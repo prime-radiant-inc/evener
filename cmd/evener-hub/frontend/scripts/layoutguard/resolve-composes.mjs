@@ -36,18 +36,24 @@ const RULE_RE = /(\.[A-Za-z0-9_-]+)[ \t]*\{([^}]*)\}/g;
 const COMPOSES_RE = /composes:\s*([^;]+?)\s+from\s+["'][^"']*["'];?/g;
 
 // `:global(<inner>)` unwrapping: the build strips the wrapper and keeps the
-// inner selector verbatim. Nested parens (e.g. `:global(:not(.x))`) are not
-// supported - anything with them throws rather than silently producing a
-// selector the build would not.
+// inner selector verbatim. The pattern below only matches paren-free inners;
+// anything nested (e.g. `:global(:not(.x))`) matches NOTHING, so the leftover
+// check after the replace throws rather than letting the browser silently
+// drop the selector and the guard pass without testing the rule.
 const GLOBAL_RE = /:global\(\s*([^()]+?)\s*\)/g;
+const LEFTOVER_GLOBAL_RE = /:global\(/;
 
 export function unwrapGlobal(cssText) {
-  return cssText.replace(GLOBAL_RE, (_whole, inner) => {
+  const unwrapped = cssText.replace(GLOBAL_RE, (_whole, inner) => {
     if (!/^[a-zA-Z.*#:[\]]/.test(inner)) {
       throw new Error(`unwrapGlobal: unsupported :global() inner ${JSON.stringify(inner)} - extend the pattern`);
     }
     return inner;
   });
+  if (LEFTOVER_GLOBAL_RE.test(unwrapped)) {
+    throw new Error("unwrapGlobal: unmatched :global( remains (nested parens?) - extend the pattern");
+  }
+  return unwrapped;
 }
 
 export function resolveComposes(cssTexts) {
