@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -96,6 +97,20 @@ func canonicalScratchRoot(root string) (string, error) {
 }
 
 func sessionScratchBase(requested, workspaceRoot string) (string, error) {
+	bases := sessionScratchBases(requested, workspaceRoot)
+	if len(bases) == 0 {
+		return "", noSessionScratchBaseError(workspaceRoot)
+	}
+	return bases[0], nil
+}
+
+// sessionScratchBases lists, in allocation-preference order, every base a
+// session on this workspace may end up in: the requested base (or the temp dir)
+// and the user cache dir, each canonical, keeping only the ones that exist as a
+// directory outside the workspace. Allocation takes the first; a reclaim has to
+// visit them all, because a workspace that contains the temp dir sends its
+// sessions to the cache dir instead.
+func sessionScratchBases(requested, workspaceRoot string) []string {
 	first := requested
 	if strings.TrimSpace(first) == "" {
 		first = sessionScratchTempDir()
@@ -104,6 +119,7 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 	if cache, err := sessionScratchUserCacheDir(); err == nil && strings.TrimSpace(cache) != "" {
 		candidates = append(candidates, cache)
 	}
+	var bases []string
 	for _, candidate := range candidates {
 		absolute, err := filepath.Abs(candidate)
 		if err != nil || pathWithin(absolute, workspaceRoot) {
@@ -117,9 +133,15 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 		if err != nil || pathWithin(canonical, workspaceRoot) {
 			continue
 		}
-		return canonical, nil
+		if !slices.Contains(bases, canonical) {
+			bases = append(bases, canonical)
+		}
 	}
-	return "", fmt.Errorf("sandbox: no session scratch base outside workspace %q", workspaceRoot)
+	return bases
+}
+
+func noSessionScratchBaseError(workspaceRoot string) error {
+	return fmt.Errorf("sandbox: no session scratch base outside workspace %q", workspaceRoot)
 }
 
 func pathWithin(path, root string) bool {
@@ -152,18 +174,32 @@ func (s *SessionScratch) Cleanup() error {
 }
 
 // SweepCrashedSessionScratch reclaims the session scratch directories left in
-// the base a new session would allocate from. A session releases its lease and
-// keeps its directory at close and on handoff, so nothing else ever removes
-// those: this is what makes retention safe rather than a permanent leak. It
+// every base a session on workspaceRoot may allocate from. A session releases
+// its lease and keeps its directory at close and on handoff, so nothing else
+// ever removes those: this is what makes retention safe rather than a permanent
+// leak. It sweeps all the allocation bases rather than the one this workspace
+// would pick, because a workspace containing the temp dir allocates from the
+// cache dir instead, and it skips a base inside workspaceRoot for the same
+// reason allocation refuses one: nothing Evener owns is ever written there. It
 // reports only the failures an operator can act on — an unreadable base, a
 // directory it owned but could not remove — so it is best called once at
 // process start, off the startup path.
-func SweepCrashedSessionScratch() error {
-	base, err := sessionScratchBase("", "")
+func SweepCrashedSessionScratch(workspaceRoot string) error {
+	canonicalWorkspace, err := canonicalScratchRoot(workspaceRoot)
 	if err != nil {
 		return err
 	}
-	return sweepCrashedSessionScratch(base)
+	bases := sessionScratchBases("", canonicalWorkspace)
+	if len(bases) == 0 {
+		return noSessionScratchBaseError(workspaceRoot)
+	}
+	var failures []error
+	for _, base := range bases {
+		if err := sweepCrashedSessionScratch(base); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
