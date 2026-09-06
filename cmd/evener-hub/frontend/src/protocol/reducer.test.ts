@@ -2336,6 +2336,277 @@ test("mergeOlderItemPage preserves older settled payload and usage when the curr
   });
 });
 
+test.each([
+  ["omitted text falls back to the older settled text", undefined, "settled text"],
+  ["explicit empty text remains empty", "", ""],
+  ["explicit nonempty text remains the newer text", "newer text", "newer text"],
+])("mergeOlderItemPage preserves same-key text presence semantics: %s", (_case, newerText, expectedText) => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [
+              {
+                id: "newer-item",
+                transcriptKey: "shared-key",
+                position: { entry: 2, item: 0 },
+                turnId: "shared-turn",
+                type: "agentMessage",
+                ...(newerText === undefined ? {} : { text: newerText }),
+                status: "completed",
+              },
+              {
+                id: "newer-after",
+                transcriptKey: "after-key",
+                position: { entry: 2, item: 1 },
+                turnId: "shared-turn",
+                type: "agentMessage",
+                text: "after",
+                status: "completed",
+              },
+            ],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled text",
+            output: "settled output",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["shared-key", "after-key"]);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "newer-item",
+    text: expectedText,
+    output: "settled output",
+    position: { entry: 2, item: 0 },
+  });
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage keeps omitted text absent across repeated same-key merges", () => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [{ id: "newer-item", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const page = {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed" as const,
+        itemsView: "full" as const,
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage" as const,
+            text: "settled text",
+            status: "completed" as const,
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  };
+
+  const first = mergeOlderItemPage(model, page);
+  const second = mergeOlderItemPage(first, page);
+
+  expect(first.turns[0]?.items[0]?.text).toBe("settled text");
+  expect(second.turns[0]?.items[0]?.text).toBe("settled text");
+  expect(second.turns[0]?.items).toHaveLength(1);
+});
+
+test("an even older omitted fragment does not erase an older provided text", () => {
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "completed",
+            itemsView: "fragment",
+            items: [{ id: "newer-item", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+          },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const provided = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "provided-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "A",
+          },
+        ],
+      },
+    ],
+  });
+  const result = mergeOlderItemPage(provided, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "omitted-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("A");
+});
+
+test("agent message delta clone preserves omitted text presence for later pagination", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [{ id: "item-1", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta: "chunk" },
+    },
+    1001,
+  );
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("settled");
+});
+
+test("settling nonempty pending text marks its fresh text as provided", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [{ id: "item-1", transcriptKey: "shared-key", turnId: "shared-turn", type: "agentMessage" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta: "live" },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "shared-turn",
+        turn: { id: "shared-turn", status: "completed", itemsView: "" },
+      },
+    },
+    1002,
+  );
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "historical",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]?.text).toBe("live");
+});
+
 test("mergeOlderItemPage retains the older status when an equal-rank newer item omits status", () => {
   const thread = testThread({
     turns: [
