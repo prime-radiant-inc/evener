@@ -139,7 +139,13 @@ func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenS
 	if err != nil {
 		return tokenSource{}, err
 	}
-	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(creds.JSON)}
+	// A stored credential is classified from the bytes evener holds; only
+	// ADC has to trust the JSON the library read from the file.
+	credentialJSON := creds.JSON
+	if res.Credential.Source == "store" {
+		credentialJSON = []byte(res.Credential.Value)
+	}
+	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(credentialJSON)}
 	if a.sources == nil {
 		a.sources = map[string]cachedSource{}
 	}

@@ -183,6 +183,23 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 	}
 }
 
+func TestGCPADCClassifiesAStoredCredentialFromTheStoredJSON(t *testing.T) {
+	// The parser seam returns no JSON echo; the stored value itself must
+	// decide that this is a user credential and so needs the quota header.
+	a := &GCPADC{
+		CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
+			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "json-token"})}, nil
+		},
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	if err := a.Apply(context.Background(), req, storedRes("vertex", storedUserJSON)); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("x-goog-user-project"); got != "my-project" {
+		t.Fatalf("x-goog-user-project = %q, want my-project: a stored authorized_user credential is classified from the stored JSON, not from what the parser echoes", got)
+	}
+}
+
 func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
 	var fromJSON [][]byte
 	a := &GCPADC{
