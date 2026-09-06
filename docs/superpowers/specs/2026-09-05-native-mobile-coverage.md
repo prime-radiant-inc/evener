@@ -82,3 +82,5 @@ Source `b4d7060cf` adds SQLite drafts keyed by hub and session, checkpointed unc
 ## Reading validation update — 5 September 2026
 
 Source `2d73a9000` has both-platform release Markdown builds and 48 passing native tests. [Reading evidence](../../design/mobile/markdown-evidence.md) records exact code and source-link copying, Android table overflow navigation, dark appearance and large-text observations. Acceptance remains open: live iOS font changes clip action labels until remount, Android font changes recreate the activity without route restoration, and complete native accessibility/streaming checks remain outstanding. These lifecycle defects take precedence over declaring the reading surface polished.
+
+The subsequent shared-text correction makes iOS Action/Copy/ErrorMessage measurement respond to live font-scale changes, retaining Android native nonlinear scaling. Both builds pass; final iOS manual evidence shows untruncated status and composer actions after a live change. Android route restoration and complete app-wide accessibility acceptance remain open.
