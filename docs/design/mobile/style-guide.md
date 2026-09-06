@@ -36,7 +36,7 @@ Use at least 44 pt interactive regions on iOS as our proposed minimum and 48 dp 
 
 Use the OS navigation structure, safe areas, back behavior, menus and sheets. The selected hub must be discoverable at the root and explicit in destination-sensitive actions. For aggregated lists, include a readable hub name. Keep normal connection health quiet; elevate loss of connectivity or uncertain delivery. Avoid a permanent strip of low-value status controls.
 
-Keep a stable route back to saved hubs and ongoing sessions. Setup explains where execution happens and what must be available on the host. Receiving events, establishing a connection and confirming a submitted action are different states; the interface must not substitute one for another.
+Use one session-actions overflow icon in the conversation header, preserving space for the title. Expose Session details, Tasks and Activity directly through the native iOS menu and Android action sheet. The Android sheet includes the full session and hub names; it must scroll with large text. Keep a stable route back to saved hubs and ongoing sessions. Setup explains where execution happens and what must be available on the host. Receiving events, establishing a connection and confirming a submitted action are different states; the interface must not substitute one for another.
 
 ### Conversation
 
