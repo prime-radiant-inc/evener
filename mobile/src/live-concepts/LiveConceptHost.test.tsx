@@ -106,7 +106,7 @@ function conversation(items: MobileConversation["items"]): MobileConversation {
     status: "running",
     items,
     capabilities,
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
   };

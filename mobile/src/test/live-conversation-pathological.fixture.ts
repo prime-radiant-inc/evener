@@ -187,7 +187,7 @@ function buildConversation(
     status: "idle",
     items: buildTimelineItems(count),
     capabilities: ALL_TRUE_CAPS,
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: SAMPLE_USAGE,
     reasoningEffort: "medium",
     reasoningEffortLevels: ["low", "medium", "high"],

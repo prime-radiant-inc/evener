@@ -98,7 +98,7 @@ function makeConversation(
       goal: true,
       rename: true,
     },
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
     ...over,

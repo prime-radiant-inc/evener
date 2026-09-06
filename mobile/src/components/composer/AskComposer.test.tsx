@@ -89,7 +89,7 @@ function makeConversation(
     status: "ready",
     items,
     capabilities: ALL_TRUE_CAPS,
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: true,
     ...over,
