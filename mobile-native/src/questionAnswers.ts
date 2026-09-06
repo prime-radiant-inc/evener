@@ -13,7 +13,12 @@ export type QuestionSelections = Record<
 export function pendingQuestions(conversation: MobileConversation | null) {
   return conversation?.askPending
     ? conversation.items.flatMap((item) =>
-        item.kind === "question" ? item.batch.questions : [],
+        item.kind === "question"
+          ? item.batch.questions.map((question) => ({
+              ...question,
+              callId: item.batch.callId,
+            }))
+          : [],
       )
     : [];
 }
