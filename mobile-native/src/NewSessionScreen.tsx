@@ -1,7 +1,7 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -39,17 +39,19 @@ export function NewSessionScreen({
     () => (ready && client ? createNewSessionService(client) : null),
     [ready, client],
   );
+  useEffect(() => {
+    store.getState().bind(service);
+    return () => store.getState().bind(null);
+  }, [store, service]);
   useFocusEffect(
     useCallback(() => {
-      store.getState().bind(service);
       if (service) {
         void store.getState().loadMetadata();
-        void store.getState().loadModels();
+        void store.getState().loadModels(true);
       }
-      return () => store.getState().bind(null);
     }, [store, service]),
   );
-  const disabled = !ready || form.submitting;
+  const disabled = !ready || form.submitting || form.loadingModels;
   const inputStyle = [
     styles.input,
     {
@@ -147,6 +149,17 @@ export function NewSessionScreen({
               ))}
             </ScrollView>
           ) : null}
+          <Action
+            disabled={disabled || !form.cwd.trim()}
+            onPress={() => {
+              navigation.navigate("LaunchSettings", {
+                hubId,
+                projectCwd: form.cwd.trim(),
+              });
+            }}
+          >
+            Project launch settings
+          </Action>
           <Copy>Harness</Copy>
           <View>
             <Choice

@@ -38,3 +38,36 @@ reconnect behavior and the form's spacing remain open under MOB-007/MOB-001.
 Android UI automation returned a transient null root during one observation;
 a subsequent read and explicit Find directories action recovered without an app
 restart. The initial opening was not counted as successful picker evidence.
+
+
+## Project launch settings and composer round trip
+
+On 6 September 2026, the creation screen gained project launch settings for its
+selected hub directory. The editor uses the advertised project-defaultable
+schema and the existing layer editor, including collections, conflict handling
+and readback. It does not write resolved effective settings into the layer.
+
+Manual Release checks used iPhone 17 Pro/iOS 26.5 and Pixel 7/API 35 against the
+owned SecondHub fixture. iOS selected Fake Alternate, opened project settings,
+saved maxRounds=7 and returned with its model and directory intact. An independent
+installed API client confirmed project maxRounds=7 and global maxRounds absent.
+Android selected Fake Test Model, opened the same project's editor, observed
+Effective value 7, restored inheritance, saved and returned with its model and
+directory intact. Independent AppWire readback confirmed both overrides absent.
+These operations used no production hub and made no provider requests.
+
+The initial native round trip reproduced a model-selection loss: blur unbound
+the creation service, clearing its model and reasoning. The service now lives
+with the mounted screen and connection. Focus refreshes metadata and the catalog;
+matching model/reasoning choices survive only when still advertised. Creation is
+blocked during the explicit catalog refresh so an in-flight read cannot silently
+replace the intended model with a hub default. Tests cover the preserved choice,
+removed model, removed reasoning level and blocked submission during refresh.
+The project controller test also checks exact cwd/layer scope, rejection of a
+global-only option and retention of unrelated layer fields.
+
+The native suite has 314 passing tests and TypeScript passes. Both Release builds
+pass. This establishes the ordinary scalar project-settings round trip; collection
+editing at project scope, concurrent writers, reconnects during this flow, full
+prompt preservation and accessibility still need native qualification. The form's
+spacing and per-launch/trust workflows remain open.

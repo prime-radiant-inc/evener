@@ -185,3 +185,29 @@ it("shows the hub rejection while retaining the draft without replay", async () 
   });
   expect(calls.filter((c) => c.method === "thread/start")).toHaveLength(1);
 });
+
+it("retains available model and reasoning when refreshing the same project", async () => {
+  const { store, calls } = setup();
+  const initial = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await initial;
+  store.getState().selectModel(model);
+  store.getState().setReasoning("high");
+  const refresh = store.getState().loadModels(true);
+  expect(await store.getState().submit()).toEqual({ status: "blocked" });
+  calls[1]?.response.resolve({ data: [model] });
+  await refresh;
+  expect(calls).toHaveLength(2);
+  expect(store.getState()).toMatchObject({ model, reasoning: "high" });
+  const changed = store.getState().loadModels(true);
+  calls[2]?.response.resolve({
+    data: [{ ...model, reasoningEffortLevels: ["low"] }],
+  });
+  await changed;
+  expect(store.getState().model?.model).toBe("a");
+  expect(store.getState().reasoning).toBe("");
+  const removed = store.getState().loadModels(true);
+  calls[3]?.response.resolve({ data: [] });
+  await removed;
+  expect(store.getState().model).toBeNull();
+});

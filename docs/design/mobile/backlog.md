@@ -358,6 +358,11 @@ Directory browsing is now available in the creation form. Both native platforms
 selected a hub directory and created a session there, independently confirmed by
 AppWire. Hub rejection messages are retained alongside creation uncertainty;
 see [creation evidence and remaining scope](session-creation.md).
+Project launch-layer editing now has iOS save and Android inherit/readback
+evidence, with independent scope checks. The settings round trip preserves a
+valid selected model and revalidates reasoning against the refreshed catalog.
+314 native tests and TypeScript pass. Per-launch configuration, repository trust
+and complete project-layer failure/accessibility qualification remain open.
 
 Acceptance: real native creation with valid/invalid paths and configuration,
 trust decisions, creation failure/uncertainty, keyboard and accessibility

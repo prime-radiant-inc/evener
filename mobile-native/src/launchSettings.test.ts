@@ -7,7 +7,7 @@ import type {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchSettings } from "./launchSettings";
 
-function fixture() {
+function fixture(layerName: "global" | "project" = "global", cwd = "/") {
   let layer: LaunchConfigLayer = {
     model: "fixture/model",
     maxRounds: 3,
@@ -79,7 +79,7 @@ function fixture() {
   } as ConversationClientLike;
   return {
     client,
-    model: new LaunchSettings(client, "/", "global"),
+    model: new LaunchSettings(client, cwd, layerName),
     io,
     calls,
     listeners,
@@ -334,4 +334,27 @@ it("ignores an obsolete refresh after a newer baseline is loaded", async () => {
   release();
   await old;
   expect(f.model.getSnapshot().current).toEqual({ model: "new/model" });
+});
+
+it("scopes project reads and writes and refuses global-only fields", async () => {
+  const f = fixture("project", "/project-fixture");
+  await f.model.refresh();
+  expect(() => f.model.edit("nonInteractive", true)).toThrow();
+  f.model.edit("maxRounds", 7);
+  expect(await f.model.save()).toBe(true);
+  const writes = f.calls.filter(
+    (call) => call.method === "evener/launch/setLayer",
+  );
+  expect(writes).toHaveLength(1);
+  expect(writes[0]?.params).toEqual({
+    cwd: "/project-fixture",
+    layer: "project",
+    config: { model: "fixture/model", maxRounds: 7, env: { KEEP: "value" } },
+  });
+  const reads = f.calls.filter(
+    (call) => call.method === "evener/launch/getLayer",
+  );
+  expect(reads.length).toBeGreaterThan(0);
+  for (const read of reads)
+    expect(read.params).toEqual({ cwd: "/project-fixture", layer: "project" });
 });
