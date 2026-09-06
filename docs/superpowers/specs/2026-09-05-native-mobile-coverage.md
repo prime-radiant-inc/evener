@@ -27,7 +27,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Manage session | Native rename, context compaction and confirmed runtime stop; both-platform isolated real-daemon checks | Fork, clear, explicit lifecycle controls, disconnected/uncertain action acceptance, accessibility and physical-device verification |
 | Model and launch settings | Model/reasoning selection during creation and in the composer for existing sessions | Vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
-| Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
+| Approvals and questions | Sandbox approval sheet, explicit allow/deny, live resolution and stale request guards; automated and controlled-wire native evidence in `docs/design/mobile/approval-evidence.md`. Question text/options still use composer replies | Real sandbox execution/resumption and native fault/accessibility acceptance; structured question interaction and other user decision surfaces |
 | Hub navigation | Project pin/favorite and project/session archive/unarchive in row actions; both-platform isolated-hub checks | Project/session removal, session pin assign/unpin, section rename/delete and pinned browsing |
 | Provider authentication | Not exposed | Status, API keys, login/logout, device authorization, auth tests |
 | Instances | Not exposed | List/create/edit/remove/default |

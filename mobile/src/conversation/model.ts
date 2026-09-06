@@ -164,6 +164,17 @@ export interface MobileUsage {
 
 // The full mobile conversation view model. projectThread produces this from a
 // Thread; React components consume only this shape, never the wire Thread.
+export interface MobileApproval {
+  id: string;
+  tool: string;
+  kind: string;
+  mode: string;
+  path: string;
+  command?: string;
+  output?: string;
+  partiallyRan: boolean;
+}
+
 export interface MobileConversation {
   id: string;
   instanceId?: string;
@@ -180,4 +191,5 @@ export interface MobileConversation {
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
   askPending: boolean;
+  pendingApprovals: MobileApproval[];
 }

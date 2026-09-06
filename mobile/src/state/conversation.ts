@@ -34,7 +34,7 @@ import type {
   MobileTimelineItem,
   MobileUsage,
 } from "../conversation/model";
-import { projectQueue } from "../conversation/project";
+import { projectApproval, projectQueue } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationService,
@@ -570,6 +570,7 @@ export function createConversationStore() {
   // projection. If unchanged, the rehydrate commits authoritative projected
   // capabilities.
   let capabilityOwnerRev = 0;
+  let approvalOwnerRev = 0;
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -1156,7 +1157,29 @@ export function createConversationStore() {
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
+        const buffered: AnyNotification[] = [];
+        let needsSnapshot = false;
+        let active = true;
+        let unsubscribe: (() => void) | null = null;
+        let liveHandler: ((notification: AnyNotification) => void) | null =
+          null;
         try {
+          // Subscribe before requesting the snapshot so live events cannot fall
+          // into the gap between the server snapshot and client publication.
+          unsubscribe = service.subscribeNotifications((notification) => {
+            if (!active || gen !== conversationGen) return;
+            if (liveHandler) liveHandler(notification);
+            else if (
+              notification.method === "evener/sandbox/escalation/requested" ||
+              notification.method === "evener/sandbox/escalation/resolved"
+            )
+              buffered.push(notification);
+            else {
+              const target = notificationRef(notification);
+              if (target && (target.ref === undefined || target.ref === ref))
+                needsSnapshot = true;
+            }
+          });
           const { conversation, activity, olderCursor } =
             await service.readProjection(ref);
           if (gen !== conversationGen) return;
@@ -1185,7 +1208,7 @@ export function createConversationStore() {
             status: "open",
             olderCursor,
           });
-          service.subscribeNotifications((n) => {
+          liveHandler = (n) => {
             if (gen !== conversationGen) return;
             // Route notifications to BOTH stores — conversation and activity.
             // Propagate every returned outcome; rehydrate requests the one shared
@@ -1200,13 +1223,26 @@ export function createConversationStore() {
             // rejected it on identity grounds — but conversation still needs
             // its own processing for conversation-specific notifications).
             get().applyNotification(n);
-          });
+          };
+          for (const notification of buffered) liveHandler(notification);
+          buffered.length = 0;
+          // Deltas may already be included in the snapshot; reread rather than
+          // replaying those non-idempotent events onto the initial content.
+          if (needsSnapshot) requestRehydrate(ref);
         } catch (err) {
           if (gen !== conversationGen) return;
           set({
             status: "error",
             error: err instanceof Error ? err.message : String(err),
           });
+        } finally {
+          if (!liveHandler) {
+            active = false;
+            buffered.length = 0;
+            // The service's cleanup targets its current subscription. Never
+            // let an old open unsubscribe a newer conversation's listener.
+            if (gen === conversationGen) unsubscribe?.();
+          }
         }
       },
 
@@ -1282,6 +1318,7 @@ export function createConversationStore() {
         // the await, a newer capability owner published caps and the rehydrate
         // must preserve the current caps.
         const entryCapRev = capabilityOwnerRev;
+        const entryApprovalRev = approvalOwnerRev;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1463,6 +1500,10 @@ export function createConversationStore() {
           const committedConversation = {
             ...conversation,
             items: committedItems,
+            pendingApprovals:
+              entryApprovalRev === approvalOwnerRev
+                ? conversation.pendingApprovals
+                : (currentConv?.pendingApprovals ?? []),
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
@@ -2047,6 +2088,34 @@ export function createConversationStore() {
 
         const conv = state.conversation;
         switch (n.method) {
+          case "evener/sandbox/escalation/requested": {
+            approvalOwnerRev++;
+            const approval = projectApproval(n.params);
+            set({
+              conversation: {
+                ...conv,
+                pendingApprovals: [
+                  ...conv.pendingApprovals.filter(
+                    (value) => value.id !== approval.id,
+                  ),
+                  approval,
+                ],
+              },
+            });
+            break;
+          }
+          case "evener/sandbox/escalation/resolved": {
+            approvalOwnerRev++;
+            set({
+              conversation: {
+                ...conv,
+                pendingApprovals: conv.pendingApprovals.filter(
+                  (value) => value.id !== n.params.escalationId,
+                ),
+              },
+            });
+            break;
+          }
           case "thread/status/changed": {
             const params = n.params as {
               status: { type: string };
