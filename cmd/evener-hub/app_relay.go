@@ -54,6 +54,7 @@ type relayKeyState struct {
 }
 
 type hubThreadReadResult struct {
+	relayKey string
 	response appwire.ThreadReadResponse
 	handoff  appsource.RelayHandoff
 	release  func()
@@ -1130,7 +1131,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
 			return nil, err
 		}
-		handle, _, publish, release, err := acquireRelaySession(ctx, relaySource, source, params)
+		handle, state, publish, release, err := acquireRelaySession(ctx, relaySource, source, params)
 		if err != nil {
 			return nil, err
 		}
@@ -1152,6 +1153,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
 		if result.Handoff != nil {
 			read = &hubThreadReadResult{
+				relayKey: state.relayKey,
 				response: result.Response,
 				handoff:  result.Handoff,
 				release:  releaseCommand,
@@ -1186,20 +1188,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if read == nil || read.handoff == nil {
 			return true
 		}
-		sourceID := strings.TrimSpace(read.response.Thread.Source)
-		if ref, err := appwire.ParseRef(params.Ref); err == nil {
-			sourceID = ref.SourceID
-		}
-		if sourceID == "" {
-			sourceID = "local"
-		}
-		// Keyed on the response's Thread.ID rather than the request's
-		// ref.ThreadID: the daemon maps a stable ref back to the live session
-		// id before answering (server/appwire_runtime.go appThreadIDForRead),
-		// so the two coincide on every reachable path, and thread/unsubscribe
-		// resolves through the same mapping. Kept explicit so a future source
-		// that lets them diverge shows exactly where to look.
-		relayKey := sourceID + ":" + read.response.Thread.ID
+		// Subscribe to the publication key owned by the relay. A stable ref
+		// survives clear while the response Thread.ID names its new instance.
+		relayKey := read.relayKey
 		captured, err := withDeletionTargetOwnership(
 			cfg,
 			params.Ref,
@@ -1254,7 +1245,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return appwire.ThreadReadResponse{}, err
 		}
 		threadID := read.response.Thread.ID
-		relayKey := source.ID() + ":" + threadID
+		relayKey := read.relayKey
 		registered, err := withDeletionTargetOwnership(
 			cfg,
 			params.Ref,
