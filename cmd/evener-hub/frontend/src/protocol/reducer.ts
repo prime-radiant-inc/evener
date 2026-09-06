@@ -403,6 +403,18 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
   return settled;
 }
 
+// Omission is not a replacement: finalize the text already observed locally.
+// Explicit wire text, including empty text, remains authoritative.
+function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing || itemTextPresence(settled) === "provided") return settled;
+  const pending = existing.pendingText;
+  const merged = copyItemTextPresence(existing, {
+    ...settled,
+    text: existing.text + (pending === undefined ? "" : pendingTextJoined(pending)),
+  });
+  return pending === undefined ? merged : setItemTextPresence(merged, "provided");
+}
+
 // item/completed's settled wire item never carries observedStartedAt/
 // observedCompletedAt — those are model-only client observations (see
 // ItemModel's doc comment in model.ts), never present on a wire ThreadItem,
@@ -1064,8 +1076,8 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp);
-        // Same three-helper composition as item/completed's existing-item
-        // branch below (mergeReasoning/mergeArguments/mergeObservedTiming
+        // Same helper composition as item/completed's existing-item branch
+        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
         // read/write disjoint fields off the same `old` reference, so
         // composition order is free) — this branch has its own settled
         // items rather than item/completed's single one, so it maps instead
@@ -1073,7 +1085,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
-          return mergeObservedTiming(mergeArguments(mergeReasoning(identitySettled, old), old), old, now);
+          return mergeObservedTiming(
+            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            old,
+            now,
+          );
         });
       } else {
         // The live wire's settle stamp never carries items — every live
@@ -1136,7 +1152,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             ...turn,
             items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
-                mergeArguments(mergeReasoning(mergeItemIdentityMetadata(old, incoming), old), old),
+                mergeArguments(
+                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  old,
+                ),
                 old,
                 now,
               ),
