@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import WebSocket from "ws";
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
 import { createHubClient } from "../src/connection";
@@ -36,6 +37,52 @@ try {
     storedSource: result.status.activeSource,
   });
   await c.request("evener/auth/logout", { provider: "work" });
+  const expiring = await c.request("evener/auth/device/start", {
+    provider: "work",
+  });
+  const expire = await fetch("http://127.0.0.1:9201/clock/expire", {
+    method: "POST",
+  });
+  assert.equal(expire.status, 204, "fixture expiry control");
+  assert.equal(
+    (
+      await c.request("evener/auth/device/poll", {
+        provider: "work",
+        flowId: expiring.flowId,
+      })
+    ).state,
+    "expired",
+  );
+  const retrying = await c.request("evener/auth/device/start", {
+    provider: "work",
+  });
+  const fault = await fetch("http://127.0.0.1:9201/fault/poll", {
+    method: "POST",
+  });
+  assert.equal(fault.status, 204, "fixture poll failure control");
+  await assert.rejects(
+    c.request("evener/auth/device/poll", {
+      provider: "work",
+      flowId: retrying.flowId,
+    }),
+  );
+  const beforeRetry = await c.request("evener/auth/status", {
+    provider: "work",
+  });
+  assert.equal(beforeRetry.signedIn, false);
+  const clear = await fetch("http://127.0.0.1:9201/fault/clear", {
+    method: "POST",
+  });
+  assert.equal(clear.status, 204, "fixture failure recovery control");
+  await fetch("http://127.0.0.1:9201/approve", { method: "POST" });
+  const retried = await c.request("evener/auth/device/poll", {
+    provider: "work",
+    flowId: retrying.flowId,
+  });
+  assert.equal(retried.state, "authorized");
+  assert.equal(retried.status?.activeSource, "oauth");
+  await c.request("evener/auth/logout", { provider: "work" });
+  console.log({ expiry: "expired", sameFlowRetry: "authorized" });
   await fetch("http://127.0.0.1:9201/mode/browser", { method: "POST" });
   const fallback = await c.request("evener/auth/device/start", {
     provider: "work",

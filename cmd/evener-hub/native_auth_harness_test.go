@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -35,7 +36,9 @@ func TestNativeAuthHarness(t *testing.T) {
 	config := writeProvidersToml(t, dir, codexInstanceToml)
 	ctrl := newTestAuthController(t, dir, stateDir, config)
 	ctrl.cfg.IssuerBaseURL = base
-	var approved, browser atomic.Bool
+	var approved, browser, pollFailure atomic.Bool
+	var clockOffset atomic.Int64
+	ctrl.now = func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
 	ctrl.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
 		if browser.Load() {
 			return authopenai.DeviceCode{}, authopenai.ErrDeviceCodeNotEnabled
@@ -44,13 +47,16 @@ func TestNativeAuthHarness(t *testing.T) {
 		return authopenai.DeviceCode{UserCode: "NATIVE-TEST", VerificationURL: base + "/authorize", DeviceAuthID: "native-device", Interval: time.Second}, nil
 	}
 	ctrl.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		if pollFailure.Load() {
+			return authopenai.DeviceCodeSuccess{}, false, errors.New("fixture OAuth poll failed")
+		}
 		if !approved.Load() {
 			return authopenai.DeviceCodeSuccess{}, true, nil
 		}
 		return authopenai.DeviceCodeSuccess{AuthorizationCode: "fixture-code", CodeVerifier: "fixture-verifier"}, false, nil
 	}
 	tokens := func() authopenai.TokenSet {
-		return authopenai.TokenSet{AccessToken: "native-fixture-access", RefreshToken: "native-fixture-refresh", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
+		return authopenai.TokenSet{AccessToken: "native-fixture-access", RefreshToken: "native-fixture-refresh", TokenType: "Bearer", Expiry: ctrl.now().Add(time.Hour)}
 	}
 	ctrl.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
 		return tokens(), nil
@@ -82,6 +88,18 @@ func TestNativeAuthHarness(t *testing.T) {
 	mux.HandleFunc("POST /mode/browser", func(w http.ResponseWriter, r *http.Request) { browser.Store(true); w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /mode/device", func(w http.ResponseWriter, r *http.Request) {
 		browser.Store(false)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /clock/expire", func(w http.ResponseWriter, r *http.Request) {
+		clockOffset.Add(int64(16 * time.Minute))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /fault/poll", func(w http.ResponseWriter, r *http.Request) {
+		pollFailure.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /fault/clear", func(w http.ResponseWriter, r *http.Request) {
+		pollFailure.Store(false)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
