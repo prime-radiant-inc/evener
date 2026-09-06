@@ -211,3 +211,53 @@ it("retains available model and reasoning when refreshing the same project", asy
   await removed;
   expect(store.getState().model).toBeNull();
 });
+
+it("starts with per-launch overrides using the web scalar precedence without saving defaults", async () => {
+  const { store, calls } = setup();
+  const loading = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await loading;
+  store.getState().selectModel(model);
+  store.getState().setReasoning("low");
+  store.getState().setLaunchOverrides({
+    model: "q/advanced",
+    reasoningEffort: "high",
+    maxRounds: 0,
+    env: { EMPTY: "" },
+    modelFallbacks: [],
+  });
+  const pending = store.getState().submit();
+  const start = calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toEqual({
+    cwd: "/project",
+    model: "q/advanced",
+    reasoningEffort: "high",
+    launchOverrides: {
+      model: "q/advanced",
+      reasoningEffort: "high",
+      maxRounds: 0,
+      env: { EMPTY: "" },
+      modelFallbacks: [],
+    },
+  });
+  expect(
+    calls.filter((c) => c.method === "evener/launch/setLayer"),
+  ).toHaveLength(0);
+  start?.response.reject(new Error("reply lost"));
+  expect(await pending).toEqual({ status: "failed" });
+  expect(store.getState().launchOverrides.maxRounds).toBe(0);
+  store.getState().bind(null);
+  expect(store.getState().launchOverrides.env).toEqual({ EMPTY: "" });
+});
+
+it("keeps per-launch drafts isolated by hub and snapshots caller-owned values", () => {
+  const a = createNewSessionStore("a");
+  const b = createNewSessionStore("b");
+  const overrides = { env: { MODE: "test" } };
+  a.getState().setLaunchOverrides(overrides);
+  overrides.env.MODE = "changed";
+  expect(a.getState().launchOverrides.env).toEqual({ MODE: "test" });
+  expect(b.getState().launchOverrides).toEqual({});
+  a.getState().setLaunchOverrides({});
+  expect(a.getState().launchOverrides).toEqual({});
+});

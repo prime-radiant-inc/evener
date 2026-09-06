@@ -363,8 +363,10 @@ evidence, with independent scope checks. The settings round trip preserves a
 valid selected model and revalidates reasoning against the refreshed catalog.
 Repository trust now has iOS approval and Android stale-file rejection/review/
 approval evidence, confirmed independently. 316 native tests and TypeScript pass.
-Per-launch configuration and complete project-layer/trust failure/accessibility
-qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
+Per-session schema options now have native scalar creation/readback evidence
+on both platforms and share the saved-layer field editors. 318 native tests pass.
+Plugin selection, creation images, per-launch collection/precedence failure
+coverage and complete project-layer/trust accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
 independently under MOB-018.
 
 Acceptance: real native creation with valid/invalid paths and configuration,

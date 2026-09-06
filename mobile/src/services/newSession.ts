@@ -13,6 +13,7 @@ import type {
   HarnessDescriptor,
   HarnessListResponse,
   InputItem,
+  LaunchConfigLayer,
   MethodTypes,
   ModelListParams,
   ModelListResponse,
@@ -30,6 +31,7 @@ export interface NewSessionParams {
   model?: string;
   harness?: string;
   reasoningEffort?: string;
+  launchOverrides?: LaunchConfigLayer;
 }
 
 export interface NewSessionService {
@@ -61,6 +63,9 @@ export function createNewSessionService(
       }
       if (params.reasoningEffort !== undefined) {
         wireParams.reasoningEffort = params.reasoningEffort;
+      }
+      if (params.launchOverrides !== undefined) {
+        wireParams.launchOverrides = params.launchOverrides;
       }
       const response: ThreadStartResponse = await client.request(
         "thread/start",
