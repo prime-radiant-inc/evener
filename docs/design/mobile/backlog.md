@@ -262,7 +262,17 @@ Acceptance: both-platform native lifecycle on an owned fixture marketplace,
 notification refresh, partial loading errors, cross-device changes, long lists,
 large text, disconnect during mutation and hub switching without blind replay.
 
-### MOB-015 · P1 · Hub information and launch settings · Open
+### MOB-015 · P1 · Hub information and launch settings · In progress
+
+The native Hub settings screen now exposes the typed read-only overview and
+links to Providers/Plugins, replacing their separate session-list actions. Four
+controller tests cover refresh failure, stale responses, disposal and Go omitted
+empty/zero values; all 272 native tests and both Release builds pass. Runtime
+and storage are manually inspected on both platforms against SecondHub; iOS
+agents and both-platform empty Codex/MCP states are verified. See
+[hub-information evidence](hub-information-evidence.md). Editable launch layers,
+nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
+screen readers and visual acceptance remain open.
 
 Child of MOB-006; coordinate editable launch layers with MOB-007. Show runtime,
 storage, agents, Codex launches and version information as read-only where the

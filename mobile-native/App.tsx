@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { locationForRoute, restoredStack } from "./src/location";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
@@ -99,6 +100,11 @@ function Navigation() {
           <Stack.Screen name="Projects" component={ProjectsScreen} />
           <Stack.Screen name="Providers" component={ProvidersScreen} />
           <Stack.Screen name="Plugins" component={PluginsScreen} />
+          <Stack.Screen
+            name="HubSettings"
+            component={HubSettingsScreen}
+            options={{ title: "Hub settings" }}
+          />
           <Stack.Screen
             name="SessionLocation"
             component={SessionLocationScreen}
