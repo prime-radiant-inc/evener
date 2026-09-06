@@ -1313,7 +1313,11 @@ export function ConversationScreen({
             data={timelineRows}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <TimelineItem item={item} hubId={route.params.hubId} />
+              <TimelineItem
+                item={item}
+                hubId={route.params.hubId}
+                sessionRef={route.params.ref}
+              />
             )}
             contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
             ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
