@@ -44,8 +44,8 @@ func FuzzRPCRelayPass3(f *testing.F) {
 		}
 		dispatch(appwire.MethodThreadList, appwire.ThreadListParams{})
 		dispatch(appwire.MethodThreadList, appwire.ThreadListParams{SourceIDs: []string{"remote"}, Statuses: []string{"active"}, SearchTerm: "name", Limit: 1})
-		dispatch(appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread", IncludeTurns: true, TurnLimit: 1})
-		dispatch(appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread", Limit: 1})
+		dispatch(appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "remote:thread", IncludeTurns: true, ItemLimit: 1})
+		dispatch(appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: "remote:thread", ItemLimit: 1})
 		dispatch(appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{})
 		dispatch(appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{Ref: "remote:thread", Limit: 1})
 		dispatch(appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "remote"})

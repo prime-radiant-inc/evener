@@ -12,7 +12,14 @@ Transcript `thread/read` and `thread/turns/list` have one paging unit: items. Re
 
 Transcript reads with `IncludeTurns` return bounded item fragments. Metadata-only reads remain valid. Preserve existing method names and item response-validator function names to avoid unrelated API renaming. Item positions, transcript keys, fragment metadata, and response-byte limits remain mandatory. Logical turns remain containers; their existence does not imply a second paging mode. Empty successful responses remain valid under the single contract.
 
+## Implementation removal
+
+Remove live, saved, relay, and source mode switches; numeric turn-window helpers; obsolete saved turn-window entry points; and the separate per-entry legacy projection/cache branch after migrating callers. Do not leave aliases or wrappers solely to preserve the retired contract.
+
+Replace `materializeLocalDaemonTurns` and its hidden full-history numeric-page walk with bounded native item reads. Preserve native continuation, complete snapshots, append stability, hidden-prefix rewrite detection, authenticated identities, cancellation safety, and atomic snapshot-to-live handoff. A missing native continuation can mean genuine exhaustion and must not be treated as permission to erase complete-state handling.
+
 Keep grouped projection/index machinery, logical ordinals including empty groups, `NextEntry`, stable IDs, accounting, deletion fences, enrichment, and lifecycle behavior. Agent/doctor transcript semantics and the separate per-turn item API are outside this paging removal. Their similarly named limits are not obsolete transcript paging fields.
+
 ## Clients and documentation
 
 

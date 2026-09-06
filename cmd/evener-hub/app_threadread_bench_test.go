@@ -102,7 +102,7 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 		tb.Fatal(err)
 	}
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{
-		Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40,
+		Ref: "local:" + sessionID, IncludeTurns: true, ItemLimit: 40,
 	}, path
 }
 

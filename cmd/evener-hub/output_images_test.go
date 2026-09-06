@@ -252,7 +252,7 @@ func TestOutputImagesForToolCallOmitsMissingAndNonImageCandidates(t *testing.T) 
 
 // TestEnrichThreadFileBackedOutputImagesDoesNotDuplicateAnAlreadyProjectedReadFileImage
 // simulates the real past-thread-read pipeline order (app_threadread.go's
-// pastEntryLatestTurns already ran projectReplayOutputImages before
+// pastEntryThread already ran projectReplayOutputImages before
 // reconcileAndEnrichPastThread's enrichThreadFileBackedOutputImages runs):
 // a read_file item that already carries a tool-result-sourced OutputImage
 // for the file it read must not gain a second, file-backed entry for the

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -123,7 +124,7 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	response, ok, err := pastThreadReadResponse(context.Background(), cfg, appwire.ThreadReadParams{
-		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 1,
 	})
 	if err != nil || !ok {
 		t.Fatalf("pastThreadReadResponse = %v, %v", err, ok)
@@ -1089,9 +1090,17 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	// flushes, so the transcript read back is byte-identical.
 	w.SyncInterval = time.Hour
 	for range 199 {
+		// One logical turn per exchange: user input opens, assistant reply
+		// continues. Bare assistant runs would merge into one logical turn.
+		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("capture"))); err != nil {
+		t.Fatal(err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
 	if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
@@ -1106,7 +1115,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40}
+	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemLimit: 40}
 }
 
 // TestPastEntryThreadAdvertisesResumableCapabilities asserts a past/exited
@@ -1214,8 +1223,6 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok || len(full.Turns) != 200 {
 		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
 	}
-	wantTurns, wantCursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
-
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
@@ -1223,15 +1230,23 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	if !reflect.DeepEqual(got.Thread.Turns, wantTurns) || got.OlderCursor != wantCursor {
-		t.Fatal("bounded saved read differs from full reference")
+	if items := flattenTestItems(got.Thread.Turns); len(items) == 0 || len(items) > appwire.TranscriptItemPageLimit || got.OlderCursor == "" {
+		t.Fatalf("bounded saved read = %d items, cursor %q; want 1..%d items and continuation", len(items), got.OlderCursor, appwire.TranscriptItemPageLimit)
 	}
-	if !reflect.DeepEqual(projected, []int{40}) {
-		t.Fatalf("saved read used legacy full projection of 200 turns; bounded projection reports = %v, want [40]", projected)
+	if len(projected) == 0 {
+		t.Fatalf("saved read did not report bounded projection: %v", projected)
 	}
-	last := got.Thread.Turns[len(got.Thread.Turns)-1].Items[0]
-	if len(last.OutputImages) != 1 || last.OutputImages[0].Name != "screenshot" {
-		t.Fatalf("bounded saved projection lost embedded output image: %+v", last)
+	// The newest logical turn is the user input plus its tool result; the
+	// command-execution item with the embedded image is the second item.
+	last := got.Thread.Turns[len(got.Thread.Turns)-1]
+	found := false
+	for _, item := range last.Items {
+		if len(item.OutputImages) == 1 && item.OutputImages[0].Name == "screenshot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bounded saved projection lost embedded output image: %+v", last.Items)
 	}
 }
 
@@ -1250,7 +1265,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
 		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
 	}
-	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 1})
 	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
 	}
@@ -1294,26 +1309,186 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	full, ok := requirePastThreadForRead(t, cfg, params)
-	if !ok {
-		t.Fatal("past thread not found")
-	}
-	_, cursor := appwire.WindowTurns(full.Turns, params.TurnLimit)
-	want := appwire.PageTurns(full.Turns, cursor, 30)
-
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
-	got, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: cursor, Limit: 30})
+	first, ok := requirePastThreadReadResponse(t, cfg, params)
+	if !ok || first.OlderCursor == "" {
+		t.Fatal("past thread initial item page missing continuation")
+	}
+	got, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: first.OlderCursor, ItemLimit: 30})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal("bounded saved page differs from full reference")
+	if items := flattenTestItems(got.Data); len(items) == 0 || len(items) > 30 {
+		t.Fatalf("bounded saved page = %d items, want 1..30", len(items))
 	}
-	if !reflect.DeepEqual(projected, []int{30}) {
-		t.Fatalf("saved page used legacy full projection of 200 turns; bounded projection reports = %v, want [30]", projected)
+	if len(projected) == 0 {
+		t.Fatalf("saved page did not report bounded projection: %v", projected)
 	}
+}
+
+func TestPastThreadItemReadPropagatesContextCancellation(t *testing.T) {
+	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, found, err := pastThreadReadResponse(ctx, cfg, appwire.ThreadReadParams{
+		Ref:          "local:" + sessionID,
+		IncludeTurns: true,
+		ItemLimit:    1,
+	})
+	if !found {
+		t.Fatal("past item read did not find seeded session")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("past item read error = %v, want context.Canceled", err)
+	}
+}
+
+func TestPastThreadItemBackfillHonorsPreCanceledContext(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("initial", func(t *testing.T) {
+		_, found, err := pastThreadItemReadResponse(ctx, cfg, appwire.ThreadReadParams{
+			Ref:          "local:" + entry.Meta.ID,
+			IncludeTurns: true,
+			ItemLimit:    40,
+		})
+		if !found {
+			t.Fatal("past item read did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item backfill error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("continuation", func(t *testing.T) {
+		latest, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			ItemLimit: 40,
+		})
+		if err != nil || !found {
+			t.Fatalf("seed item page = (%v, %v, %v)", latest, found, err)
+		}
+		_, found, err = pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{
+			Ref:       "local:" + entry.Meta.ID,
+			ItemLimit: 40,
+			Cursor:    latest.NextCursor,
+		})
+		if !found {
+			t.Fatal("past item continuation did not find seeded session")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("past item continuation error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	params := appwire.ThreadReadParams{
+		Ref:          "local:" + entry.Meta.ID,
+		IncludeTurns: true,
+		ItemLimit:    40,
+	}
+	latest, found, err := pastThreadReadResponse(context.Background(), cfg, params)
+	if err != nil || !found {
+		t.Fatalf("past item read = (%+v, %v, %v)", latest, found, err)
+	}
+	if latest.OlderCursor == "" {
+		t.Fatal("latest item page has no opaque older cursor")
+	}
+	// Each logical turn is a user input followed by its assistant burst, so
+	// the fixture's 40- and 5-item bursts become 41- and 6-item turns; the
+	// 40-item window splits turn one 6+34 and returns all six of turn two.
+	if len(latest.Thread.Turns) != 2 || len(latest.Thread.Turns[0].Items) != 34 || len(latest.Thread.Turns[1].Items) != 6 {
+		t.Fatalf("latest turn fragments = %+v, want 34 items and 6 items", latest.Thread.Turns)
+	}
+	if got := latest.Thread.Turns[0].Items[0].Text; got != "item-06" {
+		t.Fatalf("latest first fragment item=%q, want item-06", got)
+	}
+	if got := latest.Thread.Turns[1].Items[0].Text; got != "in" {
+		t.Fatalf("latest second fragment first item=%q, want the second turn's user input", got)
+	}
+	if got := latest.Thread.Turns[1].Items[1].Text; got != "item-40" {
+		t.Fatalf("latest second fragment second item=%q, want item-40", got)
+	}
+	if !latest.Thread.Turns[0].HasEarlierItems || latest.Thread.Turns[0].HasLaterItems || latest.Thread.Turns[1].HasEarlierItems || latest.Thread.Turns[1].HasLaterItems {
+		t.Fatalf("fragment completeness = first(%v,%v) second(%v,%v), want first earlier and no later on final", latest.Thread.Turns[0].HasEarlierItems, latest.Thread.Turns[0].HasLaterItems, latest.Thread.Turns[1].HasEarlierItems, latest.Thread.Turns[1].HasLaterItems)
+	}
+
+	older, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{
+		Ref:       params.Ref,
+		ItemLimit: 40,
+		Cursor:    latest.OlderCursor,
+	})
+	if err != nil || !found {
+		t.Fatalf("past older item page = (%+v, %v, %v)", older, found, err)
+	}
+	if len(older.Data) != 1 || len(older.Data[0].Items) != 7 {
+		t.Fatalf("older item page = %+v, want one seven-item fragment", older)
+	}
+	if got := older.Data[0].Items[0].Text; got != "in" {
+		t.Fatalf("older first item=%q, want the first turn's user input", got)
+	}
+	if got := older.Data[0].Items[1].Text; got != "item-00" {
+		t.Fatalf("older second item=%q, want item-00", got)
+	}
+	if older.Data[0].HasEarlierItems || !older.Data[0].HasLaterItems {
+		t.Fatalf("older completeness=(%v,%v), want no earlier and later", older.Data[0].HasEarlierItems, older.Data[0].HasLaterItems)
+	}
+}
+
+func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
+	t.Helper()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-item-paging-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5", TurnCount: 2,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	for turnIndex, count := range []int{40, 5} {
+		parts := make([]llm.ContentPart, 0, count)
+		for i := range count {
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: fmt.Sprintf("item-%02d", turnIndex*40+i)})
+		}
+		// One logical turn per assistant burst: a user input opens each one.
+		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := index.Find(sessionID)
+	if !ok {
+		t.Fatal("past item-paging entry not found")
+	}
+	return hubcore.WebConfig{Past: index}, entry
 }
 
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {

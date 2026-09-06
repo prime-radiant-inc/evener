@@ -46,7 +46,20 @@ Additional owned caller fixture found by controller: `cmd/evener/internal/launch
 - [ ] Run affected packages (one command at a time): `GOMAXPROCS=2 go test -p 1 ./appwire ./internal/appitempaging ./internal/appserver ./server`; focused new regressions under race; `go generate ./appwire`; format/diff checks. Report blockers from cross-lane dependencies honestly.
 - [ ] Self-review and commit explicit owned files; write report with RED/GREEN, commits and remaining cross-lane compile dependencies.
 
+### Task 2: Hub, native source and persisted readers
+
+**Ownership:** `cmd/evener-hub/` excluding its entire `frontend/`; `internal/apptranscript/`. No wire/server/docs edits. This includes hub source, saved/live/relay routing and relevant tests/fuzz targets.
+
+**Consumes:** Task 1 shared contract. Source interface method names remain stable for Task 3 frontend consumers.
+
+- [ ] Before implementation, add a scripted native-daemon regression proving default item reads do not issue turn-mode requests or walk unbounded history; cover exhausted/complete snapshots and bounded append/rewrite transitions. Add default saved-read item bound assertions without `PageUnit` selection. Use existing truthful scripted transport fixtures, not mocks returning inconsistent cursors.
+- [ ] Run new tests with `GOMAXPROCS=2 go test -p 1 ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -run 'FlagDay|ItemOnly' -count=1 -v`; record behavioral RED before removing fields.
+- [ ] Migrate hub read/list and relay paths to unconditional item packing. Remove `materializeLocalDaemonTurns`; use bounded native reads/continuations while preserving snapshot identity, hidden-prefix validation, complete states, cancellation and atomic handoff.
 - [ ] Remove saved turn-window wrappers and unused legacy projection/cache branch; preserve grouped full internal projections, shared indexes, accounting and empty-group `NextEntry`. Trace callers before deleting similarly named APIs. Do not delete unrelated agent/doctor transcript semantics.
+- [ ] Migrate tests/fuzz fixtures to native item requests and opaque cursors. Preserve all append, rewrite, cancellation, page-budget, stable-identity and ordinal assertions. Audit `Seed(any)` compatibility only where Task 1 reports relevant callers.
+- [ ] After shared contract is available, run `GOMAXPROCS=2 go test -p 1 ./internal/apptranscript ./cmd/evener-hub/internal/appsource ./cmd/evener-hub`; run focused new and existing critical source/ordinal regressions under race, not the whole hub race suite. Format/diff checks.
+- [ ] Commit explicit owned paths and report RED/GREEN, old symbols removed, retained surfaces and incomplete gates.
+
 ### Task 4: Integrate, verify, review and publish
 
 **Ownership:** controller coordinates, delegates fixes to owning lane. Cross-cutting compile-only callers outside lane ownership receive an explicit ownership grant before editing.

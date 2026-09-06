@@ -48,6 +48,11 @@
 - `internal/appitempaging/page_test.go` — exact 40-item, split-turn, split-entry, exclusive-boundary, and no-loss tests.
 - `internal/apptranscript/item_paging.go` — indexed newest/previous item reads without projecting the historical prefix.
 - `internal/apptranscript/item_paging_test.go` — index generation, partial-entry, append, rebuild, and cross-page tool tests.
+- `cmd/evener-hub/internal/appsource/codex_item_paging.go` — adaptation from Codex native turn pages to AppWire atomic item pages.
+- `cmd/evener-hub/internal/appsource/codex_item_paging_test.go` — Codex scan/cache/generation and partial-turn tests.
+- `cmd/evener-hub/app_item_page_fit.go` — shared post-enrichment candidate packing, result measurement, and cursor construction.
+- `cmd/evener-hub/app_item_page_fit_test.go` — exact byte-boundary and oversized-single-item tests.
+- `cmd/evener-hub/app_rpc_item_paging_test.go` — protocol-level live, past, stale, and no-loss regressions.
 
 ### Modified files
 
@@ -59,6 +64,12 @@
 - `cmd/evener-hub/frontend/src/protocol/types.gen.ts` — generated v4 TypeScript types.
 - `internal/apptranscript/apptranscript.go`, `internal/apptranscript/apptranscript_test.go` — emit stable transcript keys and positioned projected candidates.
 - `internal/apptranscript/turn_index.go`, `internal/apptranscript/turn_index_test.go` — index v9/journal v3 item counts and persisted generation.
+- `server/appwire_turns.go`, `server/appwire_turns_paging_test.go` — positioned live snapshot and item paging.
+- `server/appwire_runtime.go`, `server/appwire_runtime_test.go` — v4 read/list handlers and prepared paging identity.
+- `cmd/evener-hub/app_threadread.go`, `cmd/evener-hub/app_threadread_test.go` — ended local-session item paging.
+- `cmd/evener-hub/app_rpc.go`, `cmd/evener-hub/app_rpc_test.go` — enrichment followed by final-result fitting.
+- `cmd/evener-hub/internal/appsource/local_daemon.go`, `cmd/evener-hub/internal/appsource/transport_seams_test.go` — item-only local-daemon forwarding.
+- `cmd/evener-hub/internal/appsource/codex_source.go`, `cmd/evener-hub/internal/appsource/coverage_completion_test.go` — invoke the Codex atomic adapter instead of forwarding native turn cursors.
 
 ## Task 1: Publish the Item-Only v4 Contract
 
@@ -365,6 +376,296 @@ Expected: PASS, including all existing v8-rebuild, append-journal, projection, u
 git add internal/apptranscript/item_paging.go internal/apptranscript/item_paging_test.go internal/apptranscript/apptranscript.go internal/apptranscript/apptranscript_test.go internal/apptranscript/turn_index.go internal/apptranscript/turn_index_test.go
 git commit -m "feat(transcript): page indexed history by projected item"
 ```
+
+## Task 4: Page the Live Daemon Snapshot by Stable Item Position
+
+**Files:**
+- Modify: `server/appwire_turns.go`
+- Modify: `server/appwire_turns_paging_test.go`
+- Modify: `server/appwire_runtime.go`
+- Modify: `server/appwire_runtime_test.go`
+
+- [ ] **Step 1: Write failing live-snapshot tests**
+
+Add tests proving:
+
+- a seeded turn with 45 items yields a 40-item latest fragment and a 5-item previous fragment;
+- two pages can share the same turn ID without duplicate item IDs;
+- deltas and `item/completed` updates keep the original item position;
+- a tail-appended live item does not stale an existing cursor;
+- a reset deletion and a late prelude insertion rotate generation and stale an existing cursor;
+- reading with `Subscribe:true` still captures one coherent snapshot/notification cut and performs no transcript file read;
+- the runtime maps `ItemLimit`, returns positioned item fragments, and propagates typed stale errors.
+
+Run:
+
+```bash
+go test ./server -run 'TestAppTurnSnapshotItemPaging|TestAppTurnSnapshotCursorGeneration|TestAppWireItemPagingSubscriptionCut'
+```
+
+Expected: FAIL because `appTurnSnapshot` is still turn-indexed and calls decimal `WindowTurns`/`PageTurns`.
+
+- [ ] **Step 2: Add position ownership to the snapshot**
+
+Extend the snapshot with internal position state:
+
+```go
+type appTurnSnapshot struct {
+	mu                   sync.Mutex
+	threadRef            string
+	transcriptIncarnation string
+	incarnationEpoch     uint64
+	turns                []appwire.Turn
+	turnIndex            map[string]int
+	itemPositions        map[string]appwire.ThreadItemPosition // keyed by transcript key
+	nextLiveEntry        uint64
+	activeTurnID         string
+}
+
+type appTurnSeed struct {
+	Turns                   []appwire.Turn
+	ThreadRef               string
+	TranscriptIncarnation string
+	NextEntry               uint64
+}
+```
+
+Change `Seed` to accept `appTurnSeed`. `NextEntry` is the absolute count of all decoded transcript entries, including zero-item entries, so zero unambiguously means an empty transcript and the next live entry always receives its actual ordinal. Persisted and live transcript items both use `(absolute decoded-entry ordinal, final projected-item ordinal)`. Allocate a live item's position from `NextEntry` and the shared live/file projector's final visible-item ordering so later saved projection reproduces the same position and `TranscriptKey`. Reserve the special projection-versioned coordinate range only for prelude items. Completion, delta, reset, and tombstone update the started key in place.
+
+When an existing transcript key is updated, retain its position. Tail insertion allocates one new position without rotating the incarnation. Deletion, front insertion, or reordering increments `incarnationEpoch` and rotates the transcript incarnation.
+
+- [ ] **Step 3: Replace turn paging methods**
+
+```go
+func (s *appTurnSnapshot) LatestItemCandidates(limit int) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+func (s *appTurnSnapshot) PreviousItemCandidates(cursor string, limit int) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+```
+
+Both methods must hold the snapshot mutex only while cloning positioned state, then select and encode outside the lock. The returned internal candidate window includes cursor identity for the outer packer; no private metadata is added to the browser wire response. Keep item update merging, active-turn placement, notification ordering, and deep-clone guarantees unchanged.
+
+- [ ] **Step 4: Wire prepared identity and runtime handlers**
+
+`PrepareAppIdentity` must obtain or create the item-index incarnation while it already reads and projects persisted history, then seed `appTurnSnapshot` with the resolved thread reference, transcript incarnation, absolute decoded-entry count, stable keys, and positions. Reads use only the prepared in-memory snapshot.
+
+Dispatch `thread/read` and `thread/turns/list` to `NormalizeTranscriptItemLimit`, `LatestItemCandidates`, and `PreviousItemCandidates`; no turn-mode methods or numeric cursors remain. Preserve the existing one-subscription capture cut and `ReplaceSubscription` behavior.
+
+- [ ] **Step 5: Verify**
+
+```bash
+go test ./server -run 'TestAppTurnSnapshotItemPaging|TestAppTurnSnapshotCursorGeneration|TestAppWireItemPagingSubscriptionCut'
+go test ./server
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit the named paths**
+
+```bash
+git add server/appwire_turns.go server/appwire_turns_paging_test.go server/appwire_runtime.go server/appwire_runtime_test.go
+git commit -m "feat(server): page live snapshots by atomic item"
+```
+
+## Task 5: Adapt Ended Local Sessions and Codex Sources
+
+**Files:**
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/app_threadread_test.go`
+- Modify: `cmd/evener-hub/internal/appsource/local_daemon.go`
+- Modify: `cmd/evener-hub/internal/appsource/transport_seams_test.go`
+- Modify: `cmd/evener-hub/internal/appsource/codex_source.go`
+- Create: `cmd/evener-hub/internal/appsource/codex_item_paging.go`
+- Create: `cmd/evener-hub/internal/appsource/codex_item_paging_test.go`
+- Modify: `cmd/evener-hub/internal/appsource/coverage_completion_test.go`
+
+- [ ] **Step 1: Write failing source tests**
+
+Add tests for:
+
+- an ended local transcript whose newest 40 items split one turn and one entry;
+- a local cursor remaining valid after append and becoming stale after item-index rebuild, regardless of resume-sidecar availability;
+- `LocalDaemonSource` forwarding `itemLimit` and opaque cursor unchanged;
+- a Codex native turn containing 45 items being adapted into 5/40 AppWire item pages;
+- a Codex append retaining generation, while a changed prefix rotates generation;
+- tool call/result halves crossing two adapted Codex pages without either half disappearing.
+
+Run:
+
+```bash
+go test ./cmd/evener-hub/internal/appsource ./cmd/evener-hub -run 'TestPastThreadItemPaging|TestLocalDaemonItemPaging|TestCodexItemPaging'
+```
+
+Expected: FAIL because past reads call turn-page APIs and Codex forwards native turn cursors.
+
+- [ ] **Step 2: Switch ended local reads to the indexed item API**
+
+Dispatch reads to `LatestItemWindowFromFile` and `PreviousItemWindowFromFile`; remove the obsolete turn-page path. Use the canonical session ref as `ThreadRef` and the rebuildable item-index incarnation as cursor incarnation. Preserve existing image projection, cost stamps, derived totals, divergence boundaries, failed-tool counts, skill catalog, and turn reconciliation.
+
+An omitted or non-positive `itemLimit` now means 40, not an unbounded transcript. `IncludeTurns:false` remains a metadata-only read.
+
+- [ ] **Step 3: Forward explicit item mode through the local-daemon source**
+
+`LocalDaemonSource.ListTurns` and `ReadThread` must send `itemLimit` and opaque cursors. Remove the legacy turn-mode forwarding path and its assertions. Preserve item positions, transcript keys, turn-fragment flags, and opaque cursor unchanged for outer packing.
+
+- [ ] **Step 4: Implement a correct Codex adapter**
+
+Do not pass an AppWire cursor to Codex's native `thread/turns/list`. Add an adapter cache with this contract:
+
+```go
+type codexItemSnapshot struct {
+	ThreadRef      string
+	Incarnation    string
+	Candidates     []appitempaging.TranscriptItemCandidate
+	TranscriptKeys []string
+}
+
+func (s *CodexSource) latestItemWindow(
+	ctx context.Context,
+	threadID string,
+	limit int,
+	itemsView string,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+
+func (s *CodexSource) previousItemWindow(
+	ctx context.Context,
+	threadID string,
+	cursor string,
+	limit int,
+	itemsView string,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+```
+
+Materialize native history by following native turn cursors to exhaustion, map every native turn, assign oldest-first absolute `(native turn ordinal,item ordinal)` positions, and cache the resulting transcript-key sequence. On refresh, retain the incarnation only when the old key sequence is an exact prefix of the new sequence. Any changed, removed, or reordered prefix rotates it. Use `codex:<threadID>` as the thread ref; a process-local incarnation is acceptable for the provider adapter because a restart intentionally makes old provider cursors stale, while append-only refresh within one process preserves it.
+
+Use the adapter for both initial `ReadThread(IncludeTurns:true)` and `ListTurns`. Keep the Codex native wire version and native cursor semantics private to this adapter.
+
+- [ ] **Step 5: Verify**
+
+```bash
+go test ./cmd/evener-hub/internal/appsource -run 'TestLocalDaemonItemPaging|TestCodexItemPaging'
+go test ./cmd/evener-hub -run 'TestPastThreadItemPaging'
+go test ./cmd/evener-hub/internal/appsource ./cmd/evener-hub
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit the named paths**
+
+```bash
+git add cmd/evener-hub/app_threadread.go cmd/evener-hub/app_threadread_test.go cmd/evener-hub/internal/appsource/local_daemon.go cmd/evener-hub/internal/appsource/transport_seams_test.go cmd/evener-hub/internal/appsource/codex_source.go cmd/evener-hub/internal/appsource/codex_item_paging.go cmd/evener-hub/internal/appsource/codex_item_paging_test.go cmd/evener-hub/internal/appsource/coverage_completion_test.go
+git commit -m "feat(hub): adapt transcript sources to atomic item pages"
+```
+
+## Task 6: Pack the Final Enriched Result to 40 Items and 1 MiB
+
+**Files:**
+- Create: `cmd/evener-hub/app_item_page_fit.go`
+- Create: `cmd/evener-hub/app_item_page_fit_test.go`
+- Modify: `cmd/evener-hub/app_rpc.go`
+- Modify: `cmd/evener-hub/app_rpc_test.go`
+- Modify: `cmd/evener-hub/app_threadread.go`
+- Modify: `cmd/evener-hub/internal/appsource/source.go`
+
+**Interfaces:**
+- Consumes: an internal source result containing positioned candidates, cursor identity, and history-exhaustion state.
+- Produces: the public `ThreadReadResponse` or `ThreadTurnsListResponse` only after enrichment and exact typed-result measurement.
+
+- [ ] **Step 1: Write failing count/byte-boundary tests**
+
+Use deterministic text and image/document URL/cost enrichment to prove:
+
+- 45 candidates pack as newest 40 with a cursor before the oldest returned item;
+- an enriched result below `1_048_576` bytes remains unchanged;
+- a result below the target before enrichment but above it afterward excludes nearest older candidates until it fits;
+- exactly `1_048_576` bytes is accepted;
+- two ordinary items whose combined result is oversized are not returned together;
+- one oversized item is returned alone;
+- excluded candidates appear exactly once on the next request;
+- thread/read and thread/turns/list use identical packing rules;
+- marshaling the public result exposes no internal cursor identity or candidate state.
+
+```bash
+go test ./cmd/evener-hub -run 'Test(PackTranscriptItemPage|AppRPCItemPageSoftLimit|AppRPCItemPageCountLimit)' -count=1
+```
+
+Expected: FAIL because source pages are currently turn-shaped and no shared final-result packer exists.
+
+- [ ] **Step 2: Introduce one internal candidate-source result**
+
+Keep cursor identity out of public AppWire JSON:
+
+```go
+type transcriptItemCandidateResult struct {
+    Candidates appitempaging.TranscriptItemWindow
+    Identity   appitempaging.CursorIdentity
+    Exhausted  bool
+}
+```
+
+Every saved, live-daemon, and provider adapter returns this internal shape to the hub. The local-daemon adapter reconstructs the identity only from authenticated thread/source metadata and the shared cursor codec; it never trusts browser input or emits identity separately to the browser. If a source cannot supply a coherent identity and exact positions, item mode fails closed rather than falling back to turn paging.
+
+- [ ] **Step 3: Implement one exact outer packer**
+
+```go
+const transcriptRPCResultSoftLimit = 1_048_576
+const transcriptItemPageLimit = 40
+
+func packThreadReadItemCandidates(
+    candidates transcriptItemCandidateResult,
+    enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
+) (appwire.ThreadReadResponse, error)
+
+func packThreadTurnsItemCandidates(
+    candidates transcriptItemCandidateResult,
+    enrich func(appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error),
+) (appwire.ThreadTurnsListResponse, error)
+```
+
+Walk candidates newest-to-oldest, tentatively include the next nearest older atomic item, regroup fragments, run every production enrichment, and `json.Marshal` the typed AppWire `result`. Stop before item 41 or before an added item would exceed the byte target. If the first/nearest item alone is oversized, return it. Never split or truncate item content.
+
+Build the outward cursor from the final oldest returned position and internal cursor identity when older candidates remain or candidates were excluded by count/bytes; otherwise return an empty cursor. This avoids needing relay-only wire metadata and guarantees byte trimming cannot skip history. The packer may request another bounded candidate batch only when needed to fill the page; it must advance by exact position and detect a source that repeats or skips a boundary.
+
+- [ ] **Step 4: Place packing after every byte-changing transform**
+
+Route both initial and backfill paths through the same packer. Preserve production order for reconciliation, image/document URL stamping, costs, and output-image enrichment, and add no transform after the final measurement.
+
+Return an internal error if candidate keys/positions, cursor identity, or source continuation disagree; silently emitting a wrong cursor would lose history.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+go test ./cmd/evener-hub -run 'Test(PackTranscriptItemPage|AppRPCItemPageSoftLimit|AppRPCItemPageCountLimit)' -count=1
+go test ./cmd/evener-hub ./cmd/evener-hub/internal/appsource -count=1
+git add -- cmd/evener-hub/app_item_page_fit.go cmd/evener-hub/app_item_page_fit_test.go cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go cmd/evener-hub/app_threadread.go cmd/evener-hub/internal/appsource/source.go
+git commit -m "feat(hub): pack enriched transcript item pages"
+```
+
+## Task 8: Add Protocol-Level and Real-Browser Regression Gates
+
+**Files:**
+- Create: `cmd/evener-hub/app_rpc_item_paging_test.go`
+- Modify: `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx`
+- Modify: `cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx`
+- Modify: `cmd/evener-hub/frontend/scripts/overflowguard/run.mjs`
+
+- [ ] **Step 1: Write failing protocol-level integration tests**
+
+Drive the real hub RPC handler with scripted live-daemon, ended-local, and Codex sources. For each source, fetch the initial page and every older page, flatten the responses, and compare against an independently projected full transcript. Assert:
+
+- page counts are 40 except exhaustion or byte fitting;
+- one turn and one entry can cross a page boundary;
+- every expected item ID occurs once;
+- cursors are opaque and never decimal indexes;
+- a cursor from a replaced thread incarnation returns typed stale;
+- a tool call/result split across pages becomes complete after all pages load;
+- internal candidate/cursor identity state is absent from the JSON result sent to the client, while public item keys/positions and fragment flags are present.
+
+Run:
+
+```bash
+go test ./cmd/evener-hub -run 'TestAppRPCAtomicItemPagingEndToEnd'
+```
+
+Expected: FAIL until all three source paths and the shared packer agree.
 
 - [ ] **Step 4: Run focused and complete gates**
 

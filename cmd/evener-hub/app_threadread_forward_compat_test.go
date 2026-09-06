@@ -41,7 +41,7 @@ func TestPastThreadReadFailsWholeSessionOnOneUnknownTurnField(t *testing.T) {
 		t.Fatalf("past thread/read returned %d turns despite the decode error; want none — a partial result here would mean the all-or-nothing failure this test pins had silently stopped being all-or-nothing", len(resp.Thread.Turns))
 	}
 
-	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 1})
 	if !found || err == nil || page.Data != nil {
 		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found=true with a decode error and no data", page, found, err)
 	}

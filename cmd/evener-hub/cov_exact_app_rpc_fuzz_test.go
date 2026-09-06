@@ -294,8 +294,8 @@ func FuzzExactAppRPC(f *testing.F) {
 			}
 			pastServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			pastRef := "local:" + pastID
-			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, TurnLimit: 1})
-			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, Limit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: pastRef, IncludeTurns: true, ItemLimit: 1})
+			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: pastRef, ItemLimit: 1})
 			_, _ = exactDispatch(context.Background(), t, pastServer, appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{Ref: pastRef, Limit: 1})
 
 			// Drive every successful marketplace/plugin mutation through the router.
