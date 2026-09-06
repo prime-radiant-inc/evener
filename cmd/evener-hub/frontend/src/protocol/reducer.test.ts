@@ -2582,6 +2582,70 @@ test.each([
   expect(result.turns[0]?.items[0]?.text).toBe(expectedText);
 });
 
+for (const method of ["item/completed", "turn/completed"] as const) {
+  for (const chunks of [[], ["chunk-1", "chunk-2"]]) {
+    test.each([
+      ["omitted", undefined, `prefix${chunks.join("")}`],
+      ["explicit empty", "", ""],
+      ["explicit nonempty", "replacement", "replacement"],
+    ])(`${method} settles streamed text with ${chunks.length} pending chunks: %s`, (_case, text, expected) => {
+      let model = testHydrate({
+        turns: [
+          {
+            id: "shared-turn",
+            status: "inProgress",
+            itemsView: "full",
+            items: [
+              {
+                id: "item-1",
+                turnId: "shared-turn",
+                type: "agentMessage",
+                text: "prefix",
+                status: "inProgress",
+              },
+            ],
+          },
+        ],
+      });
+      expect(model.activeTurnId).toBe("shared-turn");
+      for (const delta of chunks) {
+        model = applyNotification(
+          model,
+          {
+            method: "item/agentMessage/delta",
+            params: { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn", itemId: "item-1", delta },
+          },
+          1001,
+        );
+      }
+      const item: ThreadItem = {
+        id: "item-1",
+        turnId: "shared-turn",
+        type: "agentMessage",
+        status: "completed",
+        ...(text === undefined ? {} : { text }),
+      };
+      const params = { threadId: "thr_t", ref: "ref_t", turnId: "shared-turn" };
+      model = applyNotification(
+        model,
+        method === "item/completed"
+          ? { method, params: { ...params, item } }
+          : {
+              method,
+              params: {
+                ...params,
+                turn: { id: "shared-turn", status: "completed", itemsView: "full", items: [item] },
+              },
+            },
+        1002,
+      );
+      expect(model.turns[0]?.items[0]?.text).toBe(expected);
+      expect(model.turns[0]?.items[0]?.pendingText).toBeUndefined();
+      expect(model.turns[0]?.items[0]?.status).toBe("completed");
+    });
+  }
+}
+
 test("agent message delta clone preserves omitted text presence for later pagination", () => {
   let model = testHydrate({
     turns: [
