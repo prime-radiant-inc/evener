@@ -321,6 +321,13 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	_ = s.reg.Register(t)
 }
 
+// errWorktreeOpWhileClosing is what the manage_worktree dispatch returns when
+// the session began closing before the call could be admitted on the close
+// fence. It is the operation-level sibling of errSwapWhileClosing: an
+// unadmitted operation cannot be waited for, and the close may already be past
+// its join, so the only safe answer is to run nothing at all.
+var errWorktreeOpWhileClosing = errors.New("the session is closing; operation refused")
+
 // worktreeOpLabel names a manage_worktree call for a close-fence warning: the
 // operation, and the target it acts on when the arguments carry one. The
 // argument names are the schema's own (name for create/switch/remove, path for
@@ -374,10 +381,21 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// has already run; this one spans the call. The swap and rollback
 			// admissions nest inside it and carry the finer labels a fence
 			// warning wants once the operation is past its core.
+			//
+			// A REFUSED admission refuses the operation. Every other admission
+			// in this file proceeds unfenced when it cannot be admitted, because
+			// each of those is an undo the session already owes and dropping it
+			// would leave residue; this one is work that has not started, and
+			// close may already be past its join, so running it would lock
+			// lanes and write sidecars against an environment being reaped and
+			// stores being closed. Refusing costs a tool call that a closing
+			// session was never going to complete anyway.
 			if deps.worktreeGuard.beginOp != nil {
-				if admission, ok := deps.worktreeGuard.beginOp(worktreeOpLabel(operation, args)); ok {
-					defer deps.worktreeGuard.endOp(admission)
+				admission, ok := deps.worktreeGuard.beginOp(worktreeOpLabel(operation, args))
+				if !ok {
+					return nil, fmt.Errorf("manage_worktree %s: %w", operation, errWorktreeOpWhileClosing)
 				}
+				defer deps.worktreeGuard.endOp(admission)
 			}
 			switch operation {
 			case "create":

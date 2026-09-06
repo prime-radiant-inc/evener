@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -1142,4 +1143,52 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 		t.Error("the close unlocked its own lane while the remove it interrupted was still moving locks around")
 	}
 	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
+}
+
+// A manage_worktree call that arrives once the session is closing cannot be
+// fenced: close may already be past its join, so the operation would lock
+// lanes, remove worktrees and write sidecars against an environment whose
+// process table is being reaped and whose stores are closing. The admission's
+// refusal IS the answer, and it has to reach the caller instead of being
+// dropped on the floor while the operation runs anyway.
+func TestWorktreeOps_DispatchWhileClosingIsRefusedAndRunsNoGit(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	r.s.Close()
+
+	var calls atomic.Int64
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			calls.Add(1)
+			return inner(args...)
+		}
+	}
+
+	rt := r.s.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("registry is missing manage_worktree")
+	}
+	for _, op := range []map[string]any{
+		{"operation": "create", "name": "lane"},
+		{"operation": "switch", "name": "lane"},
+		{"operation": "adopt", "path": "/tmp/lane"},
+		{"operation": "remove", "name": "lane"},
+		{"operation": "exit"},
+		{"operation": "list"},
+		{"operation": "prune"},
+	} {
+		name := op["operation"].(string)
+		t.Run(name, func(t *testing.T) {
+			_, err := rt.Exec(context.Background(), r.s.currentEnv(), op)
+			if !errors.Is(err, errWorktreeOpWhileClosing) {
+				t.Errorf("%s dispatched while closing = %v, want the closing refusal", name, err)
+			}
+		})
+	}
+
+	if got := calls.Load(); got != 0 {
+		t.Errorf("the refused operations ran %d git commands, want none", got)
+	}
 }

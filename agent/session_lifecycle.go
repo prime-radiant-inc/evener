@@ -176,8 +176,18 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 //
 // A false return means the close was already under way when this work began.
 // There is nothing left to fence it against — the environment it would run on
-// is already being torn down — so the caller proceeds best-effort, exactly as
-// it did before the fence existed, rather than skipping cleanup it still owes.
+// is already being torn down, and the close may already be past its join — and
+// the two kinds of caller answer that differently, on purpose:
+//
+//   - The manage_worktree DISPATCH refuses the call (errWorktreeOpWhileClosing).
+//     The operation has not started, and running it unfenced would lock lanes
+//     and write sidecars against an environment being reaped and stores being
+//     closed. A closing session was never going to complete it anyway.
+//   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
+//     existed. Its admission failing is the expected case — the close is what
+//     made the rollback necessary — and it is an undo the session already owes,
+//     so skipping it would leave the residue the rollback exists to prevent.
+//     Better unfenced cleanup than none.
 func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
