@@ -127,6 +127,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
 	}
+	go reclaimCrashedSessionScratch(os.Stderr)
 	resolvedPlugins, err := runResolvePlugins(ctx, cfg.pluginDirs, cfg.enabledPlugins)
 	if fatal := fatalLaunchPluginError(err, cfg.enabledPlugins); fatal != nil {
 		return fatal

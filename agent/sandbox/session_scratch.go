@@ -151,14 +151,31 @@ func (s *SessionScratch) Cleanup() error {
 	return errors.Join(releaseErr, os.RemoveAll(dir))
 }
 
+// SweepCrashedSessionScratch reclaims the session scratch directories left in
+// the base a new session would allocate from. A session releases its lease and
+// keeps its directory at close and on handoff, so nothing else ever removes
+// those: this is what makes retention safe rather than a permanent leak. It
+// reports only the failures an operator can act on — an unreadable base, a
+// directory it owned but could not remove — so it is best called once at
+// process start, off the startup path.
+func SweepCrashedSessionScratch() error {
+	base, err := sessionScratchBase("", "")
+	if err != nil {
+		return err
+	}
+	return sweepCrashedSessionScratch(base)
+}
+
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
-// lease is currently acquirable. Errors leave the candidate untouched.
-func sweepCrashedSessionScratch(base string) {
+// lease is currently acquirable. A candidate whose lease is held, or whose age
+// cannot be read, is left untouched and is not an error: it is someone else's.
+func sweepCrashedSessionScratch(base string) error {
 	entries, err := sessionScratchReadDir(base)
 	if err != nil {
-		return
+		return fmt.Errorf("sandbox: read session scratch base %q: %w", base, err)
 	}
 	cutoff := time.Now().Add(-crashedSessionScratchMaxAge)
+	var failures []error
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
 			continue
@@ -175,6 +192,9 @@ func sweepCrashedSessionScratch(base string) {
 		if err := lease.Release(); err != nil {
 			continue
 		}
-		_ = os.RemoveAll(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
+		}
 	}
+	return errors.Join(failures...)
 }

@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,4 +250,22 @@ func fileMode(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode().Perm()
+}
+
+func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-base")
+	if err := sweepCrashedSessionScratch(missing); err == nil {
+		t.Error("sweep of an unreadable base reported success")
+	}
+
+	oldTemp, oldCache := sessionScratchTempDir, sessionScratchUserCacheDir
+	sessionScratchTempDir = func() string { return missing }
+	sessionScratchUserCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
+	t.Cleanup(func() {
+		sessionScratchTempDir = oldTemp
+		sessionScratchUserCacheDir = oldCache
+	})
+	if err := SweepCrashedSessionScratch(); err == nil {
+		t.Error("sweep with no usable scratch base reported success")
+	}
 }
