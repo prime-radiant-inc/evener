@@ -1,38 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it } from "vitest";
 import { DraftLibrary } from "./draftLibrary";
-import type { DraftRecord } from "./draftRepository";
+import { DraftRepository } from "./draftRepository";
 
+const databases: DatabaseSync[] = [];
+afterEach(() => {
+	for (const db of databases.splice(0)) db.close();
+});
 function setup() {
-	const records = new Map<string, DraftRecord>();
-	const repository = {
-		read: ({ hubId, sessionRef }: { hubId: string; sessionRef: string }) =>
-			records.get(JSON.stringify([hubId, sessionRef])) ?? {
-				draft: "",
-				unconfirmed: null,
-			},
-		write: (
-			{ hubId, sessionRef }: { hubId: string; sessionRef: string },
-			record: DraftRecord,
-		) => {
-			records.set(JSON.stringify([hubId, sessionRef]), record);
-		},
-		removeHub: (hubId: string) => {
-			for (const key of records.keys())
-				if (JSON.parse(key)[0] === hubId) records.delete(key);
-		},
-	};
-	return { library: new DraftLibrary(() => repository), repository };
+	const db = new DatabaseSync(":memory:");
+	databases.push(db);
+	const repository = new DraftRepository({
+		execSync: (sql) => db.exec(sql),
+		runSync: (sql, ...params) => db.prepare(sql).run(...params),
+		getFirstSync: <T>(sql: string, ...params: string[]) =>
+			(db.prepare(sql).get(...params) as T | undefined) ?? null,
+	});
+	return { library: new DraftLibrary(() => repository), repository, db };
 }
 
 describe("drafts across navigation", () => {
 	it("invalidates open documents even if deleting persisted data fails", () => {
-		const { library, repository } = setup();
+		const { library, repository, db } = setup();
 		const destination = { hubId: "one", sessionRef: "session" };
 		const document = library.open(destination);
 		document.edit("saved");
-		repository.removeHub = () => {
-			throw new Error("disk unavailable");
-		};
+		db.exec("PRAGMA query_only = ON");
 		expect(() => library.removeHub("one")).toThrow();
 		document.edit("must not write");
 		expect(repository.read(destination).draft).toBe("saved");
