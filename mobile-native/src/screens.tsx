@@ -401,7 +401,7 @@ export function SessionsScreen({
               styles.input,
               styles.fill,
               {
-                minWidth: fontScale > 1.4 ? "100%" : 120,
+                minWidth: "100%",
                 color: colors.text,
                 borderColor: colors.border,
                 backgroundColor: colors.surface,
@@ -1570,14 +1570,49 @@ export function ConversationScreen({
                     borderWidth: 0,
                     padding: 2,
                     flex: 1,
-                    minWidth: fontScale > 1.4 ? "100%" : 120,
+                    minWidth: "100%",
                     minHeight: Platform.OS === "android" ? 48 : 44,
                     maxHeight: fontScale > 1.6 ? 96 : 160,
                     textAlignVertical: "top",
                   },
                 ]}
               />
-            ) : null}{" "}
+            ) : null}
+          </View>
+          <View
+            style={[
+              styles.row,
+              {
+                flexWrap: "wrap",
+                justifyContent: fontScale > 1.4 ? "space-between" : "flex-end",
+                gap: 4,
+              },
+            ]}
+          >
+            {canCompose && questions.length === 0 ? (
+              <Action
+                tone="quiet"
+                label="Attach images"
+                disabled={!draft.loaded || !!draft.error || imageState.busy}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  void imageSelection.choose();
+                }}
+              >
+                {imageState.busy ? "Processing…" : "+"}
+              </Action>
+            ) : null}
+            {conversation && canCompose ? (
+              <ComposerSettings
+                conversation={conversation}
+                disabled={!ready || !controls || draft.submitting}
+                pending={settingsPending}
+                open={(setting) => {
+                  Keyboard.dismiss();
+                  setComposerSetting(setting);
+                }}
+              />
+            ) : null}
             {canCompose && questions.length === 0 && command !== null ? (
               <Action
                 tone="primary"
@@ -1608,43 +1643,7 @@ export function ConversationScreen({
                   : command.command.label}
               </Action>
             ) : null}
-            {fontScale <= 1.4 ? submissionActions(["send", "steer"]) : null}
-          </View>
-          <View
-            style={[
-              styles.row,
-              {
-                flexWrap: "wrap",
-                justifyContent: fontScale > 1.4 ? "space-between" : "flex-end",
-                gap: 4,
-              },
-            ]}
-          >
-            {canCompose && questions.length === 0 ? (
-              <Action
-                tone="quiet"
-                label="Attach images"
-                disabled={!draft.loaded || !!draft.error || imageState.busy}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  void imageSelection.choose();
-                }}
-              >
-                {imageState.busy ? "Processing…" : "+"}
-              </Action>
-            ) : null}
-            {fontScale > 1.4 ? submissionActions(["send", "steer"]) : null}
-            {conversation && canCompose ? (
-              <ComposerSettings
-                conversation={conversation}
-                disabled={!ready || !controls || draft.submitting}
-                pending={settingsPending}
-                open={(setting) => {
-                  Keyboard.dismiss();
-                  setComposerSetting(setting);
-                }}
-              />
-            ) : null}
+            {submissionActions(["send", "steer"])}
             {controlsState?.error &&
             (controlsState.lastAction === "changeModel" ||
               controlsState.lastAction === "setReasoningEffort") ? (
