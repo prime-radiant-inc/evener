@@ -183,7 +183,14 @@ pause/resume, explicit poll retry and late-response disposal. Server states were
 checked against `app_auth.go` (`pending`, `expired`, `authorized`). Native editor, AppState wiring and URL opening/code copy are implemented.
 Both Release builds, 253 native tests and TypeScript pass. The [local auth fixture](auth-harness.md) now passes both flows through real hub
 handlers and temporary credential storage using the native wire client.
-Both-platform manual sign-in acceptance remains unverified.
+iOS device authorization now has [manual browser-return evidence](providers-evidence.md#ios-device-authorization-browser-round-trip), including same-flow reconnect,
+provider refresh and credential clearing, independently checked against fixture
+state. Android and browser redirect fallback remain unverified.
+
+Visual follow-up: use proportionate space for the authorized state; show native
+sign-in guidance instead of a primary CLI instruction, with server diagnostics
+available in a deliberate disclosure. Copy feedback is observed; clipboard paste
+verification remains open.
 
 Integration constraint verified in `ConnectionProvider.tsx`: backgrounding closes
 the hub connection. The sign-in flow must therefore be owned above the connected
