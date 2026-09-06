@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { LaunchOption } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { parseLaunchScalar } from "./launchScalar";
+import { assertLaunchFieldCurrent, parseLaunchScalar } from "./launchScalar";
 
 const option = (kind: string): LaunchOption => ({
   kind,
@@ -34,4 +34,18 @@ it("trims scalar text like the web collector and never coerces collections", () 
   expect(parseLaunchScalar(option("text"), " value ")).toBe("value");
   expect(parseLaunchScalar(option("path"), "  ")).toBeUndefined();
   expect(() => parseLaunchScalar(option("envMap"), "A=B")).toThrow();
+});
+it("refuses to apply an open field over a newer value", () => {
+  expect(() => assertLaunchFieldCurrent("", "9", undefined)).toThrow();
+  expect(() => assertLaunchFieldCurrent("3", "9", 8)).toThrow();
+  expect(() => assertLaunchFieldCurrent("false", "true", false)).toThrow();
+});
+it("allows intentional edits against an unchanged field baseline", () => {
+  expect(() => assertLaunchFieldCurrent("3", "3", 8)).not.toThrow();
+  expect(() => assertLaunchFieldCurrent("3", "3", undefined)).not.toThrow();
+});
+it("accepts a field that another client already changed to the desired value", () => {
+  expect(() => assertLaunchFieldCurrent("3", "8", 8)).not.toThrow();
+  expect(() => assertLaunchFieldCurrent("true", "false", false)).not.toThrow();
+  expect(() => assertLaunchFieldCurrent("3", "", undefined)).not.toThrow();
 });

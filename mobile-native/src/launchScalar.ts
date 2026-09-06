@@ -9,6 +9,19 @@ export const scalarKinds = new Set([
   "modelPicker",
   "path",
 ]);
+export const launchFieldConflictMessage =
+  "This setting changed while you were editing. Your text is kept; cancel and reopen the setting to review its current value.";
+
+/** A field sheet must not silently overwrite a newer explicit value. */
+export function assertLaunchFieldCurrent(
+  original: string,
+  current: string,
+  next: string | number | boolean | undefined,
+) {
+  if (current !== original && current !== String(next ?? ""))
+    throw Error(launchFieldConflictMessage);
+}
+
 export function parseLaunchScalar(
   option: LaunchOption,
   raw: string,
