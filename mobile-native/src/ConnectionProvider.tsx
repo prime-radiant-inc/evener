@@ -21,12 +21,15 @@ import {
 	type HubProfile,
 	HubProfiles,
 } from "./connection";
-
+import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
+import { locations } from "./nativeLocation";
 import { removeSavedHub } from "./removeHub";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
+	initialLocation: SavedLocation | null;
+	restorationError: string | null;
 	profiles: HubProfile[];
 	activeProfile: HubProfile | null;
 	client: AppwireClient | null;
@@ -42,6 +45,10 @@ interface Connection {
 const Context = createContext<Connection | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
+	const [initialLocation, setInitialLocation] = useState<SavedLocation | null>(
+		null,
+	);
+	const [restorationError, setRestorationError] = useState<string | null>(null);
 	const [profiles, setProfiles] = useState<HubProfile[]>([]);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [session, setSession] = useState<{
@@ -71,7 +78,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		repository
 			.list()
 			.then((value) => {
-				if (!cancelled) setProfiles(value);
+				if (!cancelled) {
+					setProfiles(value);
+					try {
+						const location = locations.read(value.map((profile) => profile.id));
+						setInitialLocation(location);
+						setSelected(location?.hubId ?? null);
+					} catch {
+						setRestorationError(
+							"Your last location could not be restored. Choose a saved hub.",
+						);
+					}
+				}
 			})
 			.catch(() => {
 				if (!cancelled)
@@ -170,6 +188,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	}, []);
 	const value = useMemo(
 		() => ({
+			initialLocation,
+			restorationError,
 			profiles,
 			activeProfile,
 			client,
@@ -183,6 +203,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			retry,
 		}),
 		[
+			initialLocation,
+			restorationError,
 			profiles,
 			activeProfile,
 			client,
