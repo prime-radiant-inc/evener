@@ -31,9 +31,9 @@ type ServerConfig struct {
 	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
 	// for adapters whose upstream protocol owns a different initialize shape.
 	AdapterNativeInitialize bool
-	// Logf reports server-initiated events a peer cannot see from its side of
-	// the socket — today, slow-consumer evictions, which close with a NORMAL
-	// status. Nil means silent.
+	// Logf reports server-initiated diagnostics a peer cannot see from its side
+	// of the socket, including handler failures and connection lifecycle events.
+	// Nil means silent.
 	Logf func(format string, args ...any)
 }
 
@@ -227,6 +227,12 @@ func (s *Server) logf(format string, args ...any) {
 	if s.cfg.Logf != nil {
 		s.cfg.Logf(format, args...)
 	}
+}
+
+// Logf reports a server-side diagnostic through the configured sink. It is a
+// no-op when ServerConfig.Logf is nil.
+func (s *Server) Logf(format string, args ...any) {
+	s.logf(format, args...)
 }
 
 // panicLogf reports a handler panic. It prefers the embedder's configured

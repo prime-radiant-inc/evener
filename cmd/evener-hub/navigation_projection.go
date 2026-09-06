@@ -755,6 +755,37 @@ func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLoca
 	return location, true
 }
 
+type navigationPageProgressInvariantError struct {
+	kind navigationResourceKind
+}
+
+func (err navigationPageProgressInvariantError) Error() string {
+	return fmt.Sprintf("navigation page progress invariant: %s returned no rows with remaining data", err.kind)
+}
+
+func validateNavigationPageProgress(kind navigationResourceKind, resource any) error {
+	var rows, remaining int
+	switch value := resource.(type) {
+	case hubapi.NavigationSectionResource:
+		rows, remaining = len(value.Sessions), value.Remaining
+	case hubapi.NavigationPinSectionCatalog:
+		rows, remaining = len(value.PinSections), value.Remaining
+	case hubapi.NavigationProjectCatalog:
+		rows, remaining = len(value.Projects), value.Remaining
+	case hubapi.NavigationProjectResource:
+		rows = len(value.Current.Sessions) + len(value.Recent.Sessions) + len(value.Archived.Sessions)
+		remaining = value.Current.Remaining + value.Recent.Remaining + value.Archived.Remaining
+	case hubapi.NavigationProjectPage:
+		rows, remaining = len(value.Sessions), value.Remaining
+	default:
+		return nil
+	}
+	if rows == 0 && remaining > 0 {
+		return navigationPageProgressInvariantError{kind: kind}
+	}
+	return nil
+}
+
 func (p navigationProjection) Resource(key navigationResourceKey) (any, navigationFingerprint, error) {
 	var resource any
 	var err error
@@ -800,6 +831,9 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		return nil, navigationFingerprint{}, err
 	}
 	resource = navigationResourceWithRevision(resource, key.Revision)
+	if err := validateNavigationPageProgress(key.Kind, resource); err != nil {
+		return nil, navigationFingerprint{}, err
+	}
 	encoded, err := json.Marshal(resource)
 	if err != nil {
 		return nil, navigationFingerprint{}, fmt.Errorf("encode navigation resource: %w", err)
