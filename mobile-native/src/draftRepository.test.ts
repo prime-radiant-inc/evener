@@ -50,6 +50,107 @@ const changedSignature = JSON.stringify([
 ]);
 const destination = { hubId: "hub-a", sessionRef: "session-1" };
 
+test("image bytes and draft references survive reopen without following another hub", () => {
+	const image = {
+		id: "image-a",
+		marker: 3,
+		mediaType: "image/png",
+		name: "proof.png",
+	};
+	repository.write(
+		destination,
+		{ draft: "[image 3]", unconfirmed: null, images: [image] },
+		[{ ...image, data: "AQID" }],
+	);
+	database.close();
+	openRepository();
+	expect(repository.read(destination).images).toEqual([image]);
+	expect(repository.imageInputs(destination, [image])).toEqual([
+		{ marker: 3, mediaType: "image/png", name: "proof.png", data: "AQID" },
+	]);
+	expect(
+		repository.read({ ...destination, hubId: "hub-b" }).images,
+	).toBeUndefined();
+	expect(() =>
+		repository.imageInputs({ ...destination, hubId: "hub-b" }, [image]),
+	).toThrow();
+});
+
+test("text edits do not rewrite image bytes and a failed checkpoint rolls back references", () => {
+	const image = { id: "image-a", marker: 1, mediaType: "image/png" };
+	const record = { draft: "before", unconfirmed: null, images: [image] };
+	repository.write(destination, record, [{ ...image, data: "AQID" }]);
+	database.exec(
+		"CREATE TRIGGER immutable_image BEFORE UPDATE ON draft_images BEGIN SELECT RAISE(ABORT, 'immutable image'); END",
+	);
+	repository.write(destination, { ...record, draft: "after" });
+	database.exec(
+		"CREATE TRIGGER reject_checkpoint BEFORE UPDATE ON drafts BEGIN SELECT RAISE(ABORT, 'checkpoint rejected'); END",
+	);
+	expect(() =>
+		repository.write(destination, {
+			draft: "",
+			unconfirmed: "after",
+			unconfirmedImages: [image],
+		}),
+	).toThrow();
+	expect(repository.read(destination)).toEqual({ ...record, draft: "after" });
+	expect(repository.imageInputs(destination, [image])[0]?.data).toBe("AQID");
+});
+
+test("retains uncertain images and deletes bytes only after their final reference is cleared", () => {
+	const image = { id: "image-a", marker: 1, mediaType: "image/png" };
+	repository.write(
+		destination,
+		{ draft: "", unconfirmed: "[image 1]", unconfirmedImages: [image] },
+		[{ ...image, data: "AQID" }],
+	);
+	expect(repository.imageInputs(destination, [image])).toHaveLength(1);
+	repository.write(destination, { draft: "", unconfirmed: null });
+	expect(() => repository.imageInputs(destination, [image])).toThrow();
+	expect(() =>
+		repository.write(destination, {
+			draft: "",
+			unconfirmed: null,
+			images: [image],
+		}),
+	).toThrow();
+});
+
+test("rejects replacing immutable image identity and hub removal only clears that hub's bytes", () => {
+	const image = { id: "same-id", marker: 1, mediaType: "image/png" };
+	const otherHub = { ...destination, hubId: "other" };
+	const record = { draft: "", unconfirmed: null, images: [image] };
+	repository.write(destination, record, [{ ...image, data: "AQID" }]);
+	repository.write(otherHub, record, [{ ...image, data: "BAUG" }]);
+	expect(() =>
+		repository.write(destination, record, [{ ...image, data: "replaced" }]),
+	).toThrow();
+	expect(repository.imageInputs(destination, [image])[0]?.data).toBe("AQID");
+	repository.removeHub(destination.hubId);
+	expect(() => repository.imageInputs(destination, [image])).toThrow();
+	expect(repository.imageInputs(otherHub, [image])[0]?.data).toBe("BAUG");
+});
+
+test("a failure after adding bytes rolls back the bytes and the new reference together", () => {
+	const image = { id: "photo", marker: 1, mediaType: "image/png" };
+	database.exec(
+		"CREATE TRIGGER reject_text BEFORE INSERT ON drafts BEGIN SELECT RAISE(ABORT, 'text rejected'); END",
+	);
+	expect(() =>
+		repository.write(
+			destination,
+			{ draft: "image", unconfirmed: null, images: [image] },
+			[{ ...image, data: "AQID" }],
+		),
+	).toThrow();
+	expect(repository.read(destination)).toEqual({
+		draft: "",
+		unconfirmed: null,
+	});
+	expect(() => repository.imageInputs(destination, [image])).toThrow();
+});
+
 test("missing drafts read as empty without unconfirmed text", () => {
 	expect(repository.read(destination)).toEqual({
 		draft: "",

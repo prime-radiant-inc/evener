@@ -3,7 +3,7 @@ import type { DraftDestination, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
 	DraftRepository,
-	"read" | "write" | "removeHub"
+	"read" | "write" | "removeHub" | "imageInputs"
 >;
 
 /** One document per destination keeps pending work coherent across navigation. */

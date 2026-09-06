@@ -15,11 +15,13 @@ Native composition must preserve selected images across hub switches and restart
 ## Sequence and evidence
 
 1. Share existing web input assembly and marker translation with native. Verify structured input for image-only messages, identity gaps, ordered images, names and unchanged text. Run native checks and the canonical web gate after replacing web call sites.
-2. Add native durable attachment storage and checkpoint ownership. Exercise real SQLite and filesystem boundaries, restart, hub/session isolation, failed writes, removal during pending encoding, and retained newer edits.
+2. Add native durable attachment storage and checkpoint ownership. Exercise real SQLite storage, restart, hub/session isolation, failed writes, removal during pending encoding, and retained newer edits.
 3. Add platform picker and PNG normalization, then the composer preview/removal flow. Verify installed iOS and Android apps with actual selected images against the isolated real Evener harness, including send/steer/queue and recovery.
 4. Validate accessible naming, large text, keyboard and Back behavior, permission/cancellation handling, memory use and cleanup. Validate image rendering in the transcript as part of the end-to-end flow.
 
-Only step 1 is implemented in this increment. There is no native attachment picker, durable image checkpoint or attachment E2E claim yet.
+Shared input assembly and durable image storage/checkpoint ownership are implemented. Image bytes occupy separate immutable SQLite rows; draft and uncertain image references commit with text under a savepoint. This keeps one atomic persistence boundary and avoids rewriting bytes on text edits. Removed images are deleted only when neither draft nor uncertain submission references them. Native DraftDocument supports adding/removing images, preserving failed image saves for retry, image-only submission, and preserving ordinary images during structured answers.
+
+Native 123 tests, TypeScript and targeted Biome pass. Tests use real SQLite for close/reopen, hub isolation, byte immutability, failure rollback, uncertain recovery, newer-image retention, and cleanup. Picker/PNG normalization, pending-encoding cancellation, composer previews, queue-drain integration, native manual image delivery and performance evidence remain outstanding. There is no native attachment E2E claim yet.
 
 ## Native API references
 
