@@ -46,6 +46,8 @@
 - `internal/appitempaging/cursor_test.go` — cursor round trips, append stability, malformed input, and stale-fence tests.
 - `internal/appitempaging/page.go` — positioned candidate selection, partial-turn regrouping, completeness flags, and cursor construction.
 - `internal/appitempaging/page_test.go` — exact 40-item, split-turn, split-entry, exclusive-boundary, and no-loss tests.
+- `internal/apptranscript/item_paging.go` — indexed newest/previous item reads without projecting the historical prefix.
+- `internal/apptranscript/item_paging_test.go` — index generation, partial-entry, append, rebuild, and cross-page tool tests.
 
 ### Modified files
 
@@ -55,6 +57,8 @@
 - `appwire/protocol.go` — v4 item-only catalog roots and protocol documentation.
 - `docs/appwire-protocol.md` — generated v4 item-only contract.
 - `cmd/evener-hub/frontend/src/protocol/types.gen.ts` — generated v4 TypeScript types.
+- `internal/apptranscript/apptranscript.go`, `internal/apptranscript/apptranscript_test.go` — emit stable transcript keys and positioned projected candidates.
+- `internal/apptranscript/turn_index.go`, `internal/apptranscript/turn_index_test.go` — index v9/journal v3 item counts and persisted generation.
 
 ## Task 1: Publish the Item-Only v4 Contract
 
@@ -243,6 +247,123 @@ go test ./internal/appitempaging -count=1
 go test ./appwire ./internal/appitempaging -count=1
 git add -- internal/appitempaging/cursor.go internal/appitempaging/cursor_test.go internal/appitempaging/page.go internal/appitempaging/page_test.go
 git commit -m "feat(transcript): add fenced atomic item pager"
+```
+
+## Task 3: Add Indexed Historical Item Paging
+
+**Files:**
+- Create: `internal/apptranscript/item_paging.go`
+- Create: `internal/apptranscript/item_paging_test.go`
+- Modify: `internal/apptranscript/apptranscript.go`
+- Modify: `internal/apptranscript/apptranscript_test.go`
+- Modify: `internal/apptranscript/turn_index.go`
+- Modify: `internal/apptranscript/turn_index_test.go`
+
+- [ ] **Step 1: Write failing indexed-paging tests**
+
+Build deterministic transcript fixtures with:
+
+- one assistant entry projecting 45 non-empty text/reasoning/tool items with stable transcript keys;
+- empty and suppressed `communicate` entries between visible entries;
+- a tool call in an older page and its result in the newest page;
+- an append after the first cursor is minted;
+- a transcript rewrite and an index-sidecar deletion.
+
+Assert that newest plus previous pages contain every transcript key exactly once, the 45-item entry is split 5/40, the tool halves retain the same `callId`, append preserves the item-index incarnation, and rewrite/item-index rebuild makes the old cursor stale while a missing/corrupt resume sidecar does not disable paging. Install the existing read observer and assert the newest page does not project the unselected historical prefix.
+
+Run:
+
+```bash
+go test ./internal/apptranscript -run 'TestIndexedItemPaging|TestProjectedItemPositions|TestItemPagingGeneration|TestItemPagingToolPair'
+```
+
+Expected: FAIL because item counts, generation, and item-page APIs do not exist.
+
+- [ ] **Step 2: Give every projected item a stable key and position**
+
+Keep the existing public projection behavior, but add a positioned-candidate path after filtering. Assign the absolute decoded-entry ordinal and the index in that entry's final visible projected slice, using `uint64`/`uint32` with checked conversion. Generate `TranscriptKey` from stable transcript identity and projection coordinates so started/completed live forms and later saved projection reproduce the same key. Prelude items use a reserved projection-versioned coordinate range and never collide with transcript entries.
+
+Do not expose implementation-only entry indexes as a second wire coordinate. The wire `ThreadItem.Position` is the sole v4 coordinate.
+
+- [ ] **Step 3: Upgrade the rebuildable index**
+
+Bump:
+
+```go
+const (
+	turnIndexVersion        = 9
+	turnIndexJournalVersion = 3
+	ItemCursorProjectionVersion uint16 = 1
+	itemIndexProjectionID          = "apptranscript-items-v1"
+)
+```
+
+Use `ItemCursorProjectionVersion` in `CursorIdentity.ProjectionVersion`. Store and validate the separately named string `itemIndexProjectionID` only as the rebuildable index-format/projection fingerprint; never assign that string to the numeric cursor field.
+
+Extend the disk and journal records:
+
+```go
+type turnIndexDisk struct {
+	Incarnation string `json:"incarnation"`
+}
+
+type turnIndexJournalFrame struct {
+	Incarnation string `json:"incarnation"`
+}
+
+type indexedTurn struct {
+	ItemCount uint32 `json:"item_count"`
+}
+```
+
+These fields are additions to the existing structures, not replacements for offsets, anchors, visibility counts, tool seeds, integrity stamps, or journal chaining. During a scan, project each entry once, record the final visible item count, and keep the existing tool-name seed/change machinery. Preserve `Incarnation` only when the existing item-index candidate independently validates and the change is append-only. A v8 item index, missing item index, bad item-index journal, rewrite, anchor mismatch, or projection-ID mismatch rebuilds v9 and creates a new persistent random incarnation with `crypto/rand`.
+
+Do not read `PrefixTurnCount`. Do not require a resume sidecar. If a validated prefix-entry offset is introduced independently, add it only to the raw entry index before assigning positions.
+
+- [ ] **Step 4: Implement indexed newest/previous candidate windows**
+
+Use this API:
+
+```go
+type ItemWindowOptions struct {
+    ThreadRef string
+    Cursor    string
+    Limit     int
+}
+
+func (c *TurnCache) LatestItemWindowFromFile(
+    path string,
+    maxLineBytes int,
+    options ItemWindowOptions,
+    project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+
+func (c *TurnCache) PreviousItemWindowFromFile(
+    path string,
+    maxLineBytes int,
+    options ItemWindowOptions,
+    project BoundedEntryProjector,
+) (appitempaging.TranscriptItemWindow, appitempaging.CursorIdentity, error)
+```
+
+Walk item cardinalities backward to find only records intersecting the requested candidate batch. Reconstruct tool state at the earliest selected record with existing seed/change data, project those records, slice the boundary entry by stable ordinal, and return positioned candidates. Validate that the cursor boundary is not future and is still reconstructible; otherwise return the typed item-cursor invalid-params error. Zero-item records do not consume quota.
+
+The index owns and persists the cursor incarnation. Appends preserve it after the existing independent append validation; rewrites, rebuilds, projection changes, and index identity failures rotate it. Missing, corrupt, incomplete, or oversized resume sidecars are irrelevant to this index and cannot disable paging.
+
+- [ ] **Step 5: Verify**
+
+```bash
+go test ./internal/apptranscript -run 'TestIndexedItemPaging|TestProjectedItemPositions|TestItemPagingGeneration|TestItemPagingToolPair'
+go test ./internal/apptranscript
+```
+
+Expected: PASS, including all existing v8-rebuild, append-journal, projection, usage, and failure-count tests after their expected version values are updated to v9/v3.
+
+- [ ] **Step 6: Commit the named paths**
+
+```bash
+git add internal/apptranscript/item_paging.go internal/apptranscript/item_paging_test.go internal/apptranscript/apptranscript.go internal/apptranscript/apptranscript_test.go internal/apptranscript/turn_index.go internal/apptranscript/turn_index_test.go
+git commit -m "feat(transcript): page indexed history by projected item"
 ```
 
 - [ ] **Step 4: Run focused and complete gates**

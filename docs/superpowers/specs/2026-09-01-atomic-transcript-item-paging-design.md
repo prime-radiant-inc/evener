@@ -188,6 +188,41 @@ packs the final result so saved and live paths cannot disagree about the byte
 budget. The result is a target, not an item-truncation rule: item content is
 never split or shortened to fit it.
 
+## Saved-transcript indexing
+
+Extend the saved index with projection-versioned item cardinality and enough
+boundary data to seek to an entry and resume inside its projected item list.
+The index remains rebuildable from the transcript and must fail closed on
+identity, append-validation, or projection-version mismatch.
+
+The core interface is:
+
+```go
+type TranscriptItemCandidate struct {
+    TurnID          string
+    Turn            appwire.Turn
+    Item            appwire.ThreadItem
+    Position        appwire.ThreadItemPosition
+    HasEarlierItems bool
+    HasLaterItems   bool
+}
+
+type TranscriptItemWindow struct {
+    Candidates  []TranscriptItemCandidate
+    OlderCursor string
+}
+```
+
+Projection produces stable keys and positions before transport enrichment.
+An entry that emits more than 40 items is resumable at every intra-entry
+position.
+
+PR #757's validated offset and `PrefixEntryCount` may be reused only as an
+optional, already-validated way to establish absolute entry numbering during
+index construction. `PrefixTurnCount` is legacy turn metadata and must not be
+part of item cursors, item availability, or index validity. Missing, incomplete,
+corrupt, or oversized resume sidecars leave item paging fully operational.
+
 ## Migration
 
 The v4 flag day replaces the former compatibility rollout: generated types and

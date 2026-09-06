@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,11 +41,11 @@ func TestPreludeTurnTagsSystemPromptEventKind(t *testing.T) {
 	}
 }
 
-// TestTurnsFromFileStampsStartedAtFromEntryTimestamp verifies that a
+// TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp verifies that a
 // reconstructed turn carries StartedAt from the transcript entry's recorded
 // timestamp, with DurationMS left nil — a message record has a point in time,
 // not a span, so only StartedAt can be honestly reconstructed from it.
-func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
+func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
@@ -65,9 +66,9 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
 	}
-	turns, err := TurnsFromFile(path, 128<<20, project)
+	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if len(turns) != 1 {
 		t.Fatalf("turns=%+v, want 1", turns)
@@ -84,7 +85,7 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 }
 
-func TestTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t *testing.T) {
+func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
@@ -126,51 +127,43 @@ func TestTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t *te
 		t.Fatalf("Close: %v", err)
 	}
 
-	turns, err := TurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+	turns, err := ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
 	})
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
-	want := []struct {
-		itemType string
-		mutation string
-		turnID   string
-	}{
-		{itemType: "userMessage", mutation: "user-mutation-a", turnID: "stable-user-a"},
-		{itemType: "userMessage", mutation: "user-mutation-b", turnID: "stable-user-b"},
-		{itemType: "steering", mutation: "steer-mutation-a", turnID: "stable-steer-a"},
-		{itemType: "steering", mutation: "steer-mutation-b", turnID: "stable-steer-b"},
+	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 3 {
+		t.Fatalf("grouped turns = %#v, want 2 turns with item counts 1 and 3", turns)
 	}
-	if len(turns) != len(want) {
-		t.Fatalf("turn count = %d, want %d: %#v", len(turns), len(want), turns)
+	if turns[0].ID != "stable-user-a" || turns[1].ID != "stable-user-b" {
+		t.Fatalf("grouped turn IDs = %q/%q, want stable-user-a/stable-user-b", turns[0].ID, turns[1].ID)
 	}
-	for i, expected := range want {
-		if turns[i].ID != expected.turnID {
-			t.Errorf("turn %d ID = %q, want stable ID %q", i, turns[i].ID, expected.turnID)
+	for _, item := range append(turns[0].Items, turns[1].Items...) {
+		if item.Text != "same text" {
+			t.Errorf("item text = %q, want same text", item.Text)
 		}
-		if len(turns[i].Items) != 1 {
-			t.Fatalf("turn %d item count = %d, want 1", i, len(turns[i].Items))
-		}
-		item := turns[i].Items[0]
-		if item.Type != expected.itemType ||
-			item.Text != "same text" ||
-			item.ClientMutationID != expected.mutation ||
-			item.TurnID != expected.turnID {
-			t.Errorf("turn %d item = %#v, want type=%q text=same text mutation=%q turnID=%q",
-				i, item, expected.itemType, expected.mutation, expected.turnID)
-		}
+	}
+	wantTurnIDs := []string{"stable-user-a", "stable-user-b", "stable-user-b", "stable-user-b"}
+	gotTurnIDs := []string{turns[0].Items[0].TurnID, turns[1].Items[0].TurnID, turns[1].Items[1].TurnID, turns[1].Items[2].TurnID}
+	if !reflect.DeepEqual(gotTurnIDs, wantTurnIDs) {
+		t.Fatalf("item turn IDs = %v, want %v", gotTurnIDs, wantTurnIDs)
+	}
+	wantMutations := []string{"user-mutation-a", "user-mutation-b", "steer-mutation-a", "steer-mutation-b"}
+	gotMutations := []string{turns[0].Items[0].ClientMutationID, turns[1].Items[0].ClientMutationID, turns[1].Items[1].ClientMutationID, turns[1].Items[2].ClientMutationID}
+	if !reflect.DeepEqual(gotMutations, wantMutations) {
+		t.Fatalf("item mutation IDs = %v, want %v", gotMutations, wantMutations)
 	}
 }
 
-// TestTurnsFromFileProjectorReceivesDecodedTurn holds the fix for kata j13r
+// TestItemTurnsFromFileProjectorReceivesDecodedTurn holds the fix for kata j13r
 // (apptranscript decoded every transcript line twice per read: once for its
 // own Usage/Timestamp/failure stamping, once again inside the caller's
 // EntryProjector, which re-unmarshalled the identical bytes). The projector
 // now receives the already-decoded schema.Turn directly — no json.RawMessage,
 // no decode of its own — so a projector that never imports encoding/json can
-// still read every field TurnsFromFile itself read to stamp Usage/Timestamp.
-func TestTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
+// still read every field ItemTurnsFromFile itself read to stamp Usage/Timestamp.
+func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
@@ -196,9 +189,9 @@ func TestTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 		gotTurn = turn
 		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
 	}
-	turns, err := TurnsFromFile(path, 128<<20, project)
+	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("projector called %d times, want 1", calls)
@@ -348,7 +341,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	}
 }
 
-// TestTurnsFromFileFallsBackToPurposeForPreRenameToolCalls (issue #709): the
+// TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls (issue #709): the
 // purpose->intent tool-param rename (7512a736e, 2026-08-29) made
 // ToolIntentFromArguments read only "intent", so every transcript recorded
 // before that rename -- which persisted the model's stated reason under
@@ -357,9 +350,9 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 // under its old name. This fixture reproduces the exact pre-rename shape
 // (the argument bytes 7512a736e itself rewrote from "purpose" to "intent"
 // in this file's TestProjectTurnMapsToolCallsAndResults fixture above) and
-// drives it through the real transcript writer and TurnsFromFile, not a
+// drives it through the real transcript writer and ItemTurnsFromFile, not a
 // hand-built stand-in for either.
-func TestTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) {
+func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
@@ -385,9 +378,9 @@ func TestTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
 	}
-	turns, err := TurnsFromFile(path, 128<<20, project)
+	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if len(turns) != 1 || len(turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v, want 1 turn with 1 item", turns)
@@ -1034,7 +1027,7 @@ func TestPreludeTurn(t *testing.T) {
 	}
 }
 
-func TestTurnsFromFile(t *testing.T) {
+func TestItemTurnsFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
@@ -1046,9 +1039,9 @@ func TestTurnsFromFile(t *testing.T) {
 	}
 
 	// Without projector, only prelude turns are emitted (since no projector returns items).
-	turns, err := TurnsFromFile(path, 1<<20, nil)
+	turns, err := ItemTurnsFromFile(path, 1<<20, nil)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if len(turns) != 1 || turns[0].ID != "turn_system" {
 		t.Errorf("turns = %+v", turns)
@@ -1058,9 +1051,9 @@ func TestTurnsFromFile(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}}
 	}
-	turns, err = TurnsFromFile(path, 1<<20, project)
+	turns, err = ItemTurnsFromFile(path, 1<<20, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
@@ -1072,16 +1065,16 @@ func TestTurnsFromFile(t *testing.T) {
 		t.Errorf("second turn = %+v", turns[1])
 	}
 
-	if _, err := TurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil); err == nil {
+	if _, err := ItemTurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil); err == nil {
 		t.Fatal("missing file error = nil")
 	}
 }
 
-// TestTurnsFromFile_StampsUsageFromEntry verifies an ended session's
+// TestItemTurnsFromFile_StampsUsageFromEntry verifies an ended session's
 // per-round usage (persisted on schema.Turn.Usage) is surfaced on the
 // projected appwire.Turn, so the ended-session view can show the same
 // per-turn token totals the live projector stamps as the turn happens.
-func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
+func TestItemTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
@@ -1095,9 +1088,9 @@ func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", Text: "hi"}}
 	}
-	turns, err := TurnsFromFile(path, 1<<20, project)
+	turns, err := ItemTurnsFromFile(path, 1<<20, project)
 	if err != nil {
-		t.Fatalf("TurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)

@@ -46,6 +46,7 @@ Additional owned caller fixture found by controller: `cmd/evener/internal/launch
 - [ ] Run affected packages (one command at a time): `GOMAXPROCS=2 go test -p 1 ./appwire ./internal/appitempaging ./internal/appserver ./server`; focused new regressions under race; `go generate ./appwire`; format/diff checks. Report blockers from cross-lane dependencies honestly.
 - [ ] Self-review and commit explicit owned files; write report with RED/GREEN, commits and remaining cross-lane compile dependencies.
 
+- [ ] Remove saved turn-window wrappers and unused legacy projection/cache branch; preserve grouped full internal projections, shared indexes, accounting and empty-group `NextEntry`. Trace callers before deleting similarly named APIs. Do not delete unrelated agent/doctor transcript semantics.
 ### Task 4: Integrate, verify, review and publish
 
 **Ownership:** controller coordinates, delegates fixes to owning lane. Cross-cutting compile-only callers outside lane ownership receive an explicit ownership grant before editing.

@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -379,7 +380,7 @@ func TestPrefixStampNegativeSize(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = f.Close() })
 	_ = os.Remove(f.Name())
-	stamp, readBytes := prefixStamp(f, -1)
+	stamp, readBytes, _ := prefixStamp(context.Background(), f, -1)
 	if stamp != "" || readBytes != 0 {
 		t.Fatalf("prefixStamp(-1) = %q, %d, want empty, 0", stamp, readBytes)
 	}
@@ -404,7 +405,10 @@ func TestPrefixStampReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	stamp, readBytes := prefixStamp(f, int64(len(data)))
+	stamp, readBytes, err := prefixStamp(context.Background(), f, int64(len(data)))
+	if err != nil {
+		t.Fatalf("prefixStamp on data without newline error = %v, want nil fallback error", err)
+	}
 	if stamp != "" {
 		t.Fatalf("prefixStamp on data without newline should return empty stamp, got %q", stamp)
 	}
