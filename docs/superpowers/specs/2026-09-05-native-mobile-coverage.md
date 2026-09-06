@@ -19,7 +19,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 
 | Workflow | Native status | Work still required |
 | --- | --- | --- |
-| Hubs and connections | Named profiles, secure bearer credentials, rename/token editing, switch, reconnect; one active foreground connection | Both-platform editor acceptance, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
+| Hubs and connections | Named profiles, secure bearer credentials, rename/token editing, switch, reconnect; one active foreground connection | Live credential rotation and editor failure recovery, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
 | Browse conversations | First 50 distinct sessions, server-side search, paged project catalogs and current/recent/archived project sessions | Full navigation invalidation, real subagent lifecycle acceptance, favorites, pin sections and remaining paging acceptance |
 | Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice; native Markdown/code installed with initial copy and dark-mode evidence | Complete rich-text interaction/accessibility validation, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
 | Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; real-daemon delivery evidence | Attachments, command selection, queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
