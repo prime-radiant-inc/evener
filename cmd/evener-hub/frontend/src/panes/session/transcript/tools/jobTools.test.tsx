@@ -449,6 +449,30 @@ test("delegate_send: summary degrades gracefully with no target arg", () => {
   );
 });
 
+test("delegate_send: openTranscriptInline anchors the control between the delegate target and the status meta", () => {
+  const d = toolRendererFor("delegate_send");
+  const args = JSON.stringify({ to: "dlg_abc123", message: "status?" });
+  const output = "on it\n[delegate_id dlg_abc123 · delivered · running]";
+  const it = item({
+    toolName: "delegate_send",
+    argumentsJSON: args,
+    output,
+    raw: { action: "steered", running_in_background: true, transcript_ref: "local:child1" },
+  });
+  const anchor = d.openTranscriptInline?.(it);
+  expect(anchor).toBe("Sent a message to delegate dlg_abc123");
+  const summary = d.summary(it);
+  expect(summary.startsWith(anchor!)).toBe(true);
+});
+
+test("delegate_send: openTranscriptInline falls back to the full summary when there is no transcript to open", () => {
+  const d = toolRendererFor("delegate_send");
+  const args = JSON.stringify({ to: "dlg_abc123", message: "status?" });
+  const it = item({ toolName: "delegate_send", argumentsJSON: args, output: "" });
+  expect(d.openTranscriptRef?.(it)).toBeUndefined();
+  expect(d.openTranscriptInline?.(it)).toBeUndefined();
+});
+
 test("delegate_send: openTranscriptRef reads transcript_ref from valid raw state", () => {
   const d = toolRendererFor("delegate_send");
   const it = item({

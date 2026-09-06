@@ -107,6 +107,19 @@ export interface ToolRendererDescriptor {
   // reason as openBesidePath: the descriptor declares WHAT it targets,
   // ToolCallItem owns the control that opens it.
   openTranscriptRef?(item: ItemModel): string | undefined;
+  // openTranscriptInline moves the "open transcript" control from the END of
+  // the summary to INLINE, right after the target text inside it - the one
+  // case today is delegate_send, whose summary names the delegate target
+  // before the status meta ("Sent a message to delegate <id> · <status>"), so
+  // the control lands between the delegate it opens and the running-state
+  // words that describe it. Returns the COMPLETE PREFIX of summary()'s own
+  // text up to and including the anchor (e.g. "Sent a message to delegate
+  // <id>") - ToolRow verifies this with summary.startsWith(...), never
+  // searches for it, following the openBesideInline contract. Undefined means
+  // no inline anchor; a value that isn't a literal prefix of summary() falls
+  // back to the end placement (the same "never a dead anchor" contract as
+  // summaryLink).
+  openTranscriptInline?(item: ItemModel): string | undefined;
   // summarySuffix appends extra text to the collapsed row's summary, computed
   // from the FULL thread model rather than just this item - the one case
   // today is ask_user's "— answered: ..." recap (kata h70z), which lives in
