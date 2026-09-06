@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 import type {
   ModelListResponse,
   Thread,
+  ThreadClearResponse,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   type ConversationClientLike,
@@ -21,6 +22,7 @@ const commandContext = {
   turn: () => null,
   local: async () => {},
   openAside: (_ref: string, _title: string) => {},
+  cleared: (_response: ThreadClearResponse) => {},
 };
 
 function boundary() {
@@ -88,7 +90,8 @@ function boundary() {
       )
         return io.lifecycle(method, params);
       if (method === "model/list") return io.models();
-      if (method === "thread/fork") return io.lifecycle(method, params);
+      if (method === "thread/fork" || method === "thread/clear")
+        return io.lifecycle(method, params);
       if (
         method === "thread/model/set" ||
         method === "thread/reasoning-effort/set"
@@ -739,3 +742,154 @@ it("blocks unavailable aside creation before the wire and rejects a parent retur
     service.close();
   }
 });
+
+it("installs a clear replacement without allowing an older read to restore its transcript", async () => {
+  const { io, thread, service } = boundary();
+  thread.evener.capabilities.clear = true;
+  thread.evener.goal = {
+    objective: "old goal",
+    status: "active",
+    iterations: 1,
+  };
+  thread.turns = [
+    {
+      id: "old-turn",
+      status: "completed",
+      itemsView: "full",
+      items: [{ id: "old-item", type: "agentMessage", text: "old transcript" }],
+    },
+  ];
+  const store = createConversationStore();
+  const sink = createActivityStore().getState();
+  let releaseClear!: () => void;
+  let releaseRead!: () => void;
+  let clearEntered!: () => void;
+  let readEntered!: () => void;
+  const clearing = new Promise<void>((resolve) => {
+    clearEntered = resolve;
+  });
+  const reading = new Promise<void>((resolve) => {
+    readEntered = resolve;
+  });
+  try {
+    await store.getState().openProjected(service, sink, "local:test");
+    expect(store.getState().conversation?.items.length).toBeGreaterThan(0);
+    const replacement = structuredClone(thread);
+    replacement.id = "replacement-thread";
+    replacement.evener.instanceId = "replacement-instance";
+    delete replacement.evener.goal;
+    replacement.turns = [];
+    io.lifecycle = (method, raw) =>
+      new Promise((resolve) => {
+        const params = raw as { clientMutationId: string };
+        expect(method).toBe("thread/clear");
+        expect(raw).toEqual({
+          ref: "local:test",
+          expectedInstanceId: "instance",
+          clientMutationId: expect.any(String),
+        });
+        releaseClear = () =>
+          resolve({
+            ref: "local:test",
+            thread: replacement,
+            receipt: {
+              clientMutationId: params.clientMutationId,
+              disposition: "applied",
+              threadId: "replacement-thread",
+              instanceId: "replacement-instance",
+              projectionState: "reflected",
+            },
+          });
+        clearEntered();
+      });
+    const clear = service.clear();
+    await clearing;
+    io.read = () =>
+      new Promise((resolve) => {
+        releaseRead = () => resolve({ thread: structuredClone(thread) });
+        readEntered();
+      });
+    const oldRead = store.getState().rehydrate(service, sink);
+    await reading;
+    releaseClear();
+    const response = await clear;
+    await store
+      .getState()
+      .openProjected(service, sink, "local:test", service.adoptClear(response));
+    releaseRead();
+    await oldRead;
+    expect(store.getState().conversation).toMatchObject({
+      id: "replacement-thread",
+      instanceId: "replacement-instance",
+      items: [],
+      goal: null,
+    });
+    io.lifecycle = async (method, params) => {
+      expect(method).toBe("thread/clear");
+      expect(params).toMatchObject({
+        expectedInstanceId: "replacement-instance",
+      });
+      throw new Error("stop at transport");
+    };
+    await expect(service.clear()).rejects.toThrow("stop at transport");
+    service.close();
+    expect(() => service.adoptClear(response)).toThrow();
+  } finally {
+    store.getState().close();
+    service.close();
+  }
+});
+
+it.each(["accepted", "uncertain", "wrong receipt", "wrong ref"])(
+  "checkpoints clear and validates its replacement: %s",
+  async (outcome) => {
+    const { db, document } = commandDraft();
+    const { io, thread, service } = boundary();
+    thread.evener.capabilities.clear = true;
+    let applied = 0;
+    try {
+      await service.open("local:test");
+      document.edit("/clear");
+      io.lifecycle = async (method, raw) => {
+        const params = raw as { clientMutationId: string };
+        expect(method).toBe("thread/clear");
+        expect(document.getSnapshot().record.unconfirmed).toBe("/clear");
+        document.edit("newer draft");
+        if (outcome === "uncertain") throw new Error("Lost acknowledgement");
+        const replacement = structuredClone(thread);
+        replacement.id = "new-thread";
+        replacement.evener.instanceId = "new-instance";
+        return {
+          ref: outcome === "wrong ref" ? "local:other" : "local:test",
+          thread: replacement,
+          receipt: {
+            clientMutationId:
+              outcome === "wrong receipt" ? "wrong" : params.clientMutationId,
+            disposition: "applied",
+            threadId: "new-thread",
+            instanceId: "new-instance",
+            projectionState: "reflected",
+          },
+        };
+      };
+      const operation = submitComposerCommand(document, service, {
+        ...commandContext,
+        cleared: (response) => {
+          expect(response.thread.evener.instanceId).toBe("new-instance");
+          expect(document.getSnapshot().record.unconfirmed).toBeNull();
+          applied++;
+        },
+      });
+      if (outcome === "accepted") expect(await operation).toBe("clear");
+      else await expect(operation).rejects.toThrow();
+      expect(applied).toBe(outcome === "accepted" ? 1 : 0);
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: "newer draft",
+        unconfirmed: outcome === "accepted" ? null : "/clear",
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);

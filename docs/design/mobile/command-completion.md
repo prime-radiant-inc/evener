@@ -198,5 +198,41 @@ The live-versus-saved capability behavior is a current server limitation,
 not a native override. Loss/stale-binding behavior has SQLite/transport tests;
 manual OS/network interruption and accessibility acceptance remain open.
 
-Clear is still pending: its response replaces the instance and must retire
-older reads instead of merging a normal refresh into old transcript state.
+## Clear and live continuation, 6 September 2026
+
+The native `/clear` command now uses the current web/server thread/clear
+contract: stable ref, expected instance, and correlated mutation receipt.
+The response replaces the conversation and activity projections together,
+retires older reads, and resets paging through the existing fresh-open path.
+The durable command checkpoint settles before adopting the response; a newer
+draft survives. A malformed or lost response remains uncertain without replay.
+A closed or different conversation cannot adopt the old response.
+
+Manual E2E exposed a hub defect: after clear, the subscription capture used
+the response's replacement Thread.ID while relay publication used the stable
+request ref. A read through the stable ref silently received no live events.
+The hub now carries the relay's publication key through its read handoff and
+uses that same key for subscription registration. A WebSocket daemon fixture
+exercising the real local source and hub relay failed before this fix and
+passes with it. No native polling or instance-ref workaround was added.
+
+Both installed Release apps were tested against the rebuilt isolated hub.
+Each cleared its owned fixture, removed the old transcript marker, and kept
+the stable ref. A follow-up sent from each composer appeared live with running
+controls; Stop returned the real session to idle. Direct hub reads confirmed
+replacement instances, old markers absent and follow-ups present:
+
+- iOS stable ref local:034K4egRYkyfFWF1BYJokC; replacement 034K4wUImmZQos9PgKoCMb.
+- Android stable ref local:034K4eh98MuwuE6SuLbPN0; replacement 034K4wKVa2F8Wu7IJDgixR.
+
+[Observed iOS follow-up](assets/clear/ios-followup.png) and
+[Android follow-up](assets/clear/android-followup.png) show live continuation,
+not visual acceptance. The fake provider renamed the fixtures to Fake Session.
+The production hub was not changed.
+
+Verification: 209 native tests, native TypeScript/touched Biome, shared
+TypeScript/Biome and all 2,241 shared tests passed. The full hub package tests
+passed, including relay/subscription coverage. This is not the full repository
+merge gate. Clear during an already-started read remains fail-closed in the
+shared service; full web concurrency parity, OS interruption and accessibility
+acceptance remain open. Project reveal and built-in completion remain pending.

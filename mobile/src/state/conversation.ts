@@ -37,6 +37,7 @@ import type {
 import { projectApproval, projectQueue } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
+  ConversationReadProjection,
   ConversationService,
   LiveConversationService,
 } from "../services/conversation";
@@ -387,6 +388,7 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
     ref: string,
+    replacement?: ConversationReadProjection,
   ): Promise<void>;
   rehydrate(
     service: LiveConversationService,
@@ -1132,7 +1134,7 @@ export function createConversationStore() {
         }
       },
 
-      async openProjected(service, sink, ref) {
+      async openProjected(service, sink, ref, replacement) {
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
@@ -1188,7 +1190,7 @@ export function createConversationStore() {
             }
           });
           const { conversation, activity, olderCursor } =
-            await service.readProjection(ref);
+            replacement ?? (await service.readProjection(ref));
           if (gen !== conversationGen) return;
           const identity: ActivityIdentity = {
             threadId: conversation.id,
