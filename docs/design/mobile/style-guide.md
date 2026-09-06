@@ -100,3 +100,5 @@ Search the hub, not just loaded rows. Keep the submitted query visible while res
 ## Project browsing
 
 Use server project names and keys. Show current, recent and archived work as selected tabs, with shape and accessibility selection in addition to color. Keep loaded pages when returning from a conversation. Refresh replaces the list; Load more appends only within the same server generation and resource revision. Explain changed-list conflicts instead of silently mixing snapshots.
+
+Live list changes should not move a row under the person’s finger. Preserve the visible snapshot, show a quiet update prompt, and pause continuation until Refresh. Treat ordinary invalidation as new information, reserving error treatment for failed reads.
