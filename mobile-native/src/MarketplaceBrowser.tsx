@@ -24,6 +24,7 @@ import type {
   PluginRefParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { HubDirectoryField } from "./HubDirectoryField";
 import type { InstalledPlugins } from "./installedPlugins";
 import { Marketplaces } from "./marketplaces";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -286,6 +287,7 @@ export function MarketplaceBrowser({
       )}
       {adding && (
         <AddMarketplace
+          client={client}
           hubName={hubName}
           onClose={() => setAdding(false)}
           onAdd={model.add}
@@ -296,6 +298,7 @@ export function MarketplaceBrowser({
 }
 
 function AddMarketplace({
+  client,
   hubName,
   onClose,
   onAdd,
@@ -303,6 +306,7 @@ function AddMarketplace({
   hubName: string;
   onClose(): void;
   onAdd(params: MarketplaceAddParams): Promise<void>;
+  client: ConversationClientLike;
 }) {
   const colors = useColors();
   const [kind, setKind] = useState<"url" | "github" | "directory">("url");
@@ -396,18 +400,28 @@ function AddMarketplace({
                   ? "owner/repo"
                   : `Directory on ${hubName}`}
             </Copy>
-            <TextInput
-              accessibilityLabel="Marketplace source"
-              value={source}
-              onChangeText={setSource}
-              editable={!busy}
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={[
-                styles.input,
-                { color: colors.text, borderColor: colors.border },
-              ]}
-            />
+            {kind === "directory" ? (
+              <HubDirectoryField
+                client={client}
+                label="Marketplace source"
+                value={source}
+                onChange={setSource}
+                disabled={busy}
+              />
+            ) : (
+              <TextInput
+                accessibilityLabel="Marketplace source"
+                value={source}
+                onChangeText={setSource}
+                editable={!busy}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[
+                  styles.input,
+                  { color: colors.text, borderColor: colors.border },
+                ]}
+              />
+            )}
             {kind === "directory" && (
               <Copy muted>This path is on the hub, not this phone.</Copy>
             )}

@@ -148,3 +148,42 @@ presentation remain open. No application code changed during this iOS pass;
 the preceding 264-test baseline still applies.
 
 ![iOS corrected source and submission above software keyboard](assets/plugins/ios-add-keyboard.jpg)
+
+
+## Hub directory selection
+
+The marketplace directory input now offers Find directories using the same
+`evener/paths/complete` contract as the current web PathField, requesting folders
+only. Results show the basename with the complete path as their accessibility
+label. Selecting one writes its full path with a trailing slash and closes the
+list; Find directories then lists its children. Parent directory writes and
+loads the parent. Done browsing closes suggestions without changing the field.
+Manual entry remains available. Up to 100 results occupy a bounded 220-point
+scroll area; reaching the limit prompts the user to narrow the prefix. Failures
+have an explicit error and can be retried. Changing the field immediately
+invalidates old suggestions, and disposal fences results from an old hub.
+
+On 6 September 2026, both updated Release builds passed, as did TypeScript,
+touched-file Biome and all 268 native tests. Four new deterministic tests exercise
+the real directory controller at the hub-client boundary: directory-only payload
+and complete paths, clear while a response is pending, obsolete response versus
+current failure/retry, and closed-hub lifetime. The initial run failed because
+the new module did not yet exist; the implemented behavior then passed.
+
+On both simulators, entered the owned fixture's parent prefix ending
+`evener-mobile-plugin-`, invoked Find directories, scrolled with the software
+keyboard open and selected the returned fixture. Fresh native snapshots showed
+the complete selected path, preserving case, with a trailing slash. Invoking
+Find directories again returned its plugins child on both platforms. On Android
+selected plugins, loaded it, and used Parent directory; the field and listing
+returned to the fixture root. These were real reads from the isolated full hub.
+No marketplace was added or removed in this pass.
+
+Both screenshots were inspected. This is functional keyboard evidence, not final
+visual acceptance: action hierarchy and vertical allocation still need refinement.
+Large directory lists/nested scrolling, screen readers, large text, native failure
+and hub-switch interactions remain open. Marketplace creation from a picker
+selection has not yet been repeated end-to-end.
+
+![iOS hub directory suggestions above keyboard](assets/plugins/ios-directories.jpg)
+![Android hub directory suggestions above keyboard](assets/plugins/android-directories.png)
