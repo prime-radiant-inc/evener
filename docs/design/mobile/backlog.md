@@ -402,6 +402,32 @@ and input latency under streaming load, memory/leak checks where indicated,
 large text, screen readers, reduced motion, light/dark and native back/keyboard
 gestures. Run final-head repository gates and a workflow-level release matrix.
 
+### MOB-018 · P1 · Supported client library and independently implementable protocol · Open
+
+Jesse wants protocol documentation sufficient to implement a client without
+reading the server or web code, backed by an API client library and runnable
+examples covering the complete protocol.
+
+The shared TypeScript transport now has a standalone package boundary. A clean
+consumer installed its tarball, validated declarations, imported it through ESM
+and CommonJS, and ran the read-only inspection recipe against an authenticated
+isolated hub. The reference generator includes nested wire objects and JSON
+representations. See the [client guide](../../appwire-client.md).
+
+The generated catalog has 88 methods and 35 notifications at this snapshot; the
+first recipe covers five methods. The packaged coverage report lists gaps. This
+is not completion: add fixture-backed creation, streaming/rejoin, mutation
+receipt, approval, queue, navigation/management, provider, plugin, trust and
+upgrade recipes, with method-specific errors, presence semantics and recovery.
+
+Acceptance: an independent client consumer can implement every supported flow
+from the guide and wire reference; the library and examples run outside this
+checkout; a catalog-derived coverage matrix accounts for every supported method
+and notification (including reserved-method rejection); deterministic fixtures
+exercise failures and disconnects as well as success. Keep protocol docs and
+recipes current as native functionality is implemented. Publishing is separate
+from producing and testing a local package.
+
 ## Tracking rules
 
 - Add new observations under the relevant issue or create a stable new ID.

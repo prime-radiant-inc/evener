@@ -15,7 +15,9 @@ browser / evener tui  ──WS /rpc──▶  evener hub  ──WS──▶  eve
 This document is **generated** from the declarative catalog in
 [`appwire/protocol.go`](../appwire/protocol.go) (`appwire.Methods` and
 `appwire.Notifications`); a test cross-checks that catalog against the live
-hub and daemon routers, so it cannot drift from what is actually wired. To
+hub and daemon routers. This verifies registration, not complete behavioral
+documentation. Read the [client guide](appwire-client.md) for sequencing,
+configuration semantics and retry rules. To
 change it, edit the catalog and/or the prose template
 (`internal/appwiredoc/protocol.md.tmpl`) and run `make generate`.
 
@@ -63,8 +65,8 @@ change it, edit the catalog and/or the prose template
    jobs, warnings).
 5. **Reconnect + replay.** On a dropped socket the client reconnects, re-runs
    `thread/read(subscribe: true, replaceSubscription: true)`, and re-hydrates
-   from the authoritative thread snapshot — so no events are lost across a
-   reconnect. The web client also self-heals a long silent stall by
+   from the authoritative thread snapshot. This restores current state, not
+   every transient event emitted while disconnected. The web client also self-heals a long silent stall by
    re-subscribing.
 
 ## Error model
@@ -179,8 +181,9 @@ no router (reserved).
 
 ## Notifications (server → client)
 
-Pushed to subscribed connections; no `id`. The web client maps these in
-`cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`).
+Server notifications have no `id`. Thread events require a subscription;
+hub-wide changes such as launch-setting updates are broadcast to connected
+clients. See the [client guide](appwire-client.md) for refresh behavior.
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
@@ -223,234 +226,316 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 ## Type reference
 
-JSON fields of each params/result/payload type, reflected from the Go structs.
-An embedded type contributes its own fields inline.
+JSON fields of each params/result/payload type and its nested object types.
+Named JSON types refer to another table in this section. `array<T>` means a JSON
+array of T; `object<string, T>` means a JSON object with arbitrary keys and T
+values. An embedded type contributes its fields inline, not under its Go name.
+
+These tables describe representation. `Omitempty` is a serialization hint, **not
+an input required/optional declaration**. A pointer does not by itself promise
+that a method accepts JSON null. Nil collections may serialize as null; custom
+serializers can preserve empty values. Method-specific rules, enum values,
+mutual exclusions and presence semantics must be read with the client guide.
+Do not infer those contracts from Go types or serialization tags.
 
 
 ### `AgentMessageDeltaParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `delta` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` |  |  |
+| `itemId` | `string` | `string` |  |  |
+| `delta` | `string` | `string` |  |  |
 
 
 ### `AgentMessageResetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` |  |  |
+| `itemId` | `string` | `string` |  |  |
 
 
 ### `ArchiveParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `kind` | `appwire.ArchiveTargetKind` |  |  |
-| `id` | `string` |  |  |
-| `workingDir` | `string` | yes |  |
-| `archived` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `appwire.ArchiveTargetKind` |  |  |
+| `id` | `string` | `string` |  |  |
+| `workingDir` | `string` | `string` | yes |  |
+| `archived` | `boolean` | `bool` |  |  |
 
 
 ### `ArchiveResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
+
+
+### `AttentionChanged`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `AttentionEntry` | `AttentionEntry` | `appwire.AttentionEntry` |  | yes |
+| `prevLevel` | `string` | `string` |  |  |
 
 
 ### `AttentionChangedPayload`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `changed` | `[]appwire.AttentionChanged` |  |  |
-| `summary` | `appwire.AttentionSummary` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `changed` | `array<AttentionChanged>` | `[]appwire.AttentionChanged` |  |  |
+| `summary` | `AttentionSummary` | `appwire.AttentionSummary` |  |  |
+
+
+### `AttentionEntry`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `title` | `string` | `string` |  |  |
+| `project` | `string` | `string` |  |  |
+| `level` | `string` | `string` |  |  |
+| `askPending` | `boolean` | `bool` | yes |  |
+
+
+### `AttentionSummary`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `needsYou` | `integer` | `int` |  |  |
+| `error` | `integer` | `int` |  |  |
+| `working` | `integer` | `int` |  |  |
 
 
 ### `AuthApiKeyClearParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthApiKeySetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `value` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `value` | `string` | `string` |  |  |
 
 
 ### `AuthCredentialJsonSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `value` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `value` | `string` | `string` |  |  |
 
 
 ### `AuthDevicePollParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `flowId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `flowId` | `string` | `string` |  |  |
 
 
 ### `AuthDevicePollResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `state` | `string` |  |  |
-| `status` | `*appwire.AuthStatusResponse` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `state` | `string` | `string` |  |  |
+| `status` | `AuthStatusResponse` | `*appwire.AuthStatusResponse` | yes |  |
 
 
 ### `AuthDeviceStartParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthDeviceStartResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `flowId` | `string` |  |  |
-| `userCode` | `string` |  |  |
-| `verificationUrl` | `string` |  |  |
-| `intervalSeconds` | `int` |  |  |
-| `fallback` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `flowId` | `string` | `string` |  |  |
+| `userCode` | `string` | `string` |  |  |
+| `verificationUrl` | `string` | `string` |  |  |
+| `intervalSeconds` | `integer` | `int` |  |  |
+| `fallback` | `boolean` | `bool` | yes |  |
 
 
 ### `AuthListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `providers` | `[]appwire.AuthStatusResponse` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `providers` | `array<AuthStatusResponse>` | `[]appwire.AuthStatusResponse` |  |  |
 
 
 ### `AuthLoginCompleteParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `flowId` | `string` |  |  |
-| `redirectUrl` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `flowId` | `string` | `string` |  |  |
+| `redirectUrl` | `string` | `string` |  |  |
 
 
 ### `AuthLoginCompleteResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `status` | `appwire.AuthStatusResponse` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `status` | `AuthStatusResponse` | `appwire.AuthStatusResponse` |  |  |
 
 
 ### `AuthLoginStartParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthLoginStartResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `flowId` | `string` |  |  |
-| `url` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `flowId` | `string` | `string` |  |  |
+| `url` | `string` | `string` |  |  |
 
 
 ### `AuthLogoutParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthLogoutResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `removed` | `bool` |  |  |
-| `status` | `appwire.AuthStatusResponse` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `removed` | `boolean` | `bool` |  |  |
+| `status` | `AuthStatusResponse` | `appwire.AuthStatusResponse` |  |  |
 
 
 ### `AuthStatusParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthStatusResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `supported` | `bool` |  |  |
-| `signedIn` | `bool` |  |  |
-| `activeSource` | `string` |  |  |
-| `authModes` | `[]string` | yes |  |
-| `hasStoredOAuth` | `bool` |  |  |
-| `hasStoredFile` | `bool` | yes |  |
-| `envVar` | `string` | yes |  |
-| `shadowedEnvVar` | `string` | yes |  |
-| `email` | `string` | yes |  |
-| `storedEmail` | `string` | yes |  |
-| `accountId` | `string` | yes |  |
-| `workspaceId` | `string` | yes |  |
-| `needsRefresh` | `bool` | yes |  |
-| `needsLogin` | `bool` | yes |  |
-| `error` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `supported` | `boolean` | `bool` |  |  |
+| `signedIn` | `boolean` | `bool` |  |  |
+| `activeSource` | `string` | `string` |  |  |
+| `authModes` | `array<string>` | `[]string` | yes |  |
+| `hasStoredOAuth` | `boolean` | `bool` |  |  |
+| `hasStoredFile` | `boolean` | `bool` | yes |  |
+| `envVar` | `string` | `string` | yes |  |
+| `shadowedEnvVar` | `string` | `string` | yes |  |
+| `email` | `string` | `string` | yes |  |
+| `storedEmail` | `string` | `string` | yes |  |
+| `accountId` | `string` | `string` | yes |  |
+| `workspaceId` | `string` | `string` | yes |  |
+| `needsRefresh` | `boolean` | `bool` | yes |  |
+| `needsLogin` | `boolean` | `bool` | yes |  |
+| `error` | `string` | `string` | yes |  |
 
 
 ### `AuthTestParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
 
 
 ### `AuthTestResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` |  |  |
-| `status` | `string` |  |  |
-| `message` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `status` | `string` | `string` |  |  |
+| `message` | `string` | `string` |  |  |
+
+
+### `Capabilities`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `experimentalApi` | `boolean` | `bool` |  |  |
+| `optOutNotificationMethods` | `array<string>` | `[]string` | yes |  |
+
+
+### `ClientInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `version` | `string` | `string` |  |  |
+
+
+### `CommandDescriptor`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `pluginName` | `string` | `string` | yes |  |
+| `description` | `string` | `string` | yes |  |
+| `argumentHint` | `string` | `string` | yes |  |
+| `source` | `string` | `string` | yes |  |
 
 
 ### `CommandListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `commands` | `[]appwire.CommandDescriptor` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `commands` | `array<CommandDescriptor>` | `[]appwire.CommandDescriptor` |  |  |
+
+
+### `DeletionSkip`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `reason` | `string` | `string` |  |  |
+
+
+### `DiagnosticCause`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `string` |  |  |
+| `provider` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `status` | `integer` | `int` | yes |  |
 
 
 ### `DirsCreateParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `path` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
 
 
 ### `DirsCreateResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `path` | `string` |  |  |
-| `created` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
+| `created` | `boolean` | `bool` |  |  |
 
 
 ### `EmptyParams`
@@ -465,176 +550,369 @@ _(no fields)_
 
 ### `EvenerAuthUpdatedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `provider` | `string` | yes |  |
-| `activeSource` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` | yes |  |
+| `activeSource` | `string` | `string` | yes |  |
 
 
 ### `EvenerDelegateInfo`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `delegateId` | `string` |  |  |
-| `ownerSessionId` | `string` |  |  |
-| `rootSessionId` | `string` |  |  |
-| `childSessionId` | `string` |  |  |
-| `transcriptRef` | `string` |  |  |
-| `parentDelegateId` | `string` | yes |  |
-| `type` | `string` |  |  |
-| `lifecycle` | `string` |  |  |
-| `phase` | `string` |  |  |
-| `status` | `string` |  |  |
-| `outcome` | `string` | yes |  |
-| `reason` | `string` | yes |  |
-| `terminal` | `bool` | yes |  |
-| `resumable` | `bool` |  |  |
-| `needsAttention` | `bool` |  |  |
-| `notResumableReason` | `string` | yes |  |
-| `projectionRevision` | `uint64` |  |  |
-| `task` | `string` | yes |  |
-| `description` | `string` | yes |  |
-| `agentType` | `string` | yes |  |
-| `requestedModel` | `string` | yes |  |
-| `resolvedProfileId` | `string` | yes |  |
-| `resolvedModel` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `reasoningEffort` | `string` | yes |  |
-| `originTurnId` | `string` | yes |  |
-| `originToolCallId` | `string` | yes |  |
-| `originItemId` | `string` | yes |  |
-| `runStartedAt` | `string` | yes |  |
-| `runEndedAt` | `string` | yes |  |
-| `latestActivityAt` | `string` | yes |  |
-| `runningForMs` | `*int64` | yes |  |
-| `quietForMs` | `*int64` | yes |  |
-| `durationMs` | `*int64` | yes |  |
-| `packetKind` | `string` | yes |  |
-| `message` | `jsontext.Value` | yes |  |
-| `structuredResult` | `jsontext.Value` | yes |  |
-| `structuredResultValid` | `*bool` | yes |  |
-| `structuredResultReason` | `string` | yes |  |
-| `warnings` | `[]string` | yes |  |
-| `diagnostics` | `[]string` | yes |  |
-| `exhaustionBudget` | `string` | yes |  |
-| `exhaustionLimit` | `int` | yes |  |
-| `exhaustionResumable` | `*bool` | yes |  |
-| `delegationAllowance` | `int` | yes |  |
-| `parentWatchGranted` | `bool` | yes |  |
-| `usage` | `*appwire.EvenerUsage` | yes |  |
-| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `delegateId` | `string` | `string` |  |  |
+| `ownerSessionId` | `string` | `string` |  |  |
+| `rootSessionId` | `string` | `string` |  |  |
+| `childSessionId` | `string` | `string` |  |  |
+| `transcriptRef` | `string` | `string` |  |  |
+| `parentDelegateId` | `string` | `string` | yes |  |
+| `type` | `string` | `string` |  |  |
+| `lifecycle` | `string` | `string` |  |  |
+| `phase` | `string` | `string` |  |  |
+| `status` | `string` | `string` |  |  |
+| `outcome` | `string` | `string` | yes |  |
+| `reason` | `string` | `string` | yes |  |
+| `terminal` | `boolean` | `bool` | yes |  |
+| `resumable` | `boolean` | `bool` |  |  |
+| `needsAttention` | `boolean` | `bool` |  |  |
+| `notResumableReason` | `string` | `string` | yes |  |
+| `projectionRevision` | `integer` | `uint64` |  |  |
+| `task` | `string` | `string` | yes |  |
+| `description` | `string` | `string` | yes |  |
+| `agentType` | `string` | `string` | yes |  |
+| `requestedModel` | `string` | `string` | yes |  |
+| `resolvedProfileId` | `string` | `string` | yes |  |
+| `resolvedModel` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
+| `originTurnId` | `string` | `string` | yes |  |
+| `originToolCallId` | `string` | `string` | yes |  |
+| `originItemId` | `string` | `string` | yes |  |
+| `runStartedAt` | `string` | `string` | yes |  |
+| `runEndedAt` | `string` | `string` | yes |  |
+| `latestActivityAt` | `string` | `string` | yes |  |
+| `runningForMs` | `integer` | `*int64` | yes |  |
+| `quietForMs` | `integer` | `*int64` | yes |  |
+| `durationMs` | `integer` | `*int64` | yes |  |
+| `packetKind` | `string` | `string` | yes |  |
+| `message` | `any JSON value` | `jsontext.Value` | yes |  |
+| `structuredResult` | `any JSON value` | `jsontext.Value` | yes |  |
+| `structuredResultValid` | `boolean` | `*bool` | yes |  |
+| `structuredResultReason` | `string` | `string` | yes |  |
+| `warnings` | `array<string>` | `[]string` | yes |  |
+| `diagnostics` | `array<string>` | `[]string` | yes |  |
+| `exhaustionBudget` | `string` | `string` | yes |  |
+| `exhaustionLimit` | `integer` | `int` | yes |  |
+| `exhaustionResumable` | `boolean` | `*bool` | yes |  |
+| `delegationAllowance` | `integer` | `int` | yes |  |
+| `parentWatchGranted` | `boolean` | `bool` | yes |  |
+| `usage` | `EvenerUsage` | `*appwire.EvenerUsage` | yes |  |
+| `worktree` | `JobActivityWorktree` | `*appwire.JobActivityWorktree` | yes |  |
 
 
 ### `EvenerDelegateParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `delegate` | `appwire.EvenerDelegateInfo` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `delegate` | `EvenerDelegateInfo` | `appwire.EvenerDelegateInfo` |  |  |
+
+
+### `EvenerDiagnostics`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `tools` | `array<EvenerToolInfo>` | `[]appwire.EvenerToolInfo` | yes |  |
+| `mcp` | `array<EvenerMCPServerInfo>` | `[]appwire.EvenerMCPServerInfo` | yes |  |
+| `skills` | `array<EvenerSkillInfo>` | `[]appwire.EvenerSkillInfo` | yes |  |
+| `plugins` | `array<EvenerPluginInfo>` | `[]appwire.EvenerPluginInfo` | yes |  |
+| `hookEvents` | `array<EvenerHookEventStatus>` | `[]appwire.EvenerHookEventStatus` | yes |  |
+| `jobs` | `array<EvenerJobInfo>` | `[]appwire.EvenerJobInfo` | yes |  |
+| `delegates` | `array<EvenerDelegateInfo>` | `[]appwire.EvenerDelegateInfo` | yes |  |
+| `turnSlots` | `EvenerTurnSlots` | `*appwire.EvenerTurnSlots` | yes |  |
+| `agents` | `array<string>` | `[]string` | yes |  |
+| `delegateDiagnostics` | `array<string>` | `[]string` | yes |  |
+
+
+### `EvenerHookEventStatus`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `event` | `string` | `string` |  |  |
+| `count` | `integer` | `int` |  |  |
+| `tier` | `string` | `string` | yes |  |
+| `supported` | `boolean` | `bool` |  |  |
+
+
+### `EvenerJobInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `jobId` | `string` | `string` |  |  |
+| `jobType` | `string` | `string` |  |  |
+| `status` | `string` | `string` |  |  |
+| `reason` | `string` | `string` | yes |  |
+| `exhaustionBudget` | `string` | `string` | yes |  |
+| `exhaustionLimit` | `integer` | `int` | yes |  |
+| `resumable` | `boolean` | `*bool` | yes |  |
+| `exitCode` | `integer` | `*int` | yes |  |
+| `outputBytes` | `integer` | `int64` |  |  |
+| `transcriptRef` | `string` | `string` | yes |  |
+| `fromWatch` | `boolean` | `bool` | yes |  |
+| `background` | `boolean` | `bool` | yes |  |
+| `command` | `string` | `string` | yes |  |
+| `intent` | `string` | `string` | yes |  |
+| `parentDelegateId` | `string` | `string` | yes |  |
+| `delegateId` | `string` | `string` | yes |  |
+| `task` | `string` | `string` | yes |  |
+| `originTurnId` | `string` | `string` | yes |  |
+| `originToolCallId` | `string` | `string` | yes |  |
+| `originItemId` | `string` | `string` | yes |  |
 
 
 ### `EvenerJobParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `job` | `appwire.EvenerJobInfo` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `job` | `EvenerJobInfo` | `appwire.EvenerJobInfo` |  |  |
 
 
 ### `EvenerLaunchUpdatedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `layer` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `layer` | `string` | `string` |  |  |
+
+
+### `EvenerMCPServerInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `tools` | `array<string>` | `[]string` |  |  |
+| `status` | `string` | `string` | yes |  |
+| `error` | `string` | `string` | yes |  |
+
+
+### `EvenerPluginInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `version` | `string` | `string` | yes |  |
+| `skillCount` | `integer` | `int` |  |  |
+| `agentCount` | `integer` | `int` |  |  |
+| `hookCount` | `integer` | `int` |  |  |
+| `mcpCount` | `integer` | `int` |  |  |
+
+
+### `EvenerSkillInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `description` | `string` | `string` | yes |  |
 
 
 ### `EvenerSteeringInjectedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `startedAt` | `*int64` | yes |  |
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `text` | `string` | yes |  |
-| `images` | `[]appwire.InputItem` | yes |  |
-| `source` | `string` | yes |  |
-| `kind` | `string` | yes |  |
-| `clientMutationId` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `startedAt` | `integer` | `*int64` | yes |  |
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `text` | `string` | `string` | yes |  |
+| `images` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `kind` | `string` | `string` | yes |  |
+| `clientMutationId` | `string` | `string` | yes |  |
 
 
 ### `EvenerSubagentPreviewParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `limit` | `int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `limit` | `integer` | `int` | yes |  |
 
 
 ### `EvenerSubagentPreviewResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `items` | `[]appwire.ThreadItem` |  |  |
-| `truncated` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `items` | `array<ThreadItem>` | `[]appwire.ThreadItem` |  |  |
+| `truncated` | `boolean` | `bool` |  |  |
+
+
+### `EvenerThread`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `instanceId` | `string` | `string` | yes |  |
+| `parentRef` | `string` | `string` | yes |  |
+| `kind` | `string` | `string` | yes |  |
+| `profile` | `string` | `string` | yes |  |
+| `turnCount` | `integer` | `int` | yes |  |
+| `activeTurnId` | `string` | `string` | yes |  |
+| `contextPressure` | `number` | `float64` | yes |  |
+| `contextUsed` | `integer` | `int` | yes |  |
+| `contextWindow` | `integer` | `int` | yes |  |
+| `contextRemaining` | `integer` | `int` | yes |  |
+| `capabilities` | `ThreadCapabilities` | `appwire.ThreadCapabilities` |  |  |
+| `diagnostics` | `EvenerDiagnostics` | `*appwire.EvenerDiagnostics` | yes |  |
+| `queue` | `QueueState` | `appwire.QueueState` |  |  |
+| `pendingMutations` | `array<PendingMutation>` | `[]appwire.PendingMutation` | yes |  |
+| `tasks` | `TaskAggregate` | `*appwire.TaskAggregate` | yes |  |
+| `goal` | `GoalState` | `*appwire.GoalState` | yes |  |
+| `usage` | `EvenerUsage` | `*appwire.EvenerUsage` | yes |  |
+| `workMillis` | `integer` | `int64` | yes |  |
+| `activeTurnStartedAt` | `integer` | `int64` | yes |  |
+| `cost` | `string` | `string` | yes |  |
+| `failedToolCalls` | `integer` | `*int` | yes |  |
+| `askPending` | `boolean` | `bool` | yes |  |
+| `pendingEscalations` | `array<SandboxEscalationRequested>` | `[]appwire.SandboxEscalationRequested` | yes |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
+| `reasoningEffortLevels` | `array<string>` | `[]string` | yes |  |
+| `supportsReasoning` | `boolean` | `bool` | yes |  |
+| `visionModel` | `string` | `string` | yes |  |
+
+
+### `EvenerToolInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `source` | `string` | `string` |  |  |
+
+
+### `EvenerTurnSlots`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `inUse` | `integer` | `int64` |  |  |
+| `cap` | `integer` | `int64` |  |  |
+| `jobs` | `integer` | `int64` |  |  |
+| `driveTurns` | `integer` | `int64` |  |  |
+
+
+### `EvenerUsage`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `inputTokens` | `integer` | `int64` | yes |  |
+| `outputTokens` | `integer` | `int64` | yes |  |
+| `cacheReadTokens` | `integer` | `int64` | yes |  |
+| `totalTokens` | `integer` | `int64` | yes |  |
 
 
 ### `FavoriteSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `kind` | `string` |  |  |
-| `id` | `string` |  |  |
-| `favorited` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `string` |  |  |
+| `id` | `string` | `string` |  |  |
+| `favorited` | `boolean` | `bool` |  |  |
 
 
 ### `FavoriteSetResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
+
+
+### `FeatureSet`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadList` | `boolean` | `bool` |  |  |
+| `threadTurnsList` | `boolean` | `bool` |  |  |
+| `turnStart` | `boolean` | `bool` |  |  |
+| `turnSteer` | `boolean` | `bool` |  |  |
+| `threadClear` | `boolean` | `bool` |  |  |
+| `threadShutdown` | `boolean` | `bool` |  |  |
+| `forkFromTurn` | `boolean` | `bool` |  |  |
+| `tasks` | `boolean` | `bool` |  |  |
+| `transcriptList` | `boolean` | `bool` |  |  |
+| `modelList` | `boolean` | `bool` |  |  |
+| `directoryComplete` | `boolean` | `bool` |  |  |
+| `auth` | `boolean` | `bool` |  |  |
+| `transcriptDisplaySettings` | `boolean` | `bool` | yes |  |
+| `keybindingsSettings` | `boolean` | `bool` | yes |  |
 
 
 ### `GitHeadParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
 
 
 ### `GitHeadResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `head` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `head` | `string` | `string` |  |  |
+
+
+### `GitInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sha` | `string` | `string` | yes |  |
+| `branch` | `string` | `string` | yes |  |
+| `originUrl` | `string` | `string` | yes |  |
 
 
 ### `GoalSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `objective` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `objective` | `string` | `string` | yes |  |
 
 
 ### `GoalSetResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `started` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `started` | `boolean` | `bool` |  |  |
+
+
+### `GoalState`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `objective` | `string` | `string` | yes |  |
+| `status` | `string` | `string` |  |  |
+| `iterations` | `integer` | `int` |  |  |
 
 
 ### `GoalUpdatedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `goal` | `*appwire.GoalState` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `goal` | `GoalState` | `*appwire.GoalState` |  |  |
+
+
+### `HarnessDescriptor`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `label` | `string` | `string` |  |  |
+| `kind` | `string` | `string` | yes |  |
+| `emptyTaskUnsupportedReason` | `string` | `string` | yes |  |
+| `emptyTaskUnsupportedNextAction` | `string` | `string` | yes |  |
 
 
 ### `HarnessListParams`
@@ -644,1380 +922,2012 @@ _(no fields)_
 
 ### `HarnessListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.HarnessDescriptor` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<HarnessDescriptor>` | `[]appwire.HarnessDescriptor` |  |  |
 
 
 ### `InitializeParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `protocolVersion` | `string` |  |  |
-| `clientInfo` | `appwire.ClientInfo` |  |  |
-| `capabilities` | `appwire.Capabilities` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `protocolVersion` | `string` | `string` |  |  |
+| `clientInfo` | `ClientInfo` | `appwire.ClientInfo` |  |  |
+| `capabilities` | `Capabilities` | `appwire.Capabilities` |  |  |
 
 
 ### `InitializeResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `serverInfo` | `appwire.ServerInfo` |  |  |
-| `protocolVersion` | `string` |  |  |
-| `sourceId` | `string` |  |  |
-| `features` | `appwire.FeatureSet` |  |  |
-| `navigation` | `*appwire.NavigationCapability` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `serverInfo` | `ServerInfo` | `appwire.ServerInfo` |  |  |
+| `protocolVersion` | `string` | `string` |  |  |
+| `sourceId` | `string` | `string` |  |  |
+| `features` | `FeatureSet` | `appwire.FeatureSet` |  |  |
+| `navigation` | `NavigationCapability` | `*appwire.NavigationCapability` | yes |  |
+
+
+### `InputItem`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `type` | `string` | `string` |  |  |
+| `text` | `string` | `string` | yes |  |
+| `url` | `string` | `string` | yes |  |
+| `mediaType` | `string` | `string` | yes |  |
+| `data` | `string (base64)` | `[]uint8` | yes |  |
+| `name` | `string` | `string` | yes |  |
+| `path` | `string` | `string` | yes |  |
+| `metadata` | `object<string, string>` | `map[string]string` | yes |  |
 
 
 ### `InstanceCreateParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `base` | `string` |  |  |
-| `baseUrl` | `string` | yes |  |
-| `protocol` | `string` | yes |  |
-| `surface` | `string` | yes |  |
-| `vars` | `map[string]string` | yes |  |
-| `apiKeyEnv` | `string` | yes |  |
-| `credentialHeader` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `base` | `string` | `string` |  |  |
+| `baseUrl` | `string` | `string` | yes |  |
+| `protocol` | `string` | `string` | yes |  |
+| `surface` | `string` | `string` | yes |  |
+| `vars` | `object<string, string>` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | `string` | yes |  |
+| `credentialHeader` | `string` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `baseUrl` | `string` | yes |  |
-| `clearBaseUrl` | `bool` | yes |  |
-| `protocol` | `string` | yes |  |
-| `surface` | `string` | yes |  |
-| `vars` | `map[string]string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `baseUrl` | `string` | `string` | yes |  |
+| `clearBaseUrl` | `boolean` | `bool` | yes |  |
+| `protocol` | `string` | `string` | yes |  |
+| `surface` | `string` | `string` | yes |  |
+| `vars` | `object<string, string>` | `map[string]string` | yes |  |
 
 
 ### `InstanceEntry`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `base` | `string` | yes |  |
-| `providerId` | `string` |  |  |
-| `protocol` | `string` |  |  |
-| `surface` | `string` | yes |  |
-| `auth` | `string` |  |  |
-| `baseUrl` | `string` | yes |  |
-| `vars` | `map[string]string` | yes |  |
-| `implicit` | `bool` |  |  |
-| `hidden` | `bool` | yes |  |
-| `isDefault` | `bool` |  |  |
-| `authModes` | `[]string` | yes |  |
-| `activeSource` | `string` |  |  |
-| `hasStoredFile` | `bool` | yes |  |
-| `hasStoredOAuth` | `bool` |  |  |
-| `envVar` | `string` | yes |  |
-| `shadowedEnvVar` | `string` | yes |  |
-| `storedEmail` | `string` | yes |  |
-| `credentialRequired` | `bool` |  |  |
-| `warnings` | `[]string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `base` | `string` | `string` | yes |  |
+| `providerId` | `string` | `string` |  |  |
+| `protocol` | `string` | `string` |  |  |
+| `surface` | `string` | `string` | yes |  |
+| `auth` | `string` | `string` |  |  |
+| `baseUrl` | `string` | `string` | yes |  |
+| `vars` | `object<string, string>` | `map[string]string` | yes |  |
+| `implicit` | `boolean` | `bool` |  |  |
+| `hidden` | `boolean` | `bool` | yes |  |
+| `isDefault` | `boolean` | `bool` |  |  |
+| `authModes` | `array<string>` | `[]string` | yes |  |
+| `activeSource` | `string` | `string` |  |  |
+| `hasStoredFile` | `boolean` | `bool` | yes |  |
+| `hasStoredOAuth` | `boolean` | `bool` |  |  |
+| `envVar` | `string` | `string` | yes |  |
+| `shadowedEnvVar` | `string` | `string` | yes |  |
+| `storedEmail` | `string` | `string` | yes |  |
+| `credentialRequired` | `boolean` | `bool` |  |  |
+| `warnings` | `array<string>` | `[]string` | yes |  |
 
 
 ### `InstanceListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `instances` | `[]appwire.InstanceEntry` |  |  |
-| `availableProviders` | `[]appwire.ProviderDescriptor` |  |  |
-| `diagnostics` | `[]string` | yes |  |
-| `userLayer` | `string` | yes |  |
-| `writesRefused` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `instances` | `array<InstanceEntry>` | `[]appwire.InstanceEntry` |  |  |
+| `availableProviders` | `array<ProviderDescriptor>` | `[]appwire.ProviderDescriptor` |  |  |
+| `diagnostics` | `array<string>` | `[]string` | yes |  |
+| `userLayer` | `string` | `string` | yes |  |
+| `writesRefused` | `boolean` | `bool` | yes |  |
 
 
 ### `InstanceRemoveParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
 
 
 ### `InstanceSetDefaultParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
 
 
 ### `ItemLifecycleParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `item` | `appwire.ThreadItem` |  |  |
-| `failedToolCalls` | `*int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` |  |  |
+| `item` | `ThreadItem` | `appwire.ThreadItem` |  |  |
+| `failedToolCalls` | `integer` | `*int` | yes |  |
 
 
 ### `JobActivityBranchState`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `error` | `string` | yes |  |
-| `truncated` | `bool` | yes |  |
-| `continuation` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `error` | `string` | `string` | yes |  |
+| `truncated` | `boolean` | `bool` | yes |  |
+| `continuation` | `string` | `string` | yes |  |
 
 
 ### `JobActivityCounts`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `active` | `int` |  |  |
-| `failed` | `int` |  |  |
-| `completed` | `int` |  |  |
-| `complete` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `active` | `integer` | `int` |  |  |
+| `failed` | `integer` | `int` |  |  |
+| `completed` | `integer` | `int` |  |  |
+| `complete` | `boolean` | `bool` |  |  |
 
 
 ### `JobActivityDelegate`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `delegateId` | `string` |  |  |
-| `ownerSessionId` | `string` | yes |  |
-| `rootSessionId` | `string` | yes |  |
-| `childSessionId` | `string` |  |  |
-| `childRef` | `string` |  |  |
-| `parentDelegateId` | `string` | yes |  |
-| `type` | `string` | yes |  |
-| `lifecycle` | `string` | yes |  |
-| `phase` | `string` | yes |  |
-| `status` | `string` | yes |  |
-| `projectionRevision` | `uint64` | yes |  |
-| `outcome` | `string` | yes |  |
-| `reason` | `string` | yes |  |
-| `terminal` | `bool` | yes |  |
-| `resumable` | `bool` | yes |  |
-| `notResumableReason` | `string` | yes |  |
-| `mandate` | `string` | yes |  |
-| `task` | `string` | yes |  |
-| `description` | `string` | yes |  |
-| `agentType` | `string` | yes |  |
-| `requestedModel` | `string` | yes |  |
-| `resolvedProfileId` | `string` | yes |  |
-| `resolvedModel` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `reasoningEffort` | `string` | yes |  |
-| `originTurnId` | `string` | yes |  |
-| `originToolCallId` | `string` | yes |  |
-| `originItemId` | `string` | yes |  |
-| `runStartedAt` | `string` | yes |  |
-| `runEndedAt` | `string` | yes |  |
-| `latestActivityAt` | `string` | yes |  |
-| `runningForMs` | `*int64` | yes |  |
-| `quietForMs` | `*int64` | yes |  |
-| `durationMs` | `*int64` | yes |  |
-| `packetKind` | `string` | yes |  |
-| `message` | `jsontext.Value` | yes |  |
-| `structuredResult` | `jsontext.Value` | yes |  |
-| `structuredResultValid` | `*bool` | yes |  |
-| `structuredResultReason` | `string` | yes |  |
-| `warnings` | `[]string` | yes |  |
-| `diagnostics` | `[]string` | yes |  |
-| `exhaustionBudget` | `string` | yes |  |
-| `exhaustionLimit` | `int` | yes |  |
-| `exhaustionResumable` | `*bool` | yes |  |
-| `delegationAllowance` | `int` | yes |  |
-| `parentWatchGranted` | `bool` | yes |  |
-| `worktree` | `*appwire.JobActivityWorktree` | yes |  |
-| `turns` | `[]appwire.JobActivityJob` |  |  |
-| `child` | `*appwire.JobActivitySession` | yes |  |
-| `branch` | `appwire.JobActivityBranchState` |  |  |
-| `usage` | `*appwire.EvenerUsage` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `delegateId` | `string` | `string` |  |  |
+| `ownerSessionId` | `string` | `string` | yes |  |
+| `rootSessionId` | `string` | `string` | yes |  |
+| `childSessionId` | `string` | `string` |  |  |
+| `childRef` | `string` | `string` |  |  |
+| `parentDelegateId` | `string` | `string` | yes |  |
+| `type` | `string` | `string` | yes |  |
+| `lifecycle` | `string` | `string` | yes |  |
+| `phase` | `string` | `string` | yes |  |
+| `status` | `string` | `string` | yes |  |
+| `projectionRevision` | `integer` | `uint64` | yes |  |
+| `outcome` | `string` | `string` | yes |  |
+| `reason` | `string` | `string` | yes |  |
+| `terminal` | `boolean` | `bool` | yes |  |
+| `resumable` | `boolean` | `bool` | yes |  |
+| `notResumableReason` | `string` | `string` | yes |  |
+| `mandate` | `string` | `string` | yes |  |
+| `task` | `string` | `string` | yes |  |
+| `description` | `string` | `string` | yes |  |
+| `agentType` | `string` | `string` | yes |  |
+| `requestedModel` | `string` | `string` | yes |  |
+| `resolvedProfileId` | `string` | `string` | yes |  |
+| `resolvedModel` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
+| `originTurnId` | `string` | `string` | yes |  |
+| `originToolCallId` | `string` | `string` | yes |  |
+| `originItemId` | `string` | `string` | yes |  |
+| `runStartedAt` | `string` | `string` | yes |  |
+| `runEndedAt` | `string` | `string` | yes |  |
+| `latestActivityAt` | `string` | `string` | yes |  |
+| `runningForMs` | `integer` | `*int64` | yes |  |
+| `quietForMs` | `integer` | `*int64` | yes |  |
+| `durationMs` | `integer` | `*int64` | yes |  |
+| `packetKind` | `string` | `string` | yes |  |
+| `message` | `any JSON value` | `jsontext.Value` | yes |  |
+| `structuredResult` | `any JSON value` | `jsontext.Value` | yes |  |
+| `structuredResultValid` | `boolean` | `*bool` | yes |  |
+| `structuredResultReason` | `string` | `string` | yes |  |
+| `warnings` | `array<string>` | `[]string` | yes |  |
+| `diagnostics` | `array<string>` | `[]string` | yes |  |
+| `exhaustionBudget` | `string` | `string` | yes |  |
+| `exhaustionLimit` | `integer` | `int` | yes |  |
+| `exhaustionResumable` | `boolean` | `*bool` | yes |  |
+| `delegationAllowance` | `integer` | `int` | yes |  |
+| `parentWatchGranted` | `boolean` | `bool` | yes |  |
+| `worktree` | `JobActivityWorktree` | `*appwire.JobActivityWorktree` | yes |  |
+| `turns` | `array<JobActivityJob>` | `[]appwire.JobActivityJob` |  |  |
+| `child` | `JobActivitySession` | `*appwire.JobActivitySession` | yes |  |
+| `branch` | `JobActivityBranchState` | `appwire.JobActivityBranchState` |  |  |
+| `usage` | `EvenerUsage` | `*appwire.EvenerUsage` | yes |  |
 
 
 ### `JobActivityEntry`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `kind` | `string` |  |  |
-| `job` | `*appwire.JobActivityJob` | yes |  |
-| `delegate` | `*appwire.JobActivityDelegate` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `string` |  |  |
+| `job` | `JobActivityJob` | `*appwire.JobActivityJob` | yes |  |
+| `delegate` | `JobActivityDelegate` | `*appwire.JobActivityDelegate` | yes |  |
 
 
 ### `JobActivityJob`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `jobId` | `string` |  |  |
-| `ownerSessionId` | `string` |  |  |
-| `ownerRef` | `string` |  |  |
-| `transcriptRef` | `string` | yes |  |
-| `type` | `string` |  |  |
-| `status` | `string` |  |  |
-| `outcome` | `string` | yes |  |
-| `terminal` | `bool` |  |  |
-| `background` | `bool` |  |  |
-| `hasOutput` | `bool` |  |  |
-| `description` | `string` |  |  |
-| `command` | `string` | yes |  |
-| `task` | `string` | yes |  |
-| `reason` | `string` | yes |  |
-| `startedAt` | `string` |  |  |
-| `endedAt` | `string` | yes |  |
-| `exitCode` | `*int` | yes |  |
-| `outputBytes` | `int64` |  |  |
-| `lastOutputAt` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `jobId` | `string` | `string` |  |  |
+| `ownerSessionId` | `string` | `string` |  |  |
+| `ownerRef` | `string` | `string` |  |  |
+| `transcriptRef` | `string` | `string` | yes |  |
+| `type` | `string` | `string` |  |  |
+| `status` | `string` | `string` |  |  |
+| `outcome` | `string` | `string` | yes |  |
+| `terminal` | `boolean` | `bool` |  |  |
+| `background` | `boolean` | `bool` |  |  |
+| `hasOutput` | `boolean` | `bool` |  |  |
+| `description` | `string` | `string` |  |  |
+| `command` | `string` | `string` | yes |  |
+| `task` | `string` | `string` | yes |  |
+| `reason` | `string` | `string` | yes |  |
+| `startedAt` | `string` | `string` |  |  |
+| `endedAt` | `string` | `string` | yes |  |
+| `exitCode` | `integer` | `*int` | yes |  |
+| `outputBytes` | `integer` | `int64` |  |  |
+| `lastOutputAt` | `string` | `string` | yes |  |
 
 
 ### `JobActivitySession`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `sessionId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `label` | `string` |  |  |
-| `aggregate` | `string` |  |  |
-| `counts` | `appwire.JobActivityCounts` |  |  |
-| `entries` | `[]appwire.JobActivityEntry` |  |  |
-| `diagnostics` | `[]string` | yes |  |
-| `branch` | `appwire.JobActivityBranchState` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sessionId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `label` | `string` | `string` |  |  |
+| `aggregate` | `string` | `string` |  |  |
+| `counts` | `JobActivityCounts` | `appwire.JobActivityCounts` |  |  |
+| `entries` | `array<JobActivityEntry>` | `[]appwire.JobActivityEntry` |  |  |
+| `diagnostics` | `array<string>` | `[]string` | yes |  |
+| `branch` | `JobActivityBranchState` | `appwire.JobActivityBranchState` |  |  |
 
 
 ### `JobActivityTree`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `revision` | `uint64` |  |  |
-| `root` | `appwire.JobActivitySession` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `revision` | `integer` | `uint64` |  |  |
+| `root` | `JobActivitySession` | `appwire.JobActivitySession` |  |  |
 
 
 ### `JobActivityWorktree`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `path` | `string` |  |  |
-| `branch` | `string` |  |  |
-| `headSha` | `string` |  |  |
-| `ahead` | `int` |  |  |
-| `dirty` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
+| `branch` | `string` | `string` |  |  |
+| `headSha` | `string` | `string` |  |  |
+| `ahead` | `integer` | `int` |  |  |
+| `dirty` | `boolean` | `bool` |  |  |
 
 
 ### `JobsListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `continuation` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `continuation` | `string` | `string` | yes |  |
 
 
 ### `JobsListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `any JSON value` | `interface {}` |  |  |
 
 
 ### `JobsOutputParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `jobId` | `string` |  |  |
-| `maxBytes` | `int64` | yes |  |
-| `beforeBytes` | `int64` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `jobId` | `string` | `string` |  |  |
+| `maxBytes` | `integer` | `int64` | yes |  |
+| `beforeBytes` | `integer` | `int64` | yes |  |
 
 
 ### `JobsOutputResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `any JSON value` | `interface {}` |  |  |
 
 
 ### `JobsTreeUpdatedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `revision` | `uint64` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+
+
+### `KeybindingsConfig`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `version` | `integer` | `int` |  |  |
+| `rules` | `array<KeybindingsRule>` | `[]appwire.KeybindingsRule` |  |  |
 
 
 ### `KeybindingsOverrides`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `version` | `int` |  |  |
-| `revision` | `uint64` |  |  |
-| `rules` | `[]appwire.KeybindingsRule` |  |  |
-| `loadError` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `version` | `integer` | `int` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `rules` | `array<KeybindingsRule>` | `[]appwire.KeybindingsRule` |  |  |
+| `loadError` | `string` | `string` | yes |  |
 
 
 ### `KeybindingsPatchParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `expectedRevision` | `uint64` |  |  |
-| `config` | `appwire.KeybindingsConfig` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `expectedRevision` | `integer` | `uint64` |  |  |
+| `config` | `KeybindingsConfig` | `appwire.KeybindingsConfig` |  |  |
+
+
+### `KeybindingsRule`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `action` | `string` | `string` |  |  |
+| `chord` | `string` | `*string` |  |  |
+
+
+### `LaunchConfigDiagnostic`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `layer` | `string` | `string` |  |  |
+| `field` | `string` | `string` |  |  |
+| `message` | `string` | `string` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `layer` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `layer` | `string` | `string` |  |  |
 
 
 ### `LaunchConfigLayer`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `schema` | `*int` | yes |  |
-| `model` | `string` | yes |  |
-| `fastCheapModel` | `string` | yes |  |
-| `agent` | `string` | yes |  |
-| `reasoningEffort` | `string` | yes |  |
-| `contextStrategy` | `string` | yes |  |
-| `openAIResponsesContinuation` | `string` | yes |  |
-| `sandbox` | `string` | yes |  |
-| `sandboxNet` | `*bool` | yes |  |
-| `maxRounds` | `*int` | yes |  |
-| `maxSubagentDepth` | `*int` | yes |  |
-| `maxConcurrentDelegateTurns` | `*int` | yes |  |
-| `maxRetainedTerminal` | `*int` | yes |  |
-| `noProjectPrompts` | `*bool` | yes |  |
-| `nonInteractive` | `*bool` | yes |  |
-| `appReplaySize` | `*int` | yes |  |
-| `skillsDirs` | `[]string` | yes |  |
-| `pluginDirs` | `[]string` | yes |  |
-| `mcpConfigs` | `[]string` | yes |  |
-| `systemPromptMode` | `string` | yes |  |
-| `systemPromptFile` | `string` | yes |  |
-| `systemPromptText` | `string` | yes |  |
-| `systemPromptAppendMode` | `string` | yes |  |
-| `systemPromptAppendFile` | `string` | yes |  |
-| `systemPromptAppendText` | `string` | yes |  |
-| `systemPromptAppend` | `[]string` | yes |  |
-| `modelFallbacks` | `[]string` | yes |  |
-| `enabledPlugins` | `*[]string` | yes |  |
-| `mcps` | `[]appwire.MCPServerSpec` | yes |  |
-| `env` | `map[string]string` | yes |  |
-| `verbose` | `*bool` | yes |  |
-| `traceFile` | `string` | yes |  |
-| `cpuProfile` | `string` | yes |  |
-| `exportATIFPath` | `string` | yes |  |
-| `exportATIFProviderHandles` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `schema` | `integer` | `*int` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `fastCheapModel` | `string` | `string` | yes |  |
+| `agent` | `string` | `string` | yes |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
+| `contextStrategy` | `string` | `string` | yes |  |
+| `openAIResponsesContinuation` | `string` | `string` | yes |  |
+| `sandbox` | `string` | `string` | yes |  |
+| `sandboxNet` | `boolean` | `*bool` | yes |  |
+| `maxRounds` | `integer` | `*int` | yes |  |
+| `maxSubagentDepth` | `integer` | `*int` | yes |  |
+| `maxConcurrentDelegateTurns` | `integer` | `*int` | yes |  |
+| `maxRetainedTerminal` | `integer` | `*int` | yes |  |
+| `noProjectPrompts` | `boolean` | `*bool` | yes |  |
+| `nonInteractive` | `boolean` | `*bool` | yes |  |
+| `appReplaySize` | `integer` | `*int` | yes |  |
+| `skillsDirs` | `array<string>` | `[]string` | yes |  |
+| `pluginDirs` | `array<string>` | `[]string` | yes |  |
+| `mcpConfigs` | `array<string>` | `[]string` | yes |  |
+| `systemPromptMode` | `string` | `string` | yes |  |
+| `systemPromptFile` | `string` | `string` | yes |  |
+| `systemPromptText` | `string` | `string` | yes |  |
+| `systemPromptAppendMode` | `string` | `string` | yes |  |
+| `systemPromptAppendFile` | `string` | `string` | yes |  |
+| `systemPromptAppendText` | `string` | `string` | yes |  |
+| `systemPromptAppend` | `array<string>` | `[]string` | yes |  |
+| `modelFallbacks` | `array<string>` | `[]string` | yes |  |
+| `enabledPlugins` | `array<string>` | `*[]string` | yes |  |
+| `mcps` | `array<MCPServerSpec>` | `[]appwire.MCPServerSpec` | yes |  |
+| `env` | `object<string, string>` | `map[string]string` | yes |  |
+| `verbose` | `boolean` | `*bool` | yes |  |
+| `traceFile` | `string` | `string` | yes |  |
+| `cpuProfile` | `string` | `string` | yes |  |
+| `exportATIFPath` | `string` | `string` | yes |  |
+| `exportATIFProviderHandles` | `string` | `string` | yes |  |
 
 
 ### `LaunchConfigResolveParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `launchOverrides` | `LaunchConfigLayer` | `*appwire.LaunchConfigLayer` | yes |  |
 
 
 ### `LaunchConfigResolved`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `effective` | `appwire.LaunchConfigLayer` |  |  |
-| `layers` | `map[string]appwire.LaunchConfigLayer` |  |  |
-| `provenance` | `map[string]string` |  |  |
-| `repo` | `*appwire.RepoLaunchConfigStatus` | yes |  |
-| `diagnostics` | `[]appwire.LaunchConfigDiagnostic` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `effective` | `LaunchConfigLayer` | `appwire.LaunchConfigLayer` |  |  |
+| `layers` | `object<string, LaunchConfigLayer>` | `map[string]appwire.LaunchConfigLayer` |  |  |
+| `provenance` | `object<string, string>` | `map[string]string` |  |  |
+| `repo` | `RepoLaunchConfigStatus` | `*appwire.RepoLaunchConfigStatus` | yes |  |
+| `diagnostics` | `array<LaunchConfigDiagnostic>` | `[]appwire.LaunchConfigDiagnostic` | yes |  |
 
 
 ### `LaunchConfigSetLayerParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `layer` | `string` |  |  |
-| `config` | `appwire.LaunchConfigLayer` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `layer` | `string` | `string` |  |  |
+| `config` | `LaunchConfigLayer` | `appwire.LaunchConfigLayer` |  |  |
 
 
 ### `LaunchConfigTrustRepoParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `hash` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `hash` | `string` | `string` |  |  |
+
+
+### `LaunchOption`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `field` | `string` | `string` |  |  |
+| `wireField` | `string` | `string` |  |  |
+| `label` | `string` | `string` |  |  |
+| `description` | `string` | `string` | yes |  |
+| `group` | `string` | `string` |  |  |
+| `kind` | `string` | `string` |  |  |
+| `pathKind` | `string` | `string` | yes |  |
+| `repeatable` | `boolean` | `bool` | yes |  |
+| `defaultableLayers` | `array<string>` | `[]string` | yes |  |
+| `perLaunch` | `boolean` | `bool` |  |  |
+| `debugOnly` | `boolean` | `bool` | yes |  |
+| `envFallback` | `LaunchOptionEnvFallback` | `*appwire.LaunchOptionEnvFallback` | yes |  |
+| `choices` | `array<LaunchOptionChoice>` | `[]appwire.LaunchOptionChoice` | yes |  |
+| `driverSupport` | `object<string, boolean>` | `map[string]bool` | yes |  |
+| `builtinDefault` | `string` | `string` | yes |  |
+| `builtinDefaultInt` | `integer` | `*int` | yes |  |
+| `builtinDefaultBool` | `boolean` | `*bool` | yes |  |
+| `builtinDefaultLabel` | `string` | `string` | yes |  |
+
+
+### `LaunchOptionChoice`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `value` | `string` | `string` |  |  |
+| `label` | `string` | `string` |  |  |
+| `disabled` | `boolean` | `bool` | yes |  |
+| `hint` | `string` | `string` | yes |  |
+
+
+### `LaunchOptionEnvFallback`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
 
 
 ### `LaunchOptionSchemaResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `options` | `[]appwire.LaunchOption` |  |  |
-| `excluded` | `map[string]string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `options` | `array<LaunchOption>` | `[]appwire.LaunchOption` |  |  |
+| `excluded` | `object<string, string>` | `map[string]string` | yes |  |
+
+
+### `MCPServerSpec`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `command` | `string` | `string` |  |  |
+| `args` | `array<string>` | `[]string` | yes |  |
 
 
 ### `MarketplaceAddParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` | yes |  |
-| `source` | `appwire.MarketplaceSourceInput` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` | yes |  |
+| `source` | `MarketplaceSourceInput` | `appwire.MarketplaceSourceInput` |  |  |
 
 
 ### `MarketplaceBrowseParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
 
 
 ### `MarketplaceBrowseResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `description` | `string` | yes |  |
-| `plugins` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `description` | `string` | `string` | yes |  |
+| `plugins` | `array<MarketplaceCatalogPlugin>` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
+
+
+### `MarketplaceCatalogPlugin`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `description` | `string` | `string` | yes |  |
+| `category` | `string` | `string` | yes |  |
+| `homepage` | `string` | `string` | yes |  |
+| `author` | `string` | `string` | yes |  |
+
+
+### `MarketplaceEntry`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `source` | `MarketplaceSourceInput` | `appwire.MarketplaceSourceInput` |  |  |
+| `installLocation` | `string` | `string` | yes |  |
+| `lastUpdated` | `integer` | `int64` |  |  |
 
 
 ### `MarketplaceListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `marketplaces` | `[]appwire.MarketplaceEntry` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `marketplaces` | `array<MarketplaceEntry>` | `[]appwire.MarketplaceEntry` |  |  |
 
 
 ### `MarketplaceNameParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+
+
+### `MarketplaceSourceInput`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `string` |  |  |
+| `repo` | `string` | `string` | yes |  |
+| `url` | `string` | `string` | yes |  |
+| `path` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `sha` | `string` | `string` | yes |  |
 
 
 ### `MobilePairingParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `origin` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `origin` | `string` | `string` |  |  |
 
 
 ### `MobilePairingResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `authUrl` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `authUrl` | `string` | `string` |  |  |
+
+
+### `ModelDescriptor`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` |  |  |
+| `model` | `string` | `string` |  |  |
+| `displayName` | `string` | `string` | yes |  |
+| `contextWindow` | `integer` | `*int` | yes |  |
+| `maxInputTokens` | `integer` | `*int` | yes |  |
+| `supportsTools` | `boolean` | `*bool` | yes |  |
+| `supportsVision` | `boolean` | `*bool` | yes |  |
+| `maxOutputTokens` | `integer` | `*int` | yes |  |
+| `supportsWebSearch` | `boolean` | `*bool` | yes |  |
+| `supportsReasoning` | `boolean` | `*bool` | yes |  |
+| `inputCostPerMillion` | `number` | `*float64` | yes |  |
+| `outputCostPerMillion` | `number` | `*float64` | yes |  |
+| `reasoningEffortLevels` | `array<string>` | `[]string` | yes |  |
+
+
+### `ModelListDiagnostic`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `provider` | `string` | `string` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `title` | `string` | `string` | yes |  |
+| `message` | `string` | `string` |  |  |
+| `hint` | `string` | `string` | yes |  |
 
 
 ### `ModelListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `harness` | `string` | yes |  |
-| `cwd` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `harness` | `string` | `string` | yes |  |
+| `cwd` | `string` | `string` | yes |  |
 
 
 ### `ModelListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.ModelDescriptor` |  |  |
-| `diagnostics` | `[]appwire.ModelListDiagnostic` | yes |  |
-| `recent` | `[]appwire.ModelDescriptor` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<ModelDescriptor>` | `[]appwire.ModelDescriptor` |  |  |
+| `diagnostics` | `array<ModelListDiagnostic>` | `[]appwire.ModelListDiagnostic` | yes |  |
+| `recent` | `array<ModelDescriptor>` | `[]appwire.ModelDescriptor` | yes |  |
+
+
+### `MutationReceipt`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `clientMutationId` | `string` | `string` |  |  |
+| `disposition` | `string` | `appwire.MutationDisposition` |  |  |
+| `threadId` | `string` | `string` |  |  |
+| `instanceId` | `string` | `string` | yes |  |
+| `turnId` | `string` | `string` | yes |  |
+| `queueEntryIds` | `array<string>` | `[]string` | yes |  |
+| `projectionState` | `string` | `appwire.MutationProjectionState` |  |  |
+
+
+### `NavigationCapability`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `version` | `integer` | `int` |  |  |
+| `generationId` | `string` | `string` |  |  |
+| `sequence` | `integer` | `uint64` |  |  |
+| `readVersions` | `array<integer>` | `[]int` | yes |  |
 
 
 ### `NavigationInvalidatedPayload`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `generationId` | `string` |  |  |
-| `sequence` | `uint64` |  |  |
-| `targets` | `[]appwire.NavigationInvalidationTarget` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `generationId` | `string` | `string` |  |  |
+| `sequence` | `integer` | `uint64` |  |  |
+| `targets` | `array<NavigationInvalidationTarget>` | `[]appwire.NavigationInvalidationTarget` |  |  |
+
+
+### `NavigationInvalidationTarget`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `appwire.NavigationTargetKind` |  |  |
+| `section` | `string` | `string` | yes |  |
+| `sectionId` | `string` | `string` | yes |  |
+| `catalog` | `string` | `string` | yes |  |
+| `projectKey` | `string` | `string` | yes |  |
+| `revision` | `integer` | `uint64` | yes |  |
+
+
+### `NavigationMutation`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `generation_id` | `string` | `string` |  |  |
+| `targets` | `array<NavigationInvalidationTarget>` | `[]appwire.NavigationInvalidationTarget` |  |  |
+
+
+### `NavigationReadBase`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `generationId` | `string` | `string` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `etag` | `string` | `string` |  |  |
 
 
 ### `NavigationReadParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `representationVersion` | `uint8` |  |  |
-| `resource` | `string` |  |  |
-| `section` | `string` | yes |  |
-| `sectionId` | `string` | yes |  |
-| `catalog` | `string` | yes |  |
-| `projectKey` | `string` | yes |  |
-| `tier` | `string` | yes |  |
-| `ref` | `string` | yes |  |
-| `offset` | `*uint32` | yes |  |
-| `limit` | `*uint32` | yes |  |
-| `base` | `*appwire.NavigationReadBase` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `representationVersion` | `integer` | `uint8` |  |  |
+| `resource` | `string` | `string` |  |  |
+| `section` | `string` | `string` | yes |  |
+| `sectionId` | `string` | `string` | yes |  |
+| `catalog` | `string` | `string` | yes |  |
+| `projectKey` | `string` | `string` | yes |  |
+| `tier` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `offset` | `integer` | `*uint32` | yes |  |
+| `limit` | `integer` | `*uint32` | yes |  |
+| `base` | `NavigationReadBase` | `*appwire.NavigationReadBase` | yes |  |
 
 
 ### `NavigationReadResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `status` | `string` |  |  |
-| `representation` | `appwire.NavigationRepresentation` | yes |  |
-| `generationId` | `string` |  |  |
-| `revision` | `uint64` |  |  |
-| `etag` | `string` |  |  |
-| `base` | `*appwire.NavigationReadBase` | yes |  |
-| `data` | `jsontext.Value` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `status` | `string` | `string` |  |  |
+| `representation` | `string` | `appwire.NavigationRepresentation` | yes |  |
+| `generationId` | `string` | `string` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `etag` | `string` | `string` |  |  |
+| `base` | `NavigationReadBase` | `*appwire.NavigationReadBase` | yes |  |
+| `data` | `any JSON value` | `jsontext.Value` | yes |  |
+
+
+### `OutputImage`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `source` | `string` | `string` |  |  |
+| `name` | `string` | `string` | yes |  |
+| `mediaType` | `string` | `string` | yes |  |
+| `size` | `integer` | `int64` | yes |  |
+| `url` | `string` | `string` | yes |  |
+| `sha` | `string` | `string` | yes |  |
+| `path` | `string` | `string` | yes |  |
 
 
 ### `PathValidateParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `path` | `string` |  |  |
-| `kind` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
+| `kind` | `string` | `string` | yes |  |
 
 
 ### `PathValidateResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `path` | `string` |  |  |
-| `valid` | `bool` |  |  |
-| `error` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
+| `valid` | `boolean` | `bool` |  |  |
+| `error` | `string` | `string` | yes |  |
 
 
 ### `PathsCompleteParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `prefix` | `string` |  |  |
-| `limit` | `int` | yes |  |
-| `includeFiles` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `prefix` | `string` | `string` |  |  |
+| `limit` | `integer` | `int` | yes |  |
+| `includeFiles` | `boolean` | `bool` | yes |  |
 
 
 ### `PathsCompleteResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<string>` | `[]string` |  |  |
+
+
+### `PendingMutation`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `clientMutationId` | `string` | `string` |  |  |
+| `method` | `string` | `string` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
+| `executionState` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` | yes |  |
+| `queueEntryIds` | `array<string>` | `[]string` | yes |  |
+| `projectionState` | `string` | `appwire.MutationProjectionState` |  |  |
+
+
+### `PinSection`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `name` | `string` | `string` |  |  |
+| `memberCount` | `integer` | `int` |  |  |
 
 
 ### `PinSectionDeleteParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `sectionId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sectionId` | `string` | `string` |  |  |
 
 
 ### `PinSectionDeleteResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `changed` | `bool` |  |  |
-| `memberCount` | `int` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `changed` | `boolean` | `bool` |  |  |
+| `memberCount` | `integer` | `int` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `PinSectionRenameParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `sectionId` | `string` |  |  |
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sectionId` | `string` | `string` |  |  |
+| `name` | `string` | `string` |  |  |
 
 
 ### `PinSectionRenameResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `changed` | `bool` |  |  |
-| `section` | `appwire.PinSection` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `changed` | `boolean` | `bool` |  |  |
+| `section` | `PinSection` | `appwire.PinSection` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `PluginCheckNowResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `updated` | `[]string` | yes |  |
-| `errors` | `[]string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `updated` | `array<string>` | `[]string` | yes |  |
+| `errors` | `array<string>` | `[]string` | yes |  |
+
+
+### `PluginDiagnostic`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` | yes |  |
+| `path` | `string` | `string` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `message` | `string` | `string` |  |  |
+
+
+### `PluginEntry`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `plugin` | `string` | `string` |  |  |
+| `marketplace` | `string` | `string` |  |  |
+| `version` | `string` | `string` |  |  |
+| `enabled` | `boolean` | `bool` |  |  |
+| `autoUpgrade` | `boolean` | `bool` |  |  |
+| `broken` | `boolean` | `bool` |  |  |
+| `installPath` | `string` | `string` |  |  |
+| `gitCommitSha` | `string` | `string` | yes |  |
+| `installedAt` | `integer` | `int64` |  |  |
+| `lastUpdated` | `integer` | `int64` |  |  |
+
+
+### `PluginLaunchCandidate`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `version` | `string` | `string` | yes |  |
+| `description` | `string` | `string` | yes |  |
+| `source` | `string` | `string` |  |  |
+| `marketplace` | `string` | `string` | yes |  |
+| `path` | `string` | `string` | yes |  |
+| `selected` | `boolean` | `bool` |  |  |
+| `skillCount` | `integer` | `int` |  |  |
+| `agentCount` | `integer` | `int` |  |  |
+| `commandCount` | `integer` | `int` |  |  |
+| `hookCount` | `integer` | `int` |  |  |
+| `mcpCount` | `integer` | `int` |  |  |
 
 
 ### `PluginListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `plugins` | `[]appwire.PluginEntry` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `plugins` | `array<PluginEntry>` | `[]appwire.PluginEntry` |  |  |
 
 
 ### `PluginPreviewParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cwd` | `string` |  |  |
-| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cwd` | `string` | `string` |  |  |
+| `launchOverrides` | `LaunchConfigLayer` | `*appwire.LaunchConfigLayer` | yes |  |
 
 
 ### `PluginPreviewResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `plugins` | `[]appwire.PluginLaunchCandidate` |  |  |
-| `diagnostics` | `[]appwire.PluginDiagnostic` | yes |  |
-| `selectionErrors` | `[]appwire.PluginSelectionError` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `plugins` | `array<PluginLaunchCandidate>` | `[]appwire.PluginLaunchCandidate` |  |  |
+| `diagnostics` | `array<PluginDiagnostic>` | `[]appwire.PluginDiagnostic` | yes |  |
+| `selectionErrors` | `array<PluginSelectionError>` | `[]appwire.PluginSelectionError` | yes |  |
 
 
 ### `PluginRefParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `plugin` | `string` |  |  |
-| `marketplace` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `plugin` | `string` | `string` |  |  |
+| `marketplace` | `string` | `string` |  |  |
+
+
+### `PluginSelectionError`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `reason` | `string` | `string` |  |  |
 
 
 ### `PluginSetAutoUpgradeParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `plugin` | `string` |  |  |
-| `marketplace` | `string` |  |  |
-| `autoUpgrade` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `plugin` | `string` | `string` |  |  |
+| `marketplace` | `string` | `string` |  |  |
+| `autoUpgrade` | `boolean` | `bool` |  |  |
 
 
 ### `ProjectDeleteParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `key` | `string` |  |  |
-| `workingDir` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `key` | `string` | `string` |  |  |
+| `workingDir` | `string` | `string` |  |  |
 
 
 ### `ProjectDeleteResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `deleted` | `[]string` |  |  |
-| `skipped` | `[]appwire.ProjectDeleteSkip` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `deleted` | `array<string>` | `[]string` |  |  |
+| `skipped` | `array<ProjectDeleteSkip>` | `[]appwire.ProjectDeleteSkip` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
+
+
+### `ProjectDeleteSkip`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `reason` | `string` | `string` |  |  |
 
 
 ### `ProjectsRecentParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `limit` | `int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `limit` | `integer` | `int` | yes |  |
 
 
 ### `ProjectsRecentResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<string>` | `[]string` |  |  |
+
+
+### `ProviderDescriptor`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `name` | `string` | `string` | yes |  |
+| `protocol` | `string` | `string` |  |  |
+| `auth` | `string` | `string` |  |  |
+| `varsEnv` | `array<string>` | `[]string` | yes |  |
+| `vars` | `object<string, string>` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `array<string>` | `[]string` | yes |  |
+| `implicit` | `boolean` | `bool` |  |  |
+
+
+### `QueueState`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `depth` | `integer` | `int` | yes |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `preview` | `array<string>` | `[]string` | yes |  |
+| `ids` | `array<string>` | `[]string` | yes |  |
+| `clientMutationIds` | `array<string>` | `[]string` | yes |  |
+| `texts` | `array<string>` | `[]string` | yes |  |
 
 
 ### `ReasoningSummaryDeltaParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `summaryIndex` | `int` |  |  |
-| `delta` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` |  |  |
+| `itemId` | `string` | `string` |  |  |
+| `summaryIndex` | `integer` | `int` |  |  |
+| `delta` | `string` | `string` |  |  |
+
+
+### `RepoLaunchConfigStatus`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` |  |  |
+| `hash` | `string` | `string` | yes |  |
+| `trust` | `string` | `string` |  |  |
+| `preview` | `string` | `string` | yes |  |
 
 
 ### `SandboxEscalationRequested`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `escalationId` | `string` |  |  |
-| `mode` | `string` |  |  |
-| `tool` | `string` |  |  |
-| `kind` | `string` |  |  |
-| `deniedPath` | `string` |  |  |
-| `command` | `string` | yes |  |
-| `outputSoFar` | `string` | yes |  |
-| `partiallyRan` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `escalationId` | `string` | `string` |  |  |
+| `mode` | `string` | `string` |  |  |
+| `tool` | `string` | `string` |  |  |
+| `kind` | `string` | `string` |  |  |
+| `deniedPath` | `string` | `string` |  |  |
+| `command` | `string` | `string` | yes |  |
+| `outputSoFar` | `string` | `string` | yes |  |
+| `partiallyRan` | `boolean` | `bool` | yes |  |
 
 
 ### `SandboxEscalationResolveParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
-| `escalationId` | `string` |  |  |
-| `approve` | `bool` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `escalationId` | `string` | `string` |  |  |
+| `approve` | `boolean` | `bool` |  |  |
 
 
 ### `SandboxEscalationResolved`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `escalationId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `escalationId` | `string` | `string` |  |  |
 
 
 ### `SearchParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `query` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `query` | `string` | `string` | yes |  |
 
 
 ### `SearchResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `live` | `[]appwire.SearchResult` |  |  |
-| `past` | `[]appwire.SearchResult` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `live` | `array<SearchResult>` | `[]appwire.SearchResult` |  |  |
+| `past` | `array<SearchResult>` | `[]appwire.SearchResult` |  |  |
+
+
+### `SearchResult`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `title` | `string` | `string` |  |  |
+| `project` | `string` | `string` |  |  |
+| `state` | `string` | `string` |  |  |
+| `age` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+
+
+### `ServerInfo`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `version` | `string` | `string` |  |  |
 
 
 ### `SessionDeleteParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
 
 
 ### `SessionDeleteResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `deleted` | `[]string` |  |  |
-| `skipped` | `[]appwire.DeletionSkip` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `deleted` | `array<string>` | `[]string` |  |  |
+| `skipped` | `array<DeletionSkip>` | `[]appwire.DeletionSkip` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `SessionPinAssignParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `sessionRef` | `string` |  |  |
-| `sectionId` | `*string` | yes |  |
-| `sectionName` | `*string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sessionRef` | `string` | `string` |  |  |
+| `sectionId` | `string` | `*string` | yes |  |
+| `sectionName` | `string` | `*string` | yes |  |
 
 
 ### `SessionPinAssignResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `changed` | `bool` |  |  |
-| `assignment` | `appwire.SessionPinAssignment` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `changed` | `boolean` | `bool` |  |  |
+| `assignment` | `SessionPinAssignment` | `appwire.SessionPinAssignment` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionPinAssignment`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sessionRef` | `string` | `string` |  |  |
+| `section` | `PinSection` | `appwire.PinSection` |  |  |
+
+
+### `SessionPinUnpinAssignment`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sessionRef` | `string` | `string` |  |  |
 
 
 ### `SessionPinUnpinParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `sessionRef` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `sessionRef` | `string` | `string` |  |  |
 
 
 ### `SessionPinUnpinResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ok` | `bool` |  |  |
-| `changed` | `bool` |  |  |
-| `assignment` | `appwire.SessionPinUnpinAssignment` |  |  |
-| `navigation` | `appwire.NavigationMutation` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ok` | `boolean` | `bool` |  |  |
+| `changed` | `boolean` | `bool` |  |  |
+| `assignment` | `SessionPinUnpinAssignment` | `appwire.SessionPinUnpinAssignment` |  |  |
+| `navigation` | `NavigationMutation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SettingsAgentEntry`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `editPath` | `string` | `string` | yes |  |
+
+
+### `SettingsHubOverview`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `version` | `string` | `string` | yes |  |
+| `commit` | `string` | `string` | yes |  |
+| `listenAddr` | `string` | `string` | yes |  |
+| `runDir` | `string` | `string` | yes |  |
+| `spawnTimeout` | `string` | `string` | yes |  |
+| `bearerTokenAge` | `string` | `string` | yes |  |
+| `pastIndex` | `SettingsPastIndexOverview` | `*appwire.SettingsPastIndexOverview` | yes |  |
+
+
+### `SettingsMCPOverview`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `servers` | `array<SettingsMCPServerEntry>` | `[]appwire.SettingsMCPServerEntry` | yes |  |
+| `error` | `string` | `string` | yes |  |
+
+
+### `SettingsMCPServerEntry`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `name` | `string` | `string` |  |  |
+| `transport` | `string` | `string` | yes |  |
+| `status` | `string` | `string` | yes |  |
+| `error` | `string` | `string` | yes |  |
 
 
 ### `SettingsOverviewResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `hub` | `*appwire.SettingsHubOverview` | yes |  |
-| `storage` | `*appwire.SettingsStorageOverview` | yes |  |
-| `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
-| `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `hub` | `SettingsHubOverview` | `*appwire.SettingsHubOverview` | yes |  |
+| `storage` | `SettingsStorageOverview` | `*appwire.SettingsStorageOverview` | yes |  |
+| `agents` | `array<SettingsAgentEntry>` | `[]appwire.SettingsAgentEntry` | yes |  |
+| `mcpDiscovered` | `SettingsMCPOverview` | `*appwire.SettingsMCPOverview` | yes |  |
+
+
+### `SettingsPastIndexOverview`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `path` | `string` | `string` | yes |  |
+| `size` | `string` | `string` | yes |  |
+| `perPage` | `integer` | `int` | yes |  |
+| `count` | `integer` | `int` | yes |  |
+
+
+### `SettingsStorageOverview`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `stateDir` | `string` | `string` | yes |  |
+
+
+### `TaskAggregate`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `total` | `integer` | `int` |  |  |
+| `done` | `integer` | `int` |  |  |
+| `cancelled` | `integer` | `int` | yes |  |
+| `remaining` | `integer` | `int` | yes |  |
+| `current` | `TaskSummary` | `*appwire.TaskSummary` | yes |  |
 
 
 ### `TaskListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
 
 
 ### `TaskListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `interface {}` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `any JSON value` | `interface {}` |  |  |
+
+
+### `TaskSummary`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `integer` | `int` |  |  |
+| `description` | `string` | `string` |  |  |
 
 
 ### `TaskUpdatedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `total` | `int` |  |  |
-| `done` | `int` |  |  |
-| `cancelled` | `int` | yes |  |
-| `remaining` | `int` | yes |  |
-| `current` | `*appwire.TaskSummary` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `total` | `integer` | `int` |  |  |
+| `done` | `integer` | `int` |  |  |
+| `cancelled` | `integer` | `int` | yes |  |
+| `remaining` | `integer` | `int` | yes |  |
+| `current` | `TaskSummary` | `*appwire.TaskSummary` | yes |  |
+
+
+### `Thread`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `sessionId` | `string` | `string` |  |  |
+| `projectId` | `string` | `string` | yes |  |
+| `projectPath` | `string` | `string` | yes |  |
+| `forkedFromId` | `string` | `string` | yes |  |
+| `preview` | `string` | `string` |  |  |
+| `ephemeral` | `boolean` | `bool` |  |  |
+| `modelProvider` | `string` | `string` |  |  |
+| `createdAt` | `integer` | `int64` |  |  |
+| `updatedAt` | `integer` | `int64` |  |  |
+| `status` | `ThreadStatus` | `appwire.ThreadStatus` |  |  |
+| `path` | `string` | `string` | yes |  |
+| `cwd` | `string` | `string` |  |  |
+| `cliVersion` | `string` | `string` |  |  |
+| `source` | `string` | `string` |  |  |
+| `threadSource` | `string` | `string` | yes |  |
+| `agentNickname` | `string` | `string` | yes |  |
+| `agentRole` | `string` | `string` | yes |  |
+| `gitInfo` | `GitInfo` | `*appwire.GitInfo` | yes |  |
+| `name` | `string` | `string` | yes |  |
+| `turns` | `array<Turn>` | `[]appwire.Turn` | yes |  |
+| `evener` | `EvenerThread` | `appwire.EvenerThread` |  |  |
+
+
+### `ThreadCapabilities`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `send` | `boolean` | `bool` |  |  |
+| `steer` | `boolean` | `bool` |  |  |
+| `interrupt` | `boolean` | `bool` |  |  |
+| `compact` | `boolean` | `bool` |  |  |
+| `clear` | `boolean` | `bool` |  |  |
+| `forkFromTurn` | `boolean` | `bool` |  |  |
+| `shutdown` | `boolean` | `bool` |  |  |
+| `changeModel` | `boolean` | `bool` |  |  |
+| `changeVisionModel` | `boolean` | `bool` |  |  |
+| `queue` | `boolean` | `bool` |  |  |
+| `goal` | `boolean` | `bool` |  |  |
+| `rename` | `boolean` | `bool` |  |  |
 
 
 ### `ThreadClearParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
 
 
 ### `ThreadClearResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `thread` | `appwire.Thread` |  |  |
-| `ref` | `string` |  |  |
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `thread` | `Thread` | `appwire.Thread` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `ThreadClosedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `reason` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `reason` | `string` | `string` | yes |  |
 
 
 ### `ThreadCompactStartParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
 
 
 ### `ThreadForkParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `sourceTurnId` | `string` |  |  |
-| `editedInput` | `string` | yes |  |
-| `label` | `string` | yes |  |
-| `modelProvider` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `deferInput` | `bool` | yes |  |
-| `aside` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `sourceTurnId` | `string` | `string` |  |  |
+| `editedInput` | `string` | `string` | yes |  |
+| `label` | `string` | `string` | yes |  |
+| `modelProvider` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `deferInput` | `boolean` | `bool` | yes |  |
+| `aside` | `boolean` | `bool` | yes |  |
 
 
 ### `ThreadForkResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `thread` | `appwire.Thread` |  |  |
-| `originalInput` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `thread` | `Thread` | `appwire.Thread` |  |  |
+| `originalInput` | `string` | `string` | yes |  |
+
+
+### `ThreadItem`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `type` | `string` | `string` |  |  |
+| `id` | `string` | `string` |  |  |
+| `transcriptKey` | `string` | `string` | yes |  |
+| `position` | `ThreadItemPosition` | `*appwire.ThreadItemPosition` | yes |  |
+| `turnId` | `string` | `string` | yes |  |
+| `transcriptEntryIndex` | `integer` | `int` | yes |  |
+| `text` | `string` | `string` | yes |  |
+| `delta` | `string` | `string` | yes |  |
+| `images` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
+| `toolName` | `string` | `string` | yes |  |
+| `callId` | `string` | `string` | yes |  |
+| `argumentsJson` | `string` | `string` | yes |  |
+| `description` | `string` | `string` | yes |  |
+| `output` | `string` | `string` | yes |  |
+| `error` | `string` | `string` | yes |  |
+| `outputImages` | `array<OutputImage>` | `[]appwire.OutputImage` | yes |  |
+| `status` | `string` | `string` | yes |  |
+| `prevalOnly` | `boolean` | `bool` | yes |  |
+| `startedAt` | `integer` | `*int64` | yes |  |
+| `completedAt` | `integer` | `*int64` | yes |  |
+| `durationMs` | `integer` | `*int64` | yes |  |
+| `exitCode` | `integer` | `*int64` | yes |  |
+| `raw` | `any JSON value` | `jsontext.Value` | yes |  |
+| `eventKind` | `string` | `appwire.ThreadItemEventKind` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `steeringKind` | `string` | `string` | yes |  |
+| `clientMutationId` | `string` | `string` | yes |  |
+
+
+### `ThreadItemPosition`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `entry` | `integer` | `uint64` |  |  |
+| `item` | `integer` | `uint32` |  |  |
 
 
 ### `ThreadListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `cursor` | `string` | yes |  |
-| `limit` | `int` | yes |  |
-| `sortKey` | `string` | yes |  |
-| `sortDirection` | `string` | yes |  |
-| `searchTerm` | `string` | yes |  |
-| `statuses` | `[]string` | yes |  |
-| `sourceIds` | `[]string` | yes |  |
-| `includeSubagents` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `cursor` | `string` | `string` | yes |  |
+| `limit` | `integer` | `int` | yes |  |
+| `sortKey` | `string` | `string` | yes |  |
+| `sortDirection` | `string` | `string` | yes |  |
+| `searchTerm` | `string` | `string` | yes |  |
+| `statuses` | `array<string>` | `[]string` | yes |  |
+| `sourceIds` | `array<string>` | `[]string` | yes |  |
+| `includeSubagents` | `boolean` | `bool` | yes |  |
 
 
 ### `ThreadListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.Thread` |  |  |
-| `nextCursor` | `string` | yes |  |
-| `backwardsCursor` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<Thread>` | `[]appwire.Thread` |  |  |
+| `nextCursor` | `string` | `string` | yes |  |
+| `backwardsCursor` | `string` | `string` | yes |  |
 
 
 ### `ThreadModelChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `modelProvider` | `string` |  |  |
-| `model` | `string` |  |  |
-| `reasoningEffortLevels` | `[]string` | yes |  |
-| `supportsReasoning` | `bool` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `modelProvider` | `string` | `string` |  |  |
+| `model` | `string` | `string` |  |  |
+| `reasoningEffortLevels` | `array<string>` | `[]string` | yes |  |
+| `supportsReasoning` | `boolean` | `bool` | yes |  |
 
 
 ### `ThreadModelRetryParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` | yes |  |
-| `attempt` | `int` |  |  |
-| `maxAttempts` | `int` |  |  |
-| `delayMs` | `int64` |  |  |
-| `errorClass` | `string` | yes |  |
-| `statusCode` | `int` | yes |  |
-| `message` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `groupElapsedMs` | `int64` |  |  |
-| `attemptCap` | `int` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` | yes |  |
+| `attempt` | `integer` | `int` |  |  |
+| `maxAttempts` | `integer` | `int` |  |  |
+| `delayMs` | `integer` | `int64` |  |  |
+| `errorClass` | `string` | `string` | yes |  |
+| `statusCode` | `integer` | `int` | yes |  |
+| `message` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `groupElapsedMs` | `integer` | `int64` |  |  |
+| `attemptCap` | `integer` | `int` |  |  |
 
 
 ### `ThreadModelSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `modelProvider` | `string` |  |  |
-| `model` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `modelProvider` | `string` | `string` |  |  |
+| `model` | `string` | `string` |  |  |
 
 
 ### `ThreadNameChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `name` | `string` |  |  |
-| `source` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `name` | `string` | `string` |  |  |
+| `source` | `string` | `string` | yes |  |
 
 
 ### `ThreadNameSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `name` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `name` | `string` | `string` |  |  |
 
 
 ### `ThreadQueueChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `queue` | `appwire.QueueState` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `queue` | `QueueState` | `appwire.QueueState` |  |  |
 
 
 ### `ThreadReadParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
-| `includeTurns` | `bool` |  |  |
-| `itemsView` | `string` | yes |  |
-| `subscribe` | `bool` | yes |  |
-| `replaceSubscription` | `bool` | yes |  |
-| `itemLimit` | `int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `includeTurns` | `boolean` | `bool` |  |  |
+| `itemsView` | `string` | `string` | yes |  |
+| `subscribe` | `boolean` | `bool` | yes |  |
+| `replaceSubscription` | `boolean` | `bool` | yes |  |
+| `itemLimit` | `integer` | `int` | yes |  |
 
 
 ### `ThreadReadResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `thread` | `appwire.Thread` |  |  |
-| `olderCursor` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `thread` | `Thread` | `appwire.Thread` |  |  |
+| `olderCursor` | `string` | `string` | yes |  |
 
 
 ### `ThreadReasoningEffortChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `reasoningEffort` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
 
 
 ### `ThreadReasoningEffortSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `reasoningEffort` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `reasoningEffort` | `string` | `string` |  |  |
 
 
 ### `ThreadResumeParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `sessionId` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `sessionId` | `string` | `string` | yes |  |
 
 
 ### `ThreadResumeResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `thread` | `appwire.Thread` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `thread` | `Thread` | `appwire.Thread` |  |  |
 
 
 ### `ThreadResyncParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
 
 
 ### `ThreadShutdownParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
 
 
 ### `ThreadStartParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `harness` | `string` | yes |  |
-| `cwd` | `string` |  |  |
-| `input` | `[]appwire.InputItem` | yes |  |
-| `modelProvider` | `string` | yes |  |
-| `model` | `string` | yes |  |
-| `profile` | `string` | yes |  |
-| `reasoningEffort` | `string` | yes |  |
-| `nonInteractive` | `*bool` | yes |  |
-| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `harness` | `string` | `string` | yes |  |
+| `cwd` | `string` | `string` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
+| `modelProvider` | `string` | `string` | yes |  |
+| `model` | `string` | `string` | yes |  |
+| `profile` | `string` | `string` | yes |  |
+| `reasoningEffort` | `string` | `string` | yes |  |
+| `nonInteractive` | `boolean` | `*bool` | yes |  |
+| `launchOverrides` | `LaunchConfigLayer` | `*appwire.LaunchConfigLayer` | yes |  |
 
 
 ### `ThreadStartResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `thread` | `appwire.Thread` |  |  |
-| `turn` | `appwire.Turn` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `thread` | `Thread` | `appwire.Thread` |  |  |
+| `turn` | `Turn` | `appwire.Turn` |  |  |
 
 
 ### `ThreadStartedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `thread` | `appwire.Thread` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `thread` | `Thread` | `appwire.Thread` |  |  |
+
+
+### `ThreadStatus`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `type` | `string` | `string` |  |  |
+| `activeFlags` | `array<string>` | `[]string` | yes |  |
 
 
 ### `ThreadStatusChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `status` | `appwire.ThreadStatus` |  |  |
-| `failedToolCalls` | `*int` | yes |  |
-| `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `status` | `ThreadStatus` | `appwire.ThreadStatus` |  |  |
+| `failedToolCalls` | `integer` | `*int` | yes |  |
+| `capabilities` | `ThreadCapabilities` | `*appwire.ThreadCapabilities` | yes |  |
 
 
 ### `ThreadTranscriptListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
 
 
 ### `ThreadTranscriptListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.ThreadTranscriptTarget` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<ThreadTranscriptTarget>` | `[]appwire.ThreadTranscriptTarget` |  |  |
+
+
+### `ThreadTranscriptTarget`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `threadId` | `string` | `string` | yes |  |
+| `title` | `string` | `string` |  |  |
+| `kind` | `string` | `string` |  |  |
+| `status` | `string` | `string` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `turnsUsed` | `integer` | `int` | yes |  |
 
 
 ### `ThreadTurnItemsListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
-| `turnId` | `string` |  |  |
-| `cursor` | `string` | yes |  |
-| `limit` | `int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `turnId` | `string` | `string` |  |  |
+| `cursor` | `string` | `string` | yes |  |
+| `limit` | `integer` | `int` | yes |  |
 
 
 ### `ThreadTurnItemsListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.ThreadItem` |  |  |
-| `nextCursor` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<ThreadItem>` | `[]appwire.ThreadItem` |  |  |
+| `nextCursor` | `string` | `string` | yes |  |
 
 
 ### `ThreadTurnsListParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
-| `cursor` | `string` | yes |  |
-| `itemsView` | `string` | yes |  |
-| `itemLimit` | `int` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
+| `cursor` | `string` | `string` | yes |  |
+| `itemsView` | `string` | `string` | yes |  |
+| `itemLimit` | `integer` | `int` | yes |  |
 
 
 ### `ThreadTurnsListResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]appwire.Turn` |  |  |
-| `nextCursor` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `data` | `array<Turn>` | `[]appwire.Turn` |  |  |
+| `nextCursor` | `string` | `string` | yes |  |
 
 
 ### `ThreadUnsubscribeParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` | yes |  |
-| `ref` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` | yes |  |
+| `ref` | `string` | `string` | yes |  |
 
 
 ### `ThreadVisionModelChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `visionModel` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `visionModel` | `string` | `string` |  |  |
 
 
 ### `ThreadVisionModelSetParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `visionModel` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `visionModel` | `string` | `string` |  |  |
 
 
 ### `ToolOutputDeltaParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` | yes |  |
-| `itemId` | `string` |  |  |
-| `callId` | `string` |  |  |
-| `delta` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` | yes |  |
+| `itemId` | `string` | `string` |  |  |
+| `callId` | `string` | `string` |  |  |
+| `delta` | `string` | `string` |  |  |
+
+
+### `TranscriptDisplayAdvanced`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `roundTimings` | `boolean` | `bool` |  |  |
+| `tokenCounts` | `boolean` | `bool` |  |  |
+| `estimatedCost` | `boolean` | `bool` |  |  |
+| `systemEvents` | `boolean` | `bool` |  |  |
+| `promptEvents` | `boolean` | `bool` |  |  |
+| `hookExits` | `string` | `appwire.TranscriptHookExitDetail` |  |  |
 
 
 ### `TranscriptDisplayChangedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `layout` | `appwire.TranscriptViewportClass` |  |  |
-| `revision` | `uint64` |  |  |
-| `config` | `appwire.TranscriptDisplayConfig` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `layout` | `string` | `appwire.TranscriptViewportClass` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `config` | `TranscriptDisplayConfig` | `appwire.TranscriptDisplayConfig` |  |  |
+
+
+### `TranscriptDisplayConfig`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `version` | `integer` | `int` |  |  |
+| `content` | `TranscriptDisplayContent` | `appwire.TranscriptDisplayContent` |  |  |
+| `advanced` | `TranscriptDisplayAdvanced` | `appwire.TranscriptDisplayAdvanced` |  |  |
+
+
+### `TranscriptDisplayContent`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `kind` | `string` | `appwire.TranscriptContentKind` |  |  |
+| `level` | `string` | `appwire.TranscriptLevel` | yes |  |
+| `custom` | `TranscriptDisplayCustomContent` | `*appwire.TranscriptDisplayCustomContent` | yes |  |
+
+
+### `TranscriptDisplayCustomContent`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `toolIntent` | `boolean` | `bool` |  |  |
+| `toolCalls` | `boolean` | `bool` |  |  |
+| `reasoning` | `boolean` | `bool` |  |  |
+| `expandByDefault` | `boolean` | `bool` |  |  |
+
+
+### `TranscriptDisplayDefault`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `revision` | `integer` | `uint64` |  |  |
+| `config` | `TranscriptDisplayConfig` | `appwire.TranscriptDisplayConfig` |  |  |
 
 
 ### `TranscriptDisplayDefaults`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `desktop` | `appwire.TranscriptDisplayDefault` |  |  |
-| `mobile` | `appwire.TranscriptDisplayDefault` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `desktop` | `TranscriptDisplayDefault` | `appwire.TranscriptDisplayDefault` |  |  |
+| `mobile` | `TranscriptDisplayDefault` | `appwire.TranscriptDisplayDefault` |  |  |
 
 
 ### `TranscriptDisplayDefaultsPatchParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `layout` | `appwire.TranscriptViewportClass` |  |  |
-| `expectedRevision` | `uint64` |  |  |
-| `config` | `appwire.TranscriptDisplayConfig` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `layout` | `string` | `appwire.TranscriptViewportClass` |  |  |
+| `expectedRevision` | `integer` | `uint64` |  |  |
+| `config` | `TranscriptDisplayConfig` | `appwire.TranscriptDisplayConfig` |  |  |
 
 
 ### `TranscriptDisplayPatchResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `layout` | `appwire.TranscriptViewportClass` |  |  |
-| `revision` | `uint64` |  |  |
-| `config` | `appwire.TranscriptDisplayConfig` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `layout` | `string` | `appwire.TranscriptViewportClass` |  |  |
+| `revision` | `integer` | `uint64` |  |  |
+| `config` | `TranscriptDisplayConfig` | `appwire.TranscriptDisplayConfig` |  |  |
+
+
+### `Turn`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `id` | `string` | `string` |  |  |
+| `items` | `array<ThreadItem>` | `[]appwire.ThreadItem` | yes |  |
+| `itemsView` | `string` | `appwire.TurnItemsView` |  |  |
+| `status` | `string` | `string` |  |  |
+| `error` | `TurnError` | `*appwire.TurnError` | yes |  |
+| `hasEarlierItems` | `boolean` | `bool` | yes |  |
+| `hasLaterItems` | `boolean` | `bool` | yes |  |
+| `startedAt` | `integer` | `*int64` | yes |  |
+| `completedAt` | `integer` | `*int64` | yes |  |
+| `durationMs` | `integer` | `*int64` | yes |  |
+| `usage` | `EvenerUsage` | `*appwire.EvenerUsage` | yes |  |
+| `cost` | `string` | `string` | yes |  |
 
 
 ### `TurnCancelQueuedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `index` | `int` |  |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `expectedEntryId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `index` | `integer` | `int` |  |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `expectedEntryId` | `string` | `string` |  |  |
 
 
 ### `TurnCancelQueuedResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `removedText` | `string` |  |  |
-| `removedImages` | `int` | yes |  |
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `removedText` | `string` | `string` |  |  |
+| `removedImages` | `integer` | `int` | yes |  |
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnCompletedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turnId` | `string` | `string` |  |  |
+| `turn` | `Turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnDrainAsSteerParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `expectedQueueRevision` | `uint64` |  |  |
-| `input` | `[]appwire.InputItem` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `expectedQueueRevision` | `integer` | `uint64` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
 
 
 ### `TurnDrainAsSteerResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
+
+
+### `TurnError`
+
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `message` | `string` | `string` |  |  |
+| `additionalDetails` | `string` | `string` | yes |  |
+| `codexErrorInfo` | `any JSON value` | `interface {}` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `title` | `string` | `string` | yes |  |
+| `hint` | `string` | `string` | yes |  |
+| `cause` | `DiagnosticCause` | `*appwire.DiagnosticCause` | yes |  |
 
 
 ### `TurnInterruptParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `threadId` | `string` | yes |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `threadId` | `string` | `string` | yes |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
 
 
 ### `TurnInterruptResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnPromoteQueuedAsSteerParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `index` | `int` |  |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `expectedEntryId` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `index` | `integer` | `int` |  |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `expectedEntryId` | `string` | `string` |  |  |
 
 
 ### `TurnPromoteQueuedAsSteerResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnQueueParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` |  |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `input` | `[]appwire.InputItem` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` |  |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
 
 
 ### `TurnQueueResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnStartParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `threadId` | `string` | yes |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `input` | `[]appwire.InputItem` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `threadId` | `string` | `string` | yes |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
 
 
 ### `TurnStartResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `turn` | `appwire.Turn` |  |  |
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `turn` | `Turn` | `appwire.Turn` |  |  |
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `TurnStartedParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `turn` | `Turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnSteerParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | `string` | yes |  |
-| `threadId` | `string` | yes |  |
-| `clientMutationId` | `string` |  |  |
-| `expectedInstanceId` | `string` |  |  |
-| `input` | `[]appwire.InputItem` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `ref` | `string` | `string` | yes |  |
+| `threadId` | `string` | `string` | yes |  |
+| `clientMutationId` | `string` | `string` |  |  |
+| `expectedInstanceId` | `string` | `string` |  |  |
+| `input` | `array<InputItem>` | `[]appwire.InputItem` | yes |  |
 
 
 ### `TurnSteerResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `receipt` | `appwire.MutationReceipt` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `receipt` | `MutationReceipt` | `appwire.MutationReceipt` |  |  |
 
 
 ### `UpgradeParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `requested` | `string` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `requested` | `string` | `string` | yes |  |
 
 
 ### `UpgradeResponse`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `release` | `string` |  |  |
-| `channel` | `string` |  |  |
-| `url` | `string` |  |  |
-| `archive` | `string` |  |  |
-| `prefix` | `string` |  |  |
-| `binDir` | `string` |  |  |
-| `shareBinDir` | `string` |  |  |
-| `installed` | `[]string` |  |  |
-| `restartMessage` | `string` |  |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `release` | `string` | `string` |  |  |
+| `channel` | `string` | `string` |  |  |
+| `url` | `string` | `string` |  |  |
+| `archive` | `string` | `string` |  |  |
+| `prefix` | `string` | `string` |  |  |
+| `binDir` | `string` | `string` |  |  |
+| `shareBinDir` | `string` | `string` |  |  |
+| `installed` | `array<string>` | `[]string` |  |  |
+| `restartMessage` | `string` | `string` |  |  |
 
 
 ### `WarningParams`
 
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `message` | `string` | yes |  |
-| `source` | `string` | yes |  |
-| `title` | `string` | yes |  |
-| `hint` | `string` | yes |  |
-| `warning` | `interface {}` | yes |  |
-| `cause` | `*appwire.DiagnosticCause` | yes |  |
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
+| `threadId` | `string` | `string` |  |  |
+| `ref` | `string` | `string` |  |  |
+| `message` | `string` | `string` | yes |  |
+| `source` | `string` | `string` | yes |  |
+| `title` | `string` | `string` | yes |  |
+| `hint` | `string` | `string` | yes |  |
+| `warning` | `any JSON value` | `interface {}` | yes |  |
+| `cause` | `DiagnosticCause` | `*appwire.DiagnosticCause` | yes |  |
 
 
