@@ -35,3 +35,37 @@ light mode, screen-reader order, and command-specific action widths require
 further native checks. Raw transcript notices and overall conversation
 hierarchy remain unfinished. These screenshots do not establish final visual
 acceptance.
+
+## Large-text correction and native keyboard checks
+
+Testing at iOS's largest accessibility content size exposed clipped custom
+Work/Session navigation buttons in the fixed-height native bar. Sessions and
+conversation headers now use the installed native-stack library's native iOS
+bar-button items. UIKit owns their sizing; Android retains its existing header
+rendering. Callbacks and disabled conditions are shared between presentations.
+The native Work button was exercised and opened the expected Tasks/Activity
+menu after this change.
+
+Above font scale 1.4, the draft takes the composer width and its primary action
+moves beside attachment access before the settings row. Normal-size placement
+is unchanged. Latest uses a fixed-size arrow with its accessible name and
+44/48-unit touch region, rather than scaling a decorative glyph as prose.
+
+Both final Release apps were rebuilt and launched. TypeScript, touched Biome,
+and all 223 native tests pass. Native captures were inspected with long drafts
+and software keyboards visible: iOS at accessibility-extra-extra-extra-large,
+Android at font scale 2.0. Draft, Send, attachment, model, and reasoning remain
+reachable. The 426-character iOS draft remained intact across relaunch and
+text-size changes; Android's long paragraph wrapped inside its bounded input.
+No test draft was submitted in this pass. Simulator text settings were restored
+to iOS large and Android 1.0 afterward.
+
+Captures: [iOS largest size with keyboard](assets/composer-accessibility/ios-largest-keyboard.png)
+and [Android large text with keyboard](assets/composer-accessibility/android-large-keyboard.png).
+
+This resolves the observed header clipping and narrow large-text input. It
+does not certify active-turn or slash-command layouts at extreme sizes,
+multiline editing/selection gestures, screen-reader focus order, all model
+label lengths, light mode, or smaller physical devices. The large iOS input
+is intentionally a scrolling viewport and does not show its entire draft at
+once. Further accessibility and visual acceptance remains required.
