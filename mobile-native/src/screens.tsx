@@ -1458,6 +1458,8 @@ export function ConversationScreen({
         <View
           style={[
             {
+              flexShrink: 1,
+              maxHeight: "80%",
               marginHorizontal: 12,
               marginTop: 8,
               marginBottom: 8,
@@ -1470,51 +1472,6 @@ export function ConversationScreen({
             },
           ]}
         >
-          {questions.length ? (
-            <Action
-              disabled={!ready}
-              expanded={questionsOpen}
-              onPress={() => {
-                Keyboard.dismiss();
-                setQuestionsOpen(true);
-              }}
-            >
-              {`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
-            </Action>
-          ) : null}
-          {conversation?.pendingApprovals.length ? (
-            <Action
-              disabled={!ready || !approvalControls}
-              expanded={approvalsOpen}
-              onPress={() => {
-                Keyboard.dismiss();
-                setApprovalsOpen(true);
-              }}
-            >{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
-          ) : null}
-          {conversation?.queue.depth ? (
-            <Action
-              tone="quiet"
-              expanded={queueOpen}
-              onPress={() => {
-                Keyboard.dismiss();
-                setQueueOpen(true);
-              }}
-            >
-              {`${conversation.queue.depth} queued`}
-            </Action>
-          ) : null}
-          {conversation?.goal ? (
-            <Action
-              tone="quiet"
-              onPress={() => {
-                Keyboard.dismiss();
-                setSessionOpen(true);
-              }}
-            >
-              {`Goal · ${conversation.goal.status}`}
-            </Action>
-          ) : null}
           {canCompose &&
           questions.length === 0 &&
           connected &&
@@ -1550,160 +1507,216 @@ export function ConversationScreen({
               }}
             />
           ) : null}
-          {canCompose && questions.length === 0 ? (
-            <ImageAttachments document={document} selection={imageSelection} />
-          ) : null}
-          <ErrorMessage message={imageState.error} />
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-end",
-              flexWrap: "wrap",
-              gap: 8,
-            }}
+          <ScrollView
+            style={{ flexGrow: 0, flexShrink: 1 }}
+            contentContainerStyle={{ gap: 4 }}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
           >
+            {questions.length ? (
+              <Action
+                disabled={!ready}
+                expanded={questionsOpen}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setQuestionsOpen(true);
+                }}
+              >
+                {`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
+              </Action>
+            ) : null}
+            {conversation?.pendingApprovals.length ? (
+              <Action
+                disabled={!ready || !approvalControls}
+                expanded={approvalsOpen}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setApprovalsOpen(true);
+                }}
+              >{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
+            ) : null}
+            {conversation?.queue.depth ? (
+              <Action
+                tone="quiet"
+                expanded={queueOpen}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setQueueOpen(true);
+                }}
+              >
+                {`${conversation.queue.depth} queued`}
+              </Action>
+            ) : null}
+            {conversation?.goal ? (
+              <Action
+                tone="quiet"
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setSessionOpen(true);
+                }}
+              >
+                {`Goal · ${conversation.goal.status}`}
+              </Action>
+            ) : null}
             {canCompose && questions.length === 0 ? (
-              <TextInput
-                ref={composerInput}
-                accessibilityLabel="Message"
-                multiline
-                value={draft.record.draft}
-                onChangeText={(text) => document.edit(text)}
-                onSelectionChange={(event) =>
-                  setComposerSelection(event.nativeEvent.selection)
-                }
-                editable={draft.loaded}
-                placeholder="Message"
-                placeholderTextColor={colors.secondary}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    backgroundColor: colors.surface,
-                    borderWidth: 0,
-                    padding: 2,
-                    flex: 1,
-                    minWidth: "100%",
-                    minHeight: Platform.OS === "android" ? 48 : 44,
-                    maxHeight: fontScale > 1.6 ? 96 : 160,
-                    textAlignVertical: "top",
-                  },
-                ]}
+              <ImageAttachments
+                document={document}
+                selection={imageSelection}
               />
             ) : null}
-          </View>
-          {fontScale > 1.4 ? composerSettings : null}
-          <View
-            style={[
-              styles.row,
-              {
+            <ErrorMessage message={imageState.error} />
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-end",
                 flexWrap: "wrap",
-                justifyContent: fontScale > 1.4 ? "space-between" : "flex-end",
-                gap: 4,
-              },
-            ]}
-          >
-            {canCompose && questions.length === 0 ? (
-              <Action
-                tone="quiet"
-                label="Attach images"
-                disabled={!draft.loaded || !!draft.error || imageState.busy}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  void imageSelection.choose();
-                }}
-              >
-                {imageState.busy ? "Processing…" : "+"}
-              </Action>
-            ) : null}
-            {fontScale <= 1.4 ? composerSettings : null}
-            {canCompose && questions.length === 0 && command !== null ? (
-              <Action
-                tone="primary"
-                label={
-                  command.command.id === "compact"
-                    ? "Compact transcript"
-                    : undefined
-                }
-                disabled={
-                  !ready ||
-                  !draft.loaded ||
-                  !!draft.error ||
-                  draft.submitting ||
-                  unconfirmedSend !== null ||
-                  imageState.busy ||
-                  (command.command.id === "goal" &&
-                    !goalCommand &&
-                    !conversation?.goal) ||
-                  (command.command.capability != null &&
-                    !conversation?.capabilities[command.command.capability])
-                }
-                onPress={() => void applyCommand()}
-              >
-                {command.command.id === "goal"
-                  ? goalCommand || !conversation?.goal
-                    ? "Set goal"
-                    : "Clear goal"
-                  : command.command.label}
-              </Action>
-            ) : null}
-            {submissionActions(["send", "steer"])}
-            {controlsState?.error &&
-            (controlsState.lastAction === "changeModel" ||
-              controlsState.lastAction === "setReasoningEffort") ? (
-              <Action
-                tone="quiet"
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setComposerSetting(
-                    controlsState.lastAction === "changeModel"
-                      ? "model"
-                      : "reasoning",
-                  );
-                }}
-              >
-                Review settings error
-              </Action>
-            ) : null}
-            {draft.error ? (
-              <Action tone="accent" onPress={document.retry}>
-                {draft.loaded ? "Retry saving" : "Retry loading draft"}
-              </Action>
-            ) : null}
-            {!connected ||
-            snapshot.error ||
-            actionError ||
-            unconfirmedSend !== null ? (
-              <Action
-                tone="quiet"
-                onPress={() => {
-                  Keyboard.dismiss();
-                  timeline.current?.scrollToOffset({
-                    offset: 0,
-                    animated: true,
-                  });
-                }}
-              >
-                {unconfirmedSend !== null
-                  ? "Check delivery"
-                  : !connected
-                    ? "Connection"
-                    : "Review error"}
-              </Action>
-            ) : null}
-            {conversation?.capabilities.interrupt ? (
-              <Action
-                tone="quiet"
-                disabled={!ready}
-                onPress={() => {
-                  void mutate("interrupt");
-                }}
-              >
-                Stop
-              </Action>
-            ) : null}
-            {submissionActions(["queue"])}
-          </View>
+                gap: 8,
+              }}
+            >
+              {canCompose && questions.length === 0 ? (
+                <TextInput
+                  ref={composerInput}
+                  accessibilityLabel="Message"
+                  multiline
+                  value={draft.record.draft}
+                  onChangeText={(text) => document.edit(text)}
+                  onSelectionChange={(event) =>
+                    setComposerSelection(event.nativeEvent.selection)
+                  }
+                  editable={draft.loaded}
+                  placeholder="Message"
+                  placeholderTextColor={colors.secondary}
+                  style={[
+                    styles.input,
+                    {
+                      color: colors.text,
+                      backgroundColor: colors.surface,
+                      borderWidth: 0,
+                      padding: 2,
+                      flex: 1,
+                      minWidth: "100%",
+                      minHeight: Platform.OS === "android" ? 48 : 44,
+                      maxHeight: fontScale > 1.6 ? 96 : 160,
+                      textAlignVertical: "top",
+                    },
+                  ]}
+                />
+              ) : null}
+            </View>
+            {fontScale > 1.4 ? composerSettings : null}
+            <View
+              style={[
+                styles.row,
+                {
+                  flexWrap: "wrap",
+                  justifyContent:
+                    fontScale > 1.4 ? "space-between" : "flex-end",
+                  gap: 4,
+                },
+              ]}
+            >
+              {canCompose && questions.length === 0 ? (
+                <Action
+                  tone="quiet"
+                  label="Attach images"
+                  disabled={!draft.loaded || !!draft.error || imageState.busy}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    void imageSelection.choose();
+                  }}
+                >
+                  {imageState.busy ? "Processing…" : "+"}
+                </Action>
+              ) : null}
+              {fontScale <= 1.4 ? composerSettings : null}
+              {canCompose && questions.length === 0 && command !== null ? (
+                <Action
+                  tone="primary"
+                  label={
+                    command.command.id === "compact"
+                      ? "Compact transcript"
+                      : undefined
+                  }
+                  disabled={
+                    !ready ||
+                    !draft.loaded ||
+                    !!draft.error ||
+                    draft.submitting ||
+                    unconfirmedSend !== null ||
+                    imageState.busy ||
+                    (command.command.id === "goal" &&
+                      !goalCommand &&
+                      !conversation?.goal) ||
+                    (command.command.capability != null &&
+                      !conversation?.capabilities[command.command.capability])
+                  }
+                  onPress={() => void applyCommand()}
+                >
+                  {command.command.id === "goal"
+                    ? goalCommand || !conversation?.goal
+                      ? "Set goal"
+                      : "Clear goal"
+                    : command.command.label}
+                </Action>
+              ) : null}
+              {submissionActions(["send", "steer"])}
+              {controlsState?.error &&
+              (controlsState.lastAction === "changeModel" ||
+                controlsState.lastAction === "setReasoningEffort") ? (
+                <Action
+                  tone="quiet"
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setComposerSetting(
+                      controlsState.lastAction === "changeModel"
+                        ? "model"
+                        : "reasoning",
+                    );
+                  }}
+                >
+                  Review settings error
+                </Action>
+              ) : null}
+              {draft.error ? (
+                <Action tone="accent" onPress={document.retry}>
+                  {draft.loaded ? "Retry saving" : "Retry loading draft"}
+                </Action>
+              ) : null}
+              {!connected ||
+              snapshot.error ||
+              actionError ||
+              unconfirmedSend !== null ? (
+                <Action
+                  tone="quiet"
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    timeline.current?.scrollToOffset({
+                      offset: 0,
+                      animated: true,
+                    });
+                  }}
+                >
+                  {unconfirmedSend !== null
+                    ? "Check delivery"
+                    : !connected
+                      ? "Connection"
+                      : "Review error"}
+                </Action>
+              ) : null}
+              {conversation?.capabilities.interrupt ? (
+                <Action
+                  tone="quiet"
+                  disabled={!ready}
+                  onPress={() => {
+                    void mutate("interrupt");
+                  }}
+                >
+                  Stop
+                </Action>
+              ) : null}
+              {submissionActions(["queue"])}
+            </View>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
