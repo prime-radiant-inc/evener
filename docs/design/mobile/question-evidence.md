@@ -20,4 +20,14 @@ The native UI reuses shared composeAskAnswers and turn/start. Dispatch checks th
 
 The fixture injected a completed ask_user item into a real thread snapshot. Answer submission, receipt handling and subsequent thread updates used the actual isolated hub; this does not prove an actual harness ask_user pause/resume. Synthetic questions were removed and the all-interface ordinary navigation proxy restored. Production was untouched.
 
-Unfinished selections currently survive sheet dismissal but not app termination, binding recreation or a changed question definition. Persisting those selections with exact question ownership remains required. Larger text, VoiceOver/TalkBack traversal, background/reconnect races, deliberate acknowledgement-loss native injection and physical-device acceptance remain open. This is not complete question-workflow acceptance or full release verification.
+Unfinished selections are now persisted by exact hub, session and question definition. Changed definitions intentionally start fresh. See the persistence addendum below. Larger text, VoiceOver/TalkBack traversal, background/reconnect races, deliberate acknowledgement-loss native injection and physical-device acceptance remain open. This is not complete question-workflow acceptance or full release verification.
+
+## Question draft persistence
+
+The existing local draft database now stores one question selection record per hub/session, with the full projected question definition as its signature. Each edit is saved synchronously. Exact matching definitions restore selections after navigation or relaunch; changed definitions return an empty selection set. Hub removal clears these records too. Corrupt records and storage failures surface errors; failed writes retain visible edits, offer Retry and block submission until saved.
+
+Native TypeScript, Biome and 101 tests pass. Three storage tests use actual SQLite close/reopen, destination/signature isolation, hub removal and invalid stored resolution data. A bounded independent review found no actionable findings. Both Release builds completed. iOS termination/relaunch restored an unfinished written answer while preserving the ordinary composer draft. Android force-stop/relaunch restored a selected option on the final build. Its note-entry automation timed out after entering only Andro; that partial note also restored, but full note entry is not claimed. Before installation, the emulator stopped responding to ADB and console commands and was restarted without wiping data; installation succeeded after boot completed. The controlled question proxy was removed after verification.
+
+![iOS restored unfinished answer](assets/question-draft-ios.png)
+
+![Android restored selected option](assets/question-draft-android.png)
