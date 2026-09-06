@@ -110,6 +110,11 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 				out.Effective.Agent = opt.BuiltinDefault
 				set(opt.Field)
 			}
+		case "providerIdleTimeout":
+			if strings.TrimSpace(out.Effective.ProviderIdleTimeout) == "" && opt.BuiltinDefault != "" {
+				out.Effective.ProviderIdleTimeout = opt.BuiltinDefault
+				set(opt.Field)
+			}
 		case "contextStrategy":
 			if strings.TrimSpace(out.Effective.ContextStrategy) == "" && opt.BuiltinDefault != "" {
 				out.Effective.ContextStrategy = opt.BuiltinDefault

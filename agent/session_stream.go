@@ -354,7 +354,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		switch {
 		case contentSeen:
 			obs.Phase = llm.PhaseConsume
-		case errors.Is(err, llm.ErrSSEReadTimeout) || time.Since(attemptStart) >= 30*time.Second:
+		case errors.Is(err, llm.ErrSSEReadTimeout) || errors.Is(err, llm.ErrResponseIdleTimeout) || time.Since(attemptStart) >= 30*time.Second:
 			obs.Phase = llm.PhaseSilentStall
 		default:
 			obs.Phase = llm.PhaseFastReject

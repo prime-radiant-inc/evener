@@ -29,6 +29,7 @@ var launchConfigLayerSchema = map[string]any{
 		"fastCheapModel":              map[string]any{"type": "string"},
 		"agent":                       map[string]any{"type": "string"},
 		"reasoningEffort":             map[string]any{"type": "string"},
+		"providerIdleTimeout":         map[string]any{"type": "string"},
 		"contextStrategy":             map[string]any{"type": "string"},
 		"openAIResponsesContinuation": map[string]any{"type": "string"},
 		"maxRounds":                   map[string]any{"type": []string{"integer", "null"}},
@@ -73,6 +74,18 @@ var launchConfigLayerSchema = map[string]any{
 		"exportATIFPath":            map[string]any{"type": "string"},
 		"exportATIFProviderHandles": map[string]any{"type": "string"},
 	},
+}
+
+func TestLaunchConfigLayerSchemaProviderIdleTimeout(t *testing.T) {
+	properties := launchConfigLayerSchema["properties"].(map[string]any)
+	if !reflect.DeepEqual(properties["providerIdleTimeout"], map[string]any{"type": "string"}) {
+		t.Fatalf("providerIdleTimeout schema = %#v, want string", properties["providerIdleTimeout"])
+	}
+	for _, required := range launchConfigLayerSchema["required"].([]string) {
+		if required == "providerIdleTimeout" {
+			t.Fatal("providerIdleTimeout must remain optional")
+		}
+	}
 }
 
 func TestLaunchConfigLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {

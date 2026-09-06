@@ -160,6 +160,13 @@ func TestConsumeModelStream_Observation_ZeroContentPhases(t *testing.T) {
 			wantPartialNil: true,
 		},
 		{
+			name:           "ResponseIdleSilentStall",
+			err:            fmt.Errorf("read: %w", llm.ErrResponseIdleTimeout),
+			wantPhase:      llm.PhaseSilentStall,
+			wantBytes:      0,
+			wantPartialNil: true,
+		},
+		{
 			name:           "FastReject",
 			err:            errors.New("400 bad request"),
 			wantPhase:      llm.PhaseFastReject,

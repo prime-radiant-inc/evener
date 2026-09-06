@@ -94,6 +94,26 @@ func TestApplyRuntimeDefaultsFillsBuiltinsFromSchema(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeDefaultsProviderIdleTimeout(t *testing.T) {
+	for _, value := range []string{"", "5s", "0"} {
+		t.Run("value="+value, func(t *testing.T) {
+			resolved := Resolved{Effective: Layer{ProviderIdleTimeout: value}}
+			want, source := "10m", LayerBuiltin
+			if value != "" {
+				resolved.Provenance = map[string]LayerName{"provider_idle_timeout": LayerProject}
+				want, source = value, LayerProject
+			}
+			got := ApplyRuntimeDefaults(resolved, envOf(nil), LaunchOptionSchema())
+			if got.Effective.ProviderIdleTimeout != want {
+				t.Errorf("ProviderIdleTimeout = %q, want %q", got.Effective.ProviderIdleTimeout, want)
+			}
+			if got.Provenance["provider_idle_timeout"] != source {
+				t.Errorf("provider_idle_timeout provenance = %q, want %q", got.Provenance["provider_idle_timeout"], source)
+			}
+		})
+	}
+}
+
 func TestApplyRuntimeDefaultsProvenance(t *testing.T) {
 	resolved := Resolved{Effective: Layer{}}
 	got := ApplyRuntimeDefaults(resolved, envOf(nil), schemaForTest())
