@@ -251,6 +251,24 @@ restoration and connection diagnostics remain lifecycle work. iOS native visual
 checks are still pending behind the host lock, alongside screen readers,
 MCP argument-detail interaction, same-named files and larger resource lists.
 
+### Android font-scale recreation investigation
+
+A Release candidate added `fontScale` to MainActivity's `configChanges` through
+an Expo config plugin. The build, TypeScript and all 311 native tests passed,
+but the native acceptance check failed. With Max rounds open and an unsaved `7`
+in the input, changing system font scale from 1.0 to 2.0 preserved the editor and
+draft. Existing text did not resize, including after Home and returning to the
+same activity. Canceling and reopening the editor rendered the larger text.
+The Max rounds title bounds changed from y314–380 to y330–426 only after reopening.
+
+This candidate is insufficient. React Native 0.86.3's ReactHostImpl requests
+surface layout on a font-scale change, but that alone did not update the open
+editor in this reproduction. Investigate mounted text and Modal layout propagation
+before retaining the manifest change. Do not trade draft loss for stale accessible
+text. The system scale was restored to 1.0 and the local draft canceled; no hub
+setting was saved. This does not explain the earlier transient connection failure
+or the separate Android ANR.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,
