@@ -61,7 +61,10 @@ What this means day to day:
   session, or a live delegate lane — is actively working in. The tool tells you the
   lock reason (which session or delegate holds it) so you know who to ask.
 - Leaving a worktree (`exit`, switching away, or ending the session cleanly) releases
-  the lock automatically.
+  the lock automatically. A clean close releases every managed worktree that still
+  carries that session's own lock, not just the one it was sitting in — so a lock an
+  earlier crash left behind on a worktree the session never got back into is gone once
+  the session closes cleanly.
 - `force` never overrides a lock. Locks and dirty-tree safety are different
   protections: `force` skips the "are there uncommitted changes here" check on
   `remove`; unlocking someone else's worktree is a deliberate act (`git worktree

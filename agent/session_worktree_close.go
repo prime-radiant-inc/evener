@@ -420,33 +420,49 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 	}
 }
 
-// unlockOwnManagedWorktreeAtClose unlocks the session's OWN occupied managed
-// worktree on a clean close (native worktree tools spec §5 close-unlock), so a
-// close→resume round-trip re-enters an unlocked tree. This is distinct from
-// delegate-lane disposal: the session's own managed worktree (tracked by
-// worktreeCurrentManaged / worktreeCurrentPath) is unlocked on disk, never
-// removed. The unlock routes through leaveCurrentWorktree, which applies the
-// EvLeave lock rule (own session marker → unlock; unlocked / foreign / delegate
-// → no-op).
+// unlockOwnManagedWorktreeAtClose releases every managed worktree this session's
+// own marker still holds on a clean close (native worktree tools spec §5
+// close-unlock), so a close→resume round-trip re-enters unlocked trees. This is
+// distinct from delegate-lane disposal: a managed worktree is unlocked on disk,
+// never removed.
+//
+// It sweeps the project's managed lanes rather than only the occupied one
+// (worktreeCurrentPath). A lane keeps this session's marker after a process
+// death inside it, and after a resume whose re-entry was refused (child session,
+// non-local env, out-of-project target, unverifiable registry) returned before
+// the lane was recorded as current — and the residue sweeps take only unlocked
+// lanes, so nothing else ever released it. Once this close finishes the session
+// id those markers carry names no live session at all, which makes close the one
+// place that can retire them without guessing at another owner's liveness.
+//
+// Every release routes through the EvLeave lock rule (own session marker →
+// unlock; unlocked / foreign / delegate marker → leave untouched), so another
+// session's lock stays put and a live delegate lane remains the parent's §9
+// disposal lifecycle's to release. Subagents are out of scope: a child never
+// takes a session marker of its own (§5 occupancy locks; §9 "the evener:dlg:
+// lock on a delegate lane is owned by the parent's disposal lifecycle").
 func (s *Session) unlockOwnManagedWorktreeAtClose() {
-	s.mu.Lock()
-	path := s.worktreeCurrentPath
-	managed := s.worktreeCurrentManaged
-	s.mu.Unlock()
-	if path == "" || !managed {
+	if s.isSubagentSession() {
 		return
 	}
-	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
+	st := s.worktreeStateSnapshot()
+	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return
 	}
-	controlEnv, _, done, ok := laneControlEnv(local, path)
-	if !ok {
+	run, done, err := s.worktreeControlRun(context.Background(), st.mainRepoRoot)
+	if err != nil {
 		return
 	}
 	defer done()
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-	if err := s.leaveCurrentWorktree(run); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})
+	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
+	porcelain, err := readWorktreePorcelain(run)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree locks under %s at close failed: %v", projectDir, err)})
+		return
+	}
+	for _, e := range managedPorcelainEntries(porcelain, projectDir) {
+		if err := s.leaveWorktreeWithLockState(run, e.Path, e.Locked, e.LockReason); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
+		}
 	}
 }
