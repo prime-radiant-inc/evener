@@ -230,6 +230,47 @@ describe("clicking Retry", () => {
     expect(connectionStore.getState().state).toBe("ready");
   });
 
+  test("notifies onClientReplaced with the fresh client after a successful retry", async () => {
+    const original = new FakeClient("closed");
+    connectionStore.getState().connect(original);
+    const fresh = new FakeClient("ready");
+    const replaced: unknown[] = [];
+
+    const user = userEvent.setup();
+    render(
+      <ConnectionBanner
+        state="closed"
+        delayMs={0}
+        createClient={() => fresh}
+        onClientReplaced={(c) => replaced.push(c)}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(replaced).toEqual([fresh]));
+  });
+
+  test("does not notify onClientReplaced when the fresh handshake rejects", async () => {
+    const fresh = new FakeClient("closed");
+    fresh.scriptConnect(() => {
+      throw new Error("handshake failed");
+    });
+    const replaced: unknown[] = [];
+
+    const user = userEvent.setup();
+    render(
+      <ConnectionBanner
+        state="closed"
+        delayMs={0}
+        createClient={() => fresh}
+        onClientReplaced={(c) => replaced.push(c)}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(connectionStore.getState().client).toBe(fresh));
+    expect(replaced).toEqual([]);
+  });
   test("never calls window.location.reload", async () => {
     const reloadSpy = vi.fn();
     vi.stubGlobal("location", { ...window.location, reload: reloadSpy });

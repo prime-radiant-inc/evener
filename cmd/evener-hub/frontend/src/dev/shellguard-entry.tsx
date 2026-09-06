@@ -15,8 +15,16 @@
 // answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
+import { navigationInvalidatedNotification } from "../protocol/testing/notifications";
+import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import railStyles from "../shell/rail/Rail.module.css";
+import { RailRenderObserver } from "../shell/rail/railRenderObserver";
+import {
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  type ResourceKey,
+} from "../stores/navigation/types";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -34,7 +42,7 @@ window.addEventListener("unhandledrejection", (event) => {
 const PROJECT_COUNT = 12;
 const SESSION_COUNT = 10;
 const projectSummaries = Array.from({ length: PROJECT_COUNT }, (_, p) => {
-  const key = `proj${p}`;
+  const key = `p${p}`;
   const name = `project-${p}`;
   return {
     key,
@@ -44,19 +52,6 @@ const projectSummaries = Array.from({ length: PROJECT_COUNT }, (_, p) => {
     session_count: SESSION_COUNT,
   };
 });
-const navigationSessions = (projectKey: string, projectName: string) =>
-  Array.from({ length: SESSION_COUNT }, (_, s) => ({
-    ref: `local:${projectKey}-s${s}`,
-    host_id: "local",
-    session_id: `${projectKey}-s${s}`,
-    title: `${projectName} session ${s}`,
-    project: projectName,
-    state: "idle",
-    kind: "session",
-    live: false,
-    children: [],
-  }));
-
 const NAVIGATION_MANIFEST = {
   generation_id: "shellguard-generation",
   revision: 1,
@@ -65,91 +60,290 @@ const NAVIGATION_MANIFEST = {
   sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
   catalogs: { projects: { count: PROJECT_COUNT }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
-const EMPTY_SECTION = {
-  generation_id: "shellguard-generation",
-  revision: 1,
-  sessions: [],
-  remaining: 0,
-  truncated: false,
-};
-const EMPTY_PIN_CATALOG = {
-  generation_id: "shellguard-generation",
-  revision: 1,
-  pin_sections: [],
-  remaining: 0,
-};
-const EMPTY_PROJECT_CATALOG = {
-  generation_id: "shellguard-generation",
-  revision: 1,
-  projects: projectSummaries,
-  remaining: 0,
-};
-const EMPTY_PIN_SECTION = {
-  generation_id: "shellguard-generation",
-  revision: 1,
-  sessions: [],
-  remaining: 0,
-  truncated: false,
-};
 
-function projectResource(key: string) {
-  const summary = projectSummaries.find((p) => p.key === key);
-  const sessions = summary ? navigationSessions(key, summary.name) : [];
-  const tier = { sessions, remaining: 0 };
+let changedTitle = "project-0 session 0";
+let mutationRevision = 1;
+const renderCounts = new Map<string, number>();
+let shellClient: FakeClient | null = null;
+let visibleRowIDs: string[] = [];
+let changedObserverRowID: string | null = null;
+
+function sessionValue(projectKey: string, projectName: string, index: number) {
   return {
-    generation_id: "shellguard-generation",
-    revision: 1,
-    key,
-    current: tier,
-    recent: { sessions: [], remaining: 0 },
-    archived: { sessions: [], remaining: 0 },
-    truncated: false,
+    ref: `local:${projectKey}-s${index}`,
+    host_id: "local",
+    session_id: `${projectKey}-s${index}`,
+    title: projectKey === "p0" && index === 0 ? changedTitle : `${projectName} session ${index}`,
+    project: projectName,
+    state: "idle",
+    kind: "session",
+    live: false,
+    children: [],
   };
 }
 
-function navigationRead(params: NavigationReadParams): NavigationReadResponse {
-  const response = (data: unknown): NavigationReadResponse => ({
-    status: "ok",
-    generationId: "shellguard-generation",
-    revision: 1,
-    etag: '"shellguard-etag"',
-    data,
-  });
+function snapshot(metadata: unknown, entities: unknown[], containers: unknown[]) {
+  return { metadata, entities, containers };
+}
+
+async function navigationEntityKey(key: ResourceKey, kind: string, logicalIdentity: string): Promise<string> {
+  const source = new TextEncoder().encode(`${kind}\0${logicalIdentity}`);
+  const digest = await crypto.subtle.digest("SHA-256", source);
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${navigationViewScope(key)}/entity/${hex}`;
+}
+
+function effectiveLimit(key: ResourceKey): number {
+  if (!("limit" in key)) return 0;
+  const maximum = key.kind === "pin_catalog" || key.kind === "catalog" ? 100 : 50;
+  return key.limit === 0 || key.limit > maximum ? maximum : key.limit;
+}
+
+function resourceKey(params: NavigationReadParams): ResourceKey {
+  const offset = params.offset ?? 0;
+  const limit = params.limit ?? 0;
   switch (params.resource) {
     case "manifest":
-      return response(NAVIGATION_MANIFEST);
+      return { kind: "manifest" };
     case "section":
-      return response(EMPTY_SECTION);
+      if (params.section !== "live" && params.section !== "needs_you")
+        throw new Error("section navigation read requires section");
+      return { kind: "section", section: params.section, offset, limit };
     case "pin_catalog":
-      return response(EMPTY_PIN_CATALOG);
+      return { kind: "pin_catalog", offset, limit };
     case "pin_section":
-      return response(EMPTY_PIN_SECTION);
+      if (!params.sectionId) throw new Error("pin-section navigation read requires sectionId");
+      return { kind: "pin_section", sectionId: params.sectionId, offset, limit };
     case "catalog":
-      return response(EMPTY_PROJECT_CATALOG);
+      if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
+        throw new Error("catalog navigation read requires catalog");
+      return { kind: "catalog", catalog: params.catalog, offset, limit };
     case "project":
-      if (params.projectKey === undefined) throw new Error("project navigation read requires projectKey");
-      return response(projectResource(params.projectKey));
+      if (!params.projectKey) throw new Error("project navigation read requires projectKey");
+      return { kind: "project", projectKey: params.projectKey };
     case "project_page":
-      return response({
+      if (!params.projectKey || (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived"))
+        throw new Error("project-page navigation read requires projectKey and tier");
+      return { kind: "project_page", projectKey: params.projectKey, tier: params.tier, offset, limit };
+    case "location":
+      if (!params.ref) throw new Error("location navigation read requires ref");
+      return { kind: "location", ref: params.ref };
+    default:
+      throw new Error(`unsupported navigation resource: ${params.resource}`);
+  }
+}
+
+async function sessionSnapshot(key: Extract<ResourceKey, { kind: "project" }>, projectName: string) {
+  const projectEntityKey = await navigationEntityKey(key, "project", key.projectKey);
+  const entities = await Promise.all(
+    Array.from({ length: SESSION_COUNT }, async (_, index) => ({
+      key: await navigationEntityKey(key, "session", `local:${key.projectKey}-s${index}`),
+      kind: "session",
+      value: sessionValue(key.projectKey, projectName, index),
+    })),
+  );
+  return snapshot(
+    {
+      generation_id: "shellguard-generation",
+      revision: mutationRevision,
+      key: key.projectKey,
+      current_remaining: 0,
+      recent_remaining: 0,
+      archived_remaining: 0,
+      truncated: false,
+    },
+    [{ key: projectEntityKey, kind: "project", value: { key: key.projectKey } }, ...entities],
+    [
+      {
+        key: navigationOwnedContainerKey(projectEntityKey, "current"),
+        owner: { kind: "entity", entityKey: projectEntityKey, slot: "current" },
+        children: entities.map((entity) => entity.key),
+      },
+      {
+        key: navigationOwnedContainerKey(projectEntityKey, "recent"),
+        owner: { kind: "entity", entityKey: projectEntityKey, slot: "recent" },
+        children: [],
+      },
+      {
+        key: navigationOwnedContainerKey(projectEntityKey, "archived"),
+        owner: { kind: "entity", entityKey: projectEntityKey, slot: "archived" },
+        children: [],
+      },
+      ...entities.map((entity) => ({
+        key: navigationOwnedContainerKey(entity.key, "children"),
+        owner: { kind: "entity", entityKey: entity.key, slot: "children" },
+        children: [],
+      })),
+    ],
+  );
+}
+
+async function catalogSnapshot(key: Extract<ResourceKey, { kind: "catalog" }>) {
+  const projects = key.catalog === "projects" ? projectSummaries : [];
+  const entities = await Promise.all(
+    projects.map(async (project) => ({
+      key: await navigationEntityKey(key, "project", project.key),
+      kind: "project",
+      value: project,
+    })),
+  );
+  return snapshot(
+    {
+      generation_id: "shellguard-generation",
+      revision: mutationRevision,
+      offset: key.offset,
+      limit: effectiveLimit(key),
+      remaining: 0,
+    },
+    entities,
+    [
+      {
+        key: navigationRootContainerKey(key, "projects"),
+        owner: { kind: "resource_root", slot: "projects" },
+        children: entities.map((entity) => entity.key),
+      },
+    ],
+  );
+}
+
+function emptySnapshot(key: ResourceKey) {
+  let metadata: Record<string, unknown>;
+  let slot: string;
+  switch (key.kind) {
+    case "section":
+    case "pin_section":
+      metadata = {
         generation_id: "shellguard-generation",
-        revision: 1,
-        key: params.projectKey,
-        tier: params.tier,
-        offset: params.offset,
-        sessions: [],
+        revision: mutationRevision,
+        offset: key.offset,
+        limit: effectiveLimit(key),
         remaining: 0,
         truncated: false,
-      });
-    case "location":
-      return response({
+      };
+      slot = "sessions";
+      break;
+    case "pin_catalog":
+      metadata = {
         generation_id: "shellguard-generation",
-        revision: 1,
-        ref: params.ref,
-        top_level_ref: params.ref,
+        revision: mutationRevision,
+        offset: key.offset,
+        limit: effectiveLimit(key),
+        remaining: 0,
+      };
+      slot = "pin_sections";
+      break;
+    case "project_page":
+      metadata = {
+        generation_id: "shellguard-generation",
+        revision: mutationRevision,
+        key: key.projectKey,
+        tier: key.tier,
+        offset: key.offset,
+        limit: effectiveLimit(key),
+        remaining: 0,
+        truncated: false,
+      };
+      slot = "sessions";
+      break;
+    case "location":
+      metadata = {
+        generation_id: "shellguard-generation",
+        revision: mutationRevision,
+        ref: key.ref,
+        top_level_ref: key.ref,
         top_level: true,
-      });
+      };
+      slot = "session";
+      break;
+    default:
+      throw new Error(`shellguard has no empty snapshot for ${key.kind}`);
   }
-  throw new Error(`unsupported navigation resource: ${params.resource}`);
+  return snapshot(
+    metadata,
+    [],
+    [
+      {
+        key: navigationRootContainerKey(key, slot),
+        owner: { kind: "resource_root", slot },
+        children: [],
+      },
+    ],
+  );
+}
+
+async function projectDelta(key: Extract<ResourceKey, { kind: "project" }>) {
+  return {
+    metadata: {
+      generation_id: "shellguard-generation",
+      revision: mutationRevision,
+      key: key.projectKey,
+      current_remaining: 0,
+      recent_remaining: 0,
+      archived_remaining: 0,
+      truncated: false,
+    },
+    upsertedEntities: [
+      {
+        key: await navigationEntityKey(key, "session", "local:p0-s0"),
+        kind: "session",
+        value: sessionValue("p0", "project-0", 0),
+      },
+    ],
+    removedEntityKeys: [],
+    upsertedContainers: [],
+    removedContainerKeys: [],
+  };
+}
+async function navigationRead(params: NavigationReadParams): Promise<NavigationReadResponse> {
+  if (params.representationVersion !== 2) throw new Error("shellguard expected v2 navigation reads");
+  const key = resourceKey(params);
+  const v2 = (
+    data: unknown,
+    representation: "snapshot" | "delta" = "snapshot",
+    base?: NavigationReadBase,
+  ): NavigationReadResponse => ({
+    status: "ok",
+    representation,
+    generationId: "shellguard-generation",
+    revision: mutationRevision,
+    etag: `"shellguard-${mutationRevision}"`,
+    data,
+    ...(representation === "delta" ? { base } : {}),
+  });
+  switch (key.kind) {
+    case "manifest":
+      return v2(
+        snapshot(
+          { ...NAVIGATION_MANIFEST, revision: mutationRevision },
+          [],
+          [
+            {
+              key: navigationRootContainerKey(key, "manifest"),
+              owner: { kind: "resource_root", slot: "manifest" },
+              children: [],
+            },
+          ],
+        ),
+      );
+    case "section":
+      return v2(emptySnapshot(key));
+    case "pin_catalog":
+      return v2(emptySnapshot(key));
+    case "pin_section":
+      return v2(emptySnapshot(key));
+    case "catalog":
+      return v2(await catalogSnapshot(key));
+    case "project": {
+      if (mutationRevision > 1 && params.base?.revision === 1 && key.projectKey === "p0")
+        return v2(await projectDelta(key), "delta", params.base);
+      const summary = projectSummaries.find((project) => project.key === key.projectKey);
+      return v2(await sessionSnapshot(key, summary?.name ?? key.projectKey));
+    }
+    case "project_page":
+      return v2(emptySnapshot(key));
+    case "location":
+      return v2(emptySnapshot(key));
+  }
 }
 
 const rootEl = document.getElementById("root");
@@ -165,6 +359,7 @@ async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
+  shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
     protocolVersion: "evener-appwire-v3",
@@ -183,9 +378,13 @@ async function boot(): Promise<void> {
       directoryComplete: true,
       auth: true,
     },
-    navigation: { version: 1, generationId: "shellguard-generation", sequence: 0 },
+    navigation: { version: 1, readVersions: [2], generationId: "shellguard-generation", sequence: 0 },
   }));
-  createRoot(root).render(<AppShell client={fake} />);
+  createRoot(root).render(
+    <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
+      <AppShell client={fake} />
+    </RailRenderObserver>,
+  );
 }
 
 interface Box {
@@ -421,10 +620,54 @@ const target = window as typeof window & {
   measureShell: typeof measureShell;
   measureMobileSidebar: typeof measureMobileSidebar;
   measureTapTargets: typeof measureTapTargets;
+  applyShellNavigationDelta: () => Promise<unknown>;
+  measureRailRenderCounts: () => {
+    counts: Record<string, number>;
+    changedRowID: string | null;
+    visibleRowIDs: string[];
+    document: { scrollHeight: number; viewportHeight: number };
+  };
 };
 target.measureShell = measureShell;
 target.measureMobileSidebar = measureMobileSidebar;
 target.measureTapTargets = measureTapTargets;
+target.measureRailRenderCounts = () => ({
+  counts: Object.fromEntries(renderCounts),
+  changedRowID: changedObserverRowID,
+  visibleRowIDs,
+  document: { scrollHeight: document.documentElement.scrollHeight, viewportHeight: window.innerHeight },
+});
+target.applyShellNavigationDelta = async () => {
+  if (!shellClient) throw new Error("shellguard client is not ready");
+  visibleRowIDs = [...renderCounts.keys()];
+  const expectedChangedRowID = await navigationEntityKey(
+    { kind: "project", projectKey: "p0" },
+    "session",
+    "local:p0-s0",
+  );
+  changedObserverRowID = visibleRowIDs.find((id) => id === expectedChangedRowID) ?? null;
+  if (changedObserverRowID === null) {
+    throw new Error(`shellguard changed row was not observed before delta: ${expectedChangedRowID}`);
+  }
+  changedTitle = "project-0 session 0 changed";
+  mutationRevision = 2;
+  // Preserve the visible observer IDs above; clear only invocation counts and
+  // do it immediately before publishing the one-entity delta.
+  renderCounts.clear();
+  shellClient.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: "shellguard-generation",
+      sequence: 1,
+      targets: [{ kind: "project", projectKey: "p0", revision: 2 }],
+    }),
+  );
+  const deadline = performance.now() + 15_000;
+  for (;;) {
+    if (document.body.textContent?.includes(changedTitle)) return true;
+    if (performance.now() > deadline) throw new Error("shellguard delta did not converge");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
 target.settledShell = (async () => {
   await booted;
   const deadline = performance.now() + 15_000;

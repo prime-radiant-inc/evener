@@ -21,7 +21,7 @@ import { type PaneTypeId, paneFor } from "./paneRegistry";
 // point (Jesse: "there should only ever be one pane in the 'main group'").
 export type PaneSlot = "main" | "secondary";
 
-type PrimaryPaneType = "settings" | "spawn" | "session";
+type PrimaryPaneType = "settings" | "spawn" | "session" | "welcome";
 
 export interface OpenPaneRecord {
   id: string;
@@ -129,7 +129,7 @@ export function cancelPaneFocus(paneId: string): void {
 // the mismatch unrepresentable instead of merely unwritten.
 function primaryMatches(pane: OpenPaneRecord | null, type: PrimaryPaneType, params: unknown): boolean {
   if (pane?.type !== type) return false;
-  // Settings and spawn are singletons: their type IS their identity, and a
+  // Settings, spawn, and welcome are singletons: their type IS their identity, and a
   // section change is a params update to the pane that already holds it.
   if (type !== "session") return true;
   return (pane.params as { ref?: unknown }).ref === (params as { ref?: unknown }).ref;
