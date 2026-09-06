@@ -35,6 +35,7 @@ import { ApprovalControls } from "./approvalControls";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
+import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
@@ -787,9 +788,9 @@ export function ConversationScreen({
         await document.submit(async (text, images) => {
           store.getState().setDraft(text);
           const previous = store.getState().lastAcceptedMutation;
-          await store
-            .getState()
-            [kind](service, buildComposerInput(text, images));
+          const input = buildComposerInput(text, images);
+          if (kind === "steer") await steerComposer(store, service, input);
+          else await store.getState()[kind](service, input);
           const accepted = store.getState().lastAcceptedMutation;
           return (
             accepted != null && accepted !== previous && accepted.kind === kind

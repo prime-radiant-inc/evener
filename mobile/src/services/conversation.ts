@@ -80,7 +80,10 @@ export interface ConversationService {
   }>;
   subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
   send(input: InputItem[]): Promise<MutationReceipt>;
-  steer(input: InputItem[]): Promise<MutationReceipt>;
+  steer(
+    input: InputItem[],
+    expectedQueueRevision?: number,
+  ): Promise<MutationReceipt>;
   queue(input: InputItem[]): Promise<MutationReceipt>;
   interrupt(): Promise<MutationReceipt>;
   compact(): Promise<void>;
@@ -616,7 +619,7 @@ export function createConversationService(
       );
     },
 
-    async steer(input) {
+    async steer(input, expectedQueueRevision) {
       requireCap("steer", "steer");
       const threadRef = requireRef();
       const expectedInstanceId = nonemptyString(
@@ -625,12 +628,20 @@ export function createConversationService(
       );
       const clientMutationId = idFactory();
       const result = await withCapabilityRefresh("steer", () =>
-        client.request("turn/steer", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-          input,
-        }),
+        expectedQueueRevision === undefined
+          ? client.request("turn/steer", {
+              ref: threadRef,
+              clientMutationId,
+              expectedInstanceId,
+              input,
+            })
+          : client.request("turn/drainAsSteer", {
+              ref: threadRef,
+              clientMutationId,
+              expectedInstanceId,
+              expectedQueueRevision,
+              input,
+            }),
       );
       return decodeMutationResult(
         "steer",
