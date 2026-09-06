@@ -213,3 +213,9 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: false, canQueue: false });
   });
 });
+
+test("an incompatible daemon cannot receive another message even with an outstanding send", () => {
+  expect(
+    deriveSendQueueAvailability({ statusType: "restartRequired", capabilities: caps(), hasPendingSend: true }),
+  ).toEqual({ canSend: false, canQueue: false });
+});

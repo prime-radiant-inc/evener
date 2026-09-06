@@ -82,6 +82,7 @@ export function deriveSendQueueAvailability({
   capabilities,
   hasPendingSend,
 }: SendQueueAvailabilityInput): SendQueueAvailability {
+  if (statusType === "restartRequired") return BOTH_UNAVAILABLE;
   // Tier 6 (below) reaches inside this tier rather than being shadowed by it. A
   // finished session is resumable - turn/start alone carries the hub's
   // auto-resume (app_rpc.go's resumeTurnStartThread) - so a first message wakes

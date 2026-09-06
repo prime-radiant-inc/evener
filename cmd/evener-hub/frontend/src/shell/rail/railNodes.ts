@@ -254,7 +254,13 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
 // child is settled work - it would otherwise sit in the current list forever.
 // A child that picks work back up (a drive turn, job_send) reports active and
 // surfaces again.
-const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "warning", "notLoaded"]);
+const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
+  "active",
+  "awaiting",
+  "warning",
+  "restartRequired",
+  "notLoaded",
+]);
 
 // Namespaced the same way projectNodeExpansionKey is, and off the PARENT's row_id, so
 // every parent's fold is its own key at every nesting depth - expanding one
@@ -401,7 +407,7 @@ export function pinSectionDisclosureID(sectionID: string): string {
 // railNodes for its node types). Same two wire states RailRow's own
 // cadenceStateFor maps to Cadence's "needs-you" family.
 function stateNeedsYou(state: string): boolean {
-  return state === "awaiting" || state === "warning";
+  return state === "awaiting" || state === "warning" || state === "restartRequired";
 }
 
 // The state a row PRESENTS, which is not always the wire state. "awaiting"

@@ -303,6 +303,9 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err := deletionFenceError(cfg, params.Ref, sessionID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
+	if err := daemonRestartRequiredError(cfg, params.Ref, sessionID, ""); err != nil {
+		return appwire.ThreadResumeResponse{}, err
+	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}

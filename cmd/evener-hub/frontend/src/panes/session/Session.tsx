@@ -379,6 +379,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               retry={model.modelRetry}
               primaryModel={model.model}
             />
+            {model.status.type === "restartRequired" && (
+              <div role="alert">
+                Session restart required. Stop the older daemon, then resume this session to restore messages and
+                activity. Stopping interrupts active work.
+              </div>
+            )}
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>

@@ -36,6 +36,7 @@ export function cadenceStateForStatus(type: string): CadenceState {
       return "failed";
     case "awaiting":
     case "warning":
+    case "restartRequired":
       return "needs-you";
     case "active":
       return "working";

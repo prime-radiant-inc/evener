@@ -40,6 +40,12 @@ func withDeletionTargetOwnership[R any](
 		var zero R
 		return zero, err
 	}
+	if clientMutationID != "" {
+		if err := daemonRestartRequiredError(cfg, ref, threadID, clientMutationID); err != nil {
+			var zero R
+			return zero, err
+		}
+	}
 	return action()
 }
 

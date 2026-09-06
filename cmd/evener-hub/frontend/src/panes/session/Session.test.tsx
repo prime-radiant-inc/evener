@@ -2029,3 +2029,15 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
     spy.mockRestore();
   }
 });
+
+test("explains that an incompatible daemon needs an explicit restart", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
