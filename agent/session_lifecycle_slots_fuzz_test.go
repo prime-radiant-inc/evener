@@ -316,9 +316,10 @@ func FuzzLcyc_DiscardRestoredCandidate(f *testing.F) {
 			}
 		}
 
+		parent.ownsEnv = true
 		for _, code := range teardown {
 			if code == 0 {
-				parent.discardRestoredCandidate(true)
+				parent.discardRestoredCandidate()
 			} else {
 				parent.Close()
 			}
@@ -327,7 +328,7 @@ func FuzzLcyc_DiscardRestoredCandidate(f *testing.F) {
 			}
 		}
 		// Idempotence: a final round of both must remain a no-op.
-		parent.discardRestoredCandidate(true)
+		parent.discardRestoredCandidate()
 		parent.Close()
 		if st := parent.State(); st != SessionClosed {
 			t.Fatalf("post-idempotence state %q, want %q", st, SessionClosed)

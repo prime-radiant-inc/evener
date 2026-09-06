@@ -461,7 +461,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// parent owns cleanup of that env (step 4), so a child's teardown never
 		// runs it; what a child owns is its scratch, retained for the handoff.
 		for _, sub := range subs {
-			teardownChildSession(budgetCtx, sub.sess, sub.ownsEnv, retainChildScratch)
+			teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
@@ -631,14 +631,14 @@ func (s *Session) retainParkedWorktreeEnvironmentScratch() {
 }
 
 // discardRestoredCandidate tears down a restore candidate nothing ever adopted.
-// ownsEnv says whether the candidate's execution environment is one built FOR it
-// (a working-dir re-root and/or a per-delegate box) rather than the parent's own:
-// prepareSubagentEnvironment returns the parent's environment untouched when the
-// delegate needs neither, and a shared environment belongs to the live parent
-// still working in it. It is the same distinction close() makes before retaining
-// a child's scratch (subagent.ownsEnv), read here so an aborted candidate never
-// deletes a scratch dir out from under its parent.
-func (s *Session) discardRestoredCandidate(ownsEnv bool) {
+// The candidate's own ownsEnv says whether its execution environment is one
+// built FOR it (a working-dir re-root and/or a per-delegate box) rather than
+// the parent's own: prepareSubagentEnvironment returns the parent's environment
+// untouched when the delegate needs neither, and a shared environment belongs
+// to the live parent still working in it. It is the same distinction close()
+// makes before retaining a child's scratch, read here so an aborted candidate
+// never deletes a scratch dir out from under its parent.
+func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -659,7 +659,7 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 			_ = s.jobManager.store.Close()
 		}
 		for _, sub := range subs {
-			sub.sess.discardRestoredCandidate(sub.ownsEnv)
+			sub.sess.discardRestoredCandidate()
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
@@ -669,7 +669,7 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		releaseOwnedChildEnvironment(s.currentEnv(), ownsEnv, disposeChildScratch)
+		releaseOwnedChildEnvironment(s.currentEnv(), s.ownsEnv, disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

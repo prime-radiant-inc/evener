@@ -109,7 +109,7 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 		t.Fatal("restoreIdle unexpectedly reused a resident child")
 	}
 	defer func() {
-		sub.sess.discardRestoredCandidate(sub.ownsEnv)
+		sub.sess.discardRestoredCandidate()
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 	}()
 
@@ -2250,7 +2250,7 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	if !restored {
 		t.Fatal("cold idle delegate was reported retained")
 	}
-	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
+	defer sub.sess.discardRestoredCandidate()
 	if sub.sess.cfg.MaxToolRoundsPerInput != 17 || sub.sess.cfg.ReasoningEffort != "high" {
 		t.Fatalf("restored config = rounds:%d effort:%q", sub.sess.cfg.MaxToolRoundsPerInput, sub.sess.cfg.ReasoningEffort)
 	}
@@ -2293,7 +2293,7 @@ func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.
 	if !restored {
 		t.Fatal("cold idle delegate was reported retained")
 	}
-	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
+	defer sub.sess.discardRestoredCandidate()
 
 	cancelOwner()
 	select {
@@ -2326,7 +2326,7 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 	if err != nil {
 		t.Fatalf("restoreIdle: %v", err)
 	}
-	defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
+	defer sub.sess.discardRestoredCandidate()
 	if got := sub.sess.getOrCreateTaskStore(); got != want {
 		t.Fatalf("shared TaskStore pointer = %p, want exact root pointer %p", got, want)
 	}
