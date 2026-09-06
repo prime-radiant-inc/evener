@@ -88,3 +88,11 @@ Using the Release build at 7df17fd7b, created a fresh isolated session with NATI
 The screenshot exposed a visual omission: question tabs had selected accessibility state but no visible selected indicator. An accent underline is added in source after this capture. The underline has not yet had native visual verification. This test covers a two-question batch and relaunch, not late arrivals during sending or interrupted storage.
 
 ![Restored second question and note before sending](assets/multi-question-restored-ios.png)
+
+## Saved hubs versus server settings
+
+Current web panes/settings/sections/hub.tsx displays read-only listen address, run directory and spawn timeout from settingsOverview. It is not a saved-connection editor. Native connection profiles are explicitly required by Jesse's multi-hub goal and must be audited as a native connection concern, separately from parity with server settings.
+
+Native HubProfiles currently supports secure storage and replacement by ID, while ConnectionProvider always generates a new ID on save and HubsScreen only exposes add/open/remove. Editing is therefore not implemented. Address changes must not silently reuse another server's draft identity or credentials; this requires explicit identity handling when the editor is added. Server runtime settings remain a separate missing native surface.
+
+Android Release at 7e9dd7070 built successfully (359 tasks, 12 executed); installation is still pending in the existing emulator. No latest-build Android restoration result is claimed yet.
