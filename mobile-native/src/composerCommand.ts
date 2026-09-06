@@ -15,7 +15,18 @@ import type {
 } from "../../mobile/src/services/conversation";
 import type { DraftDocument } from "./draftDocument";
 
+const localCommands = [
+  { id: "tasks", capability: null, label: "Tasks" },
+  { id: "status", capability: null, label: "Status" },
+  { id: "copy-id", capability: null, label: "Copy ID" },
+] as const;
+export type LocalComposerCommand = (typeof localCommands)[number]["id"];
+export function isLocalComposerCommand(id: string): id is LocalComposerCommand {
+  return localCommands.some((command) => command.id === id);
+}
+
 const commands = [
+  ...localCommands,
   { id: "goal", args: true, capability: "goal", label: "Set goal" },
   { id: "compact", capability: "compact", label: "Compact" },
   { id: "shutdown", capability: "shutdown", label: "Shut down" },
@@ -31,6 +42,7 @@ export class CommandArgumentError extends Error {}
 
 interface CommandContext {
   isCurrent(): boolean;
+  local(command: LocalComposerCommand): Promise<void>;
   turn(): { activeTurnId?: string; queue: { revision: number } } | null;
   reasoning(): Pick<
     MobileConversation,
@@ -59,11 +71,24 @@ export async function submitComposerCommand(
     ConversationModelCatalog,
   context: CommandContext,
 ): Promise<(typeof commands)[number]["id"] | null> {
-  const record = document.getSnapshot().record;
+  const snapshot = document.getSnapshot();
+  const record = snapshot.record;
+  if (
+    !snapshot.loaded ||
+    snapshot.error ||
+    snapshot.submitting ||
+    record.unconfirmed !== null
+  )
+    return null;
   const match = composerCommand(record.draft, record.images?.length);
   if (!match || !context.isCurrent()) return null;
   let operation: () => Promise<unknown>;
   const id = match.command.id;
+  if (isLocalComposerCommand(id)) {
+    await context.local(id);
+    if (document.getSnapshot().record === record) document.edit("");
+    return id;
+  }
   const invalid = () =>
     new CommandArgumentError(
       match.argsText.trim()
