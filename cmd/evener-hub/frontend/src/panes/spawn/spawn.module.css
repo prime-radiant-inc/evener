@@ -37,11 +37,31 @@
 }
 
 /* The card's own model slot: the session composer's ModelSwitchTrigger at
- * every width. min-width: 0 so a long qualified provider/model id ellipsizes
- * inside the row instead of pushing the effort trigger and Start off it. */
+ * every width. The slot is a flex item that must shrink (flex + min-width: 0
+ * + overflow: hidden); the trigger's own nested spans - the Popover wrapper
+ * or the mobile triggerWrapper, then the button, then the value - each keep
+ * their min-content width by default, so they are pierced here with :global
+ * (the same piercing statusrow.module.css uses for the status row's own
+ * trigger) and given the same shrink contract, down to the value span whose
+ * own ellipsis turns a ~100-char qualified id into "…" instead of pushing
+ * effort and Start out of the card. */
 .modelTrigger {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+}
+
+.modelTrigger > :global(span) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.modelTrigger :global(button) {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 /* Narrow pane: the model label is the first thing to yield, exactly like the
@@ -155,8 +175,15 @@
   border: none;
   background: transparent;
   opacity: 0;
-  cursor: pointer;
+  /* Inherit the wrapper's cursor: the overlay is the topmost hittable layer,
+   * so its own `pointer` would win over the wrapper's `not-allowed` on a
+   * disabled control and promise an interaction the select refuses. */
+  cursor: inherit;
   font: inherit;
+}
+
+.effortTrigger:not([data-disabled="true"]) .effortSelect {
+  cursor: pointer;
 }
 
 /* Standard visually-hidden recipe (see statusrow.module.css's own copy of

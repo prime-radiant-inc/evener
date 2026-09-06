@@ -78,6 +78,14 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     // before staging settles the fonts of a page that has not asked for them
     // yet and measureSpawn still runs mid-swap.
     await waitForFonts(send);
+    // Pick the harness's long-id model through the real picker before
+    // measuring: the card assertions below verify the trigger ellipsizes it
+    // inside the row instead of pushing effort/Start out.
+    try {
+      await evaluate(send, "window.selectLongSpawnModel()");
+    } catch (error) {
+      throw new Error(`selecting the long model at ${width}px failed: ${error.message}`);
+    }
     await evaluate(send, "window.openSpawnPlugins(); new Promise((resolve) => requestAnimationFrame(resolve))");
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
@@ -160,6 +168,25 @@ function assertResult(result, expectedWidth) {
       failures.push(
         `the card's model trigger (${describeBox(card.modelTrigger)}) is outside the prompt card (${describeBox(card.card)})`,
       );
+    }
+    // Long-model case (selectLongSpawnModel above): the ~100-char qualified
+    // id must stay inside the card at every width. Where the card itself is
+    // narrower than the id (the 320/390 panes - at 899 the form goes full
+    // width so the id genuinely fits), the value must ellipsize
+    // (scrollWidth past clientWidth) rather than push effort/Start out.
+    if (card.modelValue === null) {
+      failures.push(`the card's model value is not in the measured tree at ${expectedWidth}px`);
+    } else {
+      if (!contains(card.card, card.modelValue)) {
+        failures.push(
+          `the card's model value (${describeBox(card.modelValue)}) is outside the prompt card (${describeBox(card.card)})`,
+        );
+      }
+      if (expectedWidth <= 390 && card.modelValue.scrollWidth <= card.modelValue.clientWidth + 1) {
+        failures.push(
+          `the long model id is not ellipsizing at ${expectedWidth}px (scroll ${card.modelValue.scrollWidth}px vs client ${card.modelValue.clientWidth}px) - the fixture may not have applied`,
+        );
+      }
     }
     if (card.effort === null) {
       failures.push(`the card's effort control is not in the measured tree at ${expectedWidth}px`);

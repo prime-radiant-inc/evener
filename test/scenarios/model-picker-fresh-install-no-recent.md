@@ -25,9 +25,11 @@ it worth an e2e card at all:
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
 / `[data-settings-model-picker]` / `.chip-picker-provider` selectors this
 card used are all gone with the vanilla frontend (`660376f78`). Both
-pickers are now the **same** shared ARIA combobox widget
-(`widgets/modelCatalog/`): `panes/spawn/ModelField.tsx#ModelField` and
-`panes/settings/sections/launchShared/fields.tsx#ScalarField` render the same
+pickers are now the **same** shared trigger + catalog widget
+(`panes/session/chrome/ModelSwitchTrigger.tsx#ModelSwitchTrigger` over
+`widgets/modelCatalog/`): `panes/spawn/Spawn.tsx` renders that trigger in the
+prompt card's own control row (`[data-testid="spawn-model-trigger"]`), and
+`panes/settings/sections/launchShared/fields.tsx#ScalarField` renders the same
 `<ModelCatalog>`, differing only in which `loadCatalog` they inject. So
 there is one markup to assert against, not two.
 

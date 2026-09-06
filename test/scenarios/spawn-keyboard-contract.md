@@ -11,8 +11,8 @@ independently falsifiable:
   (`widgets/modelCatalog/index.tsx:204-208`), with an exactly-typed id
   or display name as the fallback answer when nothing is highlighted
   (`:209-216`). Picking closes the popover and reports the model up
-  through `ModelField` → `handleModelChange`
-  (`panes/spawn/Spawn.tsx#handleModelChange`).
+  through `handleModelPickEntry` → `handleModelChange`
+  (`panes/spawn/Spawn.tsx#handleModelPickEntry`).
 - **Bare Enter in the prompt textarea inserts a newline.**
   `handlePromptKeyDown` returns without touching an Enter that carries
   no modifier (`Spawn.tsx#handlePromptKeyDown`), so the browser's own default
@@ -104,13 +104,12 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    `archived` tier through its `remaining` pages with `project_page`. Collect
    the refs from every response and save the resulting set for comparison
    after the picker interaction.
-4. Open the picker and pick with Enter. The desktop Model field's trigger
-   is the only VISIBLE button on the page carrying the screen-reader
-   text `— change model`; assert that before clicking it. The filter on
-   `offsetParent` is load bearing: the prompt card carries a second such
-   trigger for the phone (`[data-testid="spawn-model-trigger"]`), which
-   at this viewport is inside a `display: none` wrapper and so has no
-   `offsetParent` at all, and the mobile config block
+4. Open the picker and pick with Enter. The card's model trigger
+   (`[data-testid="spawn-model-trigger"]`) is the VISIBLE button on the
+   page carrying the screen-reader text `— change model`; assert that
+   before clicking it. The filter on `offsetParent` is load bearing:
+   Advanced options can carry a second such trigger when the schema
+   exposes a model picker, and the mobile config block
    (`[data-testid="spawn-mobile-config"]`) is hidden the same way:
    ```javascript
    (() => {
@@ -268,17 +267,14 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
   to exercise that composition, it is a different scenario, and
   `dirListSetting.test.tsx`'s "Enter on a directory row descends without
   submitting the add row" is its unit-level precedent.
-- **Two `— change model` buttons live in the DOM, and only one of them
-  is on screen.** The desktop Model field renders a `ModelCatalog`
-  trigger (`panes/spawn/ModelField.tsx#ModelField`, inside
-  `[data-testid="spawn-desktop-model"]`); the prompt card renders a
-  `ModelSwitchTrigger` for the phone
-  (`[data-testid="spawn-model-trigger"]`), gated by a
-  `display: none` wrapper until the 899px breakpoint
-  (`panes/spawn/spawn.module.css`'s `.modelTrigger`). Both carry the
-  same screen-reader suffix and read the same model state, so a
-  name-only match at a desktop viewport picks whichever comes first in
-  the DOM — the hidden one. Filter on `offsetParent !== null`, as steps
-  4 and 5 do. The mobile settings list holds no model control at all
-  any more (issue #198 moved that job to the card), so its rows are not
-  a third match.
+- **One `— change model` button lives in the prompt card.** The card's
+  control row renders a `ModelSwitchTrigger`
+  (`panes/session/chrome/ModelSwitchTrigger.tsx#ModelSwitchTrigger`, inside
+  `[data-testid="spawn-model-slot"]`, value hook
+  `[data-testid="spawn-model-value"]`) at every width - the below-card
+  desktop field is gone (composer unification), so there is no second
+  trigger to disambiguate from. Advanced options can still carry its own
+  model picker when the schema exposes one, so a name-only match keeps
+  the `offsetParent !== null` filter, as steps 4 and 5 do. The mobile
+  settings list holds no model control at all any more (issue #198 moved
+  that job to the card), so its rows are not a match either.
