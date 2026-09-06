@@ -70,3 +70,13 @@ A native transport-boundary regression failed before the correction and now veri
 ## Active-question restoration
 
 The native sheet records its active question key in SQLite per hub/session and restores it only if that key still belongs to the pending set. Tab presses, Next question, and automatic advancement all save the position. A position-write failure retains the visible position and exposes a retry, separately from answer persistence. Hub removal clears saved positions. The real SQLite test covers close/reopen, changed pending sets, destination isolation, and hub removal. Native TypeScript and 110 tests pass; native relaunch verification of this addition remains open.
+
+## Native manual acceptance follow-up
+
+- iOS Release at 7df17fd7b built, installed and launched. In the real isolated session, the composer reasoning picker showed default selected, changed to high, then returned to default. The controller refreshed from the hub after each mutation and the composer reflected both values. The fallback ladder and explicit none branches have automated/current-web coverage but were not manually exercised in this session.
+- Android Release at 54774a4c4 created a fresh native session with prompt NATIVE-ASK-HARNESS Android web parity and Fake Test Model. The real harness emitted ask_user (call_fakellm_5). Verified the recommendation selected, ordinary composition hidden, one Send answers action, provider receipt of Focused, the resumed communicate response, and restoration of ordinary Message. This build includes batch ownership and per-question answer persistence, but predates the reasoning/default and active-question-position changes.
+- Before this Android check, the emulator displayed Process system isn't responding. Its event log identifies ANRs in system NotificationHistoryJobService, Google Play services, and the permission controller. Selecting Wait allowed the check to proceed; this is not a root-cause fix or proof of long-run emulator stability. No Evener-specific ANR was established by that record.
+
+![Android real harness answer and restored composer](assets/parity-question-android-answer.png)
+
+![iOS restored session-default reasoning](assets/reasoning-default-ios.png)
