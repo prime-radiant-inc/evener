@@ -80,3 +80,11 @@ The native sheet records its active question key in SQLite per hub/session and r
 ![Android real harness answer and restored composer](assets/parity-question-android-answer.png)
 
 ![iOS restored session-default reasoning](assets/reasoning-default-ios.png)
+
+## Multi-question iOS relaunch acceptance
+
+Using the Release build at 7df17fd7b, created a fresh isolated session with NATIVE-MULTI-ASK iOS restoration. A separate scripted provider on loopback port 58876 emitted one real ask_user call with two questions. Next question moved from Native harness to Review. Entered a note on Review, terminated and relaunched the app, reopened questions, and observed Review still active with the complete note and both recommended answers retained. One Send answers action produced a provider-received reply with both numbered answers and the note, then restored ordinary composition.
+
+The screenshot exposed a visual omission: question tabs had selected accessibility state but no visible selected indicator. An accent underline is added in source after this capture. The underline has not yet had native visual verification. This test covers a two-question batch and relaunch, not late arrivals during sending or interrupted storage.
+
+![Restored second question and note before sending](assets/multi-question-restored-ios.png)

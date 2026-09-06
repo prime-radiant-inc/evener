@@ -200,7 +200,13 @@ export function QuestionSheet({
                     accessibilityRole="tab"
                     accessibilityState={{ selected: index === activeIndex }}
                     onPress={() => setActiveIndex(index)}
-                    style={{ padding: 12, minHeight: 48 }}
+                    style={{
+                      padding: 12,
+                      minHeight: 48,
+                      borderBottomWidth: 2,
+                      borderBottomColor:
+                        index === activeIndex ? colors.accent : "transparent",
+                    }}
                   >
                     <Copy>{`${index + 1}. ${question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
                   </Pressable>
