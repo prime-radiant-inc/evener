@@ -330,6 +330,10 @@ type testConfig struct {
 	// subagentBeforeSettlement observes the final unlocked boundary before a
 	// stable generation enters controller settlement.
 	subagentBeforeSettlement func(*subagent)
+	// delegateAttentionStartCommitted observes the start hand-off: the attention
+	// generation is committed and its run goroutine does not exist yet. Tests use
+	// it to drive the child from a second goroutine at exactly that point.
+	delegateAttentionStartCommitted func(*subagent)
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

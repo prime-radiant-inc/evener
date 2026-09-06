@@ -155,6 +155,13 @@ gate, and the whole-campaign sweep re-runs after the pass.
 - **Test (red, `-race`):** launch a drive turn, concurrently call
   `startOrSteerSubagentRun`; assert no second `ProcessInputKind` starts
   concurrently (no data race).
+- **Amendment (2026-09-06):** `sub.driving` also covers a committed delegate
+  attention start until its run takes ownership: `driveStableDelegateAttention`
+  takes the claim with its drivability check and holds it across the durable
+  start, released under the same hold that sets `running`, so a wake-edge
+  drive landing in that window steers or waits instead of launching a second,
+  unleased turn on the child (the once-seen
+  `TestDelegateResourceSupervision_AttentionFollowUpRequiresReport` flake).
 
 ### F1 [USABILITY, text-only] — allowance>0 on a non-delegating role silently accepted
 - **Symptom:** `delegate(agent_type:"subagent", delegation_allowance:1)` is
