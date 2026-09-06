@@ -44,8 +44,14 @@ space and a clipped draft line. See [layout evidence and remaining checks](fullw
 
 The [initial implementation and native evidence](fullwidth-composer.md) show
 full-width drafts and controls-row submission. Android keyboard/send and iOS
-stop were exercised against the isolated runtime. Large text, iOS keyboard,
-running-control density and remaining acceptance states are still open.
+stop were exercised against the isolated runtime. Empty drafts and ordinary
+command layouts now have keyboard evidence on both platforms; Android 2.0
+running controls and draft-preserving Stop are verified.
+
+**Confirmed failure:** largest iOS text with `/project` pushes the draft and
+action behind the keyboard. The command header and overall composer lack an
+available-height boundary. Fix total composer overflow before accepting this
+issue; a capped result list alone is insufficient. See [state checks](fullwidth-composer.md#empty-command-and-running-state-checks).
 
 ### MOB-001 · P1 · Use screen space deliberately · In progress
 

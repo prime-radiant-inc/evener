@@ -103,3 +103,55 @@ long model labels, empty drafts and screen-reader interaction remain open.
 ![iOS corrected control rows with keyboard](assets/fullwidth-composer/ios-large-controls.png)
 
 ![Android corrected control rows with keyboard](assets/fullwidth-composer/android-large-controls.png)
+
+## Empty, command and running-state checks
+
+Manual checks on the installed 447ed65f8 Release apps:
+
+- Empty iOS and Android drafts have full-width inputs and disabled Send on the
+  controls row, with both real keyboards visible.
+- `/project` at ordinary sizes places Show in project on the controls row on
+  both platforms. Suggestions are insertion-only; the command action was not
+  invoked. The model label truncates more to accommodate the longer action.
+- Android font scale 2.0 keeps `/project`, model/reasoning, attachment and its
+  action visible above the real keyboard.
+- iOS largest accessibility text **fails** with `/project`: the command header
+  wraps into several tall lines, the results and footer extend behind the
+  keyboard, and neither the draft nor its action remains visibly reachable.
+  Dismiss is reachable and removes the suggestions, but that recovery does not
+  make the state acceptable.
+- Android at 2.0 submitted COMPOSER_RUNNING_ACCESSIBILITY to the owned isolated
+  SecondHub session. Steer, Stop and Queue appeared together below settings.
+  The new draft `Keep this draft while the turn is running.` survived Stop,
+  which restored Send. This exercised the real runtime and scripted provider.
+  iOS received the running state while retaining its `/project` draft; no claim
+  of iOS running-control visual acceptance is made.
+
+The iOS failure has two unbounded regions: CommandCompletion caps only the
+results FlatList at 160 points, leaving its wrapping title/Dismiss header
+outside that limit, and the enclosing composer has no total available-height
+constraint or overflow-scrolling path. Fixing the header alone is insufficient
+for arbitrary large-text command actions, running controls and draft heights.
+The next correction must allocate the whole keyboard-visible area and keep
+editing, dismissal and submission reachable without reducing requested fonts.
+
+The iOS test tool's replaceExisting option inserted at the caret in this run.
+Readback caught it. The accidental character was removed, and native AX value
+clearing produced the verified empty state before `/project` was entered.
+Simulator text settings were restored to iOS large and Android 1.0. iOS ends
+with the unsent `/project` draft and suggestions dismissed; Android retains the
+newer draft. No production sessions were changed.
+
+![iOS empty draft](assets/fullwidth-composer/empty-ios.png)
+
+![Android empty draft](assets/fullwidth-composer/empty-android.png)
+
+![iOS command at ordinary size](assets/fullwidth-composer/command-ios.png)
+
+![Android command at ordinary size](assets/fullwidth-composer/command-android.png)
+
+![iOS largest-text command overflow failure](assets/fullwidth-composer/command-ios-large.png)
+
+![Android large-text command](assets/fullwidth-composer/command-android-large.png)
+
+![Android large-text running controls](assets/fullwidth-composer/running-android-large.png)
