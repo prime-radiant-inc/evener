@@ -1465,7 +1465,7 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 		if laneFenced {
 			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+isolation.worktreePath)
 		}
-		isolation.cleanup(s, reservation.delegateID)
+		isolation.cleanupUnderAdmission(s, reservation.delegateID)
 	}
 	if workingDir != "" {
 		// Cutting the lane forks git on the PARENT's environment, whose process
@@ -1526,7 +1526,38 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 	)
 }
 
+// cleanup is for a caller past prepareIsolation's own admitted span: the
+// CommitStart failure, failCommittedStart's arms, and failAdoptedStart all
+// reach here after prepareIsolation has already returned, undoing a lane it
+// already handed back to them. Its rollback forks git on the PARENT session's
+// environment, whose process table a close reaps, exactly the hazard
+// prepareIsolation's own rollback is admitted against — so this takes an
+// admission of its own before running cleanupUnderAdmission, the same shape
+// worktreeCreate's rollback and the switch-target unlock already use for it.
+//
+// It is BEST-EFFORT, the ROLLBACK case documented on beginEnvWork
+// (session_lifecycle.go): a refusal means the close is already past its join,
+// and an undo the session owes is better run unfenced than not run at all.
+//
+// The create's admission is not simply held across construction to cover
+// this instead: failCommittedStart's retain-candidate arm
+// (retainFailedStartCandidate) never reaches a cleanup, so an admission held
+// that long would leak and stall every close for a full budget.
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
+	if isolation.worktreePath != "" {
+		admission, fenced := s.beginEnvWork("delegate lane rollback for " + isolation.worktreePath)
+		if fenced {
+			defer s.endEnvWork(admission)
+		}
+	}
+	isolation.cleanupUnderAdmission(s, delegateID)
+}
+
+// cleanupUnderAdmission is cleanup's body, for a caller that already holds
+// the admission covering the lane's git — prepareIsolation's own rollback,
+// which has already relabelled the create's admission for the undo it is
+// about to run and must not take a second one.
+func (isolation delegateIsolation) cleanupUnderAdmission(s *Session, delegateID string) {
 	if isolation.ownsFreshEnv {
 		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
 		// belongs to this isolation step), so this is the only rollback for the
