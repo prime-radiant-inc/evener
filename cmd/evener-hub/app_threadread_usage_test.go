@@ -57,6 +57,11 @@ func seedPastSessionWithUsage(t testing.TB, divergenceTurn int, usages []llm.Usa
 	// one fsync per Append (same reason seedBoundedPastThread does).
 	w.SyncInterval = time.Hour
 	for _, u := range usages {
+		// One logical turn per usage: a user input opens the turn and the
+		// assistant reply (carrying the usage) continues it.
+		if err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("in")}); err != nil {
+			t.Fatal(err)
+		}
 		if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("saved turn"), Usage: u}); err != nil {
 			t.Fatal(err)
 		}
@@ -113,11 +118,14 @@ func TestPastThreadRead_DerivesSessionUsageFromFullTranscriptWhenMetaHasNone(t *
 // verbatim copy of the parent's prefix, so summing the whole file would charge
 // the child for spend it never made. Only the post-divergence span counts.
 func TestPastThreadRead_ForkUsageExcludesTheInheritedParentPrefix(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, 3, []llm.Usage{
-		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}, // parent's, entry 1
-		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200}, // parent's, entry 2
-		{InputTokens: 4000, OutputTokens: 400, TotalTokens: 4400}, // the child's own, entry 3
-		{InputTokens: 5000, OutputTokens: 500, TotalTokens: 5500}, // the child's own, entry 4
+	// Each usage is one logical turn of two entries (user + assistant), so
+	// the parent's two usages occupy entries 1-4 and the child's own history
+	// starts at entry 5.
+	cfg, entry := seedPastSessionWithUsage(t, 5, []llm.Usage{
+		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}, // parent's
+		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200}, // parent's
+		{InputTokens: 4000, OutputTokens: 400, TotalTokens: 4400}, // the child's own
+		{InputTokens: 5000, OutputTokens: 500, TotalTokens: 5500}, // the child's own
 	})
 
 	thread := readSeededThread(t, cfg, entry)
@@ -157,7 +165,7 @@ func TestPastThreadRead_PersistedCumulativeUsageWinsOverTheDerivedSum(t *testing
 // It has spent nothing, and the honest report for "nothing measured" is an
 // ABSENT total — never a zero that renders as a real "↑0 ↓0" or a "~$0.00".
 func TestPastThreadRead_UnopenedForkReportsAbsentUsageNotZero(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, 3, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 5, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200},
 	})
@@ -225,7 +233,7 @@ func TestPastThreadRead_DerivedUsageIsIndependentOfTheTurnWindow(t *testing.T) {
 	cfg, entry := seedPastSessionWithUsage(t, 0, usages)
 
 	windowed, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{
-		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 10,
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 10,
 	})
 	if !ok {
 		t.Fatal("past thread not found")

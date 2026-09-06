@@ -496,7 +496,7 @@ func TestThreadReadUnderTheCutReachesNoSession(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-		Ref: "local:th_1", Subscribe: true, IncludeTurns: true, TurnLimit: 40,
+		Ref: "local:th_1", Subscribe: true, IncludeTurns: true, ItemLimit: 40,
 	}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	reads := make(chan outcome, 1)
 	go func() {
 		response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
-			Ref: "local:th_1", Subscribe: true, IncludeTurns: true, TurnLimit: 40,
+			Ref: "local:th_1", Subscribe: true, IncludeTurns: true, ItemLimit: 40,
 		})
 		reads <- outcome{response: response, err: err}
 	}()

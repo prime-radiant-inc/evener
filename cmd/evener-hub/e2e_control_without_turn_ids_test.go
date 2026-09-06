@@ -727,10 +727,13 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var seen string
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				if turn.ID != turnID {
 					continue
 				}
@@ -746,7 +749,7 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("turn %s never reached status %q in the transcript; last status %q", turnID, status, seen)
+	t.Fatalf("turn %s never reached status %q in the transcript; last status %q (last poll error: %v)", turnID, status, seen, lastErr)
 }
 
 // awaitModelOutput waits for the named turn to carry model-produced output, so
@@ -760,10 +763,13 @@ func awaitTurnStatus(ctx context.Context, t *testing.T, client *appwire.Client, 
 func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client, ref, turnID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				if turn.ID != turnID {
 					continue
 				}
@@ -780,7 +786,7 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("turn %s produced no model output; anything asserted about it would hold for a turn the provider never ran", turnID)
+	t.Fatalf("turn %s produced no model output; anything asserted about it would hold for a turn the provider never ran (last poll error: %v)", turnID, lastErr)
 }
 
 // awaitModelEcho waits for text to come back as model output. Unlike a
@@ -790,10 +796,13 @@ func awaitModelOutput(ctx context.Context, t *testing.T, client *appwire.Client,
 func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				for _, item := range turn.Items {
 					if item.Type == "agentMessage" && strings.Contains(item.Text, text) {
 						return
@@ -807,7 +816,7 @@ func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, r
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("%q never came back as model output: the steer was accepted and recorded, but nothing proves the model received it", text)
+	t.Fatalf("%q never came back as model output: the steer was accepted and recorded, but nothing proves the model received it (last poll error: %v)", text, lastErr)
 }
 
 // awaitSteeringItem waits for text to appear as a steering item in the durable
@@ -815,10 +824,13 @@ func awaitModelEcho(ctx context.Context, t *testing.T, client *appwire.Client, r
 func awaitSteeringItem(ctx context.Context, t *testing.T, client *appwire.Client, ref, text string) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		turns, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{Ref: ref, ItemsView: "full"})
-		if err == nil {
-			for _, turn := range turns.Data {
+		turns, err := readTranscriptTurns(ctx, client, ref, "full")
+		if err != nil {
+			lastErr = err
+		} else {
+			for _, turn := range turns {
 				for _, item := range turn.Items {
 					if item.Type == "steering" && strings.Contains(item.Text, text) {
 						return turn.ID
@@ -832,8 +844,39 @@ func awaitSteeringItem(ctx context.Context, t *testing.T, client *appwire.Client
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("%q never appeared as a steering item in the transcript: the steer was accepted but a user reading the session back never sees it", text)
+	t.Fatalf("%q never appeared as a steering item in the transcript: the steer was accepted but a user reading the session back never sees it (last poll error: %v)", text, lastErr)
 	return ""
+}
+
+// readTranscriptTurns starts each observation with the bounded v4 thread/read
+// item window. Older transcript items are reached only through the opaque
+// cursor returned by that read, so polling does not silently miss a target in
+// the history while still avoiding an unbounded initial response.
+func readTranscriptTurns(ctx context.Context, client *appwire.Client, ref, itemsView string) ([]appwire.Turn, error) {
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{
+		Ref:          ref,
+		IncludeTurns: true,
+		ItemsView:    itemsView,
+		ItemLimit:    appwire.TranscriptItemPageLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	turns := append([]appwire.Turn(nil), read.Thread.Turns...)
+	for cursor := read.OlderCursor; cursor != ""; {
+		page, err := clientRequest[appwire.ThreadTurnsListResponse](ctx, client, appwire.MethodThreadTurnsList, appwire.ThreadTurnsListParams{
+			Ref:       ref,
+			Cursor:    cursor,
+			ItemsView: itemsView,
+			ItemLimit: appwire.TranscriptItemPageLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, page.Data...)
+		cursor = page.NextCursor
+	}
+	return turns, nil
 }
 
 // requireConflict fails unless err is the daemon's Conflict carrying want,

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -67,16 +68,37 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	if !params.IncludeTurns || params.TurnLimit <= 0 {
-		thread, ok, err := pastThreadForRead(ctx, cfg, params)
-		if !ok {
-			return appwire.ThreadReadResponse{}, false, err
-		}
-		if err != nil {
-			return appwire.ThreadReadResponse{}, true, err
-		}
-		return windowedReadResponse(thread, params.TurnLimit), true, nil
+	return pastThreadItemReadResponse(ctx, cfg, params)
+}
+
+func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
+	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, true, err
 	}
+	entry, ok := pastEntryForRead(cfg, readParams)
+	if !ok {
+		return appwire.ThreadTurnsListResponse{}, false, nil
+	}
+	page, err := pastEntryPageItems(ctx, entry, params.Cursor, itemLimit)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, true, err
+	}
+	result := page.candidateResult()
+	packed, packErr := packThreadTurnsItemCandidates(result, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
+		thread = stampItemPageTurns(cfg, entry, thread)
+		response.Data = thread.Turns
+		return response, nil
+	}, itemLimit)
+	if packErr != nil {
+		return appwire.ThreadTurnsListResponse{}, true, packErr
+	}
+	return packed, true, nil
+}
+
+func pastThreadItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return appwire.ThreadReadResponse{}, false, nil
@@ -86,39 +108,88 @@ func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params a
 		return appwire.ThreadReadResponse{}, true, err
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
-	var olderCursor string
-	thread.Turns, olderCursor, err = pastEntryLatestTurns(cfg, entry, params.TurnLimit)
+	if !params.IncludeTurns {
+		return appwire.ThreadReadResponse{Thread: stampDerivedTotals(cfg, entry, thread)}, true, nil
+	}
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = stampDerivedTotals(cfg, entry, reconcileAndEnrichPastThread(entry, thread))
-	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
+	page, err := pastEntryLatestItems(ctx, entry, itemLimit)
+	if err != nil {
+		return appwire.ThreadReadResponse{}, true, err
+	}
+	result := page.candidateResult()
+	packed, packErr := packThreadReadItemCandidates(result, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		thread.Turns = response.Thread.Turns
+		thread = stampItemPageTurns(cfg, entry, thread)
+		response.Thread = thread
+		return response, nil
+	}, itemLimit)
+	if packErr != nil {
+		return appwire.ThreadReadResponse{}, true, packErr
+	}
+	return packed, true, nil
 }
 
-func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool, error) {
-	readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
-	if params.Limit <= 0 {
-		entry, ok := pastEntryForRead(cfg, readParams)
-		if !ok {
-			return appwire.ThreadTurnsListResponse{}, false, nil
-		}
-		thread, err := pastEntryThread(ctx, cfg, entry, true)
-		if err != nil {
-			return appwire.ThreadTurnsListResponse{}, true, err
-		}
-		return appwire.PageTurns(thread.Turns, params.Cursor, params.Limit), true, nil
+type pastItemPage struct {
+	Candidates  []appitempaging.TranscriptItemCandidate
+	OlderCursor string
+	Identity    appitempaging.CursorIdentity
+	Exhausted   bool
+}
+
+func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
+	return transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{
+			Candidates:  p.Candidates,
+			OlderCursor: p.OlderCursor,
+		},
+		Identity:  p.Identity,
+		Exhausted: p.Exhausted,
 	}
-	entry, ok := pastEntryForRead(cfg, readParams)
-	if !ok {
-		return appwire.ThreadTurnsListResponse{}, false, nil
-	}
-	page, err := pastEntryPageTurns(cfg, entry, params.Cursor, params.Limit)
+}
+
+func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int) (pastItemPage, error) {
+	path := pastTranscriptPath(entry)
+	window, identity, err := pastTranscriptCache.LatestItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
+		Limit:     limit,
+	}, projectBoundedPastTranscriptTurn)
 	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, true, err
+		return pastItemPage{}, err
 	}
-	thread := reconcileAndEnrichPastThread(entry, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: page.Data})
-	page.Data = thread.Turns
-	return page, true, nil
+	return pastItemPage{
+		Candidates:  window.Candidates,
+		OlderCursor: window.OlderCursor,
+		Identity:    identity,
+		Exhausted:   window.OlderCursor == "",
+	}, nil
+}
+
+func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, cursor string, limit int) (pastItemPage, error) {
+	path := pastTranscriptPath(entry)
+	window, identity, err := pastTranscriptCache.PreviousItemWindowFromFileContext(ctx, path, transcriptJSONLMaxLineBytes, apptranscript.ItemWindowOptions{
+		ThreadRef: appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String(),
+		Cursor:    cursor,
+		Limit:     limit,
+	}, projectBoundedPastTranscriptTurn)
+	if err != nil {
+		return pastItemPage{}, err
+	}
+	return pastItemPage{
+		Candidates:  window.Candidates,
+		OlderCursor: window.OlderCursor,
+		Identity:    identity,
+		Exhausted:   window.OlderCursor == "",
+	}, nil
+}
+
+func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	stampSessionImageURLs(entry.Meta.ID, thread.Turns)
+	stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)
+	thread = reconcileAndEnrichPastThread(entry, thread)
+	return stampDerivedTotals(cfg, entry, thread)
 }
 
 func pastEntryForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (hubcore.PastEntry, bool) {
@@ -558,15 +629,6 @@ func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
 	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
 }
 
-// windowedReadResponse bounds a thread's turns to the latest TurnLimit for a
-// lazy initial load, setting OlderCursor when it truncates. TurnLimit <= 0
-// returns the full transcript (legacy behavior).
-func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadReadResponse {
-	turns, cursor := appwire.WindowTurns(thread.Turns, turnLimit)
-	thread.Turns = turns
-	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: cursor}
-}
-
 // pastTranscriptCache memoizes saved-transcript parsing by file identity. Past
 // transcripts are immutable, so lazy paging back through one (a fresh
 // thread/turns/list file read per page) reuses one parse instead of re-reading
@@ -663,14 +725,14 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
-	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
 	})
 	if err != nil {
 		return nil, err
 	}
 	stampSessionImageURLs(entry.Meta.ID, turns)
-	// TurnsFromFile only has the per-round usage persisted in the transcript;
+	// ItemTurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's instance and model, so the cost estimate
 	// is stamped here as a post-pass against the row those resolve to.
 	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
@@ -694,28 +756,6 @@ func decodeTranscriptTurn(raw json.RawMessage) (schema.Turn, bool) {
 		return schema.Turn{}, false
 	}
 	return entryRec.Turn, true
-}
-
-func pastEntryLatestTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
-	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	turns, cursor, err := pastTranscriptCache.LatestFromFile(path, transcriptJSONLMaxLineBytes, limit, projectBoundedPastTranscriptTurn)
-	if err != nil {
-		return nil, "", err
-	}
-	stampSessionImageURLs(entry.Meta.ID, turns)
-	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
-	return turns, cursor, nil
-}
-
-func pastEntryPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
-	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	page, err := pastTranscriptCache.PageFromFile(path, transcriptJSONLMaxLineBytes, cursor, limit, projectBoundedPastTranscriptTurn)
-	if err != nil {
-		return appwire.ThreadTurnsListResponse{}, err
-	}
-	stampSessionImageURLs(entry.Meta.ID, page.Turns)
-	stampPastTurnCosts(pastEntryCost(cfg, entry), page.Turns)
-	return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
 }
 
 func stampPastTurnCosts(cost *registry.Cost, turns []appwire.Turn) {

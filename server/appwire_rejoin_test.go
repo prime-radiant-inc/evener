@@ -392,7 +392,6 @@ func TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent(t *testing.T) {
 		Ref:          "local:th_1",
 		Subscribe:    true,
 		IncludeTurns: true,
-		TurnLimit:    40,
 	})
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
@@ -561,7 +560,6 @@ func TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription(t *testing.T)
 			Ref:          "local:th_1",
 			Subscribe:    true,
 			IncludeTurns: true,
-			TurnLimit:    40,
 		})
 		reads <- readOutcome{response: response, err: err}
 	}()
@@ -730,7 +728,6 @@ func TestReloadMidStreamResumesTheSameStream(t *testing.T) {
 			Subscribe:    true,
 			IncludeTurns: true,
 			ItemsView:    "full",
-			TurnLimit:    40,
 		})
 		reads <- outcome{response: response, err: err}
 	}()
@@ -788,7 +785,16 @@ func TestReloadMidStreamResumesTheSameStream(t *testing.T) {
 	}
 
 	uninterrupted := srv.appAllTurns("th_1")
-	if !reflect.DeepEqual(reloadedTurns, uninterrupted) {
-		t.Fatalf("reloaded state diverged from the never-reloaded snapshot\n reloaded: %+v\n   direct: %+v", reloadedTurns, uninterrupted)
+	// The v4 IncludeTurns wire contract always returns item fragments, while
+	// the uninterrupted in-memory snapshot retains complete turns. Normalize
+	// only that documented projection marker; DeepEqual preserves every other
+	// turn/item field (status, completeness, positions, timestamps, usage,
+	// errors, raw/image state, and future nested fields).
+	want := cloneAppTurns(uninterrupted)
+	for i := range want {
+		want[i].ItemsView = appwire.TurnItemsViewFragment
+	}
+	if !reflect.DeepEqual(reloadedTurns, want) {
+		t.Fatalf("reloaded state diverged from the never-reloaded snapshot\n reloaded: %+v\n   direct: %+v", reloadedTurns, want)
 	}
 }

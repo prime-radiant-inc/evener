@@ -482,44 +482,44 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	default:
 		t.Fatal("TurnInterrupt returned before the interrupted runner emitted TURN_ENDED")
 	}
-	turns, err := daemon.client.ThreadTurnsList(daemon.ctx, appwire.ThreadTurnsListParams{Ref: daemon.ref})
+	turns, err := daemon.client.ThreadRead(daemon.ctx, appwire.ThreadReadParams{Ref: daemon.ref, IncludeTurns: true})
 	if err != nil {
-		t.Fatalf("ThreadTurnsList: %v", err)
+		t.Fatalf("ThreadRead: %v", err)
 	}
 	startedCount := 0
 	startedStatus := ""
-	for _, turn := range turns.Data {
+	for _, turn := range turns.Thread.Turns {
 		if turn.ID == started.Turn.ID {
 			startedCount++
 			startedStatus = turn.Status
 		}
 	}
 	if startedCount != 1 || startedStatus != "inProgress" {
-		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Data)
+		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Thread.Turns)
 	}
 	stoppedBeforeProjection := daemon.mutationSnapshot(t)
 	interruptBeforeProjection := stoppedBeforeProjection.Journal[interrupt.ClientMutationID]
-	t.Logf("before SESSION_END projection: turns=%v interrupt=%#v fence=%s", waiterInterruptTurnStatuses(turns.Data), interruptBeforeProjection, stoppedBeforeProjection.InterruptFence)
+	t.Logf("before SESSION_END projection: turns=%v interrupt=%#v fence=%s", waiterInterruptTurnStatuses(turns.Thread.Turns), interruptBeforeProjection, stoppedBeforeProjection.InterruptFence)
 	if len(stoppedBeforeProjection.InterruptFence) != 0 || interruptBeforeProjection.OperationState != "terminal" ||
 		interruptBeforeProjection.ExecutionState != "interrupted" {
 		t.Fatalf("interrupt was not durably terminal before projection: %#v", stoppedBeforeProjection)
 	}
 	daemon.releaseInterruptedSessionEnd()
 	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.sessionEndProjected, "interrupted SESSION_END projection")
-	turns, err = daemon.client.ThreadTurnsList(daemon.ctx, appwire.ThreadTurnsListParams{Ref: daemon.ref})
+	turns, err = daemon.client.ThreadRead(daemon.ctx, appwire.ThreadReadParams{Ref: daemon.ref, IncludeTurns: true})
 	if err != nil {
-		t.Fatalf("ThreadTurnsList after SESSION_END projection: %v", err)
+		t.Fatalf("ThreadRead after SESSION_END projection: %v", err)
 	}
 	terminal := false
-	for _, turn := range turns.Data {
+	for _, turn := range turns.Thread.Turns {
 		if turn.ID == started.Turn.ID {
 			terminal = turn.Status == "interrupted"
 		}
 	}
 	if !terminal {
-		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Data)
+		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Thread.Turns)
 	}
-	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Data))
+	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Thread.Turns))
 	if err := daemon.client.TurnInterrupt(daemon.ctx, interrupt); err != nil {
 		t.Fatalf("replay terminal interrupt: %v", err)
 	}

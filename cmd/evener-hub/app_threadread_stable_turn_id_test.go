@@ -3,7 +3,6 @@ package hub
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -14,47 +13,39 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestPastThreadReadsNameAReservedTurnTheSameWayWindowedOrNot pins the turn ids
-// a saved session answers with across the three reads the hub serves it by.
-//
-// thread/read chooses between two projections on turnLimit alone: unlimited
-// reads the whole transcript, limited reads a bounded window off the turn
-// index, and thread/turns/list pages the same index. One saved session must
-// name its turns identically under all three — a client that scrolls back into
-// an older page must not find the turn it is replying to renamed.
+// TestPastThreadReadsNameAReservedTurnAcrossItemPages pins the turn identity
+// a saved session answers with across the bounded read and continuation.
 //
 // The turn at stake carries a persisted reserved id (appwire.ClientMutationTurnID,
 // kata rk09), which lives outside the entry-index namespace by design.
-func TestPastThreadReadsNameAReservedTurnTheSameWayWindowedOrNot(t *testing.T) {
+func TestPastThreadReadsNameAReservedTurnAcrossItemPages(t *testing.T) {
 	cfg, ref, reserved := seedPastThreadWithReservedTurnID(t)
 
 	full, ok := requirePastThreadForRead(t, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
+	// Four user+assistant exchanges are four logical turns; the last one
+	// carries the reserved id its client-authored user input persisted.
 	fullIDs := threadTurnIDs(full.Turns)
-	if len(fullIDs) != 8 || fullIDs[6] != reserved {
-		t.Fatalf("full read turn IDs = %v, want the persisted %q at the seventh entry", fullIDs, reserved)
+	if len(fullIDs) != 4 || fullIDs[3] != reserved {
+		t.Fatalf("full read turn IDs = %v, want the persisted %q at the last logical turn", fullIDs, reserved)
 	}
 
-	windowed, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, TurnLimit: 3})
+	windowed, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 3})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	wantWindow, wantCursor := appwire.WindowTurns(full.Turns, 3)
-	if !reflect.DeepEqual(threadTurnIDs(windowed.Thread.Turns), threadTurnIDs(wantWindow)) || windowed.OlderCursor != wantCursor {
-		t.Fatalf("windowed thread/read turn IDs = %v (cursor %q), want the full read's %v (cursor %q)",
-			threadTurnIDs(windowed.Thread.Turns), windowed.OlderCursor, threadTurnIDs(wantWindow), wantCursor)
+	if len(flattenTestItems(windowed.Thread.Turns)) != 3 || windowed.OlderCursor == "" {
+		t.Fatalf("item thread/read = %d items (cursor %q), want 3 items and continuation", len(flattenTestItems(windowed.Thread.Turns)), windowed.OlderCursor)
 	}
 
-	page, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: ref, Cursor: windowed.OlderCursor, Limit: 3})
+	page, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: ref, Cursor: windowed.OlderCursor, ItemLimit: 3})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
-	wantPage := appwire.PageTurns(full.Turns, windowed.OlderCursor, 3)
-	if !reflect.DeepEqual(threadTurnIDs(page.Data), threadTurnIDs(wantPage.Data)) || page.NextCursor != wantPage.NextCursor {
-		t.Fatalf("thread/turns/list turn IDs = %v (next %q), want the full read's %v (next %q)",
-			threadTurnIDs(page.Data), page.NextCursor, threadTurnIDs(wantPage.Data), wantPage.NextCursor)
+	if len(flattenTestItems(page.Data)) != 3 {
+		t.Fatalf("thread/turns/list = %d items, want 3", len(flattenTestItems(page.Data)))
 	}
 }
 

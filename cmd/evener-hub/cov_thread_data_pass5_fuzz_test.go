@@ -108,7 +108,6 @@ func FuzzThreadDataPass5(f *testing.F) {
 				t.Fatal("replay projected no items")
 			}
 			_ = appItemsFromReplayTurn("empty", 0, schema.Turn{}, nil)
-			_ = windowedReadResponse(appwire.Thread{Turns: []appwire.Turn{{ID: "one"}, {ID: "two"}}}, 1)
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
 				_, _, _ = pastThreadForRead(context.Background(), cfg, params)
 			}

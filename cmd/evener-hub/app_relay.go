@@ -54,10 +54,12 @@ type relayKeyState struct {
 }
 
 type hubThreadReadResult struct {
-	response appwire.ThreadReadResponse
-	handoff  appsource.RelayHandoff
-	release  func()
-	once     sync.Once
+	response          appwire.ThreadReadResponse
+	itemCandidates    appsource.ItemCandidateResult
+	hasItemCandidates bool
+	handoff           appsource.RelayHandoff
+	release           func()
+	once              sync.Once
 }
 
 func (r *hubThreadReadResult) finish(commit bool) bool {
@@ -1124,6 +1126,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		needsRelay := params.Subscribe || relayOnThreadRead(source)
 		relaySource, atomic := source.(appsource.RelaySessionSource)
 		if !atomic || !needsRelay {
+			if combined, ok := source.(appsource.CombinedItemReadSource); ok &&
+				params.IncludeTurns {
+				response, candidates, err := combined.ReadThreadWithItemCandidates(ctx, params)
+				return &hubThreadReadResult{
+					response: response, itemCandidates: candidates, hasItemCandidates: err == nil,
+				}, err
+			}
 			response, err := source.ReadThread(ctx, params)
 			return &hubThreadReadResult{response: response}, err
 		}

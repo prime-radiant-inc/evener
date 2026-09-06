@@ -109,6 +109,10 @@ type Server struct {
 	conns                          map[string]*Connection
 	afterUnregisterDelete          func()
 	beforeSubscriptionRegistration func()
+	// beforeHydrationCommit runs after a response removes its hydration
+	// finalizer and before that finalizer commits. Production leaves it nil;
+	// package tests use it to pin the response-visible activation boundary.
+	beforeHydrationCommit          func()
 	afterBroadcastConnectionLookup func(*Connection)
 }
 
@@ -459,6 +463,7 @@ type Connection struct {
 	initialized  bool
 	cancel       context.CancelFunc
 	responseMu   sync.Mutex
+	hydrationMu  sync.Mutex
 	hydrations   map[string]*hydrationResponseFinalizer
 }
 
@@ -511,12 +516,17 @@ func (c *Connection) enqueue(msg appwire.Message) bool {
 
 func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) error {
 	responseID, responseSucceeded := responseHydrationOutcome(msg)
+	c.hydrationMu.Lock()
 	c.sendMu.RLock()
 	if c.sendClosed {
 		finalizer := c.takeHydration(responseID)
 		c.sendMu.RUnlock()
 		if finalizer != nil {
 			finalizer.abort()
+			c.hydrationMu.Unlock()
+			finalizer.abortAfterWithdrawal()
+		} else {
+			c.hydrationMu.Unlock()
 		}
 		return context.Canceled
 	}
@@ -526,10 +536,19 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 		c.sendMu.RUnlock()
 		if finalizer != nil {
 			if responseSucceeded || finalizer.releaseOnErrorResponse {
+				if c.server.beforeHydrationCommit != nil {
+					c.server.beforeHydrationCommit()
+				}
 				finalizer.commit()
+				c.hydrationMu.Unlock()
+				finalizer.commitAfterRelease()
 			} else {
 				finalizer.abort()
+				c.hydrationMu.Unlock()
+				finalizer.abortAfterWithdrawal()
 			}
+		} else {
+			c.hydrationMu.Unlock()
 		}
 		return nil
 	case <-ctx.Done():
@@ -537,6 +556,10 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 		c.sendMu.RUnlock()
 		if finalizer != nil {
 			finalizer.abort()
+			c.hydrationMu.Unlock()
+			finalizer.abortAfterWithdrawal()
+		} else {
+			c.hydrationMu.Unlock()
 		}
 		return ctx.Err()
 	}
@@ -690,6 +713,9 @@ type hydrationResponseFinalizer struct {
 
 func (f *hydrationResponseFinalizer) commit() {
 	f.server.releaseHydration(f.conn, f.threadID, f.generation)
+}
+
+func (f *hydrationResponseFinalizer) commitAfterRelease() {
 	if f.handoff.Commit != nil {
 		f.handoff.Commit()
 	}
@@ -697,7 +723,6 @@ func (f *hydrationResponseFinalizer) commit() {
 
 func (f *hydrationResponseFinalizer) abort() {
 	f.server.withdrawHydration(f.conn, f.threadID, f.generation, f.rollback)
-	f.abortAfterWithdrawal()
 }
 
 func (f *hydrationResponseFinalizer) abortAfterWithdrawal() {
@@ -840,12 +865,14 @@ func captureSubscription(
 	if server.beforeSubscriptionRegistration != nil {
 		server.beforeSubscriptionRegistration()
 	}
+	conn.hydrationMu.Lock()
 	server.projectionMu.Lock()
 	server.deliveryMu.Lock()
 	var superseded []*hydrationResponseFinalizer
 	abortAfterUnlock := func() bool {
 		server.deliveryMu.Unlock()
 		server.projectionMu.Unlock()
+		conn.hydrationMu.Unlock()
 		for _, finalizer := range superseded {
 			finalizer.abortAfterWithdrawal()
 		}
@@ -903,6 +930,7 @@ func captureSubscription(
 	})
 	server.deliveryMu.Unlock()
 	server.projectionMu.Unlock()
+	conn.hydrationMu.Unlock()
 	for _, finalizer := range superseded {
 		finalizer.abortAfterWithdrawal()
 	}

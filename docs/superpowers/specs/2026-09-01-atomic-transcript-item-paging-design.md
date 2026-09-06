@@ -223,6 +223,17 @@ index construction. `PrefixTurnCount` is legacy turn metadata and must not be
 part of item cursors, item availability, or index validity. Missing, incomplete,
 corrupt, or oversized resume sidecars leave item paging fully operational.
 
+## Live snapshot and lifecycle rules
+
+The daemon stores positioned items and supports the same item-window request as
+the saved index. A started item receives its final `TranscriptKey`; completion,
+delta, reset, and tombstone events update that key in place. The later saved
+transcript projection must reproduce it.
+
+The live source may return more positioned candidates than the final page can
+hold. The hub enriches and packs them, requesting another candidate batch only
+when needed to fill the 40-item/1-MiB page without skipping positions.
+
 ## Migration
 
 The v4 flag day replaces the former compatibility rollout: generated types and
