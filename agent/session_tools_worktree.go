@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -229,10 +230,6 @@ type WorktreePruneResult struct {
 type worktreeGuard struct {
 	// state snapshots the current worktree occupancy (spec §7 state()).
 	state func() worktreeState
-	// controlEnv returns a local env rooted at the main repo root for lifecycle
-	// git commands (spec §7 controlEnv()). It errors when the session env is not
-	// a LocalExecutionEnvironment.
-	controlEnv func(mainRepoRoot string) (execenv.ExecutionEnvironment, error)
 	// enterWorktree swaps the session env into path, saving the prior env the
 	// first time (spec §7 enterWorktree()). managed records whether path is a
 	// evener-managed worktree, persisted via SessionMeta.WorktreeManaged (spec §7
@@ -242,8 +239,16 @@ type worktreeGuard struct {
 	enterWorktree func(path string, managed bool) error
 	// exitWorktree restores the saved pre-worktree env and clears it, returning
 	// the restored root and ok=false when no restore env was saved (spec §7
-	// exitWorktree()).
-	exitWorktree func() (restoredRoot string, ok bool)
+	// exitWorktree()), or an error when the swap was refused because the
+	// session is closing.
+	exitWorktree func() (restoredRoot string, ok bool, err error)
+	// beginOp admits a whole manage_worktree call on the session's close fence,
+	// labelled for a fence warning. ok is false when the session is already
+	// closing, in which case the operation runs unfenced — there is nothing left
+	// to fence it against. A true return MUST be paired with endOp.
+	beginOp func(label string) (envWorkID, bool)
+	// endOp releases an admission obtained from beginOp.
+	endOp func(envWorkID)
 	// liveWorkUnder reports live child/delegate/shell work rooted at or under
 	// path (spec §7 liveWorkUnder()); remove/prune use it.
 	liveWorkUnder func(path string) []string
@@ -316,6 +321,28 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 	_ = s.reg.Register(t)
 }
 
+// errWorktreeOpWhileClosing is what the manage_worktree dispatch returns when
+// the session began closing before the call could be admitted on the close
+// fence. It is the operation-level sibling of errSwapWhileClosing: an
+// unadmitted operation cannot be waited for, and the close may already be past
+// its join, so the only safe answer is to run nothing at all.
+var errWorktreeOpWhileClosing = errors.New("the session is closing; operation refused")
+
+// worktreeOpLabel names a manage_worktree call for a close-fence warning: the
+// operation, and the target it acts on when the arguments carry one. The
+// argument names are the schema's own (name for create/switch/remove, path for
+// switch-by-path and adopt, id for dispose), so an unrecognized shape degrades
+// to the bare operation rather than guessing.
+func worktreeOpLabel(operation string, args map[string]any) string {
+	label := "manage_worktree " + operation
+	for _, key := range []string{"name", "path", "id"} {
+		if target, ok := args[key].(string); ok && strings.TrimSpace(target) != "" {
+			return label + " " + strings.TrimSpace(target)
+		}
+	}
+	return label
+}
+
 // registerWorktreeTool registers the manage_worktree lifecycle tool (spec §2)
 // directly on the registry, mirroring registerGoalTools/registerTaskTools:
 // registry-only, not part of any provider profile's own tool definitions.
@@ -340,6 +367,35 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// created; see rootOnlyWorktreeTools).
 			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
 				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+			}
+			// Admit the WHOLE operation on the close fence, here, at the one
+			// entry every operation passes through (worktreeGuard is wired only
+			// from newToolDeps, and the sole direct call to an op function —
+			// remove's cascade into dispose — is itself inside a dispatched
+			// operation). Every arm runs git on the session's execution
+			// environment and most of them move lanes and locks around, so a
+			// close must wait for the operation rather than reap the process
+			// table under its git or unlock a lane it is still moving. Only some
+			// operations swap the environment, so the swap's own admission
+			// covers only those, and it does not begin until after an op's core
+			// has already run; this one spans the call. The swap and rollback
+			// admissions nest inside it and carry the finer labels a fence
+			// warning wants once the operation is past its core.
+			//
+			// A REFUSED admission refuses the operation. Every other admission
+			// in this file proceeds unfenced when it cannot be admitted, because
+			// each of those is an undo the session already owes and dropping it
+			// would leave residue; this one is work that has not started, and
+			// close may already be past its join, so running it would lock
+			// lanes and write sidecars against an environment being reaped and
+			// stores being closed. Refusing costs a tool call that a closing
+			// session was never going to complete anyway.
+			if deps.worktreeGuard.beginOp != nil {
+				admission, ok := deps.worktreeGuard.beginOp(worktreeOpLabel(operation, args))
+				if !ok {
+					return nil, fmt.Errorf("manage_worktree %s: %w", operation, errWorktreeOpWhileClosing)
+				}
+				defer deps.worktreeGuard.endOp(admission)
 			}
 			switch operation {
 			case "create":
@@ -605,6 +661,32 @@ func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.Executio
 	return cachingWorktreeRunner(gitRunner(ctx, env))
 }
 
+// resolveLaneMainRoot resolves the main repository root of the worktree at
+// lanePath through a probe clone rooted there, and disposes the probe: a
+// resolution that falls back to the git binary mints a scratch on it. Empty
+// when the lane is not part of a repository.
+func resolveLaneMainRoot(local *execenv.LocalExecutionEnvironment, lanePath string) string {
+	probe := local.WithWorkingDirectory(lanePath)
+	defer probe.DisposeUnadoptedScratch()
+	return execenv.ResolveMainRepoRoot(probe, lanePath)
+}
+
+// laneControlEnv builds the control environment a lane-scoped lifecycle step
+// runs its git through: a clone rooted at the lane's main repository root,
+// resolved through resolveLaneMainRoot. The clone is this step's alone, and
+// its first command mints a scratch and takes its lease, so done disposes it
+// and the caller runs it on the way out — every caller gets one by
+// construction. ok is false when the lane is not part of a repository. The
+// caller applies whatever control policy its step needs.
+func laneControlEnv(local *execenv.LocalExecutionEnvironment, lanePath string) (controlEnv *execenv.LocalExecutionEnvironment, mainRoot string, done func(), ok bool) {
+	mainRoot = resolveLaneMainRoot(local, lanePath)
+	if mainRoot == "" {
+		return nil, "", nil, false
+	}
+	controlEnv = local.WithWorkingDirectory(mainRoot)
+	return controlEnv, mainRoot, controlEnv.DisposeUnadoptedScratch, true
+}
+
 // worktreeControlEnv returns a local env rooted at mainRepoRoot for lifecycle
 // git commands (spec §2 "Git control environment", §7 controlEnv()). The
 // user-facing s.env may be rooted inside a worktree after create/switch, and
@@ -613,6 +695,11 @@ func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.Executio
 // env can target the main root without disturbing the confined tool env. Errors
 // when the session env is not a LocalExecutionEnvironment (spec §2: env
 // swapping and local git worktree management are unsupported otherwise).
+//
+// The control env is a clone built for one op, and its first git command
+// mints a scratch dir and takes its lease; nothing references the clone once
+// the op returns, so the op disposes it (worktreeControlRun's done, the create
+// core's Done) or each op leaves a directory with a held lease behind.
 func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvironment, error) {
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -740,41 +827,48 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 		return err
 	}
 
-	s.swapEnvAndRefresh(next)
-
-	s.mu.Lock()
-	if saveRestore {
-		s.worktreeRestoreEnv = prior
+	// The occupancy is recorded under the swap's own install lock hold: the
+	// parked environment must be visible to a close the moment next is.
+	record := func() {
+		if saveRestore {
+			s.worktreeRestoreEnv = prior
+		}
+		s.worktreeCurrentPath = path
+		s.worktreeCurrentManaged = managed
 	}
-	s.worktreeCurrentPath = path
-	s.worktreeCurrentManaged = managed
-	s.mu.Unlock()
+	if err := s.swapEnvAndRefresh(next, record); err != nil {
+		return err
+	}
+	if hook := s.cfg.testOnly.enterWorktreeAfterSwap; hook != nil {
+		hook()
+	}
 	return nil
 }
 
 // exitWorktree implements worktreeGuard.exitWorktree() (spec §7): restore the
 // saved pre-worktree env and clear it so the next enter saves afresh. It
 // returns ok=false when no restore env was saved (the session is not in a
-// worktree entered via the tool). This is the env-restore primitive only; the
+// worktree entered via the tool), and an error when the swap was refused
+// because the session is closing. This is the env-restore primitive only; the
 // operation-level `exit` semantics (own-marker unlock, restore-land idempotent
 // lock rule) land with Task 14 and layer on top of this.
-func (s *Session) exitWorktree() (string, bool) {
+func (s *Session) exitWorktree() (string, bool, error) {
 	s.mu.Lock()
 	restore := s.worktreeRestoreEnv
 	s.mu.Unlock()
 	if restore == nil {
-		return "", false
+		return "", false, nil
 	}
 
-	s.swapEnvAndRefresh(restore)
-
-	s.mu.Lock()
-	s.worktreeRestoreEnv = nil
-	s.worktreeCurrentPath = ""
-	s.worktreeCurrentManaged = false
-	root := restore.WorkingDirectory()
-	s.mu.Unlock()
-	return root, true
+	record := func() {
+		s.worktreeRestoreEnv = nil
+		s.worktreeCurrentPath = ""
+		s.worktreeCurrentManaged = false
+	}
+	if err := s.swapEnvAndRefresh(restore, record); err != nil {
+		return "", false, err
+	}
+	return restore.WorkingDirectory(), true, nil
 }
 
 // liveWorkUnder implements worktreeGuard.liveWorkUnder() (spec §7): live
@@ -989,8 +1083,15 @@ func metaDirForLane(lanePath string) string { return filepath.Join(filepath.Dir(
 // rather than four positional strings so callers can't transpose them.
 type worktreeCreateCoreResult struct {
 	Path, Branch, BaseSHA, MainRoot string
-	Project                         identifier.Project
-	Run                             worktree.GitRunner
+	// MetaDir is the project metadata dir the sidecar was written to. A nested
+	// name puts the lane under a subdirectory of the project dir while the
+	// sidecar stays here, so a rollback must not derive it from Path.
+	MetaDir string
+	Project identifier.Project
+	Run     worktree.GitRunner
+	// Done disposes the control environment Run is bound to (its scratch and
+	// lease); the caller runs it once it is finished with Run.
+	Done func()
 }
 
 // worktreeCreateCore is the shared git-level portion of managed-worktree
@@ -1032,6 +1133,14 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		return worktreeCreateCoreResult{}, cerr
 	}
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
+	// The control env's lifetime is the caller's on success (Done) and this
+	// function's on every failure below.
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			disposeUnadoptedScratch(controlEnv)
+		}
+	}()
 
 	// Step 3: worktree path under <worktreeRoot>/<Project.ID>/<name>.
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
@@ -1125,13 +1234,16 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: git worktree add failed: %w", errPrefix, addErr)
 	}
 
+	handedOff = true
 	return worktreeCreateCoreResult{
 		Path:     worktreePath,
 		Branch:   name,
 		BaseSHA:  baseSHA,
 		MainRoot: project.CanonicalPath,
+		MetaDir:  metaDir,
 		Project:  project,
 		Run:      run,
+		Done:     func() { disposeUnadoptedScratch(controlEnv) },
 	}, nil
 }
 
@@ -1151,6 +1263,44 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 	if err != nil {
 		return WorktreeResult{}, err
 	}
+	defer res.Done()
+	// Steps 1-6 added and locked the lane and wrote its sidecar for a session
+	// that, past any failure below, will never enter it; every such failure
+	// takes them back. The rollback runs on its own bounded control context,
+	// not the request's: the close that refuses the swap has already cancelled
+	// the request context res.Run is bound to, and a rollback through it would
+	// fail silently.
+	entered := false
+	// The rollback runs after the swap has already left the close fence, and its
+	// git forks on the process table a close reaps. Take an admission of its own
+	// so a close that refused the swap waits for the undo it caused instead of
+	// tearing the environment down mid-rollback. It has to be taken HERE, not
+	// where the rollback starts: between the swap releasing its own admission
+	// and this defer running there is a window a close fits through, and an
+	// admission asked for inside it would be refused. So the admission spans the
+	// whole operation and is named for it, and renames itself if a rollback does
+	// start — a create held mid-enter is not a rollback and must not read as one.
+	createAdmission, createFenced := s.beginEnvWork("create " + res.Path)
+	defer func() {
+		if createFenced {
+			defer s.endEnvWork(createAdmission)
+		}
+		if entered {
+			return
+		}
+		if createFenced {
+			s.relabelEnvWork(createAdmission, "create rollback for "+res.Path)
+		}
+		run, done, err := s.worktreeCleanupRun(res.MainRoot)
+		if err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, err)})
+			return
+		}
+		defer done()
+		if rbErr := s.rollbackFreshWorktree(run, res.Path, res.Branch, res.MetaDir, name); rbErr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("rolling back worktree %s after a failed create failed: %v", res.Path, rbErr)})
+		}
+	}()
 
 	// Step 7: creating a new worktree from inside a managed one is a LEAVE of
 	// the old one — unlock it via Decide (spec §3 step 7; §5 EvLeave).
@@ -1160,10 +1310,12 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 
 	// Step 8: enter the new worktree (env swap + refresh, saving the prior env).
 	// A sandbox re-root the host cannot satisfy fails closed here rather than
-	// entering the new worktree unconfined.
+	// entering the new worktree unconfined; a swap the session's close refused
+	// fails the same way. Both roll the lane back above.
 	if err := s.enterWorktree(res.Path, true); err != nil {
 		return WorktreeResult{}, err
 	}
+	entered = true
 
 	// Step 9: report the path, branch, base SHA, and main repo root.
 	return WorktreeResult{
@@ -1194,6 +1346,7 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 	if err != nil {
 		return "", "", "", "", identifier.Project{}, err
 	}
+	res.Done()
 	return res.Path, res.Branch, res.BaseSHA, res.MainRoot, res.Project, nil
 }
 
@@ -1210,27 +1363,49 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 	if project.ID == "" || project.CanonicalPath == "" {
 		return
 	}
-	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		return
-	}
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
 	if err != nil {
 		return
 	}
-	controlEnv := active.WithWorkingDirectory(project.CanonicalPath)
-	if controlEnv.SandboxReRootError() != nil {
-		return // best-effort: cannot build a confined control env for this lane
+	// Best-effort: a control env the host cannot confine or a control policy it
+	// cannot satisfy skips the rollback rather than running it unscoped.
+	run, done, err := s.worktreeCleanupRun(project.CanonicalPath)
+	if err != nil {
+		return
 	}
-	if err := s.useWorktreeControlPolicy(controlEnv, project.CanonicalPath); err != nil {
-		return // best-effort: skip when the control policy is unsatisfiable
+	defer done()
+	// Swallowed here, not at the core: this rollback runs on a delegate-create
+	// path whose own failure is the one worth reporting.
+	_ = s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
+}
+
+// rollbackFreshWorktree takes back a just-created, still-empty managed
+// worktree: its lock, the worktree itself, the branch cut for it, and its
+// metadata sidecar under metaDir. It is the git-level core
+// rollbackFreshDelegateWorktree wraps for an isolation lane and worktreeCreate
+// uses on every failure after its core added the lane.
+//
+// Every step is attempted regardless of what the ones before it did: a lock
+// that would not come off must not stop the worktree removal that makes the
+// lock moot. What it could not take back is JOINED AND RETURNED rather than
+// swallowed — the caller decides. A returned error never displaces the failure
+// that triggered the rollback (rollbackFreshDelegateWorktree's rationale); the
+// point is that residue this leaves is reported somewhere rather than silent.
+func (s *Session) rollbackFreshWorktree(run worktree.GitRunner, lanePath, branch, metaDir, sidecarName string) error {
+	var errs []error
+	if _, err := run("worktree", "unlock", lanePath); err != nil {
+		errs = append(errs, fmt.Errorf("unlocking the lane: %w", err))
 	}
-	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
-	_, _ = run("worktree", "unlock", lanePath)
-	_, _ = run("worktree", "remove", "--force", "--", lanePath)
-	_, _ = run("branch", "-D", delegateID)
-	metaDir := metaDirForProject(filepath.Join(worktreeRoot, project.ID))
-	_ = s.deleteWorktreeSidecar(metaDir, delegateID)
+	if _, err := run("worktree", "remove", "--force", "--", lanePath); err != nil {
+		errs = append(errs, fmt.Errorf("removing the lane: %w", err))
+	}
+	if _, err := run("branch", "-D", branch); err != nil {
+		errs = append(errs, fmt.Errorf("deleting branch %s: %w", branch, err))
+	}
+	if err := s.deleteWorktreeSidecar(metaDir, sidecarName); err != nil {
+		errs = append(errs, fmt.Errorf("deleting the sidecar: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 // currentStateDir reads s.stateDir under s.mu.
@@ -1340,12 +1515,29 @@ func lockStateFromPorcelain(porcelain []worktree.PorcelainEntry, path string) (l
 // worktreeControlRun builds a GitRunner over the control env rooted at
 // mainRepoRoot (spec §2 "Git control environment"), for lifecycle git calls
 // that must run outside the (possibly worktree-rooted) user-facing env.
-func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (worktree.GitRunner, error) {
+func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (worktree.GitRunner, func(), error) {
 	controlEnv, err := s.worktreeControlEnv(mainRepoRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.newWorktreeGitRunner(ctx, controlEnv), nil
+	return s.newWorktreeGitRunner(ctx, controlEnv), func() { disposeUnadoptedScratch(controlEnv) }, nil
+}
+
+// worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
+// LaneClosePassBudget — the budget the close disposal pass spends
+// (session_worktree_close.go); the close-time cleanup runners themselves are
+// deliberately unbudgeted. A rollback of a refused or failed op must not
+// inherit the request context, which the close that refused the swap has
+// already cancelled. The returned done cancels the context and disposes the
+// control environment; the caller runs it when the rollback is over.
+func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return run, func() { cancel(); dispose() }, nil
 }
 
 // relPathUnderManagedDir canonicalizes projectDir (spec §5: "canonicalize
@@ -1505,12 +1697,43 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 	// is load-bearing (spec §4 switch step 3): a lost race fails right here,
 	// with nothing yet changed, instead of leaving the session unlocked out of
 	// its old worktree.
+	entered := false
 	switch worktree.Decide(worktree.EvEnter, targetState) {
 	case worktree.ActLock:
 		marker := worktree.FormatSessionMarker(s.id)
 		if _, err := run("worktree", "lock", "--reason", marker, target); err != nil {
 			return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: locking the target: %w", err)
 		}
+		// The lock this switch took goes back on every failure from here on,
+		// through a control runner of its own: the close that refuses the swap
+		// has already cancelled the request context run is bound to. Like the
+		// create rollback, it runs after the swap has left the close fence and
+		// forks git on the process table a close reaps, so it takes an admission
+		// of its own, spanning the whole switch for the same reason the create's
+		// does and renamed the same way when the unlock starts; a lock left
+		// behind here strands the target under this session's marker, which
+		// prune skips.
+		switchAdmission, switchFenced := s.beginEnvWork("switch to " + target)
+		defer func() {
+			if switchFenced {
+				defer s.endEnvWork(switchAdmission)
+			}
+			if entered {
+				return
+			}
+			if switchFenced {
+				s.relabelEnvWork(switchAdmission, "switch target unlock for "+target)
+			}
+			unlock, done, err := s.worktreeCleanupRun(st.mainRepoRoot)
+			if err != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, err)})
+				return
+			}
+			defer done()
+			if _, unlockErr := unlock("worktree", "unlock", target); unlockErr != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking switch target %s after a failed switch failed: %v", target, unlockErr)})
+			}
+		}()
 	case worktree.ActAdopt:
 		// Already carries our own marker (crash-resume case); nothing to do.
 	default:
@@ -1522,10 +1745,18 @@ func (s *Session) worktreeEnterManagedWithPorcelain(st worktreeState, run worktr
 
 	// Steps 4-5: swap the env directly to the target (no intermediate
 	// restore step) and refresh envInfo + the prompt cache. A sandbox re-root the
-	// host cannot satisfy fails closed rather than switching in unconfined.
+	// host cannot satisfy fails closed rather than switching in unconfined; a
+	// swap the session's close refused fails the same way, and the target's
+	// lock goes back above. The lock the leave released is deliberately NOT
+	// restored: the refusal means the session is closing, and its close
+	// unlocks its own lane on the way out (unlockOwnManagedWorktreeAtClose) —
+	// a re-lock landing after that would strand the lane under a dead session's
+	// marker, which prune skips and remove refuses. Resume handles either
+	// state; worktreeCreate leaves its own leave alone for the same reason.
 	if err := s.enterWorktree(target, true); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	entered = true
 
 	// Step 6: report the path and branch.
 	return WorktreeSwitchResult{Path: target, Branch: branchAtRoot(run, target)}, nil
@@ -1548,10 +1779,11 @@ func (s *Session) worktreeSwitchByName(ctx context.Context, name string) (Worktr
 	if st.mainRepoRoot == "" {
 		return WorktreeSwitchResult{}, errors.New("manage_worktree switch: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	defer done()
 	path := filepath.Join(st.worktreeRoot, st.project.ID, filepath.FromSlash(name))
 	return s.worktreeEnterManaged(st, run, path)
 }
@@ -1581,10 +1813,11 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	}
 	canonicalArg = filepath.Clean(canonicalArg)
 
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	defer done()
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
 		return WorktreeSwitchResult{}, fmt.Errorf("manage_worktree switch: listing worktrees: %w", err)
@@ -1627,6 +1860,9 @@ func (s *Session) worktreeSwitchByPath(ctx context.Context, rawPath string) (Wor
 	if err := s.leaveCurrentWorktreeFromPorcelain(run, porcelain); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
+	// A refused swap has nothing of its own to give back here (no target
+	// lock), and the lock the leave released stays released — see the by-name
+	// choreography for why a re-lock would strand it.
 	if err := s.enterWorktree(matchedPath, false); err != nil {
 		return WorktreeSwitchResult{}, err
 	}
@@ -1670,10 +1906,11 @@ func (s *Session) worktreeAdopt(ctx context.Context, rawPath string) (WorktreeAd
 	}
 	canonicalArg = filepath.Clean(canonicalArg)
 
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeAdoptResult{}, err
 	}
+	defer done()
 	porcelain, err := readWorktreePorcelain(run)
 	if err != nil {
 		return WorktreeAdoptResult{}, fmt.Errorf("manage_worktree adopt: listing worktrees: %w", err)
@@ -1836,10 +2073,11 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 	var run worktree.GitRunner
 	var porcelain []worktree.PorcelainEntry
 	if st.mainRepoRoot != "" {
-		r, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+		r, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 		if err != nil {
 			return WorktreeExitResult{}, err
 		}
+		defer done()
 		run = r
 		porcelain, err = readWorktreePorcelain(run)
 		if err != nil {
@@ -1855,7 +2093,10 @@ func (s *Session) worktreeExit(ctx context.Context) (WorktreeExitResult, error) 
 
 	// Step 3: restore the saved env, clear it, recompute envInfo, refresh the
 	// prompt cache (spec §7 exitWorktree()).
-	restoredRoot, _ := s.exitWorktree()
+	restoredRoot, _, err := s.exitWorktree()
+	if err != nil {
+		return WorktreeExitResult{}, err
+	}
 	result := WorktreeExitResult{RestoredRoot: restoredRoot, LeftPath: leftPath}
 
 	// Step 4: if the restore root is itself a managed worktree (the session
@@ -1938,10 +2179,11 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	if !isUnderManagedDir(canonicalTarget, projectDir) {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: %s is not a managed worktree", name)
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreeRemoveResult{}, err
 	}
+	defer done()
 
 	// "Currently inside" is judged against the session's ACTIVE root, not the
 	// create/switch-tracked worktreeCurrentPath, so that a session launched
@@ -2095,7 +2337,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 				return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: unlocking before restore: %w", err)
 			}
 		}
-		restoredRoot, _ := s.exitWorktree()
+		restoredRoot, _, err := s.exitWorktree()
+		if err != nil {
+			return WorktreeRemoveResult{}, err
+		}
 		warning, err := s.applyRestoreLandRelockFromPorcelain(run, restoredRoot, projectDir, porcelain)
 		if err != nil {
 			return WorktreeRemoveResult{}, err
@@ -2432,10 +2677,11 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 	if st.mainRepoRoot == "" {
 		return nil, errors.New("manage_worktree list: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return nil, err
 	}
+	defer done()
 
 	// Step 1: `git worktree list --porcelain` — never `git worktree prune`.
 	out, err := run("worktree", "list", "--porcelain")
@@ -2543,10 +2789,11 @@ func (s *Session) worktreePrune(ctx context.Context) (WorktreePruneResult, error
 	if st.mainRepoRoot == "" {
 		return WorktreePruneResult{}, errors.New("manage_worktree prune: not in a git repository")
 	}
-	run, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return WorktreePruneResult{}, err
 	}
+	defer done()
 
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)

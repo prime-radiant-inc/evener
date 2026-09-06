@@ -5,11 +5,12 @@
 // leaving the browser to answer the questions jsdom cannot: which branch of
 // the breakpoint won, where the prompt card's control row and everything in it
 // actually landed, and whether any rendered box escaped the viewport.
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { ClientProvider } from "../shell/clientContext";
-import { Toast } from "../widgets";
+import { PathField, Toast } from "../widgets";
 import { isElementVisible } from "./guardVisibility";
 import "../styles/tokens.css";
 import "../styles/global.css";
@@ -25,9 +26,26 @@ fake.on("model/list", () => ({
     { provider: "openai", model: "gpt-5" },
   ],
 }));
-fake.on("evener/projects/recent", () => ({ data: [] }));
-fake.on("evener/paths/complete", () => ({ data: [] }));
-fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+const directoryRoot = "/home/test/projects/team/experiments/session-start-interface";
+const directoryTree = new Map<string, string[]>([
+  ["/home/test", [directoryRoot]],
+  [directoryRoot, Array.from({ length: 35 }, (_, i) => `${directoryRoot}/folder-${i}`)],
+]);
+for (const child of directoryTree.get(directoryRoot) ?? []) directoryTree.set(child, []);
+fake.on("evener/projects/recent", () => ({ data: [directoryRoot] }));
+fake.on("evener/paths/complete", ({ prefix }) => ({ data: directoryTree.get(prefix.replace(/\/+$/, "")) ?? [] }));
+fake.on("evener/path/validate", ({ path }) => {
+  const resolved = path === "~" ? "/home/test" : path;
+  return {
+    path: resolved,
+    valid: directoryTree.has(resolved),
+    error: directoryTree.has(resolved) ? undefined : "Directory not found",
+  };
+});
+fake.on("evener/dirs/create", ({ path }) => {
+  directoryTree.set(path, []);
+  return { path, created: true };
+});
 fake.on("evener/plugin/preview", () => ({
   plugins: [
     {
@@ -345,6 +363,95 @@ function openSpawnPlugins(): void {
   summary.click();
 }
 
+async function directoryElement<T extends HTMLElement>(selector: string): Promise<T> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const element = document.querySelector<T>(selector);
+    if (element && isElementVisible(element) && !(element instanceof HTMLButtonElement && element.disabled))
+      return element;
+    if (performance.now() > deadline) throw new Error(`Directory picker did not expose ${selector}`);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
+// Exercise the production picker with a long path and enough children to
+// scroll. Geometry must keep the confirmation visible even with a keyboard.
+async function exerciseDirectoryPicker() {
+  const mobile = window.innerWidth <= 899;
+  const trigger = await directoryElement<HTMLButtonElement>(
+    mobile ? '[data-label="Working directory"] button' : "#spawn-cwd",
+  );
+  trigger.focus();
+  trigger.click();
+  const recent = await directoryElement<HTMLButtonElement>(`button[aria-label="Open recent ${directoryRoot}"]`);
+  recent.click();
+  await directoryElement<HTMLButtonElement>(`button[aria-label="Open ${directoryRoot}/folder-34"]`);
+  const dialog = await directoryElement<HTMLElement>('[role="dialog"]');
+  const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => button.textContent === "Use this folder",
+  );
+  if (!confirm) throw new Error("Directory picker has no confirmation");
+  const failures: string[] = [];
+  function measure(label: string) {
+    const panel = dialog.getBoundingClientRect();
+    const action = confirm?.getBoundingClientRect();
+    const visibleBottom =
+      window.innerHeight -
+      (mobile ? Number.parseFloat(document.documentElement.style.getPropertyValue("--keyboard-inset")) || 0 : 0);
+    if (
+      !confirm ||
+      !isElementVisible(confirm) ||
+      !action ||
+      action.width <= 0 ||
+      action.height <= 0 ||
+      action.top < 0 ||
+      action.bottom > visibleBottom + 1
+    )
+      failures.push(`${label}: confirmation outside visible viewport`);
+    if (panel.left < -1 || panel.right > window.innerWidth + 1) failures.push(`${label}: dialog overflows viewport`);
+    for (const button of dialog.querySelectorAll("button")) {
+      const box = button.getBoundingClientRect();
+      if (box.width > 0 && (box.left < panel.left - 1 || box.right > panel.right + 1))
+        failures.push(`${label}: control overflows dialog`);
+    }
+  }
+  measure("browse");
+  if (mobile) {
+    document.documentElement.style.setProperty("--keyboard-inset", "300px");
+    measure("keyboard");
+  }
+  const newFolder = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => button.textContent === "New folder",
+  );
+  if (!newFolder) throw new Error("Directory picker has no creation action");
+  newFolder.click();
+  const nameInput = await directoryElement<HTMLInputElement>('input[autocomplete="off"]:not([aria-label="Path"])');
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!setter) throw new Error("Input value setter missing");
+  setter.call(nameInput, "a-new-directory-with-a-long-readable-name");
+  nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  nameInput.form?.requestSubmit();
+  const created = `${directoryRoot}/a-new-directory-with-a-long-readable-name`;
+  const deadline = performance.now() + 10_000;
+  // The path can render before the effect restores focus to a persistent control.
+  while (
+    document.querySelector<HTMLInputElement>('input[aria-label="Path"]')?.value !== created ||
+    confirm.disabled ||
+    !dialog.contains(document.activeElement)
+  ) {
+    if (performance.now() > deadline) throw new Error("Directory creation did not settle");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  measure("created");
+  confirm.click();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (!trigger.textContent?.includes(created)) failures.push("Confirmed path was not stored on the launch form");
+  if (document.activeElement !== trigger) failures.push("Confirmation did not restore trigger focus");
+  document.documentElement.style.removeProperty("--keyboard-inset");
+  return failures;
+}
+
 const settled = settleSpawn();
 
 declare global {
@@ -353,6 +460,8 @@ declare global {
     settledSpawn: Promise<true>;
     stageSpawnAttachments: typeof stageSpawnAttachments;
     openSpawnPlugins: typeof openSpawnPlugins;
+    exerciseDirectoryPicker: typeof exerciseDirectoryPicker;
+    exerciseDirectoryField: typeof exerciseDirectoryField;
   }
 }
 
@@ -360,3 +469,67 @@ window.measureSpawn = measureSpawn;
 window.settledSpawn = settled;
 window.stageSpawnAttachments = stageSpawnAttachments;
 window.openSpawnPlugins = openSpawnPlugins;
+
+window.exerciseDirectoryPicker = exerciseDirectoryPicker;
+
+async function exerciseDirectoryField() {
+  const path = `${directoryRoot}-a-very-long-final-directory-component`;
+  directoryTree.set(path, []);
+  function Field() {
+    const [value, setValue] = useState(path);
+    return (
+      <form style={{ margin: 16, width: "calc(100% - 32px)", maxWidth: 340 }}>
+        <PathField
+          id="shared-directory-field"
+          value={value}
+          onChange={setValue}
+          complete={async (prefix, includeFiles) =>
+            (await fake.request("evener/paths/complete", { prefix, includeFiles })).data
+          }
+          directory={{
+            validatePath: (path, kind) => fake.request("evener/path/validate", { path, kind }),
+            createDirectory: async (path) => {
+              await fake.request("evener/dirs/create", { path });
+            },
+          }}
+        />
+      </form>
+    );
+  }
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;inset:0;z-index:1;background:var(--surface-0)";
+  document.body.append(host);
+  const root = createRoot(host);
+  root.render(<Field />);
+  const failures: string[] = [];
+  try {
+    const trigger = await directoryElement<HTMLButtonElement>("#shared-directory-field");
+    const text = trigger.querySelector("span");
+    if (
+      !text ||
+      text.scrollWidth > text.clientWidth + 1 ||
+      text.getBoundingClientRect().bottom > trigger.getBoundingClientRect().bottom
+    )
+      failures.push("Shared directory field truncates or clips its path");
+    trigger.focus();
+    trigger.click();
+    const input = await directoryElement<HTMLInputElement>('input[aria-label="Path"]');
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    input.focus();
+    if (input.selectionStart !== 0 || input.selectionEnd !== input.value.length)
+      failures.push("First path focus did not select the directory");
+    const dialog = await directoryElement<HTMLElement>('[role="dialog"]');
+    const cancel = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Cancel",
+    );
+    cancel?.click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (document.activeElement !== trigger) failures.push("Directory field did not restore focus");
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+  return failures;
+}
+
+window.exerciseDirectoryField = exerciseDirectoryField;

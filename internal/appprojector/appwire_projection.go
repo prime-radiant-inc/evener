@@ -78,6 +78,7 @@ type AppEventProjector struct {
 	midSessionAnnouncementTurnID string
 	assistantItem                string
 	assistantText                string
+	messageStartByID             map[string]time.Time
 	provisionalCommunicateItems  map[string]string
 	communicateCommittedCalls    map[string]struct{}
 	communicatePhases            map[string]communicatePhase
@@ -215,7 +216,38 @@ func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
 
-func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
+func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotification) {
+	// Message lifecycles share one timing rule: keep the first visible event's
+	// timestamp through completion. One-shot messages use their own event time.
+	defer func() {
+		for i := range out {
+			if reset, ok := out[i].Params.(appwire.AgentMessageResetParams); ok {
+				delete(p.messageStartByID, reset.ItemID)
+			}
+			params, ok := out[i].Params.(appwire.ItemLifecycleParams)
+			if !ok || (params.Item.Type != "userMessage" && params.Item.Type != "agentMessage") {
+				continue
+			}
+			startedAt, exists := p.messageStartByID[params.Item.ID]
+			if !exists {
+				startedAt = event.Timestamp
+			}
+			if !startedAt.IsZero() {
+				ms := startedAt.UnixMilli()
+				params.Item.StartedAt = &ms
+			}
+			if out[i].Method == appwire.NotifyItemStarted {
+				if p.messageStartByID == nil {
+					p.messageStartByID = map[string]time.Time{}
+				}
+				p.messageStartByID[params.Item.ID] = startedAt
+			} else {
+				delete(p.messageStartByID, params.Item.ID)
+			}
+			out[i].Params = params
+		}
+	}()
+
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
@@ -929,6 +961,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		if data.ClientMutationID != "" {
 			params["clientMutationId"] = data.ClientMutationID
+		}
+		if !event.Timestamp.IsZero() {
+			params["startedAt"] = event.Timestamp.UnixMilli()
 		}
 		return []AppNotification{p.notification(appwire.NotifyEvenerSteeringInjected, params)}
 	case events.EventCompactionTurn:
@@ -1953,6 +1988,7 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 func (p *AppEventProjector) resetTurnScopedState() {
 	p.assistantItem = ""
 	p.assistantText = ""
+	p.messageStartByID = nil
 	p.reasoningItem = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}

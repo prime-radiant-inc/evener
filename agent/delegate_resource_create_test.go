@@ -507,7 +507,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 			root.cfg.ModelFallbacks[0] = "openai/mutated-fallback"
 			*root.cfg.EnableLoopDetection = true
 			root.mu.Unlock()
-			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir))
+			root.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(mutatedWorkDir), nil)
 			root.replaceActiveProvenance(mutatedProvenance)
 		})
 	}
@@ -1024,7 +1024,7 @@ func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeClean
 	// This boundary models process loss, not a graceful shutdown. A graceful
 	// Close now durably stops committed generations and therefore waits for the
 	// construction owner that a crash fixture intentionally does not retain.
-	root.discardRestoredCandidate()
+	root.discardRestoredCandidate(true)
 
 	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
 	if err != nil {

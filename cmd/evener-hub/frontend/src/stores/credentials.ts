@@ -108,8 +108,21 @@ function emptyListState(): ListState {
   return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
 }
 
-function applyList(resp: InstanceListResponse): void {
-  credentialsStore.setState(listState(resp));
+let requestVersion = 0;
+let requestedList = false;
+
+// Reads and writes share ordering: only the most recently started request
+// can replace the listing, even when responses arrive out of order.
+async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<void> {
+  const version = ++requestVersion;
+  try {
+    const response = await request();
+    if (version === requestVersion) {
+      credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    }
+  } finally {
+    if (version === requestVersion) credentialsStore.setState({ loading: false });
+  }
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
@@ -119,33 +132,37 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
 
   async fetch() {
     const client = requireClient();
+    requestedList = true;
+    const version = ++requestVersion;
     set({ loading: true, error: null });
     try {
       const resp = await client.request("evener/instance/list", {});
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ ...listState(resp), loading: false });
     } catch (err) {
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });
     }
   },
 
   async create(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/create", params));
+    await applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/edit", params));
+    await applyMutation(() => client.request("evener/instance/edit", params));
   },
 
   async remove(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/remove", { name }));
+    await applyMutation(() => client.request("evener/instance/remove", { name }));
   },
 
   async setDefault(name) {
     const client = requireClient();
-    applyList(await client.request("evener/instance/setDefault", { name }));
+    await applyMutation(() => client.request("evener/instance/setDefault", { name }));
   },
 
   async setApiKey(provider, value) {
@@ -222,6 +239,7 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
+let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleRefetch(): void {
@@ -243,10 +261,13 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/auth/updated") scheduleRefetch();
 }
 
-function attachNotifications(client: AppwireClientLike): void {
+function attachNotifications(client: AppwireClientLike | null): void {
   if (client === wiredClient) return; // already wired to this exact client
+  unsubscribeNotifications?.();
+  clearTimeout(refetchTimer);
+  refetchTimer = undefined;
   wiredClient = client;
-  client.onNotification(handleNotification);
+  unsubscribeNotifications = client?.onNotification(handleNotification);
 }
 
 // Watches connectionStore for the client becoming available and attaches
@@ -254,8 +275,27 @@ function attachNotifications(client: AppwireClientLike): void {
 // identical wiring for the full "why react to the store instead of reading
 // it once" rationale (a mount-order race between this module and AppShell's
 // own connect() effect).
-connectionStore.subscribe((state) => {
-  if (state.client) attachNotifications(state.client);
+connectionStore.subscribe((state, previous) => {
+  if (state.client !== previous.client || state.state !== previous.state) {
+    requestVersion += 1;
+    credentialsStore.setState({ loading: false });
+    clearTimeout(refetchTimer);
+    refetchTimer = undefined;
+  }
+  attachNotifications(state.client);
+  // Once a view has requested credentials, reconnects must restore its list
+  // even if its one-shot mount loader was interrupted.
+  if (
+    requestedList &&
+    state.client &&
+    state.state === "ready" &&
+    (state.client !== previous.client || previous.state !== "ready")
+  ) {
+    void credentialsStore
+      .getState()
+      .fetch()
+      .catch(() => {});
+  }
 });
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
@@ -265,6 +305,10 @@ if (initialClient) attachNotifications(initialClient);
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
+  requestVersion += 1;
+  requestedList = false;
+  unsubscribeNotifications?.();
+  unsubscribeNotifications = undefined;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;

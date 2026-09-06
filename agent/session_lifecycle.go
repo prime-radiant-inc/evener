@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +141,173 @@ func (s *Session) endDispose() {
 	s.disposeWG.Done()
 }
 
+// envWorkID handles one admission on envWorkWG, so its label can be dropped
+// again when the work returns.
+type envWorkID uint64
+
+// registerEnvWorkLocked records an admission described by label and returns its
+// handle. The caller holds s.mu and has already established that the session is
+// not closing — that pairing is the whole point (see beginEnvWork).
+func (s *Session) registerEnvWorkLocked(label string) envWorkID {
+	s.envWorkSeq++
+	id := envWorkID(s.envWorkSeq)
+	if s.envWork == nil {
+		s.envWork = make(map[envWorkID]string)
+	}
+	s.envWork[id] = label
+	s.envWorkWG.Add(1)
+	return id
+}
+
+// beginEnvWork admits work that runs commands on the session's execution
+// environment and must therefore finish before Close reaps that environment's
+// process table: a whole manage_worktree call at its dispatch, and the rollback
+// a refused or failed operation owes after its swap has already released the
+// swap's own admission. It is the beginDispose idiom again — the closing check
+// AND the envWorkWG Add happen under one s.mu hold, so a successful Add
+// happens-before Close()'s join. A true return MUST be paired with a (deferred)
+// endEnvWork().
+//
+// label says what the work is, in the terms a human reading a shutdown warning
+// would want: it is what the close names if its bounded join gives up on this
+// admission.
+//
+// swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
+// because it needs the environment it is adopting from out of the same lock
+// hold that reads `closing`; it is the same admission on the same WaitGroup.
+//
+// A false return means the close was already under way when this work began.
+// There is nothing left to fence it against — the environment it would run on
+// is already being torn down, and the close may already be past its join — and
+// the two kinds of caller answer that differently, on purpose:
+//
+//   - The manage_worktree DISPATCH refuses the call (errWorktreeOpWhileClosing).
+//     The operation has not started, and running it unfenced would lock lanes
+//     and write sidecars against an environment being reaped and stores being
+//     closed. A closing session was never going to complete it anyway.
+//   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
+//     existed. Its admission failing is the expected case — the close is what
+//     made the rollback necessary — and it is an undo the session already owes,
+//     so skipping it would leave the residue the rollback exists to prevent.
+//     Better unfenced cleanup than none.
+func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return 0, false
+	}
+	return s.registerEnvWorkLocked(label), true
+}
+
+// relabelEnvWork renames a live admission. An operation's admission is taken
+// before the work it will eventually have to undo, so the label that is honest
+// during the operation is not the one that is honest once its rollback starts;
+// the rollback renames itself as it begins. A handle no longer live (the work
+// returned) renames nothing.
+func (s *Session) relabelEnvWork(id envWorkID, label string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, live := s.envWork[id]; live {
+		s.envWork[id] = label
+	}
+}
+
+// endEnvWork releases an admission obtained from beginEnvWork().
+func (s *Session) endEnvWork(id envWorkID) {
+	s.mu.Lock()
+	delete(s.envWork, id)
+	s.mu.Unlock()
+	s.envWorkWG.Done()
+}
+
+// outstandingEnvWork lists the labels of every admission still in flight,
+// ordered so a warning reads the same way twice.
+func (s *Session) outstandingEnvWork() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	labels := make([]string, 0, len(s.envWork))
+	for _, label := range s.envWork {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// joinEnvWorkWithinCloseBudget waits for every admitted environment work item
+// before the close touches anything that work is still using — the delegate
+// tree, this session's lanes and locks, the stores recording them, and finally
+// the environment's process table — and says what it walked past when the
+// shared close budget expires first.
+//
+// The three kinds of admission reach this join by different routes:
+//
+//   - A whole OPERATION, admitted at the manage_worktree dispatch, runs its git
+//     on the request context of the tool call. A close cancels the turn context
+//     that call descends from, so it stops of its own accord — but only the
+//     operations that reach a cancellation point do, and an operation that has
+//     already committed to a git command finishes it.
+//   - A SWAP's refresh runs under the session's own context, which this close
+//     cancelled in its step 2, well before reaching here. It stops on its own.
+//   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
+//     context.Background() with a LaneClosePassBudget of its own, because the
+//     close that refused the swap has already cancelled the request context the
+//     op's runner was bound to, and a rollback through that would fail
+//     silently. Cancelling the close cannot shorten it.
+//
+// So this bound is not a restatement of the rollback's bound: the close budget
+// is one LaneClosePassBudget minted when the close began and partly spent by
+// the time it gets here, while a rollback's is a full LaneClosePassBudget
+// starting later. The join can therefore always expire first. That is accepted
+// rather than fixed by waiting longer, for two reasons. The cascade budget
+// (spec §P0) exists so a whole close is bounded, and this join is a participant
+// in it, not an exception: giving rollback admissions their own full budget
+// would let one refused create roughly double a shutdown, which is the
+// unbounded-fence failure in slower motion. And when time is left the gap
+// rarely bites — a rollback of a just-created, still-empty lane is three git
+// commands and a sidecar unlink, and only approaches its ceiling when git is
+// already wedged, which is exactly the case the bound exists for.
+//
+// Sometimes there is no time left at all, and then a perfectly healthy rollback
+// is walked past: a close whose delegate-tree stop was hopeless calls
+// cancelBudget() outright, so the join below is zero-length by the time it
+// runs. That is the deliberate order of a shutdown that has already given up on
+// one subtree — but it is why the warning matters, and why it must name a real
+// admission rather than fire on every such close.
+//
+// If the two budgets ever do need reconciling, the move is to shorten the
+// ROLLBACK's (it cleans up an empty lane; it is not a disposal pass) rather
+// than lengthen the close — a budget change, and its own decision, not
+// something to smuggle in here.
+//
+// Walking past is the lesser failure either way. But the cleanup below is about
+// to reap the process table under whatever is still running, which must not
+// happen silently, so the warning names it.
+func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		s.envWorkWG.Wait()
+	}()
+	select {
+	case <-joined:
+		return
+	case <-ctx.Done():
+	}
+	// The budget is spent. Warn only about work that is actually still there:
+	// a close reaches this join with an already-expired budget whenever the
+	// delegate-tree stop cancelled the cascade outright, and one that also
+	// admitted nothing has nothing the cleanup below can run under. An empty
+	// list is likewise what a drain that won the race by a hair leaves — both
+	// are silence, not a warning naming nobody.
+	outstanding := s.outstandingEnvWork()
+	if len(outstanding) == 0 {
+		return
+	}
+	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+		"close budget expired with environment work still in flight (%s); the environment is cleaned under it",
+		strings.Join(outstanding, "; "))})
+}
+
 func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	s.closeOnce.Do(func() {
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
@@ -202,6 +371,34 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			s.cfg.testOnly.closeAfterDisposeSweepJoin()
 		}
 
+		// Join the environment work admitted before `closing` was set: a whole
+		// manage_worktree call (admitted at its dispatch, which is the one entry
+		// every operation passes through), the refresh of any swap that call
+		// performs, and the rollback a refused or failed operation still owes
+		// after that swap returned. All of them fork git on the session's shared
+		// process table, and the last is work a close CAUSED.
+		//
+		// It joins HERE, before the delegate tree closes and before any of this
+		// session's own worktree cleanup, because everything below acts on the
+		// same lanes, locks and durable records an in-flight operation is still
+		// moving: disposing delegate lanes, sweeping foreign residue, unlocking
+		// the session's own worktree, and closing the stores that record all of
+		// it. Joining just before the environment cleanup would fence the process
+		// table and nothing else, leaving the operation to race every step in
+		// between. Nothing admitted may depend on those steps — an operation that
+		// waited on the delegate-tree close would deadlock this join until the
+		// budget expired — which is the same constraint the disposeWG join above
+		// already imposes on the dispose op.
+		//
+		// A swap's refresh stops on the session context cancelled in step 2
+		// above; a rollback is deliberately detached from it and bounded by a
+		// budget of its own; an operation stops wherever its own request context
+		// is checked. This join is the backstop over all three (see
+		// joinEnvWorkWithinCloseBudget). It runs for a child close too
+		// (cleanupEnv false): no such work may outlive the session that admitted
+		// it.
+		s.joinEnvWorkWithinCloseBudget(budgetCtx)
+
 		// The root-owned stable controller is the shutdown authority for its
 		// delegate tree. Persist and join recursive stop before generic Session
 		// teardown can close a child out from under that durable operation. The
@@ -221,7 +418,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// registered here (and cancelled below) or observes closing and refuses —
 		// there is no window for a late goroutine to escape the drain. The map is
 		// cleared under the lock; children are closed OUTSIDE the lock
-		// (sub.sess.Close() acquires its own mu).
+		// (teardownChildSession's close acquires the child's own mu).
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		subs := s.subagents.drainForClose()
@@ -261,21 +458,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
-		// parent owns cleanup of the shared env, so child closes skip env cleanup.
+		// parent owns cleanup of that env (step 4), so a child's teardown never
+		// runs it; what a child owns is its scratch, retained for the handoff.
 		for _, sub := range subs {
-			sub.sess.close(budgetCtx, false)
-			// A child that owns a FRESH env (a per-delegate sandbox and/or a lane
-			// re-root) may hold a sandbox scratch dir + file-tool fds that close(false)
-			// deliberately skips (child env cleanup is the parent's job because children
-			// historically SHARED the parent env). Release that env's live scratch lease
-			// and cached file-tool fds here, but retain the directory for the human
-			// handoff. Guarded on ownsEnv: a child sharing the parent env is never
-			// retained — the parent owns that env below.
-			if sub.ownsEnv {
-				if le, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-					le.RetainSandboxScratch()
-				}
-			}
+			teardownChildSession(budgetCtx, sub.sess, sub.ownsEnv, retainChildScratch)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
@@ -311,7 +497,23 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if cleanupEnv {
+			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
+				observe(s.currentEnv())
+			}
 			s.currentEnv().Cleanup()
+			// A session closing while entered in a worktree still holds the
+			// environment it parked at enter. A child spawned before the enter
+			// shares that object and may have minted a scratch there — one the
+			// child's teardown skips (not its own) and the current clone's
+			// Cleanup never reaches. The parked environment shares the current
+			// clone's process table, which was just reaped, so only its scratch
+			// is left: retained, never a second Cleanup.
+			s.retainParkedWorktreeEnvironmentScratch()
+			// And every environment a later enter dropped, which the parked one
+			// does not cover: worktreeRestoreEnv holds only the launch
+			// environment, so a switch leaves the clone it came from reachable
+			// from nothing.
+			s.retainAbandonedEnvironmentScratch()
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -369,7 +571,74 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 	})
 }
 
-func (s *Session) discardRestoredCandidate() {
+// recordAbandonedEnvironmentLocked remembers an environment the swap has just
+// installed over, when the session can no longer reach it: not the environment
+// just installed, and not the one an enter parked (worktreeRestoreEnv, which
+// close retains separately). The clone between two enters is the case that
+// matters — a switch does not re-park, so the environment the session came from
+// is dropped from every session reference while a child spawned in it still
+// holds the object and can mint a scratch there afterwards.
+//
+// The caller holds s.mu and has already run the swap's record, so
+// worktreeRestoreEnv is the parked environment this swap decided on. An
+// environment is recorded once: a clone is only ever installed once, and the
+// scan keeps that true by construction rather than by trust, so the slice is
+// bounded by the number of worktree switches a session actually made.
+func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExecutionEnvironment) {
+	if prior == nil || prior == next || prior == s.worktreeRestoreEnv {
+		return
+	}
+	if slices.Contains(s.abandonedEnvs, prior) {
+		return
+	}
+	s.abandonedEnvs = append(s.abandonedEnvs, prior)
+}
+
+// retainAbandonedEnvironmentScratch releases the leases of every scratch the
+// environments this session swapped away from still own, keeping the
+// directories for the handoff, and retires their file-tool layers through the
+// drain — RetainSessionScratch does both.
+//
+// Only close calls it, after the current environment's Cleanup and for the same
+// reason the parked environment's retain runs there: an abandoned environment
+// shares the current clone's process table, so its processes are already reaped
+// and running Cleanup on it would reap that table a second time. What is left on
+// it is what a shared child minted after the session moved on, which nothing
+// else will ever release.
+func (s *Session) retainAbandonedEnvironmentScratch() {
+	s.mu.Lock()
+	abandoned := s.abandonedEnvs
+	s.abandonedEnvs = nil
+	s.mu.Unlock()
+	for _, env := range abandoned {
+		env.RetainSessionScratch()
+	}
+}
+
+// retainParkedWorktreeEnvironmentScratch releases the leases of every scratch
+// the environment parked by a worktree enter (worktreeRestoreEnv) still owns,
+// keeping the directories for the handoff. Only close calls it, after the
+// current environment's Cleanup: the parked environment shares that process
+// table, so its processes are already reaped and running Cleanup on it would
+// reap the table a second time.
+func (s *Session) retainParkedWorktreeEnvironmentScratch() {
+	s.mu.Lock()
+	parked := s.worktreeRestoreEnv
+	s.mu.Unlock()
+	if parked != nil {
+		parked.RetainSessionScratch()
+	}
+}
+
+// discardRestoredCandidate tears down a restore candidate nothing ever adopted.
+// ownsEnv says whether the candidate's execution environment is one built FOR it
+// (a working-dir re-root and/or a per-delegate box) rather than the parent's own:
+// prepareSubagentEnvironment returns the parent's environment untouched when the
+// delegate needs neither, and a shared environment belongs to the live parent
+// still working in it. It is the same distinction close() makes before retaining
+// a child's scratch (subagent.ownsEnv), read here so an aborted candidate never
+// deletes a scratch dir out from under its parent.
+func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -390,25 +659,17 @@ func (s *Session) discardRestoredCandidate() {
 			_ = s.jobManager.store.Close()
 		}
 		for _, sub := range subs {
-			sub.sess.discardRestoredCandidate()
+			sub.sess.discardRestoredCandidate(sub.ownsEnv)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
 		}
 		_ = s.closeOwnedDelegateStore()
-		// restoreDelegateChildEnvironment always hands a restored delegate a
-		// FRESH environment (a re-rooted clone, and its own per-lane sandbox
-		// scratch when sandboxed) — never the parent's shared one. A discarded
-		// candidate was never adopted by anything, so unlike close()'s
-		// RetainSandboxScratch (which hands a normally torn-down delegate's
-		// scratch to a human), there is no one left to retain it for; dispose it
-		// outright, mirroring disposeUnadoptedSubagentSession's unadopted-env
-		// discipline on the create-path twin of this abort. A no-op on a shared
-		// or never-sandboxed env (DisposeSandboxScratch is a no-op without an
-		// owned tmp).
-		if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			le.DisposeSandboxScratch()
-		}
+		// A discarded candidate was never adopted by anything, so unlike a normal
+		// teardown (which RETAINS both scratch dirs for the human handoff), there
+		// is no one left to retain them for: both go, the same decision the
+		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
+		releaseOwnedChildEnvironment(s.currentEnv(), ownsEnv, disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -889,7 +1150,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
-		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
+		// After a terminal communicate, notification work is left to the one-shot
+		// drain rather than run here: a completion the model was never shown is
+		// delivered there, so its reply REPLACES the run's answer instead of
+		// being joined onto it as a further output of this call (#865). Every
+		// one-shot turn path is followed by DrainJobTree (cmd/evener run,
+		// drainForFinalization), and the drain's own turn gate reads the same
+		// two signals.
+		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
 			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{

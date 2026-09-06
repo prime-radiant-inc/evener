@@ -1,10 +1,4 @@
-/* The spawn form layout. Tokens only; neutral surfaces that never use color for
- * attention.
- *
- * Prompt card first, then ONE configuration row beneath it: writing the prompt
- * is what starting an agent IS, and the config is settings that mostly stay
- * where they were last left. The card's own min-height (Textarea's minLines)
- * takes the page's vertical slack, so there is no dead gap under the actions. */
+/* Session creation: project directory, prompt, then secondary settings. */
 .form {
   display: flex;
   flex-direction: column;
@@ -74,9 +68,7 @@
   font-size: var(--font-size-body);
 }
 
-/* One compact row of configuration, wrapping to stacked rows on a narrow
- * viewport. The working directory is the only field that changes often, so it
- * takes the row's free width and the other two size to their content. */
+/* Secondary launch settings wrap with the available pane width. */
 .cfg {
   display: flex;
   flex-wrap: wrap;
@@ -84,16 +76,54 @@
   gap: var(--space-3);
 }
 
-/* The directory field plus its branch suffix. `flex: 1 1 240px` with
- * `min-width: 0` gives it the row's slack while still letting it shrink below
- * its content on a phone (a PathField trigger holds a full path, so its natural
- * width is large enough to push the row wide without this). */
 .cfgDir {
   display: flex;
-  flex: 1 1 240px;
+  flex-direction: column;
   min-width: 0;
-  align-items: baseline;
-  gap: var(--space-1);
+  gap: var(--space-2);
+}
+.directoryButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--ink-hi);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.directoryButton:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+.directoryButton:hover {
+  background: var(--hover-1);
+}
+.directoryButton > svg {
+  flex: none;
+}
+.directoryButton > span:last-child {
+  flex: none;
+  color: var(--ink-mid);
+}
+.directoryText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.directoryText strong {
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+.directoryPath {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
 }
 
 /* The model picker is a composite widget, so it gets a label span + widget
@@ -112,26 +142,12 @@
   border-left: 2px solid transparent;
 }
 
-/* The branch is a read-only HEAD readout riding the directory row, not a peer
- * field: mono because it is an identifier, --ink-low because it is the row's
- * least actionable fact, and flex:none so a long branch name never steals the
- * directory field's width. */
 .branch {
-  flex: none;
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-1);
-  max-width: 40%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--ink-low);
+  padding-left: var(--space-3);
+  color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-}
-
-.branchSeparator {
-  color: var(--ink-low);
+  overflow-wrap: anywhere;
 }
 
 /* Matches widgets/formrow's .label exactly: the Model field renders its label
@@ -157,6 +173,7 @@
 
 .notice {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -192,7 +209,8 @@
     min-height: 96px;
   }
 
-  .cfg {
+  .cfg,
+  .cfgDir {
     display: none;
   }
 

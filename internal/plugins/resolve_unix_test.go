@@ -190,10 +190,7 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 		!strings.Contains(res.Diagnostics[0].Message, "staged bundled preview") {
 		t.Fatalf("Diagnostics = %+v, want one naming the staging it could not remove", res.Diagnostics)
 	}
-	entries, readErr := os.ReadDir(store)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
+	entries := bundledStoreEntries(t, store)
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stagingPrefix) {
 		t.Fatalf("bundled store holds %v, want the staging the preview could not remove", entries)
 	}
@@ -204,10 +201,10 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 
 // Two launches meeting the same mismatched destination must not undo each
 // other's work. Classifying, setting aside and publishing run as one sequence
-// under the store lock, so a classification made before the lock is never
-// acted on after it: the slot beside the destination keeps one copy of the
-// foreign content, the destination holds the copy this build publishes, and
-// neither is left vacant for a session that is already pointing at it.
+// under the bundled cache's lock, so a classification made before the lock is
+// never acted on after it: the slot beside the destination keeps one copy of
+// the foreign content, the destination holds the copy this build publishes,
+// and neither is left vacant for a session that is already pointing at it.
 func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) {
 	digest, err := bundledPluginDigest("coordinator-workflow")
 	if err != nil {
@@ -245,10 +242,7 @@ func TestBundledStore_ConcurrentPublishKeepsOneConflictAndOneCopy(t *testing.T) 
 		if err != nil || string(content) != "someone else's data" {
 			t.Fatalf("attempt %d: set-aside content = %q (err %v), want the foreign data preserved", attempt, content, err)
 		}
-		entries, err := os.ReadDir(filepath.Dir(dest))
-		if err != nil {
-			t.Fatal(err)
-		}
+		entries := bundledStoreEntries(t, filepath.Dir(dest))
 		if len(entries) != 2 {
 			t.Fatalf("attempt %d: bundled store holds %v, want the published copy and one set-aside slot", attempt, entries)
 		}
@@ -341,12 +335,12 @@ func TestBundledStore_SetsAsideADestinationHoldingAFIFO(t *testing.T) {
 	}
 }
 
-// Readying the store waits for the store lock, so a caller that has given up
-// has to be able to stop that wait. The hub hands its request context down for
-// exactly this: a client that disconnected, or a TUI whose own deadline
-// passed, must not leave a handler parked on a lock some install is holding
-// for as long as the lock timeout allows.
-func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T) {
+// Readying the store waits for the bundled cache's lock, so a caller that has
+// given up has to be able to stop that wait. The hub hands its request context
+// down for exactly this: a client that disconnected, or a TUI whose own
+// deadline passed, must not leave a handler parked on a lock another publisher
+// is holding for as long as the lock timeout allows.
+func TestResolveForLaunch_StopsWaitingForTheBundledLockWhenCancelled(t *testing.T) {
 	tests := []struct {
 		name    string
 		resolve func(context.Context, *Manager) (LaunchPluginResolution, error)
@@ -367,8 +361,8 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
-			// Somebody else is holding the store lock, the way an install does.
-			release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+			// Another bundled publisher is holding the cache's lock.
+			release, err := acquireLock(context.Background(), m.bundledLockPath(), time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -400,10 +394,11 @@ func TestResolveForLaunch_StopsWaitingForTheStoreLockWhenCancelled(t *testing.T)
 
 // Staging that looks abandoned may belong to a publisher that is merely slow —
 // paused, swapped out, waiting on a filesystem — and the only thing that tells
-// the two apart is the store lock that publisher holds from its first look at
-// the destination until its copy is in place. So the sweep runs under that
-// lock or not at all: a launch that cannot take it reclaims nothing.
-func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
+// the two apart is the bundled cache's lock that publisher holds from its
+// first look at the destination until its copy is in place. So the sweep runs
+// under that lock or not at all: a launch that cannot take it reclaims
+// nothing.
+func TestMaterializeBundledPlugin_SweepsOnlyUnderTheBundledLock(t *testing.T) {
 	// Both ways a launch meets the store: publishing a copy, and adopting one
 	// that is already there. The second reaches the sweep only because it
 	// found something to sweep, and it is still not allowed to sweep unlocked.
@@ -438,8 +433,8 @@ func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
 			}
 			m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-			// Somebody else holds the lock, so this launch never gets to look.
-			release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+			// Another publisher holds the lock, so this launch never gets to look.
+			release, err := acquireLock(context.Background(), m.bundledLockPath(), time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -453,26 +448,26 @@ func TestMaterializeBundledPlugin_SweepsOnlyUnderTheStoreLock(t *testing.T) {
 				t.Fatalf("ResolveForLaunch error = %v, want %v", err, test.wantErr)
 			}
 			if _, err := os.Stat(staging); err != nil {
-				t.Fatalf("staging was swept without holding the store lock: %v", err)
+				t.Fatalf("staging was swept without holding the bundled cache lock: %v", err)
 			}
 		})
 	}
 }
 
 // A launch that only has to adopt a copy already published must not queue
-// behind whatever else is touching the store. Hub start runs the auto-upgrade
-// pass, which holds the store lock across git fetches; a launch that took the
-// lock for housekeeping it has no housekeeping for would wait that out, or
-// fail, for nothing. With no abandoned staging to reclaim there is nothing to
-// take the lock for, and the launch reads its copy and goes.
-func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheStoreLock(t *testing.T) {
+// behind whatever else is touching the bundled cache. A publisher of a
+// different plugin holds that cache's lock for its whole copy; a launch that
+// took the lock for housekeeping it has no housekeeping for would wait that
+// out, or fail, for nothing. With no abandoned staging to reclaim there is
+// nothing to take the lock for, and the launch reads its copy and goes.
+func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheBundledLock(t *testing.T) {
 	m := NewManager(t.TempDir())
 	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Somebody else is holding the store lock, the way an auto-upgrade does.
-	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	// Another bundled publisher is holding the cache's lock.
+	release, err := acquireLock(context.Background(), m.bundledLockPath(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +481,7 @@ func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheStoreLock(t *tes
 		t.Fatal(err)
 	}
 	if err := res.ValidateSelection(); err != nil {
-		t.Fatalf("a launch could not adopt a published copy while the store lock was held: %v", err)
+		t.Fatalf("a launch could not adopt a published copy while the bundled cache lock was held: %v", err)
 	}
 	if len(res.SelectedDirs) != 1 || res.SelectedDirs[0] != published {
 		t.Fatalf("SelectedDirs = %v, want the published copy at %s", res.SelectedDirs, published)
@@ -497,10 +492,10 @@ func TestMaterializeBundledPlugin_AdoptsAPublishedCopyWithoutTheStoreLock(t *tes
 }
 
 // The sweep is housekeeping a launch does on its way past, so it waits for the
-// store lock the way housekeeping should: briefly. One stale orphan must not
-// put every adopting launch behind an auto-upgrade holding the lock across git
-// fetches, waiting out the budget a publish is entitled to and then leaving
-// the orphan for the next launch to wait out again.
+// bundled cache's lock the way housekeeping should: briefly. One stale orphan
+// must not put every adopting launch behind a publisher that is still copying,
+// waiting out the budget a publish is entitled to and then leaving the orphan
+// for the next launch to wait out again.
 func TestMaterializeBundledPlugin_GivesUpQuicklyOnTheSweepLock(t *testing.T) {
 	m := NewManager(t.TempDir())
 	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
@@ -516,8 +511,8 @@ func TestMaterializeBundledPlugin_GivesUpQuicklyOnTheSweepLock(t *testing.T) {
 	}
 	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	// Somebody else is holding the store lock, the way an auto-upgrade does.
-	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	// Another bundled publisher is holding the cache's lock.
+	release, err := acquireLock(context.Background(), m.bundledLockPath(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,11 +584,12 @@ func TestMaterializeBundledPlugin_LeavesStagingWhoseMarkerIsNotAFile(t *testing.
 	}
 }
 
-// A launch can be given up on while its sweep waits for the store lock. The
-// sweep swallows its own lock failure by design — housekeeping nobody is
-// waiting on — and the caller's cancellation arrives as exactly that failure,
-// so the context has to be read again before the copy is handed back. What the
-// launch has by then is a published copy it is no longer entitled to return.
+// A launch can be given up on while its sweep waits for the bundled cache's
+// lock. The sweep swallows its own lock failure by design — housekeeping
+// nobody is waiting on — and the caller's cancellation arrives as exactly that
+// failure, so the context has to be read again before the copy is handed back.
+// What the launch has by then is a published copy it is no longer entitled to
+// return.
 func TestMaterializeBundledPlugin_StopsForACallerThatLeftDuringTheSweep(t *testing.T) {
 	m := NewManager(t.TempDir())
 	published, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
@@ -609,8 +605,8 @@ func TestMaterializeBundledPlugin_StopsForACallerThatLeftDuringTheSweep(t *testi
 	}
 	m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
-	// Somebody else is holding the store lock, so the sweep has to wait for it.
-	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	// Another publisher holds the lock, so the sweep has to wait for it.
+	release, err := acquireLock(context.Background(), m.bundledLockPath(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,5 +685,102 @@ func TestBundledStore_AnUnreadableDestinationIsSetAsideLikeAnyOtherConflict(t *t
 	}
 	if string(content) != "someone else's data" {
 		t.Errorf("preserved content = %q, want it untouched", content)
+	}
+}
+
+// Publishing a bundled copy needs exclusion against other bundled publishers
+// and nothing else: it classifies a destination, sets a conflict aside, stages
+// and renames, all of it under <Root>/bundled. So it must not queue behind the
+// plugin store lock, which install, upgrade, gc, catalog and marketplace
+// refresh hold across git fetches for up to 30 seconds. Hub start runs the
+// auto-upgrade sweep, so a first launch after a version bump — the one launch
+// that has a copy to publish — is exactly the launch that meets it.
+func TestMaterializeBundledPlugin_PublishesWhileTheStoreLockIsHeld(t *testing.T) {
+	m := NewManager(t.TempDir())
+	// Somebody else holds the store lock, the way an auto-upgrade does across
+	// its git fetches, and goes on holding it past everything below: the
+	// publish has to finish under that lock rather than after it, so the
+	// holder lets go in cleanup and nowhere else.
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+
+	digest, err := bundledPluginDigest("coordinator-workflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A hang tripwire, nothing more. A publish that queued behind the store
+	// lock gives up on its own after the 30s budget and says which lock it was
+	// waiting for, which is the diagnosis worth having, so this sits well past
+	// that and decides nothing about whether the separation holds.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	published, _, err := m.materializeBundledPlugin(ctx, "coordinator-workflow")
+	if err != nil {
+		t.Fatalf("publishing while the store lock was held: %v", err)
+	}
+	// The premise, checked rather than assumed: a publish that succeeded is
+	// only evidence if the store lock was still taken when it did. Nothing
+	// here turns on how long anything took — the lock is contended or the
+	// success above proves nothing.
+	if free, freeErr := acquireLock(context.Background(), m.lockPath(), 0); freeErr == nil {
+		free()
+		t.Error("the store lock was not held when the publish finished, so this proves nothing about the two locks")
+	}
+	if want := m.bundledPluginPath("coordinator-workflow", digest); published != want {
+		t.Fatalf("published %s, want %s", published, want)
+	}
+	if _, err := os.Stat(filepath.Join(published, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("published copy incomplete: %v", err)
+	}
+}
+
+// The other direction of the same separation: a publish in flight holds the
+// bundled cache's lock for the whole classify-stage-rename sequence, and an
+// install, an upgrade or an auto-upgrade sweep that wants the store lock must
+// not wait out the copy it has no stake in.
+func TestMaterializeBundledPlugin_LeavesTheStoreLockFreeWhilePublishing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	publishing := make(chan struct{})
+	finish := make(chan struct{})
+	original := copyBundledPayload
+	t.Cleanup(func() { copyBundledPayload = original })
+	copyBundledPayload = func(dir string, fsys fs.FS) error {
+		close(publishing)
+		<-finish
+		return original(dir, fsys)
+	}
+
+	var published string
+	var publishErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		published, _, publishErr = m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+	}()
+	unblock := sync.OnceFunc(func() {
+		close(finish)
+		<-done
+	})
+	t.Cleanup(unblock)
+	<-publishing
+
+	// Mid-copy: whatever the publish is holding, the store lock is not it. No
+	// wait budget at all, so nothing here turns on how loaded the machine is —
+	// the lock is free on the first try or the publish is holding it.
+	storeLock, err := acquireLock(context.Background(), m.lockPath(), 0)
+	if err != nil {
+		t.Fatalf("a bundled publish in flight blocked the store lock: %v", err)
+	}
+	storeLock()
+
+	unblock()
+	if publishErr != nil {
+		t.Fatalf("the publish held mid-copy failed: %v", publishErr)
+	}
+	if _, err := os.Stat(filepath.Join(published, ".claude-plugin", "plugin.json")); err != nil {
+		t.Fatalf("published copy incomplete: %v", err)
 	}
 }

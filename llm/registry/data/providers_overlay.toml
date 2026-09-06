@@ -244,6 +244,24 @@ image_detail = "omit"
 reasoning_summary = "detailed"
 body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
 
+# Astra uses the Codex Lite route. The subscription's default context is
+# smaller than the public API window; live model facts can override it.
+[providers."openai-codex".models."gpt-6-astra"]
+context_window = 272000
+max_output_tokens = 128000
+tools = true
+structured_output = true
+sampling = false
+reasoning = true
+effort_values = ["low", "medium", "high", "xhigh", "max"]
+default_effort = "low"
+input_modalities = ["text", "image"]
+responses_lite = true
+thinking_always_on = true
+image_detail = "original"
+reasoning_summary = "detailed"
+body = { "reasoning.context" = "all_turns", "text.verbosity" = "low", parallel_tool_calls = false }
+
 # ---------------------------------------------------------------------------
 # Azure (§9.2)
 # ---------------------------------------------------------------------------

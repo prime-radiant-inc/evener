@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 )
 
 const delegateSalvagedDraftNote = "partial draft salvaged in the child transcript — resume it with delegate_send rather than re-dispatching"
@@ -158,21 +159,100 @@ type preparedSubagentRun struct {
 	treeSlot *treeReservation
 }
 
-// disposeUnadoptedSubagentSession tears down a child that never became a
-// tracked/adopted delegate. Normal session cleanup retains sandbox scratch for
-// the human handoff, but an unadopted fresh environment has no owner left to
-// perform that handoff, so its scratch is rolled back here.
-func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+// disposeUnadoptedScratch drops every per-session scratch directory env
+// provisioned — the sandbox-owned one and the one an unsandboxed environment
+// mints on its first command — releasing each lease with its directory. Every
+// caller is a path that provisioned an environment and then failed before any
+// session adopted it: both releases belong to a session's own teardown, so
+// without this nothing ever runs them and each failure leaves a directory and a
+// live lease behind. A no-op for an environment with no scratch to drop,
+// including one that is not local. It must run only on an environment built for
+// the failed thing, never on a shared parent's, whose scratch the parent is
+// still working in.
+func disposeUnadoptedScratch(env execenv.ExecutionEnvironment) {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.DisposeUnadoptedScratch()
+	}
+}
+
+// childScratchDisposition says what becomes of the scratch a child's owned
+// environment provisioned when the child is torn down.
+type childScratchDisposition int
+
+const (
+	// retainChildScratch releases the leases and keeps the directories: the
+	// child finished something a human may still want to inspect, the handoff
+	// every normal session teardown makes.
+	retainChildScratch childScratchDisposition = iota
+	// disposeChildScratch drops the directories with their leases: the child
+	// was never adopted or is being discarded, so no one is left to hand
+	// anything to.
+	disposeChildScratch
+)
+
+// teardownChildSession closes a child session and settles what it owned. It is
+// the one teardown every child takes — the parent's own close, the eviction of
+// a retained terminal child, the stable controller's reclamation of a retained
+// runtime, the disposal of a child that never became a tracked delegate, and
+// the disposal of an isolation lane — so every path makes the same two
+// decisions.
+//
+// Invariant: a session runs Cleanup only on an environment whose process table
+// it constructed, at its own close, and never on a child's. A child's
+// environment is either the parent's own (a delegate with neither a working
+// dir nor a box of its own) or a WithWorkingDirectory clone built for it, and a
+// clone shares the parent's process table by pointer, so Cleanup on either one
+// signals the parent's in-flight tools. A child's own processes end without it:
+// its job manager stops its shells and cancellation ends its tool commands at
+// close, and whatever survives is reaped when the table's owner closes. What a
+// child owns outright is its clone's scratch — the sandbox-provisioned dir and
+// the one an unsandboxed clone minted on its first command — and that is
+// released here, both kinds together, per scratch: retained on a handoff,
+// disposed when the child is dropped. A shared environment is left untouched
+// in every respect: the parent is still working in it.
+func teardownChildSession(ctx context.Context, sess *Session, ownsEnv bool, scratch childScratchDisposition) {
 	if sess == nil {
 		return
 	}
-	sess.Close()
+	sess.close(ctx, false)
+	releaseOwnedChildEnvironment(sess.currentEnv(), ownsEnv, scratch)
+}
+
+// releaseOwnedChildEnvironment is teardownChildSession's environment step on
+// its own, for the one child close that is not a close(): a restore candidate
+// nothing adopted is discarded by discardRestoredCandidate, which settles the
+// candidate's own resources and then makes exactly this decision for its env.
+func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool, scratch childScratchDisposition) {
 	if !ownsEnv {
 		return
 	}
-	if le, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		le.DisposeSandboxScratch()
+	if scratch == disposeChildScratch {
+		disposeUnadoptedScratch(env)
+		return
 	}
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
+		local.RetainSessionScratch()
+	}
+}
+
+// ownsChildEnvironment reports whether child, a session this one tracks, runs
+// on an environment built for it (subagent.ownsEnv) rather than on this
+// session's own. A child this session does not track answers false: the safe
+// answer, since a teardown then touches nothing beyond the child's own
+// resources.
+func (s *Session) ownsChildEnvironment(child *Session) bool {
+	if s == nil || s.subagents == nil || child == nil {
+		return false
+	}
+	sub := s.subagents.get(child.id)
+	return sub != nil && sub.sess == child && sub.ownsEnv
+}
+
+// disposeUnadoptedSubagentSession tears down a child that never became a
+// tracked/adopted delegate: the create-path twin of discardRestoredCandidate.
+// No owner is left to hand anything to, so its owned scratch goes with it.
+func disposeUnadoptedSubagentSession(sess *Session, ownsEnv bool) {
+	teardownChildSession(context.Background(), sess, ownsEnv, disposeChildScratch)
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {
@@ -596,11 +676,11 @@ func (s *Session) prepareSubagentRunWithModelSelection(
 ) (*preparedSubagentRun, error) {
 	return s.prepareSubagentRunFromSelection(
 		ctx, task, workingDir, maxTurns, agentType, reasoningEffort,
-		parentTasks, grantTools, selection, nil,
+		parentTasks, grantTools, selection, nil, nil,
 	)
 }
 
-func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection) (*preparedSubagentRun, error) {
+func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor delegatestore.Descriptor, watchParent bool, selection subagentModelSelection, inheritedContext []transcript.Entry) (*preparedSubagentRun, error) {
 	if selection.profile == nil || selection.profile.ID() != descriptor.ResolvedProfileID || selection.profile.Model() != descriptor.ResolvedModel {
 		actual := "<nil>"
 		if selection.profile != nil {
@@ -623,7 +703,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 	selection.agent = nil
 	return s.prepareSubagentRunFromSelection(
 		ctx, descriptor.Task, descriptor.WorkingDir, 0, descriptor.AgentType, descriptor.Config.ReasoningEffort,
-		nil, nil, selection, &descriptor,
+		nil, nil, selection, &descriptor, inheritedContext,
 	)
 }
 
@@ -665,6 +745,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	grantTools []string,
 	selection subagentModelSelection,
 	frozen *delegatestore.Descriptor,
+	inheritedContext []transcript.Entry,
 ) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
@@ -702,6 +783,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
+	subCfg.spawn.inheritedContext = inheritedContext
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSystemNotification = s.routeSystemNotification
@@ -932,12 +1014,12 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if err != nil {
 		// A fresh environment that failed before session adoption never reaches the
-		// session cleanup path, so dispose any scratch it provisioned. A worktree-only
-		// re-root has no owned scratch, making this safe when reqSandbox is nil.
+		// session cleanup path, so dispose every scratch it provisioned: the
+		// sandbox-owned one AND the one an unsandboxed environment mints on its
+		// first command, which the construction above reaches through its own git
+		// snapshot. A prepared environment belongs to whoever prepared it.
 		if ownsFreshEnv && !hasPreparedEnv {
-			if le, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok {
-				le.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(subEnv)
 		}
 		return nil, err
 	}
@@ -1005,7 +1087,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 			return nil, err
 		}
 		for _, ev := range evicted {
-			ev.sess.Close()
+			teardownChildSession(context.Background(), ev.sess, ev.ownsEnv, retainChildScratch)
 		}
 	}
 

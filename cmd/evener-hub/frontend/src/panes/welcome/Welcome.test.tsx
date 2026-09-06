@@ -1,7 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import { connectionStore } from "../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
 import buttonStyles from "../../widgets/button/button.module.css";
@@ -12,6 +15,30 @@ afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
   resetNavigationStoreForTests();
+  connectionStore.setState({ state: "idle", client: null });
+  resetCredentialsStoreForTests();
+});
+
+test("automatic setup replaces Welcome so Back returns to the previous page", async () => {
+  window.history.replaceState({}, "", "/settings");
+  window.history.pushState({}, "", "/");
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  connectionStore.getState().connect(client);
+  render(<Welcome params={{}} paneId="welcome" focused={true} />);
+  await waitFor(() => expect(window.location.pathname).toBe("/new"));
+  window.history.back();
+  await waitFor(() => expect(window.location.pathname).toBe("/settings"));
+});
+
+test("a background welcome pane does not replace the active session for setup", async () => {
+  window.history.pushState({}, "", "/s/local:existing");
+  const client = new FakeClient("ready");
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  connectionStore.getState().connect(client);
+  render(<Welcome params={{}} paneId="welcome" focused={false} />);
+  await screen.findByText("No session open");
+  expect(window.location.pathname).toBe("/s/local:existing");
 });
 
 function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {

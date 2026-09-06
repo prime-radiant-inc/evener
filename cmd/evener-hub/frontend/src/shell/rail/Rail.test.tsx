@@ -140,6 +140,37 @@ afterEach(() => {
 });
 
 describe("resource-backed Rail", () => {
+  test("places identity and Settings before Search in the top row and preserves navigation", () => {
+    installState();
+    connectionStore.setState({ serverInfo: { name: "evener-hub", version: "0.0.0" } });
+    const onHide = vi.fn();
+    render(<Rail onHide={onHide} />);
+    const brand = within(screen.getByTestId("rail-brand"));
+    const identity = brand.getByText("evener-hub");
+    const settings = brand.getByRole("button", { name: "Settings" });
+    const search = brand.getByRole("button", { name: "Search" });
+    const hide = brand.getByRole("button", { name: "Hide sidebar" });
+    for (const [left, right] of [
+      [identity, settings],
+      [settings, search],
+      [search, hide],
+    ] as const) {
+      expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(screen.getAllByText("evener-hub")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Settings" })).toHaveLength(1);
+    const previousPath = window.location.pathname;
+    try {
+      window.history.replaceState({}, "", "/new");
+      fireEvent.click(settings);
+      expect(window.location.pathname).toBe("/settings");
+      fireEvent.click(hide);
+      expect(onHide).toHaveBeenCalledOnce();
+    } finally {
+      window.history.replaceState({}, "", previousPath);
+    }
+  });
+
   test("renders loaded global and project resources without a transport read", () => {
     installState([
       sectionResource("live", [summary({ title: "Live resource" })]),

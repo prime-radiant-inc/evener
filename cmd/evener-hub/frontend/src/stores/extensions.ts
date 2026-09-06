@@ -83,6 +83,7 @@ export interface ExtensionsStoreState {
   setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
 
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
+  createDirectory(path: string): Promise<void>;
   // Backs PathField. The prefix passes through verbatim, because the widget
   // picks which of the RPC's two duties it wants per keystroke: a trailing
   // slash lists a directory's children, a bare prefix fuzzy-completes it
@@ -256,6 +257,10 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     return client.request("evener/path/validate", { path, kind });
   },
 
+  async createDirectory(path) {
+    await requireClient().request("evener/dirs/create", { path });
+  },
+
   async completePaths(prefix, includeFiles) {
     const client = requireClient();
     const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
@@ -377,3 +382,9 @@ export function resetExtensionsStoreForTests(): void {
     launchLayerError: null,
   });
 }
+
+/** Directory actions shared by settings fields; the widget stays wire-free. */
+export const directoryActions = {
+  validatePath: (path: string, kind: string) => extensionsStore.getState().validatePath(path, kind),
+  createDirectory: (path: string) => extensionsStore.getState().createDirectory(path),
+};

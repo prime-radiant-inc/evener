@@ -32,6 +32,7 @@ type delegateArgs struct {
 	ReasoningEffort     string
 	DelegationAllowance *int
 	WatchParent         bool
+	ForkContext         bool
 	Isolation           string
 	Sandbox             string
 	SandboxNet          *bool
@@ -217,12 +218,11 @@ func (s *Session) delegateWorktreeReport(isolation, workingDir string) *delegate
 	if !ok {
 		return nil
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, mainRoot, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return nil
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	if controlEnv.SandboxReRootError() != nil {
 		return nil
 	}

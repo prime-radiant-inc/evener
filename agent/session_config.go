@@ -275,22 +275,12 @@ type testConfig struct {
 	// visionSideChannelTimeout overrides the production vision timeout only for
 	// deterministic package tests. Zero preserves the production timeout.
 	visionSideChannelTimeout time.Duration
-	// beforeTerminalCommunicateAccept observes the exact production boundary
-	// after Stop hooks accept communicate and before its terminal notification
-	// cut is captured. Tests use it only to place deterministic finalize/cut
-	// ordering barriers. Nil in production.
-	beforeTerminalCommunicateAccept func()
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)
-	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
-	// it owns jm.mu and before it reads durable/running/queue state. It permits a
-	// concurrent finalizer to prove which side of the cut owns the notification.
-	// Nil in production.
-	terminalCutAfterManagerLock func()
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error
@@ -499,6 +489,28 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
+	// envCleanupObserved observes every environment Close() runs Cleanup on,
+	// just before it does, so a test can assert the process-table cleanup ran
+	// exactly once and on the environment the session currently holds — never
+	// on one it parked (worktreeRestoreEnv), whose scratch is retained without
+	// it. Nil in production.
+	envCleanupObserved func(execenv.ExecutionEnvironment)
+
+	// swapEnvAfterAdopt observes the point in swapEnvAndRefresh just after the
+	// session's scratch moved onto the next environment and before the refresh
+	// and install, so a test can begin a close in that window. It receives the
+	// context the refresh's git runs under, so a test can also assert that a
+	// close cancels that work. Nil in production.
+	swapEnvAfterAdopt func(refreshCtx context.Context)
+
+	// enterWorktreeAfterSwap observes the point in enterWorktree right after
+	// the environment swap returned — the earliest point outside the swap a
+	// close can land — so a test can run one there against a session whose
+	// installed and parked environments are both already recorded. It is NOT
+	// a seam between the install and the record: those share one s.mu hold,
+	// and a seam between them would have to release it. Nil in production.
+	enterWorktreeAfterSwap func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta
@@ -610,6 +622,10 @@ type spawnConfig struct {
 
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
+
+	// inheritedContext seeds a delegate's transcript once, at construction.
+	// NewSession consumes it; descendants start clean unless they also opt in.
+	inheritedContext []transcript.Entry
 
 	// depth is the sub-agent nesting depth (0 for root sessions).
 	depth int

@@ -237,12 +237,6 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 	})
 }
 
-func installWorktreeSeams(t *testing.T, s *Session, seams worktreeTestSeams) {
-	t.Helper()
-	worktreeSeams.Store(s, seams)
-	t.Cleanup(func() { worktreeSeams.Delete(s) })
-}
-
 func failingDeleteWorktreeSeam() worktreeTestSeams {
 	return worktreeTestSeams{deleteSidecar: func(string, string) error {
 		return errors.New("scripted sidecar delete failure")

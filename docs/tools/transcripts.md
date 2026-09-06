@@ -37,6 +37,26 @@ mutated.
 then one semantic *entry* per turn. Provider requests and responses are never transcript
 records. Immutable once written.
 
+**Model switches.** A successful explicit model switch appends a `MODEL_SWITCH`
+turn. Its `message` is display text; `turn.model_switch` carries the resolved
+configuration identities for readers that need model history:
+
+```json
+{"old_provider":"openai","old_model":"gpt-5.4","new_provider":"anthropic","new_model":"claude-opus-4-6"}
+```
+
+Provider fields identify configured provider instances, and model fields identify
+selected model IDs. These describe the configured transition, not a provider's
+response-reported model or automatic per-request fallback. The turn timestamp is
+when the switch marker was recorded. Rejected switches do not append a marker.
+
+Earlier v2 switch markers have no `model_switch` object; their structured
+transition is unknown, and readers must not recover it by parsing display prose.
+Evener's strict decoder rejects fields its build does not know, so an older
+binary cannot read a transcript containing this field. Upgrade transcript
+readers together with writers; this addition does not change format version 2
+or introduce a migration or permissive decoder.
+
 **Turn number.** The addressing unit across both tools. A 0-based index over *entry*
 lines (the header does not advance it). It is what every tool emits
 and accepts — outline lines, markdown headings, `range`, `expand_turn` — so they compose

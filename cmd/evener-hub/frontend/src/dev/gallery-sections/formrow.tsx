@@ -6,19 +6,19 @@ import styles from "./formrow.module.css";
 
 function LiveFormRow() {
   const [value, setValue] = useState("");
-  const invalid = value.length > 0 && !value.startsWith("/");
+  const invalid = value.length > 0 && value.length < 3;
   return (
     <FormRow
-      label="Plugin directory"
+      label="Display name"
       htmlFor="gallery-formrow-live"
-      help={invalid ? undefined : "Absolute path on the hub's filesystem."}
-      error={invalid ? "Path must be absolute." : undefined}
+      help={invalid ? undefined : "At least three characters."}
+      error={invalid ? "Name must contain at least three characters." : undefined}
     >
       <Input
         id="gallery-formrow-live"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="/opt/plugins"
+        placeholder="My project"
       />
     </FormRow>
   );

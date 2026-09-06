@@ -508,23 +508,29 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 // never creates a second stop: each root subtree is drained through the same
 // durable stop operation, in stable order, before the next one can begin.
 func (c *delegateTreeController) Close(ctx context.Context) error {
-	if err := c.closeRuntimeTree(ctx, func(child *Session) { child.Close() }); err != nil {
+	if err := c.closeRuntimeTree(ctx, nil); err != nil {
 		return err
 	}
 	return c.store.Close()
 }
 
 // closeRuntimeTree fences admission, durably stops every stable root, joins the
-// exact stop reconciliation, and tears resident sessions down leaf-first. The
-// caller supplies the Session-close policy so root Session shutdown can keep a
-// shared environment alive until its own final cleanup. The delegate store
-// remains open for subsequent worktree disposal evidence.
-func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChild func(*Session)) error {
+// exact stop reconciliation, and tears resident sessions down leaf-first. Every
+// resident runtime is a child session — on its owner's environment or on a
+// clone sharing the owner's process table — so the default policy is the child
+// teardown (teardownChildSession, scratch retained), never Session.Close. The
+// caller may supply its own policy; root Session shutdown does, so it keeps its
+// shared environment alive until its own final cleanup. ownsEnv is the owner's
+// record of whether the child's environment was built for it. The delegate
+// store remains open for subsequent worktree disposal evidence.
+func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChild func(child *Session, ownsEnv bool)) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if closeChild == nil {
-		closeChild = func(child *Session) { child.Close() }
+		closeChild = func(child *Session, ownsEnv bool) {
+			teardownChildSession(ctx, child, ownsEnv, retainChildScratch)
+		}
 	}
 	c.mu.Lock()
 	if !c.closing {
@@ -539,8 +545,23 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 		allMembers[id] = struct{}{}
 	}
 	children := make([]*Session, 0, len(allMembers))
+	// Each resident runtime's owner, read now while the tree is intact: the
+	// close policy asks the owner whether the child's environment is its own.
+	owners := make(map[*Session]*Session, len(allMembers))
 	for _, id := range c.memberIDsLeafFirstLocked(allMembers) {
-		if live := c.live[id]; live != nil && live.runtime != nil {
+		live := c.live[id]
+		if live == nil {
+			continue
+		}
+		if aggregate := c.durable[id]; aggregate != nil {
+			if live.runtime != nil {
+				owners[live.runtime] = c.ownerRuntimeLocked(aggregate)
+			}
+			if live.binding != nil && live.binding.runtime != nil {
+				owners[live.binding.runtime] = c.ownerRuntimeLocked(aggregate)
+			}
+		}
+		if live.runtime != nil {
 			children = append(children, live.runtime)
 		}
 	}
@@ -604,7 +625,7 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 			continue
 		}
 		closed[child] = struct{}{}
-		closeChild(child)
+		closeChild(child, owners[child].ownsChildEnvironment(child))
 	}
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
 		return err

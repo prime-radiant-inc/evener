@@ -23,6 +23,10 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
 
+## Directory fields
+
+All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.
+
 ## The examples are the running app
 
 There is no static example gallery to keep in sync. Run the dev server and open

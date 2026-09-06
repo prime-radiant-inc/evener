@@ -97,7 +97,9 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 	s := sbxWorktreeSession(t)
 	laneAEnv := execenv.NewLocalExecutionEnvironment(laneA)
 	laneAEnv.Sandbox = sbxResolve(t, facts, laneA, sandbox.ModeWorkspaceWrite)
-	s.swapEnvAndRefresh(laneAEnv)
+	if err := s.swapEnvAndRefresh(laneAEnv, nil); err != nil {
+		t.Fatalf("swapEnvAndRefresh: %v", err)
+	}
 
 	s.enterWorktree(laneB, true)
 	entered := s.currentEnv().(*execenv.LocalExecutionEnvironment)
@@ -108,8 +110,8 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 		t.Errorf("entered sandbox write roots must be lane B only: %v", entered.Sandbox.FileTool.WriteRoots)
 	}
 
-	root, ok := s.exitWorktree()
-	if !ok || root != laneA {
+	root, ok, err := s.exitWorktree()
+	if err != nil || !ok || root != laneA {
 		t.Fatalf("exitWorktree must restore lane A, got (%q, %v)", root, ok)
 	}
 	restored := s.currentEnv().(*execenv.LocalExecutionEnvironment)
@@ -134,7 +136,7 @@ func TestEnterWorktreeRefusesUnsatisfiableReRoot(t *testing.T) {
 	// cannot be re-rooted, so WithWorkingDirectory to any target fails closed — a
 	// deterministic stand-in for a target the host cannot classify/enforce.
 	laneAEnv.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted, Backend: sandbox.BackendBwrap}
-	s.swapEnvAndRefresh(laneAEnv)
+	s.swapEnvAndRefresh(laneAEnv, nil)
 
 	if err := s.enterWorktree(laneB, true); err == nil {
 		t.Fatal("enterWorktree into an unsatisfiable re-root target must be refused")

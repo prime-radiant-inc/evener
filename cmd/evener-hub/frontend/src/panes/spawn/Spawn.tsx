@@ -1,20 +1,6 @@
-// The spawn pane: starts a new agent.
-//
-// This page IS the composer, not a form that happens to contain one - it renders
-// the same widgets/promptcard the session composer does, with its own primary
-// verb ("Start") in the card's corner. The prompt leads and takes the page's
-// vertical slack; beneath it sits ONE compact configuration row (working
-// directory widest, since it is the only field that changes often, then model
-// and effort), with the branch riding the directory row as a read-only HEAD
-// readout rather than a peer field. Harness lives in Advanced options: most
-// installs have exactly one, and a field whose answer is always "evener" should
-// not lead the page.
-//
-// Behind that: sticky-default layering + stale-model cleanup, the schema-driven
-// advanced options (which also host the access-mode field, 9ct0 §3.3), image
-// attachments, working-dir preflight, and ?dir=/?prompt= URL prefill (floor §1,
-// parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
-// (Jesse 2026-07-22).
+// Session creation keeps the project directory above the prompt and the
+// less frequently changed launch settings below it. The directory picker
+// commits once, so browsing does not churn directory-dependent configuration.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
@@ -38,7 +24,6 @@ import {
   IconButton,
   Loader,
   PaneScaffold,
-  PathField,
   PromptCard,
   Select,
   SendIcon,
@@ -47,16 +32,19 @@ import {
   useToasts,
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
+import { DirectoryIcon, DirectoryPicker } from "../../widgets/directorypicker";
 import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
+import { basename } from "../../widgets/pathfield/pathRows";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { ConnectProviderDialog } from "../settings/sections/credentials/ConnectProviderDialog";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
@@ -85,6 +73,7 @@ import {
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
+import { useProviderSetup } from "./useProviderSetup";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -128,7 +117,9 @@ const CLASS = {
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   cfgModel: requireClass(styles.cfgModel, "spawn.module.css", "cfgModel"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
+  directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
+  directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
+  directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
@@ -153,12 +144,20 @@ const MODEL_CHOOSE_LABEL = "Choose a model";
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const client = useClient();
   const toasts = useToasts();
+  const providerSetup = useProviderSetup();
+  const [connectingProvider, setConnectingProvider] = useState(false);
+  const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
+  const providerConnected = useCallback(() => {
+    setConnectingProvider(false);
+    void providerSetup.retry();
+  }, [providerSetup.retry]);
 
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState("");
   const [model, setModel] = useState(""); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [cwd, setCwd] = useState("");
+  const [directoryOpen, setDirectoryOpen] = useState(false);
   const [branch, setBranch] = useState(""); // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useState("");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
@@ -227,6 +226,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
+  const initialModelRef = useRef("");
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -255,6 +255,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const attachments = useAttachments(textEditor);
 
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
+  const providerRequired = usesEvenerModels && providerSetup.status === "missing";
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set.
@@ -262,8 +263,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
-  // so the scoped cache below is keyed on this generation: evener/auth/updated
-  // advances it, the loader identities change, and the catalog effect and the
+  // so the scoped cache below is keyed on two signals of it: this generation,
+  // which evener/auth/updated advances the moment it arrives, and the
+  // instance list's identity, which follows the credentials store's debounced
+  // refetch and also covers an instance being added, edited or removed. On
+  // either, the loader identities change, and the catalog effect and the
   // pickers reload (the mount-only stale-model sweep does not re-run).
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
   useEffect(
@@ -275,12 +279,22 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   );
   const modelListCache = useRef<{
     client: object;
+    instances: object;
     generation: number;
     entries: Map<string, Promise<ModelListResponse>>;
-  }>({ client, generation: credentialsGeneration, entries: new Map() });
+  }>({ client, instances: providerSetup.instances, generation: credentialsGeneration, entries: new Map() });
   const loadModelList = useCallback((): Promise<ModelListResponse> => {
-    if (modelListCache.current.client !== client || modelListCache.current.generation !== credentialsGeneration) {
-      modelListCache.current = { client, generation: credentialsGeneration, entries: new Map() };
+    if (
+      modelListCache.current.client !== client ||
+      modelListCache.current.instances !== providerSetup.instances ||
+      modelListCache.current.generation !== credentialsGeneration
+    ) {
+      modelListCache.current = {
+        client,
+        instances: providerSetup.instances,
+        generation: credentialsGeneration,
+        entries: new Map(),
+      };
     }
     const cache = modelListCache.current.entries;
     const key = `${harness}\0${cwd}`;
@@ -295,7 +309,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     });
     cache.set(key, tracked);
     return tracked;
-  }, [client, harness, cwd, credentialsGeneration]);
+  }, [client, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
@@ -327,6 +341,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
     [client],
   );
+  const createDirectory = useCallback((path: string) => createDir(client, path), [client]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
       client.request("evener/launch/resolve", {
@@ -370,13 +385,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema) and the stale-model sweep.
+  // (harnesses, advanced schema).
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
   useEffect(() => {
     const urlPrefill = readUrlPrefill(window.location.search);
     const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
     if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
     if (defaults.harness) setHarness(defaults.harness);
+    initialModelRef.current = defaults.model ?? "";
     if (defaults.model) setModel(defaults.model);
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
@@ -398,16 +414,24 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       },
       () => {},
     );
-    // Stale-model cleanup (floor §1.10): sweep the persisted defaults against the
-    // live model list; if this project's prefilled model was discarded, clear it
-    // and surface the inline notice.
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Sweep persisted defaults using the current provider configuration. A
+  // credential refresh cancels older catalogs before they can discard a model.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  useEffect(() => {
+    let active = true;
+    const initialModel = initialModelRef.current;
     loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
-        if (defaults.model && discarded.includes(defaults.model)) {
+        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
           setModel("");
-          setStaleNotice(defaults.model);
+          setStaleNotice(initialModel);
         }
       },
       () => {},
@@ -415,7 +439,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [client, providerSetup.instances]);
 
   // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
   // /new?dir=/?prompt= navigation while this pane is already open refocuses
@@ -752,7 +776,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
-    if (modelRequired) return;
+    if (modelRequired || providerRequired) return;
     if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
@@ -845,15 +869,53 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
+        <div className={CLASS.cfgDir}>
+          <button
+            type="button"
+            id="spawn-cwd"
+            className={CLASS.directoryButton}
+            aria-label={`Working directory: ${cwd || "Choose a folder"}`}
+            aria-haspopup="dialog"
+            aria-expanded={directoryOpen}
+            onClick={() => setDirectoryOpen(true)}
+          >
+            <DirectoryIcon />
+            <span className={CLASS.directoryText}>
+              <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
+              <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
+            </span>
+            <span>Change…</span>
+          </button>
+          {branch !== "" && (
+            <span className={CLASS.branch} data-testid="spawn-branch">
+              {branch}
+            </span>
+          )}
+        </div>
+        {directoryOpen && (
+          <DirectoryPicker
+            key={cwd}
+            value={cwd}
+            fallbackDir={getGlobalLastWorkingDir()}
+            complete={complete}
+            listRecents={listRecents}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
+            onClose={() => setDirectoryOpen(false)}
+            onPick={(path) => {
+              setCwd(path);
+              setGlobalLastWorkingDir(path);
+              setDirectoryOpen(false);
+            }}
+          />
+        )}
+
         <div className={CLASS.mobilePromptIntro} data-testid="spawn-mobile-prompt-intro">
           <h3 className={CLASS.mobilePromptHeading}>What should the agent do?</h3>
           <p className={CLASS.mobilePromptSubtitle}>Leave blank to start a dormant session.</p>
         </div>
 
-        {/* The prompt comes FIRST and takes the page's slack: writing the
-            prompt is what starting an agent IS, and everything below it is
-            configuration that mostly stays where it was last left. The card is
-            the same widgets/promptcard the session composer renders. */}
+        {/* The prompt shares its card and attachment controls with the session composer. */}
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
           <PromptCard
             data-testid="spawn-prompt-card"
@@ -935,7 +997,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || pluginSelectionBlocked}
+                  disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
@@ -947,6 +1009,25 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             }
           />
         </Dropzone>
+        {providerRequired && (
+          <div className={CLASS.notice} role="status">
+            <span>Connect a provider to use a model. Sign in or add an API key here.</span>
+            <Button onClick={() => setConnectingProvider(true)}>Connect provider</Button>
+            <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+              Retry provider check
+            </Button>
+          </div>
+        )}
+        {usesEvenerModels && providerSetup.status === "error" && (
+          <div className={CLASS.notice} role="status">
+            <span>Could not check provider configuration.</span>
+            <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
+            <Button variant="quiet" onClick={() => setConnectingProvider(true)}>
+              Review providers
+            </Button>
+          </div>
+        )}
+        {connectingProvider && <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />}
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         {/* The same AttachmentTile the session composer draws (kata kbg7):
@@ -963,45 +1044,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
-        {/* ONE compact row of configuration beneath the card, widest field
-            first: the working directory is the only one that changes often.
-            Harness moved into Advanced options - most installs have exactly one,
-            and a field whose answer is always "evener" should not lead the page. */}
+        {/* Model and effort share the secondary settings row. */}
         <div className={CLASS.cfg}>
-          <div className={CLASS.cfgDir}>
-            <FormRow label="Working directory" htmlFor="spawn-cwd">
-              <PathField
-                id="spawn-cwd"
-                value={cwd}
-                onChange={setCwd}
-                kind="dir"
-                listRecents={listRecents}
-                complete={complete}
-                // With no ?dir= prefill and no per-project blob the field starts
-                // empty; the panel then opens on the last directory a session was
-                // launched in rather than on $HOME (spec 3.4). Read here rather
-                // than captured at mount so it reflects the latest stamp.
-                fallbackDir={getGlobalLastWorkingDir()}
-                placeholder="Working directory"
-                // Browsing writes the field on every step, so the last-used
-                // directory is recorded once the panel closes rather than
-                // continuously (spec 3.7).
-                onPanelClose={setGlobalLastWorkingDir}
-              />
-            </FormRow>
-            {/* Branch is a read-only HEAD readout, not a peer field: it rides
-                the directory row as a mono suffix ("~/code/evener · main") because
-                it is a property of that directory. */}
-            {branch !== "" && (
-              <span className={CLASS.branch} data-testid="spawn-branch" title={`HEAD ${branch}`}>
-                <span className={CLASS.branchSeparator} aria-hidden="true">
-                  ·
-                </span>
-                {branch}
-              </span>
-            )}
-          </div>
-
           {/* data-testid on the wrapper, not the trigger: the trigger is
               ModelCatalog's own button and has no hook to give, and the pane
               now renders a SECOND "— change model" button (the card's
@@ -1095,6 +1139,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             cwd={cwd}
             onCwdChange={setCwd}
             complete={complete}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
             listRecents={listRecents}
             fallbackDir={getGlobalLastWorkingDir()}
             onCwdPanelClose={setGlobalLastWorkingDir}
@@ -1115,6 +1161,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
 
         <AdvancedOptions
+          createDirectory={createDirectory}
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
           validatePath={validatePath}

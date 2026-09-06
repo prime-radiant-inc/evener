@@ -124,7 +124,7 @@ provider glob beats an upstream row fact, and a user-layer instance-wide
 
 The live layer sits between the curated overlay and the user config. It
 establishes existence for models the catalog lacks and supplies `Tools`,
-`InputModalities`, `ContextWindow`, `MaxOutputTokens`, `EffortValues`,
+`InputModalities`, `ContextWindow`, `MaxOutputTokens`, `EffortValues`, `DefaultEffort`,
 `Cost`, `Reasoning`, plus `ThinkingAlwaysOn` (only when OpenRouter's
 `reasoning.mandatory` is `true`). It overrides catalog and curated facts but
 **never a field the user layer (layer 4) set**, and it never touches any
@@ -561,6 +561,24 @@ transport with behavior beyond authentication:
 - the backend enforces a model allowlist: an unknown id is a resolve error,
   not a synthesized row (the exception in [Unknown models](#unknown-models)
   above).
+
+`openai-codex/gpt-6-astra` is available in the curated catalog, including on
+named instances with `base = "openai-codex"`; discovery is not required to
+select it. Its subscription context defaults to 272,000 tokens. Live discovery
+can override that value and the default reasoning effort; the public API's
+larger context window is not the subscription default.
+
+Astra uses Responses Lite: the routing header is set, tools and instructions
+are sent as developer input items, and `reasoning.context = "all_turns"`
+preserves reasoning across tool turns. Images use `detail = "original"`.
+`parallel_tool_calls` is false on this route. These settings follow the
+[Codex request builder](https://github.com/openai/codex/blob/459a79eb85400af759e9220c7bafb4429ae07516/codex-rs/core/src/client.rs#L907).
+
+The selectable reasoning efforts are `low`, `medium`, `high`, `xhigh`, and
+`max`; reasoning cannot be disabled. Codex discovery also advertises `ultra`,
+but Evener omits it: it is a
+[Codex delegation preset](https://github.com/openai/codex/blob/459a79eb85400af759e9220c7bafb4429ae07516/codex-rs/core/src/client.rs#L186),
+not an API effort. Astra does not change the instance's default or cheap model.
 
 ## The fields denylist and `evener models inspect`
 

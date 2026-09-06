@@ -31,13 +31,13 @@ var (
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
 func (m *Manager) Gc(ctx context.Context) ([]string, error) {
-	release, err := gcAcquireLock(ctx, m.lockPath(), 30*time.Second)
+	release, err := m.acquireStoreLock(ctx, gcAcquireLock, m.lockPath(), 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 
-	reg, err := LoadRegistry(m.registryPath())
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}

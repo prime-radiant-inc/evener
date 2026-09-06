@@ -244,11 +244,20 @@ func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testin
 
 func seedDelegateReclaimRuntime(t *testing.T, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool) *Session {
 	t.Helper()
+	runtime := &Session{id: "child-" + id}
+	seedDelegateReclaimRuntimeSession(t, c, id, parentID, endedAt, acknowledged, closed, runtime)
+	return runtime
+}
+
+// seedDelegateReclaimRuntimeSession is seedDelegateReclaimRuntime with a
+// caller-built resident runtime, for a test whose subject is what closing that
+// runtime touches.
+func seedDelegateReclaimRuntimeSession(t *testing.T, c *delegateTreeController, id, parentID string, endedAt time.Time, acknowledged, closed bool, runtime *Session) {
+	t.Helper()
 	originalNow := c.now
 	c.now = func() time.Time { return endedAt }
 	t.Cleanup(func() { c.now = originalNow })
 	seedDelegateControllerRunning(t, c, id, parentID)
-	runtime := &Session{id: "child-" + id}
 	c.mu.Lock()
 	live := c.live[id]
 	live.runtime = runtime
@@ -297,7 +306,6 @@ func seedDelegateReclaimRuntime(t *testing.T, c *delegateTreeController, id, par
 			t.Fatalf("close resumability %s: %v", id, err)
 		}
 	}
-	return runtime
 }
 
 func reclamationDelegateIDs(claim *delegateRuntimeReclamationClaim) []string {

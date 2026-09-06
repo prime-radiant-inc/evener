@@ -22,6 +22,45 @@ var (
 	lockSleep = time.Sleep
 )
 
+// lockAcquirer is acquireLock's signature, which the per-area test seams
+// (installAcquireLock and its siblings) stand in for.
+type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
+
+// acquireStoreLock refuses a store root that cannot be used, then takes the
+// store lock at lockPath through acquire.
+//
+// storePath refuses the same roots wherever a store path is derived, which
+// covers everything a writer goes on to touch. It cannot cover the lock file:
+// the lock is taken before any of those paths is derived, and its own path is
+// the plain join m.lockPath(). So this is the second guard, on the first write
+// every mutation makes. Calling storeRootError used to be each caller's own
+// job: the nine writers that take the lock and then write (install, upgrade,
+// remove, the two flag setters, gc, and the three marketplace mutations)
+// skipped it and planted a store in somebody's project, and Browse, which
+// clones a marketplace lazily, skipped it too. Here a writer cannot forget the
+// check without also forgetting the lock.
+//
+// Three checks are written out on top of storePath, and these are all of them.
+// This one, because the lock file is created before any store path is derived.
+// resolveForLaunch, because a launch continues without plugins rather than
+// failing, so it needs the unusable store as a diagnostic and not an error.
+// Doctor, because reporting the environment is what Doctor is for, so it needs
+// a FAIL finding and not an error. Everywhere else derives through storePath.
+func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lockPath string, timeout time.Duration) (func(), error) {
+	if err := m.storeRootError(); err != nil {
+		return nil, err
+	}
+	return acquire(ctx, lockPath, timeout)
+}
+
+// acquireBundledLock takes the bundled cache's lock for one mutation of
+// <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
+// and it goes through acquireStoreLock so the store-root check lands on this
+// lock the same way it lands on the store lock.
+func (m *Manager) acquireBundledLock(ctx context.Context, timeout time.Duration) (func(), error) {
+	return m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
+}
+
 // acquireLock takes an exclusive flock on lockPath, retrying with capped
 // exponential backoff until ctx is canceled or timeout elapses. The returned
 // release unlocks and closes the file. Callers without a request context pass

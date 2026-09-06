@@ -105,7 +105,7 @@ func setWriteBlockedRestrictedParent(t *testing.T, parent *Session, facts sandbo
 	}
 	env := execenv.NewLocalExecutionEnvironment(cwd)
 	env.Sandbox = &resolved
-	parent.swapEnvAndRefresh(env)
+	parent.swapEnvAndRefresh(env, nil)
 }
 
 func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {
@@ -337,7 +337,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 			if sub == nil || !restored {
 				t.Fatalf("compatible restored role policy = sub:%v restored:%t", sub, restored)
 			}
-			defer sub.sess.discardRestoredCandidate()
+			defer sub.sess.discardRestoredCandidate(sub.ownsEnv)
 			assertReadOnlyDelegateBackend(t, sub.sess, tc.wantMode, tc.wantWriteBlocked)
 		})
 	}

@@ -3,9 +3,11 @@ package plugins
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -589,4 +591,96 @@ func TestDoctor_CleanStoreHasNoFailOrWarn(t *testing.T) {
 			t.Errorf("clean store produced a non-OK finding: %+v", f)
 		}
 	}
+}
+
+// Doctor is the read-only report, and an unusable store root is the
+// environment problem that explains every other check failing. It is reported
+// the way Doctor reports the rest of the environment — a FAIL finding, not an
+// error — and reported without touching the working directory: the writability
+// probe used to create its temp file under a relative root such as ".", which
+// is a write from the one verb that promises not to make any.
+func TestDoctor_ReportsARootThatIsNotResolvedWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name    string
+		root    string
+		wantErr string
+	}{
+		{"no root could be resolved", "", "no plugin store root is configured"},
+		{"the root is the working directory", ".", "not an absolute path"},
+		{"the root names a relative directory", "store", "not an absolute path"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+			plantAmbientStore(t, cwd)
+			before := dirNames(t, cwd)
+			// The probe removes its temp file, so the directory listing alone
+			// would not notice it. Watch the seam instead.
+			origCreateTemp := doctorCreateTemp
+			t.Cleanup(func() { doctorCreateTemp = origCreateTemp })
+			probed := ""
+			doctorCreateTemp = func(dir, pattern string) (doctorTempFile, error) {
+				probed = dir
+				return origCreateTemp(dir, pattern)
+			}
+
+			// git does not live under the store root, so its availability is
+			// still worth reporting — and is still really checked, which a
+			// stub that disagrees with this machine is what proves.
+			origGitAvailable := doctorGitAvailable
+			t.Cleanup(func() { doctorGitAvailable = origGitAvailable })
+			doctorGitAvailable = func() bool { return false }
+
+			m := &Manager{Root: test.root, Stderr: io.Discard}
+			findings, err := m.Doctor()
+			if err != nil {
+				t.Fatalf("Doctor error = %v, want the root reported as a finding", err)
+			}
+			if len(findings) != 2 {
+				t.Fatalf("findings = %+v, want the git finding and the unusable-root finding", findings)
+			}
+			git := findings[0]
+			if git.Level != LevelWarn || git.Category != catEnvironment || !strings.Contains(git.Message, "git not found on PATH") {
+				t.Errorf("first finding = %+v, want git availability reported despite the root", git)
+			}
+			got := findings[1]
+			if got.Level != LevelFail || got.Category != catEnvironment {
+				t.Errorf("finding = %+v, want a FAIL under %q", got, catEnvironment)
+			}
+			if !strings.Contains(got.Message, test.wantErr) {
+				t.Errorf("finding message = %q, want it to contain %q", got.Message, test.wantErr)
+			}
+			if got.Remediation == "" {
+				t.Error("finding has no remediation")
+			}
+			// The probe refuses on its own too, so a caller that reaches it
+			// directly cannot write into the working directory either.
+			if exists, probeErr := m.checkStoreWritable(); probeErr == nil || exists {
+				t.Errorf("checkStoreWritable = %v, %v; want a refusal that probes nothing", exists, probeErr)
+			}
+			if probed != "" {
+				t.Errorf("the writability probe created a file under %q", probed)
+			}
+			if after := dirNames(t, cwd); !slices.Equal(before, after) {
+				t.Errorf("working directory went from %v to %v; Doctor wrote to it", before, after)
+			}
+		})
+	}
+}
+
+// dirNames is the sorted contents of dir, for asserting that a call left it
+// exactly as it found it.
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names
 }

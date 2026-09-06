@@ -403,7 +403,7 @@ func TestWorktreeControlRun_NonLocalEnvErrors(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
 
-	_, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	_, _, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
 	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
 		t.Fatalf("worktreeControlRun with a non-local env: err = %v, want the local-execution-environment error", err)
 	}

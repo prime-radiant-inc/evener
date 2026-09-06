@@ -13,20 +13,56 @@ import (
 	"time"
 )
 
+// childReadyTripwire bounds the readiness poll below. Reaching a fixture's
+// first write costs a process creation: 440 samples taken on a host at load
+// average ~130 all landed under 65ms, but the two creations the sibling git
+// fixture needed have been measured at up to 10s on that same class of host —
+// which is exactly where the bare 10s ceiling this replaced would have fired,
+// on a fixture that was never in trouble. The bound is a hang guard, never the
+// mechanism: the poll's real exits are the file appearing and the child's own
+// reap.
+const childReadyTripwire = 90 * time.Second
+
+// childWait reaps a started child exactly once and publishes the result, so a
+// readiness poll can watch the child's own exit while the test keeps ownership
+// of the reap signal Stop needs.
+type childWait struct {
+	done chan struct{}
+	err  error // valid once done is closed
+}
+
+func reapChild(cmd *exec.Cmd) *childWait {
+	w := &childWait{done: make(chan struct{})}
+	go func() {
+		w.err = cmd.Wait()
+		close(w.done)
+	}()
+	return w
+}
+
 // waitForFile polls for a fixture file the child writes once it is ready,
-// so tests synchronize on real child state instead of sleeps.
-func waitForFile(t *testing.T, path string) string {
+// so tests synchronize on real child state instead of sleeps. It watches the
+// child's own reap alongside the file: a fixture that dies before writing —
+// a bad script, a failed exec, a sandbox refusal — names that exit instead of
+// spending the whole tripwire and then blaming a file that was never coming.
+func waitForFile(t *testing.T, path string, child *childWait) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.Now().Add(childReadyTripwire)
+	for {
 		b, err := os.ReadFile(path)
 		if err == nil && len(b) > 0 && strings.HasSuffix(string(b), "\n") {
 			return strings.TrimSpace(string(b))
 		}
+		select {
+		case <-child.done:
+			t.Fatalf("child exited before writing %s: %v", path, child.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child never wrote %s within %v", path, childReadyTripwire)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("child never wrote %s", path)
-	return ""
 }
 
 func pidAlive(pid int) bool {
@@ -63,17 +99,13 @@ func TestStopTerminatesWholeGroup(t *testing.T) {
 	if err := Start(cmd); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	grandchild, err := strconv.Atoi(waitForFile(t, pidFile))
+	child := reapChild(cmd)
+	grandchild, err := strconv.Atoi(waitForFile(t, pidFile, child))
 	if err != nil {
 		t.Fatalf("grandchild pid: %v", err)
 	}
-	reaped := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(reaped)
-	}()
-	Stop(cmd.Process.Pid, reaped, 5*time.Second)
-	<-reaped
+	Stop(cmd.Process.Pid, child.done, 5*time.Second)
+	<-child.done
 	deadline := time.Now().Add(5 * time.Second)
 	for pidAlive(grandchild) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -91,24 +123,21 @@ func TestStopEscalatesToKillWhenTermIgnored(t *testing.T) {
 	if err := Start(cmd); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	waitForFile(t, readyFile)
-	reaped := make(chan struct{})
-	waitErr := make(chan error, 1)
-	go func() {
-		waitErr <- cmd.Wait()
-		close(reaped)
-	}()
+	child := reapChild(cmd)
+	waitForFile(t, readyFile, child)
 	start := time.Now()
-	Stop(cmd.Process.Pid, reaped, 200*time.Millisecond)
+	Stop(cmd.Process.Pid, child.done, 200*time.Millisecond)
+	// TRIPWIRE: the KILL is already sent by the time Stop returns, so the reap
+	// is one signal delivery away; this only fires if it never lands at all.
 	select {
-	case <-reaped:
+	case <-child.done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("TERM-ignoring child was never killed")
 	}
 	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
 		t.Errorf("Stop returned in %v, before the TERM grace elapsed", elapsed)
 	}
-	err := <-waitErr
+	err := child.err
 	ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	if err == nil || !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
 		t.Errorf("TERM-ignoring child died with %v (state %v), want SIGKILL", err, cmd.ProcessState)
@@ -122,18 +151,14 @@ func TestStopReturnsWithoutKillWhenChildHonorsTerm(t *testing.T) {
 	if err := Start(cmd); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	waitForFile(t, readyFile)
-	reaped := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(reaped)
-	}()
+	child := reapChild(cmd)
+	waitForFile(t, readyFile, child)
 	// The grace is a tripwire, not a mechanism: a child that honors TERM
 	// must release Stop long before it, or interrupted runs would always
 	// stall for the full escalation window.
 	start := time.Now()
-	Stop(cmd.Process.Pid, reaped, 30*time.Second)
-	<-reaped
+	Stop(cmd.Process.Pid, child.done, 30*time.Second)
+	<-child.done
 	if elapsed := time.Since(start); elapsed > 25*time.Second {
 		t.Errorf("Stop took %v against a cooperative child; it waited out the grace instead of the reap", elapsed)
 	}
@@ -158,12 +183,8 @@ func TestStopNeverSignalsAnAlreadyReapedChild(t *testing.T) {
 	if err := Start(decoy); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	decoyReaped := make(chan struct{})
-	go func() {
-		_ = decoy.Wait()
-		close(decoyReaped)
-	}()
-	waitForFile(t, readyFile)
+	decoyChild := reapChild(decoy)
+	waitForFile(t, readyFile, decoyChild)
 	alreadyReaped := make(chan struct{})
 	close(alreadyReaped)
 	Stop(decoy.Process.Pid, alreadyReaped, 50*time.Millisecond)
@@ -177,8 +198,8 @@ func TestStopNeverSignalsAnAlreadyReapedChild(t *testing.T) {
 	if !pidAlive(decoy.Process.Pid) {
 		t.Error("decoy died during a Stop that should have sent nothing")
 	}
-	Stop(decoy.Process.Pid, decoyReaped, 5*time.Second)
-	<-decoyReaped
+	Stop(decoy.Process.Pid, decoyChild.done, 5*time.Second)
+	<-decoyChild.done
 }
 
 func TestExitCodeMapsSignalDeathsLikeAShell(t *testing.T) {

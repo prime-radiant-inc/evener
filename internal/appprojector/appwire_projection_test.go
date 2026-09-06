@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -44,6 +45,36 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.TranscriptEntryIndex != 3 {
 		t.Fatalf("transcript entry index=%d, want 3", item.TranscriptEntryIndex)
+	}
+}
+
+func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	// The agent's informational context-budget warnings (an output clamp, a
+	// context-usage notice) carry an explicit neutral title and hint so the
+	// classifier's keyword fallback cannot stamp its generic "Evener error"
+	// title and session-log hint onto them — the Web UI renders the title on
+	// the warning chip, and that title read as a failure for routine budget
+	// arithmetic. This is the wire-side half of that contract: whatever title
+	// the emitter supplied must survive projection verbatim.
+	out := p.Project(events.SessionEvent{Kind: events.EventWarning, SessionID: "th_1", Data: events.WarningData{
+		Message: "Output allocation reduced for inst/model: requested=100 admitted=50",
+		Source:  "evener",
+		Title:   "Context budget",
+		Hint:    "The model's output allocation was reduced to fit its context window. No action needed.",
+	}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyWarning {
+		t.Fatalf("notifications=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params["title"] != "Context budget" {
+		t.Fatalf("title=%v, want the emitter-supplied neutral title", params["title"])
+	}
+	if strings.Contains(fmt.Sprint(params["hint"]), "session log") {
+		t.Fatalf("hint=%v, want the emitter-supplied hint, not the generic session-log guidance", params["hint"])
 	}
 }
 

@@ -64,9 +64,28 @@ type DoctorFinding struct {
 // or known_marketplaces.json) failed to parse — the same failure every other
 // Manager verb would hit. A per-plugin or per-marketplace problem is never
 // returned as an error; it becomes a FAIL finding instead, so the rest of the
-// report is still useful.
+// report is still useful. A store root that cannot be used is a finding too,
+// and the report is then that finding and the git check, which is the only
+// other one that does not need the store.
 func (m *Manager) Doctor() ([]DoctorFinding, error) {
-	reg, err := LoadRegistry(m.registryPath())
+	// A root that cannot be used is an environment problem, and Doctor reports
+	// those as findings — this is the one it exists to report, since it
+	// explains every other check that cannot run. There is nothing under such
+	// a root to check either: the registry and the marketplaces file would be
+	// read from, and the writability probe written into, whatever directory
+	// the process happens to be in. git is the exception, because it is on
+	// PATH rather than in the store, and a report that dropped it would hide a
+	// second thing the user has to fix.
+	if err := m.storeRootError(); err != nil {
+		return []DoctorFinding{doctorGitFinding(), {
+			Level:       LevelFail,
+			Category:    catEnvironment,
+			Message:     fmt.Sprintf("plugin store is unusable: %v", err),
+			Remediation: "point the store at an absolute path: set XDG_CONFIG_HOME or HOME to an absolute directory, or pass an absolute --store-root to evener-doctor (--plugin-root to evener serve)",
+		}}, nil
+	}
+
+	reg, err := m.loadRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -292,19 +311,24 @@ func (m *Manager) doctorMarketplace(name string, ref MarketplaceRef) DoctorFindi
 	return DoctorFinding{Level: LevelOK, Category: catMarketplace, Message: name + ": healthy"}
 }
 
+// doctorGitFinding reports whether git is on PATH. It is the one check that
+// does not look at the store, so it is also the one Doctor can still make when
+// the store root is unusable.
+func doctorGitFinding() DoctorFinding {
+	if doctorGitAvailable() {
+		return DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"}
+	}
+	return DoctorFinding{
+		Level: LevelWarn, Category: catEnvironment,
+		Message:     "git not found on PATH",
+		Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
+	}
+}
+
 // doctorEnvironment checks the two preconditions every other operation
 // depends on: git for fetch/clone/pull, and a writable store root.
 func (m *Manager) doctorEnvironment() []DoctorFinding {
-	var findings []DoctorFinding
-	if doctorGitAvailable() {
-		findings = append(findings, DoctorFinding{Level: LevelOK, Category: catEnvironment, Message: "git is available on PATH"})
-	} else {
-		findings = append(findings, DoctorFinding{
-			Level: LevelWarn, Category: catEnvironment,
-			Message:     "git not found on PATH",
-			Remediation: "install git; marketplace/plugin fetch, clone, and upgrade all shell out to it",
-		})
-	}
+	findings := []DoctorFinding{doctorGitFinding()}
 
 	switch exists, err := m.checkStoreWritable(); {
 	case err != nil:
@@ -331,7 +355,16 @@ func (m *Manager) doctorEnvironment() []DoctorFinding {
 // exist, it is probed with a throwaway temp file, without disturbing any real
 // state.
 func (m *Manager) checkStoreWritable() (exists bool, err error) {
-	info, statErr := doctorStat(m.Root)
+	// Deriving the root is what refuses an unresolved one, before the probe
+	// creates its temp file. Under a relative root that file landed in the
+	// working directory, which is a write from the one verb that promises to
+	// make none. Doctor turns the root away before it gets here; this keeps
+	// the promise for any caller that does not.
+	root, err := m.storePath()
+	if err != nil {
+		return false, err
+	}
+	info, statErr := doctorStat(root)
 	if statErr != nil {
 		if errors.Is(statErr, fs.ErrNotExist) {
 			return false, nil
@@ -339,10 +372,10 @@ func (m *Manager) checkStoreWritable() (exists bool, err error) {
 		return false, statErr
 	}
 	if !info.IsDir() {
-		return true, fmt.Errorf("%s is not a directory", m.Root)
+		return true, fmt.Errorf("%s is not a directory", root)
 	}
 
-	f, err := doctorCreateTemp(m.Root, ".doctor-write-test-*")
+	f, err := doctorCreateTemp(root, ".doctor-write-test-*")
 	if err != nil {
 		return true, err
 	}

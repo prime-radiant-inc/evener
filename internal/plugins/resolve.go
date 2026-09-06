@@ -80,18 +80,19 @@ func (m *Manager) ResolveForLaunch(ctx context.Context, explicitDirs []string, e
 // store the way a launch does, so a destination a launch would reject fails
 // preview the same way, a store a launch could not publish into fails preview
 // too, and an already published copy is the one preview describes. Exactly
-// what it touches: it creates <Root>/bundled if that is missing, it takes the
-// store lock while it works there, and for a requested bundled plugin not yet
-// published it stages a marked copy there, reads it, and removes it before
-// returning. A destination holding content this build did not publish is
-// reported as the conflict a launch would act on and left exactly where it is:
-// repairing the store belongs to a launch, and a preview that moved that
-// directory would take a path live sessions read out from under them. It
-// publishes nothing, and it reclaims nothing: collecting abandoned staging
-// belongs to a launch. Removing what it staged is part of the promise, so a removal that
-// fails is reported as a diagnostic on the inventory it returns rather than as
-// an error that would throw the inventory away; the marked directory stays in
-// the store until a later launch's sweep reclaims it.
+// what it touches: it creates <Root>/bundled and the lock file the cache keeps
+// there if either is missing, it takes that lock while it works there, and for
+// a requested bundled plugin not yet published it stages a marked copy there,
+// reads it, and removes it before returning. A destination holding content
+// this build did not publish is reported as the conflict a launch would act on
+// and left exactly where it is: repairing the store belongs to a launch, and a
+// preview that moved that directory would take a path live sessions read out
+// from under them. It publishes nothing, and it reclaims nothing: collecting
+// abandoned staging belongs to a launch. Removing what it staged is part of
+// the promise, so a removal that fails is reported as a diagnostic on the
+// inventory it returns rather than as an error that would throw the inventory
+// away; the marked directory stays in the store until a later launch's sweep
+// reclaims it.
 func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, enabledNames *[]string) (LaunchPluginResolution, error) {
 	var scratch []string
 	resolution, err := m.resolveForLaunch(ctx, explicitDirs, enabledNames, func(name string) (bundledCandidate, error) {
@@ -102,8 +103,8 @@ func (m *Manager) PreviewForLaunch(ctx context.Context, explicitDirs []string, e
 		if staging == nil {
 			return bundledCandidate{loadPath: dest, path: dest, warnings: warnings}, nil
 		}
-		// Preview publishes nothing, so the store lock is only wanted for the
-		// staging that fills; reading the copy back needs nothing from the
+		// Preview publishes nothing, so the cache's lock is only wanted for
+		// the staging that fills; reading the copy back needs nothing from the
 		// store, and removing a private directory disturbs nobody.
 		defer staging.release()
 		// The loop that removes staged copies runs on a normal return, so a
@@ -349,8 +350,9 @@ func nothingForACallerThatLeft(err error) (LaunchPluginResolution, error) {
 // before a later publish reclaims it: orders of magnitude longer than the copy
 // it names, so a publish in flight is never disturbed. conflictSuffix names the
 // single sibling slot a destination is moved to when it holds content this
-// build did not publish; it is outside the staging namespace, so the sweep
-// never collects it.
+// build did not publish; it is outside the staging namespace, so the staging
+// sweep never collects it, but the same publish sweeps it too — see
+// reclaimableBundledConflicts.
 const (
 	stagingPrefix    = ".stage-"
 	stagingMarker    = ".evener-staging"
@@ -358,14 +360,20 @@ const (
 	conflictSuffix   = ".conflict"
 	// previousSuffix names where the slot's previous occupant waits while the
 	// destination is moved in: replaced only once there is something to
-	// replace it with.
+	// replace it with, or reclaimed by the sweep once it is old enough that no
+	// concurrent swap could still be using it.
 	previousSuffix = ".previous"
+	// bundledDigestLen is the fixed length of the hex digest digestFS
+	// produces. A store entry named <name>-<digest> can be split back into the
+	// plugin name and the digest it was published under because the digest is
+	// always this long.
+	bundledDigestLen = 16
 	// bundledPublishLockWait is how long readying the store waits for the
-	// store lock, the same wait every other mutation takes. Publishing is what
-	// the launch came for, so it waits like one. bundledSweepLockWait is what
-	// the sweep waits on its way past: housekeeping nobody is waiting on, so a
-	// lock that is busy is somebody else's turn rather than something to queue
-	// behind.
+	// bundled cache's lock, the same wait every other mutation takes on the
+	// lock it needs. Publishing is what the launch came for, so it waits like
+	// one. bundledSweepLockWait is what the sweep waits on its way past:
+	// housekeeping nobody is waiting on, so a lock that is busy is somebody
+	// else's turn rather than something to queue behind.
 	bundledPublishLockWait = 30 * time.Second
 	bundledSweepLockWait   = time.Second
 )
@@ -381,11 +389,11 @@ var copyBundledPayload = os.CopyFS
 // below the marked directory, so publishing renames the copy alone and the
 // marker never lands inside a published plugin. digest is what the destination
 // must hold, carried along so a publish that finds the destination taken can
-// tell an identical copy from foreign content. release gives up the store lock
-// the staging was opened under: the lock makes classifying the destination,
-// setting a conflict aside and publishing one sequence, so it is held from the
-// classification this staging was created on until the caller has renamed the
-// copy into place or given up on it.
+// tell an identical copy from foreign content. release gives up the bundled
+// cache's lock the staging was opened under: the lock makes classifying the
+// destination, setting a conflict aside and publishing one sequence, so it is
+// held from the classification this staging was created on until the caller
+// has renamed the copy into place or given up on it.
 type bundledStaging struct {
 	dir     string
 	payload string
@@ -408,7 +416,8 @@ var stageBundledCopy = newBundledStaging
 // newBundledStaging opens a staging directory for base inside store and marks
 // it as this code's to reclaim before anything is copied in, so a publish
 // killed at any moment leaves an orphan a later sweep recognizes. release is
-// the store lock the caller holds, handed over for the staging to carry.
+// the bundled cache's lock the caller holds, handed over for the staging to
+// carry.
 func newBundledStaging(store, base, digest string, release func()) (*bundledStaging, error) {
 	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
 	if err != nil {
@@ -465,7 +474,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 		return failed(warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err))
 	}
 	if err := os.Rename(staging.payload, dest); err != nil {
-		// The store lock keeps every other publisher out, so a destination
+		// The cache's lock keeps every other publisher out, so a destination
 		// that filled since it was classified was filled by something outside
 		// this package. An identical copy is adopted; anything else is set
 		// aside the way the classification would have, and the publish is
@@ -497,10 +506,10 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 // failed to put anything in the name it freed. The destination is the one path
 // live sessions hold — hooks, skills, MCP server commands — so leaving it
 // empty is worse than leaving the mismatched copy that was there. Nothing is
-// restored over a destination that is occupied again: under the store lock the
-// only thing that could have filled it is something outside this package, and
-// that is a conflict for the next launch to classify rather than something to
-// overwrite here.
+// restored over a destination that is occupied again: under the cache's lock
+// the only thing that could have filled it is something outside this package,
+// and that is a conflict for the next launch to classify rather than something
+// to overwrite here.
 func restoreBundledConflict(dest string) []string {
 	aside := dest + conflictSuffix
 	if _, err := os.Lstat(dest); err == nil {
@@ -559,16 +568,16 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	if err != nil {
 		return "", nil, nil, err
 	}
-	// The resolver rejects an unresolved root before it reads or builds
-	// anything; this is the same guard on the function that does the creating,
-	// for any caller that arrives here directly. Checked after the digest so a
-	// name that is not bundled at all still reports fs.ErrNotExist rather than
-	// a store complaint.
-	if err := m.storeRootError(); err != nil {
+	// Deriving the bundled store is what rejects an unresolved root, for the
+	// resolver and for any caller that arrives here directly. The guard cannot
+	// wait for the lock below: the directories are created before it is taken.
+	// Derived after the digest so a name that is not bundled at all still
+	// reports fs.ErrNotExist rather than a store complaint.
+	store, err := m.storePath(bundledDirName)
+	if err != nil {
 		return "", nil, nil, fmt.Errorf("materialize bundled plugin %s: %w", name, err)
 	}
-	dest := m.bundledPluginPath(name, digest)
-	store := filepath.Dir(dest)
+	dest := filepath.Join(store, bundledPluginDirName(name, digest))
 	// A launch resolves plugins before the startup call that creates the user
 	// config tree privately, so any parent this is first to create gets that
 	// call's own 0o700 rather than the store root's readable mode. They are
@@ -596,17 +605,17 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 		}
 		// A launch owes the store its sweep, but only when the store has
 		// something to sweep, and the scan that answers that needs no lock.
-		// Taking one on every launch would park a routine one behind an
-		// auto-upgrade holding the store lock across git fetches.
-		if publishing && len(m.abandonedStaging(store)) > 0 {
+		// Taking one on every launch would park a routine one behind whatever
+		// publisher is filling its staging.
+		if publishing && (len(m.abandonedStaging(store)) > 0 || len(m.reclaimableBundledConflicts(store)) > 0) {
 			// Housekeeping for a launch that is otherwise done: it waits the
 			// housekeeping wait, not the wait a publish is entitled to — the
 			// wait acquireLock is given here is the whole of it. A lock it
 			// does not get quickly is left to the next launch rather than
 			// making this one queue behind whatever holds it. Whether the
 			// orphans are really abandoned is decided again under the lock.
-			if release, lockErr := acquireLock(ctx, m.lockPath(), bundledSweepLockWait); lockErr == nil {
-				m.reclaimAbandonedStaging(store)
+			if release, lockErr := m.acquireBundledLock(ctx, bundledSweepLockWait); lockErr == nil {
+				m.reclaimBundledStoreDebt(store)
 				release()
 			}
 			// A lock failure the sweep is entitled to ignore is also how the
@@ -624,7 +633,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// lock two launches both classify a mismatched destination, and the second
 	// sets aside the copy the first published while deleting the copy the
 	// first preserved.
-	release, err := acquireLock(ctx, m.lockPath(), bundledPublishLockWait)
+	release, err := m.acquireBundledLock(ctx, bundledPublishLockWait)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("stage bundled plugin %s: %w", name, err)
 	}
@@ -634,7 +643,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// publisher that lost a rename and died only ever meets callers taking the
 	// published path.
 	if publishing {
-		m.reclaimAbandonedStaging(store)
+		m.reclaimBundledStoreDebt(store)
 	}
 	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
@@ -735,11 +744,11 @@ func classifyBundledDestination(dest, digest string) (bundledDestination, error)
 // store staying unusable for that plugin forever. The conflicting directory is
 // moved, never deleted, to the single sibling slot kept beside the
 // destination: one preserved copy per plugin, so a store that keeps meeting
-// conflicts does not grow without bound. Callers hold the store lock, so
-// nothing else this package runs is looking at the destination meanwhile. It
-// reports what the caller should say about what it moved: nothing moves when
-// the destination is already gone, which under the lock means something
-// outside this package took it away.
+// conflicts does not grow without bound. Callers hold the bundled cache's
+// lock, so nothing else this package runs is looking at the destination
+// meanwhile. It reports what the caller should say about what it moved:
+// nothing moves when the destination is already gone, which under the lock
+// means something outside this package took it away.
 func setAsideBundledConflict(dest string) ([]string, error) {
 	aside := dest + conflictSuffix
 	previous := aside + previousSuffix
@@ -757,8 +766,8 @@ func setAsideBundledConflict(dest string) ([]string, error) {
 	}
 	// Whatever the slot holds is moved out of the way rather than deleted, so
 	// a destination that turns out not to be movable leaves the copy already
-	// preserved still preserved. Callers hold the store lock, so this name is
-	// nobody else's; anything under it is residue from a publish that died
+	// preserved still preserved. Callers hold the cache's lock, so this name
+	// is nobody else's; anything under it is residue from a publish that died
 	// between the two renames below, and is the occupant being replaced.
 	if err := os.RemoveAll(previous); err != nil {
 		return nil, fmt.Errorf("clear the bundled plugin path %s: %w", previous, err)
@@ -829,14 +838,103 @@ func (m *Manager) abandonedStaging(dir string) []string {
 	return abandoned
 }
 
-// reclaimAbandonedStaging removes them, reading the store again so the decision
+// reclaimableBundledConflicts names the conflict-slot entries in dir this
+// publish is safe to remove: any <name>-<digest>.conflict or
+// <name>-<digest>.conflict.previous entry whose digest no longer names a
+// bundled plugin this binary ships — a version bump changed or dropped it, so
+// no set-aside or restore this binary performs will ever touch that name
+// again, at any age — and a .conflict.previous entry for a digest this binary
+// still ships once it is old enough that no concurrent swap could still be
+// parking its previous occupant there, the same age abandonedStaging holds a
+// staging directory to and for the same reason. A .conflict for the digest
+// this binary currently ships is never included: it is the single preserved
+// copy setAsideBundledConflict promises to keep.
+//
+// A .conflict.previous whose sibling .conflict is absent is never included
+// either, at any age or digest: setAsideBundledConflict renames its old
+// .conflict to .previous before renaming dest into the now-vacant .conflict,
+// so a crash between those two renames leaves exactly this shape, with the
+// .previous directory's mtime inherited from whenever that content was first
+// set aside — already older than the reclaim threshold the moment the crash
+// happens, for no other reason than time having passed since. That .previous
+// is not a replaced occupant a completed swap failed to clean up; it is the
+// one copy of what was preserved, still waiting on the recovery rename
+// setAsideBundledConflict performs the next time this dest is classified as a
+// conflict. Reclaiming it here would destroy that copy before recovery runs.
+func (m *Manager) reclaimableBundledConflicts(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var reclaimable []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		entryName := entry.Name()
+		previous := strings.HasSuffix(entryName, conflictSuffix+previousSuffix)
+		conflictName := strings.TrimSuffix(entryName, previousSuffix)
+		if !strings.HasSuffix(conflictName, conflictSuffix) {
+			continue
+		}
+		name, digest, ok := splitBundledDigestName(strings.TrimSuffix(conflictName, conflictSuffix))
+		if !ok {
+			continue
+		}
+		if previous {
+			if _, err := os.Lstat(filepath.Join(dir, conflictName)); errors.Is(err, fs.ErrNotExist) {
+				continue // interrupted set-aside: the sibling .conflict is what it renamed away from
+			}
+		}
+		current, err := bundledPluginDigest(name)
+		if err == nil && current == digest {
+			if !previous {
+				continue // the preserved copy for the digest this binary ships
+			}
+			info, err := entry.Info()
+			if err != nil || m.now().Sub(info.ModTime()) < abandonedStaging {
+				continue // may belong to a swap another process has in flight
+			}
+		}
+		reclaimable = append(reclaimable, filepath.Join(dir, entryName))
+	}
+	return reclaimable
+}
+
+// splitBundledDigestName splits a store entry's base name — with any
+// .conflict or .conflict.previous suffix already trimmed — into the bundled
+// plugin name and the digest it was published under, using the digest's fixed
+// length to find the boundary. It reports ok=false for a base too short to
+// hold a name, a separator and a digest, or whose trailing bundledDigestLen
+// bytes are not lowercase hex, since digestFS never produces anything else.
+func splitBundledDigestName(base string) (name, digest string, ok bool) {
+	if len(base) < bundledDigestLen+2 || base[len(base)-bundledDigestLen-1] != '-' {
+		return "", "", false
+	}
+	digest = base[len(base)-bundledDigestLen:]
+	for _, r := range digest {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return "", "", false
+		}
+	}
+	return base[:len(base)-bundledDigestLen-1], digest, true
+}
+
+// reclaimBundledStoreDebt removes the abandoned staging directories and
+// reclaimable conflict slots in dir, reading the store again so the decision
 // it acts on is the one it made under the lock its caller holds: that lock is
 // what tells staging nobody will come back for from staging a slow publisher
-// is still filling.
-func (m *Manager) reclaimAbandonedStaging(dir string) {
+// is still filling, and what tells a conflict.previous nobody is mid-swap on
+// it.
+func (m *Manager) reclaimBundledStoreDebt(dir string) {
 	for _, staging := range m.abandonedStaging(dir) {
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
 		_ = os.RemoveAll(staging)
+	}
+	for _, conflict := range m.reclaimableBundledConflicts(dir) {
+		// Best effort, for the same reason: a concurrent publisher may already
+		// be reclaiming the same stale or parked conflict slot.
+		_ = os.RemoveAll(conflict)
 	}
 }
 
@@ -861,8 +959,19 @@ func (m *Manager) storeRootError() error {
 	return nil
 }
 
+// bundledPluginDirName is the directory a bundled plugin's published copy sits
+// in inside the bundled store: the plugin's name and the digest of the
+// contents published under it, so a build whose contents changed publishes
+// alongside the copy a running session still holds rather than over it.
+func bundledPluginDirName(name, digest string) string {
+	return name + "-" + digest
+}
+
+// bundledPluginPath names where a bundled plugin's published copy lives. It is
+// the unchecked join, for tests naming a path; prepareBundledStore derives the
+// same path through storePath so an unresolved root is refused.
 func (m *Manager) bundledPluginPath(name, digest string) string {
-	return filepath.Join(m.Root, "bundled", name+"-"+digest)
+	return filepath.Join(m.bundledDir(), bundledPluginDirName(name, digest))
 }
 
 // bundledPluginDigest identifies the embedded contents of the bundled plugin
@@ -947,7 +1056,7 @@ func digestFS(fsys fs.FS) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(sum.Sum(nil))[:16], nil
+	return hex.EncodeToString(sum.Sum(nil))[:bundledDigestLen], nil
 }
 
 func mustSubFS(fsys fs.FS, dir string) fs.FS {

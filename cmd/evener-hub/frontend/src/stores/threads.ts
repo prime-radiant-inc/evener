@@ -102,6 +102,7 @@ export class ConflictError extends Error {
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
+  mutationWriteStalled: boolean;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -569,15 +570,28 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-const mutationPersistenceListeners = new Set<(targetRefs: string[]) => void>();
+interface MutationCommit {
+  record: MutationOutboxRecord;
+  recoveryId?: string;
+}
+
+type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
+const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 
 function isCurrentMutationRuntime(runtime: MutationRuntime | null): runtime is MutationRuntime {
   return runtime?.active === true && mutationRuntime === runtime;
 }
 
-function notifyMutationPersistence(targetRefs: Iterable<string>): void {
+function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: MutationCommit): void {
   const refs = [...new Set(targetRefs)];
-  for (const listener of mutationPersistenceListeners) listener(refs);
+  for (const listener of mutationPersistenceListeners) {
+    try {
+      listener(refs, committed);
+    } catch (error) {
+      // A projection listener cannot change the result of a durable write.
+      console.error("Mutation persistence listener failed", error);
+    }
+  }
 }
 
 function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
@@ -688,8 +702,14 @@ function getMutationRuntime(): MutationRuntime | null {
   if (mutationRuntime) return mutationRuntime;
   if (!globalThis.indexedDB) return null;
 
-  const storage = mutationStorageForTests ?? new MutationOutboxIndexedDB();
   let runtime: MutationRuntime | null = null;
+  const storage =
+    mutationStorageForTests ??
+    new MutationOutboxIndexedDB({
+      onWriteStalled: (waiting) => {
+        if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
+      },
+    });
   const dispatcher = new MutationDispatcher(storage, {
     getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
     onStorageChange: (targetRefs) => {
@@ -729,7 +749,7 @@ export interface MutationPersistenceSnapshot {
   recovery: MutationRecoveryRecord[];
 }
 
-export function subscribeMutationPersistence(listener: (targetRefs: string[]) => void): () => void {
+export function subscribeMutationPersistence(listener: MutationPersistenceListener): () => void {
   mutationPersistenceListeners.add(listener);
   return () => mutationPersistenceListeners.delete(listener);
 }
@@ -801,7 +821,7 @@ export async function resendRecoveryMutation(
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
   pinnedMutationRefs.add(targetRef);
-  notifyMutationPersistence([targetRef]);
+  notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
   handleDiscoveredMutations(runtime, [targetRef]);
   return record;
 }
@@ -1126,13 +1146,21 @@ async function enqueueMutationIntent(intent: MutationIntent): Promise<void> {
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
   await runtime.start;
-  pinnedMutationRefs.add(ref);
+  // Enqueue schedules discovery before returning; preserve the hydrated replay
+  // gate now, but only a durable commit may pin this ref after its pane closes.
   const pending = pendingThreadHydrations.get(ref);
   if (pending?.client !== wiredClient || pending.epoch !== readyEpoch) {
     dispatchableMutationRefs.add(ref);
   }
-  await runtime.outbox.enqueueIntent(intent);
-  notifyMutationPersistence([ref]);
+  let record: MutationOutboxRecord;
+  try {
+    record = await runtime.outbox.enqueueIntent(intent);
+  } catch (error) {
+    if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
+    throw error;
+  }
+  pinnedMutationRefs.add(ref);
+  notifyMutationPersistence([ref], { record });
 }
 
 async function enqueueMutation(
@@ -2052,6 +2080,7 @@ function replaceThread(
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
+  mutationWriteStalled: false,
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
@@ -2116,6 +2145,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             continue;
           }
           if (lifecycleActive && threadsStore.getState().threads.has(ref)) return;
+          // Release is terminal even when the failed read belongs to an old
+          // connection. A reconnect cannot re-arm a pane that no longer exists.
+          if (!lifecycleActive) return;
           if (wiredClient !== inflightClient || readyEpoch !== inflightEpoch) {
             if (threadsStore.getState().threads.has(ref)) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
@@ -2123,12 +2155,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
             client = await requireReadyClient();
+            if (ensureGenerations.get(ref) !== generation || (refCounts.get(ref) ?? 0) <= 0) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client);
             continue;
           }
-          // Release is terminal for this owner generation: this call's claim is
-          // already gone, so there is nothing left to retry or to report.
-          if (!lifecycleActive) return;
           // Same client, same ready epoch: the read failed in transport, not
           // because this pane lost the ref. The failed attempt owns one
           // scheduled retry for this owner generation, and every concurrent
@@ -2145,6 +2175,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (threadsStore.getState().threads.has(ref)) return;
 
         client = await requireReadyClient();
+        if ((refCounts.get(ref) ?? 0) <= 0) return;
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client);
       }

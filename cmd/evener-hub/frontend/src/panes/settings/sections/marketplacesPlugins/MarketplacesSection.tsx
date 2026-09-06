@@ -7,7 +7,7 @@
 import { type FormEvent, useId, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
-import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
+import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
@@ -199,6 +199,8 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           {kind === "directory" && (
             <FormRow label="Local path" htmlFor={pathId}>
               <PathField
+                ariaLabel="Local path"
+                directory={directoryActions}
                 id={pathId}
                 value={pathValue}
                 onChange={setPathValue}

@@ -24,7 +24,11 @@ import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css"
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
+import {
+  flushPendingTurnsProjectionForTests,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "./composer/queue/pendingTurnsStore";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
@@ -463,6 +467,7 @@ async function seedPendingSend(ref = "ref_a"): Promise<string> {
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
   });
   await refreshPendingTurnsProjection(ref);
+  await flushPendingTurnsProjectionForTests();
   return record.clientMutationId;
 }
 

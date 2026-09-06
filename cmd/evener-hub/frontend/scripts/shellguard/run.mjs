@@ -49,6 +49,48 @@ async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
+    await evaluate(
+      send,
+      "Promise.all(document.getAnimations().filter(a => a.effect.getTiming().iterations !== Infinity).map(a => a.finished))",
+    );
+    const header = JSON.parse(
+      await evaluate(
+        send,
+        `JSON.stringify((() => {
+      const brand = document.querySelector('[data-testid="rail-brand"]');
+      const settings = document.querySelector('[data-testid="rail-settings"]');
+      const search = document.querySelector('[data-testid="rail-search"]');
+      const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
+      const identity = [...(brand?.querySelectorAll('span') ?? [])].find(el => el.textContent === 'fake-evener-hub');
+      return [identity, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
+        if (!el || !brand?.contains(el)) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+      });
+    })())`,
+      ),
+    );
+    for (let i = 0; i < header.length; i++) {
+      const box = header[i];
+      if (!box || box.width <= 0 || box.height <= 0) {
+        throw new Error(
+          `rail header at ${viewport.width}px: missing visible ${["identity", "Settings", "Search", "Hide sidebar"][i]}`,
+        );
+      }
+      if (box.left < 0 || box.right > viewport.width)
+        throw new Error(`rail header escapes ${viewport.width}px viewport`);
+      if (i > 0) {
+        const previous = header[i - 1];
+        if (
+          previous.right > box.left ||
+          Math.abs((previous.top + previous.bottom) / 2 - (box.top + box.bottom) / 2) > 1
+        ) {
+          throw new Error(
+            `rail header at ${viewport.width}px: identity, Settings, Search, Hide sidebar must align on one row in order`,
+          );
+        }
+      }
+    }
     return JSON.parse(await evaluate(send, expression));
   } finally {
     await clearViewportOverride(send);
@@ -179,9 +221,7 @@ async function main() {
     try {
       await waitForHttp(`http://127.0.0.1:${vitePort}/shellguard.html`, "vite dev server", guard.getViteLaunchError);
     } catch (error) {
-      throw new Error(
-        describeBrowserStartupFailure({ error, subsystem: "vite", viteStderr: guard.getViteError() }),
-      );
+      throw new Error(describeBrowserStartupFailure({ error, subsystem: "vite", viteStderr: guard.getViteError() }));
     }
     const startupDeadline = createStartupDeadline();
     try {

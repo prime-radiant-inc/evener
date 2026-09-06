@@ -23,6 +23,8 @@ import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } 
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./instanceDialogs.module.css";
 
+import { useEditorLifetime } from "./useEditorLifetime";
+
 const CLASS = {
   body: requireClass(styles.body, "instanceDialogs.module.css", "body"),
   actions: requireClass(styles.actions, "instanceDialogs.module.css", "actions"),
@@ -58,6 +60,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
+  const active = useEditorLifetime();
 
   const baseOptions: SelectOption[] = [
     { value: "", label: "" },
@@ -101,14 +104,16 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
         apiKeyEnv: apiKeyEnv.trim() || undefined,
         credentialHeader: trimmedCredentialHeader || undefined,
       });
+      if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess();
     } catch (err) {
+      if (!active.current) return;
       const message = errorText(err);
       setError(message);
       toast.push("error", `Create failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   }
 
@@ -208,6 +213,7 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
+  const active = useEditorLifetime();
 
   // InstanceEditParams keeps baseUrl's old "empty means unchanged" meaning
   // (v3, unchanged by #711) and adds clearBaseUrl as an additive clear
@@ -228,14 +234,16 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
         baseUrl: trimmedBaseUrl !== displayedBaseUrl && trimmedBaseUrl !== "" ? trimmedBaseUrl : undefined,
         clearBaseUrl: clearingBaseUrl ? true : undefined,
       });
+      if (!active.current) return;
       toast.push("success", `Saved ${instance.name}`);
       onSuccess();
     } catch (err) {
+      if (!active.current) return;
       const message = errorText(err);
       setError(message);
       toast.push("error", `Edit failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   }
 
@@ -318,6 +326,7 @@ function CredentialValueDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
+  const active = useEditorLifetime();
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -330,15 +339,18 @@ function CredentialValueDialog({
     setBusy(true);
     try {
       await submit(instance.name, trimmed);
+      if (!active.current) return;
       await credentialsStore.getState().fetch();
+      if (!active.current) return;
       toast.push("success", successText);
       onSuccess();
     } catch (err) {
+      if (!active.current) return;
       const message = errorText(err);
       setError(message);
       toast.push("error", `Save failed: ${message}`);
     } finally {
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   }
 

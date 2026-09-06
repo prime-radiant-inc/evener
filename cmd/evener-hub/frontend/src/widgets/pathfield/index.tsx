@@ -1,18 +1,13 @@
-// The path field: one widget for every "enter a path" surface - a working
-// directory, a system-prompt file, an ATIF export target. A control-shaped
-// trigger opens a floating panel whose list is ALREADY expanded, and browsing
-// writes the field as you go: a directory click both descends and becomes the
-// value, so there is nothing to commit and no Cancel to undo.
-//
-// Wire-free by design: the caller injects `complete` (evener/paths/complete)
-// and, where recents mean something, `listRecents` (evener/projects/recent).
-// includeFiles is derived from `kind` here, never passed in.
+// Directory fields open the shared DirectoryPicker and commit explicitly.
+// File/output-file fields use a completion popover and retain literal-path entry.
+// Callers inject filesystem operations; widgets never reach into stores or RPC.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../protocol/errors";
+import { Chevron } from "../chevron";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
-import { Chevron } from "../chevron";
+import { DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
@@ -20,6 +15,8 @@ import { basename, buildPathRows, childrenPrefix, type PathPickableRow, parentOf
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "pathfield.module.css", "trigger"),
+  directoryTrigger: requireClass(styles.directoryTrigger, "pathfield.module.css", "directoryTrigger"),
+  directoryValue: requireClass(styles.directoryValue, "pathfield.module.css", "directoryValue"),
   triggerValue: requireClass(styles.triggerValue, "pathfield.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "pathfield.module.css", "triggerDefault"),
   chevron: requireClass(styles.chevron, "pathfield.module.css", "chevron"),
@@ -52,12 +49,10 @@ const JUST_PICKED_MS = 700;
  * references. */
 export type PathFieldKind = "dir" | "file" | "outputFile";
 
-export interface PathFieldProps {
+interface PathFieldBaseProps {
   id?: string;
   value: string;
   onChange: (value: string) => void;
-  /** Decides whether files are listed and what a row click means. Default "dir". */
-  kind?: PathFieldKind;
   /** Injected - the widget stays wire-free. `includeFiles` is derived from
    * `kind`, never passed by the caller. A rejection degrades to an empty list:
    * this widget has no RPC knowledge, and a permissions failure or a transient
@@ -88,11 +83,17 @@ export interface PathFieldProps {
   ariaLabel?: string;
 }
 
-/** Files are listed for the two file kinds and never for a directory field,
- * which is what makes every row of a `dir` field's list a legal answer. */
-function includesFiles(kind: PathFieldKind): boolean {
-  return kind !== "dir";
+/** Directory browsing always uses the shared validated picker. */
+export interface DirectoryActions {
+  validatePath: DirectoryPickerProps["validatePath"];
+  createDirectory: DirectoryPickerProps["createDirectory"];
 }
+
+export type PathFieldProps = PathFieldBaseProps &
+  (
+    | { kind: "file" | "outputFile"; directory?: DirectoryActions }
+    | { kind?: PathFieldKind; directory: DirectoryActions }
+  );
 
 /** A directory naming itself without its trailing slash - but "/" names the
  * filesystem root, which is a real directory and NOT the empty string. Those
@@ -104,14 +105,12 @@ function withoutTrailingSlash(dir: string): string {
   return stripped === "" && dir !== "" ? "/" : stripped;
 }
 
-/** The directory the panel opens on: a directory field browses the value
- * itself, a file field browses the file's parent. An empty value browses
+/** File browsing opens on the file's parent. An empty value browses
  * `fallbackDir` when the caller has one, otherwise "" which the hub resolves
  * to $HOME. */
-function openingDir(kind: PathFieldKind, value: string, fallbackDir?: string): string {
+function openingDir(value: string, fallbackDir?: string): string {
   const trimmed = value.trim();
   if (trimmed === "") return withoutTrailingSlash((fallbackDir ?? "").trim());
-  if (kind === "dir") return withoutTrailingSlash(trimmed);
   return trimmed.includes("/") ? parentOf(trimmed) : "";
 }
 
@@ -162,8 +161,8 @@ function FileIcon() {
   );
 }
 
-export interface PathFieldPanelProps {
-  kind: PathFieldKind;
+interface FileFieldPanelProps {
+  kind: "file" | "outputFile";
   value: string;
   /** Every keystroke and every browse step - the field is a plain controlled
    * input and its value tracks the browse position. */
@@ -193,7 +192,7 @@ export interface PathFieldPanelProps {
  * handler, outside-click is its document listener), which is why there is no
  * Escape handler and no Cancel button here.
  */
-export function PathFieldPanel({
+function FileFieldPanel({
   kind,
   value,
   onChange,
@@ -201,13 +200,13 @@ export function PathFieldPanel({
   complete,
   listRecents,
   fallbackDir,
-}: PathFieldPanelProps): JSX.Element {
+}: FileFieldPanelProps): JSX.Element {
   // null means "the user hasn't typed yet": the input SHOWS the current value
   // (selected, so the first keystroke replaces it) while the list stays
   // unfiltered. Once typing starts the typed text is both the input's value
   // and the filter - including when it's cleared back to "".
   const [typed, setTyped] = useState<string | null>(null);
-  const [currentDir, setCurrentDir] = useState(() => openingDir(kind, value, fallbackDir));
+  const [currentDir, setCurrentDir] = useState(() => openingDir(value, fallbackDir));
   const [entries, setEntries] = useState<string[] | null>(null);
   // Set only when the LATEST request rejected - distinct from entries: []
   // meaning a genuinely empty directory. See buildPathRows's own doc comment
@@ -286,7 +285,7 @@ export function PathFieldPanel({
     const reqId = reqIdRef.current;
     setEntries(null);
     setListError(null);
-    complete(prefix, includesFiles(kind)).then(
+    complete(prefix, true).then(
       (result) => {
         if (reqId === reqIdRef.current) setEntries(result);
       },
@@ -314,7 +313,7 @@ export function PathFieldPanel({
     const input = inputRef.current;
     input?.focus();
     input?.select();
-    runCompletion(childrenPrefix(openingDir(kind, value, fallbackDir)));
+    runCompletion(childrenPrefix(openingDir(value, fallbackDir)));
     listRecents?.().then(
       (result) => setRecents(result),
       () => setRecents([]),
@@ -544,8 +543,7 @@ export function PathFieldPanel({
 /**
  * The closed state IS the trigger: a control-shaped button holding the current
  * path as plain monospace text plus a chevron, and clicking anywhere on it
- * opens the browse panel as a floating Popover (portaled, so it never reflows
- * the form and no scrollable ancestor can clip it). There is no separate
+ * opens the shared directory dialog or the file completion popover. There is no separate
  * folder/Browse button - the whole field is the affordance.
  */
 export function PathField({
@@ -560,26 +558,14 @@ export function PathField({
   placeholder,
   disabled = false,
   ariaLabel,
+  directory,
 }: PathFieldProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const shownValue = value === "" ? (placeholder ?? "(default)") : value;
 
-  /** The single close path, so every way out of the panel - Escape, an outside
-   * click, a file or recent commit, a trigger click - behaves identically.
-   *
-   * Focus returns to the trigger on ALL of them, commits included. Popover's
-   * FocusScope is opted out of focus management (autoFocus={false}) so the
-   * panel's own input can hold focus and its selection, which means nothing
-   * restores focus unless this does and it falls to <body> - and from <body> a
-   * keyboard user's Tab position restarts at the top of the document rather than
-   * continuing on through the form. The trigger is where focus was before
-   * opening, so tabbing onward from it is the correct next stop.
-   *
-   * onPanelClose fires once here with the field's final value: browsing writes
-   * the value continuously now, so a caller that needs to record where the user
-   * ended up (the spawn field's last-working-directory global, spec 3.7) has to
-   * be told on close rather than on every step. */
+  // Restore the field trigger on every exit. Directory cancellation reports
+  // the committed value; file browsing retains its live-value contract.
   function closePanel(finalValue: string): void {
     setOpen(false);
     triggerRef.current?.focus();
@@ -589,6 +575,64 @@ export function PathField({
   function commit(path: string): void {
     onChange(path);
     closePanel(path);
+  }
+
+  const trigger = (
+    <button
+      ref={triggerRef}
+      id={id}
+      type="button"
+      className={`${CLASS.trigger} ${kind === "dir" ? CLASS.directoryTrigger : ""}`}
+      disabled={disabled}
+      aria-haspopup={kind === "dir" ? "dialog" : undefined}
+      aria-expanded={kind === "dir" ? open : undefined}
+      // The label has to carry the value too: aria-label replaces the
+      // button's own text, so naming it "Skill directories" alone would
+      // hide the path it currently holds.
+      aria-label={ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`}
+      onClick={() => (open ? closePanel(value) : setOpen(true))}
+    >
+      {/* Plain text, not a Chip: the trigger already draws the control's
+              own border, and a bordered chip inside it reads as a double
+              border. */}
+      <span
+        className={`${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`}
+      >
+        {shownValue}
+      </span>
+      <span className={CLASS.chevron} aria-hidden="true">
+        <Chevron direction="down" />
+      </span>{" "}
+      {/* That separating space is load-bearing: the accessible name is this
+              button's children concatenated, and each child's own text is
+              trimmed first, so a space INSIDE either span would be dropped and
+              the name would run together as "/home/jesse— browse". A
+              whitespace-only text node between them survives that trim and
+              renders nothing of its own (an all-whitespace anonymous flex item
+              is not laid out). */}
+      <span className={CLASS.srOnly}>— browse</span>
+    </button>
+  );
+  if (kind === "dir") {
+    if (!directory) throw new Error("Directory fields require validation and creation actions");
+    return (
+      <>
+        {trigger}
+        {open && (
+          <DirectoryPicker
+            key={value}
+            value={value}
+            fallbackDir={fallbackDir}
+            complete={complete}
+            listRecents={listRecents}
+            validatePath={directory.validatePath}
+            createDirectory={directory.createDirectory}
+            onPick={commit}
+            onClose={() => closePanel(value)}
+          />
+        )}
+      </>
+    );
   }
 
   return (
@@ -606,39 +650,10 @@ export function PathField({
       // The trigger is a form control: it fills its field slot so it lines up
       // with the Input/Select siblings beside it.
       stretchTrigger
-      trigger={
-        <button
-          ref={triggerRef}
-          id={id}
-          type="button"
-          className={CLASS.trigger}
-          disabled={disabled}
-          // The label has to carry the value too: aria-label replaces the
-          // button's own text, so naming it "Skill directories" alone would
-          // hide the path it currently holds.
-          aria-label={ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`}
-          onClick={() => (open ? closePanel(value) : setOpen(true))}
-        >
-          {/* Plain text, not a Chip: the trigger already draws the control's
-              own border, and a bordered chip inside it reads as a double
-              border. */}
-          <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>{shownValue}</span>
-          <span className={CLASS.chevron} aria-hidden="true">
-            <Chevron direction="down" />
-          </span>{" "}
-          {/* That separating space is load-bearing: the accessible name is this
-              button's children concatenated, and each child's own text is
-              trimmed first, so a space INSIDE either span would be dropped and
-              the name would run together as "/home/jesse— browse". A
-              whitespace-only text node between them survives that trim and
-              renders nothing of its own (an all-whitespace anonymous flex item
-              is not laid out). */}
-          <span className={CLASS.srOnly}>— browse</span>
-        </button>
-      }
+      trigger={trigger}
     >
       <div className={CLASS.popoverPanel}>
-        <PathFieldPanel
+        <FileFieldPanel
           kind={kind}
           value={value}
           onChange={onChange}

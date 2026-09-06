@@ -337,6 +337,7 @@ export interface EvenerSkillInfo {
 }
 
 export interface EvenerSteeringInjectedParams {
+  startedAt?: number;
   threadId: string;
   ref: string;
   text?: string;

@@ -269,6 +269,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
 		}
 	}
+	inheritedContext := cfg.spawn.inheritedContext
+	cfg.spawn.inheritedContext = nil
 	s := &Session{
 		id:                            sessionID,
 		cfg:                           cfg,
@@ -296,6 +298,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		artifactStore:                 store,
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
+	}
+	if inheritedContext != nil {
+		s.fork = forkInfo{parentID: cfg.spawn.parentSessionID, divergence: len(inheritedContext) + 1}
+		s.history = ResumeHistory(inheritedContext)
+		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
+		s.history = append(s.history, boundary)
+		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
 	}
 	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
@@ -433,10 +442,20 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
-			// A fresh session starts from an empty transcript, so the running
-			// failure count starts at a MEASURED zero rather than at "unknown"
-			// (FailedToolCallsSnapshot).
-			tw.TrackFailures(nil, 0)
+			// Only this session's own turns count as failures; a forked
+			// delegate's inherited prefix belongs to its parent.
+			tw.TrackFailures(nil, s.fork.divergence)
+		}
+	}
+	if inheritedContext != nil {
+		if tw == nil {
+			return nil, errors.New("fork delegate context requires a writable child transcript")
+		}
+		for _, entry := range inheritedContext {
+			if err := tw.Append(entry.Turn); err != nil {
+				_ = tw.Close()
+				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
+			}
 		}
 	}
 	s.attachTranscript(tw)
@@ -676,6 +695,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.artifactStore = restoreCfg.artifactStore
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
+	}
+	if meta.IsSubagent && meta.DivergenceTurn > 0 && cfg.spawn.subagentTask == "" {
+		// A direct resume has no live parent carrier. The assignment in meta
+		// belongs to this delegate; the first inherited input belongs to its parent.
+		cfg.spawn.subagentTask = meta.OriginalPrompt
 	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
@@ -977,6 +1001,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.resumeWorktreeReentry(meta); err != nil {
 		return nil, err
 	}
+	// Re-entry REPLACES the environment with a clone rooted in the persisted
+	// worktree; the clone adopts whatever scratch the caller's environment
+	// already owned, and initSessionState's snapshot below mints one for a
+	// clone that owns none. A caller's own failure path can only dispose the
+	// environment it handed in (it has no reference to the clone, and the
+	// environment it holds owns nothing any more), so a restore that fails from
+	// here on disposes what it re-rooted onto itself — otherwise the directory
+	// and its live lease outlive every owner. Never the caller's own env: when
+	// nothing was re-rooted, that one is the caller's to dispose or to keep.
+	reenteredEnv := s.env
+	defer func() {
+		if restoreComplete || reenteredEnv == env {
+			return
+		}
+		disposeUnadoptedScratch(reenteredEnv)
+	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
@@ -1232,13 +1272,13 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(env, ei.WorkingDir); inRepo {
+		if inRepo, branch, mod, untracked, commits := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
 			ei.GitRecentCommitTitles = commits
-			ei.GitOriginURL = gitOriginURL(env, ei.WorkingDir)
+			ei.GitOriginURL = gitOriginURL(s.sessionContext(), env, ei.WorkingDir)
 		}
 	}
 	s.envInfo = ei

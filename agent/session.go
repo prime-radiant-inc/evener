@@ -261,13 +261,17 @@ type Session struct {
 	// DrainJobTree invocation and generation-scoped for the same reason as the
 	// final abandonment record.
 	drainGraceChildren            map[string]drainGraceChild
-	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
-	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
-	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
-	sweepWG                       sync.WaitGroup  // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
-	laneSweepTimer                clock.Timer     // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
-	laneReLockRetryTimer          clock.Timer     // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
-	pendingReLock                 []isolationLane // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
+	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
+	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
+	envWork                       map[envWorkID]string                 // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
+	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
+	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
+	laneReLockRetryTimer          clock.Timer                          // one-shot resume re-lock retry timer for a restored subagent coordinator (which has no P3 open timer to piggyback on); armed at resume when a re-lock failed, stopped at close; guarded by mu
+	pendingReLock                 []isolationLane                      // own undisposed lanes whose resume re-lock failed and await one retry (P3 open timer for top-level, laneReLockRetryTimer for a subagent coordinator); guarded by mu
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
@@ -396,17 +400,13 @@ type Session struct {
 	// terminalCommunicateAccepted latches that a communicate with
 	// end_turn=true completed a turn while TurnEndsProcess: the model has
 	// explicitly ended the turn that ends the process. Unlike comm it is never
-	// reset — the one-shot drain and the round loop read it to refuse to
-	// resurrect a run the model already declared over (issue #329). Guarded by
-	// mu.
+	// reset — the one-shot drain reads it to abandon residue with no live work
+	// behind it, and the round loop reads it to finish an empty post-terminal
+	// notification turn idle instead of retrying (issue #329). A completion
+	// the model was never shown is still delivered after it; watch
+	// notifications queued before it are cut when the drain starts (#865).
+	// Guarded by mu.
 	terminalCommunicateAccepted bool
-	// terminalNotificationCut is captured at the same acceptance boundary. It
-	// identifies exactly which durable terminal generations and in-memory queue
-	// entries existed before the terminal communicate, so a completion that
-	// lands before DrainJobTree enters cannot be mistaken for a leftover.
-	// Guarded by mu; queue sequence assignment is guarded separately by
-	// pendingJobNotifsMu.
-	terminalNotificationCut terminalNotificationCut
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -478,7 +478,7 @@ type Session struct {
 	//
 	// Guarded by its own mutex; never taken while holding sub.mu. Where it is
 	// held together with the job manager mutex, jm.mu is taken FIRST and this
-	// one second (captureTerminalNotificationCut).
+	// one second.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
@@ -487,10 +487,6 @@ type Session struct {
 	// completion rode that request, so the reply is an answer, not
 	// housekeeping. Guarded by pendingJobNotifsMu.
 	jobNotifsDelivered uint64
-	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
-	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
-	// finalizer from crossing its durable-pending/running-map boundary.
-	nextJobNotifSeq uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -829,7 +825,6 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 			}
 		}
 	}
-	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
@@ -904,14 +899,6 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 	}
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
-}
-
-func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
-	if n == nil || n.queueSeq != 0 {
-		return
-	}
-	s.nextJobNotifSeq++
-	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
@@ -1079,6 +1066,17 @@ func (s *Session) ID() string { return s.id }
 
 func (s *Session) apiLogContext(ctx context.Context) context.Context {
 	return llm.WithAPILogContext(ctx, s.id)
+}
+
+// sessionContext returns the session's own context — the one Close cancels —
+// as the parent for work that must stop when the session closes. A Session
+// built without one (a bare test fixture) gets a background context, so every
+// caller can derive unconditionally.
+func (s *Session) sessionContext() context.Context {
+	if s.sessionCtx != nil {
+		return s.sessionCtx
+	}
+	return context.Background()
 }
 
 // The contextmgr.Host seam is satisfied by the ctxHost adapter (context_host.go),
@@ -1304,7 +1302,12 @@ func (s *Session) SetModel(model string) error {
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
 	// client) before the live-only EventModelChanged notification below.
-	s.appendTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker := schema.NewTurn(schema.TurnModelSwitch, llm.System(markerText))
+	marker.ModelSwitch = &schema.ModelSwitchInfo{
+		OldProvider: oldProfile.ID(), OldModel: oldProfile.Model(),
+		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
+	}
+	s.recordTurn(marker, marker)
 	s.emit(events.EventModelChanged, events.ModelChangedData{
 		OldProvider:           oldProfile.ID(),
 		OldModel:              oldProfile.Model(),
@@ -1535,11 +1538,14 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 	return true
 }
 
-// extractOriginalPrompt returns the text of the first user input in the session history.
-// If compaction removed it, falls back to the SubagentTask from config.
+// extractOriginalPrompt returns a delegate's assignment or the first user
+// input of a root session. Inherited conversation does not redefine the task.
 func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.isSubagentSession() && s.cfg.spawn.subagentTask != "" {
+		return s.cfg.spawn.subagentTask
+	}
 	for _, t := range s.history {
 		if t.Kind == schema.TurnUserInput {
 			return t.Message.Text()

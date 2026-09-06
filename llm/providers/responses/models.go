@@ -94,7 +94,7 @@ func (m codexModelListEntry) row() registry.Model {
 	}
 	// The Codex backend is the only listing that states the effort a model
 	// runs at when the request omits one (spec §7.4).
-	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" {
+	if d := strings.TrimSpace(m.DefaultReasoningLevel); d != "" && !strings.EqualFold(d, "ultra") {
 		caps.DefaultEffort = new(d)
 	}
 	if len(m.InputModalities) > 0 {
@@ -104,7 +104,8 @@ func (m codexModelListEntry) row() registry.Model {
 }
 
 // codexReasoningEfforts dedupes and trims a Codex row's reasoning-level
-// list into the effort names it advertises.
+// list into API effort names. Ultra is a Codex client delegation preset,
+// not an effort the Responses API accepts.
 func codexReasoningEfforts(levels []codexReasoningLevel) []string {
 	if len(levels) == 0 {
 		return nil
@@ -113,7 +114,7 @@ func codexReasoningEfforts(levels []codexReasoningLevel) []string {
 	seen := make(map[string]bool, len(levels))
 	for _, level := range levels {
 		effort := strings.TrimSpace(level.Effort)
-		if effort == "" || seen[effort] {
+		if effort == "" || strings.EqualFold(effort, "ultra") || seen[effort] {
 			continue
 		}
 		seen[effort] = true

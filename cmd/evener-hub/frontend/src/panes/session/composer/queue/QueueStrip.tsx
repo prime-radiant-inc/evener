@@ -18,6 +18,7 @@ import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "..
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
+  resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
@@ -235,20 +236,35 @@ export function QueueStrip({
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    let wonRecoveryResend = true;
     onDrainBusyChange(true);
     try {
       await submitWithPendingTracking(
         {
           ref: sessionRef,
           method: "drain",
+          recoveryId: activeRecoveryId,
           text,
           attachments,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
-        () => threadsStore.getState().drainAsSteer(sessionRef, text, attachments),
+        async () => {
+          if (activeRecoveryId) {
+            wonRecoveryResend = await resendRecoveryPendingTurn(
+              activeRecoveryId,
+              sessionRef,
+              "drain",
+              text,
+              attachments ?? [],
+            );
+            return;
+          }
+          return threadsStore.getState().drainAsSteer(sessionRef, text, attachments);
+        },
       );
+      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       onDrainSuccess();
     } catch {
       // Already reported via onFailure above; swallow so the rejection

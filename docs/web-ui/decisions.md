@@ -3,6 +3,15 @@
 Status: **current**. This is the blessed design's provenance — what we chose,
 out of what alternatives, and whether the code does it today.
 
+## Directory selection (2026-09-05)
+
+Jesse approved the session-start directory dialog and its use for every web
+directory picker. The authoritative [directory-selection contract](design-system.md#directory-selection-one-shared-interaction)
+requires shared widgets, explicit confirmation, cancellation that preserves the
+committed value, and inline child-directory creation on desktop and mobile.
+Older immediate-commit directory popovers are retired. File selection retains its
+file-specific behavior.
+
 It exists because the record was scattered. Between 2026-06 and 2026-07 a
 visual-brainstorming pass produced 23 mockups, each presenting four labelled
 alternatives, and we picked winners and shipped them. The winners were

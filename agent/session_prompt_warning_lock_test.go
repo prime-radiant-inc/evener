@@ -221,7 +221,7 @@ func TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock(t *testing.T) 
 	next := s.env.(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(t.TempDir())
 
 	awaitOrFail(t, "swapEnvAndRefresh with a failing prompt render", func() {
-		s.swapEnvAndRefresh(next)
+		s.swapEnvAndRefresh(next, nil)
 	})
 
 	select {

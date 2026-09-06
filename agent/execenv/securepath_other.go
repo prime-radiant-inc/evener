@@ -51,7 +51,7 @@ func errSandboxUnsupported() error {
 // contract above: unreachable in practice (no sandboxFS is ever built here),
 // fail closed if somehow reached.
 
-func (s *sandboxFS) close() {}
+func (s *sandboxFS) close() { s.closed.Store(true) }
 
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()

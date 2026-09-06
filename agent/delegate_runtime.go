@@ -498,12 +498,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		candidate := sub
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			finishRestore(nil, trackErr)
 			return nil, trackErr
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -669,7 +669,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 		return false, errors.New("owed candidate conflicts with controller runtime state")
 	}
 	start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
-	start.sub.sess.discardRestoredCandidate()
+	start.sub.sess.discardRestoredCandidate(start.sub.ownsEnv)
 	return false, persistErr
 }
 
@@ -847,13 +847,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		})
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
 				finishRestore(nil, trackErr)
 			})
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate()
+			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
 			sub = tracked
 			restored = false
 		}
@@ -1161,6 +1161,12 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	selection, err := s.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		return delegateStartFailed(err)
+	}
+	if args.ForkContext {
+		parent := s.currentProfile()
+		if selection.profile.ID() != parent.ID() || selection.profile.Model() != parent.Model() {
+			return delegateStartFailed(errors.New("invalid_request: fork_context requires the parent's model and provider; use a clean session with a self-contained prompt for a different model"))
+		}
 	}
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
@@ -1486,9 +1492,11 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 	if isolation.ownsFreshEnv {
-		if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-			local.DisposeSandboxScratch()
-		}
+		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
+		// belongs to this isolation step), so this is the only rollback for the
+		// scratch the construction's git snapshot minted on an unsandboxed lane,
+		// as well as for a sandboxed lane's owned one.
+		disposeUnadoptedScratch(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -1524,7 +1532,15 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 	if started.descriptor.ParentWatchGranted {
 		ctx = context.WithValue(ctx, ctxWatchParent, true)
 	}
-	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection)
+	var inheritedContext []transcript.Entry
+	if args.ForkContext {
+		var err error
+		inheritedContext, err = s.snapshotDelegateContext()
+		if err != nil {
+			return nil, err
+		}
+	}
+	prepared, err := s.prepareStableDelegateRun(ctx, started.descriptor, started.descriptor.ParentWatchGranted, selection, inheritedContext)
 	if err != nil {
 		return nil, err
 	}
@@ -1592,10 +1608,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv := true
 	defer func() {
+		// The construction below runs the child's git snapshot, which is what
+		// mints an unsandboxed environment's scratch, so a failure after that
+		// point has one to drop as surely as a sandboxed restore has its owned one.
 		if discardEnv && ownsFresh {
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.DisposeSandboxScratch()
-			}
+			disposeUnadoptedScratch(childEnv)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
@@ -1661,12 +1678,12 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
-		child.discardRestoredCandidate()
+		child.discardRestoredCandidate(ownsFresh)
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
-			child.discardRestoredCandidate()
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
@@ -1683,7 +1700,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
-			child.discardRestoredCandidate()
+			child.discardRestoredCandidate(ownsFresh)
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 	}
@@ -1829,9 +1846,17 @@ func (runtime delegateRuntime) failCommittedStart(started delegateStartCommit, i
 	plans, claimedForClose, finishErr := runtime.owner.delegateController.FailCommittedStart(started.lease, finish, reason, runtimeForClose)
 	runtime.owner.delegateController.emitDelegateUpdates(plans)
 	if committedStartFailureDisposition(finishErr) == delegateCommittedStartFailureStopWon {
-		if prepared != nil && (!controllerAttached || claimedForClose) {
-			prepared.runCancel()
-			prepared.disposeUnadopted()
+		// The stop settled the generation, so this exit owns the rollback of
+		// whatever nobody else holds: the unadopted child, unless the controller
+		// kept its runtime for its own close, and with it the isolation the
+		// construction was building on. The lane and its clone's scratch have no
+		// other owner once the start is dead, whether or not a child was built.
+		if prepared == nil || !controllerAttached || claimedForClose {
+			if prepared != nil {
+				prepared.runCancel()
+				prepared.disposeUnadopted()
+			}
+			isolation.cleanup(runtime.owner, started.lease.delegateID)
 		}
 		return stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, constructionErr)
 	}
@@ -2247,7 +2272,7 @@ func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.closeRuntimeTree(ctx, func(child *Session) {
+	return s.delegateController.closeRuntimeTree(ctx, func(child *Session, _ bool) {
 		child.close(ctx, false)
 	})
 }

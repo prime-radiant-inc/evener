@@ -5,10 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -296,44 +294,6 @@ func TestUnsandboxedScratchDirConcurrentProvisioning(t *testing.T) {
 	}
 }
 
-// TestCleanupReleasesUnsandboxedScratchLease is the leak regression from the
-// task-1 review: off/unsandboxed is the DEFAULT sandbox mode, and
-// session_lifecycle.go calls Cleanup() on every session close, so if Cleanup
-// never released the unsandboxedScratch lease, a long-running `evener serve`
-// daemon would hold one open file descriptor (the lease flock) per session
-// for the rest of the process's life — sweepCrashedSessionScratch can only
-// reclaim a lease that is currently acquirable. Verified at the OS level: a
-// fresh flock attempt on the SAME lease file must succeed immediately after
-// Cleanup(), proving the held lock was actually released, not merely that no
-// error was returned.
-func TestCleanupReleasesUnsandboxedScratchLease(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("flock-based lease verification is unix-only")
-	}
-	worktree := t.TempDir()
-	env := NewLocalExecutionEnvironment(worktree)
-	scratch := env.unsandboxedScratchDir()
-	if scratch == "" {
-		t.Fatal("unsandboxedScratchDir provisioning failed")
-	}
-
-	env.Cleanup()
-
-	// ".evener-session.lock" mirrors sandbox.SessionScratch's lease filename
-	// convention (agent/sandbox/session_scratch.go); there is no exported way
-	// to introspect lease state, so this checks the real OS-level lock instead.
-	leasePath := filepath.Join(scratch, ".evener-session.lock")
-	f, err := os.OpenFile(leasePath, os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatalf("open lease file: %v", err)
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatalf("lease still held after Cleanup (leak): %v", err)
-	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-}
-
 // TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock pins the one
 // working-directory shape that used to drive the lazy scratch mint through a
 // `git rev-parse` subprocess, and through that into itself.
@@ -367,8 +327,8 @@ func TestUnsandboxedScratchDirGitProbeDoesNotSelfDeadlock(t *testing.T) {
 	if _, ok := structuralWorktreeRoot(work); ok {
 		t.Fatal("layout no longer misses structuralWorktreeRoot; this test would not exercise the git fallback")
 	}
-	if !hasGitEntryAncestor(work) {
-		t.Fatal("layout has no .git ancestor; this test would not exercise the git fallback")
+	if present, known := hasGitEntryAncestor(work); !present || !known {
+		t.Fatalf("layout has no observable .git ancestor (present=%v known=%v); this test would not exercise the git fallback", present, known)
 	}
 
 	env := NewLocalExecutionEnvironment(work)

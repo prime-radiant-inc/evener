@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -55,7 +57,7 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != repoDir {
 		t.Fatalf("currentEnv().WorkingDirectory() = %q, want %q", got, repoDir)
@@ -124,7 +126,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	}
 	next := base.WithWorkingDirectory(repoDir)
 
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 
 	sess.mu.Lock()
 	ei := sess.envInfo
@@ -278,7 +280,7 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 
 	// The watcher window spans the whole call, including step 2's locked
 	// section and its first post-swap prompt render.
-	sess.swapEnvAndRefresh(next)
+	sess.swapEnvAndRefresh(next, nil)
 	close(stop)
 	<-done
 
@@ -322,9 +324,9 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Go(func() {
 		for i := range swapIterations {
 			if i%2 == 0 {
-				sess.swapEnvAndRefresh(envA)
+				sess.swapEnvAndRefresh(envA, nil)
 			} else {
-				sess.swapEnvAndRefresh(envB)
+				sess.swapEnvAndRefresh(envB, nil)
 			}
 		}
 	})
@@ -338,4 +340,191 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	})
 
 	wg.Wait()
+}
+
+// closeFenceProbe bounds the window a fence test gives a close to reach
+// environment cleanup while it holds admitted environment work. This is an
+// absence proof: the join is exactly what keeps close out of cleanup while the
+// work is held, so there is no ordering signal to await, only a window to let
+// pass. A scripted close reaches cleanup in well under a second when the join
+// is missing, so two seconds is a tripwire with margin; it is spent on every
+// passing run.
+const closeFenceProbe = 2 * time.Second
+
+// A swap that passed its closing check is admitted: the session promised to
+// finish it. Its refresh then runs git on the environment it is installing —
+// forks on the process table the session's own close reaps — so a close that
+// walks past an admitted swap tears the environment down while those commands
+// are still starting, on contexts it never gets to cancel.
+//
+// Close therefore waits for every admitted swap before it cleans the
+// environment, and the refresh runs under the session's own context so the
+// close's cancel makes that wait short rather than a full close budget.
+//
+// The hook below holds the swap in exactly the window step 1's git occupies:
+// admitted, past the scratch move, with the install still to come.
+func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	cleanupObserved := make(chan struct{})
+	var refreshLiveAfterClose, cleanupDuringRefresh atomic.Bool
+
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(refreshCtx context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// The close cancels the session context before any teardown, so by here
+		// the refresh is already cancelled: its git stops instead of forking
+		// onto a process table the close is about to reap.
+		if refreshCtx.Err() == nil {
+			refreshLiveAfterClose.Store(true)
+		}
+		select {
+		case <-cleanupObserved:
+			cleanupDuringRefresh.Store(true)
+		case <-time.After(closeFenceProbe):
+		}
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	if refreshLiveAfterClose.Load() {
+		t.Error("the refresh context was still live after the session began closing: the close cannot stop the git the refresh forks")
+	}
+	if cleanupDuringRefresh.Load() {
+		t.Error("the close cleaned the session's environment while an admitted swap was still in flight")
+	}
+}
+
+// The fence on admitted environment work is BOUNDED by the close budget on
+// purpose. The refresh runs under the session's own context, which the close
+// cancels before it reaches the join, so the bound only bites when a process is
+// already ignoring cancellation — and an unbounded fence there would turn one
+// hung git into a daemon that never shuts down. Giving up is the lesser
+// failure, but it must not be a silent one: the close is about to reap the
+// process table under whatever is still running, so it says what it walked
+// past, by name.
+func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
+	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	lanePath, _ := createLaneExpectations(t, r, "lane")
+
+	warnings := collectWarningsUntilClosed(r.s)
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	r.s.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			r.s.Close()
+		}()
+		<-closeBegun
+		// Stand in for a refresh whose git ignores the cancellation the close
+		// already delivered: outlast the whole budget.
+		time.Sleep(2 * LaneClosePassBudget)
+	}
+
+	_, err := r.create(t, map[string]any{"name": "lane"})
+	<-closeDone
+
+	if err == nil {
+		t.Error("the enter succeeded while the session closed under it, want a refusal")
+	}
+	// Close completed rather than hanging behind the held swap: <-closeDone
+	// returned above, and the events channel it closes ends the collector.
+	msgs := <-warnings
+	found := fenceWarnings(msgs)
+	if len(found) != 1 {
+		t.Fatalf("fence warnings = %q, want exactly one naming the work the close walked past; all warnings were %q", found, msgs)
+	}
+	fence := found[0]
+	if !strings.Contains(fence, lanePath) {
+		t.Errorf("fence warning %q does not name the swap still in flight (%s)", fence, lanePath)
+	}
+	// The create is held mid-enter: its admission covers the whole operation,
+	// but no rollback has started and one may never start. Naming it a rollback
+	// here would send a reader looking for cleanup that is not running.
+	if strings.Contains(fence, "rollback") {
+		t.Errorf("fence warning %q calls the create a rollback while its swap is still in flight and nothing has been rolled back", fence)
+	}
+}
+
+// shortenCloseCascadeBudget cuts the shared close-cascade budget for one test
+// and restores it afterwards, so a fence test can watch the join give up
+// without waiting out the production thirty seconds. LaneClosePassBudget is
+// the package var both ensureCloseBudget and worktreeCleanupRun read.
+func shortenCloseCascadeBudget(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := LaneClosePassBudget
+	LaneClosePassBudget = d
+	t.Cleanup(func() { LaneClosePassBudget = old })
+}
+
+// collectWarningsUntilClosed drains every EventWarning off sess until its close
+// shuts the events channel, and hands the messages back on the returned
+// channel. A fence test reads it AFTER the close it is watching has returned:
+// ranging over the channel is what makes "closed" the terminator, so unlike
+// warningMessages it is safe across a close.
+func collectWarningsUntilClosed(sess *Session) <-chan []string {
+	out := make(chan []string, 1)
+	go func() {
+		var msgs []string
+		for ev := range sess.Events() {
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok {
+				msgs = append(msgs, data.Message)
+			}
+		}
+		out <- msgs
+	}()
+	return out
+}
+
+// fenceWarnings returns the environment-work fence warnings among msgs.
+func fenceWarnings(msgs []string) []string {
+	var found []string
+	for _, msg := range msgs {
+		if strings.Contains(msg, "environment work still in flight") {
+			found = append(found, msg)
+		}
+	}
+	return found
+}
+
+// A close whose budget is already spent still reaches the environment-work
+// fence: the delegate-tree stop cancels the cascade budget outright when its
+// own stop timed out, and the close carries on to cleanup. With nothing
+// admitted there is nothing the cleanup can run under, so there is nothing to
+// say — and a warning naming an empty list is noise on every such close.
+func TestWorktreeSwap_ExpiredBudgetWithNothingAdmittedSaysNothing(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	warnings := collectWarningsUntilClosed(r.s)
+
+	// A deadline already in the past: ensureCloseBudget reuses an incoming one
+	// rather than minting a fresh deadline, so the fence join meets a budget
+	// that expired before the close began.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	r.s.close(ctx, true)
+
+	if got := fenceWarnings(<-warnings); len(got) != 0 {
+		t.Errorf("a close with nothing admitted warned about the fence anyway: %q", got)
+	}
 }

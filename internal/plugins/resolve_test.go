@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
@@ -383,10 +385,7 @@ func TestMaterializeBundledPlugin_NeverReplacesAPublishedCopy(t *testing.T) {
 	if !os.SameFile(before, after) {
 		t.Fatal("published copy was replaced by a new directory")
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 1 {
 		t.Fatalf("bundled store has %d entries, want only the published copy: %v", len(entries), entries)
 	}
@@ -415,10 +414,7 @@ func TestMaterializeBundledPlugin_ConcurrentCallsPublishOnce(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths[0], ".claude-plugin", "plugin.json")); err != nil {
 		t.Fatalf("published copy incomplete: %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 1 {
 		t.Fatalf("bundled store has %d entries after a race, want one: %v", len(entries), entries)
 	}
@@ -444,10 +440,7 @@ func TestPreviewForLaunch_PublishesNothing(t *testing.T) {
 	if len(res.Candidates) != 1 || res.Candidates[0].Path != want || res.Candidates[0].Source != LaunchPluginSourceBundled || res.Candidates[0].AgentCount < 7 {
 		t.Fatalf("Candidates = %+v, want the bundled coordinator-workflow at %s", res.Candidates, want)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-	if err != nil {
-		t.Fatalf("read the bundled store after a preview: %v", err)
-	}
+	entries := bundledStoreEntries(t, m.bundledDir())
 	if len(entries) != 0 {
 		t.Fatalf("preview left %d entries in the plugin store: %v", len(entries), entries)
 	}
@@ -813,6 +806,156 @@ func TestMaterializeBundledPlugin_ReclaimsStagingBesideAPublishedCopy(t *testing
 	}
 }
 
+// A publish that dies between parking the previous occupant of the conflict
+// slot and removing it leaves that parked copy behind forever, and a version
+// bump that changes a plugin's digest leaves its old .conflict and
+// .conflict.previous behind too: neither is a .stage- directory the staging
+// sweep looks for, and Gc only walks the install cache, never the bundled
+// store. The next publish's sweep has to reclaim both, while never touching
+// the one .conflict the design promises to keep: the preserved copy for the
+// digest this binary still ships.
+func TestMaterializeBundledPlugin_ReclaimsConflictSlots(t *testing.T) {
+	t.Run("an aged conflict.previous beside an existing conflict is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		previous := conflict + previousSuffix
+		// The sibling .conflict is what tells the sweep this .previous is the
+		// occupant a completed swap replaced and failed to remove, not one
+		// still waiting on the recovery rename.
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); !os.IsNotExist(err) {
+			t.Fatalf("aged conflict.previous survived a later publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("a fresh conflict.previous beside an existing conflict survives", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		previous := conflict + previousSuffix
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); err != nil {
+			t.Fatalf("fresh conflict.previous was reclaimed: %v", err)
+		}
+	})
+
+	// A crash between the two renames in setAsideBundledConflict — the old
+	// .conflict moved to .previous, dest not yet moved into the now-vacant
+	// .conflict — leaves a .previous with no sibling .conflict. Its mtime is
+	// inherited from whenever that content was first set aside, which can
+	// already be older than the reclaim threshold the moment the crash
+	// happens. setAsideBundledConflict's own recovery (renaming .previous back
+	// to .conflict) runs the next time this dest is classified as a conflict,
+	// so the sweep must never delete it first: doing so would destroy the one
+	// copy that recovery is waiting to restore.
+	t.Run("an aged conflict.previous with no sibling conflict is never reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := dest + conflictSuffix + previousSuffix
+		if err := os.MkdirAll(previous, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(previous); err != nil {
+			t.Fatalf("interrupted set-aside's preserved copy was reclaimed before recovery could restore it: %v", err)
+		}
+	})
+
+	t.Run("a conflict for a stale digest is reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		digest, err := bundledPluginDigest("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		staleConflict := m.bundledPluginPath("coordinator-workflow", staleBundledDigest(digest)) + conflictSuffix
+		if err := os.MkdirAll(staleConflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staleConflict); !os.IsNotExist(err) {
+			t.Fatalf("conflict for a stale digest survived a publish (stat err = %v)", err)
+		}
+	})
+
+	t.Run("a conflict for the current digest is never reclaimed", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		dest, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflict := dest + conflictSuffix
+		if err := os.MkdirAll(conflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		digest, err := bundledPluginDigest("coordinator-workflow")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Something else for the sweep to reclaim alongside it, so the
+		// assertion below proves the sweep ran and chose to spare the
+		// current-digest conflict rather than merely never being triggered.
+		staleConflict := m.bundledPluginPath("coordinator-workflow", staleBundledDigest(digest)) + conflictSuffix
+		if err := os.MkdirAll(staleConflict, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m.Now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+		if _, _, err := m.materializeBundledPlugin(context.Background(), "coordinator-workflow"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staleConflict); !os.IsNotExist(err) {
+			t.Fatalf("sweep did not run: the stale conflict planted beside it is still present (stat err = %v)", err)
+		}
+		if _, err := os.Stat(conflict); err != nil {
+			t.Fatalf("conflict for the current digest was reclaimed: %v", err)
+		}
+	})
+}
+
+// staleBundledDigest returns a same-length hex digest that differs from
+// current, standing in for what a version bump leaves behind: a digest this
+// binary no longer computes for any bundled plugin.
+func staleBundledDigest(current string) string {
+	if current[:1] == "0" {
+		return "1" + current[1:]
+	}
+	return "0" + current[1:]
+}
+
 // The resolver looks a bundled plugin up by its embedded directory name and
 // then keys the inventory by the manifest name the loader reports, so every
 // bundled plugin must carry the manifest name its directory promises.
@@ -902,10 +1045,7 @@ func TestBundledStore_AdoptsOnlyTheContentTheDigestNames(t *testing.T) {
 			if len(res.Candidates) != 1 || res.Candidates[0].Path != published || res.Candidates[0].AgentCount < 7 {
 				t.Fatalf("Candidates = %+v, want the published copy at %s", res.Candidates, published)
 			}
-			entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-			if err != nil {
-				t.Fatal(err)
-			}
+			entries := bundledStoreEntries(t, m.bundledDir())
 			if len(entries) != 1 {
 				t.Errorf("bundled store holds %v, want only the published copy", entries)
 			}
@@ -1013,10 +1153,7 @@ func TestBundledStore_SetsAsideAConflictingDestination(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(aside, "first.md")); !os.IsNotExist(err) {
 			t.Errorf("an earlier set-aside copy survived (stat err = %v), want one slot per plugin", err)
 		}
-		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		entries := bundledStoreEntries(t, m.bundledDir())
 		if len(entries) != 2 {
 			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
 		}
@@ -1178,10 +1315,7 @@ func TestSetAsideBundledConflict_RecoversAnInterruptedSetAside(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dest+conflictSuffix, "newer.md")); err != nil {
 			t.Errorf("the slot does not hold the conflict this launch found: %v", err)
 		}
-		entries, err := os.ReadDir(filepath.Join(m.Root, "bundled"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		entries := bundledStoreEntries(t, m.bundledDir())
 		if len(entries) != 2 {
 			t.Errorf("bundled store holds %v, want the published copy and the one slot beside it", entries)
 		}
@@ -1460,3 +1594,104 @@ func TestMaterializeBundledPlugin_PutsASetAsideBackWhenStagingCannotBeCreated(t 
 		t.Errorf("warnings = %v, want one naming the restore", warnings)
 	}
 }
+
+// A regular file bigger than maxBundledFileBytes is never a copy of anything
+// this build ships — the docstring on maxBundledFileBytes says as much — so
+// digestFS classifies it as a mismatch by its declared size alone, without
+// reading it, and classifyBundledDestination in turn reports the destination
+// as a conflict. The file is Truncated to size rather than written, so
+// growing it past the bound never allocates the bytes in between: the test
+// stays fast regardless of how large the bound is. This assumes the test
+// filesystem supports sparse files, true of the APFS/ext4/tmpfs filesystems
+// development machines and CI run on; on one that does not, the Truncate
+// would still produce a correctly sized file, just by writing zeroes for
+// real, so the test would still pass, only slower.
+func TestClassifyBundledDestination_ATreeWithAFileOverTheBoundIsAConflict(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "widget-somedigest")
+	writePlugin(t, dest, "widget", nil)
+	big, err := os.Create(filepath.Join(dest, "big.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(maxBundledFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// digestFS is what actually enforces the bound, asserted directly so the
+	// test is sensitive to that specifically: read to completion, the
+	// oversized file's own read count would still fall short of its declared
+	// size and get caught the same way a shrinking file does, so asserting
+	// only on classifyBundledDestination's conflict state below — which is
+	// also what an ordinary digest mismatch produces — would not prove the
+	// bound was what did the catching.
+	if _, err := digestFS(os.DirFS(dest)); !errors.Is(err, errIrregularContent) {
+		t.Fatalf("digestFS err = %v, want errIrregularContent for a file over the bound", err)
+	}
+
+	// classifyBundledDestination is what a launch actually calls; confirmed
+	// here to translate that mismatch into the conflict state a launch acts
+	// on. The digest is otherwise irrelevant: an oversized file forces a
+	// conflict before classifyBundledDestination ever gets to compare a
+	// computed digest against this one.
+	state, err := classifyBundledDestination(dest, "irrelevant")
+	if err != nil {
+		t.Fatalf("classifyBundledDestination: %v", err)
+	}
+	if state != bundledDestinationConflict {
+		t.Errorf("state = %v, want bundledDestinationConflict for a file over the bound", state)
+	}
+}
+
+// digestFS streams a file no further than the size its directory entry
+// declared, and treats a read that comes up short of that size the same way
+// it treats a file over the bound: whatever is really there is not the copy
+// it claims to be. A file that shrinks between being listed and being read
+// would take this path, but reproducing that on a real filesystem needs a
+// goroutine racing the walk, which is not deterministic. digestFS takes an
+// fs.FS rather than a path, so the branch is reachable directly and
+// deterministically instead: shortReadFS lists "short.bin" at 10 bytes but
+// only ever delivers 5 before EOF, no race required.
+func TestDigestFS_AFileShorterThanItsDeclaredSizeIsAMismatch(t *testing.T) {
+	fsys := shortReadFS{MapFS: fstest.MapFS{
+		"short.bin": &fstest.MapFile{Data: make([]byte, 10)},
+	}}
+	if _, err := digestFS(fsys); !errors.Is(err, errIrregularContent) {
+		t.Fatalf("digestFS err = %v, want errIrregularContent for a file that reads short of its declared size", err)
+	}
+}
+
+// shortReadFS is an fstest.MapFS whose "short.bin" entry is opened through a
+// shortReadFile instead of the map's own file: the directory listing still
+// declares the size the map records, but the opened file's Read delivers
+// fewer bytes than that before EOF.
+type shortReadFS struct {
+	fstest.MapFS
+}
+
+func (fsys shortReadFS) Open(name string) (fs.File, error) {
+	if name == "short.bin" {
+		return &shortReadFile{}, nil
+	}
+	return fsys.MapFS.Open(name)
+}
+
+// shortReadFile delivers "short" (5 bytes) and then EOF, regardless of what
+// its directory entry declared its size to be.
+type shortReadFile struct{ read bool }
+
+func (f *shortReadFile) Stat() (fs.FileInfo, error) {
+	return fstest.MapFS{"short.bin": {Data: make([]byte, 10)}}.Stat("short.bin")
+}
+
+func (f *shortReadFile) Read(p []byte) (int, error) {
+	if f.read {
+		return 0, io.EOF
+	}
+	f.read = true
+	return copy(p, "short"), io.EOF
+}
+
+func (f *shortReadFile) Close() error { return nil }
