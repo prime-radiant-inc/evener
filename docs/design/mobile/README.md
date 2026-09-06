@@ -4,6 +4,8 @@
 
 Use the [native mobile backlog](backlog.md) to track issues and new feedback.
 MOB-001, inefficient use of visual space, is the current first priority.
+MOB-011 records Jesse's composer correction: full-width text, Submit on the
+controls row. It supersedes the earlier draft/submit placement in the studies.
 
 Fluency and beauty are requirements of the mobile app, alongside capability and reliability. The current React Native prototype proves some workflows; it does not establish the visual direction. Jesse’s assessment of its chunky rows is the starting point for this work.
 
