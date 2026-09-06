@@ -1064,16 +1064,23 @@ func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
 
 // TemplateVarsEnv lists the variables a curated provider's URL templates
 // read, as the vars_env map restricted to them: a placeholder in the base
-// URL or an endpoint template (the provider's own or a row's) or an input of
-// the host rule. A vars_env entry no template reads is left out — models.dev
-// lists GOOGLE_APPLICATION_CREDENTIALS beside the Vertex project and
-// location, but the credential is read from the environment or the store,
-// never substituted — so a form built on the result offers no input the
-// registry would ignore. Nil for an unknown id.
+// URL or an endpoint template (the provider's own transport or one of its
+// rows'; top-level glob rows carry capabilities, not transports) or an input
+// of the host rule. A vars_env entry no template reads is left out —
+// models.dev lists GOOGLE_APPLICATION_CREDENTIALS beside the Vertex project
+// and location, but the credential is read from the environment or the
+// store, never substituted — so a form built on the result offers no input
+// the registry would ignore. A provider with no curated base URL at all
+// (cloudflare-ai-gateway, watsonx: models.dev publishes no api for them)
+// keeps its whole map: the user supplies the URL, and a placeholder they
+// type still resolves from instance vars. Nil for an unknown id.
 func (r *Registry) TemplateVarsEnv(id string) map[string]string {
 	rec, ok := r.curated[id]
 	if !ok {
 		return nil
+	}
+	if rec.head.Transport.BaseURL == "" {
+		return mergeStringMap(nil, rec.head.Transport.VarsEnv)
 	}
 	referenced := map[string]bool{}
 	note := func(t Transport) {

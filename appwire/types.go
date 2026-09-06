@@ -2714,9 +2714,10 @@ type InstanceEntry struct {
 // to the environment variable name it is fed by, so a typed override can be
 // sent keyed by the name the registry actually substitutes. It is
 // registry.Transport.VarsEnv restricted to the placeholders some URL
-// template reads (Registry.TemplateVarsEnv): a vars_env entry nothing
-// substitutes, such as a credential's own variable, gets no input. VarsEnv is the same
-// environment-variable names alone, sorted. It stays a list because v3
+// template reads or a host rule consumes (Registry.TemplateVarsEnv): a
+// vars_env entry nothing substitutes, such as a credential's own variable,
+// gets no input. VarsEnv is the same environment-variable names alone,
+// sorted. It stays a list because v3
 // peers — a TUI built before Vars existed — decode it as one, and
 // ProtocolVersion is compared exactly, so a wire shape cannot change under
 // v3; new readers use Vars.

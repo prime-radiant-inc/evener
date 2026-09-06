@@ -728,4 +728,22 @@ describe("ConnectProviderDialog", () => {
     expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Set credential JSON" })).toBeNull();
   });
+
+  test("a removed credential-JSON instance does not reopen its editor when restored", async () => {
+    const vertex = instance({
+      name: "vertex",
+      providerId: "google-vertex",
+      auth: "gcp-adc",
+      authModes: ["adc", "credentialJson"],
+    });
+    connectFakeClient({ instances: [vertex], availableProviders: [] });
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Set credential JSON" }));
+    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
+    await act(async () => credentialsStore.setState({ instances: [] }));
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+    await act(async () => credentialsStore.setState({ instances: [vertex] }));
+    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeNull();
+  });
 });
