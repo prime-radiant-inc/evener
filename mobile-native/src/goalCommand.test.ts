@@ -630,7 +630,7 @@ it("does not resurrect a turn that completes during a read before its start was 
   }
 });
 
-it.each(["tasks", "status", "copy-id"] as const)(
+it.each(["tasks", "status", "copy-id", "project"] as const)(
   "runs /%s locally without a delivery checkpoint",
   async (id) => {
     const { db, document } = commandDraft();

@@ -59,6 +59,7 @@ import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
+import { locateSession, type SessionLocation } from "./navigationReveal";
 import { QuestionSheet } from "./QuestionSheet";
 import { QueueSheet } from "./QueueSheet";
 import {
@@ -80,6 +81,7 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+  SessionLocation: { hubId: string; location: SessionLocation };
   Projects: { hubId: string };
   Project: { hubId: string; projectKey: string; title: string };
   Hubs: undefined;
@@ -604,6 +606,7 @@ export function ConversationScreen({
   const [actionError, setActionError] = useState<string | null>(null);
   const [commandPending, setCommandPending] = useState(false);
   const commandBusy = useRef(false);
+  const projectLookup = useRef<AbortController | null>(null);
   const document = useMemo(
     () =>
       drafts.open({ hubId: route.params.hubId, sessionRef: route.params.ref }),
@@ -619,7 +622,13 @@ export function ConversationScreen({
     imageSelection.getSnapshot,
   );
   useFocusEffect(
-    useCallback(() => () => imageSelection.cancel(), [imageSelection]),
+    useCallback(
+      () => () => {
+        imageSelection.cancel();
+        projectLookup.current?.abort();
+      },
+      [imageSelection],
+    ),
   );
   const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
   const connected =
@@ -897,6 +906,38 @@ export function ConversationScreen({
                 throw new CommandArgumentError(
                   "The session changed. Try again from the current session.",
                 );
+              if (id === "project") {
+                if (!client)
+                  throw new CommandArgumentError(
+                    "Connect to the hub to locate this session.",
+                  );
+                const lookup = new AbortController();
+                projectLookup.current = lookup;
+                let location: SessionLocation;
+                try {
+                  location = await locateSession(
+                    client,
+                    route.params.ref,
+                    lookup.signal,
+                  );
+                } catch (error) {
+                  throw new CommandArgumentError(
+                    error instanceof Error
+                      ? error.message
+                      : "Could not locate this session.",
+                  );
+                }
+                if (!currentBinding() || lookup.signal.aborted)
+                  throw new CommandArgumentError(
+                    "The session changed before its location was loaded.",
+                  );
+                Keyboard.dismiss();
+                navigation.push("SessionLocation", {
+                  hubId: route.params.hubId,
+                  location,
+                });
+                return;
+              }
               if (id === "copy-id") {
                 try {
                   const copied = await Clipboard.setStringAsync(
