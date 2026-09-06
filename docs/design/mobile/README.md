@@ -2,6 +2,9 @@
 
 **Direction approved; implementation in progress · 5 September 2026**
 
+Use the [native mobile backlog](backlog.md) to track issues and new feedback.
+MOB-001, inefficient use of visual space, is the current first priority.
+
 Fluency and beauty are requirements of the mobile app, alongside capability and reliability. The current React Native prototype proves some workflows; it does not establish the visual direction. Jesse’s assessment of its chunky rows is the starting point for this work.
 
 Product scope and behavior come from the current web UI, server contracts, and Jesse’s explicit requests. The old mobile UI is not a feature reference. Reusing its protocol or state code requires checking that code against these sources. Research references inform presentation and interaction; they do not add Evener capabilities. Screen studies must distinguish existing behavior from proposals and link their behavior to current sources. The [parity audit](web-parity-audit.md) records corrections and unresolved differences.
