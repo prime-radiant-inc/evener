@@ -105,6 +105,23 @@ func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams)
 	if err != nil {
 		return appwire.Ref{}, err
 	}
+	return s.relaySessionRef(entry)
+}
+
+// ResolveSubscriptionAdmission preserves stable/current root aliases while
+// keeping read-only descendants distinct from their shared relay session.
+func (s *LocalDaemonSource) ResolveSubscriptionAdmission(params appwire.ThreadReadParams) (appwire.Ref, error) {
+	item, err := s.localEntryForRefMode(params.Ref, params.ThreadID, true)
+	if err != nil {
+		return appwire.Ref{}, err
+	}
+	if item.ReadOnlyAlias {
+		return appwire.Ref{SourceID: s.sourceID, ThreadID: localDaemonThreadID(item)}, nil
+	}
+	return s.relaySessionRef(localDaemonRendezvousEntry(item))
+}
+
+func (s *LocalDaemonSource) relaySessionRef(entry rendezvous.Entry) (appwire.Ref, error) {
 	threadID := entry.ThreadID
 	if entry.SessionID != "" {
 		threadID = entry.SessionID
@@ -800,14 +817,22 @@ func (s *LocalDaemonSource) entryForReadRef(rawRef, threadID string) (rendezvous
 }
 
 func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (rendezvous.Entry, error) {
+	item, err := s.localEntryForRefMode(rawRef, threadID, allowReadOnlyAlias)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	return localDaemonRendezvousEntry(item), nil
+}
+
+func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
 	requestedRef := strings.TrimSpace(rawRef)
 	if rawRef != "" {
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil {
-			return rendezvous.Entry{}, err
+			return LocalDaemonEntry{}, err
 		}
 		if ref.SourceID != s.sourceID {
-			return rendezvous.Entry{}, fmt.Errorf("source not found: %s", ref.SourceID)
+			return LocalDaemonEntry{}, fmt.Errorf("source not found: %s", ref.SourceID)
 		}
 		threadID = ref.ThreadID
 	}
@@ -817,13 +842,13 @@ func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOn
 		}
 		entry := localDaemonRendezvousEntry(item)
 		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
-			return entry, nil
+			return item, nil
 		}
 		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
-			return entry, nil
+			return item, nil
 		}
 	}
-	return rendezvous.Entry{}, appwire.SessionUnavailable("thread not found: " + threadID)
+	return LocalDaemonEntry{}, appwire.SessionUnavailable("thread not found: " + threadID)
 }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {

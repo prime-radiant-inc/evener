@@ -2941,6 +2941,8 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 	}{
 		{"child_ref", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
 		{"child_id", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{ThreadID: "child"}},
+		{"unsubscribe_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child", ThreadID: "current"}},
+		{"read_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", ThreadID: "child"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

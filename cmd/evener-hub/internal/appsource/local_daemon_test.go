@@ -1022,3 +1022,53 @@ func TestLocalDaemonResolveRelaySessionCanonicalizesAliasesWithoutAcquiring(t *t
 		t.Fatalf("resolution acquired %d relay sessions, want none", acquired)
 	}
 }
+
+func TestLocalDaemonResolveSubscriptionAdmissionSingleSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		params    appwire.ThreadReadParams
+		want      string
+		snapshots int
+	}{
+		{"stable_root", appwire.ThreadReadParams{Ref: "local:stable"}, "local:stable", 1},
+		{"current_root", appwire.ThreadReadParams{ThreadID: "current"}, "local:stable", 1},
+		{"current_root_ref", appwire.ThreadReadParams{Ref: "local:current"}, "local:stable", 1},
+		{"child_ref", appwire.ThreadReadParams{Ref: "local:child"}, "local:child", 1},
+		{"child_id", appwire.ThreadReadParams{ThreadID: "child"}, "local:child", 1},
+		{"root_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", ThreadID: "child"}, "local:stable", 1},
+		{"child_ref_precedence", appwire.ThreadReadParams{Ref: "local:child", ThreadID: "current"}, "local:child", 1},
+		{"missing_ref_precedence", appwire.ThreadReadParams{Ref: "local:missing", ThreadID: "current"}, "", 1},
+		{"missing_id", appwire.ThreadReadParams{ThreadID: "missing"}, "", 1},
+		{"invalid_ref_precedence", appwire.ThreadReadParams{Ref: "invalid", ThreadID: "current"}, "", 0},
+		{"foreign_ref_precedence", appwire.ThreadReadParams{Ref: "other:stable", ThreadID: "current"}, "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/rpc", SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable"}
+			snapshots := 0
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+				snapshots++
+				if snapshots > 1 {
+					return nil // A second inventory read cannot resolve this target.
+				}
+				return []LocalDaemonEntry{
+					{Entry: entry},
+					{Entry: entry, SessionID: "child", OwnerSessionID: "current", ReadOnlyAlias: true},
+				}
+			}, nil)
+			got, err := source.ResolveSubscriptionAdmission(tc.params)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("invalid admission resolved as %q", got.String())
+				}
+			} else if err != nil || got.String() != tc.want {
+				t.Fatalf("admission = %q, %v; want %q", got.String(), err, tc.want)
+			}
+			if snapshots != tc.snapshots {
+				t.Fatalf("inventory snapshots = %d, want %d", snapshots, tc.snapshots)
+			}
+			if len(source.relaySessions) != 0 {
+				t.Fatal("admission resolution acquired a relay session")
+			}
+		})
+	}
+}
