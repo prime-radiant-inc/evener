@@ -241,7 +241,7 @@ func fuzzGCDoctorEdges(t *testing.T) {
 	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("gc cache file succeeded")
 	}
-	findings := m.doctorOrphanCacheDirs(nil)
+	findings := m.doctorOrphanCacheDirs()
 	if len(findings) != 1 || findings[0].Level != LevelFail {
 		t.Fatalf("orphan findings = %#v", findings)
 	}

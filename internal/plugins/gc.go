@@ -17,6 +17,21 @@ var (
 	gcRemoveAll   = os.RemoveAll
 )
 
+// referencedInstallPaths is the set of materialized directories the registry
+// names — the ones that are live rather than orphaned. Gc removes what is not
+// in it and Doctor reports what is not in it, and the two have to agree: a
+// directory Doctor calls orphaned that Gc would keep sends the user to a
+// command that does nothing.
+func referencedInstallPaths(reg Registry) map[string]bool {
+	referenced := make(map[string]bool, len(reg.Plugins))
+	for _, entries := range reg.Plugins {
+		for _, e := range entries {
+			referenced[filepath.Clean(e.InstallPath)] = true
+		}
+	}
+	return referenced
+}
+
 // Gc sweeps cacheDir() (cache/<marketplace>/<plugin>/<sha>/) for materialized
 // plugin dirs that no registry entry's InstallPath references, and removes
 // them. It returns the removed paths.
@@ -41,12 +56,7 @@ func (m *Manager) Gc(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	referenced := make(map[string]bool, len(reg.Plugins))
-	for _, entries := range reg.Plugins {
-		for _, e := range entries {
-			referenced[filepath.Clean(e.InstallPath)] = true
-		}
-	}
+	referenced := referencedInstallPaths(reg)
 
 	marketplaceEntries, err := gcReadDir(m.cacheDir())
 	if err != nil {
