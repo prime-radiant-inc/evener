@@ -12,14 +12,15 @@ import (
 // fail once, loudly, at initialize -- rather than agreeing there and then
 // disagreeing on every request.
 //
-// v3 dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
+// v4 makes transcript reads item-only and rejects retired paging fields. v3
+// dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
 // names no turn. A v2 daemon still requires that field, so a v3 client talking
 // to one would get a Conflict per button press and the user would read it as
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v3"
+const ProtocolVersion = "evener-appwire-v4"
 
 const (
 	MethodInitialize                  = "initialize"
@@ -1040,12 +1041,32 @@ type EvenerTurnSlots struct {
 	Drives int64 `json:"driveTurns"`
 }
 
+// TurnItemsView identifies whether a turn carries its complete item list or a
+// fragment selected by item-mode paging.
+type TurnItemsView string
+
+const (
+	TurnItemsViewFull     TurnItemsView = "full"
+	TurnItemsViewFragment TurnItemsView = "fragment"
+)
+
+// ThreadItemPosition is an absolute position in the decoded transcript and
+// the final visible projected item slice for that entry.
+type ThreadItemPosition struct {
+	Entry uint64 `json:"entry"`
+	Item  uint32 `json:"item"`
+}
+
 type Turn struct {
-	ID        string       `json:"id"`
-	Items     []ThreadItem `json:"items,omitempty"`
-	ItemsView string       `json:"itemsView"`
-	Status    string       `json:"status"`
-	Error     *TurnError   `json:"error,omitempty"`
+	ID        string        `json:"id"`
+	Items     []ThreadItem  `json:"items,omitempty"`
+	ItemsView TurnItemsView `json:"itemsView"`
+	Status    string        `json:"status"`
+	Error     *TurnError    `json:"error,omitempty"`
+	// HasEarlierItems and HasLaterItems describe completeness at the item
+	// boundaries of a fragment. They are omitted by legacy/full responses.
+	HasEarlierItems bool `json:"hasEarlierItems,omitempty"`
+	HasLaterItems   bool `json:"hasLaterItems,omitempty"`
 	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
 	// the same scale as DurationMS and the web reducer's epoch-ms read. The
 	// appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
@@ -1176,21 +1197,23 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
-	Type                 string        `json:"type"`
-	ID                   string        `json:"id"`
-	TurnID               string        `json:"turnId,omitempty"`
-	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
-	Text                 string        `json:"text,omitempty"`
-	Delta                string        `json:"delta,omitempty"`
-	Images               []InputItem   `json:"images,omitempty"`
-	ToolName             string        `json:"toolName,omitempty"`
-	CallID               string        `json:"callId,omitempty"`
-	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
-	Description          string        `json:"description,omitempty"`
-	Output               string        `json:"output,omitempty"`
-	Error                string        `json:"error,omitempty"`
-	OutputImages         []OutputImage `json:"outputImages,omitempty"`
-	Status               string        `json:"status,omitempty"`
+	Type                 string              `json:"type"`
+	ID                   string              `json:"id"`
+	TranscriptKey        string              `json:"transcriptKey,omitempty"`
+	Position             *ThreadItemPosition `json:"position,omitempty"`
+	TurnID               string              `json:"turnId,omitempty"`
+	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
+	Text                 string              `json:"text,omitempty"`
+	Delta                string              `json:"delta,omitempty"`
+	Images               []InputItem         `json:"images,omitempty"`
+	ToolName             string              `json:"toolName,omitempty"`
+	CallID               string              `json:"callId,omitempty"`
+	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Output               string              `json:"output,omitempty"`
+	Error                string              `json:"error,omitempty"`
+	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
+	Status               string              `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
@@ -1286,19 +1309,31 @@ type ThreadReadParams struct {
 	ItemsView           string `json:"itemsView,omitempty"`
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
-	// TurnLimit bounds includeTurns to the latest N turns for windowed
-	// (lazy) loading; 0 means unbounded (the full transcript). When it
-	// truncates, the response carries OlderCursor for paging back via
-	// thread/turns/list.
-	TurnLimit int `json:"turnLimit,omitempty"`
+	ItemLimit           int    `json:"itemLimit,omitempty"`
 }
 
 type ThreadReadResponse struct {
 	Thread Thread `json:"thread"`
-	// OlderCursor is set when TurnLimit truncated the returned turns; pass it
-	// to thread/turns/list to fetch the page of turns just before the window.
-	// Empty means the response already includes the oldest turn.
+	// OlderCursor is set when itemLimit truncated the returned items; pass it
+	// to thread/turns/list to fetch the page just before the window. Empty means
+	// the response already includes the oldest item.
 	OlderCursor string `json:"olderCursor,omitempty"`
+}
+
+func decodeStrictJSON(data []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dst)
+}
+
+func (p *ThreadReadParams) UnmarshalJSON(data []byte) error {
+	type wire ThreadReadParams
+	var decoded wire
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	*p = ThreadReadParams(decoded)
+	return nil
 }
 
 type ThreadUnsubscribeParams struct {
@@ -1310,13 +1345,23 @@ type ThreadTurnsListParams struct {
 	ThreadID  string `json:"threadId,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Cursor    string `json:"cursor,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
 	ItemsView string `json:"itemsView,omitempty"`
+	ItemLimit int    `json:"itemLimit,omitempty"`
 }
 
 type ThreadTurnsListResponse struct {
 	Data       []Turn `json:"data"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+func (p *ThreadTurnsListParams) UnmarshalJSON(data []byte) error {
+	type wire ThreadTurnsListParams
+	var decoded wire
+	if err := decodeStrictJSON(data, &decoded); err != nil {
+		return err
+	}
+	*p = ThreadTurnsListParams(decoded)
+	return nil
 }
 
 type ThreadTurnItemsListParams struct {
@@ -2713,25 +2758,20 @@ type InstanceCreateParams struct {
 
 // InstanceEditParams is the params for evener/instance/edit. Editing an
 // implicit instance writes a shadowing entry carrying only these fields
-// (spec §11.3). The wire shape is additive over v3 (ProtocolVersion stays
-// evener-appwire-v3): every field it already had keeps its exact old
-// meaning, so an old and a new peer can never silently disagree about a
-// request either one sends.
+// (spec §11.3). This wire shape is part of evener-appwire-v4; fields carried
+// forward retain their established meanings, and v4 peers negotiate this
+// shape before using it.
 //
 // EMPTY MEANS UNCHANGED, not "clear", for BaseURL, Protocol and Surface: an
-// empty value leaves the stored one alone. That is unchanged from before
-// (#711) — BaseURL cannot be emptied to mean "clear" without changing what a
-// v3 `baseUrl: ""` has always meant to a peer on either side of an upgrade.
+// empty value leaves the stored one alone. That preserves the pre-v4 field
+// semantics (#711) — BaseURL cannot be emptied to mean "clear" without
+// changing what a v3 `baseUrl: ""` meant to a peer before the v4 upgrade.
 //
-// ClearBaseURL is the new, additive way to reach a clear: when true, it
-// drops the authored base_url override and goes back to the registry
-// default, lifting spec §10's credential-inheritance stop, which keys on a
-// literal base_url. It is additive rather than a wire-incompatible change
-// because an old hub simply ignores the unknown field — the request reduces
-// to an ordinary no-op edit on BaseURL, not a silent wrong clear — and a new
-// hub talking to an old client that never sends it behaves exactly as
-// before. BaseURL and ClearBaseURL are never both meaningful in the same
-// request: send one or the other.
+// ClearBaseURL is the v4 way to reach a clear: when true, it drops the
+// authored base_url override and goes back to the registry default, lifting
+// spec §10's credential-inheritance stop, which keys on a literal base_url.
+// BaseURL and ClearBaseURL are never both meaningful in the same request: send
+// one or the other.
 //
 // Protocol and Surface have no clear operation yet — Name identifies the
 // instance and an empty Vars map is a no-op edit either way, so those two

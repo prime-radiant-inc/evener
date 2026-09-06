@@ -97,8 +97,8 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("launch check output=%+v", out)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "evener-appwire-v3" {
-		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v3\"", out.Protocol)
+	if out.Protocol != "evener-appwire-v4" {
+		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v4\"", out.Protocol)
 	}
 }
 
