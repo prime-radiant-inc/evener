@@ -210,3 +210,21 @@ it("rejects a response from before a generation change during the request", asyn
   expect(pages.getSnapshot().rows).toEqual([]);
   expect(pages.getSnapshot().stale).toBe(true);
 });
+
+it("retains truncation disclosure across appended pages and clears it on refresh", async () => {
+  const { requests, pages } = boundary();
+  const first = pages.refresh();
+  const partial = response(["a"], 1);
+  partial.data = { ...(partial.data as object), truncated: true };
+  requests[0].resolve(partial);
+  await first;
+  expect(pages.getSnapshot().truncated).toBe(true);
+  const next = pages.more();
+  requests[1].resolve(response(["b"]));
+  await next;
+  expect(pages.getSnapshot().truncated).toBe(true);
+  const refresh = pages.refresh();
+  requests[2].resolve(response(["c"]));
+  await refresh;
+  expect(pages.getSnapshot().truncated).toBe(false);
+});

@@ -19,7 +19,7 @@ This uses evener/navigation/read catalog and project_page resources. It does not
 
 ## Open acceptance
 
-This is not full navigation completion. Pins, favorites/archive mutations, nested session disclosure, server truncation disclosure, live invalidation notifications and project-route restoration after process death remain open. Multi-page catalog and archived nonempty datasets, native revision-conflict recovery, screen readers and physical devices still need dedicated acceptance. The top-level thread/list roster retains its documented cap; project paging is the available path to older sessions. No full repository merge gate or release-readiness claim is made.
+This is not full navigation completion. Pins, favorites/archive mutations, project-route restoration after process death remain open. Multi-page catalog and archived nonempty datasets, native revision-conflict recovery, screen readers and physical devices still need dedicated acceptance. The top-level thread/list roster retains its documented cap; project paging is the available path to older sessions. No full repository merge gate or release-readiness claim is made.
 
 ## Live invalidation increment
 
@@ -31,3 +31,14 @@ Both simulators observed a real rename of the owned isolated-hub session to Navi
 
 ![iOS update prompt](assets/navigation-update-ios.png)
 ![Android update prompt and paused continuation](assets/navigation-update-android.png)
+
+## Related-session disclosure
+
+Project sessions now disclose nested destinations in one virtualized list. Opening a session and expanding its related sessions are separate actions. Expansion survives ordinary return from a conversation and resets when the list owner changes. Canonical refs suppress duplicate destinations and repeated ancestor references. Indentation is capped to protect readable width. Per-row omitted counts and a page-level partial-tree notice expose server truncation; the latter accumulates across continuation and resets on refresh.
+
+Native tests: 81 across 15 files, TypeScript and targeted Biome pass. Both final Release builds succeeded and were installed. New behavioral tests cover collapsed/expanded ordering, duplicate/cyclic refs and truncation across paging/refresh. Independent review found no actionable findings.
+
+Both simulators expanded two levels, opened the deepest destination and returned with disclosures intact. The fixture proxy added a synthetic hierarchy and omitted counts to real isolated-hub navigation responses; opening used real owned session refs. This proves native handling of that projection, not daemon-created subagent hierarchy. Final screenshots include the singular-count correction. Screen readers, very deep trees and real subagent lifecycle remain open acceptance.
+
+![iOS related sessions](assets/navigation-tree-ios.png)
+![Android related sessions](assets/navigation-tree-android.png)
