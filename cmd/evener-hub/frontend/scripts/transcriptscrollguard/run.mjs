@@ -118,6 +118,10 @@ async function main() {
       if (initial.turns !== 42) failures.push(`expected 42 scripted turns in the model, found ${initial.turns}`);
       if (initial.pill) failures.push(`pill is visible at mount (text: ${JSON.stringify(initial.pillText)}) - the session should open at the bottom`);
 
+      const grown = JSON.parse(await evaluate(send, "(async () => JSON.stringify(await window.growMeasuredRow()))()"));
+      if (grown.scrollHeight <= initial.scrollHeight) failures.push("late row growth did not increase content height");
+      if (Math.abs(grown.bottomGap) > BOTTOM_TOLERANCE_PX || grown.pill) failures.push("late row growth lost the end anchor");
+
       if (failures.length === 0) {
         // A REAL scroll away (scrollTop assignment through CDP - the browser
         // dispatches the native scroll event). The pill must appear from
