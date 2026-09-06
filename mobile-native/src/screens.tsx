@@ -1499,10 +1499,12 @@ export function ConversationScreen({
           questions.length === 0 &&
           connected &&
           client &&
+          conversation &&
           slashToken ? (
             <CommandCompletion
               client={client}
               sessionRef={route.params.ref}
+              capabilities={conversation.capabilities}
               query={slashToken.query}
               close={() => setCompletionClosedAt(draft.record.draft)}
               choose={(item) => {

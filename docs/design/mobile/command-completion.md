@@ -48,18 +48,41 @@ hints. The list scrolls within a bounded height.
 
 ## Remaining command work
 
-This picker currently offers catalog commands and skills. Built-in session
-actions must be routed explicitly before advertising them here. Submission
-supports goal, compact, shutdown, model, reasoning-effort, interrupt, steer,
-queue, drain-as-steer, copy-id, tasks, status, and aside. Remaining native
-slash routes are clear and project. Some already have other native controls,
-which does not establish slash-command parity. Unavailable-command feedback
-and full built-in completion integration remain acceptance work.
+The picker offers catalog commands, skills, and the native-supported built-in
+commands described below. Completion of model and reasoning argument values
+remains open; their composer settings pickers remain available. Offering a
+command name does not establish full slash-command parity.
 
 Still required: native middle-of-draft/caret and IME tests, large catalogs and
 large text, screen-reader interaction, plugin install/remove while open,
 catalog fault/reconnect and hub-switch acceptance, real command execution,
 and final-release regression. The full app goal remains incomplete.
+
+## Built-in name completion, 6 September 2026
+
+The picker uses the supported native submission registry and current session
+capabilities with the web's merge, fuzzy-match and insertion helpers. Every
+advertised built-in has a counterpart in the current web palette registry;
+the old mobile UI supplies no feature requirements. Capability changes update
+the visible options. Selecting a row inserts its name without executing it.
+
+Built-ins remain selectable while the separately loaded catalog is pending or
+failed. Catalog commands and skills retain the existing stale-result guards.
+This does not bypass submission-time capability or active-turn checks.
+
+Verification: 226 native tests, TypeScript and touched-file Biome pass. Both
+Release builds succeeded. Manual isolated-hub checks selected `/tasks` on iOS
+and opened its existing sheet. With catalog failure injected, Android selected
+`/project` and navigated to the correct project on SecondHub; iOS selected
+`/goal` and retained it as an unsubmitted draft. The test fault is removed.
+The saved screenshots were visually inspected. The error panel consumes too
+much vertical space and needs refinement; these are functional evidence, not
+final visual acceptance. Large-text, screen-reader and argument-completion
+acceptance remain open.
+
+![Android built-in available during catalog failure](assets/builtin-completion/android-catalog-failure.png)
+
+![iOS built-ins available during catalog failure](assets/builtin-completion/ios-builtins.png)
 
 ## Lifecycle command submission, 6 September 2026
 

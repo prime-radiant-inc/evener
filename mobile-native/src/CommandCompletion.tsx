@@ -4,19 +4,23 @@ import {
   filterSlashMenuItems,
   type SlashMenuItem,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { CommandCatalog } from "./commandCatalog";
+import { builtinComposerItems } from "./composerCommand";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CommandCompletion({
   client,
   sessionRef,
+  capabilities,
   query,
   choose,
   close,
 }: {
   client: ConversationClientLike;
   sessionRef: string;
+  capabilities: MobileConversation["capabilities"];
   query: string;
   choose: (item: SlashMenuItem) => void;
   close: () => void;
@@ -31,7 +35,10 @@ export function CommandCompletion({
     catalog.start();
     return () => catalog.dispose();
   }, [catalog]);
-  const items = filterSlashMenuItems(state.items, query);
+  const items = filterSlashMenuItems(
+    [...builtinComposerItems(capabilities), ...state.items],
+    query,
+  );
   if (!state.loading && !state.error && items.length === 0) return null;
   return (
     <View
@@ -66,11 +73,13 @@ export function CommandCompletion({
             accessibilityRole="button"
             accessibilityLabel={`Insert ${item.invocation}`}
             accessibilityHint={item.hint}
-            disabled={state.loading || !!state.error}
+            disabled={
+              item.kind !== "builtin" && (state.loading || !!state.error)
+            }
             onPress={() => {
               if (
-                !catalog.getSnapshot().loading &&
-                !catalog.getSnapshot().error
+                item.kind === "builtin" ||
+                (!catalog.getSnapshot().loading && !catalog.getSnapshot().error)
               )
                 choose(item);
             }}
