@@ -48,10 +48,12 @@ stop were exercised against the isolated runtime. Empty drafts and ordinary
 command layouts now have keyboard evidence on both platforms; Android 2.0
 running controls and draft-preserving Stop are verified.
 
-**Confirmed failure:** largest iOS text with `/project` pushes the draft and
-action behind the keyboard. The command header and overall composer lack an
-available-height boundary. Fix total composer overflow before accepting this
-issue; a capped result list alone is insufficient. See [state checks](fullwidth-composer.md#empty-command-and-running-state-checks).
+The largest-iOS-text `/project` overflow is corrected by bounding the entire
+composer and scrolling oversized draft/actions separately from suggestions.
+Both native command actions reached the project listing with large text and
+real keyboards. Check smaller devices, landscape, screen-reader navigation,
+long drafts and running controls in this layout before accepting the issue.
+See [overflow correction evidence](fullwidth-composer.md#bounded-composer-overflow-correction).
 
 ### MOB-001 · P1 · Use screen space deliberately · In progress
 
