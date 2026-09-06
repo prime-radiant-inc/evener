@@ -15,34 +15,36 @@ var probeSandboxHost = func() sandbox.HostFacts {
 	return sandbox.RealProber{}.Probe()
 }
 
-// startScratchReclaim runs the reclaim for workspaceRoot on its own goroutine,
-// falling back to the process working directory when the command did not name
-// one. A working directory that cannot be read skips the reclaim rather than
-// sweeping with no workspace to exclude: the command is about to fail on the
-// same lookup.
-func startScratchReclaim(workspaceRoot string) {
-	if strings.TrimSpace(workspaceRoot) == "" {
+// startScratchReclaim runs the reclaim for a command working in workingDir on
+// its own goroutine, falling back to the process working directory when the
+// command did not name one. A working directory that cannot be read skips the
+// reclaim rather than sweeping with no workspace to exclude: the command is
+// about to fail on the same lookup.
+func startScratchReclaim(workingDir string) {
+	if strings.TrimSpace(workingDir) == "" {
 		wd, err := os.Getwd()
 		if err != nil {
 			return
 		}
-		workspaceRoot = wd
+		workingDir = wd
 	}
-	go reclaimCrashedSessionScratch(workspaceRoot, os.Stderr)
+	go reclaimCrashedSessionScratch(workingDir, os.Stderr)
 }
 
 // reclaimCrashedSessionScratch removes the session scratch directories that
 // sessions retained (lease released, directory kept) and never came back for.
-// workspaceRoot is this process's working directory, which decides the same
-// thing it decides for allocation: a scratch base inside it is not Evener's.
-// The reclaim reads every scratch base and probes a lease per candidate, so
-// startup runs it on its own goroutine and never waits on it; that outliving
-// goroutine is why the callers hand it os.Stderr rather than a writer the
-// caller owns. What it could not remove it names and leaves for the next start:
-// two processes starting together can race on one directory, and the loser's
-// failure is reclaimed the next time either of them starts.
-func reclaimCrashedSessionScratch(workspaceRoot string, warnings io.Writer) {
-	if err := sandbox.SweepCrashedSessionScratch(workspaceRoot); err != nil {
+// workingDir is the directory the command runs in, which the reclaim anchors to
+// the same workspace root a session would (execenv.SessionScratchWorkspaceRoot),
+// so a scratch base inside the workspace is off limits to the reclaim for
+// exactly the reason it is off limits to allocation: nothing Evener owns is ever
+// written there. The reclaim reads every scratch base and probes a lease per
+// candidate, so startup runs it on its own goroutine and never waits on it; that
+// outliving goroutine is why the callers hand it os.Stderr rather than a writer
+// the caller owns. What it could not remove it names and leaves for the next
+// start: two processes starting together can race on one directory, and the
+// loser's failure is reclaimed the next time either of them starts.
+func reclaimCrashedSessionScratch(workingDir string, warnings io.Writer) {
+	if err := sandbox.SweepCrashedSessionScratch(execenv.SessionScratchWorkspaceRoot(workingDir)); err != nil {
 		fmt.Fprintf(warnings, "warning: reclaiming crashed session scratch: %v; retrying at the next start\n", err) //nolint:errcheck
 	}
 }

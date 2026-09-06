@@ -96,48 +96,70 @@ func canonicalScratchRoot(root string) (string, error) {
 	return canonical, nil
 }
 
+// sessionScratchBase returns the base a new session allocates in, and stops at
+// the first one that serves: a session start must not wait on the cache
+// filesystem, which may be slow or unavailable, once the temp dir has answered.
 func sessionScratchBase(requested, workspaceRoot string) (string, error) {
-	bases := sessionScratchBases(requested, workspaceRoot)
-	if len(bases) == 0 {
-		return "", noSessionScratchBaseError(workspaceRoot)
+	if base, ok := validSessionScratchBase(preferredSessionScratchCandidate(requested), workspaceRoot); ok {
+		return base, nil
 	}
-	return bases[0], nil
+	if cache, err := sessionScratchUserCacheDir(); err == nil {
+		if base, ok := validSessionScratchBase(cache, workspaceRoot); ok {
+			return base, nil
+		}
+	}
+	return "", noSessionScratchBaseError(workspaceRoot)
 }
 
 // sessionScratchBases lists, in allocation-preference order, every base a
 // session on this workspace may end up in: the requested base (or the temp dir)
-// and the user cache dir, each canonical, keeping only the ones that exist as a
-// directory outside the workspace. Allocation takes the first; a reclaim has to
-// visit them all, because a workspace that contains the temp dir sends its
-// sessions to the cache dir instead.
+// and the user cache dir, each canonical and listed once. Allocation stops at
+// the first; a reclaim has to visit them all, because a workspace that contains
+// the temp dir sends its own sessions to the cache dir instead.
 func sessionScratchBases(requested, workspaceRoot string) []string {
-	first := requested
-	if strings.TrimSpace(first) == "" {
-		first = sessionScratchTempDir()
-	}
-	candidates := []string{first}
-	if cache, err := sessionScratchUserCacheDir(); err == nil && strings.TrimSpace(cache) != "" {
+	candidates := []string{preferredSessionScratchCandidate(requested)}
+	if cache, err := sessionScratchUserCacheDir(); err == nil {
 		candidates = append(candidates, cache)
 	}
 	var bases []string
 	for _, candidate := range candidates {
-		absolute, err := filepath.Abs(candidate)
-		if err != nil || pathWithin(absolute, workspaceRoot) {
-			continue
-		}
-		info, err := os.Stat(absolute)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		canonical, err := filepath.EvalSymlinks(absolute)
-		if err != nil || pathWithin(canonical, workspaceRoot) {
-			continue
-		}
-		if !slices.Contains(bases, canonical) {
-			bases = append(bases, canonical)
+		base, ok := validSessionScratchBase(candidate, workspaceRoot)
+		if ok && !slices.Contains(bases, base) {
+			bases = append(bases, base)
 		}
 	}
 	return bases
+}
+
+// preferredSessionScratchCandidate is the base a caller asked for, or the temp
+// dir when it asked for none.
+func preferredSessionScratchCandidate(requested string) string {
+	if strings.TrimSpace(requested) == "" {
+		return sessionScratchTempDir()
+	}
+	return requested
+}
+
+// validSessionScratchBase reports the canonical form of candidate when Evener
+// may keep session scratch there: an existing directory, outside the workspace
+// both as named and as resolved.
+func validSessionScratchBase(candidate, workspaceRoot string) (string, bool) {
+	if strings.TrimSpace(candidate) == "" {
+		return "", false
+	}
+	absolute, err := filepath.Abs(candidate)
+	if err != nil || pathWithin(absolute, workspaceRoot) {
+		return "", false
+	}
+	info, err := os.Stat(absolute)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil || pathWithin(canonical, workspaceRoot) {
+		return "", false
+	}
+	return canonical, true
 }
 
 func noSessionScratchBaseError(workspaceRoot string) error {

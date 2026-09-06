@@ -585,11 +585,21 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 // first .git entry — so the probe returned "" there anyway and the anchor fell
 // back to RootDir, exactly as it does now.
 func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
-	workspaceRoot := e.RootDir
-	if root, ok := structuralWorktreeRoot(e.RootDir); ok {
-		workspaceRoot = root
+	return sandbox.NewSessionScratch(e.sandboxTmpBase, SessionScratchWorkspaceRoot(e.RootDir))
+}
+
+// SessionScratchWorkspaceRoot reports the workspace a session started in dir
+// anchors its scratch to: the structural worktree root when dir sits in one, and
+// dir itself when it does not. Everything that decides whether a scratch base
+// lies inside the workspace has to ask this one function — the allocator above
+// and the startup reclaim in cmd/evener both do — or the two disagree about
+// which tree a directory belongs to and the reclaim sweeps a base allocation
+// refuses to use.
+func SessionScratchWorkspaceRoot(dir string) string {
+	if root, ok := structuralWorktreeRoot(dir); ok {
+		return root
 	}
-	return sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	return dir
 }
 
 // retainUnsandboxedScratch releases this env's unsandboxed per-session

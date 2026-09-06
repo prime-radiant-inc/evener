@@ -4,6 +4,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // TestReclaimCrashedSessionScratchRemovesOnlyAbandonedScratch drives the startup
@@ -168,4 +172,91 @@ func newRetainedSessionScratch(t *testing.T, base, workspace string) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
 	return scratch.Dir
+}
+
+// TestReclaimCrashedSessionScratchAnchorsAtTheWorktreeRoot pins the reclaim to
+// the workspace allocation anchors to. A command run from a subdirectory of a
+// git worktree allocates against the worktree root, so a scratch base anywhere
+// under that root — not merely under the directory the command started in — is
+// one Evener never allocates into.
+func TestReclaimCrashedSessionScratchAnchorsAtTheWorktreeRoot(t *testing.T) {
+	workspace := newGitWorkspace(t)
+	workspaceTemp := filepath.Join(workspace, "tmp")
+	sub := filepath.Join(workspace, "sub")
+	for _, dir := range []string{workspaceTemp, sub} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("create %q: %v", dir, err)
+		}
+	}
+	cache := redirectUserCacheDir(t)
+	t.Setenv("TMPDIR", workspaceTemp)
+
+	insideWorkspace := newRetainedSessionScratch(t, workspaceTemp, "")
+	abandoned := newRetainedSessionScratch(t, cache, workspace)
+	age(t, insideWorkspace, abandoned)
+
+	var warnings bytes.Buffer
+	reclaimCrashedSessionScratch(sub, &warnings)
+
+	if _, err := os.Stat(insideWorkspace); err != nil {
+		t.Errorf("reclaim from %q removed %q, a base inside the worktree: %v", sub, insideWorkspace, err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("abandoned scratch %q in the cache base survived the reclaim: %v", abandoned, err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("startup reclaim reported a failure: %s", warnings.String())
+	}
+}
+
+// newGitWorkspace returns a throwaway directory that reads as a git worktree
+// root, which is what a session anchors its scratch to.
+func newGitWorkspace(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git: %v", err)
+	}
+	return root
+}
+
+// TestServeReclaimsScratchAnchoredAtItsDirFlag drives serve's own flag parsing
+// from an unrelated working directory: the daemon allocates its scratch against
+// --dir, so the reclaim it starts has to read that same workspace and leave a
+// scratch base inside it alone.
+func TestServeReclaimsScratchAnchoredAtItsDirFlag(t *testing.T) {
+	stateDir := t.TempDir()
+	workspace := newGitWorkspace(t)
+	workspaceTemp := filepath.Join(workspace, "tmp")
+	if err := os.MkdirAll(workspaceTemp, 0o700); err != nil {
+		t.Fatalf("create workspace temp dir: %v", err)
+	}
+	cache := redirectUserCacheDir(t)
+	t.Setenv("TMPDIR", workspaceTemp)
+
+	insideWorkspace := newRetainedSessionScratch(t, workspaceTemp, "")
+	abandoned := newRetainedSessionScratch(t, cache, workspace)
+	age(t, insideWorkspace, abandoned)
+
+	var warnings bytes.Buffer
+	stop := errors.New("stop after startup")
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	deps.reclaimScratch = func(workingDir string) { reclaimCrashedSessionScratch(workingDir, &warnings) }
+	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) { return nil, nil, stop }
+
+	args := []string{"--dir", workspace, "--state-dir", stateDir, "--model", "openai/gpt-test"}
+	if err := runServeWithDeps(args, deps); !errors.Is(err, stop) {
+		t.Fatalf("serve error = %v, want %v", err, stop)
+	}
+	if _, err := os.Stat(insideWorkspace); err != nil {
+		t.Errorf("serve's reclaim removed %q, a base inside its --dir workspace: %v", insideWorkspace, err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Errorf("abandoned scratch %q in the cache base survived serve's reclaim: %v", abandoned, err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("serve's reclaim reported a failure: %s", warnings.String())
+	}
 }
