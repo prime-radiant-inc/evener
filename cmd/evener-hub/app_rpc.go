@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -151,6 +152,21 @@ func listItemTurns(
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
 	return packed, true, nil
+}
+
+// rejectedMutationError attaches a definitive receipt only when recovery
+// failed before dispatch or the source already confirmed non-acceptance.
+func rejectedMutationError(clientMutationID string, err error) error {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		wire = appwire.WireError{Code: appwire.CodeInternalError, Message: err.Error()}
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	data.ClientMutationID = clientMutationID
+	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
+	data.RetryDisposition = appwire.RetryDispositionNone
+	wire.Data = data
+	return wire
 }
 
 func blockedUnknownMutationError(clientMutationID string, err error) error {
@@ -585,6 +601,9 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
+			if isNotAcceptedMutationError(err) {
+				return appwire.TurnStartResponse{}, rejectedMutationError(params.ClientMutationID, resumeErr)
+			}
 			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
 		}
 		resolved = false

@@ -288,7 +288,7 @@ func (s *LocalDaemonSource) ForkThread(context.Context, appwire.ThreadForkParams
 func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return appwire.TurnStartResponse{}, err
+		return appwire.TurnStartResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnStartResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {

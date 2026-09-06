@@ -130,3 +130,31 @@ func TestHubResumeRefreshesProtocolStateBeforeDeciding(t *testing.T) {
 		})
 	}
 }
+
+func TestHubTurnStartDiscoversRestartRequiredDuringRecovery(t *testing.T) {
+	root := t.TempDir()
+	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: protocolMismatchPeer(t)})
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: past, Roster: roster, ResumeLocks: hubcore.NewResumeLocks()})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, ClientMutationID: "upgrade-recovery", ExpectedInstanceID: sessionID, Input: []appwire.InputItem{{Type: "text", Text: "sentinel"}}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error=%v", err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) || data["cause"] != "daemonRestartRequired" || data["clientMutationId"] != "upgrade-recovery" {
+		t.Fatalf("rejection=%+v data=%+v", wire, wire.Data)
+	}
+}
