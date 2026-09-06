@@ -64,3 +64,37 @@ branch paging, native reconnect/fault testing, cross-hub action ownership,
 complete delegate metadata and timing presentation, styled ANSI output,
 output copy/selection and reading-position behavior, large-text and screen
 reader coverage, long-log memory/performance, and representative devices.
+
+## Delegate navigation and reconnect follow-up
+
+Using the same isolated real hub, the scripted provider issued the current
+`delegate` tool with a leaf assignment. It created distinct children for each
+native parent, and each child reported NATIVE-DELEGATE-CHILD-READY through
+`communicate`. Android child: `local:034K2olsBMMCemqCadASi0`; iOS child:
+`local:034K2p09OvyVcaii5Foii8`.
+
+On both platforms, Work → Activity → inactive fold → delegate detail → Open
+session reached the child's own transcript and displayed its report marker
+with the expected hub name. iOS toolbar Back and Android system Back returned
+to the respective parent. The web reference opens delegates in a read-only
+transcript pane; these children advertise no composition capabilities.
+
+This check exposed an editable Message field and attachment picker on a
+session that could not send. Native now omits composition fields, attachment
+controls and composer settings when all send/steer/queue/goal capabilities are
+false. Reading/navigation controls and pending decisions remain available.
+Stored drafts are untouched, and an unknown/loading conversation is not
+classified as read-only. Both new Release builds succeeded, and both apps
+were installed and restarted into the child: its report remains readable and
+Message/Attach images/model controls are absent. Native 158 tests, TypeScript,
+and touched-file Biome pass. This presentation change was checked manually;
+no new automated UI-rendering coverage is claimed.
+
+For reconnect acceptance, both parent Activity panels were expanded before
+restarting the owned port-9199 WebSocket proxy with a controlled jobs/list
+failure. Both panels retained their rows and fold state, displayed the exact
+refresh error plus the stale-data notice, and recovered on Refresh activity
+after the failure was removed. This establishes native activity-tree
+retention and recovery; output-window reconnect/failure acceptance and
+cross-hub faults are still open. Nested delegate branch paging, full metadata,
+styled output, accessibility and performance acceptance remain outstanding.
