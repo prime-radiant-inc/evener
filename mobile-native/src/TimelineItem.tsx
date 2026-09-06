@@ -1,5 +1,10 @@
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { View } from "react-native";
+import {
+  scopedDisclosureId,
+  toggleDisclosure,
+  isDisclosureOpen as useDisclosureOpen,
+} from "../../cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { TranscriptImages } from "./TranscriptImages";
 import { isInterruptedNotice, type TimelineRow } from "./timeline";
@@ -8,11 +13,18 @@ import { Action, Copy, useColors } from "./ui";
 export function TimelineItem({
   item,
   hubId,
+  sessionRef,
 }: {
   item: TimelineRow;
   hubId: string;
+  sessionRef: string;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const disclosureId = scopedDisclosureId(
+    JSON.stringify([hubId, sessionRef]),
+    JSON.stringify([item.kind, item.id]),
+  );
+  const expanded = useDisclosureOpen(disclosureId, false);
+  const toggle = () => toggleDisclosure(disclosureId, false);
   const colors = useColors();
   let content: ReactNode;
   switch (item.kind) {
@@ -23,11 +35,16 @@ export function TimelineItem({
             tone="quiet"
             label={`Session details, ${item.entries.length} ${item.entries.length === 1 ? "entry" : "entries"}`}
             expanded={expanded}
-            onPress={() => setExpanded(!expanded)}
+            onPress={toggle}
           >{`${expanded ? "▾" : "▸"} Session details · ${item.entries.length}`}</Action>
           {expanded
             ? item.entries.map((entry) => (
-                <TimelineItem key={entry.id} item={entry} hubId={hubId} />
+                <TimelineItem
+                  key={entry.id}
+                  item={entry}
+                  hubId={hubId}
+                  sessionRef={sessionRef}
+                />
               ))
             : null}
         </>
@@ -51,7 +68,7 @@ export function TimelineItem({
             tone="quiet"
             label="Interrupted, show notice"
             expanded={expanded}
-            onPress={() => setExpanded(!expanded)}
+            onPress={toggle}
           >{`${expanded ? "▾" : "▸"} Interrupted`}</Action>
           {expanded ? <Copy>{item.text}</Copy> : null}
         </>
@@ -106,7 +123,7 @@ export function TimelineItem({
             tone="quiet"
             label={`${expanded ? "Collapse" : "Expand"} ${item.label}`}
             expanded={expanded}
-            onPress={() => setExpanded(!expanded)}
+            onPress={toggle}
           >{`${expanded ? "▾" : "▸"} ${item.label} · ${item.state}`}</Action>
           {expanded ? (
             <>
