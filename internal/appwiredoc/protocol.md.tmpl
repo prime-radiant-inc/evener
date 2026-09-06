@@ -15,7 +15,9 @@ browser / evener tui  ──WS /rpc──▶  evener hub  ──WS──▶  eve
 This document is **generated** from the declarative catalog in
 [`appwire/protocol.go`](../appwire/protocol.go) (`appwire.Methods` and
 `appwire.Notifications`); a test cross-checks that catalog against the live
-hub and daemon routers, so it cannot drift from what is actually wired. To
+hub and daemon routers. This verifies registration, not complete behavioral
+documentation. Read the [client guide](appwire-client.md) for sequencing,
+configuration semantics and retry rules. To
 change it, edit the catalog and/or the prose template
 (`internal/appwiredoc/protocol.md.tmpl`) and run `make generate`.
 
@@ -63,8 +65,8 @@ change it, edit the catalog and/or the prose template
    jobs, warnings).
 5. **Reconnect + replay.** On a dropped socket the client reconnects, re-runs
    `thread/read(subscribe: true, replaceSubscription: true)`, and re-hydrates
-   from the authoritative thread snapshot — so no events are lost across a
-   reconnect. The web client also self-heals a long silent stall by
+   from the authoritative thread snapshot. This restores current state, not
+   every transient event emitted while disconnected. The web client also self-heals a long silent stall by
    re-subscribing.
 
 ## Error model
@@ -91,8 +93,9 @@ no router (reserved).
 
 ## Notifications (server → client)
 
-Pushed to subscribed connections; no `id`. The web client maps these in
-`cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`).
+Server notifications have no `id`. Thread events require a subscription;
+hub-wide changes such as launch-setting updates are broadcast to connected
+clients. See the [client guide](appwire-client.md) for refresh behavior.
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
@@ -102,16 +105,25 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 ## Type reference
 
-JSON fields of each params/result/payload type, reflected from the Go structs.
-An embedded type contributes its own fields inline.
+JSON fields of each params/result/payload type and its nested object types.
+Named JSON types refer to another table in this section. `array<T>` means a JSON
+array of T; `object<string, T>` means a JSON object with arbitrary keys and T
+values. An embedded type contributes its fields inline, not under its Go name.
+
+These tables describe representation. `Omitempty` is a serialization hint, **not
+an input required/optional declaration**. A pointer does not by itself promise
+that a method accepts JSON null. Nil collections may serialize as null; custom
+serializers can preserve empty values. Method-specific rules, enum values,
+mutual exclusions and presence semantics must be read with the client guide.
+Do not infer those contracts from Go types or serialization tags.
 
 {{range .Types}}
 ### `{{.Name}}`
 {{if .Fields}}
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
+| Field | JSON type | Go type | Omitempty | Embedded |
+|-------|-----------|---------|-----------|----------|
 {{- range .Fields}}
-| `{{.JSON}}` | `{{.GoType}}` | {{yesno .Omitempty}} | {{yesno .Embedded}} |
+| `{{.JSON}}` | `{{.JSONType}}` | `{{.GoType}}` | {{yesno .Omitempty}} | {{yesno .Embedded}} |
 {{- end}}
 {{else}}
 _(no fields)_

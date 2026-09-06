@@ -36,6 +36,7 @@ var (
 type fieldView struct {
 	JSON      string
 	GoType    string
+	JSONType  string
 	Omitempty bool
 	Embedded  bool
 }
@@ -114,12 +115,6 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
-	// InstanceEntry never appears as a method's own Params/Result - only
-	// nested inside InstanceListResponse.Instances - so without this it
-	// would never get a field table of its own, and a field documented on
-	// its AuthStatusResponse twin (e.g. shadowedEnvVar) would silently go
-	// undocumented here (PR #758 review).
-	register(appwire.InstanceEntry{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
@@ -146,7 +141,10 @@ func build() docData {
 }
 
 func registerType(typeNames map[string]typeView, v any) string {
-	t := reflect.TypeOf(v)
+	return registerReflectedType(typeNames, reflect.TypeOf(v))
+}
+
+func registerReflectedType(typeNames map[string]typeView, t reflect.Type) string {
 	if t == nil {
 		return "(inline)"
 	}
@@ -158,7 +156,22 @@ func registerType(typeNames map[string]typeView, v any) string {
 		name = t.String()
 	}
 	if _, seen := typeNames[name]; !seen {
+		// Register before visiting children so recursive wire shapes terminate.
 		typeNames[name] = typeView{Name: name, Fields: fieldsOf(t)}
+		if t.Kind() == reflect.Struct {
+			for field := range t.Fields() {
+				if !field.IsExported() || field.Tag.Get("json") == "-" {
+					continue
+				}
+				nested := field.Type
+				for nested.Kind() == reflect.Pointer || nested.Kind() == reflect.Slice || nested.Kind() == reflect.Array || nested.Kind() == reflect.Map {
+					nested = nested.Elem()
+				}
+				if nested.Kind() == reflect.Struct && nested.PkgPath() != "time" {
+					registerReflectedType(typeNames, nested)
+				}
+			}
+		}
 	}
 	return name
 }
@@ -182,9 +195,47 @@ func fieldsOf(t reflect.Type) []fieldView {
 		out = append(out, fieldView{
 			JSON:      name,
 			GoType:    f.Type.String(),
+			JSONType:  jsonType(f.Type),
 			Omitempty: strings.Contains(opts, "omitempty"),
 			Embedded:  f.Anonymous,
 		})
 	}
 	return out
+}
+
+// jsonType describes representation, not request validation or presence rules.
+func jsonType(t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.PkgPath() == "time" && t.Name() == "Time" {
+		return "string (RFC 3339)"
+	}
+	if (strings.HasSuffix(t.PkgPath(), "/jsontext") && t.Name() == "Value") || (t.PkgPath() == "encoding/json" && t.Name() == "RawMessage") {
+		return "any JSON value"
+	}
+	switch t.Kind() {
+	case reflect.Bool:
+		return "boolean"
+	case reflect.String:
+		return "string"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "integer"
+	case reflect.Float32, reflect.Float64:
+		return "number"
+	case reflect.Slice, reflect.Array:
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+			return "string (base64)"
+		}
+		return "array<" + jsonType(t.Elem()) + ">"
+	case reflect.Map:
+		return "object<string, " + jsonType(t.Elem()) + ">"
+	case reflect.Struct:
+		if t.Name() != "" {
+			return t.Name()
+		}
+		return "object"
+	default:
+		return "any JSON value"
+	}
 }

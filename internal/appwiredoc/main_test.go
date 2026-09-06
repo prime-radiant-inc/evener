@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -161,4 +162,58 @@ func TestBuildIncludesInstanceEntry(t *testing.T) {
 		return
 	}
 	t.Fatal("build() missing InstanceEntry")
+}
+
+func TestRegisterNestedWireTypes(t *testing.T) {
+	type child struct {
+		Name string `json:"name"`
+	}
+	type parent struct {
+		Children map[string][]*child `json:"children"`
+		Hidden   child               `json:"-"`
+	}
+	type cycle struct {
+		Next *cycle `json:"next,omitempty"`
+	}
+	types := map[string]typeView{}
+	registerType(types, parent{})
+	registerType(types, cycle{})
+	if len(types["child"].Fields) != 1 || types["child"].Fields[0].JSON != "name" {
+		t.Fatalf("nested object definition missing: %+v", types)
+	}
+	if len(types["cycle"].Fields) != 1 {
+		t.Fatal("recursive wire object was not registered")
+	}
+}
+
+func TestBuildIncludesLaunchAndCreationDependencies(t *testing.T) {
+	found := map[string]bool{}
+	for _, item := range build().Types {
+		found[item.Name] = true
+	}
+	for _, name := range []string{"LaunchConfigLayer", "LaunchOption", "RepoLaunchConfigStatus", "MCPServerSpec", "Thread", "Turn", "InputItem"} {
+		if !found[name] {
+			t.Errorf("missing nested wire definition %s", name)
+		}
+	}
+}
+
+func TestWireJSONTypes(t *testing.T) {
+	cases := []struct {
+		typ  reflect.Type
+		want string
+	}{
+		{reflect.TypeFor[*bool](), "boolean"},
+		{reflect.TypeFor[int64](), "integer"},
+		{reflect.TypeFor[float64](), "number"},
+		{reflect.TypeFor[[]string](), "array<string>"},
+		{reflect.TypeFor[map[string][]int](), "object<string, array<integer>>"},
+		{reflect.TypeFor[[]byte](), "string (base64)"},
+		{reflect.TypeFor[json.RawMessage](), "any JSON value"},
+	}
+	for _, tc := range cases {
+		if got := jsonType(tc.typ); got != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.typ, got, tc.want)
+		}
+	}
 }
