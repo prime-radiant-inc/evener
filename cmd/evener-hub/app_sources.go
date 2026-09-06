@@ -46,7 +46,14 @@ func withDeletionTargetOwnership[R any](
 			return zero, err
 		}
 	}
-	return action()
+	result, err := action()
+	if clientMutationID != "" && isSessionUnavailableError(err) {
+		if restartErr := refreshDaemonRestartRequiredError(cfg, ref, threadID, clientMutationID); restartErr != nil {
+			var zero R
+			return zero, restartErr
+		}
+	}
+	return result, err
 }
 
 func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {

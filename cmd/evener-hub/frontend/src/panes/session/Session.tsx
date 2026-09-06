@@ -84,9 +84,12 @@ const EMPTY_THREADS = new Map<string, ThreadModel>();
 //
 // `status.type === "active"` is the wire vocabulary's word for "a turn is
 // running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
-// exactly the mid-first-turn window. Every other status with zero turns -
-// idle, notLoaded, closed, "" - has nothing running, so the invitation holds.
-function EmptyTranscript({ active }: { active: boolean }) {
+// exactly the mid-first-turn window. An incompatible session needs a restart;
+// other empty sessions invite their first message.
+function EmptyTranscript({ active, restartRequired }: { active: boolean; restartRequired: boolean }) {
+  if (restartRequired) {
+    return <EmptyState title="Session unavailable until restart" hint="Stop the daemon, then resume this session." />;
+  }
   if (active) {
     return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
   }
@@ -416,7 +419,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
         <ColdStartSkeleton />
       ) : isDormantTranscript(model.turns) ? (
-        <EmptyTranscript active={model.status.type === "active"} />
+        <EmptyTranscript
+          active={model.status.type === "active"}
+          restartRequired={model.status.type === "restartRequired"}
+        />
       ) : (
         transcript
       )}

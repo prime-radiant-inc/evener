@@ -327,3 +327,42 @@ func TestNavigationDisablesRenameForRestartRequiredDaemon(t *testing.T) {
 		t.Fatal("compatible session lost rename")
 	}
 }
+
+func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
+	for _, method := range []string{appwire.MethodTurnQueue, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadReasoningEffortSet, appwire.MethodEvenerSandboxEscalationResolve} {
+		t.Run(method, func(t *testing.T) {
+			root := t.TempDir()
+			sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster.Refresh()
+			writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)})
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster, RunDir: runDir})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+				t.Fatal(err)
+			}
+			var response any
+			err := client.Request(context.Background(), method, map[string]any{"ref": "local:" + sessionID, "clientMutationId": "uncertain", "expectedInstanceId": sessionID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}, "name": "renamed", "reasoningEffort": "high", "escalationId": "escalation", "approve": true}, &response)
+			if !isDaemonRestartRequiredError(err) {
+				t.Fatalf("error=%v", err)
+			}
+			if method == appwire.MethodTurnQueue {
+				var wire appwire.WireError
+				if !errors.As(err, &wire) {
+					t.Fatal(err)
+				}
+				data, ok := wire.Data.(map[string]any)
+				if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+					t.Fatalf("outcome=%+v", wire)
+				}
+			}
+		})
+	}
+}

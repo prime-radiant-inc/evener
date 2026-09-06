@@ -2077,3 +2077,18 @@ test("shows an explicit session refresh failure", async () => {
   expect(await screen.findByText("refresh rejected")).toBeTruthy();
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("restartRequired");
 });
+
+test.each([false, true])("restart-required empty transcript suppresses first-send UI (pending=%s)", async (pending) => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  if (pending) await seedPendingSend();
+  expect(screen.queryByText(/send the first message/i)).toBeNull();
+  expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
+  expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
+});
