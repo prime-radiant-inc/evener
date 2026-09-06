@@ -241,20 +241,25 @@ func (s *Session) outstandingEnvWork() []string {
 // the environment's process table — and says what it walked past when the
 // shared close budget expires first.
 //
-// The three kinds of admission reach this join by different routes:
+// The four kinds of admission reach this join by different routes:
 //
 //   - A whole OPERATION, admitted at the manage_worktree dispatch, runs its git
 //     on the request context of the tool call. A close cancels the turn context
 //     that call descends from, so it stops of its own accord — but only the
 //     operations that reach a cancellation point do, and an operation that has
 //     already committed to a git command finishes it.
+//   - A delegate's LANE CREATE, admitted in prepareIsolation, runs its git on
+//     the request context of the spawn, which descends from that same turn
+//     context: it stops exactly the way an operation does, and likewise
+//     finishes a git command it has already committed to.
 //   - A SWAP's refresh runs under the session's own context, which this close
 //     cancelled in its step 2, well before reaching here. It stops on its own.
 //   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
 //     context.Background() with a LaneClosePassBudget of its own, because the
-//     close that refused the swap has already cancelled the request context the
-//     op's runner was bound to, and a rollback through that would fail
-//     silently. Cancelling the close cannot shorten it.
+//     close that refused the swap — or the spawn whose lane it is taking back —
+//     has already cancelled the request context the op's runner was bound to,
+//     and a rollback through that would fail silently. Cancelling the close
+//     cannot shorten it.
 //
 // So this bound is not a restatement of the rollback's bound: the close budget
 // is one LaneClosePassBudget minted when the close began and partly spent by
@@ -376,9 +381,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// Join the environment work admitted before `closing` was set: a whole
 		// manage_worktree call (admitted at its dispatch, which is the one entry
 		// every operation passes through), the refresh of any swap that call
-		// performs, and the rollback a refused or failed operation still owes
+		// performs, the cut of a delegate's isolation lane and the rollback that
+		// undoes it, and the rollback a refused or failed operation still owes
 		// after that swap returned. All of them fork git on the session's shared
-		// process table, and the last is work a close CAUSED.
+		// process table, and the rollbacks are work a close CAUSED.
 		//
 		// It joins HERE, before the delegate tree closes and before any of this
 		// session's own worktree cleanup, because everything below acts on the
@@ -394,9 +400,9 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		//
 		// A swap's refresh stops on the session context cancelled in step 2
 		// above; a rollback is deliberately detached from it and bounded by a
-		// budget of its own; an operation stops wherever its own request context
-		// is checked. This join is the backstop over all three (see
-		// joinEnvWorkWithinCloseBudget). It runs for a child close too
+		// budget of its own; an operation, and a delegate's lane create, stop
+		// wherever their own request context is checked. This join is the
+		// backstop over all of them (see joinEnvWorkWithinCloseBudget). It runs for a child close too
 		// (cleanupEnv false): no such work may outlive the session that admitted
 		// it.
 		s.joinEnvWorkWithinCloseBudget(budgetCtx)
