@@ -157,8 +157,11 @@ The hub-bound provider controller now has automated coverage for retained data,
 late responses after disposal, auth invalidation during reads, configuration write
 refusal, overlapping writes, uncertain-write reconciliation without replay, and
 pre-mutation read races. The first native list/detail/key-management screen now has [isolated-hub evidence](providers-evidence.md).
-Instance create/edit forms, credential testing, sign-in and the complete
-both-platform manual acceptance matrix remain open.
+Creation and endpoint editing are implemented, with iOS creation and Android
+edit/reset/removal exercised on the isolated hub. Credential testing, sign-in,
+reverse-platform form coverage and the complete manual acceptance matrix remain
+open. iOS keyboard-open bottom-action reachability is an explicit unresolved
+finding in the evidence; saving after keyboard dismissal does not close it.
 
 Child of MOB-006. Implement the server-derived provider list, instance detail,
 create/edit/remove/default, credential test, set/clear stored key and logout.
