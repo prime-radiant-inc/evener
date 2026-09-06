@@ -104,3 +104,7 @@ Use server project names and keys. Show current, recent and archived work as sel
 Live list changes should not move a row under the person’s finger. Preserve the visible snapshot, show a quiet update prompt, and pause continuation until Refresh. Treat ordinary invalidation as new information, reserving error treatment for failed reads.
 
 Related sessions use a separate disclosure action so opening a conversation never also expands it. Keep expanded destinations in the same scrolling list, cap indentation to retain reading width, and preserve expansion on return. State omitted content plainly rather than implying the visible tree is complete.
+
+## Organization actions
+
+Use a quiet More affordance beside project/session rows with a full platform touch target and an accessible name containing the item title. Show the selected title and hub in the action surface. Archive and restore belong together through the Archived view. Keep organization separate from runtime stop and deletion. A successful mutation must be reflected by a server-confirmed read; retain visible failure information when that cannot be established.
