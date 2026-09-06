@@ -1063,10 +1063,14 @@ func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
 }
 
 // TemplateVarsEnv lists the variables a curated provider's URL templates
-// read, as the vars_env map restricted to them: a placeholder in the base
-// URL or an endpoint template (the provider's own transport or one of its
-// rows'; top-level glob rows carry capabilities, not transports) or an input
-// of the host rule. A vars_env entry no template reads is left out —
+// read, as a vars_env map restricted to them: a placeholder in the base URL
+// or an endpoint template (the provider's own transport or one of its rows';
+// top-level glob rows carry capabilities, not transports) or an input of the
+// host rule. The mappings come from the provider's vars_env and from its
+// rows' — a models.dev per-model api template maps its placeholders on the
+// row alone (convertModel), which is where google-vertex's OpenAI-compatible
+// rows keep GOOGLE_VERTEX_ENDPOINT — with the provider's own entry winning a
+// name both carry. A vars_env entry no template reads is left out —
 // models.dev lists GOOGLE_APPLICATION_CREDENTIALS beside the Vertex project
 // and location, but the credential is read from the environment or the
 // store, never substituted — so a form built on the result offers no input
@@ -1083,24 +1087,26 @@ func (r *Registry) TemplateVarsEnv(id string) map[string]string {
 		return mergeStringMap(nil, rec.head.Transport.VarsEnv)
 	}
 	referenced := map[string]bool{}
+	var mapped map[string]string
 	note := func(t Transport) {
 		for _, tpl := range []string{t.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
 			for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
 				referenced[m[1]] = true
 			}
 		}
+		mapped = mergeStringMap(mapped, t.VarsEnv)
 	}
-	note(rec.head.Transport)
 	for _, row := range rec.head.Models {
 		if row.Transport != nil {
 			note(*row.Transport)
 		}
 	}
+	note(rec.head.Transport)
 	for _, name := range hostRuleAuthorityVars(rec.head.Transport.HostRule) {
 		referenced[name] = true
 	}
 	out := map[string]string{}
-	for name, env := range rec.head.Transport.VarsEnv {
+	for name, env := range mapped {
 		if referenced[name] {
 			out[name] = env
 		}
