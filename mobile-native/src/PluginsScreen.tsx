@@ -24,6 +24,7 @@ import type { PluginRefParams } from "../../cmd/evener-hub/frontend/src/protocol
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { InstalledPlugins } from "./installedPlugins";
+import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -61,6 +62,7 @@ function Plugins({
   const colors = useColors();
   const model = useMemo(() => new InstalledPlugins(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  const [panel, setPanel] = useState<"installed" | "browse">("installed");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -134,82 +136,110 @@ function Plugins({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
-      <FlatList
-        data={visible}
-        keyExtractor={(item) => JSON.stringify([item.marketplace, item.plugin])}
-        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-        keyboardShouldPersistTaps="handled"
-        refreshing={state.loading}
-        onRefresh={() => {
-          void model.refresh();
-        }}
-        ListHeaderComponent={
-          <View style={{ gap: 8, paddingBottom: 12 }}>
-            <Copy muted>{hubName}</Copy>
-            <TextInput
-              accessibilityLabel="Filter installed plugins"
-              placeholder="Filter plugins or marketplaces"
-              placeholderTextColor={colors.secondary}
-              value={query}
-              onChangeText={setQuery}
-              autoCorrect={false}
-              autoCapitalize="none"
-              style={[
-                styles.input,
-                { color: colors.text, borderColor: colors.border },
-              ]}
-            />
-            <ErrorMessage message={state.error} />
-            {state.error && (
-              <Action
-                onPress={() => {
-                  void model.refresh();
-                }}
-              >
-                Retry
-              </Action>
-            )}
-          </View>
-        }
-        ListEmptyComponent={
-          state.loading ? (
-            <ActivityIndicator accessibilityLabel="Loading installed plugins" />
-          ) : state.plugins !== null ? (
-            <Copy muted>
-              {needle
-                ? "No matching plugins."
-                : "No plugins installed on this hub."}
-            </Copy>
-          ) : null
-        }
-        renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${item.broken ? "broken" : item.enabled ? "enabled" : "disabled"}`}
-            onPress={() => {
-              close();
-              setSelected({
-                plugin: item.plugin,
-                marketplace: item.marketplace,
-              });
-            }}
-            style={({ pressed }) => ({
-              minHeight: 56,
-              paddingVertical: 9,
-              borderBottomWidth: 0.5,
-              borderColor: colors.border,
-              opacity: pressed ? 0.65 : 1,
-            })}
-          >
-            <Copy numberOfLines={2}>{item.plugin}</Copy>
-            <Copy muted numberOfLines={2}>
-              {item.marketplace} · {item.version || "Unknown version"}
-              {item.broken ? " · Broken" : !item.enabled ? " · Disabled" : ""}
-              {item.autoUpgrade ? " · Auto-upgrade" : ""}
-            </Copy>
-          </Pressable>
-        )}
-      />
+      <View style={[styles.row, { paddingHorizontal: 12 }]}>
+        <Action
+          tone={panel === "installed" ? "accent" : "quiet"}
+          onPress={() => setPanel("installed")}
+        >
+          Installed
+        </Action>
+        <Action
+          tone={panel === "browse" ? "accent" : "quiet"}
+          onPress={() => setPanel("browse")}
+        >
+          Browse
+        </Action>
+      </View>
+      {panel === "browse" ? (
+        <MarketplaceBrowser
+          client={client}
+          hubName={hubName}
+          installed={model}
+          onOpenPlugin={(target) => {
+            close();
+            setSelected(target);
+          }}
+        />
+      ) : (
+        <FlatList
+          data={visible}
+          keyExtractor={(item) =>
+            JSON.stringify([item.marketplace, item.plugin])
+          }
+          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
+          keyboardShouldPersistTaps="handled"
+          refreshing={state.loading}
+          onRefresh={() => {
+            void model.refresh();
+          }}
+          ListHeaderComponent={
+            <View style={{ gap: 8, paddingBottom: 12 }}>
+              <Copy muted>{hubName}</Copy>
+              <TextInput
+                accessibilityLabel="Filter installed plugins"
+                placeholder="Filter plugins or marketplaces"
+                placeholderTextColor={colors.secondary}
+                value={query}
+                onChangeText={setQuery}
+                autoCorrect={false}
+                autoCapitalize="none"
+                style={[
+                  styles.input,
+                  { color: colors.text, borderColor: colors.border },
+                ]}
+              />
+              <ErrorMessage message={state.error} />
+              {state.error && (
+                <Action
+                  onPress={() => {
+                    void model.refresh();
+                  }}
+                >
+                  Retry
+                </Action>
+              )}
+            </View>
+          }
+          ListEmptyComponent={
+            state.loading ? (
+              <ActivityIndicator accessibilityLabel="Loading installed plugins" />
+            ) : state.plugins !== null ? (
+              <Copy muted>
+                {needle
+                  ? "No matching plugins."
+                  : "No plugins installed on this hub."}
+              </Copy>
+            ) : null
+          }
+          renderItem={({ item }) => (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${item.plugin}, ${item.marketplace}, ${item.broken ? "broken" : item.enabled ? "enabled" : "disabled"}`}
+              onPress={() => {
+                close();
+                setSelected({
+                  plugin: item.plugin,
+                  marketplace: item.marketplace,
+                });
+              }}
+              style={({ pressed }) => ({
+                minHeight: 56,
+                paddingVertical: 9,
+                borderBottomWidth: 0.5,
+                borderColor: colors.border,
+                opacity: pressed ? 0.65 : 1,
+              })}
+            >
+              <Copy numberOfLines={2}>{item.plugin}</Copy>
+              <Copy muted numberOfLines={2}>
+                {item.marketplace} · {item.version || "Unknown version"}
+                {item.broken ? " · Broken" : !item.enabled ? " · Disabled" : ""}
+                {item.autoUpgrade ? " · Auto-upgrade" : ""}
+              </Copy>
+            </Pressable>
+          )}
+        />
+      )}
       {entry && selected && (
         <Modal
           visible
