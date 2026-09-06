@@ -93,6 +93,12 @@ The screenshot exposed a visual omission: question tabs had selected accessibili
 
 Current web panes/settings/sections/hub.tsx displays read-only listen address, run directory and spawn timeout from settingsOverview. It is not a saved-connection editor. Native connection profiles are explicitly required by Jesse's multi-hub goal and must be audited as a native connection concern, separately from parity with server settings.
 
-Native HubProfiles currently supports secure storage and replacement by ID, while ConnectionProvider always generates a new ID on save and HubsScreen only exposes add/open/remove. Editing is therefore not implemented. Address changes must not silently reuse another server's draft identity or credentials; this requires explicit identity handling when the editor is added. Server runtime settings remain a separate missing native surface.
+Native saved-hub editing supports renaming and explicit credential replacement while preserving the profile ID and origin. The editor never loads the stored token into a field; replacement defaults off, and explicit empty replacement clears it. Renaming does not recreate the connection; credential replacement reconnects the active hub. Connecting to another address requires a separate profile so that credentials and drafts cannot silently follow a different server. Server runtime settings remain a separate missing native surface.
 
 Android Release at 7e9dd7070 built successfully (359 tasks, 12 executed); installation is still pending in the existing emulator. No latest-build Android restoration result is claimed yet.
+
+## Saved-hub editor verification
+
+Native TypeScript, targeted Biome and all 111 tests across 19 files pass. The storage regression covers rename, unchanged identity and credential, explicit token replacement/clear, isolation from a second hub, and refusal to revive a removed profile. Both Release builds succeeded; Android installation returned Success.
+
+On iOS, renamed the isolated Tree profile to Harness Hub, reopened the editor, enabled token replacement and observed a blank secure field, then changed the name and cancelled. Cancellation retained Harness Hub. Opening the saved hub showed Connected and its session list; after terminating and relaunching, Harness Hub and authenticated connectivity persisted. This verifies rename persistence and cancellation, not live credential rotation or every failure path. Android editor interaction remains pending.
