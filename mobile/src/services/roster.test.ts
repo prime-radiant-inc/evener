@@ -376,3 +376,14 @@ describe("RosterService", () => {
     await expect(service.list()).rejects.toThrow("server down");
   });
 });
+
+it("searches the server before projecting the limited roster", async () => {
+  const client = new ScriptedClient();
+  client.on("thread/list", () => ({ data: makeThreads(2) }));
+  const result = await createRosterService(client, 2).list("project notes");
+  expect(result.threads).toHaveLength(2);
+  expect(client.requests[0]?.params).toEqual({
+    limit: 3,
+    searchTerm: "project notes",
+  });
+});
