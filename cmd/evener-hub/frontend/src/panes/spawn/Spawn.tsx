@@ -1015,7 +1015,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     <Chevron direction="down" />
                   </span>
                   <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
-                    Reasoning effort
+                    Prompt reasoning effort
                   </label>
                   <select
                     id="spawn-reasoning-effort"
