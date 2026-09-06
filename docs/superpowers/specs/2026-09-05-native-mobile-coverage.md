@@ -28,7 +28,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Model and launch settings | Model/reasoning selection during creation and in the composer for existing sessions | Vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
 | Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
-| Hub navigation | Not exposed | Favorite/archive, project/session removal, pin assign/unpin, section rename/delete |
+| Hub navigation | Project pin/favorite and project/session archive/unarchive in row actions; both-platform isolated-hub checks | Project/session removal, session pin assign/unpin, section rename/delete and pinned browsing |
 | Provider authentication | Not exposed | Status, API keys, login/logout, device authorization, auth tests |
 | Instances | Not exposed | List/create/edit/remove/default |
 | Plugins and marketplaces | Not exposed | Browse/preview/install/upgrade/enable/disable/remove, source management, auto-upgrade |
@@ -129,3 +129,7 @@ Project browsing now observes live navigation invalidations, preserves visible r
 ### Related sessions
 
 Project browsing now exposes nested related sessions, omitted counts and partial-tree notices. Both simulators exercised two expansion levels and preserved them on return from a real session opened through a scripted hierarchy. Native81 tests and both Release builds pass. The fixture does not establish real daemon-created subagent lifecycle acceptance; see project-browsing-evidence.md for the boundary.
+
+### Organization actions
+
+Native row actions now expose project pin/favorite and project/session archive/unarchive with receipt-confirmed refresh and stale-owner protection. Native87 tests, TypeScript, targeted Biome and both Release builds pass. Both simulators manually archived and restored the owned project and session against the isolated real hub; project pinning and removal were also checked. See `docs/design/mobile/organization-evidence.md` for exact verification and remaining acceptance.

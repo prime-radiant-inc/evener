@@ -1,19 +1,28 @@
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Pressable,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
+  ArchiveParams,
   NavigationProjectSummary,
   NavigationSessionSummary,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { useConnection } from "./ConnectionProvider";
+import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";
 import { navigationTree } from "./navigationTree";
 import type { Routes } from "./screens";
@@ -60,6 +69,7 @@ function PageList<T>({
   empty,
   childRows,
   omitted,
+  organization,
 }: {
   pages: NavigationPages<T>;
   ready: boolean;
@@ -70,9 +80,38 @@ function PageList<T>({
   empty: string;
   childRows?: (row: T) => readonly T[];
   omitted?: (row: T) => number;
+  organization: (
+    row: T,
+    depth: number,
+  ) => {
+    target: Omit<ArchiveParams, "archived">;
+    archived: boolean;
+    favorite?: boolean;
+  } | null;
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(pages.subscribe, pages.getSnapshot);
+  const { client, activeProfile } = useConnection();
+  const focused = useIsFocused();
+  const binding = useMemo(
+    () => ({ client, pages, ready, focused }),
+    [client, pages, ready, focused],
+  );
+  const current = useRef(binding);
+  current.current = binding;
+  const actions = useMemo(
+    () =>
+      client && ready && focused
+        ? new NavigationActions(
+            client,
+            (receipt) => pages.refreshAfter(receipt),
+            () => current.current === binding,
+          )
+        : null,
+    [client, pages, ready, focused, binding],
+  );
+  useEffect(() => () => actions?.dispose(), [actions]);
+
   const [expansion, setExpansion] = useState({
     owner: pages,
     keys: new Set<string>(),
@@ -116,6 +155,7 @@ function PageList<T>({
           ) : null}
         </View>
       ) : null}
+      {actions ? <OrganizationStatus actions={actions} /> : null}
       <FlatList
         data={rows}
         keyExtractor={({ item }) => rowKey(item)}
@@ -163,16 +203,67 @@ function PageList<T>({
               borderColor: colors.border,
             }}
           >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${title(item)}`}
-              disabled={!ready}
-              onPress={() => open(item)}
-              style={{ paddingVertical: 13, minHeight: 68, gap: 4 }}
-            >
-              <Copy>{title(item)}</Copy>
-              <Copy muted>{detail(item)}</Copy>
-            </Pressable>
+            <View style={styles.row}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${title(item)}`}
+                disabled={!ready}
+                onPress={() => open(item)}
+                style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
+              >
+                <Copy>{title(item)}</Copy>
+                <Copy muted>{detail(item)}</Copy>
+              </Pressable>
+              {actions && organization(item, depth) ? (
+                <Action
+                  tone="quiet"
+                  label={`More actions for ${title(item)}`}
+                  disabled={!ready || state.loading || state.stale}
+                  onPress={() => {
+                    const value = organization(item, depth);
+                    if (!value || actions.getSnapshot().pending) return;
+                    const invoke = (operation: () => void) => {
+                      if (!pages.getSnapshot().stale) operation();
+                    };
+                    Alert.alert(
+                      title(item),
+                      `${activeProfile?.name ?? "Hub"} · Organize without deleting history or stopping work.`,
+                      [
+                        ...(value.favorite === undefined
+                          ? []
+                          : [
+                              {
+                                text: value.favorite
+                                  ? "Remove from pinned"
+                                  : "Add to pinned",
+                                onPress: () =>
+                                  invoke(() => {
+                                    void actions.favorite(
+                                      value.target.id,
+                                      !value.favorite,
+                                    );
+                                  }),
+                              },
+                            ]),
+                        {
+                          text: value.archived ? "Unarchive" : "Archive",
+                          onPress: () =>
+                            invoke(() => {
+                              void actions.archive(
+                                value.target,
+                                !value.archived,
+                              );
+                            }),
+                        },
+                        { text: "Cancel", style: "cancel" },
+                      ],
+                    );
+                  }}
+                >
+                  ···
+                </Action>
+              ) : null}
+            </View>
             {childRows?.(item).length ? (
               <Action
                 tone="quiet"
@@ -190,6 +281,18 @@ function PageList<T>({
         )}
       />
     </>
+  );
+}
+function OrganizationStatus({ actions }: { actions: NavigationActions }) {
+  const state = useSyncExternalStore(actions.subscribe, actions.getSnapshot);
+  if (!state.pending && !state.error) return null;
+  return (
+    <View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+      {state.pending ? (
+        <ActivityIndicator accessibilityLabel="Updating organization" />
+      ) : null}
+      <ErrorMessage message={state.error} />
+    </View>
   );
 }
 const projectKey = (row: NavigationProjectSummary) => row.key;
@@ -243,9 +346,22 @@ export function ProjectsScreen({
           pages={pages}
           ready={state === "ready"}
           rowKey={projectKey}
+          organization={(row) =>
+            row.key === "no-project"
+              ? null
+              : {
+                  target: {
+                    kind: "project",
+                    id: row.key,
+                    workingDir: row.working_dir,
+                  },
+                  archived: row.is_archived ?? archived,
+                  favorite: row.favorite ?? false,
+                }
+          }
           title={(row) => row.name || row.working_dir || "Untitled project"}
           detail={(row) =>
-            `${row.session_count} sessions${row.working_dir ? ` · ${row.working_dir}` : ""}`
+            `${row.favorite ? "Pinned · " : ""}${row.session_count} sessions${row.working_dir ? ` · ${row.working_dir}` : ""}`
           }
           empty={
             archived ? "No archived projects." : "No projects on this hub yet."
@@ -319,6 +435,14 @@ export function ProjectScreen({
           pages={pages}
           ready={state === "ready"}
           rowKey={sessionRef}
+          organization={(row, depth) =>
+            depth > 0 || ["subagent", "fork", "cluster"].includes(row.kind)
+              ? null
+              : {
+                  target: { kind: "session", id: row.session_id },
+                  archived: tier === "archived",
+                }
+          }
           childRows={(row) => row.children ?? []}
           omitted={(row) =>
             (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)

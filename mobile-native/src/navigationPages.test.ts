@@ -228,3 +228,61 @@ it("retains truncation disclosure across appended pages and clears it on refresh
   await refresh;
   expect(pages.getSnapshot().truncated).toBe(false);
 });
+
+it("requires a post-mutation read to satisfy its receipt even without notifications", async () => {
+  const { requests, pages } = boundary();
+  const first = pages.refresh();
+  requests[0].resolve(response(["old"]));
+  await first;
+  const reload = pages.refreshAfter({
+    generation_id: "hub-generation",
+    targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+  });
+  requests[1].resolve(response(["old"], 0, 2));
+  await expect(reload).rejects.toThrow();
+  expect(pages.getSnapshot().stale).toBe(true);
+  expect(pages.getSnapshot().rows).toEqual([{ key: "old" }]);
+  const retry = pages.refresh();
+  requests[2].resolve(response(["new"], 0, 3));
+  await retry;
+  expect(pages.getSnapshot().rows).toEqual([{ key: "new" }]);
+});
+it("does not acknowledge a mutation when another read supersedes its verification", async () => {
+  const { pages, requests } = boundary();
+  const first = pages.refresh();
+  requests[0].resolve(response(["old"]));
+  await first;
+  const mutation = pages.refreshAfter({
+    generation_id: "hub-generation",
+    targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+  });
+  const refresh = pages.refresh();
+  requests[2].resolve(response(["other"], 0, 1));
+  await refresh;
+  requests[1].resolve(response(["new"], 0, 3));
+  await expect(mutation).rejects.toThrow();
+});
+it("revalidates after a notification races mutation verification, without repeating the mutation", async () => {
+  const { pages, requests, invalidate } = boundary();
+  pages.watch();
+  const first = pages.refresh();
+  requests[0].resolve(response(["old"]));
+  await first;
+  const mutation = pages.refreshAfter({
+    generation_id: "hub-generation",
+    targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+  });
+  invalidate({
+    generationId: "hub-generation",
+    sequence: 12,
+    targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+  });
+  requests[1].resolve(response(["new"], 0, 3));
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(requests).toHaveLength(3);
+  requests[2].resolve(response(["new"], 0, 3));
+  await mutation;
+  expect(pages.getSnapshot().stale).toBe(false);
+  expect(pages.getSnapshot().error).toBeNull();
+});
