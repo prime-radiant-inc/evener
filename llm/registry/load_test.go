@@ -794,6 +794,16 @@ func TestTemplateVarsEnv(t *testing.T) {
 			"GOOGLE_APPLICATION_CREDENTIALS": "GOOGLE_APPLICATION_CREDENTIALS",
 		},
 	}}}
+	// No curated base URL, but a row with its own template: the provider's
+	// whole map stays offered (the user types the URL) and the row's mapping
+	// is offered too.
+	r.curated["typed-url"] = &record{head: Provider{
+		Transport: Transport{VarsEnv: map[string]string{"ACCOUNT": "EXAMPLE_ACCOUNT"}},
+		Models: map[string]Model{"m": {Transport: &Transport{
+			BaseURL: "https://{REGION}.example.test/v1",
+			VarsEnv: map[string]string{"REGION": "EXAMPLE_REGION"},
+		}}},
+	}}
 	for _, tt := range []struct {
 		id   string
 		want map[string]string
@@ -807,6 +817,7 @@ func TestTemplateVarsEnv(t *testing.T) {
 		// No curated base URL (models.dev publishes no api): the user types
 		// the URL, so every vars_env entry stays offered.
 		{id: "watsonx", want: map[string]string{"WATSONX_AI_PROJECT_ID": "WATSONX_AI_PROJECT_ID"}},
+		{id: "typed-url", want: map[string]string{"ACCOUNT": "EXAMPLE_ACCOUNT", "REGION": "EXAMPLE_REGION"}},
 		{id: "no-such-provider"},
 	} {
 		t.Run(tt.id, func(t *testing.T) {
@@ -814,6 +825,21 @@ func TestTemplateVarsEnv(t *testing.T) {
 				t.Fatalf("TemplateVarsEnv(%q) = %v, want %v", tt.id, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTemplateVarsEnvTopLevelGlob: a top-level glob row may carry a transport
+// (applyGlobs merges it into every matching row before substitution), so its
+// placeholders and mappings are offered to the providers that have a matching
+// row and to no other.
+func TestTemplateVarsEnvTopLevelGlob(t *testing.T) {
+	glob := "[models.\"*llama-3.3-70b*\"]\nbase_url = \"https://{GLOB_REGION}.example.test/v1\"\nvars_env = { \"GLOB_REGION\" = \"EXAMPLE_GLOB_REGION\" }\n"
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(glob)))
+	if got := r.TemplateVarsEnv("google-vertex")["GLOB_REGION"]; got != "EXAMPLE_GLOB_REGION" {
+		t.Fatalf("google-vertex (has llama-3.3-70b rows) TemplateVarsEnv = %v, want GLOB_REGION mapped", r.TemplateVarsEnv("google-vertex"))
+	}
+	if got := r.TemplateVarsEnv("openai"); got["GLOB_REGION"] != "" {
+		t.Fatalf("openai (no matching row) TemplateVarsEnv = %v, want no GLOB_REGION", got)
 	}
 }
 

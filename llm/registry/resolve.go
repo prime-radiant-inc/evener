@@ -457,7 +457,7 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	}
 	warnings = append(warnings, rec.notes...)
 	if transport.HostRule == HostRuleVertexLocation {
-		if loc, ok := r.varLookup(rec)("GOOGLE_VERTEX_LOCATION"); ok && loc != "global" && loc != "us" && loc != "eu" {
+		if loc, ok := r.varLookup(rec, transport)("GOOGLE_VERTEX_LOCATION"); ok && loc != "global" && loc != "us" && loc != "eu" {
 			for _, p := range vertexGlobalOnly {
 				if strings.Contains(hit.wireID, p) {
 					warnings = append(warnings, fmt.Sprintf("regional Vertex location %q supports Claude Sonnet 4.6 and earlier; use global, us, or eu for %s", loc, hit.wireID))
@@ -651,7 +651,7 @@ func (r *Registry) buildTransport(rec *record, row Model, proto string) (Transpo
 	// One lookup serves the base URL, the endpoint templates, and the Vars
 	// scan, so a user `vars` entry with an unset $ENV reference is reported
 	// once however many templates read it (spec §10).
-	lookup := r.varLookupWith(rec, func(w string) { varWarnings = append(varWarnings, w) })
+	lookup := r.varLookupWith(rec, t, func(w string) { varWarnings = append(varWarnings, w) })
 	url, missing, hostWarnings := r.resolveBaseURLWith(rec, t, lookup)
 	t.BaseURL = url
 	warnings = append(warnings, hostWarnings...)

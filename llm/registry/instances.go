@@ -233,7 +233,7 @@ func (r *Registry) canonicalVarLookup(rec, base *record, shape Transport) func(s
 	for _, name := range hostRuleAuthorityVars(shape.HostRule) {
 		authority[name] = true
 	}
-	actual := r.varLookup(rec)
+	actual := r.varLookup(rec, shape)
 	defaults := r.defaultVarLookup(base)
 	return func(name string) (string, bool) {
 		if authority[name] {
