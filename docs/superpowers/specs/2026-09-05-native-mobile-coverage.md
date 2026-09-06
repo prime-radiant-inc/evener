@@ -94,3 +94,8 @@ Android API 35 system Back is subsequently corrected by disabling the unsupporte
 ### Queue-management increment
 
 The native composer queue count opens a platform modal with full queued text (or labeled preview), identity-guarded cancellation, and entry/revision-guarded individual/bulk steering. Both simulators exercised these actions against the scripted WebSocket fixture. Shared tests 2,233 and native tests 54 passed; both Release builds succeeded. See `docs/design/mobile/queue-evidence.md`. Real-daemon steering consumption, native conflict/uncertain-response scenarios, idle run-now and durable queue mutation recovery remain unverified or unimplemented; this is not full queue workflow completion.
+
+
+### Real queue delivery and idle resume
+
+The isolated real daemon accepted Android cancellation/promotion and iOS bulk steering. The next scripted provider request contained the promoted and drained markers, and excluded the cancelled marker. Idle resume is now exposed and manually exercised on iOS (selected steering) and Android (all combined); UI copy explains that resuming releases remaining queued work. Shared 2,234/native54 tests and both Release builds pass. See the real-daemon section of `docs/design/mobile/queue-evidence.md`; queue-specific uncertain/reconnect/native-conflict acceptance is still open.

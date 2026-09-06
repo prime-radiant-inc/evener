@@ -8,9 +8,9 @@ Expose Inspect queue from the composer whenever entries exist. Support cancel, u
 
 Before implementation, inspect the server handler contracts and web implementation for exact capabilities, ordering, notification and error semantics. Extend shared service wrappers only where needed; do not duplicate transport policy in screen components.
 
-- [ ] Confirm server contracts and current native/shared state ownership.
-- [ ] Behavioral tests through real shared state and scripted protocol boundary.
-- [ ] Native queue surface and guarded operations.
+- [x] Confirm server contracts and current native/shared state ownership.
+- [x] Behavioral tests through real shared state and scripted protocol boundary.
+- [x] Native queue surface and guarded operations.
 - [ ] Both-platform manual E2E including stale queue, cancellation, steering, reconnect and no replay.
 
 ## Shared projection prerequisite
@@ -22,3 +22,6 @@ Behavioral tests first failed on the missing identity/revision fields, then pass
 ## Implemented native slice
 
 The shared projection now carries the same instance identity as the service. Cancellation requires the observed instance; promotion and drain wrappers validate it and preserve the entry/revision guards. A native queue sheet exposes full text, cancel, individual steering and bulk steering for steering-capable sessions. The draft is untouched. Shared and native gates plus both Release builds passed; both simulators exercised the scripted queue operations and sheet dismissal. See `docs/design/mobile/queue-evidence.md` for exact evidence and remaining acceptance work. The final manual-E2E checkbox remains open for real-daemon, stale-native-view and reconnect/no-ACK cases.
+
+
+Real isolated-daemon checks now prove active cancellation/promotion/drain and delivery of the retained steering to the next model request. Idle sessions expose Resume with this / Run all together; the explanation reflects the server's release of the remaining queue. Automated shared tests now total 2,234, native 54, and both final Release builds pass. The remaining manual checkbox stays open for queue-specific stale/uncertain/reconnect cases.
