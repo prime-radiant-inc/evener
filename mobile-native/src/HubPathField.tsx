@@ -3,27 +3,33 @@ import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
 import {
   basename,
   childrenPrefix,
+  isDirEntry,
   parentOf,
 } from "../../cmd/evener-hub/frontend/src/widgets/pathfield/pathRows";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HubDirectories } from "./hubDirectories";
+import { HubPaths } from "./hubPaths";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-export function HubDirectoryField({
+export function HubPathField({
   client,
   value,
   onChange,
   disabled,
   label,
+  kind,
 }: {
   client: ConversationClientLike;
   value: string;
   onChange(value: string): void;
   disabled: boolean;
   label: string;
+  kind: "dir" | "file" | "outputFile";
 }) {
   const colors = useColors();
-  const model = useMemo(() => new HubDirectories(client), [client]);
+  const model = useMemo(
+    () => new HubPaths(client, kind !== "dir"),
+    [client, kind],
+  );
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const [open, setOpen] = useState(false);
   useEffect(() => () => model.dispose(), [model]);
@@ -53,7 +59,7 @@ export function HubDirectoryField({
             void model.load(value);
           }}
         >
-          Find directories
+          {kind === "dir" ? "Find directories" : "Find files"}
         </Action>
         {open && (
           <Action
@@ -83,12 +89,10 @@ export function HubDirectoryField({
             </Action>
           )}
           {state.loading && (
-            <ActivityIndicator accessibilityLabel="Loading hub directories" />
+            <ActivityIndicator accessibilityLabel="Loading hub paths" />
           )}
           <ErrorMessage message={state.error} />
-          {state.paths?.length === 0 && (
-            <Copy muted>No matching directories.</Copy>
-          )}
+          {state.paths?.length === 0 && <Copy muted>No matching paths.</Copy>}
           {state.paths && state.paths.length > 0 && (
             <ScrollView
               style={{ maxHeight: 220 }}
@@ -99,10 +103,15 @@ export function HubDirectoryField({
                 <Action
                   key={path}
                   disabled={disabled}
-                  label={`Choose directory ${path}`}
+                  label={`${kind === "dir" ? "Choose directory" : isDirEntry(path) ? "Open directory" : "Choose file"} ${path}`}
                   onPress={() => {
-                    edit(childrenPrefix(path));
-                    setOpen(false);
+                    if (kind !== "dir" && isDirEntry(path)) {
+                      edit(path);
+                      void model.load(path);
+                    } else {
+                      edit(kind === "dir" ? childrenPrefix(path) : path);
+                      setOpen(false);
+                    }
                   }}
                 >
                   {basename(path) || path}
@@ -112,7 +121,7 @@ export function HubDirectoryField({
           )}
           {state.paths && state.paths.length >= 100 && (
             <Copy muted>
-              Showing up to 100 directories. Type more of the path to narrow the
+              Showing up to 100 paths. Type more of the path to narrow the
               results.
             </Copy>
           )}

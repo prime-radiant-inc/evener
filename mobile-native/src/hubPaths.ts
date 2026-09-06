@@ -1,18 +1,21 @@
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
-interface DirectoryState {
+interface PathState {
   paths: string[] | null;
   loading: boolean;
   error: string | null;
 }
 
-/** Directory suggestions belong to one field and one connected hub. */
-export class HubDirectories {
-  private state: DirectoryState = { paths: null, loading: false, error: null };
+/** Path suggestions belong to one field and one connected hub. */
+export class HubPaths {
+  private state: PathState = { paths: null, loading: false, error: null };
   private listeners = new Set<() => void>();
   private version = 0;
   private disposed = false;
-  constructor(private client: ConversationClientLike) {}
+  constructor(
+    private client: ConversationClientLike,
+    private includeFiles = false,
+  ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -20,7 +23,7 @@ export class HubDirectories {
       this.listeners.delete(listener);
     };
   };
-  private publish(state: DirectoryState) {
+  private publish(state: PathState) {
     if (this.disposed) return;
     this.state = state;
     for (const listener of this.listeners) listener();
@@ -36,7 +39,7 @@ export class HubDirectories {
     try {
       const result = await this.client.request("evener/paths/complete", {
         prefix,
-        includeFiles: false,
+        includeFiles: this.includeFiles,
         limit: 100,
       });
       if (version === this.version)
@@ -47,7 +50,7 @@ export class HubDirectories {
           paths: null,
           loading: false,
           error:
-            "Could not load directories from this hub. Try again or enter the path manually.",
+            "Could not load paths from this hub. Try again or enter the path manually.",
         });
     }
   };

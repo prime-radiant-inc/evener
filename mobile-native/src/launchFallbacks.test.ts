@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
 import {
   addFallback,
-  assertFallbacksCurrent,
+  assertLaunchListCurrent,
   collectFallbacks,
-} from "./launchFallbacks";
+} from "./launchLists";
 
 it("preserves fallback order and rejects duplicates", () => {
   const current = ["fake/first"];
@@ -21,12 +21,12 @@ it("distinguishes inheritance from explicitly disabling fallbacks", () => {
 });
 it("treats reordered fallbacks and explicit emptiness as conflicting changes", () => {
   expect(() =>
-    assertFallbacksCurrent(["a", "b"], ["b", "a"], undefined),
+    assertLaunchListCurrent(["a", "b"], ["b", "a"], undefined),
   ).toThrow();
-  expect(() => assertFallbacksCurrent(undefined, [], ["a"])).toThrow();
+  expect(() => assertLaunchListCurrent(undefined, [], ["a"])).toThrow();
 });
 it("allows unchanged and convergent edits", () => {
-  expect(() => assertFallbacksCurrent(["a"], ["a"], ["b"])).not.toThrow();
-  expect(() => assertFallbacksCurrent(["a"], [], [])).not.toThrow();
-  expect(() => assertFallbacksCurrent([], undefined, undefined)).not.toThrow();
+  expect(() => assertLaunchListCurrent(["a"], ["a"], ["b"])).not.toThrow();
+  expect(() => assertLaunchListCurrent(["a"], [], [])).not.toThrow();
+  expect(() => assertLaunchListCurrent([], undefined, undefined)).not.toThrow();
 });
