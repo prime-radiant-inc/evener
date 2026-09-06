@@ -112,6 +112,10 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"dispose-branch", TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone},
 		{"close-unlock-stranded", TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker},
 		{"close-unlock-foreign", TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker},
+		{"close-unlock-child", TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker},
+		{"close-unlock-delegate", TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker},
+		{"close-unlock-budget", TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget},
+		{"close-unlock-spent-budget", TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases},
 		{"close-unlock-listing-fails", TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns},
 		{"close-unlock-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns},
 		{"close-unlock-nonlocal", TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp},
@@ -204,7 +208,7 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	s := &Session{env: &worktreeFaultExecEnv{}, cfg: SessionConfig{}}
 	s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: "/tmp/not-local"})
 	s.disposeDelegateLanesAtClose(context.Background())
-	s.unlockOwnManagedWorktreeAtClose()
+	s.unlockOwnManagedWorktreeAtClose(context.Background())
 }
 
 func hooksRunResultZero() hooks.RunResult { return hooks.RunResult{} }

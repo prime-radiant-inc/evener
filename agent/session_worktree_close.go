@@ -438,18 +438,28 @@ func (s *Session) unlockLaneIfOwn(run worktree.GitRunner, ev worktree.LockEvent,
 // Every release routes through the EvLeave lock rule (own session marker →
 // unlock; unlocked / foreign / delegate marker → leave untouched), so another
 // session's lock stays put and a live delegate lane remains the parent's §9
-// disposal lifecycle's to release. Subagents are out of scope: a child never
-// takes a session marker of its own (§5 occupancy locks; §9 "the evener:dlg:
-// lock on a delegate lane is owned by the parent's disposal lifecycle").
-func (s *Session) unlockOwnManagedWorktreeAtClose() {
-	if s.isSubagentSession() {
-		return
-	}
+// disposal lifecycle's to release. Child sessions are in scope: a delegating
+// child keeps the full manage_worktree tool (session init strips it only for a
+// worktree-isolated child and for a zero delegation allowance), so it does take
+// an evener:<child-sid> marker of its own on a lane it creates or switches into.
+//
+// The pass shares the close cascade's deadline so a wedged git cannot hold
+// shutdown for the per-command timeout on every lane. A cascade budget that is
+// already spent is replaced with a fresh one rather than short-circuiting the
+// pass: releasing our own locks is tail work of the same kind as the P0 pass's
+// budget-exempt touch+unlock tail, and skipping it would strand exactly the
+// markers this pass exists to clear.
+func (s *Session) unlockOwnManagedWorktreeAtClose(ctx context.Context) {
 	st := s.worktreeStateSnapshot()
 	if st.env == nil || st.mainRepoRoot == "" || st.worktreeRoot == "" {
 		return
 	}
-	run, done, err := s.worktreeControlRun(context.Background(), st.mainRepoRoot)
+	if ctx == nil || ctx.Err() != nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, LaneClosePassBudget)
+	defer cancel()
+	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
 		return
 	}
@@ -461,7 +471,7 @@ func (s *Session) unlockOwnManagedWorktreeAtClose() {
 		return
 	}
 	for _, e := range managedPorcelainEntries(porcelain, projectDir) {
-		if err := s.leaveWorktreeWithLockState(run, e.Path, e.Locked, e.LockReason); err != nil {
+		if err := s.releaseOwnWorktreeLock(run, e.Path, e.Locked, e.LockReason); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", e.Path, err)})
 		}
 	}

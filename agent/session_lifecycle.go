@@ -485,7 +485,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// delegate lanes) over the SAME shared close budget. Store must still be
 		// open (the own-store Disposed mark is a durable append); it closes below.
 		s.disposeLaneResidueAtClose(budgetCtx)
-		s.unlockOwnManagedWorktreeAtClose()
+		s.unlockOwnManagedWorktreeAtClose(budgetCtx)
 
 		if s.jobManager != nil {
 			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
