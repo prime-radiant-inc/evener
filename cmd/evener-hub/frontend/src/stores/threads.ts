@@ -205,7 +205,7 @@ export interface ThreadsStoreState {
   // `any` on the wire catalog (appwire/types.go:896-898) - this returns
   // that raw field verbatim, never wrapped, so the store stays shape-
   // agnostic; the caller owns interpreting it (the chrome stream's own
-  // parseTaskListData). A Codex-source thread rejects this call
+  // parseTaskListData). A source that omits the capability rejects this call
   // (appwire.Unavailable, "actionUnavailable") - that typed error
   // propagates unchanged, same as every other read-only action here; the
   // caller renders the empty/unsupported state for it.

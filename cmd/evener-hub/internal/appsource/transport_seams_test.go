@@ -75,17 +75,11 @@ func dialTransport(transport appwire.Transport) appwireDialFunc {
 	}
 }
 
-func fuzzScenarioSourceDialSeamsPreserveCallerCancellation(t *testing.T) {
+func fuzzScenarioLocalDaemonDialSeamPreservesCallerCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dial := func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
 		return nil, errors.New("dial failed")
-	}
-
-	codex := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-	codex.dial = dial
-	if _, _, err := codex.connect(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("codex connect error = %v", err)
 	}
 
 	local := NewLocalDaemonSource("local", nil, nil)
@@ -105,196 +99,18 @@ func rendezvousEntry(endpoint string) rendezvous.Entry {
 	return rendezvous.Entry{Endpoint: endpoint}
 }
 
-func fuzzScenarioCodexConnectHandshakeFailures(t *testing.T) {
-	t.Run("initialize error", func(t *testing.T) {
-		transport := respondingTransport(func(method string) (any, error) {
-			return nil, errors.New(method + " failed")
-		})
-		s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-		s.dial = dialTransport(transport)
-		if _, _, err := s.connect(context.Background()); err == nil {
-			t.Fatal("connect returned nil")
-		}
-		select {
-		case <-transport.closed:
-		default:
-			t.Fatal("transport was not closed")
-		}
-	})
-
-	t.Run("initialize canceled", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		transport := respondingTransport(func(string) (any, error) {
-			cancel()
-			return nil, errors.New("initialize failed")
-		})
-		s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-		s.dial = dialTransport(transport)
-		if _, _, err := s.connect(ctx); !errors.Is(err, context.Canceled) {
-			t.Fatalf("connect error = %v", err)
-		}
-	})
-
-	for _, tc := range []struct {
-		name   string
-		cancel bool
-	}{
-		{name: "initialized notification error"},
-		{name: "initialized notification canceled", cancel: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			transport := respondingTransport(func(string) (any, error) { return map[string]any{}, nil })
-			transport.send = func(_ context.Context, msg appwire.Message) error {
-				if msg.Request != nil {
-					transport.recv <- appwire.ResponseMessage(msg.Request.ID, map[string]any{})
-					return nil
-				}
-				if tc.cancel {
-					cancel()
-				}
-				return errors.New("notify failed")
-			}
-			s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-			s.dial = dialTransport(transport)
-			_, _, err := s.connect(ctx)
-			if err == nil || (tc.cancel && !errors.Is(err, context.Canceled)) {
-				t.Fatalf("connect error = %v", err)
-			}
-		})
+func assertSessionUnavailable(t *testing.T, err error, label string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected error, got nil", label)
 	}
-}
-
-func fuzzScenarioCodexRPCFailureAndValidationBranches(t *testing.T) {
-	dialErr := errors.New("connection refused")
-	dial := func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
-		return nil, dialErr
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("%s: error %T=%v, want appwire.WireError", label, err, err)
 	}
-	s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-	s.dial = dial
-	ctx := context.Background()
-	ref := "codex:thread"
-	calls := []func() error{
-		func() error { _, err := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
-		func() error { _, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: ref}); return err },
-		func() error { _, err := s.StartThread(ctx, appwire.ThreadStartParams{}); return err },
-		func() error { _, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{Ref: ref}); return err },
-		func() error { _, err := s.ForkThread(ctx, appwire.ThreadForkParams{Ref: ref}); return err },
-		func() error {
-			_, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref})
-			return err
-		},
-		func() error { _, err := s.ListModels(ctx, appwire.ModelListParams{}); return err },
-		func() error { _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref}); return err },
-	}
-	for i, call := range calls {
-		if err := call(); err == nil {
-			t.Fatalf("call %d returned nil", i)
-		}
-	}
-
-	badInput := []appwire.InputItem{{Type: "unsupported"}}
-	if _, err := s.StartTurn(ctx, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
-		t.Fatal("StartTurn accepted invalid input")
-	}
-	if _, err := s.startTurnWithClient(ctx, nil, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
-		t.Fatal("startTurnWithClient accepted invalid input")
-	}
-	if _, err := s.SteerTurn(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Ref: ref, Input: badInput}); err == nil {
-		t.Fatal("SteerTurn accepted invalid input")
-	}
-}
-
-func fuzzScenarioCodexRPCResponseErrors(t *testing.T) {
-	newSource := func() *CodexSource {
-		transport := respondingTransport(func(method string) (any, error) {
-			if method == appwire.MethodInitialize {
-				return map[string]any{}, nil
-			}
-			return nil, errors.New("rpc failed")
-		})
-		s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-		s.dial = dialTransport(transport)
-		return s
-	}
-	ctx := context.Background()
-	ref := "codex:thread"
-	turnTransport := respondingTransport(func(string) (any, error) { return nil, errors.New("rpc failed") })
-	turnCtx, cancelTurn := context.WithCancel(ctx)
-	turnClient := appwire.NewClient(turnTransport)
-	turnClient.Start(turnCtx)
-	calls := []func() error{
-		func() error { _, err := newSource().StartThread(ctx, appwire.ThreadStartParams{}); return err },
-		func() error {
-			_, err := newSource().startTurnWithClient(ctx, turnClient, appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: ref})
-			return err
-		},
-		func() error {
-			_, err := newSource().ResumeThread(ctx, appwire.ThreadResumeParams{Ref: ref})
-			return err
-		},
-		func() error { _, err := newSource().ForkThread(ctx, appwire.ThreadForkParams{Ref: ref}); return err },
-		func() error { _, err := newSource().ListModels(ctx, appwire.ModelListParams{}); return err },
-		func() error {
-			_, err := newSource().SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref})
-			return err
-		},
-	}
-	for i, call := range calls {
-		if err := call(); err == nil {
-			cancelTurn()
-			_ = turnClient.Close()
-			<-turnTransport.recvDone
-			t.Fatalf("call %d returned nil", i)
-		}
-	}
-	cancelTurn()
-	_ = turnClient.Close()
-	<-turnTransport.recvDone
-}
-
-func fuzzScenarioCodexInitialAndResumedTurnFailures(t *testing.T) {
-	result := func(method string) (any, error) {
-		switch method {
-		case appwire.MethodInitialize:
-			return map[string]any{}, nil
-		case appwire.MethodThreadStart:
-			return map[string]any{"thread": map[string]any{"id": "thread"}}, nil
-		case appwire.MethodThreadResume:
-			return map[string]any{"thread": map[string]any{"id": "thread"}}, nil
-		default:
-			return nil, errors.New("turn failed")
-		}
-	}
-	newSource := func() *CodexSource {
-		s := NewCodexSource(CodexSourceConfig{Endpoint: "ws://daemon"}, nil)
-		s.dial = dialTransport(respondingTransport(result))
-		return s
-	}
-	input := []appwire.InputItem{{Type: "text", Text: "hello"}}
-	if _, err := newSource().StartThread(context.Background(), appwire.ThreadStartParams{Input: input}); err == nil {
-		t.Fatal("StartThread returned nil")
-	}
-	if _, err := newSource().StartTurn(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex:thread", Input: input}); err == nil {
-		t.Fatal("StartTurn returned nil")
-	}
-
-	live := &codexLiveThread{done: make(chan struct{}), subscribers: map[chan appwire.Notification]struct{}{}, closed: true}
-	s := newTestCodexSource()
-	s.live["thread"] = live
-	if got := s.liveThread("thread"); got != nil {
-		t.Fatalf("closed live thread = %p", got)
-	}
-
-	for _, mapper := range []func(error) error{codexSourceDialError, localDaemonDialError} {
-		var wire appwire.WireError
-		if err := mapper(context.DeadlineExceeded); !errors.As(err, &wire) {
-			t.Fatalf("deadline error = %v", err)
-		}
-	}
-	if err := codexSourceDialError(fakeTimeoutError{}); err == nil {
-		t.Fatal("timeout error mapped nil")
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("%s: wire=%+v, want SessionUnavailable", label, wire)
 	}
 }
 
@@ -304,6 +120,10 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 	entry.ThreadID = "thread"
 	entry.SourceID = "local"
 	entry.Protocol = appwire.ProtocolVersion
+	var wire appwire.WireError
+	if err := localDaemonDialError(context.DeadlineExceeded); !errors.As(err, &wire) {
+		t.Fatalf("deadline error = %v", err)
+	}
 
 	for _, cancelAt := range []string{"initialize", "read"} {
 		t.Run("subscribe canceled during "+cancelAt, func(t *testing.T) {

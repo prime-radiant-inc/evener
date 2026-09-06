@@ -138,8 +138,8 @@ func TestHubModelBrowseSelectedToolRendersFocusedAndCtrlTToggles(t *testing.T) {
 
 func TestHubModelActionUnavailableNoticeIncludesSourceAndReason(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.Ref = "codex-local:th_1"
-	m.detail.SourceLabel = "codex-local"
+	m.detail.Ref = "local-daemon:th_1"
+	m.detail.SourceLabel = "local-daemon"
 	m.detail.Capabilities.Clear = false
 	m.session.setInputValue("/clear")
 
@@ -149,7 +149,7 @@ func TestHubModelActionUnavailableNoticeIncludesSourceAndReason(t *testing.T) {
 	}
 	got := updated.(hubModel).View()
 	// View() format: summary on first line, source·cause on second, next on third.
-	for _, want := range []string{"Clear is not available for this session.", "codex-local", "source does not advertise clear"} {
+	for _, want := range []string{"Clear is not available for this session.", "local-daemon", "source does not advertise clear"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("notice missing %q:\n%s", want, got)
 		}
@@ -158,7 +158,7 @@ func TestHubModelActionUnavailableNoticeIncludesSourceAndReason(t *testing.T) {
 
 func TestDetailsDrawerShowsCapabilities(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.SourceLabel = "codex-local"
+	m.detail.SourceLabel = "local-daemon"
 	m.detail.Capabilities = hubSessionCapabilities{
 		Send:    true,
 		Steer:   true,
@@ -169,7 +169,7 @@ func TestDetailsDrawerShowsCapabilities(t *testing.T) {
 	// column padding is hand-maintained per format string, so collapse it and keep
 	// each label bound to its full value.
 	got := collapseLabelPadding(m.renderSessionDetails())
-	for _, want := range []string{"DETAILS", "Source: codex-local", "Capabilities: send, steer, compact"} {
+	for _, want := range []string{"DETAILS", "Source: local-daemon", "Capabilities: send, steer, compact"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("details drawer missing %q:\n%s", want, got)
 		}
@@ -234,14 +234,14 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 func TestDetailsDrawerShowsMissingDiagnostics(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail = hubSessionDetail{
-		Ref:         "codex:th_1",
+		Ref:         "remote:th_1",
 		SessionID:   "th_1",
-		SourceLabel: "codex",
+		SourceLabel: "remote",
 		Model:       "gpt-5.1",
 	}
 
 	got := collapseLabelPadding(m.renderSessionDetails())
-	for _, want := range []string{"Source: codex", "Diagnostics: not reported by source"} {
+	for _, want := range []string{"Source: remote", "Diagnostics: not reported by source"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("details drawer missing %q:\n%s", want, got)
 		}

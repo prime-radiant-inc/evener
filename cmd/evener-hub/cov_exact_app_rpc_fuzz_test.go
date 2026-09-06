@@ -201,7 +201,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			runDir := t.TempDir()
 			_, _ = rendezvous.Write(runDir, rendezvous.Entry{PID: 7, Address: "127.0.0.1:1", ThreadID: "thread"})
-			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir, CodexSources: []appsource.CodexSourceConfig{{ID: "codex"}}})
+			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
 			if local, ok := runRegistry.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}
@@ -418,7 +418,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			}
 
 			calls := 0
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				return nil, errors.New("resolve")
 			}
@@ -426,7 +426,7 @@ func FuzzExactAppRPC(f *testing.F) {
 
 			calls = 0
 			source.startTurnErr = appwire.SessionUnavailable("resume")
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				if calls == 1 {
 					return source, nil
@@ -436,7 +436,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation"})
 
 			calls = 0
-			resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 				calls++
 				return source, nil
 			}

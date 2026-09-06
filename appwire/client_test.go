@@ -335,7 +335,7 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 }
 
 // A legitimate notification burst that lands while no consumer has drained yet
-// (a codex initial-turn replay is ~160 messages; consumers can be a scheduling
+// (a large initial-turn replay can be ~160 messages; consumers can be a scheduling
 // slice behind) must ride the buffer, not kill the connection. The overflow
 // guard exists for pathological stalls, so the buffer needs real headroom
 // above any single legitimate burst. Flake root cause, full-suite load,

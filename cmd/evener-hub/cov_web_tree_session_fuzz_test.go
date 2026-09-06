@@ -18,7 +18,7 @@ import (
 // fuzz input continues to vary the strings and numeric values.
 func FuzzCovWebTreeSessionPure(f *testing.F) {
 	f.Add("local:thread", "title", int64(0), 0)
-	f.Add("codex:thread", strings.Repeat("x", 100)+"\nrest", int64(65_000), 1500)
+	f.Add("remote:thread", strings.Repeat("x", 100)+"\nrest", int64(65_000), 1500)
 	f.Fuzz(func(t *testing.T, refText, title string, millis int64, tokens int) {
 		if len(refText) > 256 || len(title) > 512 {
 			t.Skip()

@@ -12,14 +12,9 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-var ensureManagedCodexSourcesForList = ensureManagedCodexSources
-
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
-	if err := ensureManagedCodexSourcesForList(ctx, cfg, sources, params); err != nil {
-		return appwire.ThreadListResponse{}, err
-	}
 	for _, source := range sources.All() {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
@@ -103,25 +98,6 @@ func annotateThreadProjects(threads []appwire.Thread) {
 		threads[i].ProjectID = project.ID
 		threads[i].ProjectPath = project.CanonicalPath
 	}
-}
-
-func ensureManagedCodexSources(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) error {
-	if cfg.CodexLauncher == nil || sources == nil {
-		return nil
-	}
-	for _, launch := range cfg.CodexLaunches {
-		sourceID := strings.TrimSpace(launch.ID)
-		if sourceID == "" {
-			sourceID = "codex"
-		}
-		if !sourceAllowedForList(sourceID, params) {
-			continue
-		}
-		if _, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources); err != nil && sourceExplicitlyRequestedForList(sourceID, params) {
-			return err
-		}
-	}
-	return nil
 }
 
 func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {

@@ -648,7 +648,7 @@ in this repo produce one, and neither announces itself.
 **Registered `check*` functions.** Several packages drive their behavioral
 contracts through a fuzz entry point that replays one check selected by the fuzz
 input — `FuzzFSPathsBehaviorProgram` and friends in `cmd/evener-hub/internal/`
-(`fspaths`, `hostlock`, `hubedge`, `codexlaunch`, `launchconfig`). A
+(`fspaths`, `hostlock`, `hubedge`, `launchconfig`). A
 `check*(t *testing.T)` function in those packages runs **only** if it appears in
 its `checks := []func(*testing.T){…}` seed table. Write one, forget the table
 entry, and `go test` passes without ever calling it.

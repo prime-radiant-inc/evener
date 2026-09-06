@@ -122,7 +122,6 @@ type hubModel struct {
 	spawnEmptyTaskNext             map[string]string
 	spawnModel                     string
 	spawnModels                    []tuipick.ModelPickerItem
-	spawnHarnessModels             map[string][]tuipick.ModelPickerItem
 	spawnModelPicker               *tuipick.ModelPicker
 	spawnDirInput                  textinput.Model
 	spawnPluginsPanel              *launchconfig.PluginsForLaunchPanel

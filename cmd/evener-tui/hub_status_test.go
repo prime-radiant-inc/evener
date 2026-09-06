@@ -269,7 +269,7 @@ func TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone(t *testing
 }
 
 // TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone guards the "no data"
-// path: an old daemon or Codex thread reports no usage, and the mapping must
+// path: a source-backed thread reports no usage, and the mapping must
 // not synthesize a zero-value struct (which would render ↑0 ↓0).
 func TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone(t *testing.T) {
 	detail := hubDetailFromThread(appwire.Thread{

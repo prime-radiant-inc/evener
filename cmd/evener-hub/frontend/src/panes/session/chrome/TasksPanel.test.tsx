@@ -673,18 +673,18 @@ test("does not fetch at all while the panel is closed, even if the aggregate cha
   expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(0);
 });
 
-// --- Codex-source unsupported state (actionUnavailable) -------------------
+// --- source-backed unsupported state (actionUnavailable) ------------------
 
-test("a Codex-source actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
+test("a source-backed actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => {
-    throw new WireError("codex source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
+    throw new WireError("remote source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
 
   render(
     <>
-      <TasksPanel sessionRef="ref_codex" model={testModel()} />
+      <TasksPanel sessionRef="ref_remote" model={testModel()} />
       <Toast />
     </>,
   );

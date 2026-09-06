@@ -407,16 +407,16 @@ func TestHubJobsListDeadSessionNotInPastIndex(t *testing.T) {
 // TestHubJobsOutputNonLocalRefKeepsTheLiveError: jobs.jsonl under a project
 // state dir is LOCAL session state, so a non-local ref must never be
 // answered from it. The past index deliberately holds a session whose id is
-// the codex ref's thread id — dropping the local-source check would serve
+// the remote ref's thread id — dropping the local-source check would serve
 // another source's caller this local session's job list.
 func TestHubJobsListNonLocalRefKeepsTheLiveError(t *testing.T) {
 	cfg, sessionID, _, _ := seedPastSessionWithActivity(t, 1)
 	sources := appsource.NewRegistry()
-	sources.Add(&jobsListSource{id: "codex", jobsErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
+	sources.Add(&jobsListSource{id: "remote", jobsErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
 
-	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "codex:" + sessionID})
+	resp, err := hubJobsList(context.Background(), cfg, sources, appwire.JobsListParams{Ref: "remote:" + sessionID})
 	if !isDeadSessionError(err) {
-		t.Fatalf("hubJobsList = (%#v, %v), want the codex source's own dead-session error; local past state is not this ref's to serve", resp.Data, err)
+		t.Fatalf("hubJobsList = (%#v, %v), want the remote source's own dead-session error; local past state is not this ref's to serve", resp.Data, err)
 	}
 }
 
@@ -642,7 +642,7 @@ func TestHubJobsOutputWithoutPastIndexKeepsTheLiveError(t *testing.T) {
 // TestHubJobsOutputNonLocalRefKeepsTheLiveError proves the past gate's
 // local-ref requirement: jobs.jsonl under a project state dir is LOCAL
 // session state, so a non-local ref must never be answered from it. The past
-// index deliberately holds a session whose id is the codex ref's thread id
+// index deliberately holds a session whose id is the remote ref's thread id
 // and whose persisted job id is the one requested — dropping the local-source
 // check would serve another source's caller this local session's output.
 func TestHubJobsOutputNonLocalRefKeepsTheLiveError(t *testing.T) {
@@ -650,11 +650,11 @@ func TestHubJobsOutputNonLocalRefKeepsTheLiveError(t *testing.T) {
 		{id: "job_x", description: "local past job", command: "make local", output: "0123456789"},
 	})
 	sources := appsource.NewRegistry()
-	sources.Add(&jobsListSource{id: "codex", outErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
+	sources.Add(&jobsListSource{id: "remote", outErr: appwire.SessionUnavailable(threadNotFoundMessagePrefix + sessionID)})
 
-	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "codex:" + sessionID, JobID: "job_x", MaxBytes: 4})
+	_, err := hubJobsOutput(context.Background(), cfg, sources, appwire.JobsOutputParams{Ref: "remote:" + sessionID, JobID: "job_x", MaxBytes: 4})
 	if !isDeadSessionError(err) {
-		t.Fatalf("err = %v, want the codex source's own dead-session error; local past state is not this ref's to serve", err)
+		t.Fatalf("err = %v, want the remote source's own dead-session error; local past state is not this ref's to serve", err)
 	}
 }
 

@@ -447,31 +447,6 @@ func TestCovFetchHubTranscriptTargets(t *testing.T) {
 	}
 }
 
-// TestCovFetchHubModelsForHarness exercises model fetch for harness.
-func TestCovFetchHubModelsForHarness(t *testing.T) {
-	var calls []appwire.ModelListParams
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-			calls = append(calls, params)
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
-		})
-	})
-	defer cleanup()
-	msg, ok := fetchHubModelsForHarness(client, "codex", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "gpt-5" {
-		t.Fatalf("harness model result = %#v", msg)
-	}
-
-	// Empty harness (trimmed).
-	msg, ok = fetchHubModelsForHarness(client, "  ", "/tmp")().(hubModelsMsg)
-	if !ok || msg.err != nil || msg.harness != "" || len(msg.models) != 1 || msg.models[0].ID != "openai/gpt-5" {
-		t.Fatalf("default model result = %#v", msg)
-	}
-	if len(calls) != 2 || calls[0].Harness != "codex" || calls[0].CWD != "/tmp" || calls[1].Harness != "" || calls[1].CWD != "/tmp" {
-		t.Fatalf("model/list calls = %#v", calls)
-	}
-}
-
 // TestCovFetchHubSessionModels exercises session model fetch.
 func TestCovFetchHubSessionModels(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {

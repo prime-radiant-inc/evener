@@ -111,7 +111,8 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
   it cannot resolve (`localSessionCWD`, `doc_serve.go#localSessionCWD`). A session
   spawned with no `working_dir` cannot pass this card.
 - **`/doc/image` is LOCAL-session only** (`isLocalRouteID`, `doc_serve.go:133-135`).
-  A remote/codex ref gets no file-backed descriptor at all.
+  A source-qualified `remote:thread-id` ref gets no file-backed descriptor at
+  all.
 - **The gallery silently drops any `src` the browser refuses** (`onError` →
   `markUnloadable`, `ImageGallery.tsx:73-77,140`). Deleting `out.png` between
   the two loads therefore reads as "reload lost the image" when it is really

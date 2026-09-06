@@ -58,7 +58,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 				var lc net.ListenConfig
 				return lc.Listen(ctx, network, addr)
 			},
-			serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
+			serve: func(context.Context, hubHTTPServer) error {
 				served = true
 				if mode == 9 {
 					return stop

@@ -88,7 +88,6 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		Capabilities: hubapi.HealthCapabilities{
 			TranscriptFollow: true,
 			Fork:             true,
-			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
 }

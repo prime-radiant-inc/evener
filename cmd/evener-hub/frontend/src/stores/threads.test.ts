@@ -4698,8 +4698,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 // chrome stream): both are plain read-only wire calls with no turn-CAS
 // concept - verified against every server-side handler
 // (cmd/evener-hub/app_rpc.go's registerMiscHandlers, cmd/evener-hub/
-// internal/appsource/{local_daemon,codex_source}.go's ListTasks,
-// server/appwire_runtime.go's handleAppTasksList/handleAppModelList): none
+// app source ListTasks implementations, and server/appwire_runtime.go's
+// handleAppTasksList/handleAppModelList): none
 // of them ever construct appwire.Conflict(). Neither action maps errors -
 // a WireError (even one shaped like a Conflict, which cannot actually occur
 // here) passes through unchanged, same as resolveEscalation above.
@@ -5211,18 +5211,17 @@ describe("useThreadsStore.listTasks", () => {
     expect(result).toEqual(TASKS_DATA);
   });
 
-  test("propagates a Codex-source rejection (actionUnavailable) unchanged, not mapped to ConflictError", async () => {
+  test("propagates a source-backed rejection (actionUnavailable) unchanged, not mapped to ConflictError", async () => {
     const fake = connectFakeClient();
-    // Mirrors CodexSource.ListTasks verbatim (cmd/evener-hub/internal/
-    // appsource/codex_source.go:405-407): appwire.Unavailable(...), code
-    // -32014, evenerErrorInfo "actionUnavailable" - never a Conflict.
+    // Mirrors a source that omits the capability: appwire.Unavailable(...),
+    // code -32014, evenerErrorInfo "actionUnavailable" - never a Conflict.
     fake.on("evener/tasks/list", () => {
-      throw new WireError("codex source does not expose evener tasks", -32014, {
+      throw new WireError("remote source does not expose evener tasks", -32014, {
         evenerErrorInfo: "actionUnavailable",
       });
     });
 
-    const rejection = threadsStore.getState().listTasks("ref_codex");
+    const rejection = threadsStore.getState().listTasks("ref_remote");
     await expect(rejection).rejects.toBeInstanceOf(WireError);
     await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
     await expect(rejection).rejects.toMatchObject({ evenerErrorInfo: "actionUnavailable" });

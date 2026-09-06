@@ -20,10 +20,9 @@ export function isActionUnavailable(err: unknown): boolean {
 // (cmd/evener-hub/internal/appsource/local_daemon.go:551, entryForRef finding
 // no matching rendezvous entry). A live daemon that's merely unreachable for
 // a moment (connection reset, broken pipe, i/o timeout) is ALSO
-// sessionUnavailable, but as "local/codex daemon unavailable: ..."
-// (local_daemon.go:438-501, codex_source.go:522-591) - that must still
-// surface as a real error, so this checks the message prefix too, not just
-// the evenerErrorInfo code.
+// sessionUnavailable, but with a different message - that must still surface
+// as a real error, so this checks the message prefix too, not just the
+// evenerErrorInfo code.
 //
 // This is also why the panels' daemonGone terminal state never offers Try
 // again: the hub's own list handlers (app_tasks.go's hubTasksList and the

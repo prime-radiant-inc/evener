@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
@@ -148,7 +147,6 @@ func FuzzExactTails(f *testing.F) {
 		thread := appwire.Thread{ID: "id", Source: "local", Status: appwire.ThreadStatus{Type: "nonsense"}, Evener: appwire.EvenerThread{Ref: "local:id"}}
 		_ = workspaceDataFromAppThread(thread)
 		web := NewWebServer(hubcore.WebConfig{})
-		_ = NewWebServer(hubcore.WebConfig{CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex"}}})
 		web.sources = appsource.NewRegistry()
 		_ = web.workspaceData("remote:id")
 		data := WorkspaceData{}
@@ -160,13 +158,6 @@ func FuzzExactTails(f *testing.F) {
 		reg.Add(src)
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
-
-		oldManagedList := ensureManagedCodexSourcesForList
-		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {
-			return errors.New("managed source")
-		}
-		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadListParams{})
-		ensureManagedCodexSourcesForList = oldManagedList
 
 		// Project deletion's second liveness check can race with a resume.
 		deleteWeb := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})

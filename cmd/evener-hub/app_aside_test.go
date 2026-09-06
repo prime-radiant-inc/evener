@@ -99,12 +99,12 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 // local-evener-session feature: remote sources are never invoked with it.
 func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 	source := &forkingRelaySource{
-		id: "codex",
+		id: "remote",
 		thread: appwire.Thread{
 			ID:        "th_aside",
 			SessionID: "th_aside",
-			Source:    "codex",
-			Evener:    appwire.EvenerThread{Ref: "codex:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+			Source:    "remote",
+			Evener:    appwire.EvenerThread{Ref: "remote:th_aside", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
 		},
 		notifications: make(chan appwire.Notification, 1),
 		canceled:      make(chan struct{}, 1),
@@ -122,7 +122,7 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
-		Ref:   "codex:th_aside",
+		Ref:   "remote:th_aside",
 		Aside: true,
 	}, &appwire.ThreadForkResponse{})
 	if err == nil {

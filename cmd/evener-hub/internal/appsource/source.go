@@ -37,9 +37,8 @@ type Source interface {
 	SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error)
 }
 
-// RelaySessionSource is implemented by sources that can preserve one ordered
-// upstream snapshot-to-live stream. Codex deliberately does not implement this
-// interface because it converges through authoritative full-state replacement.
+// RelaySessionSource is implemented by the retained local-daemon source, which
+// preserves one ordered upstream snapshot-to-live stream.
 type RelaySessionSource interface {
 	ResolveRelaySession(appwire.ThreadReadParams) (appwire.Ref, error)
 	AcquireRelaySession(appwire.Ref) (RelaySessionRoutePublicationLease, error)

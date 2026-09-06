@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -42,9 +41,6 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		}
 		if mode == 1 {
 			cfg.StateGlob = "["
-		}
-		if mode == 2 {
-			cfg.CodexLaunches = []codexlaunch.CodexLaunchConfig{{ID: "local", Binary: "codex"}}
 		}
 		if mode == 6 {
 			oldExecutable := hubExecutable
@@ -75,7 +71,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 				var lc net.ListenConfig
 				return lc.Listen(ctx, network, addr)
 			},
-			serve: func(_ context.Context, _ hubHTTPServer, _ hubShutdowner) error {
+			serve: func(_ context.Context, _ hubHTTPServer) error {
 				if mode >= 3 {
 					time.Sleep(3 * time.Millisecond)
 					cancel()

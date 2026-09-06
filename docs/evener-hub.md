@@ -4,8 +4,7 @@
 default interactive surface — where you start sessions, watch the agent work,
 and steer it across many concurrent sessions; the `evener tui` terminal
 dashboard talks to the same API. The hub launches and supervises
-`evener serve` daemons, indexes saved sessions for search, and connects to or
-launches Codex app-server sources.
+local `evener serve` daemons and indexes saved sessions for search.
 
 **First time here?** [Getting started](getting-started.md)
 walks from install to your first session. This document is the
@@ -115,30 +114,6 @@ past_results_per_page = 50
 EOF
 
 chmod 600 "$hub_config"
-```
-
-Codex app-server integration is a separate, optional block. Use
-`codex_launches` when the hub should own the Codex app-server lifecycle:
-
-```toml
-[[codex_launches]]
-id = "codex-local"
-binary = "codex"
-working_dir = "/path/to/projects"
-listen = "ws://127.0.0.1:0"
-timeout = "30s"
-
-[codex_launches.env]
-CODEX_HOME = "/path/to/.codex"
-```
-
-Use `codex_sources` instead when a Codex app-server is already running:
-
-```toml
-[[codex_sources]]
-id = "codex-local"
-endpoint = "ws://127.0.0.1:9900"
-bearer_token_file = "/run/secrets/codex-token"
 ```
 
 ## Launch configuration
@@ -449,15 +424,11 @@ Manual verification:
 4. Refresh and confirm the transcript replays from saved state.
 5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
    confirm the same session appears with source label `evener`.
-6. If Codex is configured, switch the harness to `codex-local`, spawn a Codex
-   session, and confirm Evener-only actions are hidden or report structured
-   action-unavailable diagnostics.
 
 ## Operations notes
 
 - Evener daemons spawned by the hub keep running if the hub exits. Stop sessions
   from the hub or kill the daemon processes when you want them stopped.
-- Codex app-server processes launched by the hub stop when the hub shuts down.
 - Existing daemons keep the `evener` binary they were spawned from. Rebuild and
   restart sessions to pick up a new binary.
 - Do not blanket-prune `run_dir`, and never delete a live rendezvous file or

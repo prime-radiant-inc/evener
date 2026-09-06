@@ -11,7 +11,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
@@ -132,10 +131,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 
 		_ = sanitizeModelDescriptors([]appwire.ModelDescriptor{{Provider: " ", Model: "x"}, {Provider: "p", Model: " "}, {Provider: " p ", Model: " m "}})
 		_ = sanitizeModelDiagnostics([]appwire.ModelListDiagnostic{{Message: " "}, {Provider: " p ", Source: " s ", Title: " t ", Message: " m ", Hint: " h "}})
-		_ = launchHarnessDescriptors(hubcore.WebConfig{CodexSources: []appsource.CodexSourceConfig{{}, {ID: "evener"}, {ID: "extra"}}, CodexLaunches: []codexlaunch.CodexLaunchConfig{{}, {ID: "extra"}, {ID: "launched"}}})
-		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{}, appsource.NewRegistry(), "missing")
-		launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "managed", Binary: filepath.Join(t.TempDir(), "missing")}})
-		_, _ = sourceForModelHarness(ctx, hubcore.WebConfig{CodexLauncher: launcher}, appsource.NewRegistry(), "managed")
+		_ = launchHarnessDescriptors()
+		_, _ = sourceForModelHarness(appsource.NewRegistry(), "missing")
 		errorSources := appsource.NewRegistry()
 		errorSources.Add(&scriptedAppSource{id: "remote"})
 		_, _ = hubModelListInner(ctx, hubcore.WebConfig{}, errorSources, appwire.ModelListParams{Harness: "remote"})

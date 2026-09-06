@@ -28,13 +28,6 @@ func (s *fuzzHubServer) Shutdown(context.Context) error {
 	return errors.New("ignored shutdown error")
 }
 
-type fuzzHubCompanion struct{ shutdown chan struct{} }
-
-func (c *fuzzHubCompanion) Shutdown(context.Context) error {
-	close(c.shutdown)
-	return errors.New("ignored companion shutdown error")
-}
-
 func FuzzMainListenerLifecycle(f *testing.F) {
 	f.Add(byte(0), "127.0.0.1:9180")
 	f.Add(byte(1), "0.0.0.0:9180")
@@ -66,9 +59,8 @@ func FuzzMainListenerLifecycle(f *testing.F) {
 		case 2:
 			ctx, cancel := context.WithCancel(context.Background())
 			srv := &fuzzHubServer{ctx: ctx, listenErr: http.ErrServerClosed, shutdown: make(chan struct{})}
-			companion := &fuzzHubCompanion{shutdown: make(chan struct{})}
 			cancel()
-			if err := serveHub(ctx, srv, companion); err != nil {
+			if err := serveHub(ctx, srv); err != nil {
 				t.Fatalf("serveHub shutdown: %v", err)
 			}
 			select {
@@ -76,23 +68,18 @@ func FuzzMainListenerLifecycle(f *testing.F) {
 			default:
 				t.Fatal("server was not shut down")
 			}
-			select {
-			case <-companion.shutdown:
-			default:
-				t.Fatal("companion was not shut down")
-			}
 		case 3:
 			want := errors.New("listen")
 			ctx, cancel := context.WithCancel(context.Background())
 			srv := &fuzzHubServer{listenErr: want, shutdown: make(chan struct{})}
-			if err := serveHub(ctx, srv, nil); !errors.Is(err, want) {
+			if err := serveHub(ctx, srv); !errors.Is(err, want) {
 				t.Fatalf("serveHub error = %v", err)
 			}
 			cancel()
 			<-srv.shutdown
 			ctx, cancel = context.WithCancel(context.Background())
 			srv = &fuzzHubServer{listenErr: nil, shutdown: make(chan struct{})}
-			if err := serveHub(ctx, srv, nil); err != nil {
+			if err := serveHub(ctx, srv); err != nil {
 				t.Fatalf("serveHub nil error = %v", err)
 			}
 			cancel()

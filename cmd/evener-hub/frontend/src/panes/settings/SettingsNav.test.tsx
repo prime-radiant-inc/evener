@@ -43,7 +43,7 @@ test("renders a nav landmark labelled Settings sections", () => {
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
 });
 
-test("renders all 16 section links with their visible labels", () => {
+test("renders all 15 legacy section links with their visible labels", () => {
   render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
   for (const label of [
     "General",
@@ -54,7 +54,6 @@ test("renders all 16 section links with their visible labels", () => {
     "Providers & credentials",
     "Agents",
     "Evener launch",
-    "Codex launch",
     "In-repo config",
     "Marketplaces & Plugins",
     "Plugins",

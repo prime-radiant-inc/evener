@@ -108,10 +108,10 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
-	// MethodEvenerSettingsOverview returns the field bag behind six settings
+	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
-	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
-	// servers. See SettingsOverviewResponse's doc comment.
+	// hub/runtime, storage, agent roster, and probed MCP servers. See
+	// SettingsOverviewResponse's doc comment.
 	MethodEvenerSettingsOverview = "evener/settings/overview"
 	// MethodEvenerSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
@@ -626,8 +626,9 @@ type EvenerThread struct {
 	// thread envelope, which is refreshed at the turn boundaries that move
 	// them. Usage is a pointer
 	// (unlike the other two scalars) because EvenerUsage is a value struct whose
-	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
-	// signals "no token data" rather than rendering ↑0 ↓0.
+	// omitempty would never omit — nil is how a fresh thread, an old daemon, or a
+	// source-backed thread that omits the field signals "no token data" rather
+	// than rendering ↑0 ↓0.
 	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
 	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
 	// Emitting seconds here would mix units with the consumer's ms clock.
@@ -673,19 +674,20 @@ type EvenerThread struct {
 	// failed. Nil means nobody counted: the transcript is unreadable (a legacy
 	// format_version 1 file, or a missing one), the session has no transcript,
 	// or the producer does not derive the figure at all — an old daemon, a
-	// Codex-sourced thread, or the hub's per-entry list sweeps, which cannot
-	// afford a scan per session. Consumers render nil as nothing, never as a
-	// fabricated zero.
+	// source-backed thread that omits the field, or the hub's per-entry list
+	// sweeps, which cannot afford a scan per session. Consumers render nil as
+	// nothing, never as a fabricated zero.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// AskPending is true while an ask_user question is unanswered. Additive:
-	// absent on old daemons and Codex threads, decoding as false.
+	// absent on old daemons and source-backed threads that omit the field,
+	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
 	// surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
-	// model's transcript or any model-visible projection. Absent on old daemons /
-	// Codex threads.
+	// model's transcript or any model-visible projection. Absent on old daemons
+	// and source-backed threads that omit the field.
 	PendingEscalations []SandboxEscalationRequested `json:"pendingEscalations,omitempty"`
 	// ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning are the
 	// live reasoning-effort settings for the session's current profile, so a
@@ -713,9 +715,9 @@ type GoalState struct {
 }
 
 // EvenerUsage carries a evener session's cumulative self-only token totals for
-// the status row. A nil *EvenerUsage on EvenerThread means no token data (old
-// daemon, Codex thread, or a session with zero usage) — the clusters hide
-// rather than render ↑0 ↓0.
+// the status row. A nil *EvenerUsage on EvenerThread means no token data (an old
+// daemon, a source-backed thread that omits the field, or a session with zero
+// usage) — the clusters hide rather than render ↑0 ↓0.
 type EvenerUsage struct {
 	InputTokens     int64 `json:"inputTokens,omitempty"`
 	OutputTokens    int64 `json:"outputTokens,omitempty"`
@@ -855,12 +857,12 @@ type ThreadCapabilities struct {
 	// messages for processing after the active turn completes.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
-	// for a evener session that can accept a goal; false for sources without the
-	// engine (e.g. codex), so goal/set is gated like every other thread action.
+	// for a evener session that can accept a goal; false for sources that do not
+	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
-	// meta); false for Codex-bridged threads.
+	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 }
 
@@ -2136,10 +2138,10 @@ type ThreadStatusChangedParams struct {
 	// those flip, so the set refreshes there and nowhere else — no polling, no
 	// re-read of the transcript.
 	//
-	// ABSENT MEANS "NO UPDATE", same as the count: a source that does not
-	// state-gate its capabilities (the Codex bridge) omits it, and a client
-	// that cleared its set on absence would strip a session of every action
-	// its hydrate legitimately advertised.
+	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
+	// threads may omit capabilities their source does not advertise. A client
+	// that cleared its set on absence would strip a session of every action its
+	// hydrate legitimately advertised.
 	//
 	// A CLOSE frame is the one status a daemon does not fill in: what a thread
 	// can still be asked to do once its daemon is gone is the hub's answer, not
@@ -2161,8 +2163,9 @@ type AgentMessageDeltaParams struct {
 
 // ReasoningSummaryDeltaParams is the params shape for the
 // item/reasoning/summaryTextDelta notification: an incremental chunk of the
-// model's reasoning summary for the named reasoning item. Mirrors the Codex
-// app-server reasoning stream so the web UI can render thinking live.
+// model's reasoning summary for the named reasoning item. The hub preserves
+// source-provided compatible fields without claiming a Codex bridge, so the web
+// UI can render thinking live.
 type ReasoningSummaryDeltaParams struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
@@ -3058,28 +3061,26 @@ type PluginSetAutoUpgradeParams struct {
 }
 
 // SettingsOverviewResponse is the result of evener/settings/overview: the field
-// bag behind six settings sections whose only data path today is Go-template
-// variables rendered server-side — General, Hub, Storage, Agents, Codex
-// launch, and the probed half of MCP servers (cmd/evener-hub/templates/
-// partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
-// replacing cmd/evener-hub/web_settings.go's settingsData for exactly those six
-// (the deletion wave removes the template path once the frontend ports off
-// it). Every field is sourced from the same computation the legacy template
-// used; see each sub-type's doc comment for the exact web_settings.go
-// citation. A field the legacy template never rendered is left off rather
-// than invented — also noted on the sub-type that would otherwise carry it.
+// bag behind five settings sections whose only data path today is Go-template
+// variables rendered server-side — General, Hub, Storage, Agents, and the
+// probed half of MCP servers (cmd/evener-hub/templates/partials/settings/
+// {general,hub,storage,agents,mcp}.html) — replacing cmd/evener-hub/
+// web_settings.go's settingsData for exactly those five. Every field is sourced
+// from the same computation the legacy template used; see each sub-type's doc
+// comment for the exact web_settings.go citation. A field the legacy template
+// never rendered is left off rather than invented — also noted on the sub-type
+// that would otherwise carry it.
 //
 // The other ten settings sections (providers/credentials, evener launch,
-// in-repo trust, per-project override, marketplaces/plugins, plugin/skill
-// dirs, the MCP config editable half, theme, transcript, display,
-// notifications) are out of scope: they already have their own wire methods
-// or land on a different task's new store. Nothing here is per-project.
+// in-repo trust, per-project override, marketplaces/plugins, plugin/skill dirs,
+// the MCP config editable half, theme, transcript, display, notifications) are
+// out of scope: they already have their own wire methods or land on a different
+// task's new store. Nothing here is per-project.
 type SettingsOverviewResponse struct {
-	Hub           *SettingsHubOverview       `json:"hub,omitempty"`
-	Storage       *SettingsStorageOverview   `json:"storage,omitempty"`
-	Agents        []SettingsAgentEntry       `json:"agents,omitempty"`
-	CodexLaunches []SettingsCodexLaunchEntry `json:"codexLaunches,omitempty"`
-	McpDiscovered *SettingsMCPOverview       `json:"mcpDiscovered,omitempty"`
+	Hub           *SettingsHubOverview     `json:"hub,omitempty"`
+	Storage       *SettingsStorageOverview `json:"storage,omitempty"`
+	Agents        []SettingsAgentEntry     `json:"agents,omitempty"`
+	McpDiscovered *SettingsMCPOverview     `json:"mcpDiscovered,omitempty"`
 }
 
 // SettingsHubOverview is the Settings → General / Settings → Hub section
@@ -3166,35 +3167,6 @@ type SettingsAgentEntry struct {
 	// shape parity with web_settings.go's agentDisplay.EditPath in case a
 	// future on-disk agent source populates it.
 	EditPath string `json:"editPath,omitempty"`
-}
-
-// SettingsCodexLaunchEntry is one row in Settings → Codex launch config
-// (cmd/evener-hub/templates/partials/settings/launch-codex.html): a read-only
-// display of one [[codex_launches]] hub.toml entry.
-// Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
-// codexlaunch.CodexLaunchConfig).
-//
-// Binary/WorkingDir/Listen/Timeout ride over the wire as their raw configured
-// value (empty/zero when unset) rather than the template's display-fallback
-// text ("codex", "(inherited)", "ws://127.0.0.1:0", "30s") — the frontend
-// applies the same fallback at render time, so the wire stays truthful about
-// what is actually configured.
-//
-// Args, BearerToken, and BearerTokenFile are intentionally excluded: Args is
-// never rendered by the template, and the bearer-token fields are live
-// secrets the credential-never-echo invariant forbids sending to the browser
-// — the template never renders them either. EnvKeys carries only the Env
-// map's keys, sorted, matching the template's own redaction ("Values are
-// redacted here.").
-type SettingsCodexLaunchEntry struct {
-	ID         string `json:"id"`
-	Binary     string `json:"binary,omitempty"`
-	WorkingDir string `json:"workingDir,omitempty"`
-	Listen     string `json:"listen,omitempty"`
-	// TimeoutMillis is Timeout in milliseconds, 0 when unset (the template's
-	// 30s default applies client-side, matching the other display fallbacks).
-	TimeoutMillis int64    `json:"timeoutMillis,omitempty"`
-	EnvKeys       []string `json:"envKeys,omitempty"`
 }
 
 // SettingsMCPServerEntry is one probed MCP server row in Settings → MCP

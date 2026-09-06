@@ -1,7 +1,7 @@
 # Agentic Test Scenarios
 
-These are end-to-end test cards written for an AI agent (Claude, Codex,
-etc.) to execute. They are **not** Playwright/Selenium/expect scripts.
+These are end-to-end test cards written for an AI agent to execute. They are
+**not** Playwright/Selenium/expect scripts.
 The reader is expected to use general tools — a browser, a terminal,
 file readers, log inspectors — and adapt when the surface changes a
 little. The intent is high-level enough that a small UI shuffle
