@@ -19,6 +19,7 @@ const commandContext = {
   isCurrent: () => true,
   reasoning: () => null,
   turn: () => null,
+  local: async () => {},
 };
 
 function boundary() {
@@ -623,3 +624,44 @@ it("does not resurrect a turn that completes during a read before its start was 
     service.close();
   }
 });
+
+it.each(["tasks", "status", "copy-id"] as const)(
+  "runs /%s locally without a delivery checkpoint",
+  async (id) => {
+    const { db, document } = commandDraft();
+    const { service } = boundary();
+    try {
+      for (const outcome of ["success", "newer", "failure"] as const) {
+        const text = `/${id}`;
+        document.edit(text);
+        const operation = submitComposerCommand(document, service, {
+          ...commandContext,
+          local: async (actual) => {
+            expect(actual).toBe(id);
+            expect(document.getSnapshot().record).toMatchObject({
+              draft: text,
+              unconfirmed: null,
+            });
+            if (outcome === "failure")
+              throw new Error("Platform operation failed");
+            if (outcome === "newer") document.edit("newer draft");
+          },
+        });
+        if (outcome === "failure") await expect(operation).rejects.toThrow();
+        else expect(await operation).toBe(id);
+        expect(document.getSnapshot().record).toMatchObject({
+          draft:
+            outcome === "failure"
+              ? text
+              : outcome === "newer"
+                ? "newer draft"
+                : "",
+          unconfirmed: null,
+        });
+      }
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);

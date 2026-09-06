@@ -1,6 +1,7 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import * as Clipboard from "expo-clipboard";
 import {
   useCallback,
   useEffect,
@@ -10,6 +11,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  AccessibilityInfo,
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
@@ -46,6 +48,7 @@ import { useConnection } from "./ConnectionProvider";
 import {
   CommandArgumentError,
   composerCommand,
+  isLocalComposerCommand,
   submitComposerCommand,
 } from "./composerCommand";
 import { steerComposer } from "./composerSteering";
@@ -870,8 +873,52 @@ export function ConversationScreen({
             isCurrent: currentBinding,
             reasoning: () => store.getState().conversation,
             turn: () => store.getState().conversation,
+            local: async (id) => {
+              if (!currentBinding())
+                throw new CommandArgumentError(
+                  "The session changed. Try again from the current session.",
+                );
+              if (id === "copy-id") {
+                try {
+                  const copied = await Clipboard.setStringAsync(
+                    route.params.ref,
+                  );
+                  if (!copied) throw new Error("Clipboard unavailable");
+                  AccessibilityInfo.announceForAccessibility(
+                    "Session reference copied",
+                  );
+                } catch {
+                  throw new CommandArgumentError(
+                    "Could not copy the session reference. Try again.",
+                  );
+                }
+                return;
+              }
+              Keyboard.dismiss();
+              if (id === "status") setSessionOpen((open) => !open);
+              else {
+                const current = store.getState().conversation;
+                if (!current || !client)
+                  throw new CommandArgumentError(
+                    "Session tasks are unavailable.",
+                  );
+                setTaskContext((open) =>
+                  open
+                    ? null
+                    : {
+                        hubId: route.params.hubId,
+                        ref: route.params.ref,
+                        threadId: current.id,
+                        hasTasks: current.tasks != null,
+                        hubName: activeProfile?.name ?? "Hub",
+                        client,
+                      },
+                );
+              }
+            },
           });
       if (!completed || !currentBinding()) return;
+      if (isLocalComposerCommand(completed)) return;
       if (completed === "shutdown") {
         store.getState().close();
         service.close();

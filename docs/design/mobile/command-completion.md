@@ -51,8 +51,8 @@ hints. The list scrolls within a bounded height.
 This picker currently offers catalog commands and skills. Built-in session
 actions must be routed explicitly before advertising them here. Submission
 supports goal, compact, shutdown, model, reasoning-effort, interrupt, steer,
-queue, and drain-as-steer. Remaining native slash routes are clear, aside,
-copy-id, tasks, status, and project. Some already have other native controls,
+queue, drain-as-steer, copy-id, tasks, and status. Remaining native slash
+routes are clear, aside, and project. Some already have other native controls,
 which does not establish slash-command parity. Unavailable-command feedback
 and full built-in completion integration remain acceptance work.
 
@@ -146,3 +146,26 @@ received without its start cannot be undone by an in-flight read. The final
 native suite, focused shared suite and both typecheck/lint checks pass. The
 final Release builds include this correction; the four-action manual sequence
 above preceded that final state-only change.
+
+## Local session commands, 6 September 2026
+
+`/tasks` opens the existing native Tasks sheet; `/status` opens the existing
+Session sheet. These adapt the current web panel toggles to the platform's
+sheet navigation. `/copy-id` copies the full session reference, as the web
+command does, and announces success for accessibility. None creates a network
+delivery checkpoint. Success clears only the unchanged command draft; a local
+failure preserves the editable command, and newer drafts survive asynchronous
+clipboard completion. Existing pending-delivery and storage guards still apply.
+
+Verification: all 200 native tests and TypeScript pass. Both Release builds
+passed and were installed. Both platforms opened/dismissed the correct Tasks
+and Session sheets with the command draft cleared. Android pasted the copied
+reference into the composer and iOS simctl read back its pasteboard; both
+matched their distinct isolated test session refs exactly. The Android paste
+was removed without sending. Clipboard failure and newer-draft preservation
+have automated platform-boundary/SQLite coverage, not manual OS fault injection.
+
+Project reveal remains separate: current web uses navigation location lookup
+and reveals the matching project/session. A generic project-list navigation
+would not satisfy that behavior. Offline local-command access and complete
+screen-reader navigation remain acceptance work.
