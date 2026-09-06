@@ -30,6 +30,24 @@ afterEach(() => {
 	rmSync(directory, { recursive: true, force: true });
 });
 
+const questionSignature = JSON.stringify([
+	{
+		key: "call:0",
+		header: "Question",
+		question: "Choose",
+		options: [{ label: "A", detail: "" }],
+		multiSelect: false,
+	},
+]);
+const changedSignature = JSON.stringify([
+	{
+		key: "call:0",
+		header: "Question",
+		question: "Changed",
+		options: [{ label: "A", detail: "" }],
+		multiSelect: false,
+	},
+]);
 const destination = { hubId: "hub-a", sessionRef: "session-1" };
 
 test("missing drafts read as empty without unconfirmed text", () => {
@@ -134,25 +152,23 @@ test("question selections survive reopening only for the exact destination and q
 			note: "context",
 		},
 	};
-	repository.writeQuestions(destination, "question-definition", selections);
+	repository.writeQuestions(destination, questionSignature, selections);
 	database.close();
 	openRepository();
-	expect(repository.readQuestions(destination, "question-definition")).toEqual(
+	expect(repository.readQuestions(destination, questionSignature)).toEqual(
 		selections,
 	);
-	expect(repository.readQuestions(destination, "changed-definition")).toEqual(
-		{},
-	);
+	expect(repository.readQuestions(destination, changedSignature)).toEqual({});
 	expect(
 		repository.readQuestions(
 			{ ...destination, hubId: "other" },
-			"question-definition",
+			questionSignature,
 		),
 	).toEqual({});
 	expect(
 		repository.readQuestions(
 			{ ...destination, sessionRef: "other" },
-			"question-definition",
+			questionSignature,
 		),
 	).toEqual({});
 });
@@ -162,15 +178,53 @@ test("hub removal also clears question selections without affecting another hub"
 		"call:0": { resolution: { kind: "skip" as const }, note: "" },
 	};
 	for (const target of [destination, other])
-		repository.writeQuestions(target, "questions", selections);
+		repository.writeQuestions(target, questionSignature, selections);
 	repository.removeHub(destination.hubId);
-	expect(repository.readQuestions(destination, "questions")).toEqual({});
-	expect(repository.readQuestions(other, "questions")).toEqual(selections);
+	expect(repository.readQuestions(destination, questionSignature)).toEqual({});
+	expect(repository.readQuestions(other, questionSignature)).toEqual(
+		selections,
+	);
 });
 test("malformed question selections report corruption instead of enabling submission", () => {
-	repository.writeQuestions(destination, "questions", {});
+	repository.writeQuestions(destination, questionSignature, {});
 	database
 		.prepare("UPDATE question_drafts SET selections = ?")
 		.run('{"call:0":{"note":"","resolution":{"kind":"option","labels":42}}}');
-	expect(() => repository.readQuestions(destination, "questions")).toThrow();
+	expect(() =>
+		repository.readQuestions(destination, questionSignature),
+	).toThrow();
+});
+
+test("adding questions and writing a sibling batch preserves unfinished answers", () => {
+	const first = {
+		key: "first:0",
+		header: "First",
+		question: "Choose",
+		multiSelect: false,
+		options: [{ label: "A", detail: "" }],
+	};
+	const second = { ...first, key: "second:0", header: "Second" };
+	const a = {
+		[first.key]: {
+			resolution: { kind: "free" as const, text: "unfinished" },
+			note: "keep",
+		},
+	};
+	const b = { [second.key]: { resolution: null, note: "second note" } };
+	repository.writeQuestions(destination, JSON.stringify([first]), a);
+	expect(
+		repository.readQuestions(destination, JSON.stringify([first, second])),
+	).toEqual(a);
+	repository.writeQuestions(destination, JSON.stringify([second]), b);
+	database.close();
+	openRepository();
+	expect(
+		repository.readQuestions(destination, JSON.stringify([first, second])),
+	).toEqual({ ...a, ...b });
+	expect(
+		repository.readQuestions(
+			destination,
+			JSON.stringify([{ ...first, question: "Changed" }, second]),
+		),
+	).toEqual(b);
 });
