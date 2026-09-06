@@ -4,6 +4,8 @@ Dev-facing docs for working on this repo: setup, environment, worktrees,
 performance, naming, and the agent-run scenario harness, plus the `make`
 gates themselves — building, testing, linting, coverage, and fuzzing.
 
+- **[AppWire client guide](../appwire-client.md)** — standalone client library,
+  wire reference, launch semantics and runnable example coverage.
 - **[building.md](building.md)** — build, distribution, and install targets,
   and the frontend install prerequisite they share with the frontend test
   gates.
