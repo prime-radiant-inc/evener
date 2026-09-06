@@ -719,6 +719,51 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 	}
 }
 
+// TestIdentitySection_CleanupRuleScopedToDeliverables pins the workspace-cleanup
+// fix for #302. The pre-fix rule ("Leave the workspace clean. Remove scratch
+// files, debug scripts, and temporary artifacts you created") treated an
+// agent-built deliverable as a temporary artifact by the rule's own wording, so
+// agents deleted the artifact they were asked to produce and reported success.
+// The 2026-08-27 triage correction records that prose softening alone has a
+// demonstrated counterexample (trial u5nPEMv deleted the built .so while running
+// prose counterweights), so the guarded regression here is the handoff-state
+// rule: cleanup is scoped to transient scratch, deliverables are never cleanup
+// targets regardless of how they were produced, and every deliverable is handed
+// off by name. A silent revert to the old unscoped wording must fail this test.
+func TestIdentitySection_CleanupRuleScopedToDeliverables(t *testing.T) {
+	t.Parallel()
+	resolver := &sectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		agentFS:  bundled.Agents(),
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+	section := resolver.Section("identity", promptData{Provider: "openai", Agent: "coordinator"})
+
+	// The scoped-cleanup contract: deliverables are not cleanup targets,
+	// cleanup is limited to transient scratch, and deliverables are handed
+	// off by name.
+	for _, want := range []string{
+		"is the deliverable, not clutter",
+		"needed to rebuild, rerun, or verify",
+		"hand off every deliverable",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("identity section missing scoped-cleanup guidance %q; got:\n%s", want, section)
+		}
+	}
+
+	// The old unscoped rule read a deliverable as "a temporary artifact you
+	// created" and made it a cleanup target; it must not come back.
+	for _, bad := range []string{
+		"Leave the workspace clean. Remove scratch files, debug scripts, and temporary artifacts you created",
+	} {
+		if strings.Contains(section, bad) {
+			t.Errorf("identity section should not contain %q (unscoped cleanup rule from #302)", bad)
+		}
+	}
+}
+
 // TestTranscriptsSection_SilentWithoutTheTools is the other half of the rule
 // ruled 2026-08-06: the section is eight lines of instructions for two tools, so
 // a session that has neither — ten of the eleven shipped typed agents — gets
