@@ -12,6 +12,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CommandCompletion({
   client,
+  maxHeight,
   sessionRef,
   capabilities,
   query,
@@ -19,6 +20,7 @@ export function CommandCompletion({
   close,
 }: {
   client: ConversationClientLike;
+  maxHeight: number;
   sessionRef: string;
   capabilities: MobileConversation["capabilities"];
   query: string;
@@ -46,24 +48,24 @@ export function CommandCompletion({
         borderBottomWidth: 0.5,
         borderColor: colors.border,
         paddingBottom: 4,
-        maxHeight: 160,
+        maxHeight,
         flexShrink: 0,
       }}
     >
-      <View style={styles.row}>
-        <View style={styles.fill}>
-          <Copy muted numberOfLines={1}>
-            Commands and skills
-          </Copy>
-        </View>
-        <Action onPress={close}>Dismiss</Action>
-      </View>
       <FlatList
         data={items}
-        style={{ maxHeight: 160, flexShrink: 1 }}
+        style={{ maxHeight, flexShrink: 1 }}
         keyboardShouldPersistTaps="always"
         ListHeaderComponent={
           <>
+            <View style={styles.row}>
+              <View style={styles.fill}>
+                <Copy muted numberOfLines={1}>
+                  Commands and skills
+                </Copy>
+              </View>
+              <Action onPress={close}>Dismiss</Action>
+            </View>
             {state.loading ? (
               <ActivityIndicator accessibilityLabel="Loading commands and skills" />
             ) : null}
