@@ -26,8 +26,10 @@ var gitExecTimeout = 2 * time.Second
 func gitExecTimeoutMS() int { return int(gitExecTimeout / time.Millisecond) }
 
 // gitOriginURL returns the git remote origin URL for the repo at cwd,
-// or "" if not a git repo or no origin remote is configured.
-func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
+// or "" if not a git repo or no origin remote is configured. ctx is the
+// caller's work context: each exec is additionally bounded by gitExecTimeout,
+// and cancelling ctx stops the fork in flight.
+func gitOriginURL(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) string {
 	if env == nil {
 		return ""
 	}
@@ -35,9 +37,9 @@ func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
 	defer cancel()
-	res, err := execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), "remote", "get-url", "origin")
+	res, err := execenv.RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "remote", "get-url", "origin")
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -76,7 +78,10 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
 	return strings.TrimSpace(br.Stdout)
 }
 
-func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
+// snapshotGit reads the launch/refresh git summary for cwd. ctx is the
+// caller's work context: each exec is additionally bounded by gitExecTimeout,
+// and cancelling ctx stops the forks in flight and the ones still to come.
+func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
 	if env == nil {
 		return false, "", 0, 0, nil
 	}
@@ -89,9 +94,9 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	}
 
 	run := func(args ...string) (execenv.ExecResult, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
+		execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
 		defer cancel()
-		return execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), args...)
+		return execenv.RunGit(execCtx, env, cwd, gitExecTimeoutMS(), args...)
 	}
 
 	inside, err := run("rev-parse", "--is-inside-work-tree")

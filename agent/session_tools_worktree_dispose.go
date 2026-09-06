@@ -110,6 +110,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	if envErr != nil {
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s: %w", id, envErr)
 	}
+	defer disposeUnadoptedScratch(controlEnv)
 	budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 	defer cancelBudget()
 	run := s.newWorktreeGitRunner(budgetCtx, controlEnv)
@@ -117,7 +118,7 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 
 	if laneDirPresent {
 		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			laneMain := execenv.ResolveMainRepoRoot(local.WithWorkingDirectory(lanePath), lanePath)
+			laneMain := resolveLaneMainRoot(local, lanePath)
 			if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
 				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
 			}
@@ -203,13 +204,8 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
 	id := state.delegateID
 	if sub != nil && sub.sess != nil {
-		sub.sess.close(ctx, false)
+		teardownChildSession(ctx, sub.sess, sub.ownsEnv, retainChildScratch)
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
-		if sub.ownsEnv {
-			if local, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-				local.Cleanup()
-			}
-		}
 	}
 	lane := isolationLane{delegateID: id, path: lanePath}
 	if !lanePresent {

@@ -36,6 +36,22 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	if path == "" {
 		return nil
 	}
+	// A child session restores onto whatever environment its parent hands it,
+	// often the parent's own (a delegate with neither a working dir nor a box
+	// of its own), and the re-root below adopts that environment's scratch. No
+	// child ever persists a worktree — delegate lanes belong to the parent's
+	// lifecycle and a child cannot call manage_worktree — so a child meta naming
+	// one is a corrupted or hand-edited record. Refuse loudly: re-entering would
+	// take the parent's scratch out from under the parent. isSubagentSession
+	// reads the persisted flag as well as the live spawn carrier: a bare
+	// `serve --resume <child-id>` restores with an empty carrier.
+	if s.isSubagentSession() {
+		parentID := s.cfg.spawn.parentSessionID
+		if parentID == "" {
+			parentID = meta.ParentSessionID
+		}
+		return fmt.Errorf("worktree re-entry: child session %s of %s cannot re-enter %s: a child never persists a worktree", s.id, parentID, path)
+	}
 	local, ok := s.env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return nil // worktree re-entry is a local-execution-environment-only feature
@@ -43,13 +59,28 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
 
+	// Every environment the session leaves this function on is a clone of local,
+	// and a clone owns nothing of its original: the scratch local already
+	// provisioned (a launcher's own command may have minted it before the
+	// restore) has to follow the session onto whichever clone it lands on, or
+	// the session's own close reaches only the clone and local's lease is held
+	// for the rest of the daemon's uptime. This is the one swap that cannot go
+	// through swapEnvAndRefresh (see the doc comment above), which makes the
+	// same move for every later enter and exit. worktreeRestoreEnv is not the
+	// session's environment, so it adopts nothing until an exit swaps onto it.
+	reroot := func(dir string) *execenv.LocalExecutionEnvironment {
+		next := local.WithWorkingDirectory(dir)
+		next.AdoptSessionScratch(local)
+		return next
+	}
+
 	// notice lands the env at the persisted restore root (when one was
 	// recorded) and surfaces a model-facing warning explaining why re-entry
 	// did not happen (spec §7: worktree-gone and foreign-lock both "start at
 	// the restore root... with a notice").
 	notice := func(reason string) {
 		if restoreRoot != "" {
-			s.env = local.WithWorkingDirectory(restoreRoot)
+			s.env = reroot(restoreRoot)
 			reason += "; resuming at " + restoreRoot
 		}
 		// Buffered, not emitted directly: this runs before initSessionState
@@ -158,7 +189,7 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 
 	// Re-enter: root the env in the worktree directly. No swapEnvAndRefresh
 	// here — see the doc comment above.
-	s.env = local.WithWorkingDirectory(target)
+	s.env = reroot(target)
 	s.worktreeCurrentPath = target
 	s.worktreeCurrentManaged = meta.WorktreeManaged
 	if restoreRoot != "" {
@@ -184,9 +215,11 @@ func worktreeGitEntryExists(path string) bool {
 // session cannot be un-launched (spec §5: "if the lane is foreign-locked the
 // session continues but warns loudly that it is co-occupying").
 //
-// Scoped to root sessions (s.cfg.spawn.parentSessionID == "") only: a
-// delegate or an ordinary subagent spawned with a cwd inside a managed
-// worktree does not take an independent lock here. Delegate lane locks are
+// Scoped to root sessions (isSubagentSession false: no live spawn parent and
+// no persisted subagent flag, since a bare `serve --resume <child-id>` restores
+// with an empty spawn carrier) only: a delegate or an ordinary subagent spawned
+// with a cwd inside a managed worktree does not take an independent lock here.
+// Delegate lane locks are
 // owned by the parent's own §9 create/revive/dispose lifecycle, not by the
 // child session's init (spec §5: "The evener:dlg: lock on a delegate lane is
 // owned by the parent's disposal lifecycle, not the child"); an ordinary
@@ -209,7 +242,7 @@ func worktreeGitEntryExists(path string) bool {
 // there is no unlocked window for this function to (mis)detect on the
 // child's own init.
 func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
-	if !isGitRepo || s.cfg.spawn.parentSessionID != "" {
+	if !isGitRepo || s.isSubagentSession() {
 		return
 	}
 	s.mu.Lock()
@@ -247,6 +280,7 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 
 	controlEnv := local.WithWorkingDirectory(project.CanonicalPath)
+	defer controlEnv.DisposeUnadoptedScratch()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {

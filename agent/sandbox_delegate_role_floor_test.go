@@ -105,7 +105,7 @@ func setWriteBlockedRestrictedParent(t *testing.T, parent *Session, facts sandbo
 	}
 	env := execenv.NewLocalExecutionEnvironment(cwd)
 	env.Sandbox = &resolved
-	parent.swapEnvAndRefresh(env)
+	parent.swapEnvAndRefresh(env, nil)
 }
 
 func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {

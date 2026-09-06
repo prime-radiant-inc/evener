@@ -111,12 +111,11 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return "", false
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(ctx, controlEnv)
 	metaDir := metaDirForLane(lanePath)
 	sc, scErr := worktree.ReadSidecar(metaDir, lane.delegateID)
@@ -222,12 +221,11 @@ func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, 
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return ""
 	}
-	rootedAtLane := local.WithWorkingDirectory(lanePath)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtLane, lanePath)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
 		return ""
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	metaDir := metaDirForLane(lanePath)
 
@@ -442,12 +440,11 @@ func (s *Session) unlockOwnManagedWorktreeAtClose() {
 	if !ok {
 		return
 	}
-	rootedAtPath := local.WithWorkingDirectory(path)
-	mainRoot := execenv.ResolveMainRepoRoot(rootedAtPath, path)
-	if mainRoot == "" {
+	controlEnv, _, done, ok := laneControlEnv(local, path)
+	if !ok {
 		return
 	}
-	controlEnv := local.WithWorkingDirectory(mainRoot)
+	defer done()
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	if err := s.leaveCurrentWorktree(run); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("unlocking own worktree %s at close failed: %v", path, err)})

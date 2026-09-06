@@ -2,14 +2,18 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -1010,5 +1014,181 @@ func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 	// not a forced takeover).
 	if got := sr.laneLockReason(t, launchPath); got != foreignReason {
 		t.Errorf("launch worktree lock = %q, want untouched %q", got, foreignReason)
+	}
+}
+
+// remove has no environment swap, so nothing about it was ever admitted on the
+// close fence: it read the registry, unlocked crash residue, removed a
+// worktree, and deleted a branch and a sidecar, all on git forked into the
+// process table a concurrent close reaps. The fence has to cover the whole
+// operation, not just the swap some operations happen to perform.
+func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	// Creating b leaves a — unlocked and removable — and puts the session in b,
+	// so the close's own close-time unlock targets b and never touches a.
+	if _, err := r.create(t, map[string]any{"name": "b"}); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+
+	cleanupObserved := make(chan struct{})
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	var cleanupDuringOp, holding atomic.Bool
+	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+
+	// Begin the close from inside the operation, at remove's first git command.
+	// Installed after the setup creates, and the close cannot have run one
+	// earlier because this hook is what starts it, so the first registry read to
+	// arrive is remove's own.
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" &&
+				holding.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					r.s.Close()
+				}()
+				<-closeBegun
+				select {
+				case <-cleanupObserved:
+					cleanupDuringOp.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	_, removeErr := r.removeOp(t, map[string]any{"name": "a"})
+
+	// Checked before the join: a hook that never fired means no close was ever
+	// started, and waiting on closeDone would hang instead of reporting that.
+	if !holding.Load() {
+		t.Fatal("remove never read the worktree registry; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringOp.Load() {
+		t.Error("the close cleaned the session's environment while the remove it interrupted was still running")
+	}
+	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
+}
+
+// The fence is only worth as much as its position in the close. Joining the
+// admitted work just before environment cleanup leaves every close-time
+// worktree step — disposing delegate lanes, sweeping residue, unlocking the
+// session's own lane, closing the stores that record all of it — running
+// concurrently with an operation that is still moving locks and lanes around.
+// The join belongs before any of that.
+func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	resB, err := r.create(t, map[string]any{"name": "b"})
+	if err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	// Lane b is the session's own occupied worktree, so the unlock of b is
+	// close's own lane cleanup and nothing the remove of a would ever issue.
+	laneB := resB["path"].(string)
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	ownLaneUnlocked := make(chan struct{})
+	var unlockedOnce sync.Once
+	var cleanupDuringOp, holding atomic.Bool
+
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == laneB {
+				unlockedOnce.Do(func() { close(ownLaneUnlocked) })
+			}
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" &&
+				holding.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					r.s.Close()
+				}()
+				<-closeBegun
+				select {
+				case <-ownLaneUnlocked:
+					cleanupDuringOp.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	_, removeErr := r.removeOp(t, map[string]any{"name": "a"})
+
+	if !holding.Load() {
+		t.Fatal("remove never read the worktree registry; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringOp.Load() {
+		t.Error("the close unlocked its own lane while the remove it interrupted was still moving locks around")
+	}
+	_ = removeErr // the operation's own verdict under a concurrent close is not this test's subject
+}
+
+// A manage_worktree call that arrives once the session is closing cannot be
+// fenced: close may already be past its join, so the operation would lock
+// lanes, remove worktrees and write sidecars against an environment whose
+// process table is being reaped and whose stores are closing. The admission's
+// refusal IS the answer, and it has to reach the caller instead of being
+// dropped on the floor while the operation runs anyway.
+func TestWorktreeOps_DispatchWhileClosingIsRefusedAndRunsNoGit(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	r.s.Close()
+
+	var calls atomic.Int64
+	base := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := base(ctx, env)
+		return func(args ...string) (string, error) {
+			calls.Add(1)
+			return inner(args...)
+		}
+	}
+
+	rt := r.s.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("registry is missing manage_worktree")
+	}
+	for _, op := range []map[string]any{
+		{"operation": "create", "name": "lane"},
+		{"operation": "switch", "name": "lane"},
+		{"operation": "adopt", "path": "/tmp/lane"},
+		{"operation": "remove", "name": "lane"},
+		{"operation": "exit"},
+		{"operation": "list"},
+		{"operation": "prune"},
+	} {
+		name := op["operation"].(string)
+		t.Run(name, func(t *testing.T) {
+			_, err := rt.Exec(context.Background(), r.s.currentEnv(), op)
+			if !errors.Is(err, errWorktreeOpWhileClosing) {
+				t.Errorf("%s dispatched while closing = %v, want the closing refusal", name, err)
+			}
+		})
+	}
+
+	if got := calls.Load(); got != 0 {
+		t.Errorf("the refused operations ran %d git commands, want none", got)
 	}
 }

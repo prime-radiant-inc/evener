@@ -163,10 +163,14 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		laneA, laneB, home := twoLanes(t)
 		env := NewLocalExecutionEnvironment(laneA)
 		env.Sandbox = resolvedAt(t, home, laneA, sandbox.ModeWorkspaceWrite)
+		// sandbox() acquires the layer before returning it, and a layer closes
+		// only on the release that drains it; both of the ones this subtest takes
+		// go back, or their root descriptors stay open for the rest of the run.
 		first := env.sandbox()
 		if first == nil {
 			t.Fatal("an enforced policy must build a sandboxFS")
 		}
+		defer first.release()
 		rp2 := resolvedAt(t, home, laneB, sandbox.ModeWorkspaceWrite)
 		if err := env.EnableSandbox(rp2); err != nil {
 			t.Fatalf("EnableSandbox: %v", err)
@@ -176,6 +180,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if second == nil || second == first {
 			t.Errorf("EnableSandbox must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
 		}
+		defer second.release()
 		// Not a pointer-identity check against rp2: sandbox() folds the concrete
 		// scratch dir into its OWN copy of the policy (WithSessionScratch), so the
 		// rebuilt sandboxFS legitimately carries a policy value distinct from rp2 —
@@ -200,6 +205,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if first == nil {
 			t.Fatal("an enforced policy must build a sandboxFS")
 		}
+		defer first.release()
 		if err := env.UseControlPolicy(main); err != nil {
 			t.Fatalf("UseControlPolicy: %v", err)
 		}
@@ -207,6 +213,7 @@ func TestPolicyReplaceRebuildsSandboxFS(t *testing.T) {
 		if second == nil || second == first {
 			t.Errorf("UseControlPolicy must rebuild the fd layer, got rebuilt=%v", second != nil && second != first)
 		}
+		defer second.release()
 		if second != nil && second.policy != env.Sandbox {
 			t.Error("rebuilt sandboxFS must reflect the control policy")
 		}
@@ -291,9 +298,11 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 	if env.Wrapper != nil {
 		t.Fatalf("a host with no backend must build no kernel wrapper, got %+v", env.Wrapper)
 	}
-	if env.sandbox() == nil {
+	confined := env.sandbox()
+	if confined == nil {
 		t.Fatal("a write-blocked policy must build the file-tool enforcement layer")
 	}
+	defer confined.release()
 
 	// A write into the workspace is refused and lands nothing.
 	target := filepath.Join(worktree, "deliverable.md")
@@ -506,5 +515,356 @@ func TestDisposeUnadoptedScratchDropsBothVariantsAndRepeats(t *testing.T) {
 	}
 	if got := env.SessionScratchDir(); got != "" {
 		t.Errorf("SessionScratchDir = %q after disposal, want none", got)
+	}
+}
+
+// A session swapping environments moves the scratch between two environment
+// objects while a child sharing one of them renders its scratch path (the
+// session prompt's SessionScratchDir). The sandboxed kind's field has to be
+// guarded like the unsandboxed one, or the swap and the render race.
+func TestAdoptSessionScratchDoesNotRaceAReaderOfTheSharedEnvironment(t *testing.T) {
+	env := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	// Write-blocked off: an owned scratch with no kernel wrapper, so the reader
+	// goes through the owned field rather than the wrapper's copy of the path.
+	if err := env.EnableSandbox(&sandbox.ResolvedPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	clone := env.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+
+	stop := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = env.SessionScratchDir()
+			}
+		}
+	}()
+	for range 200 {
+		clone.AdoptSessionScratch(env)
+		env.AdoptSessionScratch(clone)
+	}
+	close(stop)
+	<-readerDone
+}
+
+// readConfinedEnvAt builds a file-tool-confined env with no kernel wrapper
+// rooted at worktree — the one shape whose effective scratch path comes from
+// the fields AdoptSessionScratch moves — whose reads are confined to the
+// worktree and its own session scratch, so a probe's read half can fail as
+// well as its write half.
+func readConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
+	t.Helper()
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	env.Sandbox = &sandbox.ResolvedPolicy{
+		Mode:         sandbox.ModeOff,
+		WriteBlocked: true,
+		FileTool:     sandbox.AccessScope{Read: sandbox.ReadWorktreeOnly, ReadRoots: []string{worktree}},
+	}
+	tmp, err := env.newSessionScratch()
+	if err != nil {
+		t.Fatalf("newSessionScratch: %v", err)
+	}
+	env.setOwnedSessionTmp(tmp)
+	return env
+}
+
+// wrapperConfinedEnvAt builds a file-tool-confined env with a kernel wrapper
+// (a bwrap-capable host, resolved hermetically; the binary is never spawned)
+// rooted at worktree, the shape whose scratch path reads through the wrapper.
+func wrapperConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironment {
+	t.Helper()
+	host := sandbox.HostFacts{OS: "linux", Home: filepath.Dir(worktree), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	if env.KernelWrapper() == nil {
+		t.Fatal("EnableSandbox attached no kernel wrapper")
+	}
+	return env
+}
+
+// assertFileToolsShareTheShellScratch has a shell command write into the env's
+// $EVENER_SCRATCH_DIR and checks the file tools read that file back and can
+// write beside it: the two must name the same directory.
+func assertFileToolsShareTheShellScratch(t *testing.T, env *LocalExecutionEnvironment) {
+	t.Helper()
+	if _, err := env.ExecCommand(context.Background(), `printf shell > "$EVENER_SCRATCH_DIR/probe"`, 5000, "", nil); err != nil {
+		t.Fatalf("shell write into the scratch: %v", err)
+	}
+	scratch := env.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the env reports no scratch after a shell command")
+	}
+	if got, err := env.ReadFile(filepath.Join(scratch, "probe"), nil, nil); err != nil || !strings.Contains(got, "shell") {
+		t.Errorf("read_file of the shell's probe in %s: got %q err %v; the file tools do not reach the scratch the shell writes to", scratch, got, err)
+	}
+	if _, err := env.WriteFile(filepath.Join(scratch, "tool.txt"), "tool\n"); err != nil {
+		t.Errorf("write_file into %s: %v; the file tools do not reach the scratch the shell writes to", scratch, err)
+	}
+}
+
+// The file-tool enforcement layer folds the session scratch into its grants
+// when it is built. A session's environment swap moves the scratch between
+// environment objects after that: the clone the session lands on gains one it
+// had none of, and the environment it left mints a fresh one for whoever
+// still shares it. A layer built before the move keeps granting the old path
+// (or none), so the file tools and the shell would name different scratch
+// directories; the layer has to follow the effective path like the
+// unsandboxed scratch layer already does.
+func TestFileToolLayerFollowsTheScratchAcrossAdoption(t *testing.T) {
+	t.Run("environment that adopts", func(t *testing.T) {
+		from := readConfinedEnvAt(t, t.TempDir())
+		// A confined env that owns no scratch (its own was disposed) builds its
+		// layer with no scratch at all.
+		to := readConfinedEnvAt(t, t.TempDir())
+		to.DisposeSandboxScratch()
+		if _, err := to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil); err == nil {
+			t.Fatal("reading a missing file succeeded")
+		}
+
+		to.AdoptSessionScratch(from)
+
+		assertFileToolsShareTheShellScratch(t, to)
+	})
+	t.Run("environment that was left", func(t *testing.T) {
+		from := readConfinedEnvAt(t, t.TempDir())
+		// A file tool builds the layer around the scratch the env owns now.
+		if _, err := from.WriteFile(filepath.Join(from.SessionScratchDir(), "before.txt"), "before\n"); err != nil {
+			t.Fatalf("write_file into the owned scratch: %v", err)
+		}
+		to := from.WithWorkingDirectory(t.TempDir())
+		t.Cleanup(to.DisposeUnadoptedScratch)
+
+		to.AdoptSessionScratch(from)
+
+		// The env that was left mints a fresh scratch for its next command.
+		assertFileToolsShareTheShellScratch(t, from)
+	})
+}
+
+// A swap moving the scratch while a file tool on the shared environment is
+// mid-operation must stay race-free: the layer the operation holds is never
+// closed under it, and every cache field is read and written under the lock.
+func TestAdoptSessionScratchDoesNotRaceAFileToolOnTheSharedEnvironment(t *testing.T) {
+	from := readConfinedEnvAt(t, t.TempDir())
+	to := from.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(to.DisposeUnadoptedScratch)
+
+	stop := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// The scratch may be mid-move: a refusal is the expected outcome
+				// then, and only the absence of a race is under test.
+				_, _ = from.WriteFile(filepath.Join(from.SessionScratchDir(), "racing.txt"), "x\n")
+			}
+		}
+	}()
+	for range 200 {
+		to.AdoptSessionScratch(from)
+		from.AdoptSessionScratch(to)
+	}
+	close(stop)
+	<-writerDone
+
+	assertFileToolsShareTheShellScratch(t, from)
+}
+
+// retiredLayerFootprint reports how many replaced layers env still holds and
+// how many root descriptors they keep open between them.
+func retiredLayerFootprint(e *LocalExecutionEnvironment) (layers, fds int) {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	for _, layer := range e.retiredFS {
+		layer.mu.Lock()
+		fds += len(layer.rootFds)
+		layer.mu.Unlock()
+	}
+	return len(e.retiredFS), fds
+}
+
+// A session that enters and exits worktrees repeatedly moves its scratch on
+// every swap, and a file tool in between rebuilds the layer each time. A
+// replaced layer stays open only while an operation still holds it; once every
+// operation on it has completed it is reclaimed at the next rebuild, so the
+// retired set is bounded by the operations in flight, not by the number of
+// swaps — and an operation that is in flight across a rebuild still completes
+// against the root it started with.
+func TestRetiredFileToolLayersAreReclaimedOnceDrained(t *testing.T) {
+	from := readConfinedEnvAt(t, t.TempDir())
+	to := readConfinedEnvAt(t, t.TempDir())
+	to.DisposeSandboxScratch()
+	first := from.SessionScratchDir()
+	if _, err := from.WriteFile(filepath.Join(first, "held.txt"), "held\n"); err != nil {
+		t.Fatalf("write_file into the owned scratch: %v", err)
+	}
+	// An operation in flight across every rebuild below: it holds the layer
+	// built around the scratch from owns now.
+	held := from.sandbox()
+	if held == nil {
+		t.Fatal("a confined env built no file-tool layer")
+	}
+
+	// Every move changes both environments' effective scratch path, and the
+	// file tool that follows on each rebuilds that environment's layer.
+	for range 200 {
+		to.AdoptSessionScratch(from)
+		_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+		_, _ = to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil)
+		from.AdoptSessionScratch(to)
+		_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+		_, _ = to.ReadFile(filepath.Join(to.RootDir, "missing"), nil, nil)
+	}
+
+	heldFds := func() int {
+		held.mu.Lock()
+		defer held.mu.Unlock()
+		return len(held.rootFds)
+	}()
+	if layers, fds := retiredLayerFootprint(from); layers > 1 || fds > heldFds {
+		t.Errorf("from retains %d replaced layers holding %d root fds after 200 moves, want at most the one layer (%d fds) an operation still holds", layers, fds, heldFds)
+	}
+	if layers, fds := retiredLayerFootprint(to); layers != 0 || fds != 0 {
+		t.Errorf("to retains %d replaced layers holding %d root fds after 200 moves, want none: nothing holds them", layers, fds)
+	}
+	if b, err := held.readFile("read_file", filepath.Join(first, "held.txt")); err != nil || string(b) != "held\n" {
+		t.Errorf("the held layer no longer completes against its old root: got %q err %v", b, err)
+	}
+
+	// Released, the held layer is reclaimed at the next rebuild.
+	held.release()
+	to.AdoptSessionScratch(from)
+	_, _ = from.ReadFile(filepath.Join(from.RootDir, "missing"), nil, nil)
+	if layers, fds := retiredLayerFootprint(from); layers != 0 || fds != 0 {
+		t.Errorf("from retains %d replaced layers holding %d root fds after the held operation completed, want none", layers, fds)
+	}
+}
+
+// openRootFdsOf counts the root descriptors env's file-tool layers, current
+// and retired, still hold open.
+func openRootFdsOf(e *LocalExecutionEnvironment) int {
+	e.sbMu.Lock()
+	defer e.sbMu.Unlock()
+	fds := 0
+	for _, layer := range append([]*sandboxFS{e.sbfs, e.scratchFS}, e.retiredFS...) {
+		if layer == nil {
+			continue
+		}
+		layer.mu.Lock()
+		fds += len(layer.rootFds)
+		layer.mu.Unlock()
+	}
+	return fds
+}
+
+// A worktree exit discards the clone the session entered on, and nothing
+// touches that clone again. The layers its file tools built around the
+// scratch it was holding have to go with the scratch when ownership moves
+// back, through the same drain (closed once no operation holds them), or
+// every enter/exit cycle leaks the clone's root descriptors.
+func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
+	if runtimeGOOS != "linux" && runtimeGOOS != "darwin" {
+		t.Skip("the unsandboxed scratch layer is linux/darwin only")
+	}
+	shapes := map[string]func(t *testing.T, worktree string) *LocalExecutionEnvironment{
+		"unsandboxed": func(t *testing.T, worktree string) *LocalExecutionEnvironment {
+			env := NewLocalExecutionEnvironment(worktree)
+			t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
+			if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+				t.Fatalf("ExecCommand: %v", err)
+			}
+			return env
+		},
+		"confined without a wrapper": readConfinedEnvAt,
+		// The bwrap/seatbelt shape reads its scratch path through the wrapper,
+		// which a re-root copies verbatim: nothing about that path changes when
+		// ownership moves, so only the move itself can say the layer is stale.
+		"confined with a wrapper": wrapperConfinedEnvAt,
+	}
+	for name, build := range shapes {
+		t.Run(name, func(t *testing.T) {
+			owner := build(t, t.TempDir())
+			lane := t.TempDir()
+			var discarded []*LocalExecutionEnvironment
+			for range 200 {
+				clone := owner.WithWorkingDirectory(lane)
+				if err := clone.SandboxReRootError(); err != nil {
+					t.Fatalf("re-root to the lane: %v", err)
+				}
+				clone.AdoptSessionScratch(owner)
+				if _, err := clone.WriteFile(filepath.Join(clone.SessionScratchDir(), "cycle.txt"), "x\n"); err != nil {
+					t.Fatalf("write_file on the entered clone: %v", err)
+				}
+				owner.AdoptSessionScratch(clone)
+				discarded = append(discarded, clone)
+			}
+			open := 0
+			for _, clone := range discarded {
+				open += openRootFdsOf(clone)
+			}
+			if open != 0 {
+				t.Errorf("200 discarded clones still hold %d root fds open, want none", open)
+			}
+			if _, err := owner.WriteFile(filepath.Join(owner.SessionScratchDir(), "after.txt"), "x\n"); err != nil {
+				t.Errorf("write_file on the owner after the cycles: %v", err)
+			}
+		})
+	}
+}
+
+// scratchSandboxFor reads the effective scratch root before it takes sbMu. A
+// scratch move landing in between retires the layer for that root and takes
+// the root away; the call must not then install a fresh layer for the stale
+// root, which nothing would retire and whose descriptors would stay open.
+func TestScratchSandboxForDoesNotInstallALayerForARootMovedAway(t *testing.T) {
+	if runtimeGOOS != "linux" && runtimeGOOS != "darwin" {
+		t.Skip("the unsandboxed scratch layer is linux/darwin only")
+	}
+	owner := NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { owner.Cleanup(); owner.DisposeUnadoptedScratch() })
+	if _, err := owner.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand: %v", err)
+	}
+	scratch := owner.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the owner minted no session scratch")
+	}
+	clone := owner.WithWorkingDirectory(t.TempDir())
+	t.Cleanup(clone.DisposeUnadoptedScratch)
+	// The move lands between the unlocked root read and the lock.
+	scratchSandboxForAfterRootRead = func() { clone.AdoptSessionScratch(owner) }
+	t.Cleanup(func() { scratchSandboxForAfterRootRead = nil })
+
+	layer := owner.scratchSandboxFor(filepath.Join(scratch, "probe"))
+	scratchSandboxForAfterRootRead = nil
+	layer.release()
+
+	owner.sbMu.Lock()
+	installed, installedRoot := owner.scratchFS, owner.scratchFSRoot
+	owner.sbMu.Unlock()
+	if installed != nil {
+		t.Errorf("a layer for root %q was installed on an environment whose scratch had moved away (effective root %q)", installedRoot, owner.allocatedSessionScratchPath())
+	}
+	if fds := openRootFdsOf(owner); fds != 0 {
+		t.Errorf("the environment still holds %d root fds after the move, want none", fds)
 	}
 }

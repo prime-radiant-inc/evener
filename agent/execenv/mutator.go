@@ -19,10 +19,12 @@ import (
 // ReadFileRaw returns the raw bytes of path, confined to the working root.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		return sfs.readFile("apply_patch", e.resolve(path))
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		defer sfs.release()
 		return sfs.readFile("apply_patch", abs)
 	}
 	abs, err := e.resolveWrite(path)
@@ -36,10 +38,12 @@ func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
 // working root (sandboxed: atomic temp+renameat beneath a writable root).
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		defer sfs.release()
 		return sfs.writeFile("apply_patch", abs, data, perm)
 	}
 	abs, err := e.resolveWrite(path)
@@ -56,10 +60,12 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 // out-of-policy target is a denial.
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		return sfs.remove("apply_patch", e.resolve(path))
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
+		defer sfs.release()
 		return sfs.remove("apply_patch", abs)
 	}
 	abs, err := e.resolveWrite(path)
@@ -74,12 +80,15 @@ func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 // are confined to the working root.
 func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
 		return sfs.rename("apply_patch", e.resolve(oldPath), e.resolve(newPath))
 	}
 	oldAbs := e.resolve(oldPath)
 	newAbs := e.resolve(newPath)
 	if sfs := e.scratchSandboxFor(oldAbs); sfs != nil {
+		defer sfs.release()
 		if targetFS := e.scratchSandboxFor(newAbs); targetFS != nil {
+			defer targetFS.release()
 			// Both endpoints are inside the same one-session scratch root. Reuse
 			// the first layer's cached root fd; its policy root is identical.
 			return sfs.rename("apply_patch", oldAbs, newAbs)
@@ -87,6 +96,7 @@ func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 		return fmt.Errorf("%s: cannot rename from the session scratch root outside that root", newPath)
 	}
 	if targetFS := e.scratchSandboxFor(newAbs); targetFS != nil {
+		defer targetFS.release()
 		return fmt.Errorf("%s: cannot rename into the session scratch root from outside that root", newPath)
 	}
 	var err error

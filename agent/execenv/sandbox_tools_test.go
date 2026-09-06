@@ -805,6 +805,9 @@ func TestLoadIgnoreSetSkipsMaskedSubtree(t *testing.T) {
 	if sfs == nil {
 		t.Fatal("expected a sandboxed environment")
 	}
+	// sandbox() hands back a held layer; the ignore-set work below runs on it,
+	// so the release goes at the end of the operation, not here.
+	defer sfs.release()
 	baseFd, canonical, err := sfs.openReadBaseFd("glob", home)
 	if err != nil {
 		t.Fatalf("openReadBaseFd: %v", err)
