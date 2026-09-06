@@ -187,8 +187,9 @@ iOS device authorization now has [manual browser-return evidence](providers-evid
 provider refresh and credential clearing, independently checked against fixture
 state. [Android device-flow evidence](providers-evidence.md#android-device-authorization-browser-round-trip)
 now covers Chrome first-run interruption, browser return, provider refresh and
-credential clearing as well. Browser redirect fallback remains unverified on both
-platforms, as do native expiry/denial and cross-hub flow isolation.
+credential clearing as well. [Browser redirect fallback](providers-evidence.md#browser-redirect-fallback-on-both-platforms)
+now has native browser copy/paste and keyboard-open completion evidence on both
+platforms. Native expiry/denial and cross-hub flow isolation remain unverified.
 
 Visual follow-up: use proportionate space for the authorized state; show native
 sign-in guidance instead of a primary CLI instruction, with server diagnostics
