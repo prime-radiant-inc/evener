@@ -24,7 +24,7 @@ import type {
   PluginRefParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HubDirectoryField } from "./HubDirectoryField";
+import { HubPathField } from "./HubPathField";
 import type { InstalledPlugins } from "./installedPlugins";
 import { Marketplaces } from "./marketplaces";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -402,7 +402,8 @@ function AddMarketplace({
                   : `Directory on ${hubName}`}
             </Copy>
             {kind === "directory" ? (
-              <HubDirectoryField
+              <HubPathField
+                kind="dir"
                 client={client}
                 label="Marketplace source"
                 value={source}

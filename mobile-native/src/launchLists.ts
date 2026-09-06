@@ -14,7 +14,7 @@ function equal(a: string[] | undefined, b: string[] | undefined) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-export function assertFallbacksCurrent(
+export function assertLaunchListCurrent(
   original: string[] | undefined,
   current: string[] | undefined,
   next: string[] | undefined,

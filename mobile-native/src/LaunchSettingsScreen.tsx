@@ -30,10 +30,11 @@ import type {
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
-import { HubDirectoryField } from "./HubDirectoryField";
+import { HubPathField } from "./HubPathField";
 import { LaunchEnvironmentEditor } from "./LaunchEnvironmentEditor";
 import { LaunchFallbackEditor } from "./LaunchFallbackEditor";
 import { LaunchModelPicker } from "./LaunchModelPicker";
+import { LaunchPathListEditor } from "./LaunchPathListEditor";
 import {
   assertLaunchFieldCurrent,
   launchFieldConflictMessage,
@@ -114,7 +115,8 @@ function LaunchDefaults({
       option.defaultableLayers?.includes("global") &&
       (scalarKinds.has(option.kind) ||
         option.kind === "envMap" ||
-        option.kind === "modelList") &&
+        option.kind === "modelList" ||
+        option.kind === "pathList") &&
       !inactivePromptDependent(option.wireField, state.draft ?? {}) &&
       `${option.label} ${option.group} ${option.description ?? ""}`
         .toLowerCase()
@@ -236,7 +238,29 @@ function LaunchDefaults({
           </View>
         ))}
       </ScrollView>
-      {selected?.kind === "modelList" ? (
+      {selected?.kind === "pathList" ? (
+        <LaunchPathListEditor
+          key={selected.wireField}
+          option={selected}
+          value={
+            (state.draft as Record<string, unknown> | null)?.[
+              selected.wireField
+            ] as string[] | undefined
+          }
+          effective={
+            (
+              state.resolved?.effective as Record<string, unknown> | undefined
+            )?.[selected.wireField] as string[] | undefined
+          }
+          client={client}
+          close={() => setSelected(null)}
+          apply={(value) => {
+            model.edit(selected.wireField as keyof LaunchConfigLayer, value);
+            setNotice(null);
+            setSelected(null);
+          }}
+        />
+      ) : selected?.kind === "modelList" ? (
         <LaunchFallbackEditor
           key={selected.wireField}
           option={selected}
@@ -444,10 +468,14 @@ function ScalarEditor({
                     onPress={() => setRaw(choice.value)}
                   />
                 ))
-              ) : client &&
-                option.kind === "path" &&
-                option.pathKind === "dir" ? (
-                <HubDirectoryField
+              ) : client && option.kind === "path" ? (
+                <HubPathField
+                  kind={
+                    option.pathKind === "file" ||
+                    option.pathKind === "outputFile"
+                      ? option.pathKind
+                      : "dir"
+                  }
                   client={client}
                   label={option.label}
                   value={raw}

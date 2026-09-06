@@ -131,6 +131,53 @@ functional evidence, not final visual acceptance: long lists, large text,
 screen-reader flow, native stale-sheet rejection and background/reconnect still
 need qualification. Path lists and MCP configuration remain required.
 
+## Path collection editor
+
+Native path lists now expose skillsDirs, pluginDirs and mcpConfigs through a
+shared field sheet. Empty lists restore inheritance. Done includes a pending
+path after validation; Cancel discards sheet edits. Open sheets compare their
+original ordered-list baseline before applying. Connection changes and unmounts
+invalidate pending validation replies while retaining drafts on reconnect.
+
+HubPathField/HubPaths extend the existing directory picker, replacing the old
+directory-specific names and updating MarketplaceBrowser and scalar launch
+paths. Directory fields still request includeFiles:false. File/output-file fields
+request includeFiles:true, recognize trailing-slash directory entries, descend
+into directories and select file entries without appending slashes. Manual entry
+remains available. Scalar file settings now have the same browsing assistance.
+
+The collection add path reuses the web validatePathListAdd helper: dedupe before
+validation, reject server-declared invalid paths, accept server-returned spelling,
+dedupe again after canonicalization, and retain the web's transport-error
+fail-open behavior. This does not promise validation during an outage. The
+directory validator preserves an already-absolute trailing slash; only use the
+server's response spelling, never assume universal filepath cleaning.
+
+Four new tests cover file-inclusive completion, wire validation arguments,
+canonical paths, empty/invalid/duplicate rejection and transport failure.
+All 308 native tests, TypeScript, touched-file Biome and both Release builds pass.
+A mutation discarding the server's canonical spelling failed its regression test.
+
+Android manual evidence on SecondHub: browsed and selected
+mobile-path-fixture/mcp config.json (including its space), Done validated the
+pending path, Save/Reload/reopen retained it, and independent AppWire readback
+matched. File browsing descended into skills/; Done rejected that directory as
+a file and retained the sheet with the server error. The skill-directory field
+used directory-only suggestions, selected skills/, saved and reloaded. The
+initial independent assertion incorrectly expected the trailing slash removed;
+server source and a fresh validation RPC confirmed preservation, and corrected
+readback matched exactly. Both overrides were restored through native inheritance
+controls; final independent readback confirmed skillsDirs and mcpConfigs unset.
+
+Screenshots: [saved MCP path](assets/launch-settings/android-mcp-path.png) and
+[file-type rejection](assets/launch-settings/android-path-invalid.png). Repeated
+long effective/draft paths waste space and need visual refinement. The Mac locked
+during testing, preventing further iOS UI interaction; iOS path testing remains
+pending despite its successful build. Also open: plugin-directory native checks,
+file-picker regression in marketplace/scalar contexts, stale/reconnect/cancel
+validation races, large text and screen readers. MCP server specifications remain
+unimplemented. MOB-015 is not complete.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,

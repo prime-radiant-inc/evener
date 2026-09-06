@@ -302,7 +302,12 @@ Fallback editing now preserves order, rejects duplicates and distinguishes
 explicit none from inheritance. Both native platforms and independent AppWire
 readbacks exercise these states; 304 native tests pass. See
 [fallback evidence and remaining checks](hub-information-and-launch-settings.md#model-fallback-collection-editor).
-Path and MCP collections remain open. Launch model fields now browse the real hub catalog,
+Path lists and file browsing now have 308 passing native tests and both Release
+builds. Android exercises file selection with spaces, directory navigation,
+file-type rejection, directory save/reload and restoration, with independent
+AppWire reads. iOS path checks remain pending because the Mac locked. See
+[path evidence and gaps](hub-information-and-launch-settings.md#path-collection-editor).
+MCP server specifications remain open. Launch model fields now browse the real hub catalog,
 reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
 Native iOS search/select/save and Android read/removal have evidence. Open scalar
 sheets reject newer field values, with two-device conflict/reopen/restoration

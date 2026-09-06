@@ -12,9 +12,9 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import {
   addFallback,
-  assertFallbacksCurrent,
+  assertLaunchListCurrent,
   collectFallbacks,
-} from "./launchFallbacks";
+} from "./launchLists";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function LaunchFallbackEditor({
@@ -41,7 +41,7 @@ export function LaunchFallbackEditor({
   function done() {
     try {
       const next = collectFallbacks(items, explicitEmpty);
-      assertFallbacksCurrent(original.current, value, next);
+      assertLaunchListCurrent(original.current, value, next);
       apply(next);
     } catch (err) {
       setError(
