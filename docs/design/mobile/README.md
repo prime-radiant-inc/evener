@@ -30,6 +30,13 @@ The capability inventory remains in `docs/superpowers/specs/2026-09-05-native-mo
 
 ## Open design judgments
 
+[Presentation study 02](presentation-study.html) explores the whole-screen
+hierarchy using the actual isolated-session markers and interruption notice.
+It includes light/dark and illustrated keyboard states, expandable notices,
+and insertion-only command selection. This is a proposed presentation, not
+implemented native behavior. It maps session lists, tool output, decisions,
+failures and administration to distinct visual treatments.
+
 The proposed direction is quiet typography and restrained chrome, with stronger emphasis for actions that need attention. Screen studies must establish the exact conversation treatment, session-row density, and primary navigation. Tokens in the guide are starting values to test, not reasons to force a poor layout.
 
 ## Direct agent-product research
