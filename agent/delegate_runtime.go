@@ -1749,7 +1749,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if err != nil {
 		return nil, false, err
 	}
-	child.ownsEnv = ownsFresh
+	child.recordEnvironmentOwnership(childEnv, ownsFresh)
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
 		child.discardRestoredCandidate()
