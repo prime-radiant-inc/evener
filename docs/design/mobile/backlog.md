@@ -160,8 +160,9 @@ pre-mutation read races. The first native list/detail/key-management screen now 
 Creation and endpoint editing are implemented, with iOS creation and Android
 edit/reset/removal exercised on the isolated hub. Credential testing, sign-in,
 reverse-platform form coverage and the complete manual acceptance matrix remain
-open. iOS keyboard-open bottom-action reachability is an explicit unresolved
-finding in the evidence; saving after keyboard dismissal does not close it.
+open. iOS ordinary-text keyboard-open action reachability is now verified with
+short strokes inside the visible form, including Save validation and Cancel.
+Large-text and successful keyboard-open creation still need acceptance.
 
 Child of MOB-006. Implement the server-derived provider list, instance detail,
 create/edit/remove/default, credential test, set/clear stored key and logout.
