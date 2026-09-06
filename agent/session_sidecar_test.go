@@ -20,7 +20,7 @@ func seedSidecarSession(t *testing.T, sessionID string, n int) string {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("turn"))); err != nil {
 			t.Fatalf("append: %v", err)
 		}
@@ -494,7 +494,7 @@ func TestRestoreSessionAcceptsCorruptPrefixLineWithSidecarAndFullReaderStillFail
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("turn"))); err != nil {
 			t.Fatalf("append: %v", err)
 		}

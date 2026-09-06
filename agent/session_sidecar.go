@@ -22,7 +22,7 @@ func foldDelegateAttentionSeeded(sidecar transcript.ResumeSidecar, suffix []tran
 	if !sidecar.SnapshotsComplete {
 		// An incomplete snapshot cannot seed the fold; the caller must fall
 		// back to the full file read.
-		return delegateAttentionFold{}, fmt.Errorf("resume sidecar fold snapshot is incomplete")
+		return delegateAttentionFold{}, errors.New("resume sidecar fold snapshot is incomplete")
 	}
 	fold := newDelegateAttentionFold()
 	for _, pending := range sidecar.PendingAttention {

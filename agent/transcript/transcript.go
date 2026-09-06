@@ -902,7 +902,7 @@ func writeSidecarAfterFullScan(path string, f *os.File, info os.FileInfo, scan s
 	// again so TranscriptSize reflects the post-truncation size.
 	current, err := f.Stat()
 	if err != nil {
-		return nil
+		return fmt.Errorf("stat transcript for sidecar: %w", err)
 	}
 	// The scan recorded where the last checkpoint entry starts; no second
 	// file pass. No checkpoint means every entry is live history — no
@@ -1072,7 +1072,6 @@ func projectsThreadItems(turn schema.Turn) bool {
 // when one exists — with the ids in first-sighting order, matching the
 // fold's order slice.
 func foldSnapshotForSidecar(entries []Entry) (pending []SidecarPendingAttention, commits []SidecarDeliveryCommit, mutations map[string]string, ok bool) {
-	pending = nil
 	commits = nil
 	mutations = map[string]string{}
 	commitIDs := map[string]string{}
@@ -1330,7 +1329,7 @@ func readHeaderAt(f *os.File) (Header, error) {
 	reader := bufio.NewReaderSize(io.NewSectionReader(f, 0, defaultHeaderReadBytes), 64*1024)
 	line, complete, _, err := ReadLine(reader, transcriptJSONLMaxLineBytes)
 	if err != nil || !complete {
-		return Header{}, fmt.Errorf("read transcript header: %v", err)
+		return Header{}, fmt.Errorf("read transcript header: %w", err)
 	}
 	line = bytes.TrimSpace(line)
 	return DecodeHeader(line)
@@ -1386,7 +1385,7 @@ func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer,
 		// validLen already counted the line's bytes, so subtracting this
 		// line's length gives its start. Recorded for checkpoint-kind entries
 		// so the opportunistic sidecar write needs no second file pass.
-		entryStartOffset := validLen - int64(bytesRead)
+		entryStartOffset := validLen - bytesRead
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue

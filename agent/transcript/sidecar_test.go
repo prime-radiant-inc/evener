@@ -24,7 +24,7 @@ func seedWindowedTranscript(t *testing.T, sessionID string, n int) string {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User("turn text"))
 		if err := w.Append(turn); err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -55,7 +55,7 @@ func TestWriteSidecarFromWriterWindowsAtCheckpointEntryStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new writer: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("turn"))); err != nil {
 			t.Fatalf("append: %v", err)
 		}
@@ -128,7 +128,7 @@ func TestRollbackAfterCheckpointInvalidatesAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		// Plain appends: SyncInterval 0 syncs every write, so advance the
 		// fault plan past the header ops and these syncs first. faultPlan(k)
 		// trips exactly the k-th op; the writer's op order here is

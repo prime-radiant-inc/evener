@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -275,7 +276,7 @@ func sidecarAnchorsMatch(file sidecarReaderAt, first, tail sidecarAnchor) bool {
 		}
 		data := make([]byte, anchor.Length)
 		n, err := file.ReadAt(data, anchor.Offset)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return false
 		}
 		sum := sha256.Sum256(data[:n])
