@@ -271,8 +271,11 @@ empty/zero values; all 272 native tests and both Release builds pass. Runtime
 and storage are manually inspected on both platforms against SecondHub; iOS
 agents and both-platform empty Codex/MCP states are verified. See
 [hub-information evidence](hub-information-evidence.md). The launch-layer controller now has ten deterministic tests and a real isolated-hub
-save/readback/restoration smoke pass; all 282 native tests pass. Native schema
-editors are not wired yet. See [launch progress](hub-information-and-launch-settings.md#launch-layer-controller-progress).
+save/readback/restoration smoke pass. Native scalar editors are now wired;
+all 285 native tests and TypeScript pass. iOS numeric save, invalid-number
+rejection and override removal have native evidence. Android editor acceptance,
+collections, model catalog and reconnect draft preservation remain open. See
+[launch progress](hub-information-and-launch-settings.md#native-scalar-editors).
 Nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
 screen readers and visual acceptance remain open.
 

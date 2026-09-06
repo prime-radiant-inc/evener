@@ -107,5 +107,43 @@ assertions). All 282 native tests, TypeScript and touched-file Biome pass.
 state root before changing maxRounds, saving through the controller, independently
 reading back and checking untouched fields, then restoring and comparing the whole
 original layer. It passed against SecondHub; the original layer was restored.
-This is real AppWire/controller evidence, not native editor E2E. No native editor
-is wired yet; all schema field kinds, validation and native acceptance remain.
+This is real AppWire/controller evidence, distinct from the native checks below.
+
+## Native scalar editors
+
+6 September 2026: Hub settings now opens Launch defaults. The screen uses the
+server's applicable global schema fields, labels, groups, descriptions and choices.
+Search narrows the compact setting rows. One-field sheets edit scalar values;
+Done changes the local draft and Save defaults writes the layer. Removing an
+override is explicit. Invalid integers and unavailable enum choices are rejected.
+Directory fields reuse hub directory completion; paths validate on the server.
+
+Manual iOS Release checks against the isolated SecondHub:
+
+- Opened Max rounds from search with its original override unset/effective -1.
+- Entered 7 with the software keyboard, tapped Done and Save defaults. The row
+  showed 7 and a saved notice; reopening resolved the effective value to 7.
+- Entered 7.5 and tapped Done. The editor stayed open with the draft intact and
+  “Enter a whole number.”
+- Chose Use inherited value, Done and Save defaults. The row returned to
+  Inherited · -1 with a saved notice, restoring the fixture's original setting.
+
+Screenshots: [saved override](assets/launch-settings/ios-saved.jpg) and
+[restored inheritance](assets/launch-settings/ios-restored.jpg). Both show the
+actual software keyboard and reachable save controls.
+
+The Android emulator cold-booted and opened the installed app connected to
+SecondHub, but subsequent UIAutomator calls timed out and screen capture stalled.
+No Android scalar-editor or cross-device update acceptance is claimed here.
+Do not restart the app or emulator solely because these observation calls timed out.
+
+Fresh validation: all 285 native tests and TypeScript pass. Three parser tests
+cover inheritance/false/zero, integer and choice validation, and collection
+rejection. Full repository merge gates and visual acceptance are not established.
+
+Remaining: collection/environment/MCP editors, model catalog selection (the
+current model field accepts an ID), file completion, project/per-launch layers,
+dirty-draft preservation across disconnects, path-error native checks, external
+update conflicts, two-hub isolation, large text and screen-reader acceptance.
+The current connection guard unmounts the editor on disconnect and therefore
+does not yet retain unsaved drafts. This slice does not close MOB-015.
