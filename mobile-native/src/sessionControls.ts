@@ -1,21 +1,43 @@
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import type { ModelListResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
-import type { ConversationService } from "../../mobile/src/services/conversation";
+import type {
+  ConversationModelCatalog,
+  ConversationService,
+} from "../../mobile/src/services/conversation";
 
-type Operation = "rename" | "compact" | "shutdown" | "setReasoningEffort";
+type Operation =
+  | "rename"
+  | "compact"
+  | "shutdown"
+  | "setReasoningEffort"
+  | "changeModel";
 interface ControlsState {
   pending: Operation | null;
+  lastAction: Operation | null;
   error: string | null;
   notice: string | null;
+  catalog: ModelListResponse | null;
+  loadingModels: boolean;
+  modelError: string | null;
 }
 
 /** Own actions for one conversation binding, independently of its sheet. */
 export class SessionControls {
-  private state: ControlsState = { pending: null, error: null, notice: null };
+  private state: ControlsState = {
+    pending: null,
+    lastAction: null,
+    error: null,
+    notice: null,
+    catalog: null,
+    loadingModels: false,
+    modelError: null,
+  };
   private listeners = new Set<() => void>();
   private disposed = false;
   constructor(
-    private service: Pick<ConversationService, Operation>,
+    private service: Pick<ConversationService, Operation> &
+      ConversationModelCatalog,
     private refresh: () => Promise<void>,
     private stopped: () => void,
     private isCurrent: () => boolean,
@@ -23,6 +45,7 @@ export class SessionControls {
       MobileConversation,
       "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
     > | null,
+    private canMutate: () => boolean,
   ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -31,8 +54,8 @@ export class SessionControls {
       this.listeners.delete(listener);
     };
   };
-  private publish(state: ControlsState) {
-    this.state = state;
+  private publish(state: Partial<ControlsState>) {
+    this.state = { ...this.state, ...state };
     for (const listener of this.listeners) listener();
   }
   dispose() {
@@ -62,12 +85,59 @@ export class SessionControls {
       this.service.setReasoningEffort(effort),
     );
   }
-  private async run(kind: Operation, operation: () => Promise<void>) {
-    if (this.disposed || !this.isCurrent() || this.state.pending) return;
-    this.publish({ pending: kind, error: null, notice: null });
+  async loadModels() {
+    if (
+      this.disposed ||
+      !this.isCurrent() ||
+      this.state.loadingModels ||
+      this.state.pending
+    )
+      return;
+    this.publish({ catalog: null, loadingModels: true, modelError: null });
+    try {
+      const catalog = await this.service.models();
+      if (this.disposed || !this.isCurrent()) return;
+      this.publish({ catalog, loadingModels: false });
+    } catch (error) {
+      if (this.disposed || !this.isCurrent()) return;
+      this.publish({
+        loadingModels: false,
+        modelError:
+          error instanceof Error ? error.message : "Could not load models.",
+      });
+    }
+  }
+  changeModel(provider: string, model: string): Promise<boolean> {
+    if (
+      !this.state.catalog?.data.some(
+        (entry) => entry.provider === provider && entry.model === model,
+      )
+    )
+      return Promise.resolve(false);
+    return this.run("changeModel", () =>
+      this.service.changeModel(provider, model),
+    );
+  }
+  private async run(
+    kind: Operation,
+    operation: () => Promise<void>,
+  ): Promise<boolean> {
+    if (
+      this.disposed ||
+      !this.isCurrent() ||
+      !this.canMutate() ||
+      this.state.pending
+    )
+      return false;
+    this.publish({
+      pending: kind,
+      lastAction: kind,
+      error: null,
+      notice: null,
+    });
     try {
       await operation();
-      if (this.disposed || !this.isCurrent()) return;
+      if (this.disposed || !this.isCurrent()) return false;
       if (kind === "shutdown") {
         this.publish({
           pending: null,
@@ -75,10 +145,10 @@ export class SessionControls {
           notice: "Runtime stop requested.",
         });
         this.stopped();
-        return;
+        return true;
       }
       await this.refresh();
-      if (this.disposed || !this.isCurrent()) return;
+      if (this.disposed || !this.isCurrent()) return false;
       this.publish({
         pending: null,
         error: null,
@@ -87,10 +157,13 @@ export class SessionControls {
             ? "Compaction requested. Progress appears in the conversation."
             : kind === "setReasoningEffort"
               ? "Reasoning effort updated."
-              : "Session renamed.",
+              : kind === "changeModel"
+                ? "Model updated."
+                : "Session renamed.",
       });
+      return true;
     } catch (cause) {
-      if (this.disposed || !this.isCurrent()) return;
+      if (this.disposed || !this.isCurrent()) return false;
       this.publish({
         pending: null,
         notice: null,
@@ -99,6 +172,7 @@ export class SessionControls {
             ? `Could not confirm the action: ${cause.message}`
             : "Could not confirm the action. Check the session before trying again; it may have been applied.",
       });
+      return false;
     }
   }
 }

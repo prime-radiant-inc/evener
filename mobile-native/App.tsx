@@ -79,6 +79,7 @@ function Navigation() {
             headerTintColor: colors.accent,
             headerTitleStyle: { color: colors.text },
             headerShadowVisible: false,
+            headerBackButtonDisplayMode: "minimal",
             contentStyle: { backgroundColor: colors.background },
           }}
         >
