@@ -1117,6 +1117,40 @@ export function ConversationScreen({
       );
     }
   }
+  const submissionActions = (kinds: readonly ("send" | "steer" | "queue")[]) =>
+    command === null &&
+    kinds.map((kind) =>
+      canCompose &&
+      questions.length === 0 &&
+      conversation?.capabilities[kind] ? (
+        <Action
+          key={kind}
+          tone={
+            kind === "send" ||
+            (kind === "steer" && !conversation.capabilities.send)
+              ? "primary"
+              : "quiet"
+          }
+          disabled={
+            !ready ||
+            !draft.loaded ||
+            !!draft.error ||
+            draft.submitting ||
+            unconfirmedSend !== null ||
+            imageState.busy ||
+            (!draft.record.draft.trim() &&
+              !draft.record.images?.length &&
+              !(kind === "steer" && conversation.queue.depth > 0))
+          }
+          onPress={() => {
+            void mutate(kind);
+          }}
+        >
+          {kind === "send" ? "Send" : kind === "steer" ? "Steer" : "Queue"}
+        </Action>
+      ) : null,
+    );
+
   return (
     <SafeAreaView
       edges={["bottom", "left", "right"]}
@@ -1252,103 +1286,130 @@ export function ConversationScreen({
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
-        <FlatList
-          ref={timeline}
-          data={timelineRows}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <TimelineItem item={item} hubId={route.params.hubId} />
-          )}
-          contentContainerStyle={{ padding: 16 }}
-          ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
-          keyboardShouldPersistTaps="handled"
-          refreshing={refreshing}
-          onRefresh={() => {
-            void refresh();
-          }}
-          ListHeaderComponent={
-            <View style={{ gap: 12, paddingBottom: 16 }}>
-              <ConnectionStatus />
-              <ErrorMessage message={snapshot.error || actionError} />
-              <ErrorMessage message={draft.error} />
-              {unconfirmedSend !== null ? (
-                <View
-                  style={[
-                    styles.card,
-                    { marginHorizontal: 16, borderColor: colors.border },
-                  ]}
-                >
-                  <Copy>Delivery unconfirmed</Copy>
-                  <Copy muted>
-                    Check the transcript before sending again. This message may
-                    have reached the hub.
-                  </Copy>
-                  <ScrollView style={{ maxHeight: 100 }}>
-                    <Copy>{unconfirmedSend}</Copy>
-                    <ImageAttachments
-                      document={document}
-                      selection={imageSelection}
-                      uncertain
-                    />
-                  </ScrollView>
-                  <View style={styles.row}>
-                    <Action
-                      disabled={draft.record.draft !== ""}
-                      onPress={() => document.restore()}
-                    >
-                      Restore to draft
-                    </Action>
-                    <Action onPress={() => document.dismiss()}>Dismiss</Action>
-                  </View>
-                  {draft.record.draft !== "" ? (
+        <View style={{ flex: 1 }}>
+          <FlatList
+            ref={timeline}
+            data={timelineRows}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TimelineItem item={item} hubId={route.params.hubId} />
+            )}
+            contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
+            ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
+            keyboardShouldPersistTaps="handled"
+            refreshing={refreshing}
+            onRefresh={() => {
+              void refresh();
+            }}
+            ListHeaderComponent={
+              <View style={{ gap: 12, paddingBottom: 16 }}>
+                <ConnectionStatus />
+                <ErrorMessage message={snapshot.error || actionError} />
+                <ErrorMessage message={draft.error} />
+                {unconfirmedSend !== null ? (
+                  <View
+                    style={[
+                      styles.card,
+                      { marginHorizontal: 16, borderColor: colors.border },
+                    ]}
+                  >
+                    <Copy>Delivery unconfirmed</Copy>
                     <Copy muted>
-                      Your current draft is kept. Clear it to restore this
-                      message.
+                      Check the transcript before sending again. This message
+                      may have reached the hub.
                     </Copy>
+                    <ScrollView style={{ maxHeight: 100 }}>
+                      <Copy>{unconfirmedSend}</Copy>
+                      <ImageAttachments
+                        document={document}
+                        selection={imageSelection}
+                        uncertain
+                      />
+                    </ScrollView>
+                    <View style={styles.row}>
+                      <Action
+                        disabled={draft.record.draft !== ""}
+                        onPress={() => document.restore()}
+                      >
+                        Restore to draft
+                      </Action>
+                      <Action onPress={() => document.dismiss()}>
+                        Dismiss
+                      </Action>
+                    </View>
+                    {draft.record.draft !== "" ? (
+                      <Copy muted>
+                        Your current draft is kept. Clear it to restore this
+                        message.
+                      </Copy>
+                    ) : null}
+                  </View>
+                ) : null}
+                <View style={{ flexShrink: 1 }}>
+                  {connected &&
+                  conversation &&
+                  !conversation.capabilities.send &&
+                  !conversation.capabilities.steer &&
+                  !conversation.capabilities.queue ? (
+                    <Copy muted>Sending is unavailable for this session.</Copy>
                   ) : null}
                 </View>
-              ) : null}
-              <View style={{ flexShrink: 1 }}>
-                {connected &&
-                conversation &&
-                !conversation.capabilities.send &&
-                !conversation.capabilities.steer &&
-                !conversation.capabilities.queue ? (
-                  <Copy muted>Sending is unavailable for this session.</Copy>
+                {snapshot.olderCursor ? (
+                  <Action
+                    disabled={!ready || snapshot.loadingOlder}
+                    onPress={() => {
+                      if (service) void store.getState().loadOlder(service);
+                    }}
+                  >
+                    {snapshot.loadingOlder ? "Loading…" : "Load older messages"}
+                  </Action>
                 ) : null}
               </View>
-              {snapshot.olderCursor ? (
-                <Action
-                  disabled={!ready || snapshot.loadingOlder}
-                  onPress={() => {
-                    if (service) void store.getState().loadOlder(service);
-                  }}
-                >
-                  {snapshot.loadingOlder ? "Loading…" : "Load older messages"}
-                </Action>
-              ) : null}
+            }
+            ListEmptyComponent={
+              <Copy muted>
+                {snapshot.status === "opening"
+                  ? "Loading conversation…"
+                  : !connected
+                    ? "Reconnect to load the conversation. Your draft is kept."
+                    : snapshot.status === "error"
+                      ? "Pull down to retry."
+                      : "No messages yet."}
+              </Copy>
+            }
+          />
+          {conversation?.items.length ? (
+            <View
+              style={{
+                position: "absolute",
+                right: 16,
+                bottom: 8,
+                backgroundColor: colors.surface,
+                borderRadius: 24,
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
+            >
+              <Action
+                tone="quiet"
+                label="Latest"
+                onPress={() =>
+                  timeline.current?.scrollToEnd({ animated: true })
+                }
+              >
+                ↓
+              </Action>
             </View>
-          }
-          ListEmptyComponent={
-            <Copy muted>
-              {snapshot.status === "opening"
-                ? "Loading conversation…"
-                : !connected
-                  ? "Reconnect to load the conversation. Your draft is kept."
-                  : snapshot.status === "error"
-                    ? "Pull down to retry."
-                    : "No messages yet."}
-            </Copy>
-          }
-        />
+          ) : null}
+        </View>
         <View
           style={[
             {
               marginHorizontal: 12,
               marginTop: 8,
               marginBottom: 8,
-              padding: 12,
-              gap: 8,
+              padding: 8,
+              gap: 4,
               borderWidth: canCompose ? 1 : 0,
               borderRadius: canCompose ? 22 : 0,
               borderColor: colors.border,
@@ -1438,33 +1499,75 @@ export function ConversationScreen({
             <ImageAttachments document={document} selection={imageSelection} />
           ) : null}
           <ErrorMessage message={imageState.error} />
-          {canCompose && questions.length === 0 ? (
-            <TextInput
-              ref={composerInput}
-              accessibilityLabel="Message"
-              multiline
-              value={draft.record.draft}
-              onChangeText={(text) => document.edit(text)}
-              onSelectionChange={(event) =>
-                setComposerSelection(event.nativeEvent.selection)
-              }
-              editable={draft.loaded}
-              placeholder="Message"
-              placeholderTextColor={colors.secondary}
-              style={[
-                styles.input,
-                {
-                  color: colors.text,
-                  backgroundColor: colors.surface,
-                  borderWidth: 0,
-                  padding: 2,
-                  minHeight: Platform.OS === "android" ? 48 : 44,
-                  maxHeight: fontScale > 1.6 ? 96 : 160,
-                  textAlignVertical: "top",
-                },
-              ]}
-            />
-          ) : null}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "flex-end",
+              flexWrap: "wrap",
+              gap: 8,
+            }}
+          >
+            {canCompose && questions.length === 0 ? (
+              <TextInput
+                ref={composerInput}
+                accessibilityLabel="Message"
+                multiline
+                value={draft.record.draft}
+                onChangeText={(text) => document.edit(text)}
+                onSelectionChange={(event) =>
+                  setComposerSelection(event.nativeEvent.selection)
+                }
+                editable={draft.loaded}
+                placeholder="Message"
+                placeholderTextColor={colors.secondary}
+                style={[
+                  styles.input,
+                  {
+                    color: colors.text,
+                    backgroundColor: colors.surface,
+                    borderWidth: 0,
+                    padding: 2,
+                    flex: 1,
+                    minWidth: 120,
+                    minHeight: Platform.OS === "android" ? 48 : 44,
+                    maxHeight: fontScale > 1.6 ? 96 : 160,
+                    textAlignVertical: "top",
+                  },
+                ]}
+              />
+            ) : null}{" "}
+            {canCompose && questions.length === 0 && command !== null ? (
+              <Action
+                tone="primary"
+                label={
+                  command.command.id === "compact"
+                    ? "Compact transcript"
+                    : undefined
+                }
+                disabled={
+                  !ready ||
+                  !draft.loaded ||
+                  !!draft.error ||
+                  draft.submitting ||
+                  unconfirmedSend !== null ||
+                  imageState.busy ||
+                  (command.command.id === "goal" &&
+                    !goalCommand &&
+                    !conversation?.goal) ||
+                  (command.command.capability != null &&
+                    !conversation?.capabilities[command.command.capability])
+                }
+                onPress={() => void applyCommand()}
+              >
+                {command.command.id === "goal"
+                  ? goalCommand || !conversation?.goal
+                    ? "Set goal"
+                    : "Clear goal"
+                  : command.command.label}
+              </Action>
+            ) : null}
+            {submissionActions(["send", "steer"])}
+          </View>
           <View
             style={[
               styles.row,
@@ -1537,15 +1640,6 @@ export function ConversationScreen({
                     ? "Connection"
                     : "Review error"}
               </Action>
-            ) : conversation?.items.length ? (
-              <Action
-                tone="quiet"
-                onPress={() =>
-                  timeline.current?.scrollToEnd({ animated: true })
-                }
-              >
-                Latest
-              </Action>
             ) : null}
             {conversation?.capabilities.interrupt ? (
               <Action
@@ -1558,72 +1652,7 @@ export function ConversationScreen({
                 Stop
               </Action>
             ) : null}
-            {canCompose && questions.length === 0 && command !== null ? (
-              <Action
-                tone="primary"
-                label={
-                  command.command.id === "compact"
-                    ? "Compact transcript"
-                    : undefined
-                }
-                disabled={
-                  !ready ||
-                  !draft.loaded ||
-                  !!draft.error ||
-                  draft.submitting ||
-                  unconfirmedSend !== null ||
-                  imageState.busy ||
-                  (command.command.id === "goal" &&
-                    !goalCommand &&
-                    !conversation?.goal) ||
-                  (command.command.capability != null &&
-                    !conversation?.capabilities[command.command.capability])
-                }
-                onPress={() => void applyCommand()}
-              >
-                {command.command.id === "goal"
-                  ? goalCommand || !conversation?.goal
-                    ? "Set goal"
-                    : "Clear goal"
-                  : command.command.label}
-              </Action>
-            ) : null}
-            {command === null &&
-              (["send", "steer", "queue"] as const).map((kind) =>
-                canCompose &&
-                questions.length === 0 &&
-                conversation?.capabilities[kind] ? (
-                  <Action
-                    key={kind}
-                    tone={
-                      kind === "send" ||
-                      (kind === "steer" && !conversation.capabilities.send)
-                        ? "primary"
-                        : "quiet"
-                    }
-                    disabled={
-                      !ready ||
-                      !draft.loaded ||
-                      !!draft.error ||
-                      draft.submitting ||
-                      unconfirmedSend !== null ||
-                      imageState.busy ||
-                      (!draft.record.draft.trim() &&
-                        !draft.record.images?.length &&
-                        !(kind === "steer" && conversation.queue.depth > 0))
-                    }
-                    onPress={() => {
-                      void mutate(kind);
-                    }}
-                  >
-                    {kind === "send"
-                      ? "Send"
-                      : kind === "steer"
-                        ? "Steer"
-                        : "Queue"}
-                  </Action>
-                ) : null,
-              )}
+            {submissionActions(["queue"])}
           </View>
         </View>
       </KeyboardAvoidingView>
