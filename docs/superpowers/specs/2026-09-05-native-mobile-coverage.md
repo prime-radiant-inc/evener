@@ -147,3 +147,12 @@ owned sessions, sent follow-ups visible through live updates, and stopped the
 new turns. This uncovered and fixed a hub relay subscription-key mismatch for
 stable refs after clear. Evidence and remaining concurrency/acceptance limits:
 `docs/design/mobile/command-completion.md` (Clear and live continuation).
+
+### Session location navigation
+
+Native `/project` follows the current web location lookup and opens the correct
+same-hub project tier or section, paging and expanding to select the session.
+iOS paged/archived targets and Android nested targets have manual Release-build
+evidence in `docs/design/mobile/command-completion.md`. Full built-in completion,
+omitted-branch recovery, pinned-section management and broader accessibility
+and navigation acceptance remain open.

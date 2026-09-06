@@ -13,7 +13,11 @@ import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { locationForRoute, restoredStack } from "./src/location";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
-import { ProjectScreen, ProjectsScreen } from "./src/ProjectsScreen";
+import {
+  ProjectScreen,
+  ProjectsScreen,
+  SessionLocationScreen,
+} from "./src/ProjectsScreen";
 import {
   ConversationScreen,
   HubsScreen,
@@ -91,6 +95,11 @@ function Navigation() {
           />
           <Stack.Screen name="Sessions" component={SessionsScreen} />
           <Stack.Screen name="Projects" component={ProjectsScreen} />
+          <Stack.Screen
+            name="SessionLocation"
+            component={SessionLocationScreen}
+            options={({ route }) => ({ title: route.params.location.title })}
+          />
           <Stack.Screen
             name="Project"
             component={ProjectScreen}

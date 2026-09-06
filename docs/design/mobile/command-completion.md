@@ -165,7 +165,7 @@ matched their distinct isolated test session refs exactly. The Android paste
 was removed without sending. Clipboard failure and newer-draft preservation
 have automated platform-boundary/SQLite coverage, not manual OS fault injection.
 
-Project reveal remains separate: current web uses navigation location lookup
+Project reveal uses navigation location lookup, as implemented below. Current web uses that lookup
 and reveals the matching project/session. A generic project-list navigation
 would not satisfy that behavior. Offline local-command access and complete
 screen-reader navigation remain acceptance work.
@@ -235,4 +235,49 @@ TypeScript/Biome and all 2,241 shared tests passed. The full hub package tests
 passed, including relay/subscription coverage. This is not the full repository
 merge gate. Clear during an already-started read remains fail-closed in the
 shared service; full web concurrency parity, OS interruption and accessibility
-acceptance remain open. Project reveal and built-in completion remain pending.
+acceptance remain open. Project reveal is implemented below; built-in completion remains pending.
+
+## Locate the session in navigation, 6 September 2026
+
+Native `/project` now uses the current web rail's location lookup and project,
+pinned-section, then live/needs-you precedence. The destination stays on the
+originating hub, reads the exact project tier or section, follows pages without
+mixing revisions, expands ancestors, and marks the target selected. Native Back
+returns to the conversation. This local command never sends a prompt or creates
+a delivery checkpoint, and a newer draft survives its asynchronous lookup.
+
+Missing/mismatched locations and stale lists show an error or refresh path.
+Leaving cancels paging. Navigation invalidation now includes section and
+pin-section resources. When the hub omits the target branch, the app reports
+that it cannot locate the row rather than inventing a position.
+
+Manual isolated-hub evidence:
+
+- iOS local:034K4egRYkyfFWF1BYJokC: after three newer fixtures were added,
+  refreshing followed the proxy's two-row pages and selected the target on
+  page two. [Paged target](assets/project-reveal/ios-paged.png).
+- Android local:034K4eh98MuwuE6SuLbPN0: the parent expanded to reveal and select
+  its nested current session. [Nested target](assets/project-reveal/android-nested.png).
+  The screenshot also records an invalidation notice from fixture changes.
+- Stopping and archiving the owned iOS fixture made the hub return tier
+  archived; the app opened it and selected Clear validation iOS.
+  [Archived target](assets/project-reveal/ios-archived.png). Live sessions stay
+  in Current according to the hub even when marked archived.
+- Both platforms returned to the original conversation with the command draft
+  cleared. Production sessions were not touched.
+
+Both Release builds, 223 native tests and TypeScript pass. Tests cover lookup
+selection, missing/mismatched responses, paging and ancestor paths, cancellation,
+revision changes, section invalidation, and local-command draft behavior.
+Device accessibility, very long-list scroll placement, omitted-branch recovery,
+and pinned/needs-you manual paths remain acceptance work. These screenshots
+establish behavior, not final visual quality.
+
+
+Independent review found and closed a blur/refocus race: each location request
+now owns an abort signal permanently cancelled on blur. A delayed response
+cannot navigate after the screen regains focus. The regression failed before
+the fix and passes afterward; the reviewer confirmed it closed. Final builds
+were smoke-tested again with iOS project navigation and Android nested reveal.
+The delayed blur/refocus path has automated coverage, not a fresh manual fault
+injection claim.

@@ -24,6 +24,7 @@ import type {
 import { useConnection } from "./ConnectionProvider";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";
+import { revealNavigationRow } from "./navigationReveal";
 import { navigationTree } from "./navigationTree";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -70,7 +71,9 @@ function PageList<T>({
   childRows,
   omitted,
   organization,
+  revealRef,
 }: {
+  revealRef?: string;
   pages: NavigationPages<T>;
   ready: boolean;
   rowKey: (row: T) => string;
@@ -127,14 +130,82 @@ function PageList<T>({
     setExpansion({ owner: pages, keys });
   }
   useEffect(() => pages.watch(), [pages]);
+  const list = useRef<FlatList<{ item: T; depth: number }>>(null);
+  const access = useRef({ rowKey, childRows });
+  access.current = { rowKey, childRows };
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const [revealRequest, setRevealRequest] = useState(0);
+  const revealEpoch = useRef(revealRequest);
+  revealEpoch.current = revealRequest;
+  function refreshList() {
+    if (revealRef) setRevealRequest((value) => value + 1);
+    else void pages.refresh();
+  }
+  const [revealed, setRevealed] = useState<NavigationPages<T> | null>(null);
+  const scrollAttempt = useRef(0);
+  const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (scrollTimer.current) clearTimeout(scrollTimer.current);
+    },
+    [],
+  );
   useFocusEffect(
     useCallback(() => {
-      if (ready && !pages.getSnapshot().loaded) void pages.refresh();
-      return () => pages.cancel();
-    }, [pages, ready]),
+      let active = true;
+      if (ready && revealRef) {
+        setRevealError(null);
+        setRevealed(null);
+        void revealNavigationRow(
+          pages,
+          revealRef,
+          access.current.rowKey,
+          access.current.childRows,
+          () => active && revealEpoch.current === revealRequest,
+        )
+          .then((path) => {
+            if (!active || !path) return;
+            setExpansion({ owner: pages, keys: new Set(path.slice(0, -1)) });
+            scrollAttempt.current = 0;
+            setRevealed(pages);
+          })
+          .catch((error) => {
+            if (active)
+              setRevealError(
+                error instanceof Error
+                  ? error.message
+                  : "Could not locate this session.",
+              );
+          });
+      } else if (ready && !pages.getSnapshot().loaded) void pages.refresh();
+      return () => {
+        active = false;
+        if (scrollTimer.current) clearTimeout(scrollTimer.current);
+        pages.cancel();
+      };
+    }, [pages, ready, revealRef, revealRequest]),
   );
+  const targetIndex = revealRef
+    ? rows.findIndex((row) => rowKey(row.item) === revealRef)
+    : -1;
+  useEffect(() => {
+    if (revealed === pages && targetIndex >= 0)
+      list.current?.scrollToIndex({
+        index: targetIndex,
+        animated: false,
+        viewPosition: 0.3,
+      });
+  }, [revealed, pages, targetIndex]);
   return (
     <>
+      {revealError ? (
+        <View style={{ paddingHorizontal: 16, gap: 8 }}>
+          <ErrorMessage message={revealError} />
+          <Action disabled={!ready || state.loading} onPress={refreshList}>
+            Locate again
+          </Action>
+        </View>
+      ) : null}
       {state.error ? (
         <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
           <ErrorMessage message={state.stale ? null : state.error} />
@@ -147,7 +218,7 @@ function PageList<T>({
             <Action
               disabled={!ready || state.loading}
               onPress={() => {
-                void pages.refresh();
+                refreshList();
               }}
             >
               Refresh list
@@ -157,11 +228,30 @@ function PageList<T>({
       ) : null}
       {actions ? <OrganizationStatus actions={actions} /> : null}
       <FlatList
+        ref={list}
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
+          list.current?.scrollToOffset({
+            offset: averageItemLength * index,
+            animated: false,
+          });
+          if (scrollAttempt.current++ < 3) {
+            if (scrollTimer.current) clearTimeout(scrollTimer.current);
+            scrollTimer.current = setTimeout(
+              () =>
+                list.current?.scrollToIndex({
+                  index,
+                  animated: false,
+                  viewPosition: 0.3,
+                }),
+              100,
+            );
+          }
+        }}
         data={rows}
         keyExtractor={({ item }) => rowKey(item)}
         refreshing={state.loading}
         onRefresh={() => {
-          if (ready) void pages.refresh();
+          if (ready) refreshList();
         }}
         contentContainerStyle={styles.padded}
         ListEmptyComponent={
@@ -198,6 +288,8 @@ function PageList<T>({
         renderItem={({ item: { item, depth } }) => (
           <View
             style={{
+              backgroundColor:
+                rowKey(item) === revealRef ? colors.surface : "transparent",
               paddingLeft: Math.min(depth, 2) * 12,
               borderBottomWidth: 0.5,
               borderColor: colors.border,
@@ -207,6 +299,7 @@ function PageList<T>({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${title(item)}`}
+                accessibilityState={{ selected: rowKey(item) === revealRef }}
                 disabled={!ready}
                 onPress={() => open(item)}
                 style={{ flex: 1, paddingVertical: 13, minHeight: 68, gap: 4 }}
@@ -462,6 +555,71 @@ export function ProjectScreen({
         />
       ) : (
         <Copy muted>Connect to this hub to browse sessions.</Copy>
+      )}
+    </SafeAreaView>
+  );
+}
+
+const sessionChildren = (row: NavigationSessionSummary) => row.children ?? [];
+export function SessionLocationScreen({
+  route,
+  navigation,
+}: NativeStackScreenProps<Routes, "SessionLocation">) {
+  const { client, activeProfile, state } = useConnection();
+  const colors = useColors();
+  const belongs = activeProfile?.id === route.params.hubId;
+  const { location } = route.params;
+  const pages = useMemo(
+    () =>
+      client && belongs
+        ? new NavigationPages<NavigationSessionSummary>(
+            client,
+            location.params,
+            "sessions",
+            sessionRef,
+          )
+        : null,
+    [client, belongs, location],
+  );
+  return (
+    <SafeAreaView
+      edges={["bottom", "left", "right"]}
+      style={[styles.fill, { backgroundColor: colors.background }]}
+    >
+      <View style={{ paddingHorizontal: 20, gap: 8 }}>
+        <Copy muted>
+          {belongs ? activeProfile?.name : "Disconnected hub"}
+          {location.params.tier ? ` · ${location.params.tier}` : ""}
+        </Copy>
+      </View>
+      {pages ? (
+        <PageList
+          pages={pages}
+          ready={state === "ready"}
+          revealRef={location.ref}
+          rowKey={sessionRef}
+          childRows={sessionChildren}
+          omitted={(row) =>
+            (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)
+          }
+          title={(row) => row.title || "Untitled session"}
+          detail={(row) =>
+            row.ask_pending || row.state === "awaiting"
+              ? "Needs you"
+              : row.state
+          }
+          empty="No sessions in this location."
+          organization={() => null}
+          open={(row) =>
+            navigation.navigate("Conversation", {
+              hubId: route.params.hubId,
+              ref: row.ref,
+              title: row.title,
+            })
+          }
+        />
+      ) : (
+        <Copy muted>Connect to this hub to locate the session.</Copy>
       )}
     </SafeAreaView>
   );
