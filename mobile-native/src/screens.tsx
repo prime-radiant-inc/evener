@@ -338,21 +338,32 @@ export function SessionsScreen({
     void roster.load(value);
   }
   useEffect(() => {
+    const openHubs = () => navigation.popToTop();
+    const openNew = () => {
+      if (activeProfile)
+        navigation.navigate("NewSession", {
+          hubId: activeProfile.id,
+          hubName: activeProfile.name,
+        });
+    };
     navigation.setOptions({
-      headerLeft: () => (
-        <Action onPress={() => navigation.popToTop()}>Hubs</Action>
-      ),
+      unstable_headerLeftItems: () => [
+        { type: "button", label: "Hubs", onPress: openHubs },
+      ],
+      unstable_headerRightItems: () => [
+        {
+          type: "button",
+          label: "New session",
+          disabled: !activeProfile || state !== "ready",
+          onPress: openNew,
+        },
+      ],
+      headerLeft: () => <Action onPress={openHubs}>Hubs</Action>,
       headerRight: () => (
         <Action
           label="New session"
           disabled={!activeProfile || state !== "ready"}
-          onPress={() => {
-            if (activeProfile)
-              navigation.navigate("NewSession", {
-                hubId: activeProfile.id,
-                hubName: activeProfile.name,
-              });
-          }}
+          onPress={openNew}
         >
           {fontScale > 1.4 ? "New" : "New session"}
         </Action>
@@ -746,54 +757,64 @@ export function ConversationScreen({
 
   const hasConversation = snapshot.conversation !== null;
   useEffect(() => {
+    const openWork = () => {
+      const current = store.getState().conversation;
+      if (!current || !client) return;
+      Keyboard.dismiss();
+      const context = {
+        hubId: route.params.hubId,
+        ref: route.params.ref,
+        threadId: current.id,
+        hubName: activeProfile?.name ?? "Hub",
+        client,
+      };
+      const tasks = () =>
+        setTaskContext({ ...context, hasTasks: current.tasks != null });
+      const activity = () => setActivityContext(context);
+      if (Platform.OS === "ios") {
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            title: "Work",
+            options: ["Tasks", "Activity", "Cancel"],
+            cancelButtonIndex: 2,
+          },
+          (index) => {
+            if (index === 0) tasks();
+            else if (index === 1) activity();
+          },
+        );
+      } else
+        Alert.alert("Work", undefined, [
+          { text: "Tasks", onPress: tasks },
+          { text: "Activity", onPress: activity },
+          { text: "Cancel", style: "cancel" },
+        ]);
+    };
+    const openSession = () => {
+      Keyboard.dismiss();
+      setSessionOpen(true);
+    };
     navigation.setOptions({
+      unstable_headerRightItems: () => [
+        {
+          type: "button",
+          label: "Work",
+          disabled: !hasConversation || !connected,
+          onPress: openWork,
+        },
+        {
+          type: "button",
+          label: "Session",
+          disabled: !hasConversation,
+          onPress: openSession,
+        },
+      ],
       headerRight: () => (
         <View style={styles.row}>
-          <Action
-            disabled={!hasConversation || !connected}
-            onPress={() => {
-              const current = store.getState().conversation;
-              if (!current || !client) return;
-              Keyboard.dismiss();
-              const context = {
-                hubId: route.params.hubId,
-                ref: route.params.ref,
-                threadId: current.id,
-                hubName: activeProfile?.name ?? "Hub",
-                client,
-              };
-              const tasks = () =>
-                setTaskContext({ ...context, hasTasks: current.tasks != null });
-              const activity = () => setActivityContext(context);
-              if (Platform.OS === "ios") {
-                ActionSheetIOS.showActionSheetWithOptions(
-                  {
-                    title: "Work",
-                    options: ["Tasks", "Activity", "Cancel"],
-                    cancelButtonIndex: 2,
-                  },
-                  (index) => {
-                    if (index === 0) tasks();
-                    else if (index === 1) activity();
-                  },
-                );
-              } else
-                Alert.alert("Work", undefined, [
-                  { text: "Tasks", onPress: tasks },
-                  { text: "Activity", onPress: activity },
-                  { text: "Cancel", style: "cancel" },
-                ]);
-            }}
-          >
+          <Action disabled={!hasConversation || !connected} onPress={openWork}>
             Work
           </Action>
-          <Action
-            disabled={!hasConversation}
-            onPress={() => {
-              Keyboard.dismiss();
-              setSessionOpen(true);
-            }}
-          >
+          <Action disabled={!hasConversation} onPress={openSession}>
             Session
           </Action>
         </View>
@@ -1390,15 +1411,27 @@ export function ConversationScreen({
                 borderColor: colors.border,
               }}
             >
-              <Action
-                tone="quiet"
-                label="Latest"
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Latest"
                 onPress={() =>
                   timeline.current?.scrollToEnd({ animated: true })
                 }
+                style={({ pressed }) => ({
+                  minWidth: Platform.OS === "ios" ? 44 : 48,
+                  minHeight: Platform.OS === "ios" ? 44 : 48,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: pressed ? 0.6 : 1,
+                })}
               >
-                ↓
-              </Action>
+                <Text
+                  allowFontScaling={false}
+                  style={{ fontSize: 24, color: colors.secondary }}
+                >
+                  ↓
+                </Text>
+              </Pressable>
             </View>
           ) : null}
         </View>
@@ -1528,7 +1561,7 @@ export function ConversationScreen({
                     borderWidth: 0,
                     padding: 2,
                     flex: 1,
-                    minWidth: 120,
+                    minWidth: fontScale > 1.4 ? "100%" : 120,
                     minHeight: Platform.OS === "android" ? 48 : 44,
                     maxHeight: fontScale > 1.6 ? 96 : 160,
                     textAlignVertical: "top",
@@ -1566,12 +1599,16 @@ export function ConversationScreen({
                   : command.command.label}
               </Action>
             ) : null}
-            {submissionActions(["send", "steer"])}
+            {fontScale <= 1.4 ? submissionActions(["send", "steer"]) : null}
           </View>
           <View
             style={[
               styles.row,
-              { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
+              {
+                flexWrap: "wrap",
+                justifyContent: fontScale > 1.4 ? "space-between" : "flex-end",
+                gap: 4,
+              },
             ]}
           >
             {canCompose && questions.length === 0 ? (
@@ -1587,6 +1624,7 @@ export function ConversationScreen({
                 {imageState.busy ? "Processing…" : "+"}
               </Action>
             ) : null}
+            {fontScale > 1.4 ? submissionActions(["send", "steer"]) : null}
             {conversation && canCompose ? (
               <ComposerSettings
                 conversation={conversation}
