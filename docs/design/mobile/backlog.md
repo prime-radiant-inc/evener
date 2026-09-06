@@ -235,10 +235,13 @@ is directory-backed; fetching a newer Git revision remains unverified. The marke
 refresh, external invalidation, separate read errors, selected-marketplace removal
 and disposed-hub/stale-response fencing. Six deterministic tests cover those
 contracts; all 264 native tests, TypeScript and touched-file Biome pass. [Browse and native catalog install](plugins-evidence.md#native-browse-and-installation)
-are now wired and manually verified on both platforms. Source refresh/removal and
-the Git URL/GitHub/hub-directory add form are implemented but still need native
-acceptance, including keyboard-open submission. Hub-path completion, realistic
-catalog density, visual hierarchy and full failure acceptance remain.
+are now wired and manually verified on both platforms. The hub-directory add form now has ordinary software-keyboard submission and
+invalid-path recovery evidence on both platforms, plus cross-client removal in
+both directions. The Android pass exposed and repaired keyboard obstruction after
+a rejection. Directory-source refresh was exercised on Android; Git URL/GitHub
+cloning and iOS source refresh remain unverified. See the [form evidence](plugins-evidence.md#ios-add-form-keyboard-recovery-and-reverse-removal).
+Hub-path completion, realistic catalog density, visual hierarchy, large text,
+screen readers and full failure acceptance remain.
 
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.

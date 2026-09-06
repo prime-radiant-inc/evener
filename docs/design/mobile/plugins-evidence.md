@@ -114,3 +114,37 @@ iOS add-form submission, reverse-direction source CRUD, Git sources, path
 completion, screen readers and visual acceptance remain open.
 
 ![Android rejected source with reachable submission above keyboard](assets/plugins/android-add-keyboard.png)
+
+
+## iOS add-form keyboard recovery and reverse removal
+
+On 6 September 2026, rebuilt and launched iOS Release at fc417145a successfully.
+Opened Plugins → Browse → Add marketplace → Hub directory. Entered an invalid
+hub path and name native-ios-form. The screenshot confirmed the software keyboard
+and Add were visible together; tapping Add produced the rejection while retaining
+both inputs.
+
+The Xcode UI tool's replaceExisting operation inserted text inside the old path
+and lowercased part of it. This was an automation failure, not accepted input
+correction or an app bug. Changed source kind to Git URL and back to Hub directory
+through native controls, preserving the name and clearing the source. Set the
+source via the simulator's native accessibility text-field API; the fresh runtime
+snapshot confirmed the exact owned fixture path including case. Scrolled the form
+until Add was fully visible above the software keyboard and tapped it. The sheet
+closed and native-ios-form appeared on iOS and Android without list reopening.
+
+Opened its catalog on iOS and Android, then removed the alias through Android's
+native confirmation naming native-ios-form and SecondHub. Android returned to
+its marketplace list; iOS's open catalog closed on the notification and the alias
+was absent from both lists. The original native-mobile-fixture was retained.
+
+This completes ordinary-keyboard directory-form creation/rejection recovery and
+cross-client removal in both directions across this and the preceding pass.
+It does not establish Git URL/GitHub cloning, large-text or screen-reader form
+acceptance, direct manual select-all editing, or visual polish. The corrected
+source still displays the previous rejection until resubmission, and the
+single-line hub path requires horizontal scrolling; path completion and form
+presentation remain open. No application code changed during this iOS pass;
+the preceding 264-test baseline still applies.
+
+![iOS corrected source and submission above software keyboard](assets/plugins/ios-add-keyboard.jpg)
