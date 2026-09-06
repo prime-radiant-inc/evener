@@ -27,6 +27,25 @@ afterEach(() => {
 });
 
 describe("durable draft lifecycle", () => {
+	it("replaces text and images together while preserving an uncertain submission", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("draft");
+		document.addImage({
+			id: "photo",
+			marker: 1,
+			mediaType: "image/png",
+			data: "AQID",
+		});
+		document.replaceDraft("/goal objective");
+		expect(repository.read(destination)).toEqual({
+			draft: "/goal objective",
+			unconfirmed: null,
+		});
+		await document.submit(async () => false);
+		document.replaceDraft("replacement");
+		expect(repository.read(destination).unconfirmed).toBe("/goal objective");
+		expect(repository.read(destination).draft).toBe("");
+	});
 	it("checkpoints queue-only submission before dispatch and retains uncertainty across remount", async () => {
 		const { document, repository, destination } = setup();
 		let calls = 0;

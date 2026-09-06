@@ -12,6 +12,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -37,6 +38,7 @@ import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
+import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
@@ -517,6 +519,17 @@ export function ConversationScreen({
   );
   const snapshot = store();
   const timeline = useRef<FlatList>(null);
+  const composerInput = useRef<TextInput>(null);
+  const focusAfterModal = useRef(false);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("focus", () => {
+      if (focusAfterModal.current && navigation.isFocused()) {
+        focusAfterModal.current = false;
+        composerInput.current?.focus();
+      }
+    });
+    return () => subscription.remove();
+  }, [navigation]);
   const [refreshing, setRefreshing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
@@ -720,6 +733,68 @@ export function ConversationScreen({
     !pending &&
     !settingsPending;
   const questions = batches.flatMap((batch) => batch.questions);
+  const goalCommand = goalObjective(
+    draft.record.draft,
+    draft.record.images?.length,
+  );
+  async function applyGoal(clear = false) {
+    if (
+      !service ||
+      !ready ||
+      !conversation?.capabilities.goal ||
+      draft.submitting ||
+      unconfirmedSend !== null ||
+      imageState.busy ||
+      questions.length
+    )
+      return;
+    setActionError(null);
+    const currentBinding = () =>
+      navigation.isFocused() &&
+      store.getState().conversationGeneration === bindingGeneration &&
+      store.getState().conversation?.instanceId === bindingInstance;
+    try {
+      await submitGoalCommand(document, service, clear);
+      if (!currentBinding()) return;
+      await store.getState().rehydrate(service, activitySink);
+    } catch {
+      if (!currentBinding()) return;
+      setActionError(
+        "Could not confirm the goal change. Check the current goal before trying again.",
+      );
+    }
+  }
+  function editGoal() {
+    const replace = () => {
+      if (
+        !connectionReady.current ||
+        !navigation.isFocused() ||
+        store.getState().conversationGeneration !== bindingGeneration ||
+        document.getSnapshot().submitting ||
+        document.getSnapshot().record.unconfirmed !== null
+      )
+        return;
+      imageSelection.cancel();
+      document.replaceDraft(
+        `/goal ${store.getState().conversation?.goal?.objective ?? ""}`,
+      );
+      // Android's dialog must release window focus before opening the keyboard.
+      focusAfterModal.current = Platform.OS === "android";
+      setSessionOpen(false);
+      if (Platform.OS === "ios")
+        requestAnimationFrame(() => composerInput.current?.focus());
+    };
+    if (draft.record.draft || draft.record.images?.length)
+      Alert.alert(
+        "Replace this draft?",
+        "The current message and attachments will be replaced with an editable goal command.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Replace draft", onPress: replace },
+        ],
+      );
+    else replace();
+  }
   async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
     const current = store.getState();
     questionBatches.reconcile(pendingQuestions(current.conversation));
@@ -876,6 +951,16 @@ export function ConversationScreen({
           }
           ready={ready}
           close={() => setSessionOpen(false)}
+          editGoal={editGoal}
+          clearGoal={() => void applyGoal(true)}
+          goalError={actionError ?? draft.error}
+          goalDisabled={
+            !ready ||
+            draft.submitting ||
+            unconfirmedSend !== null ||
+            imageState.busy ||
+            questions.length > 0
+          }
         />
       ) : null}
       {queueOpen && conversation && service ? (
@@ -1035,12 +1120,24 @@ export function ConversationScreen({
               {`${conversation.queue.depth} queued`}
             </Action>
           ) : null}
+          {conversation?.goal ? (
+            <Action
+              tone="quiet"
+              onPress={() => {
+                Keyboard.dismiss();
+                setSessionOpen(true);
+              }}
+            >
+              {`Goal · ${conversation.goal.status}`}
+            </Action>
+          ) : null}
           {questions.length === 0 ? (
             <ImageAttachments document={document} selection={imageSelection} />
           ) : null}
           <ErrorMessage message={imageState.error} />
           {questions.length === 0 ? (
             <TextInput
+              ref={composerInput}
               accessibilityLabel="Message"
               multiline
               value={draft.record.draft}
@@ -1155,39 +1252,58 @@ export function ConversationScreen({
                 Stop
               </Action>
             ) : null}
-            {(["send", "steer", "queue"] as const).map((kind) =>
-              questions.length === 0 && conversation?.capabilities[kind] ? (
-                <Action
-                  key={kind}
-                  tone={
-                    kind === "send" ||
-                    (kind === "steer" && !conversation.capabilities.send)
-                      ? "primary"
-                      : "quiet"
-                  }
-                  disabled={
-                    !ready ||
-                    !draft.loaded ||
-                    !!draft.error ||
-                    draft.submitting ||
-                    unconfirmedSend !== null ||
-                    imageState.busy ||
-                    (!draft.record.draft.trim() &&
-                      !draft.record.images?.length &&
-                      !(kind === "steer" && conversation.queue.depth > 0))
-                  }
-                  onPress={() => {
-                    void mutate(kind);
-                  }}
-                >
-                  {kind === "send"
-                    ? "Send"
-                    : kind === "steer"
-                      ? "Steer"
-                      : "Queue"}
-                </Action>
-              ) : null,
-            )}
+            {questions.length === 0 && goalCommand !== null ? (
+              <Action
+                tone="primary"
+                disabled={
+                  !ready ||
+                  !draft.loaded ||
+                  !!draft.error ||
+                  draft.submitting ||
+                  unconfirmedSend !== null ||
+                  imageState.busy ||
+                  (!goalCommand && !conversation?.goal) ||
+                  !conversation?.capabilities.goal
+                }
+                onPress={() => void applyGoal()}
+              >
+                {goalCommand || !conversation?.goal ? "Set goal" : "Clear goal"}
+              </Action>
+            ) : null}
+            {goalCommand === null &&
+              (["send", "steer", "queue"] as const).map((kind) =>
+                questions.length === 0 && conversation?.capabilities[kind] ? (
+                  <Action
+                    key={kind}
+                    tone={
+                      kind === "send" ||
+                      (kind === "steer" && !conversation.capabilities.send)
+                        ? "primary"
+                        : "quiet"
+                    }
+                    disabled={
+                      !ready ||
+                      !draft.loaded ||
+                      !!draft.error ||
+                      draft.submitting ||
+                      unconfirmedSend !== null ||
+                      imageState.busy ||
+                      (!draft.record.draft.trim() &&
+                        !draft.record.images?.length &&
+                        !(kind === "steer" && conversation.queue.depth > 0))
+                    }
+                    onPress={() => {
+                      void mutate(kind);
+                    }}
+                  >
+                    {kind === "send"
+                      ? "Send"
+                      : kind === "steer"
+                        ? "Steer"
+                        : "Queue"}
+                  </Action>
+                ) : null,
+              )}
           </View>
         </View>
       </KeyboardAvoidingView>

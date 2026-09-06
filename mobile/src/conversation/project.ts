@@ -594,6 +594,7 @@ export function projectThread(thread: Thread): MobileConversation {
     reasoningEffort: thread.evener.reasoningEffort,
     reasoningEffortLevels: thread.evener.reasoningEffortLevels,
     supportsReasoning: thread.evener.supportsReasoning,
+    goal: thread.evener.goal ?? null,
     askPending: pendingAsks.size > 0,
     pendingApprovals: (thread.evener.pendingEscalations ?? [])
       .filter(
