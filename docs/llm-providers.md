@@ -472,10 +472,9 @@ file using any of them fails to load; see
    OAuth client configuration, not a credential), or a value of the wrong
    type in any field Google's parser decodes, external-account fields
    included (for example a numeric `quota_project_id`) — is ignored with a
-   warning
-   naming the remedy, and resolution falls through to application-default
-   credentials. The gate reads these fields the way Google's library does,
-   matching key names case-insensitively.
+   warning naming the remedy, and resolution falls through to
+   application-default credentials. The gate reads these fields the way
+   Google's library does, matching key names case-insensitively.
 
 ## Cloud transports: Azure, Bedrock, Vertex
 
