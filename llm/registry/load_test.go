@@ -397,6 +397,56 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 	}
 }
 
+// A provider can have both an upstream (models.dev) entry and an overlay entry
+// naming a base with inherit_models_matching; the glob narrows the rows it
+// inherits from the base, never the rows the provider brings itself.
+func TestLoad_InheritModelsMatchingKeepsTheProviderOwnUpstreamRows(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["matchup"] = json.RawMessage(`{"id":"matchup","name":"Match Upstream","models":{"beta-9":{"id":"beta-9","name":"Beta 9","modalities":{"input":["text"],"output":["text"]},"limit":{"context":8000,"output":1000}}}}`)
+	data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := overlayWith(`
+[providers.matchbase]
+implicit = true
+name = "Match Base"
+protocol = "openai-chat"
+surface = "generic"
+base_url = "https://example.test/v1"
+auth = "none"
+
+[providers.matchbase.models."alpha-1"]
+[providers.matchbase.models."beta-1"]
+
+[providers.matchup]
+implicit = true
+base = "matchbase"
+inherit_models_matching = ["alpha-*"]
+`)
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(overlay))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := r.curated["matchup"]
+	if up == nil {
+		t.Fatal("matchup missing")
+	}
+	if got, want := sortedKeys(up.head.Models), []string{"alpha-1", "beta-9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("matchup model ids = %v, want %v (own upstream row kept, base's beta-1 dropped)", got, want)
+	}
+	if res, err := r.Resolve("matchup/beta-9"); err != nil || res.Synthesized {
+		t.Fatalf("matchup's own upstream row beta-9 must survive the inherited-row glob: res=%+v err=%v", res, err)
+	}
+}
+
 func TestLoad_InheritModelsMatchingKeepsOnlyMatchingBaseRows(t *testing.T) {
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {

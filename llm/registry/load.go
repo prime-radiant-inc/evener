@@ -410,6 +410,7 @@ func (r *Registry) curatedRecord(id string, upstream map[string]Provider, ov *La
 			return nil, fmt.Errorf("providers.%s: base: %w", id, err)
 		}
 		rec.inherit(base)
+		rec.keepInheritedRows(ovp.InheritModelsMatching)
 	}
 	if hasUp {
 		if err := rec.fold(up, r.catalogTag, r.presets); err != nil {
@@ -441,6 +442,7 @@ func (r *Registry) instanceRecord(p Provider) (*record, error) {
 			return nil, fmt.Errorf("providers.%s: base %q is not a registry id", p.ID, baseID)
 		}
 		rec.inherit(base)
+		rec.keepInheritedRows(p.InheritModelsMatching)
 		rec.providerID = baseID
 	}
 	if err := rec.fold(p, LayerConfig, r.presets); err != nil {
@@ -477,6 +479,26 @@ func (rec *record) inherit(base *record) {
 	}
 	rec.userVars = mergeStringMap(nil, base.userVars)
 	rec.notes = append([]string(nil), base.notes...)
+}
+
+// keepInheritedRows narrows the rows just copied by inherit to those whose
+// id matches a pattern (inherit_models_matching). It runs before any of the
+// record's own layers fold in, so a provider's own rows — its upstream entry
+// or its overlay/user rows — are never subject to the glob. The inherited
+// layers' row maps are shared with the base record, so they are rebuilt,
+// never edited in place.
+func (rec *record) keepInheritedRows(patterns []string) {
+	if len(patterns) == 0 {
+		return
+	}
+	for id := range rec.head.Models {
+		if !matchesAnyGlob(patterns, id) {
+			delete(rec.head.Models, id)
+		}
+	}
+	for i := range rec.layers {
+		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns)
+	}
 }
 
 func cloneTransport(t Transport) Transport {
@@ -660,8 +682,9 @@ func setIfNonEmpty(dst *string, src string) {
 
 // fold overlays one layer's record onto rec (spec §4.1, §4.2): scalars set
 // if non-empty, maps key-wise, transports field-wise after preset expansion,
-// the cross-protocol rule, inherit_models = false, and
-// inherit_models_matching.
+// the cross-protocol rule, and inherit_models = false. inherit_models_matching
+// is only recorded here; keepInheritedRows applies it at inherit time, before
+// any of the record's own layers fold in.
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
@@ -674,16 +697,6 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 		h.Models = map[string]Model{}
 		for i := range rec.layers {
 			rec.layers[i].rows = nil
-		}
-	}
-	if len(src.InheritModelsMatching) > 0 {
-		for id := range h.Models {
-			if !matchesAnyGlob(src.InheritModelsMatching, id) {
-				delete(h.Models, id)
-			}
-		}
-		for i := range rec.layers {
-			rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, src.InheritModelsMatching)
 		}
 	}
 	t, err := expandPreset(src.Transport, presets, where)
