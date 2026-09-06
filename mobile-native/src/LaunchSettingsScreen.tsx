@@ -31,6 +31,7 @@ import type {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { HubDirectoryField } from "./HubDirectoryField";
+import { LaunchEnvironmentEditor } from "./LaunchEnvironmentEditor";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import {
   assertLaunchFieldCurrent,
@@ -59,6 +60,8 @@ export function LaunchSettingsScreen({ route, navigation }: Props) {
 }
 function scalarValue(config: LaunchConfigLayer | null, field: string): string {
   const value = (config as Record<string, unknown> | null)?.[field];
+  if (value && typeof value === "object" && !Array.isArray(value))
+    return Object.keys(value).join(", ");
   return value === undefined ? "" : String(value);
 }
 function LaunchDefaults({
@@ -107,7 +110,7 @@ function LaunchDefaults({
   const options = (state.options ?? []).filter(
     (option) =>
       option.defaultableLayers?.includes("global") &&
-      scalarKinds.has(option.kind) &&
+      (scalarKinds.has(option.kind) || option.kind === "envMap") &&
       !inactivePromptDependent(option.wireField, state.draft ?? {}) &&
       `${option.label} ${option.group} ${option.description ?? ""}`
         .toLowerCase()
@@ -229,16 +232,12 @@ function LaunchDefaults({
           </View>
         ))}
       </ScrollView>
-      {selected && (
-        <ScalarEditor
+      {selected?.kind === "envMap" ? (
+        <LaunchEnvironmentEditor
           key={selected.wireField}
           option={selected}
-          value={scalarValue(state.draft, selected.wireField)}
-          effective={scalarValue(
-            state.resolved?.effective ?? null,
-            selected.wireField,
-          )}
-          client={client}
+          value={state.draft?.env}
+          effective={state.resolved?.effective.env}
           close={() => setSelected(null)}
           apply={(value) => {
             model.edit(selected.wireField as keyof LaunchConfigLayer, value);
@@ -246,6 +245,25 @@ function LaunchDefaults({
             setSelected(null);
           }}
         />
+      ) : (
+        selected && (
+          <ScalarEditor
+            key={selected.wireField}
+            option={selected}
+            value={scalarValue(state.draft, selected.wireField)}
+            effective={scalarValue(
+              state.resolved?.effective ?? null,
+              selected.wireField,
+            )}
+            client={client}
+            close={() => setSelected(null)}
+            apply={(value) => {
+              model.edit(selected.wireField as keyof LaunchConfigLayer, value);
+              setNotice(null);
+              setSelected(null);
+            }}
+          />
+        )
       )}
     </SafeAreaView>
   );
