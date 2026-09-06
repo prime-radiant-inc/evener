@@ -41,16 +41,11 @@ export function LaunchSettingsScreen({ route, navigation }: Props) {
   const { activeProfile, client, state, retry } = useConnection();
   if (activeProfile?.id !== route.params.hubId)
     return <Copy>This hub is no longer selected.</Copy>;
-  if (!client || state !== "ready")
-    return (
-      <View style={{ padding: 20 }}>
-        <Copy>Reconnect to edit launch defaults.</Copy>
-        <Action onPress={retry}>Reconnect</Action>
-      </View>
-    );
   return (
     <LaunchDefaults
-      client={client}
+      key={activeProfile.id}
+      client={state === "ready" ? client : null}
+      retry={retry}
       hubName={activeProfile.name}
       navigation={navigation}
     />
@@ -62,31 +57,32 @@ function scalarValue(config: LaunchConfigLayer | null, field: string): string {
 }
 function LaunchDefaults({
   client,
+  retry,
   hubName,
   navigation,
 }: {
-  client: ConversationClientLike;
+  client: ConversationClientLike | null;
+  retry(): void;
   hubName: string;
   navigation: Props["navigation"];
 }) {
   const colors = useColors();
-  const model = useMemo(
-    () => new LaunchSettings(client, "/", "global"),
-    [client],
-  );
+  const model = useMemo(() => new LaunchSettings(null, "/", "global"), []);
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const [selected, setSelected] = useState<LaunchOption | null>(null);
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
-    model.start();
-    void model.refresh();
+    alive.current = true;
     return () => {
       alive.current = false;
       model.dispose();
     };
   }, [model]);
+  useEffect(() => {
+    void model.setConnection(client);
+  }, [model, client]);
   usePreventRemove(state.dirty || state.saving, ({ data }) => {
     if (state.saving) return;
     Alert.alert(
@@ -121,6 +117,12 @@ function LaunchDefaults({
         contentContainerStyle={{ padding: 20, gap: 10 }}
       >
         <Copy>{hubName}</Copy>
+        {!client && (
+          <View>
+            <Copy>Disconnected. Your unsaved changes are kept here.</Copy>
+            <Action onPress={retry}>Reconnect</Action>
+          </View>
+        )}
         <Copy muted>
           Defaults for new Evener sessions. Project and per-launch settings can
           override these values.
@@ -128,6 +130,7 @@ function LaunchDefaults({
         <View style={[styles.row, { flexWrap: "wrap" }]}>
           <Action
             disabled={
+              !client ||
               !state.dirty ||
               state.loading ||
               state.saving ||
@@ -143,7 +146,7 @@ function LaunchDefaults({
             Save defaults
           </Action>
           <Action
-            disabled={state.loading || state.saving}
+            disabled={!client || state.loading || state.saving}
             onPress={() => {
               const reload = () => {
                 setNotice(null);
@@ -252,7 +255,7 @@ function ScalarEditor({
   option: LaunchOption;
   value: string;
   effective: string;
-  client: ConversationClientLike;
+  client: ConversationClientLike | null;
   close(): void;
   apply(value: string | number | boolean | undefined): void;
 }) {
@@ -267,26 +270,38 @@ function ScalarEditor({
     },
     [],
   );
+  const validation = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new transport invalidates validation replies from the old connection.
+  useEffect(() => {
+    validation.current += 1;
+    setBusy(false);
+  }, [client]);
   async function done() {
     if (busy) return;
+    const generation = ++validation.current;
+    const active = () => alive.current && generation === validation.current;
     setError(null);
     setBusy(true);
     try {
       const parsed = parseLaunchScalar(option, raw);
       if (parsed !== undefined && option.kind === "path") {
+        if (!client) {
+          setError("Reconnect to validate this path on the hub.");
+          return;
+        }
         const validation = await client.request("evener/path/validate", {
           path: String(parsed),
           kind: schemaPathKind(option.pathKind),
         });
         if (!validation.valid) {
-          if (alive.current)
+          if (active())
             setError(validation.error || "This path is not valid on the hub.");
           return;
         }
       }
-      if (alive.current) apply(parsed);
+      if (active()) apply(parsed);
     } catch (err) {
-      if (alive.current)
+      if (active())
         setError(
           err instanceof Error &&
             [
@@ -298,7 +313,7 @@ function ScalarEditor({
             : friendlyErrorMessage(err),
         );
     } finally {
-      if (alive.current) setBusy(false);
+      if (active()) setBusy(false);
     }
   }
   const choices =
@@ -362,7 +377,9 @@ function ScalarEditor({
                   onPress={() => setRaw(choice.value)}
                 />
               ))
-            ) : option.kind === "path" && option.pathKind === "dir" ? (
+            ) : client &&
+              option.kind === "path" &&
+              option.pathKind === "dir" ? (
               <HubDirectoryField
                 client={client}
                 label={option.label}

@@ -16,6 +16,20 @@ and linked evidence are historical detail; entries below describe open work.
 
 ## Next work
 
+### MOB-017 · P1 · Resolve Android input-dispatch ANR · Open
+
+The installed Release app timed out while entering the launch-settings search
+on Pixel 7/API 35. Android displayed “Evener isn't responding”; the event log
+reported 5491 ms waiting for the R key. A delayed native stack caught the main
+thread in Fabric view preallocation. Guest CPU pressure was also high, so the
+trace does not yet establish app versus emulator causality.
+
+Acceptance: reproduce with sequential UI actions, collect timely main/JS/render
+thread evidence and system load, identify the cause, fix it where it originates,
+and repeat keyboard/search/navigation checks on Android. Do not dismiss the ANR
+because the app eventually responds or merely reduce observation frequency.
+See [reconnect and Android evidence](hub-information-and-launch-settings.md#reconnect-draft-retention).
+
 ### MOB-011 · P1 · Move Submit to the composer controls row · In progress
 
 Jesse: “the composer puts the submit button on the same row as text, rather
@@ -274,7 +288,8 @@ agents and both-platform empty Codex/MCP states are verified. See
 save/readback/restoration smoke pass. Native scalar editors are now wired;
 all 285 native tests and TypeScript pass. iOS numeric save, invalid-number
 rejection and override removal have native evidence. Android editor acceptance,
-collections, model catalog and reconnect draft preservation remain open. See
+collections and model catalog remain open. Reconnect drafts now have controller
+coverage and iOS background/return evidence; Android hit MOB-017. See
 [launch progress](hub-information-and-launch-settings.md#native-scalar-editors).
 Nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
 screen readers and visual acceptance remain open.
