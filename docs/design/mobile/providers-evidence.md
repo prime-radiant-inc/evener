@@ -94,3 +94,26 @@ insets and interactive dismissal. Subsequent automated swipes did not conclusive
 establish bottom-action reachability with the keyboard open; a targeted gesture
 and geometry check is still required. Do not count successful saving after Return
 as proof this finding is fixed. Keep this under MOB-012/MOB-010 until verified.
+
+
+### Keyboard finding: ordinary-size reachability verified
+
+At `b60407d31`, reproduced the creation sheet on iPhone 17 Pro with the actual
+software keyboard visible. Three short upward strokes inside the unobscured form
+(`withinElementRef` scroll region, distance 0.15) moved Save and Cancel fully above
+the keyboard. The tool reported strokes from logical (201, 512) to (201, 434).
+The previous 0.8–0.9 strokes extended into the keyboard-covered part of the scroll
+region, so their failure did not establish that native scrolling was broken.
+
+Tapped Save with the keyboard still open and obtained the local missing-provider
+validation message. A further short stroke reached the actions after the error
+expanded the form; Cancel closed it and returned to the provider list. No server
+mutation was attempted. Both screenshots below were visually inspected. No code
+change was needed for this verification.
+
+This closes the ordinary-text bottom-action reachability observation for the
+current build. It does not establish the earlier wrapper's behavior, large-text
+acceptance, screen-reader navigation or successful creation with the keyboard open.
+
+![Actions above the iOS keyboard](assets/providers/ios-keyboard-actions.png)
+![Keyboard-open validation](assets/providers/ios-keyboard-validation.png)
