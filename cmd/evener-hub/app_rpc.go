@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -217,6 +218,30 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
 		Logf:                 hubLogf,
+		SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
+			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+				return "", false
+			}
+			var params appwire.ThreadReadParams
+			if json.Unmarshal(msg.Request.Params, &params) != nil {
+				return "", false
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return "", false
+			}
+			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe && !relayOnThreadRead(source) {
+				return "", false
+			}
+			// Stable refs and current IDs name one pending admission, but
+			// must not rewrite the relay's notification delivery identity.
+			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+				ref, err := daemon.ResolveRelaySession(params)
+				return ref.String(), err == nil
+			}
+			key, _, err := threadRelayTarget(source, params)
+			return key, err == nil
+		},
 		Features: appwire.FeatureSet{
 			ThreadList:                true,
 			ThreadTurnsList:           true,

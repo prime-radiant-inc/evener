@@ -174,6 +174,29 @@ func TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce(t *testing.T) {
 	}
 }
 
+func TestHubRelayRealWireReadUnsubscribeAliases(t *testing.T) {
+	pool := &aliasRelayPool{}
+	source := &aliasRelaySource{canonicalRefs: map[string]appwire.Ref{
+		"root-thread": {SourceID: "local", ThreadID: "root-thread"},
+	}, pool: pool}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:root-thread"}); err != nil {
+		t.Fatalf("ref-only subscribe read: %v", err)
+	}
+	if _, err := client.ThreadUnsubscribe(t.Context(), appwire.ThreadUnsubscribeParams{ThreadID: "root-thread"}); err != nil {
+		t.Fatalf("mixed-alias unsubscribe: %v", err)
+	}
+}
+
 func TestHubRelaySharedSessionAliasesEnrichUntargetedOutputImages(t *testing.T) {
 	const (
 		rootRef  = "local:root-image"
