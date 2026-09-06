@@ -208,8 +208,13 @@ failures remain actionable.
 
 The packaged `inspect.mjs` recipe uses only the public library and `ws`. It has
 been run from a clean tarball consumer against an authenticated isolated hub.
-It currently covers initialize, model/list, thread/list, launch/schema and
-launch/resolve. It does not claim mutation, notification or whole-protocol coverage.
+The inspection recipe covers initialize, model/list, thread/list, launch/schema
+and launch/resolve. The opt-in `project-layer.mjs` recipe adds getLayer, setLayer
+and the launch/updated notification. It writes a project override, checks the
+layer and effective configuration, restores the original layer and checks that
+the global layer stayed unchanged. See the package README for invocation and
+concurrent-writer limitations. These recipes cover seven catalog methods and one
+notification; they do not establish whole-protocol or failure-path coverage.
 
 The target is a fixture-backed cookbook covering every supported catalog method
 and notification, including alternate outcomes. Each recipe must describe its
@@ -244,3 +249,7 @@ resolution. The compiled package uses CommonJS while retaining the shared source
 imports used by the apps; final iOS and Android Release bundles pass. This is
 packaging evidence, not complete client recovery or scenario coverage. The
 package has not been published to a registry.
+
+The project-layer recipe also ran successfully from the independently installed
+tarball against the isolated hub on 6 September 2026. Project write, notification,
+readback, resolution, restoration and unchanged global settings were verified.
