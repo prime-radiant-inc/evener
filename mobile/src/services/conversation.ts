@@ -349,6 +349,14 @@ export function createConversationService(
   // resolving after close/reopen) no-ops against the live pair.
   let openEpoch = 0;
 
+  function requireQueueRun(): void {
+    // Promoting or draining also wakes a held queue when the session is idle.
+    if (!capabilities?.steer && !capabilities?.send)
+      throw new Error(
+        "Running queued messages is unavailable for this session.",
+      );
+  }
+
   function requireQueueInstance(expected: string): string {
     const threadRef = requireRef();
     if (nonemptyString(expected, "observed thread instance id") !== instanceId)
@@ -729,7 +737,7 @@ export function createConversationService(
 
     async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
       const threadRef = requireQueueInstance(expectedInstanceId);
-      requireCap("steer", "promoteQueuedAsSteer");
+      requireQueueRun();
       return withCapabilityRefresh("promoteQueuedAsSteer", () =>
         client.request("turn/promoteQueuedAsSteer", {
           ref: threadRef,
@@ -743,7 +751,7 @@ export function createConversationService(
 
     async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
       const threadRef = requireQueueInstance(expectedInstanceId);
-      requireCap("steer", "drainAsSteer");
+      requireQueueRun();
       return withCapabilityRefresh("drainAsSteer", () =>
         client.request("turn/drainAsSteer", {
           ref: threadRef,

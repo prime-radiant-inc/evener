@@ -2760,6 +2760,25 @@ describe("observed queue guards", () => {
       client.calls.filter((c) => c.method === "turn/cancelQueued"),
     ).toHaveLength(0);
   });
+  it("can run a held queue from idle without an active-turn steer capability", async () => {
+    const thread = makeThread();
+    thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
+    const { service, client } = setup({ thread });
+    client.on("turn/promoteQueuedAsSteer", () => ({
+      receipt: makeReceipt("steer"),
+    }));
+    client.on("turn/drainAsSteer", () => ({ receipt: makeReceipt("steer") }));
+    await service.open("ref-1");
+    await expect(
+      service.promoteQueuedAsSteer(0, "held-entry", "thread-1"),
+    ).resolves.toHaveProperty("receipt");
+    await expect(service.drainAsSteer(3, "thread-1")).resolves.toHaveProperty(
+      "receipt",
+    );
+    expect(
+      client.calls.filter((c) => c.method.startsWith("turn/")),
+    ).toHaveLength(2);
+  });
   it("carries the observed entry and revision without retrying a conflict", async () => {
     const { service, client } = setup();
     const conflict = new WireError("queue changed", -32013, {
