@@ -189,6 +189,25 @@ type LocalExecutionEnvironment struct {
 	// (AdoptSessionScratch).
 	unsandboxedScratch       *sandbox.SessionScratch
 	unsandboxedScratchFailed bool
+
+	// scratchMovedOut, when non-nil, runs on the SOURCE of a scratch move
+	// (AdoptSessionScratch) at the point its two fields have been taken and the
+	// target has not yet installed them — the interval in which a command
+	// spawned on this env finds it owning nothing and mints a fresh scratch. It
+	// is an instance-local test seam, set through
+	// ObserveScratchMoveWindowForTesting, so a test can drive that interleaving
+	// deterministically instead of racing for it; nil in production, and not
+	// copied by either clone path.
+	scratchMovedOut func()
+}
+
+// ObserveScratchMoveWindowForTesting installs fn as this environment's
+// scratch-move window observer (scratchMovedOut). It is exported because what
+// the window costs is settled by a SESSION's close, which lives in another
+// package and cannot reach the field. Install it before the move it observes;
+// changing it while one is in flight is not safe.
+func (e *LocalExecutionEnvironment) ObserveScratchMoveWindowForTesting(fn func()) {
+	e.scratchMovedOut = fn
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
@@ -801,10 +820,25 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	// The two envs' locks are never held together, so swaps in opposite
 	// directions cannot deadlock; whatever this env keeps is retained after
 	// both are released.
+	//
+	// Between the two, `from` owns nothing, and a command a child sharing it
+	// spawns there mints a scratch this move never sees. That interval needs no
+	// bookkeeping of its own: its outcome is the one a spawn landing just AFTER
+	// the move produces, which is how an emptied source already behaves, and
+	// what accounts for the scratch is the ENVIRONMENT, not the move. A session
+	// keeps every environment it swapped away from within its close's reach
+	// (worktreeRestoreEnv or abandonedEnvs, both recorded under the install's
+	// own lock hold and fenced against close), and that is what releases the
+	// lease. A "moving" flag making the mint wait would change no outcome, and
+	// it would put a blocking wait in commandEnvironment's overlay, which every
+	// spawn on every environment goes through.
 	from.scratchMu.Lock()
 	owned, unsandboxed := from.ownedSessionTmp, from.unsandboxedScratch
 	from.ownedSessionTmp, from.unsandboxedScratch = nil, nil
 	from.scratchMu.Unlock()
+	if window := from.scratchMovedOut; window != nil {
+		window()
+	}
 	e.scratchMu.Lock()
 	if e.ownedSessionTmp == nil {
 		e.ownedSessionTmp, owned = owned, nil
