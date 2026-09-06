@@ -9,11 +9,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
 )
+
+// TRIPWIRE: every real process this file spawns does milliseconds of work — a
+// shell writing one file, or a signalled child running a trap that stats one
+// directory. A ceiling this generous fires only when a process wedges, never
+// because the runner is loaded.
+const processTripwire = 30 * time.Second
 
 // TestEnableSandboxProvisionsSeatbeltBackend: EnableSandbox provisions the kernel
 // wrapper for whichever backend resolved — bubblewrap on Linux, sandbox-exec
@@ -236,6 +243,12 @@ func TestCleanupRetainsOwnedTmpAfterChildGrace(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 	env.ownedSessionTmp = tmp
+	// Cleanup escalates to SIGKILL a fixed grace after the SIGTERM, so a child
+	// the host has not scheduled by then dies before its trap can record what it
+	// saw. Awaiting the exit inside Terminate holds the escalation behind the
+	// child's own shutdown, leaving the ordering in Cleanup as the only thing the
+	// sentinel below can be reporting on.
+	env.commandFactory = awaitedTerminationFactory{}
 	sentinel := filepath.Join(dir, "tmp-was-present")
 	ready := filepath.Join(dir, "trap-installed")
 
@@ -252,19 +265,37 @@ sleep 300 & wait`
 		t.Fatalf("StreamCommand: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	// The awaited Terminate blocks Cleanup until the child exits, and the child is
+	// reaped only here, so the reaper has to be running before Cleanup is called.
+	exited := make(chan int, 1)
+	go func() {
+		code, _ := h.Wait()
+		exited <- code
+	}()
+
+	readyBy := time.Now().Add(processTripwire)
 	for {
 		if _, err := os.Stat(ready); err == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(readyBy) {
 			t.Fatal("child never signaled trap readiness")
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 
 	env.Cleanup()
-	_, _ = h.Wait()
+
+	select {
+	case code := <-exited:
+		// The trap ends in `exit 0`; anything else means the child died on a signal
+		// with its handler unfinished, which says nothing about the tmp's lifetime.
+		if code != 0 {
+			t.Fatalf("child exited %d instead of completing its TERM trap, so its observation of the owned tmp never happened", code)
+		}
+	case <-time.After(processTripwire):
+		t.Fatal("child never exited after Cleanup's SIGTERM/grace/SIGKILL sequence")
+	}
 
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("Cleanup disposed the owned tmp before signaling the child (TMPDIR pulled out from under graceful shutdown): sentinel missing, stat err = %v", err)
@@ -277,6 +308,48 @@ sleep 300 & wait`
 	}
 	if _, err := os.Stat(tmp.Dir); !os.IsNotExist(err) {
 		t.Errorf("manual scratch cleanup must remove the owned tmp, stat err = %v", err)
+	}
+}
+
+// awaitedTerminationFactory hands out real shell runtimes whose Terminate
+// returns only once the signalled child has exited. A test that needs to see
+// what a child did while it was shutting down installs it so Cleanup's SIGKILL
+// escalation cannot land mid-shutdown on a loaded host.
+type awaitedTerminationFactory struct{}
+
+func (awaitedTerminationFactory) Shell(command string) commandRuntime {
+	return &awaitedTerminationRuntime{
+		commandRuntime: systemCommandRuntimeFactory{}.Shell(command),
+		exited:         make(chan struct{}),
+	}
+}
+
+func (awaitedTerminationFactory) Argv(name string, args ...string) commandRuntime {
+	return systemCommandRuntimeFactory{}.Argv(name, args...)
+}
+
+type awaitedTerminationRuntime struct {
+	commandRuntime
+	exited chan struct{}
+	once   sync.Once
+}
+
+func (r *awaitedTerminationRuntime) Wait() error {
+	err := r.commandRuntime.Wait()
+	r.once.Do(func() { close(r.exited) })
+	return err
+}
+
+// Terminate signals as the system runtime does, then waits out the child's
+// shutdown. The reaper (StreamHandle.Wait) has to be running on another
+// goroutine for the exit to be observed here.
+func (r *awaitedTerminationRuntime) Terminate() {
+	r.commandRuntime.Terminate()
+	timer := time.NewTimer(processTripwire)
+	defer timer.Stop()
+	select {
+	case <-r.exited:
+	case <-timer.C:
 	}
 }
 
@@ -602,7 +675,7 @@ func wrapperConfinedEnvAt(t *testing.T, worktree string) *LocalExecutionEnvironm
 // write beside it: the two must name the same directory.
 func assertFileToolsShareTheShellScratch(t *testing.T, env *LocalExecutionEnvironment) {
 	t.Helper()
-	if _, err := env.ExecCommand(context.Background(), `printf shell > "$EVENER_SCRATCH_DIR/probe"`, 5000, "", nil); err != nil {
+	if _, err := env.ExecCommand(context.Background(), `printf shell > "$EVENER_SCRATCH_DIR/probe"`, int(processTripwire.Milliseconds()), "", nil); err != nil {
 		t.Fatalf("shell write into the scratch: %v", err)
 	}
 	scratch := env.SessionScratchDir()
@@ -789,7 +862,7 @@ func TestAdoptSessionScratchRetiresTheSourcesFileToolLayers(t *testing.T) {
 		"unsandboxed": func(t *testing.T, worktree string) *LocalExecutionEnvironment {
 			env := NewLocalExecutionEnvironment(worktree)
 			t.Cleanup(func() { env.Cleanup(); env.DisposeUnadoptedScratch() })
-			if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			if _, err := env.ExecCommand(context.Background(), "true", int(processTripwire.Milliseconds()), "", nil); err != nil {
 				t.Fatalf("ExecCommand: %v", err)
 			}
 			return env
@@ -841,7 +914,7 @@ func TestScratchSandboxForDoesNotInstallALayerForARootMovedAway(t *testing.T) {
 	}
 	owner := NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(func() { owner.Cleanup(); owner.DisposeUnadoptedScratch() })
-	if _, err := owner.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+	if _, err := owner.ExecCommand(context.Background(), "true", int(processTripwire.Milliseconds()), "", nil); err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
 	scratch := owner.SessionScratchDir()
