@@ -161,6 +161,14 @@ type serveDeps struct {
 	prepareAppIdentityFromEntries func(sourceID, threadID, ref string, header transcript.Header, entries []transcript.Entry) (server.PreparedAppIdentity, error)
 	updateSessionID               func(*rvreg.Registration, string) error
 	observeCallbacks              func(serveCallbackObserver)
+	// reclaimScratch removes the session scratch that daemons now gone
+	// retained, for a serve working in the directory it is handed — the one
+	// resolved from --dir, so the reclaim reads the workspace the daemon
+	// allocates against. Only the production entry point sets it, because
+	// reclaiming belongs to a real daemon start: tests drive runServe and
+	// runServeWithDeps, and the nil they leave here is what keeps a test run
+	// off the developer's own scratch bases.
+	reclaimScratch func(workingDir string)
 }
 
 type serveCallbackObserver struct {
@@ -389,6 +397,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if err != nil {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
+	}
+	if deps.reclaimScratch != nil {
+		deps.reclaimScratch(wd)
 	}
 	seedMarketplaces := deps.seedMarketplaces
 	if seedMarketplaces == nil {

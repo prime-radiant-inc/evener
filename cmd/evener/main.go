@@ -380,19 +380,19 @@ func (c subcommandExitError) Error() string { return fmt.Sprintf("exit code %d",
 // runWithScratchReclaim and runServeWithScratchReclaim are the production entry
 // points to `evener` and `evener serve`. Reclaiming the session scratch that
 // sessions retained and never came back for belongs to a real process start, so
-// it hangs off the entry points rather than run and runServe themselves, where a
-// test driving either would sweep the developer's own scratch bases. serve
-// parses its --work-dir inside runServe, so its reclaim reads the process
-// working directory; that root only decides whether a scratch base inside the
-// workspace is off limits.
+// it hangs off these adapters rather than run and runServe themselves, where a
+// test driving either would sweep the developer's own scratch bases. serve takes
+// it as a dependency rather than up front because the workspace to leave alone
+// is the one serve resolves from its own --dir.
 func runWithScratchReclaim(ctx context.Context, cfg runConfig) error {
 	startScratchReclaim(cfg.workDir)
 	return run(ctx, cfg)
 }
 
 func runServeWithScratchReclaim(args []string) error {
-	startScratchReclaim("")
-	return runServe(args)
+	deps := defaultServeDeps()
+	deps.reclaimScratch = startScratchReclaim
+	return runServeWithDeps(args, deps)
 }
 
 func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, string, error) {

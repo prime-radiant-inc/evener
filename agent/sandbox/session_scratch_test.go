@@ -269,3 +269,22 @@ func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
 		t.Error("sweep with no usable scratch base reported success")
 	}
 }
+
+func TestSessionScratchAllocationLeavesCacheBaseAloneWhenTempBaseWorks(t *testing.T) {
+	consulted := false
+	oldCache := sessionScratchUserCacheDir
+	sessionScratchUserCacheDir = func() (string, error) {
+		consulted = true
+		return "", errors.New("cache base is unavailable")
+	}
+	t.Cleanup(func() { sessionScratchUserCacheDir = oldCache })
+
+	scratch, err := NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	if consulted {
+		t.Error("allocation reached for the user cache base while the temp base was usable")
+	}
+}
