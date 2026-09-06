@@ -43,7 +43,11 @@ import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
-import { composerCommand, submitComposerCommand } from "./composerCommand";
+import {
+  CommandArgumentError,
+  composerCommand,
+  submitComposerCommand,
+} from "./composerCommand";
 import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -595,6 +599,8 @@ export function ConversationScreen({
     ),
   );
   const [actionError, setActionError] = useState<string | null>(null);
+  const [commandPending, setCommandPending] = useState(false);
+  const commandBusy = useRef(false);
   const document = useMemo(
     () =>
       drafts.open({ hubId: route.params.hubId, sessionRef: route.params.ref }),
@@ -674,6 +680,7 @@ export function ConversationScreen({
             },
             () => store.getState().conversation,
             () =>
+              !commandBusy.current &&
               !document.getSnapshot().submitting &&
               store.getState().pendingMutation?.status !== "pending",
           )
@@ -804,7 +811,7 @@ export function ConversationScreen({
     controls?.subscribe ?? noControlSubscription,
     controls?.getSnapshot ?? noControls,
   );
-  const settingsPending = controlsState?.pending != null;
+  const settingsPending = controlsState?.pending != null || commandPending;
   const pending = snapshot.pendingMutation?.status === "pending";
   const ready =
     connected &&
@@ -833,11 +840,13 @@ export function ConversationScreen({
   );
   async function applyCommand(clear = false) {
     const action = clear ? "goal" : command?.command.id;
+    const capability = clear ? "goal" : command?.command.capability;
     if (
       !service ||
       !ready ||
       !action ||
-      !conversation?.capabilities[action] ||
+      commandBusy.current ||
+      (capability != null && !conversation?.capabilities[capability]) ||
       draft.submitting ||
       unconfirmedSend !== null ||
       imageState.busy ||
@@ -846,15 +855,21 @@ export function ConversationScreen({
       return;
     setActionError(null);
     const currentBinding = () =>
+      connectionReady.current &&
       navigation.isFocused() &&
       store.getState().conversationGeneration === bindingGeneration &&
       store.getState().conversation?.instanceId === bindingInstance;
+    commandBusy.current = true;
+    setCommandPending(true);
     try {
       const completed = clear
         ? (await submitGoalCommand(document, service, true))
           ? "goal"
           : null
-        : await submitComposerCommand(document, service);
+        : await submitComposerCommand(document, service, {
+            isCurrent: currentBinding,
+            reasoning: () => store.getState().conversation,
+          });
       if (!completed || !currentBinding()) return;
       if (completed === "shutdown") {
         store.getState().close();
@@ -862,11 +877,16 @@ export function ConversationScreen({
         setSessionOpen(false);
         navigation.goBack();
       } else await store.getState().rehydrate(service, activitySink);
-    } catch {
+    } catch (error) {
       if (!currentBinding()) return;
       setActionError(
-        "Could not confirm the command. Check the session before trying again.",
+        error instanceof CommandArgumentError
+          ? error.message
+          : "Could not confirm the command. Check the session before trying again.",
       );
+    } finally {
+      commandBusy.current = false;
+      setCommandPending(false);
     }
   }
   function editGoal() {
@@ -1448,7 +1468,8 @@ export function ConversationScreen({
                   (command.command.id === "goal" &&
                     !goalCommand &&
                     !conversation?.goal) ||
-                  !conversation?.capabilities[command.command.id]
+                  (command.command.capability != null &&
+                    !conversation?.capabilities[command.command.capability])
                 }
                 onPress={() => void applyCommand()}
               >
@@ -1456,9 +1477,13 @@ export function ConversationScreen({
                   ? "Compact"
                   : command.command.id === "shutdown"
                     ? "Shut down"
-                    : goalCommand || !conversation?.goal
-                      ? "Set goal"
-                      : "Clear goal"}
+                    : command.command.id === "model"
+                      ? "Set model"
+                      : command.command.id === "reasoning-effort"
+                        ? "Set effort"
+                        : goalCommand || !conversation?.goal
+                          ? "Set goal"
+                          : "Clear goal"}
               </Action>
             ) : null}
             {command === null &&

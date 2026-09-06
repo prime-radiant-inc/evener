@@ -49,9 +49,9 @@ hints. The list scrolls within a bounded height.
 ## Remaining command work
 
 This picker currently offers catalog commands and skills. Built-in session
-actions must be routed explicitly before advertising them here. `/goal`, `/compact`, and `/shutdown` are implemented. Current-web built-ins
+actions must be routed explicitly before advertising them here. `/goal`, `/compact`, `/shutdown`, `/model`, and `/reasoning-effort` are implemented. Current-web built-ins
 still needing native slash routing include interrupt, clear, aside,
-model, reasoning-effort, steer, queue, drain-as-steer, copy-id,
+steer, queue, drain-as-steer, copy-id,
 tasks, status, and project. Some already have other native controls, which
 does not establish slash-command parity. Unknown/argument-bearing command
 fallthrough, attachment semantics and unavailable-command errors must match
@@ -82,3 +82,33 @@ to the roster, where both sessions reported notLoaded. No production session
 was changed. Native acknowledgement-loss and stale-binding fault injection
 for these commands remain manual acceptance work; SQLite/transport tests
 cover acknowledgement loss, newer drafts and blocked replay.
+
+## Model and reasoning command submission, 6 September 2026
+
+`/model` resolves the session-scoped model/list catalog by provider/model ID
+or display name, case-insensitively, using the same argument matcher as web.
+`/reasoning-effort` uses the current projection's advertised ladder only when
+supportsReasoning is true. It includes the web's default, explicit none label,
+and current out-of-ladder value. It deliberately follows the web command
+registry's zero-options behavior for an empty ladder; the settings picker's
+fallback ladder is a separate current-web behavior.
+
+Enum validation happens before the durable delivery checkpoint. Invalid
+values remain editable and show an error; they do not become uncertain sends.
+Model lookup completion checks screen ownership and the original draft record
+before dispatch, so edits or navigation while loading cannot target stale work.
+The composer and settings actions serialize during command preparation and
+execution. Accepted changes refresh the session projection and update the
+composer controls; transport uncertainty still uses the durable checkpoint.
+
+Evidence: native TypeScript and all 187 tests pass, including 12 new enum and
+stale-lookup cases at the SQLite/network boundaries. The focused 17 web command
+tests and full web gate pass. Both Release builds passed. Both platforms
+manually retained an invalid model command, accepted a corrected command,
+updated the model chip, changed reasoning (iOS high, Android low), and reset
+reasoning with the argument-free command. The hub read confirmed the selected
+model and reasoning ladder; these actions used the owned isolated Android
+parent session through two independently saved hub profiles. Both platforms
+ended with empty drafts and default reasoning. This is not a concurrent
+multiple-hub acceptance test. Native delayed-catalog, connection-fault and
+screen-reader acceptance remain open despite the automated boundary coverage.
