@@ -307,7 +307,12 @@ builds. Android exercises file selection with spaces, directory navigation,
 file-type rejection, directory save/reload and restoration, with independent
 AppWire reads. iOS path checks remain pending because the Mac locked. See
 [path evidence and gaps](hub-information-and-launch-settings.md#path-collection-editor).
-MCP server specifications remain open. Launch model fields now browse the real hub catalog,
+MCP server specifications now share the resource editor: 311 native tests and
+both builds pass; Android validates/rejects commands, saves/reloads, retains a
+backgrounded draft and removes the fixture, with independent wire readback.
+[MCP evidence](hub-information-and-launch-settings.md#mcp-server-collection-editor)
+separates this from real MCP server/session qualification, which remains open.
+Launch model fields now browse the real hub catalog,
 reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
 Native iOS search/select/save and Android read/removal have evidence. Open scalar
 sheets reject newer field values, with two-device conflict/reopen/restoration

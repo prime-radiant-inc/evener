@@ -27,6 +27,7 @@ import { friendlyErrorMessage } from "../../cmd/evener-hub/frontend/src/protocol
 import type {
   LaunchConfigLayer,
   LaunchOption,
+  MCPServerSpec,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -34,7 +35,7 @@ import { HubPathField } from "./HubPathField";
 import { LaunchEnvironmentEditor } from "./LaunchEnvironmentEditor";
 import { LaunchFallbackEditor } from "./LaunchFallbackEditor";
 import { LaunchModelPicker } from "./LaunchModelPicker";
-import { LaunchPathListEditor } from "./LaunchPathListEditor";
+import { LaunchResourceEditor } from "./LaunchResourceEditor";
 import {
   assertLaunchFieldCurrent,
   launchFieldConflictMessage,
@@ -64,7 +65,12 @@ function scalarValue(config: LaunchConfigLayer | null, field: string): string {
   const value = (config as Record<string, unknown> | null)?.[field];
   if (value && typeof value === "object" && !Array.isArray(value))
     return Object.keys(value).join(", ");
-  if (Array.isArray(value)) return value.length ? value.join(" → ") : "None";
+  if (Array.isArray(value))
+    return value.length
+      ? value
+          .map((item) => (typeof item === "string" ? item : item.name))
+          .join(" → ")
+      : "None";
   return value === undefined ? "" : String(value);
 }
 function LaunchDefaults({
@@ -116,7 +122,8 @@ function LaunchDefaults({
       (scalarKinds.has(option.kind) ||
         option.kind === "envMap" ||
         option.kind === "modelList" ||
-        option.kind === "pathList") &&
+        option.kind === "pathList" ||
+        option.kind === "mcpServerList") &&
       !inactivePromptDependent(option.wireField, state.draft ?? {}) &&
       `${option.label} ${option.group} ${option.description ?? ""}`
         .toLowerCase()
@@ -238,19 +245,20 @@ function LaunchDefaults({
           </View>
         ))}
       </ScrollView>
-      {selected?.kind === "pathList" ? (
-        <LaunchPathListEditor
+      {selected &&
+      (selected.kind === "pathList" || selected.kind === "mcpServerList") ? (
+        <LaunchResourceEditor
           key={selected.wireField}
           option={selected}
           value={
             (state.draft as Record<string, unknown> | null)?.[
               selected.wireField
-            ] as string[] | undefined
+            ] as string[] | MCPServerSpec[] | undefined
           }
           effective={
             (
               state.resolved?.effective as Record<string, unknown> | undefined
-            )?.[selected.wireField] as string[] | undefined
+            )?.[selected.wireField] as string[] | MCPServerSpec[] | undefined
           }
           client={client}
           close={() => setSelected(null)}

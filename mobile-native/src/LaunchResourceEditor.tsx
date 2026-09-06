@@ -9,14 +9,18 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { LaunchOption } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type {
+  LaunchOption,
+  MCPServerSpec,
+} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import { assertLaunchListCurrent } from "./launchLists";
+import { addLaunchMcp, resourceKey } from "./launchMcp";
 import { addLaunchPath } from "./launchPaths";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-export function LaunchPathListEditor({
+export function LaunchResourceEditor({
   option,
   value,
   effective,
@@ -25,13 +29,14 @@ export function LaunchPathListEditor({
   apply,
 }: {
   option: LaunchOption;
-  value: string[] | undefined;
-  effective: string[] | undefined;
+  value: string[] | MCPServerSpec[] | undefined;
+  effective: string[] | MCPServerSpec[] | undefined;
   client: ConversationClientLike | null;
   close(): void;
-  apply(value: string[] | undefined): void;
+  apply(value: string[] | MCPServerSpec[] | undefined): void;
 }) {
   const colors = useColors();
+  const isMcp = option.kind === "mcpServerList";
   const original = useRef(value);
   const current = useRef(value);
   current.current = value;
@@ -56,15 +61,21 @@ export function LaunchPathListEditor({
     setError(null);
     try {
       if (raw.trim() && !client)
-        throw Error("Reconnect to validate this path.");
+        throw Error("Reconnect to validate this entry.");
       const next =
         raw.trim() && client
-          ? await addLaunchPath(client, option, items, raw)
+          ? isMcp
+            ? await addLaunchMcp(client, items as MCPServerSpec[], raw)
+            : await addLaunchPath(client, option, items as string[], raw)
           : items;
       if (!active()) return;
       if (done) {
         const collected = next.length ? next : undefined;
-        assertLaunchListCurrent(original.current, current.current, collected);
+        assertLaunchListCurrent(
+          original.current?.map(resourceKey),
+          current.current?.map(resourceKey),
+          collected?.map(resourceKey),
+        );
         apply(collected);
       } else {
         setItems(next);
@@ -73,12 +84,19 @@ export function LaunchPathListEditor({
     } catch (err) {
       if (active())
         setError(
-          err instanceof Error ? err.message : "Unable to validate path.",
+          err instanceof Error ? err.message : "Unable to validate entry.",
         );
     } finally {
       if (active()) setBusy(false);
     }
   }
+  const occurrences = new Map<string, number>();
+  const rows = items.map((item) => {
+    const identity = resourceKey(item);
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return { item, identity, key: `${identity}:${occurrence}` };
+  });
   return (
     <Modal
       visible
@@ -123,13 +141,16 @@ export function LaunchPathListEditor({
               }}
             />
             <Copy muted>
-              Effective paths · {effective?.join("\n") || "None"}
+              {isMcp ? "Effective servers" : "Effective paths"} ·{" "}
+              {effective
+                ?.map((item) => (typeof item === "string" ? item : item.name))
+                .join("\n") || "None"}
             </Copy>
             <ErrorMessage message={error} />
             <View>
-              {items.map((path) => (
+              {rows.map(({ item, identity, key }) => (
                 <View
-                  key={path}
+                  key={key}
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
@@ -140,13 +161,22 @@ export function LaunchPathListEditor({
                   }}
                 >
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Copy>{path}</Copy>
+                    <Copy>{typeof item === "string" ? item : item.name}</Copy>
+                    {typeof item !== "string" && (
+                      <Copy muted>
+                        {[item.command, ...(item.args ?? [])].join(" ")}
+                      </Copy>
+                    )}
                   </View>
                   <Action
                     disabled={busy}
-                    label={`Remove path ${path}`}
+                    label={`Remove ${isMcp ? "server" : "path"} ${typeof item === "string" ? item : item.name}`}
                     onPress={() =>
-                      setItems(items.filter((item) => item !== path))
+                      setItems(
+                        items.filter(
+                          (entry) => resourceKey(entry) !== identity,
+                        ) as string[] | MCPServerSpec[],
+                      )
                     }
                   >
                     Remove
@@ -154,7 +184,7 @@ export function LaunchPathListEditor({
                 </View>
               ))}
             </View>
-            {client ? (
+            {client && !isMcp ? (
               <HubPathField
                 client={client}
                 kind={
@@ -169,7 +199,9 @@ export function LaunchPathListEditor({
               />
             ) : (
               <TextInput
-                accessibilityLabel="Path to add"
+                accessibilityLabel={isMcp ? "Server to add" : "Path to add"}
+                placeholder={isMcp ? "name command args..." : "Path to add"}
+                placeholderTextColor={colors.secondary}
                 value={raw}
                 onChangeText={setRaw}
                 editable={!busy}
@@ -187,12 +219,15 @@ export function LaunchPathListEditor({
                 void submit(false);
               }}
             >
-              Add path
+              {isMcp ? "Add server" : "Add path"}
             </Action>
-            {busy && <ActivityIndicator accessibilityLabel="Validating path" />}
+            {busy && (
+              <ActivityIndicator accessibilityLabel="Validating entry" />
+            )}
             {!client && (
               <Copy muted>
-                Reconnect to browse and validate paths. Your draft is kept here.
+                Reconnect to browse and validate entries. Your draft is kept
+                here.
               </Copy>
             )}
           </ScrollView>

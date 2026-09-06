@@ -178,6 +178,46 @@ file-picker regression in marketplace/scalar contexts, stale/reconnect/cancel
 validation races, large text and screen readers. MCP server specifications remain
 unimplemented. MOB-015 is not complete.
 
+## MCP server collection editor
+
+LaunchResourceEditor now handles both path lists and MCP server specifications,
+sharing local drafts, pending-add-on-Done, validation generation invalidation,
+stale-list checks, inheritance and removal. MCP additions use the web's
+whitespace-separated name/command/arguments syntax and validate the command with
+evener/path/validate kind=command. Invalid commands and transport failures block
+MCP additions, matching that web field. The server-returned command spelling is
+saved. This editor does not invent URL or environment fields absent from the
+typed MCPServerSpec. Existing argument arrays remain intact, including arguments
+containing spaces. Identity comparisons preserve argument boundaries rather than
+joining them ambiguously; missing args and empty args compare equally. Exact
+duplicate rows have occurrence-qualified keys and removal removes all identical
+specifications, consistent with the web list's removal behavior.
+
+Three new tests cover tokenization, command RPC arguments, canonical spelling,
+existing-entry preservation, invalid syntax/commands/transport failures and
+resource identity. All 311 native tests, TypeScript, Biome and both release builds
+pass. Removing the invalid-command rejection caused its regression test to fail;
+restoring it passed the three tests.
+
+Android manual evidence: a nonexistent command was rejected inline and the text
+remained editable. Correcting to mobile-mcp /usr/bin/true --fixture, Done, Save,
+Reload and reopen retained the exact name, command and argument; independent
+AppWire readback matched. This is a harmless executable fixture for configuration
+testing, not a working MCP server or proof of MCP session operation. A pending
+draft-mcp /usr/bin/true entry survived Home/return (launcher observed in front,
+same app task resumed). Cancel discarded that pending pair. Reopen, Remove the
+saved server, Done and Save restored inheritance; independent readback confirmed
+mcps unset on the owned SecondHub.
+
+[Android MCP editor](assets/launch-settings/android-mcp-servers.png). iOS UI
+remains unavailable because the Mac is locked; a fresh attempt confirmed that
+condition. Android's bridge transiently returned a null root, then inspection
+recovered with the same app PID 9701 and emulator PID 84728, without a restart.
+This does not resolve MOB-017. Open coverage: iOS native editing, real MCP server
+launch/tool invocation, stale and interrupted validation, duplicate entries,
+long argument arrays, screen readers and visual acceptance. All launch schema
+collection kinds now have a native editor, but MOB-015/MOB-007 remain incomplete.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,
