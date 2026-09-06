@@ -179,6 +179,23 @@ function setup(options: { thread?: Thread; olderCursor?: string } = {}) {
   return { client, service, thread };
 }
 
+describe("goal actions", () => {
+  it("sets and clears the current session goal through the wire", async () => {
+    const { client, service } = setup();
+    client.on("goal/set", () => ({ started: false }));
+    await service.open("local:test");
+    await service.setGoal("objective-sentinel");
+    await service.setGoal("");
+    expect(client.calls.filter((call) => call.method === "goal/set")).toEqual([
+      {
+        method: "goal/set",
+        params: { ref: "local:test", objective: "objective-sentinel" },
+      },
+      { method: "goal/set", params: { ref: "local:test", objective: "" } },
+    ]);
+  });
+});
+
 describe("canonical Go mutation receipt schema guard", () => {
   it("binds the decoder literals and optional fields to appwire/types.go", () => {
     const source = readFileSync(

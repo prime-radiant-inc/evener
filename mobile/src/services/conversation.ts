@@ -113,6 +113,10 @@ export interface ConversationModelCatalog {
   models(): Promise<ModelListResponse>;
 }
 
+export interface ConversationGoalActions {
+  setGoal(objective: string): Promise<void>;
+}
+
 export interface QueueConversationService extends LiveConversationService {
   promoteQueuedAsSteer(
     index: number,
@@ -340,7 +344,9 @@ function decodeMutationResult(
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
-): QueueConversationService & ConversationModelCatalog {
+): QueueConversationService &
+  ConversationModelCatalog &
+  ConversationGoalActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -760,6 +766,14 @@ export function createConversationService(
           ref: threadRef,
           reasoningEffort: effort,
         }),
+      );
+    },
+
+    async setGoal(objective) {
+      requireCap("goal", "setGoal");
+      const threadRef = requireRef();
+      await withCapabilityRefresh("setGoal", () =>
+        client.request("goal/set", { ref: threadRef, objective }),
       );
     },
 

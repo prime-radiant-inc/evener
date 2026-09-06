@@ -190,6 +190,7 @@ export interface MobileConversation {
   reasoningEffort?: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  goal?: { objective?: string; status: string; iterations: number } | null;
   askPending: boolean;
   pendingApprovals: MobileApproval[];
 }

@@ -127,6 +127,20 @@ export class DraftDocument {
 		}
 	}
 
+	replaceDraft(text: string) {
+		if (
+			!this.snapshot.loaded ||
+			this.snapshot.submitting ||
+			this.snapshot.record.unconfirmed !== null
+		)
+			return;
+		try {
+			this.persist({ draft: text, unconfirmed: null }, true);
+		} catch {
+			/* Keep the replacement visible with an explicit save retry. */
+		}
+	}
+
 	addImage(image: DraftImageData, cursor?: number) {
 		if (!this.snapshot.loaded) return;
 		const { data: _data, ...reference } = image;
