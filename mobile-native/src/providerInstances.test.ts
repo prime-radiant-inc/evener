@@ -152,3 +152,48 @@ it("does not let a pre-mutation read replace the reconciled provider configurati
   expect(model.getSnapshot().data).toEqual(listing("new default"));
   expect(model.getSnapshot().loading).toBe(false);
 });
+it("sanitizes credential test replies before publishing them", async () => {
+  const { model, io } = boundary();
+  await model.refresh();
+  io.request = async () => ({
+    provider: "wrong",
+    status: "success",
+    message: "fixture-secret",
+  });
+  await model.testCredentials("test");
+  expect(model.getSnapshot().credentialTest?.provider).toBe("test");
+  expect(model.getSnapshot().credentialTest?.pending).toBe(false);
+  expect(model.getSnapshot().credentialTest?.result?.message).toBe(
+    "Credentials verified.",
+  );
+  expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-secret");
+});
+it("discards credential results invalidated by a provider refresh", async () => {
+  const { model, io } = boundary();
+  await model.refresh();
+  const pending = deferred<unknown>();
+  io.request = (method) =>
+    method === "evener/auth/test"
+      ? pending.promise
+      : Promise.resolve(listing("changed"));
+  const check = model.testCredentials("test");
+  await model.refresh();
+  pending.resolve({ provider: "test", status: "success", message: "" });
+  await check;
+  expect(model.getSnapshot().credentialTest).toBeNull();
+});
+it("does not echo credential test transport errors or retry the test", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  io.request = async () => {
+    throw new Error("fixture-secret");
+  };
+  await model.testCredentials("test");
+  expect(model.getSnapshot().credentialTest?.result?.status).toBe(
+    "endpoint_failure",
+  );
+  expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-secret");
+  expect(requests.filter((r) => r.method === "evener/auth/test")).toHaveLength(
+    1,
+  );
+});

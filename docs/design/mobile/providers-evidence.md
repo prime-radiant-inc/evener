@@ -117,3 +117,25 @@ acceptance, screen-reader navigation or successful creation with the keyboard op
 
 ![Actions above the iOS keyboard](assets/providers/ios-keyboard-actions.png)
 ![Keyboard-open validation](assets/providers/ios-keyboard-validation.png)
+
+
+## Credential testing
+
+The instance detail now exposes `evener/auth/test`. The controller publishes only
+the shared web `safeCredentialTestResult` output, never raw provider messages or
+transport errors. Refresh and mutation invalidate prior/pending results; duplicate
+tests are disabled while pending. Rendering checks the result's instance name.
+
+On the same isolated hub B, tapped Test credentials for `fake` on both iPhone 17
+Pro and Pixel 7 Release builds. Both displayed “Credentials verified.” Screenshots
+were captured and visually inspected. This is a real native-to-hub request against
+a scripted local provider, not real-provider account authentication qualification.
+No credential values or default configuration changed during this check.
+
+Three additional tests cover sanitization, refresh invalidation of a late response
+and transport failure without secret echo/retry. The full native suite passes 242
+tests; TypeScript and touched-file Biome pass. Both Release builds succeeded.
+Sign-in/device auth, error-state native E2E, large text and screen readers remain.
+
+![iOS credential test](assets/providers/ios-credential-test.png)
+![Android credential test](assets/providers/android-credential-test.png)
