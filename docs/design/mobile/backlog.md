@@ -225,7 +225,11 @@ plugin + marketplace identity, external-update refresh, stale-read fencing,
 disposed-hub isolation and read-back after uncertain writes without replay.
 Five deterministic tests pass; the full native suite passes 258 tests, TypeScript
 and touched-file Biome pass. This is controller coverage, not rendered native
-acceptance. Native screens, catalog management and owned-marketplace E2E remain.
+acceptance. The installed list/detail screen is wired with filtering, native switches,
+upgrade, installation disclosure and confirmed removal. Both Release builds pass;
+manual navigation and empty/error rendering are verified on both platforms
+against isolated hubs. Installed rows and mutation controls still require the
+owned-marketplace lifecycle test; catalog management and Browse remain unbuilt.
 
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.

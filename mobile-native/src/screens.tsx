@@ -84,6 +84,7 @@ export type Routes = {
   SessionLocation: { hubId: string; location: SessionLocation };
   Projects: { hubId: string };
   Providers: { hubId: string };
+  Plugins: { hubId: string };
   Project: { hubId: string; projectKey: string; title: string };
   Hubs: undefined;
   Sessions: undefined;
@@ -386,6 +387,15 @@ export function SessionsScreen({
           }}
         >
           Providers
+        </Action>
+        <Action
+          disabled={!activeProfile || state !== "ready"}
+          onPress={() => {
+            if (activeProfile)
+              navigation.navigate("Plugins", { hubId: activeProfile.id });
+          }}
+        >
+          Plugins
         </Action>
         <Action
           disabled={!activeProfile || state !== "ready"}
