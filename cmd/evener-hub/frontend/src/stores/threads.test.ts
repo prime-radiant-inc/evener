@@ -31,6 +31,7 @@ import type {
 } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -1969,6 +1970,60 @@ describe("useThreadsStore.ensureThread", () => {
     box.resolveRead?.(readResponse("ref_a"));
     await ensuring;
 
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test.each([true, false])(
+    "a released read cannot resume on a replacement connection (release first: %s)",
+    async (releaseFirst) => {
+      const original = connectFakeClient();
+      let rejectRead: ((error: Error) => void) | undefined;
+      const started = nextHandledRequest(
+        original,
+        "thread/read",
+        () =>
+          new Promise<ThreadReadResponse>((_resolve, reject) => {
+            rejectRead = reject;
+          }),
+      );
+      const ensuring = threadsStore.getState().ensureThread("ref_a");
+      await started;
+      if (releaseFirst) threadsStore.getState().releaseThread("ref_a");
+
+      const replacement = new FakeClient("connecting");
+      replacement.on("thread/read", () => readResponse("ref_a"));
+      connectionStore.getState().connect(replacement);
+      rejectRead?.(new Error("old connection failed"));
+      if (!releaseFirst) {
+        await settleCallerContinuations();
+        threadsStore.getState().releaseThread("ref_a");
+      }
+      replacement.emitReady();
+      await ensuring;
+
+      expect(replacement.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+      expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    },
+  );
+
+  test("a released retry owner cannot resume after replacement readiness", async () => {
+    const original = connectFakeClient();
+    const started = nextHandledRequest(original, "thread/read", () => {
+      throw new RequestTimeoutError("initial read failed");
+    });
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await started;
+    await settleCallerContinuations();
+
+    const replacement = new FakeClient("connecting");
+    replacement.on("thread/read", () => readResponse("ref_a"));
+    connectionStore.getState().connect(replacement);
+    await settleCallerContinuations();
+    threadsStore.getState().releaseThread("ref_a");
+    replacement.emitReady();
+    await ensuring;
+
+    expect(replacement.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
@@ -4797,16 +4852,87 @@ describe("useThreadsStore.listModels", () => {
   });
 });
 
+test.each([false, true])(
+  "a failed enqueue preserves only durable pins (existing mutation: %s)",
+  async (existingMutation) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("turn/start", () => new Promise<never>(() => undefined));
+    if (existingMutation) await threadsStore.getState().send("ref_a", "already saved");
+    const unsubscribed = existingMutation ? undefined : nextHandledRequest(fake, "thread/unsubscribe", () => ({}));
+    vi.spyOn(IDBObjectStore.prototype, "add").mockImplementationOnce(() => {
+      throw new DOMException("storage full", "QuotaExceededError");
+    });
+    await expect(threadsStore.getState().send("ref_a", "not saved")).rejects.toThrow("storage full");
+    expect(await storage.listOutbox()).toHaveLength(existingMutation ? 1 : 0);
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(existingMutation);
+    await unsubscribed;
+  },
+);
+
+test("the first submission commits while startup discovery is stalled", async ({ onTestFailed }) => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  // Neither the storage watchdog nor lifecycle retries may rescue this send.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const release = () => {
+    hold?.release();
+    vi.useRealTimers();
+  };
+  onTestFailed(release);
+  const fake = connectMutationClient();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  try {
+    await readHeld;
+    await threadsStore.getState().send("ref_a", "saved before startup discovery finishes");
+    expect(await storage.listOutbox("ref_a")).toMatchObject([
+      {
+        state: "submitting",
+        method: "turn/start",
+        payload: { input: [{ type: "text", text: "saved before startup discovery finishes" }] },
+      },
+    ]);
+  } finally {
+    release();
+  }
+});
+
 test("reset retires an outbox discovery before the next runtime starts", async () => {
   const oldStorage = new MutationOutboxIndexedDB();
   let finishOldDiscovery!: (targetRefs: string[]) => void;
   const oldDiscovery = new Promise<string[]>((resolve) => {
     finishOldDiscovery = resolve;
   });
-  vi.spyOn(oldStorage, "listTargetRefs").mockReturnValueOnce(oldDiscovery);
+  let announceDiscovery: (() => void) | undefined;
+  const discoveryStarted = new Promise<void>((resolve) => {
+    announceDiscovery = resolve;
+  });
+  vi.spyOn(oldStorage, "listTargetRefs").mockImplementationOnce(() => {
+    announceDiscovery?.();
+    return oldDiscovery;
+  });
   setMutationStorageForTests(oldStorage);
 
   const oldRead = readMutationPersistence();
+  await discoveryStarted;
+  await oldRead;
   expect(oldStorage.listTargetRefs).toHaveBeenCalledTimes(1);
   resetThreadsStoreForTests();
 
@@ -4830,7 +4956,7 @@ test("reset retires an outbox discovery before the next runtime starts", async (
   await dispatched;
 
   finishOldDiscovery(["stale_ref"]);
-  await Promise.allSettled([oldRead]);
+  await newStorage.listOutbox();
 
   expect(fake.calls.filter((call) => call.method === "thread/read").map((call) => call.params)).not.toContainEqual(
     expect.objectContaining({ ref: "stale_ref" }),
@@ -6906,8 +7032,8 @@ describe("retry-safe mutation outbox integration", () => {
     await seedPinnedIntent("ref_a", "mutation-a");
     // The scan is held open by a deferred rather than by timing luck. It is a
     // real IndexedDB read either way - the outbox's own startup scan is the
-    // first one, and handleReady's is the second, issued only once that startup
-    // resolves - so this removes the race's variance, not its existence.
+    // first one, and handleReady's is the second, issued after the runtime
+    // initializes - so this removes the race's variance, not its existence.
     const storage = new MutationOutboxIndexedDB();
     const discovery = deferred<string[]>();
     const realListTargetRefs = storage.listTargetRefs.bind(storage);
@@ -6924,8 +7050,7 @@ describe("retry-safe mutation outbox integration", () => {
 
     // handleReady's own scan being ISSUED is the observable that puts this
     // generation inside the window: its tracked-ref fan-out is empty here and
-    // settles in microtasks, while the scan cannot be issued until the outbox
-    // startup's IndexedDB read has resolved a task or more later.
+    // settles in microtasks, while the scan remains outstanding.
     fake.emitReady();
     await flushIndexedDBUntil(() => scans >= 2);
     expect(scans).toBe(2);

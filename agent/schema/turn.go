@@ -147,6 +147,16 @@ type TurnFailureCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
+// ModelSwitchInfo records the resolved provider instances and model IDs on
+// either side of a successful model switch. These are configuration identities,
+// not model aliases reported by a provider response.
+type ModelSwitchInfo struct {
+	OldProvider string `json:"old_provider"`
+	OldModel    string `json:"old_model"`
+	NewProvider string `json:"new_provider"`
+	NewModel    string `json:"new_model"`
+}
+
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
@@ -182,6 +192,8 @@ type Turn struct {
 	// Hook carries the detail of one completed plugin hook. Set only on
 	// TurnHookCompleted turns; nil everywhere else.
 	Hook *HookInfo `json:"hook,omitempty"`
+	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
+	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

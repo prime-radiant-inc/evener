@@ -104,6 +104,7 @@ export class MutationOutbox {
   #intervalId: number | undefined;
   #started = false;
   #pendingDiscovery: Promise<void> = Promise.resolve();
+  readonly #scheduledReadyScans = new Set<MutationDiscoveryReason>();
 
   readonly #handleBroadcast = (event: Event) => {
     if (!this.#isReady()) return;
@@ -145,7 +146,9 @@ export class MutationOutbox {
     this.#lifecycleWindow?.addEventListener("focus", this.#handleFocus);
     this.#lifecycleDocument?.addEventListener("visibilitychange", this.#handleVisibility);
     this.#intervalId = this.#setInterval(() => this.#scheduleReadyScan("interval"), 2000);
-    await this.#discoverAll("startup");
+    // Submissions need the runtime's listeners, not a scan of earlier work.
+    // Queue startup discovery so a stalled read cannot delay their own commit.
+    this.#schedule(() => this.#discoverAll("startup"));
   }
 
   async stop(): Promise<void> {
@@ -164,22 +167,39 @@ export class MutationOutbox {
 
   async enqueueIntent(intent: MutationIntent): Promise<MutationOutboxRecord> {
     const record = await this.#storage.enqueueIntent(intent);
-    this.#broadcastChannel?.postMessage({
-      version: 1,
-      targetRef: record.targetRef,
-    } satisfies MutationOutboxWakeup);
-    if (this.#isReady()) await this.#queueDiscovery(() => this.#discover([record.targetRef], "enqueue"));
+    try {
+      this.#broadcastChannel?.postMessage({
+        version: 1,
+        targetRef: record.targetRef,
+      } satisfies MutationOutboxWakeup);
+    } catch {
+      // The commit owns the message. Lifecycle scans also discover it if a
+      // closing tab cannot broadcast; that cannot turn acceptance into failure.
+    }
+    if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
     return record;
   }
 
   async connectionReady(): Promise<void> {
     if (!this.#isReady()) return;
-    await this.#queueDiscovery(() => this.#discoverAll("ready"));
+    try {
+      await this.#queueDiscovery(() => this.#discoverAll("ready"));
+    } catch {
+      // Readiness is a lifecycle notification, not a submission result.
+      // Durable work remains available for the next discovery scan.
+    }
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {
-    if (!this.#isReady()) return;
-    this.#schedule(() => this.#discoverAll(reason));
+    if (!this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
+    this.#scheduledReadyScans.add(reason);
+    this.#schedule(async () => {
+      try {
+        await this.#discoverAll(reason);
+      } finally {
+        this.#scheduledReadyScans.delete(reason);
+      }
+    });
   }
 
   #scheduleDiscovery(targetRefs: string[], reason: MutationDiscoveryReason): void {

@@ -87,6 +87,48 @@ func TestSetModel_AppendsMarkerTurnOnSuccess(t *testing.T) {
 	}
 }
 
+// TestSetModel_PersistsModelSwitchIdentity exercises the durable semantic record,
+// including two transitions whose intermediate model is absent from meta.json.
+func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "anthropic"}),
+		withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true,
+			ResolveProfile: testResolver, testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+	for _, model := range []string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"} {
+		if err := sess.SetModel(model); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []schema.ModelSwitchInfo
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind != schema.TurnModelSwitch {
+			continue
+		}
+		if entry.Turn.ModelSwitch == nil {
+			t.Fatal("persisted model switch has no structured identity")
+		}
+		got = append(got, *entry.Turn.ModelSwitch)
+	}
+	want := []schema.ModelSwitchInfo{
+		{OldProvider: "openai", OldModel: "gpt-5.4", NewProvider: "openai", NewModel: "gpt-5.2"},
+		{OldProvider: "openai", OldModel: "gpt-5.2", NewProvider: "anthropic", NewModel: "claude-opus-4-6"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("persisted transitions = %+v, want %+v", got, want)
+	}
+	if marker := lastMarkerTurn(t, sess); marker.ModelSwitch == nil || *marker.ModelSwitch != want[1] {
+		t.Fatalf("live history transition = %+v, want %+v", marker.ModelSwitch, want[1])
+	}
+}
+
 // TestSetModel_FailedSwitchAppendsNoMarker verifies a rejected switch never
 // appends a marker turn.
 func TestSetModel_FailedSwitchAppendsNoMarker(t *testing.T) {
