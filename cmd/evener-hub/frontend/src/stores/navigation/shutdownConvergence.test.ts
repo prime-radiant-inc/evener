@@ -47,3 +47,16 @@ test("shutdown settled is true when the ref is absent from live rows", () => {
   const convergence = buildShutdownConvergence("local:gone", {});
   expect(convergence.sessionSettled()).toBe(true);
 });
+
+test("a waiter armed before initialization converges once navigation is v2", async () => {
+  resetNavigationStoreForTests();
+  // Navigation uninitialized (no revalidator): arming rejects.
+  const convergence = buildShutdownConvergence("local:s1", {});
+  const waiter = convergence.arm();
+  await expect(waiter.promise).rejects.toThrow("navigation is not initialized");
+  // Initialization lands before convergence begins: mode is v2 now, but the
+  // armed waiter is still the rejected one. Converging must treat it as a
+  // successful no-op, not surface a shutdown failure.
+  navigationStore.setState({ mode: "v2", clientGenerationID: "generation_test" });
+  await expect(convergence.converge(waiter)).resolves.toBeUndefined();
+});

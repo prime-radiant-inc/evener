@@ -45,6 +45,14 @@ export function isGenerationMismatch(error: unknown): boolean {
 export function isRevalidatorDisposed(error: unknown): boolean {
   return error instanceof Error && error.message.includes("revalidator disposed");
 }
+/** True when error is a not-initialized rejection from the navigation store
+ * (a waiter armed while no revalidator existed — e.g. a shutdown action
+ * racing client replacement, with navigation becoming v2 before convergence
+ * begins). There is nothing to converge against yet the caller's mutation
+ * already committed, so callers treat it as a successful no-op. */
+export function isNavigationNotInitialized(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("navigation is not initialized");
+}
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
   if (typeof structuredClone === "function") return structuredClone(value);

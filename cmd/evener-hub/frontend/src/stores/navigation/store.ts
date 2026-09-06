@@ -31,6 +31,7 @@ import {
 import { applyDelta, reconcileSnapshot } from "./merge";
 import {
   isGenerationMismatch,
+  isNavigationNotInitialized,
   isRevalidatorDisposed,
   type NavigationInvalidationWaiter,
   NavigationRevalidator,
@@ -102,8 +103,11 @@ export async function awaitNavigationConvergence(
         // Generation reset rejects outstanding waiters: the reboot refetches
         // every loaded resource, which converges the caller's change. Client
         // replacement disposes the revalidator outright; the replacement
-        // client reboots from scratch with the same effect.
-        if (isGenerationMismatch(error) || isRevalidatorDisposed(error)) return;
+        // client reboots from scratch with the same effect. A waiter armed
+        // while navigation was uninitialized rejects the same way: the mode
+        // may have become v2 after arming, but there was never anything to
+        // converge against and the mutation already committed.
+        if (isGenerationMismatch(error) || isRevalidatorDisposed(error) || isNavigationNotInitialized(error)) return;
         throw error;
       } finally {
         if (timer !== undefined) clearTimeout(timer);
