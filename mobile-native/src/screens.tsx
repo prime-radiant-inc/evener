@@ -531,7 +531,8 @@ export function ConversationScreen({
 }: NativeStackScreenProps<Routes, "Conversation">) {
   const { activeProfile, client, state: connectionState } = useConnection();
   const colors = useColors();
-  const { fontScale } = useWindowDimensions();
+  const { fontScale, height: windowHeight } = useWindowDimensions();
+  const [viewportHeight, setViewportHeight] = useState(windowHeight);
   const headerHeight = useHeaderHeight();
   // biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
   const store = useMemo(
@@ -1320,403 +1321,418 @@ export function ConversationScreen({
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
-        <View style={{ flex: 1 }}>
-          <FlatList
-            ref={timeline}
-            data={timelineRows}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item, index }) => (
+        <View
+          style={styles.fill}
+          onLayout={(event) =>
+            setViewportHeight(event.nativeEvent.layout.height)
+          }
+        >
+          <View style={{ flex: 1 }}>
+            <FlatList
+              ref={timeline}
+              data={timelineRows}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item, index }) => (
+                <View
+                  style={{
+                    paddingBottom: timelineGap(item, timelineRows[index + 1]),
+                  }}
+                >
+                  <TimelineItem
+                    item={item}
+                    hubId={route.params.hubId}
+                    sessionRef={route.params.ref}
+                  />
+                </View>
+              )}
+              contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
+              keyboardShouldPersistTaps="handled"
+              refreshing={refreshing}
+              onRefresh={() => {
+                void refresh();
+              }}
+              ListHeaderComponent={
+                <View style={{ gap: 12, paddingBottom: 16 }}>
+                  <ConnectionStatus />
+                  <ErrorMessage message={snapshot.error || actionError} />
+                  <ErrorMessage message={draft.error} />
+                  {unconfirmedSend !== null ? (
+                    <View
+                      style={[
+                        styles.card,
+                        { marginHorizontal: 16, borderColor: colors.border },
+                      ]}
+                    >
+                      <Copy>Delivery unconfirmed</Copy>
+                      <Copy muted>
+                        Check the transcript before sending again. This message
+                        may have reached the hub.
+                      </Copy>
+                      <ScrollView style={{ maxHeight: 100 }}>
+                        <Copy>{unconfirmedSend}</Copy>
+                        <ImageAttachments
+                          document={document}
+                          selection={imageSelection}
+                          uncertain
+                        />
+                      </ScrollView>
+                      <View style={styles.row}>
+                        <Action
+                          disabled={draft.record.draft !== ""}
+                          onPress={() => document.restore()}
+                        >
+                          Restore to draft
+                        </Action>
+                        <Action onPress={() => document.dismiss()}>
+                          Dismiss
+                        </Action>
+                      </View>
+                      {draft.record.draft !== "" ? (
+                        <Copy muted>
+                          Your current draft is kept. Clear it to restore this
+                          message.
+                        </Copy>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {connected &&
+                  conversation &&
+                  !conversation.capabilities.send &&
+                  !conversation.capabilities.steer &&
+                  !conversation.capabilities.queue ? (
+                    <Copy muted>Sending is unavailable for this session.</Copy>
+                  ) : null}
+                  {snapshot.olderCursor ? (
+                    <Action
+                      disabled={!ready || snapshot.loadingOlder}
+                      onPress={() => {
+                        if (service) void store.getState().loadOlder(service);
+                      }}
+                    >
+                      {snapshot.loadingOlder
+                        ? "Loading…"
+                        : "Load older messages"}
+                    </Action>
+                  ) : null}
+                </View>
+              }
+              ListEmptyComponent={
+                <Copy muted>
+                  {snapshot.status === "opening"
+                    ? "Loading conversation…"
+                    : !connected
+                      ? "Reconnect to load the conversation. Your draft is kept."
+                      : snapshot.status === "error"
+                        ? "Pull down to retry."
+                        : "No messages yet."}
+                </Copy>
+              }
+            />
+            {conversation?.items.length ? (
               <View
                 style={{
-                  paddingBottom: timelineGap(item, timelineRows[index + 1]),
+                  position: "absolute",
+                  right: 16,
+                  bottom: 8,
+                  backgroundColor: colors.surface,
+                  borderRadius: 24,
+                  borderWidth: 1,
+                  borderColor: colors.border,
                 }}
               >
-                <TimelineItem
-                  item={item}
-                  hubId={route.params.hubId}
-                  sessionRef={route.params.ref}
-                />
-              </View>
-            )}
-            contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
-            keyboardShouldPersistTaps="handled"
-            refreshing={refreshing}
-            onRefresh={() => {
-              void refresh();
-            }}
-            ListHeaderComponent={
-              <View style={{ gap: 12, paddingBottom: 16 }}>
-                <ConnectionStatus />
-                <ErrorMessage message={snapshot.error || actionError} />
-                <ErrorMessage message={draft.error} />
-                {unconfirmedSend !== null ? (
-                  <View
-                    style={[
-                      styles.card,
-                      { marginHorizontal: 16, borderColor: colors.border },
-                    ]}
-                  >
-                    <Copy>Delivery unconfirmed</Copy>
-                    <Copy muted>
-                      Check the transcript before sending again. This message
-                      may have reached the hub.
-                    </Copy>
-                    <ScrollView style={{ maxHeight: 100 }}>
-                      <Copy>{unconfirmedSend}</Copy>
-                      <ImageAttachments
-                        document={document}
-                        selection={imageSelection}
-                        uncertain
-                      />
-                    </ScrollView>
-                    <View style={styles.row}>
-                      <Action
-                        disabled={draft.record.draft !== ""}
-                        onPress={() => document.restore()}
-                      >
-                        Restore to draft
-                      </Action>
-                      <Action onPress={() => document.dismiss()}>
-                        Dismiss
-                      </Action>
-                    </View>
-                    {draft.record.draft !== "" ? (
-                      <Copy muted>
-                        Your current draft is kept. Clear it to restore this
-                        message.
-                      </Copy>
-                    ) : null}
-                  </View>
-                ) : null}
-                {connected &&
-                conversation &&
-                !conversation.capabilities.send &&
-                !conversation.capabilities.steer &&
-                !conversation.capabilities.queue ? (
-                  <Copy muted>Sending is unavailable for this session.</Copy>
-                ) : null}
-                {snapshot.olderCursor ? (
-                  <Action
-                    disabled={!ready || snapshot.loadingOlder}
-                    onPress={() => {
-                      if (service) void store.getState().loadOlder(service);
-                    }}
-                  >
-                    {snapshot.loadingOlder ? "Loading…" : "Load older messages"}
-                  </Action>
-                ) : null}
-              </View>
-            }
-            ListEmptyComponent={
-              <Copy muted>
-                {snapshot.status === "opening"
-                  ? "Loading conversation…"
-                  : !connected
-                    ? "Reconnect to load the conversation. Your draft is kept."
-                    : snapshot.status === "error"
-                      ? "Pull down to retry."
-                      : "No messages yet."}
-              </Copy>
-            }
-          />
-          {conversation?.items.length ? (
-            <View
-              style={{
-                position: "absolute",
-                right: 16,
-                bottom: 8,
-                backgroundColor: colors.surface,
-                borderRadius: 24,
-                borderWidth: 1,
-                borderColor: colors.border,
-              }}
-            >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Latest"
-                onPress={() =>
-                  timeline.current?.scrollToEnd({ animated: true })
-                }
-                style={({ pressed }) => ({
-                  minWidth: Platform.OS === "ios" ? 44 : 48,
-                  minHeight: Platform.OS === "ios" ? 44 : 48,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  opacity: pressed ? 0.6 : 1,
-                })}
-              >
-                <Text
-                  allowFontScaling={false}
-                  style={{ fontSize: 24, color: colors.secondary }}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Latest"
+                  onPress={() =>
+                    timeline.current?.scrollToEnd({ animated: true })
+                  }
+                  style={({ pressed }) => ({
+                    minWidth: Platform.OS === "ios" ? 44 : 48,
+                    minHeight: Platform.OS === "ios" ? 44 : 48,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: pressed ? 0.6 : 1,
+                  })}
                 >
-                  ↓
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
-        </View>
-        <View
-          style={[
-            {
-              flexShrink: 1,
-              maxHeight: "80%",
-              marginHorizontal: 12,
-              marginTop: 8,
-              marginBottom: 8,
-              padding: 8,
-              gap: 4,
-              borderWidth: canCompose ? 1 : 0,
-              borderRadius: canCompose ? 22 : 0,
-              borderColor: colors.border,
-              backgroundColor: canCompose ? colors.surface : colors.background,
-            },
-          ]}
-        >
-          {canCompose &&
-          questions.length === 0 &&
-          connected &&
-          client &&
-          conversation &&
-          slashToken ? (
-            <CommandCompletion
-              client={client}
-              sessionRef={route.params.ref}
-              capabilities={conversation.capabilities}
-              query={slashToken.query}
-              close={() => setCompletionClosedAt(draft.record.draft)}
-              choose={(item) => {
-                if (document.getSnapshot().record.draft !== draft.record.draft)
-                  return;
-                const inserted = spliceSlashCommand(
-                  draft.record.draft,
-                  slashToken,
-                  item.invocation,
-                );
-                document.edit(inserted.text);
-                setCompletionClosedAt(inserted.text);
-                setComposerSelection({
-                  start: inserted.caret,
-                  end: inserted.caret,
-                });
-                requestAnimationFrame(() => {
-                  composerInput.current?.setNativeProps({
-                    selection: { start: inserted.caret, end: inserted.caret },
-                  });
-                  composerInput.current?.focus();
-                });
-              }}
-            />
-          ) : null}
-          <ScrollView
-            style={{ flexGrow: 0, flexShrink: 1 }}
-            contentContainerStyle={{ gap: 4 }}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
+                  <Text
+                    allowFontScaling={false}
+                    style={{ fontSize: 24, color: colors.secondary }}
+                  >
+                    ↓
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+          <View
+            style={[
+              {
+                flexShrink: 1,
+                maxHeight: "80%",
+                marginHorizontal: 12,
+                marginTop: 8,
+                marginBottom: 8,
+                padding: 8,
+                gap: 4,
+                borderWidth: canCompose ? 1 : 0,
+                borderRadius: canCompose ? 22 : 0,
+                borderColor: colors.border,
+                backgroundColor: canCompose
+                  ? colors.surface
+                  : colors.background,
+              },
+            ]}
           >
-            {questions.length ? (
-              <Action
-                disabled={!ready}
-                expanded={questionsOpen}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setQuestionsOpen(true);
+            {canCompose &&
+            questions.length === 0 &&
+            connected &&
+            client &&
+            conversation &&
+            slashToken ? (
+              <CommandCompletion
+                // Suggestions use at most 40% of the composer's 80% viewport cap.
+                maxHeight={Math.min(160, viewportHeight * 0.32)}
+                client={client}
+                sessionRef={route.params.ref}
+                capabilities={conversation.capabilities}
+                query={slashToken.query}
+                close={() => setCompletionClosedAt(draft.record.draft)}
+                choose={(item) => {
+                  if (
+                    document.getSnapshot().record.draft !== draft.record.draft
+                  )
+                    return;
+                  const inserted = spliceSlashCommand(
+                    draft.record.draft,
+                    slashToken,
+                    item.invocation,
+                  );
+                  document.edit(inserted.text);
+                  setCompletionClosedAt(inserted.text);
+                  setComposerSelection({
+                    start: inserted.caret,
+                    end: inserted.caret,
+                  });
+                  requestAnimationFrame(() => {
+                    composerInput.current?.setNativeProps({
+                      selection: { start: inserted.caret, end: inserted.caret },
+                    });
+                    composerInput.current?.focus();
+                  });
                 }}
-              >
-                {`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
-              </Action>
-            ) : null}
-            {conversation?.pendingApprovals.length ? (
-              <Action
-                disabled={!ready || !approvalControls}
-                expanded={approvalsOpen}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setApprovalsOpen(true);
-                }}
-              >{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
-            ) : null}
-            {conversation?.queue.depth ? (
-              <Action
-                tone="quiet"
-                expanded={queueOpen}
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setQueueOpen(true);
-                }}
-              >
-                {`${conversation.queue.depth} queued`}
-              </Action>
-            ) : null}
-            {conversation?.goal ? (
-              <Action
-                tone="quiet"
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setSessionOpen(true);
-                }}
-              >
-                {`Goal · ${conversation.goal.status}`}
-              </Action>
-            ) : null}
-            {canCompose && questions.length === 0 ? (
-              <ImageAttachments
-                document={document}
-                selection={imageSelection}
               />
             ) : null}
-            <ErrorMessage message={imageState.error} />
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "flex-end",
-                flexWrap: "wrap",
-                gap: 8,
-              }}
+            <ScrollView
+              style={{ flexGrow: 0, flexShrink: 1 }}
+              contentContainerStyle={{ gap: 4 }}
+              keyboardShouldPersistTaps="handled"
+              nestedScrollEnabled
             >
+              {questions.length ? (
+                <Action
+                  disabled={!ready}
+                  expanded={questionsOpen}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setQuestionsOpen(true);
+                  }}
+                >
+                  {`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
+                </Action>
+              ) : null}
+              {conversation?.pendingApprovals.length ? (
+                <Action
+                  disabled={!ready || !approvalControls}
+                  expanded={approvalsOpen}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setApprovalsOpen(true);
+                  }}
+                >{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
+              ) : null}
+              {conversation?.queue.depth ? (
+                <Action
+                  tone="quiet"
+                  expanded={queueOpen}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setQueueOpen(true);
+                  }}
+                >
+                  {`${conversation.queue.depth} queued`}
+                </Action>
+              ) : null}
+              {conversation?.goal ? (
+                <Action
+                  tone="quiet"
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setSessionOpen(true);
+                  }}
+                >
+                  {`Goal · ${conversation.goal.status}`}
+                </Action>
+              ) : null}
               {canCompose && questions.length === 0 ? (
-                <TextInput
-                  ref={composerInput}
-                  accessibilityLabel="Message"
-                  multiline
-                  value={draft.record.draft}
-                  onChangeText={(text) => document.edit(text)}
-                  onSelectionChange={(event) =>
-                    setComposerSelection(event.nativeEvent.selection)
-                  }
-                  editable={draft.loaded}
-                  placeholder="Message"
-                  placeholderTextColor={colors.secondary}
-                  style={[
-                    styles.input,
-                    {
-                      color: colors.text,
-                      backgroundColor: colors.surface,
-                      borderWidth: 0,
-                      padding: 2,
-                      flex: 1,
-                      minWidth: "100%",
-                      minHeight: Platform.OS === "android" ? 48 : 44,
-                      maxHeight: fontScale > 1.6 ? 96 : 160,
-                      textAlignVertical: "top",
-                    },
-                  ]}
+                <ImageAttachments
+                  document={document}
+                  selection={imageSelection}
                 />
               ) : null}
-            </View>
-            {fontScale > 1.4 ? composerSettings : null}
-            <View
-              style={[
-                styles.row,
-                {
+              <ErrorMessage message={imageState.error} />
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "flex-end",
                   flexWrap: "wrap",
-                  justifyContent:
-                    fontScale > 1.4 ? "space-between" : "flex-end",
-                  gap: 4,
-                },
-              ]}
-            >
-              {canCompose && questions.length === 0 ? (
-                <Action
-                  tone="quiet"
-                  label="Attach images"
-                  disabled={!draft.loaded || !!draft.error || imageState.busy}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    void imageSelection.choose();
-                  }}
-                >
-                  {imageState.busy ? "Processing…" : "+"}
-                </Action>
-              ) : null}
-              {fontScale <= 1.4 ? composerSettings : null}
-              {canCompose && questions.length === 0 && command !== null ? (
-                <Action
-                  tone="primary"
-                  label={
-                    command.command.id === "compact"
-                      ? "Compact transcript"
-                      : undefined
-                  }
-                  disabled={
-                    !ready ||
-                    !draft.loaded ||
-                    !!draft.error ||
-                    draft.submitting ||
-                    unconfirmedSend !== null ||
-                    imageState.busy ||
-                    (command.command.id === "goal" &&
-                      !goalCommand &&
-                      !conversation?.goal) ||
-                    (command.command.capability != null &&
-                      !conversation?.capabilities[command.command.capability])
-                  }
-                  onPress={() => void applyCommand()}
-                >
-                  {command.command.id === "goal"
-                    ? goalCommand || !conversation?.goal
-                      ? "Set goal"
-                      : "Clear goal"
-                    : command.command.label}
-                </Action>
-              ) : null}
-              {submissionActions(["send", "steer"])}
-              {controlsState?.error &&
-              (controlsState.lastAction === "changeModel" ||
-                controlsState.lastAction === "setReasoningEffort") ? (
-                <Action
-                  tone="quiet"
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setComposerSetting(
-                      controlsState.lastAction === "changeModel"
-                        ? "model"
-                        : "reasoning",
-                    );
-                  }}
-                >
-                  Review settings error
-                </Action>
-              ) : null}
-              {draft.error ? (
-                <Action tone="accent" onPress={document.retry}>
-                  {draft.loaded ? "Retry saving" : "Retry loading draft"}
-                </Action>
-              ) : null}
-              {!connected ||
-              snapshot.error ||
-              actionError ||
-              unconfirmedSend !== null ? (
-                <Action
-                  tone="quiet"
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    timeline.current?.scrollToOffset({
-                      offset: 0,
-                      animated: true,
-                    });
-                  }}
-                >
-                  {unconfirmedSend !== null
-                    ? "Check delivery"
-                    : !connected
-                      ? "Connection"
-                      : "Review error"}
-                </Action>
-              ) : null}
-              {conversation?.capabilities.interrupt ? (
-                <Action
-                  tone="quiet"
-                  disabled={!ready}
-                  onPress={() => {
-                    void mutate("interrupt");
-                  }}
-                >
-                  Stop
-                </Action>
-              ) : null}
-              {submissionActions(["queue"])}
-            </View>
-          </ScrollView>
+                  gap: 8,
+                }}
+              >
+                {canCompose && questions.length === 0 ? (
+                  <TextInput
+                    ref={composerInput}
+                    accessibilityLabel="Message"
+                    multiline
+                    value={draft.record.draft}
+                    onChangeText={(text) => document.edit(text)}
+                    onSelectionChange={(event) =>
+                      setComposerSelection(event.nativeEvent.selection)
+                    }
+                    editable={draft.loaded}
+                    placeholder="Message"
+                    placeholderTextColor={colors.secondary}
+                    style={[
+                      styles.input,
+                      {
+                        color: colors.text,
+                        backgroundColor: colors.surface,
+                        borderWidth: 0,
+                        padding: 2,
+                        flex: 1,
+                        minWidth: "100%",
+                        minHeight: Platform.OS === "android" ? 48 : 44,
+                        maxHeight: fontScale > 1.6 ? 96 : 160,
+                        textAlignVertical: "top",
+                      },
+                    ]}
+                  />
+                ) : null}
+              </View>
+              {fontScale > 1.4 ? composerSettings : null}
+              <View
+                style={[
+                  styles.row,
+                  {
+                    flexWrap: "wrap",
+                    justifyContent:
+                      fontScale > 1.4 ? "space-between" : "flex-end",
+                    gap: 4,
+                  },
+                ]}
+              >
+                {canCompose && questions.length === 0 ? (
+                  <Action
+                    tone="quiet"
+                    label="Attach images"
+                    disabled={!draft.loaded || !!draft.error || imageState.busy}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      void imageSelection.choose();
+                    }}
+                  >
+                    {imageState.busy ? "Processing…" : "+"}
+                  </Action>
+                ) : null}
+                {fontScale <= 1.4 ? composerSettings : null}
+                {canCompose && questions.length === 0 && command !== null ? (
+                  <Action
+                    tone="primary"
+                    label={
+                      command.command.id === "compact"
+                        ? "Compact transcript"
+                        : undefined
+                    }
+                    disabled={
+                      !ready ||
+                      !draft.loaded ||
+                      !!draft.error ||
+                      draft.submitting ||
+                      unconfirmedSend !== null ||
+                      imageState.busy ||
+                      (command.command.id === "goal" &&
+                        !goalCommand &&
+                        !conversation?.goal) ||
+                      (command.command.capability != null &&
+                        !conversation?.capabilities[command.command.capability])
+                    }
+                    onPress={() => void applyCommand()}
+                  >
+                    {command.command.id === "goal"
+                      ? goalCommand || !conversation?.goal
+                        ? "Set goal"
+                        : "Clear goal"
+                      : command.command.label}
+                  </Action>
+                ) : null}
+                {submissionActions(["send", "steer"])}
+                {controlsState?.error &&
+                (controlsState.lastAction === "changeModel" ||
+                  controlsState.lastAction === "setReasoningEffort") ? (
+                  <Action
+                    tone="quiet"
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setComposerSetting(
+                        controlsState.lastAction === "changeModel"
+                          ? "model"
+                          : "reasoning",
+                      );
+                    }}
+                  >
+                    Review settings error
+                  </Action>
+                ) : null}
+                {draft.error ? (
+                  <Action tone="accent" onPress={document.retry}>
+                    {draft.loaded ? "Retry saving" : "Retry loading draft"}
+                  </Action>
+                ) : null}
+                {!connected ||
+                snapshot.error ||
+                actionError ||
+                unconfirmedSend !== null ? (
+                  <Action
+                    tone="quiet"
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      timeline.current?.scrollToOffset({
+                        offset: 0,
+                        animated: true,
+                      });
+                    }}
+                  >
+                    {unconfirmedSend !== null
+                      ? "Check delivery"
+                      : !connected
+                        ? "Connection"
+                        : "Review error"}
+                  </Action>
+                ) : null}
+                {conversation?.capabilities.interrupt ? (
+                  <Action
+                    tone="quiet"
+                    disabled={!ready}
+                    onPress={() => {
+                      void mutate("interrupt");
+                    }}
+                  >
+                    Stop
+                  </Action>
+                ) : null}
+                {submissionActions(["queue"])}
+              </View>
+            </ScrollView>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

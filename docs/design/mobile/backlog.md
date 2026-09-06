@@ -53,7 +53,10 @@ composer and scrolling oversized draft/actions separately from suggestions.
 Both native command actions reached the project listing with large text and
 real keyboards. Check smaller devices, landscape, screen-reader navigation,
 long drafts and running controls in this layout before accepting the issue.
-See [overflow correction evidence](fullwidth-composer.md#bounded-composer-overflow-correction).
+A 320 × 569 Android viewport at 200% text exposed a fixed-height allocation
+failure; the adaptive cap now preserves editing and scrollable actions. Both
+platforms reached the project listing again. iPad landscape, screen readers
+and long drafts remain open. See [short viewport evidence](fullwidth-composer.md#short-viewport-allocation).
 
 ### MOB-001 · P1 · Use screen space deliberately · In progress
 

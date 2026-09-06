@@ -186,3 +186,37 @@ long drafts and running controls in the new scroll region remain in MOB-011.
 ![iOS complete action reached by scrolling](assets/fullwidth-composer/ios-scrolled-command-action.png)
 
 ![Android bounded command with keyboard](assets/fullwidth-composer/android-bounded-command.png)
+
+## Short viewport allocation
+
+A 720 × 1280 Android emulator display at density 360 gives a 320 × 569 logical
+viewport. At font scale 2.0 with the software keyboard and `/project`, the fixed
+160-point suggestion cap consumed the whole composer and hid the draft. The
+new inner layout measures the keyboard-visible height. Suggestions now use at
+most 32% of that height (40% of the composer's 80% cap), with a 160-point ceiling.
+The header scrolls with the results so even very short list viewports can reach
+both suggestions and Dismiss. The draft/actions retain their own scroll area.
+
+Both final Release builds passed along with TypeScript, touched Biome and all
+228 native tests. Manual Android readback and screenshots prove the draft is
+visible in the narrow case, the complete action is reached by scrolling, and
+Show in project opens the project list. The iOS largest-text regression also
+reached the complete action and opened the project list. Both returned to the
+conversation. Android size/density overrides were reset to physical 1080 × 2400
+and 420; fonts restored to Android 1.0 and iOS large.
+
+The phone manifests restrict orientation to portrait (iOS also allows upside
+down), while iPad explicitly supports landscape. iPad landscape remains an
+acceptance requirement, not an assumed phone capability. This Android viewport
+is a synthetic stress test, not validation of another physical device. The
+small-screen header obscures nearly the entire session title; MOB-001 remains
+open for header consolidation. Screen readers and long-draft scroll behavior
+also remain unverified for this layout.
+
+![Small Android failure before allocation](assets/fullwidth-composer/android-small-before.png)
+
+![Small Android draft after allocation](assets/fullwidth-composer/android-small-draft.png)
+
+![Small Android complete action after scrolling](assets/fullwidth-composer/android-small-action.png)
+
+![iOS adaptive allocation regression](assets/fullwidth-composer/ios-adaptive-command-action.png)
