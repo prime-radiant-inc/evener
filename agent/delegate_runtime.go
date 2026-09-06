@@ -68,6 +68,10 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+	// laneAdmission is the spawn's close-fence admission, carried here so a
+	// rollback can rename it as it begins.
+	laneAdmission envWorkID
+	laneFenced    bool
 }
 
 type delegateQuietAttentionClaim struct {
@@ -1291,12 +1295,9 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
 	}
-	// Name the lane that actually exists: the reserved path is all the label
-	// could promise before the create ran, and the created one is where a
-	// warning naming this work should point a reader.
-	if laneFenced && isolation.worktreePath != "" {
-		s.relabelEnvWork(laneAdmission, "delegate start on lane "+isolation.worktreePath)
-	}
+	// The arms reached from here own the rename, because they are where a
+	// rollback actually starts.
+	isolation.laneAdmission, isolation.laneFenced = laneAdmission, laneFenced
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		isolation.cleanup(s, reservation.delegateID)
@@ -1606,7 +1607,15 @@ func delegateSandboxFallbackHint(s *Session, args delegateArgs, err error) error
 // failure, failCommittedStart's arms, and failAdoptedStart). Every one of
 // those callers runs inside the lane admission delegateRuntime.create holds
 // across the whole spawn, so this takes none of its own.
+//
+// The rename lives here because every post-prepareIsolation arm funnels
+// through this method, and the retain arms that roll nothing back never
+// reach it, so the admission reads "rollback" only when one is actually
+// running.
 func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
+	if isolation.laneFenced && isolation.worktreePath != "" {
+		s.relabelEnvWork(isolation.laneAdmission, "delegate lane rollback for "+isolation.worktreePath)
+	}
 	if isolation.ownsFreshEnv {
 		// prepareSubagentRunFromSelection leaves a PREPARED environment alone (it
 		// belongs to this isolation step), so this is the only rollback for the
