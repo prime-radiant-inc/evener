@@ -50,3 +50,9 @@ The check found stale transcript guidance saying reply below. That copy is corre
 QuestionBatches wraps the current web reconcileBatches function; the conversation store subscription feeds current question snapshots into it. Submission rechecks the batch, freezes it when the durable dispatch starts, and settles only that batch on accepted send. The ordinary draft delivery checkpoint remains in use, including uncertain-delivery blocking. This replaces the single answered-definition marker. The sheet still displays the first batch, and a newly arriving batch is presented after that batch settles; simultaneous independent batch interaction remains incomplete.
 
 Native TypeScript, targeted formatting, and 107 tests across 19 files pass. The two ownership tests were added before the implementation. These tests exercise the actual shared reconciler, not a copied algorithm. Previously recorded manual iOS evidence predates this ownership change; it is not manual race evidence.
+
+## Draft preservation when batches grow
+
+The existing SQLite question draft record now merges selections and definitions by question key within each hub/session. Reads restore only entries whose individual definition still matches. Adding questions or saving a separate batch no longer invalidates or overwrites an existing question's saved answer. A changed definition invalidates only that question. This retains the existing database schema and JSON definition representation.
+
+The regression test failed with the prior whole-batch signature lookup. It now verifies adding a question, saving a sibling batch, database close/reopen, both answers retained, and selective invalidation when one definition changes. All 108 native tests and TypeScript pass. Native keyboard/focus behavior across a growing batch, active-tab persistence, and storage-failure interaction during definition changes still require validation.
