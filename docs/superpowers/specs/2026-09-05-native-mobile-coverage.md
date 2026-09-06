@@ -90,3 +90,7 @@ The subsequent shared-text correction makes iOS Action/Copy/ErrorMessage measure
 Source `dc2dd032f` restores a validated saved-hub/conversation bookmark after native restart. Both-platform cold starts, Android font-change recreation, toolbar back navigation and Android cross-hub identity have [manual evidence](../../design/mobile/location-restoration-evidence.md). Native tests are 53/53. Android system Back exited the restored conversation instead of popping; this remains an explicit navigation defect. Reading offsets and form-draft restoration are not implemented.
 
 Android API 35 system Back is subsequently corrected by disabling the unsupported predictive opt-in for the current navigator. Final release checks verify restored-stack popping, keyboard-first dismissal, root exit and edge-swipe navigation; see the location evidence. Predictive transition previews and Android 16+ verification remain outstanding.
+
+### Queue-management increment
+
+The native composer queue count opens a platform modal with full queued text (or labeled preview), identity-guarded cancellation, and entry/revision-guarded individual/bulk steering. Both simulators exercised these actions against the scripted WebSocket fixture. Shared tests 2,233 and native tests 54 passed; both Release builds succeeded. See `docs/design/mobile/queue-evidence.md`. Real-daemon steering consumption, native conflict/uncertain-response scenarios, idle run-now and durable queue mutation recovery remain unverified or unimplemented; this is not full queue workflow completion.

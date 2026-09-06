@@ -9,6 +9,47 @@ import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 
 describe("native demonstration hub", () => {
+	it("changes the observed queue and rejects stale identities and revisions", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const service = createConversationService(client);
+		try {
+			await client.connect();
+			await service.open("demo:playground");
+			await service.send([{ type: "text", text: "Start" }]);
+			await service.open("demo:playground");
+			for (const text of ["First", "Second", "Third"])
+				await service.queue([{ type: "text", text }]);
+			const observed = await service.open("demo:playground");
+			expect(observed.queue.texts).toEqual(["First", "Second", "Third"]);
+			const [first, second] = observed.queue.ids ?? [];
+			if (!first || !second || !observed.instanceId)
+				throw new Error("Missing queue guards");
+			await service.cancelQueued(0, first, observed.instanceId);
+			await expect(
+				service.cancelQueued(0, first, observed.instanceId),
+			).rejects.toMatchObject({ code: -32013 });
+			await expect(
+				service.drainAsSteer(observed.queue.revision, observed.instanceId),
+			).rejects.toMatchObject({ code: -32013 });
+			const remaining = await service.open("demo:playground");
+			expect(remaining.queue.texts).toEqual(["Second", "Third"]);
+			await service.promoteQueuedAsSteer(0, second, observed.instanceId);
+			const last = await service.open("demo:playground");
+			expect(last.queue.texts).toEqual(["Third"]);
+			await service.drainAsSteer(last.queue.revision, observed.instanceId);
+			expect((await service.open("demo:playground")).queue.depth).toBe(0);
+		} finally {
+			service.close();
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("projects exact reference Markdown through the real conversation service", async () => {
 		const markdown =
 			"## Reference\n\nA **bold** paragraph.\n\n```ts\nconst n = 1;\n```";

@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
 	InitializeResponse,
 	MutationReceipt,
@@ -12,7 +13,7 @@ import type {
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 
 export async function createDemoHub(port = 9196, initialMarkdown?: string) {
-	const server = new WebSocketServer({ host: "127.0.0.1", port, path: "/rpc" });
+	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
 	if (typeof address === "string" || !address)
@@ -63,7 +64,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 				shutdown: false,
 				changeModel: false,
 				changeVisionModel: false,
-				queue: false,
+				queue: true,
 				goal: false,
 				rename: false,
 			},
@@ -79,7 +80,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 			threadList: true,
 			threadTurnsList: true,
 			turnStart: true,
-			turnSteer: false,
+			turnSteer: true,
 			threadClear: false,
 			threadShutdown: false,
 			forkFromTurn: false,
@@ -193,6 +194,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 							created.status = { type: "active" };
 							created.evener.capabilities.send = false;
 							created.evener.capabilities.interrupt = true;
+							created.evener.capabilities.steer = true;
 							created.evener.activeTurnId = turn.id;
 						}
 						threads.set(created.evener.ref, created);
@@ -220,6 +222,86 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 					case "thread/turns/list":
 						result = { data: [] };
 						break;
+					case "turn/queue":
+					case "turn/steer":
+					case "turn/cancelQueued":
+					case "turn/promoteQueuedAsSteer":
+					case "turn/drainAsSteer": {
+						if (
+							!selected ||
+							params.expectedInstanceId !== selected.evener.instanceId ||
+							!params.clientMutationId
+						)
+							throw new WireError("Session identity changed", -32013, {
+								evenerErrorInfo: "conflict",
+							});
+						const queue = selected.evener.queue;
+						const ids = queue.ids ?? [];
+						const texts = queue.texts ?? [];
+						const method = request.method;
+						let removedText: string | undefined;
+						let entryIds: string[] | undefined;
+						if (method === "turn/queue") {
+							const id = `demo-queue-${params.clientMutationId}`;
+							ids.push(id);
+							texts.push(
+								(params.input ?? [])
+									.map((item: { text?: string }) => item.text ?? "")
+									.join("\n"),
+							);
+							entryIds = [id];
+						} else if (method !== "turn/steer") {
+							if (method === "turn/drainAsSteer") {
+								if (
+									params.expectedQueueRevision !== queue.revision ||
+									ids.length === 0
+								)
+									throw new WireError("Queue revision changed", -32013, {
+										evenerErrorInfo: "conflict",
+									});
+								texts.splice(0);
+								ids.splice(0);
+							} else {
+								if (
+									params.index < 0 ||
+									!params.expectedEntryId ||
+									ids[params.index] !== params.expectedEntryId
+								)
+									throw new WireError("Queue entry changed", -32013, {
+										evenerErrorInfo: "conflict",
+									});
+								removedText = texts.splice(params.index, 1)[0];
+								ids.splice(params.index, 1);
+							}
+						}
+						if (method !== "turn/steer") {
+							queue.revision += 1;
+							queue.ids = ids;
+							queue.texts = texts;
+							queue.preview = texts.map((text) => text.slice(0, 80));
+							queue.depth = ids.length;
+						}
+						const receipt: MutationReceipt = {
+							clientMutationId: params.clientMutationId,
+							disposition: "applied",
+							threadId: selected.id,
+							instanceId: selected.evener.instanceId,
+							projectionState:
+								method === "turn/cancelQueued" ? "reflected" : "pending",
+							...(entryIds
+								? { queueEntryIds: entryIds }
+								: method === "turn/cancelQueued"
+									? {}
+									: { turnId: selected.evener.activeTurnId }),
+						};
+						result =
+							method === "turn/cancelQueued"
+								? { removedText, receipt }
+								: { receipt };
+						changed = selected;
+						break;
+					}
+
 					case "turn/start":
 					case "turn/interrupt": {
 						if (!selected) throw new Error("Unknown demonstration session");
@@ -268,6 +350,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 						thread.status = { type: starting ? "active" : "idle" };
 						thread.evener.capabilities.send = !starting;
 						thread.evener.capabilities.interrupt = starting;
+						thread.evener.capabilities.steer = starting;
 						thread.evener.activeTurnId = starting ? turn.id : undefined;
 						thread.updatedAt += 1;
 						const receipt: MutationReceipt = {
@@ -293,7 +376,8 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 						jsonrpc: "2.0",
 						id,
 						error: {
-							code: -32602,
+							code: error instanceof WireError ? error.code : -32602,
+							data: error instanceof WireError ? error.data : undefined,
 							message:
 								error instanceof Error ? error.message : "Invalid request",
 						},

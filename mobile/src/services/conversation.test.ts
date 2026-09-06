@@ -551,7 +551,7 @@ describe("ConversationService", () => {
       };
       client.on("turn/cancelQueued", () => cancelResp);
       await service.open("ref-1");
-      const result = await service.cancelQueued(0, "entry-1");
+      const result = await service.cancelQueued(0, "entry-1", "thread-1");
       expect(result.removedText).toBe("queued text");
       const call = client.calls.find((c) => c.method === "turn/cancelQueued");
       expect(call?.params).toMatchObject({
@@ -1609,7 +1609,9 @@ describe("ConversationService", () => {
             receipt: makeReceipt(),
           }) as TurnCancelQueuedResponse,
       );
-      await expect(service.cancelQueued(0, "entry-1")).rejects.toThrow();
+      await expect(
+        service.cancelQueued(0, "entry-1", "thread-1"),
+      ).rejects.toThrow();
       expect(
         client.calls.find((c) => c.method === "turn/cancelQueued"),
       ).toBeUndefined();
@@ -1735,7 +1737,9 @@ describe("ConversationService", () => {
             receipt: makeReceipt(),
           }) as TurnCancelQueuedResponse,
       );
-      await expect(service.cancelQueued(0, "entry-1")).rejects.toThrow();
+      await expect(
+        service.cancelQueued(0, "entry-1", "thread-1"),
+      ).rejects.toThrow();
       expect(
         client.calls.find((c) => c.method === "turn/cancelQueued"),
       ).toBeUndefined();
@@ -2398,7 +2402,7 @@ describe("ConversationService", () => {
       expect(
         client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
       ).toBeUndefined();
-      await expect(service.cancelQueued(0, "e")).rejects.toThrow();
+      await expect(service.cancelQueued(0, "e", "thread-1")).rejects.toThrow();
       expect(
         client.calls.find((c) => c.method === "turn/cancelQueued"),
       ).toBeUndefined();
@@ -2735,5 +2739,63 @@ describe("ConversationService", () => {
       // Other content retained — agentMessage projected as assistant.
       expect(items.some((i) => i.kind === "assistant")).toBe(true);
     });
+  });
+});
+
+describe("observed queue guards", () => {
+  beforeEach(() => {
+    idCounter = 0;
+  });
+  it("retains the instance identity used by the displayed queue", async () => {
+    const { service } = setup();
+    expect((await service.open("ref-1")).instanceId).toBe("thread-1");
+  });
+  it("rejects cancellation from an obsolete instance before dispatch", async () => {
+    const { service, client } = setup();
+    await service.open("ref-1");
+    await expect(
+      service.cancelQueued(0, "entry-1", "old-instance"),
+    ).rejects.toThrow();
+    expect(
+      client.calls.filter((c) => c.method === "turn/cancelQueued"),
+    ).toHaveLength(0);
+  });
+  it("carries the observed entry and revision without retrying a conflict", async () => {
+    const { service, client } = setup();
+    const conflict = new WireError("queue changed", -32013, {
+      evenerErrorInfo: "conflict",
+    });
+    client.on("turn/promoteQueuedAsSteer", () => {
+      throw conflict;
+    });
+    client.on("turn/drainAsSteer", () => {
+      throw conflict;
+    });
+    await service.open("ref-1");
+    await expect(
+      service.promoteQueuedAsSteer(2, "entry-c", "thread-1"),
+    ).rejects.toBe(conflict);
+    await expect(service.drainAsSteer(17, "thread-1")).rejects.toBe(conflict);
+    expect(client.calls.filter((c) => c.method.startsWith("turn/"))).toEqual([
+      {
+        method: "turn/promoteQueuedAsSteer",
+        params: {
+          ref: "ref-1",
+          index: 2,
+          expectedEntryId: "entry-c",
+          expectedInstanceId: "thread-1",
+          clientMutationId: "cmid-1",
+        },
+      },
+      {
+        method: "turn/drainAsSteer",
+        params: {
+          ref: "ref-1",
+          expectedQueueRevision: 17,
+          expectedInstanceId: "thread-1",
+          clientMutationId: "cmid-2",
+        },
+      },
+    ]);
   });
 });
