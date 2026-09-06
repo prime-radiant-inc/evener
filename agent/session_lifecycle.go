@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
@@ -507,6 +509,11 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			// clone's process table, which was just reaped, so only its scratch
 			// is left: retained, never a second Cleanup.
 			s.retainParkedWorktreeEnvironmentScratch()
+			// And every environment a later enter dropped, which the parked one
+			// does not cover: worktreeRestoreEnv holds only the launch
+			// environment, so a switch leaves the clone it came from reachable
+			// from nothing.
+			s.retainAbandonedEnvironmentScratch()
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -562,6 +569,50 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		close(s.events)
 		s.eventsMu.Unlock()
 	})
+}
+
+// recordAbandonedEnvironmentLocked remembers an environment the swap has just
+// installed over, when the session can no longer reach it: not the environment
+// just installed, and not the one an enter parked (worktreeRestoreEnv, which
+// close retains separately). The clone between two enters is the case that
+// matters — a switch does not re-park, so the environment the session came from
+// is dropped from every session reference while a child spawned in it still
+// holds the object and can mint a scratch there afterwards.
+//
+// The caller holds s.mu and has already run the swap's record, so
+// worktreeRestoreEnv is the parked environment this swap decided on. An
+// environment is recorded once: a clone is only ever installed once, and the
+// scan keeps that true by construction rather than by trust, so the slice is
+// bounded by the number of worktree switches a session actually made.
+func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExecutionEnvironment) {
+	if prior == nil || prior == next || prior == s.worktreeRestoreEnv {
+		return
+	}
+	if slices.Contains(s.abandonedEnvs, prior) {
+		return
+	}
+	s.abandonedEnvs = append(s.abandonedEnvs, prior)
+}
+
+// retainAbandonedEnvironmentScratch releases the leases of every scratch the
+// environments this session swapped away from still own, keeping the
+// directories for the handoff, and retires their file-tool layers through the
+// drain — RetainSessionScratch does both.
+//
+// Only close calls it, after the current environment's Cleanup and for the same
+// reason the parked environment's retain runs there: an abandoned environment
+// shares the current clone's process table, so its processes are already reaped
+// and running Cleanup on it would reap that table a second time. What is left on
+// it is what a shared child minted after the session moved on, which nothing
+// else will ever release.
+func (s *Session) retainAbandonedEnvironmentScratch() {
+	s.mu.Lock()
+	abandoned := s.abandonedEnvs
+	s.abandonedEnvs = nil
+	s.mu.Unlock()
+	for _, env := range abandoned {
+		env.RetainSessionScratch()
+	}
 }
 
 // retainParkedWorktreeEnvironmentScratch releases the leases of every scratch

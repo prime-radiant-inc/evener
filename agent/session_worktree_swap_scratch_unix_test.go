@@ -581,3 +581,131 @@ func TestDelegateWorktreeReport_LeavesNoUnownedHeldLease(t *testing.T) {
 		}
 	}
 }
+
+// enterLaneWithSharedChild puts the session in a fresh lane and gives it a child
+// that shares the lane environment OBJECT (a child with no working directory of
+// its own gets the parent's environment untouched). It returns that environment,
+// which the next enter will abandon.
+func enterLaneWithSharedChild(t *testing.T, r *wtRepo, name string) *execenv.LocalExecutionEnvironment {
+	t.Helper()
+	if _, err := r.create(t, map[string]any{"name": name}); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	lane := currentLocalEnv(t, r.s)
+	child, err := NewSession(r.s.client, r.s.currentProfile(), lane, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the lane environment: %v", err)
+	}
+	r.s.subagents.track(&subagent{id: child.id, sess: child, done: make(chan struct{})})
+	return lane
+}
+
+// A second enter leaves the first lane's environment reachable from nothing:
+// worktreeRestoreEnv holds the LAUNCH environment, so the clone between two
+// enters is neither current nor parked. A child spawned while the session was in
+// it still shares the object and can mint a scratch there afterwards — one its
+// own teardown skips, because the environment is not the child's, and one the
+// current clone's Cleanup never reaches. Nothing but the parent's close can
+// release it, so the parent's close has to.
+func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+
+	laneA := enterLaneWithSharedChild(t, r, "a")
+	if laneA == launch {
+		t.Fatal("the enter did not swap the session onto a lane clone")
+	}
+	// The second enter drops laneA: current becomes laneB, parked stays launch.
+	if _, err := r.create(t, map[string]any{"name": "b"}); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	if laneB := currentLocalEnv(t, r.s); laneB == laneA {
+		t.Fatal("the second enter did not swap the session off laneA")
+	}
+
+	// What the shared child does afterwards: its command mints a scratch on the
+	// environment the session has already dropped.
+	if _, err := laneA.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("child command on the abandoned environment: %v", err)
+	}
+	abandoned := laneA.SessionScratchDir()
+	if abandoned == "" {
+		t.Fatal("the child's command minted no scratch on the abandoned environment")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(abandoned) })
+	if !scratchLeaseHeld(t, abandoned) {
+		t.Fatal("the abandoned environment's scratch lease must be held before the close")
+	}
+
+	r.s.Close()
+
+	if _, err := os.Stat(abandoned); err != nil {
+		t.Errorf("close removed the abandoned environment's scratch %s, want it retained for the handoff: %v", abandoned, err)
+	}
+	if scratchLeaseHeld(t, abandoned) {
+		t.Errorf("the abandoned environment's scratch %s lease is still held after the close; nothing else will ever release it", abandoned)
+	}
+}
+
+// The same session, exiting back to the launch environment before it closes.
+// Every environment it swapped away from is abandoned — both lanes — but the
+// launch environment it swapped back ONTO is not: it is current, close cleans
+// it, and recording it as abandoned would have close retain the very
+// environment it is about to tear down.
+func TestParentCloseAfterExitRetainsEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	launch := currentLocalEnv(t, r.s)
+
+	laneA := enterLaneWithSharedChild(t, r, "a")
+	laneB := enterLaneWithSharedChild(t, r, "b")
+	if laneA == laneB {
+		t.Fatal("the second enter did not swap the session off laneA")
+	}
+	if _, err := r.exitOp(t); err != nil {
+		t.Fatalf("exit: %v", err)
+	}
+	if got := currentLocalEnv(t, r.s); got != launch {
+		t.Fatalf("exit landed on %p, want the launch environment %p", got, launch)
+	}
+
+	scratches := map[string]string{}
+	for name, env := range map[string]*execenv.LocalExecutionEnvironment{"laneA": laneA, "laneB": laneB} {
+		if _, err := env.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("child command on %s: %v", name, err)
+		}
+		dir := env.SessionScratchDir()
+		if dir == "" {
+			t.Fatalf("the child's command minted no scratch on %s", name)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		scratches[name] = dir
+	}
+
+	r.s.mu.Lock()
+	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), r.s.abandonedEnvs...)
+	r.s.mu.Unlock()
+	if len(abandoned) != 2 {
+		t.Errorf("abandoned environments = %d, want exactly the two lanes (each recorded once)", len(abandoned))
+	}
+	for _, env := range abandoned {
+		if env == launch {
+			t.Error("the launch environment was recorded as abandoned; the close would retain the environment it is about to clean")
+		}
+	}
+
+	r.s.Close()
+
+	for name, dir := range scratches {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("close removed %s's scratch %s, want it retained: %v", name, dir, err)
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("%s's scratch %s lease is still held after the close", name, dir)
+		}
+	}
+}

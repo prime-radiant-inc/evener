@@ -51,3 +51,27 @@ func TestRetainSessionScratchIsSafeToRunConcurrently(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// RetainSessionScratch is what a session's close runs on an environment it must
+// not Cleanup — a shared child's, the environment a worktree enter parked, and
+// the ones a later enter abandoned. Releasing the lease is only half of what
+// those environments hold: each also caches fd-anchored file-tool layers, and a
+// retain that left them open would keep a root descriptor per abandoned
+// environment for the rest of the process. The retain retires them through the
+// same drain a teardown uses.
+func TestRetainSessionScratchRetiresTheFileToolLayers(t *testing.T) {
+	env := readConfinedEnvAt(t, t.TempDir())
+	scratch := env.SessionScratchDir()
+	if _, err := env.WriteFile(filepath.Join(scratch, "probe"), "built\n"); err != nil {
+		t.Fatalf("write_file into the scratch: %v", err)
+	}
+	if fds := openRootFdsOf(env); fds == 0 {
+		t.Fatal("the file tool built no fd-anchored layer; this test would prove nothing")
+	}
+
+	env.RetainSessionScratch()
+
+	if fds := openRootFdsOf(env); fds != 0 {
+		t.Errorf("the retain left %d root fds open; an environment nothing will Cleanup keeps its layers forever", fds)
+	}
+}

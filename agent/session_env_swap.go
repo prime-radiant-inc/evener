@@ -128,11 +128,17 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return errSwapWhileClosing
 	}
 	ei.KnowledgeCutoff = s.envInfo.KnowledgeCutoff // profile-derived, not env-derived; swap must not clobber it
+	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
 	if record != nil {
 		record()
 	}
+	// After record, because record is what decides whether prior is the
+	// environment this swap PARKS. Anything neither parked nor installed is
+	// reachable from nothing the session holds, and a child that shares it can
+	// still mint a scratch on it, so the close has to keep a reference.
+	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
