@@ -192,7 +192,7 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
   return caps;
 }
 
-type MutationKind = "send" | "steer" | "queue" | "interrupt";
+type MutationKind = "send" | "steer" | "drain" | "queue" | "interrupt";
 export const CANONICAL_MUTATION_DISPOSITIONS = ["applied", "replayed"] as const;
 export type CanonicalMutationDisposition =
   (typeof CANONICAL_MUTATION_DISPOSITIONS)[number];
@@ -202,6 +202,7 @@ const CANONICAL_MUTATION_PROJECTION: Readonly<
 > = {
   send: "pending",
   steer: "pending",
+  drain: "pending",
   queue: "pending",
   interrupt: "reflected",
 };
@@ -255,9 +256,20 @@ function decodeMutationResult(
     "threadId",
     "projectionState",
   ];
-  if (kind === "send" || kind === "steer" || kind === "interrupt")
+  if (
+    kind === "send" ||
+    kind === "steer" ||
+    kind === "drain" ||
+    kind === "interrupt"
+  )
     requiredReceiptKeys.push("turnId");
   if (kind === "queue") requiredReceiptKeys.push("queueEntryIds");
+  const hasDrainedEntries =
+    kind === "drain" &&
+    result.receipt !== null &&
+    typeof result.receipt === "object" &&
+    "queueEntryIds" in result.receipt;
+  if (hasDrainedEntries) requiredReceiptKeys.push("queueEntryIds");
   if (
     result.receipt !== null &&
     typeof result.receipt === "object" &&
@@ -301,10 +313,15 @@ function decodeMutationResult(
     }
     decoded.instanceId = expectedInstanceId;
   }
-  if (kind === "send" || kind === "steer" || kind === "interrupt") {
+  if (
+    kind === "send" ||
+    kind === "steer" ||
+    kind === "drain" ||
+    kind === "interrupt"
+  ) {
     decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
   }
-  if (kind === "queue") {
+  if (kind === "queue" || hasDrainedEntries) {
     const ids = receipt.queueEntryIds;
     if (
       !Array.isArray(ids) ||
@@ -644,7 +661,7 @@ export function createConversationService(
             }),
       );
       return decodeMutationResult(
-        "steer",
+        expectedQueueRevision === undefined ? "steer" : "drain",
         result,
         clientMutationId,
         expectedInstanceId,

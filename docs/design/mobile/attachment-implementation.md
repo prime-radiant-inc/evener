@@ -47,7 +47,15 @@ The current web ImageGallery is the interaction reference: thumbnails open an im
 
 All 134 native tests and TypeScript pass; both Release builds succeed. Manual iOS and Android checks displayed the real session's inline image as a thumbnail and at full size. Native inspection found an iOS modal header under the status bar; giving the modal its own SafeAreaProvider corrected it. Verified settled aspect ratio, iOS Done dismissal, and Android system Back returning to the conversation. A transition capture showed temporary stretching before the iOS viewer settled; transition polish still needs checking. Multi-image navigation, authenticated HTTP image retrieval, failed-load recovery, large text and screen-reader behavior are not yet manually verified.
 
-Empty-composer queue-only steering, manual image steering/queue delivery, the gallery checks above, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding.
+## Queue-only steering and receipt correction
+
+Native enables steering with an empty composer when the live conversation has queued input. DraftDocument.submitWithQueue durably checkpoints even an empty local payload before dispatch, retains uncertainty across remount, and blocks automatic replay. The same composer routing helper carries the observed queue revision with the drain request.
+
+A manual iOS sequence created a real running harness session, queued icon.png, observed an empty composer and one queued entry, then pressed Steer. The server drained the queue and the provider decoded the exact fixture pixels. This exposed a receipt bug: a drain that consumes queued entries includes queueEntryIds, which the plain-steer decoder rejected. The persisted server mutation result for local:034K0xcRUdVXB4a529zcCs confirmed turn_m2, queue_1, and a pending projection receipt. Native kept the action unconfirmed rather than replaying it.
+
+The decoder now treats drain as a distinct receipt shape, validates the consumed queue IDs when present, and preserves them in the accepted receipt. Tests reproduced the real mismatch before the correction. All 136 native tests, 358 shared store/service tests, native TypeScript and both Release builds pass. The uncertain checkpoint survived a rebuilt app relaunch; it was explicitly dismissed after provider receipt was verified. Fresh manual queue/drain acknowledgement after the decoder fix, Android queue/drain, and direct image steering still require verification.
+
+The remaining gallery checks above, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding.
 
 ## Native API references
 

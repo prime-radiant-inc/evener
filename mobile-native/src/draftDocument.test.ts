@@ -27,6 +27,27 @@ afterEach(() => {
 });
 
 describe("durable draft lifecycle", () => {
+	it("checkpoints queue-only submission before dispatch and retains uncertainty across remount", async () => {
+		const { document, repository, destination } = setup();
+		let calls = 0;
+		const operation = async (text: string) => {
+			calls++;
+			expect(text).toBe("");
+			expect(repository.read(destination).unconfirmed).toBe("");
+			throw new Error("Connection closed before acknowledgement");
+		};
+		await document.submit(operation);
+		expect(calls).toBe(0);
+		await expect(document.submitWithQueue(operation)).rejects.toThrow();
+		expect(calls).toBe(1);
+		const restored = new DraftDocument(() => repository, destination);
+		expect(restored.getSnapshot().record.unconfirmed).toBe("");
+		await restored.submitWithQueue(operation);
+		expect(calls).toBe(1);
+		restored.dismiss();
+		await restored.submitWithQueue(async () => true);
+		expect(repository.read(destination).unconfirmed).toBeNull();
+	});
 	it("rejects a duplicate image identity without changing the existing draft", () => {
 		const { document } = setup();
 		const image = {
