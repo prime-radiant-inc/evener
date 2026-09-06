@@ -93,3 +93,6 @@ Use identical content across comparisons: a long session title; several hubs wit
 Record task completion, accidental taps, lost context, and reading interruptions during review. Proposed targets: no lost draft or reading position on ordinary return, no automatic scroll away from earlier content, and a visible path to the next required decision. Record failures as product work rather than explaining them away as polish.
 
 The [agent-product research](agent-mobile-research.md) adds interruption sequences to these fixtures: background during a pending approval; answer it on another device; reconnect after missing events; visit settings with a long draft; relaunch with an uncertain submission; and return from a notification to the exact hub and session. Exercise long input with the keyboard open on both platforms. Historical competitor reports motivate these scenarios; they do not establish defects in current releases.
+# Session search
+
+Search the hub, not just loaded rows. Keep the submitted query visible while results load and when returning from a conversation. Use keyboard Search and a visible action; Clear restores browsing. At accessibility text sizes, give the input its own row. Never advertise Load more until the hub can return a correct continuation across its combined sources.

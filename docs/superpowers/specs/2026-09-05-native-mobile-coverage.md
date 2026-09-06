@@ -20,12 +20,12 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Workflow | Native status | Work still required |
 | --- | --- | --- |
 | Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect; one active foreground connection | Edit profiles, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
-| Browse conversations | First 50 distinct sessions, refresh, native navigation | Pagination, search, archived sessions, project organization, favorites and pin sections |
+| Browse conversations | First 50 distinct sessions, server-side search, refresh, native navigation | Correct aggregate pagination, archived sessions, project organization, favorites and pin sections |
 | Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice; native Markdown/code installed with initial copy and dark-mode evidence | Complete rich-text interaction/accessibility validation, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
 | Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; real-daemon delivery evidence | Attachments, command selection, queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
 | Manage session | Native rename, context compaction and confirmed runtime stop; both-platform isolated real-daemon checks | Fork, clear, explicit lifecycle controls, disconnected/uncertain action acceptance, accessibility and physical-device verification |
-| Model and launch settings | Model/reasoning selection during creation; advertised reasoning levels in existing sessions | Existing-session model/vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
+| Model and launch settings | Model/reasoning selection during creation and in the composer for existing sessions | Vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
 | Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
 | Hub navigation | Not exposed | Favorite/archive, project/session removal, pin assign/unpin, section rename/delete |
@@ -113,3 +113,7 @@ The initial Session sheet exposed server-advertised effort levels, with current-
 ### Composer model and reasoning
 
 Model and reasoning now live directly inside the composer. Model selection uses a scoped searchable catalog and explicit application; reasoning uses a short choice sheet. Both preserve drafts and prevent overlap with compose submission. Native65/shared2,237 tests, TypeScript, targeted Biome and both Release builds pass. Both simulators switched models and effort against the isolated real daemon; Android keyboard overlap and iOS live large-text wrapping were corrected and visually verified. See `docs/design/mobile/composer-settings-evidence.md` for exact evidence and remaining acceptance.
+
+### Roster search
+
+Server-side search, clear and query-preserving navigation are implemented. Native68/shared2,238 tests and both Release builds pass, with real isolated-hub manual checks on both platforms. Live iOS large-text roster clipping is corrected. Hub aggregate pagination is demonstrably absent despite cursor fields in the protocol; this remains required work. See `docs/design/mobile/roster-search-evidence.md`.

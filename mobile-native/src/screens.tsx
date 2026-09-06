@@ -25,10 +25,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import {
-  createRosterService,
-  type RosterEntry,
-} from "../../mobile/src/services/roster";
+import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
@@ -36,6 +33,7 @@ import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { drafts } from "./nativeDrafts";
 import { QueueSheet } from "./QueueSheet";
+import { RosterSearch } from "./rosterSearch";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
 import { TimelineItem } from "./TimelineItem";
@@ -238,49 +236,40 @@ export function SessionsScreen({
 }: NativeStackScreenProps<Routes, "Sessions">) {
   const { activeProfile, client, state } = useConnection();
   const colors = useColors();
-  const [rows, setRows] = useState<RosterEntry[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const request = useRef(0);
-  const service = useMemo(
+  const { fontScale } = useWindowDimensions();
+  const [searchText, setSearchText] = useState("");
+  const roster = useMemo(
     () =>
-      client ? createRosterService(client, NATIVE_ROSTER_PAGE_SIZE) : null,
+      new RosterSearch(
+        client ? createRosterService(client, NATIVE_ROSTER_PAGE_SIZE) : null,
+      ),
     [client],
   );
+  const {
+    rows,
+    loading: refreshing,
+    error,
+    hasMore,
+    query,
+  } = useSyncExternalStore(roster.subscribe, roster.getSnapshot);
   const refresh = useCallback(async () => {
-    const generation = ++request.current;
-    if (!service || state !== "ready") {
-      setRefreshing(false);
-      return;
-    }
-    setRefreshing(true);
-    setError(null);
-    try {
-      const result = await service.list();
-      if (generation !== request.current) return;
-      setRows(result.threads);
-      setHasMore(result.hasMore);
-    } catch {
-      if (generation === request.current)
-        setError("Could not load sessions. Pull down to retry.");
-    } finally {
-      if (generation === request.current) setRefreshing(false);
-    }
-  }, [service, state]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Changing hubs must discard the previous hub roster.
+    if (state === "ready") await roster.load();
+  }, [roster, state]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new connection starts with an unfiltered roster.
   useEffect(() => {
-    setRows([]);
-    setHasMore(false);
-  }, [activeProfile?.id]);
+    setSearchText("");
+  }, [roster]);
   useFocusEffect(
     useCallback(() => {
       void refresh();
-      return () => {
-        request.current += 1;
-      };
-    }, [refresh]),
+      return () => roster.cancel();
+    }, [refresh, roster]),
   );
+  function search(value: string) {
+    if (state !== "ready") return;
+    Keyboard.dismiss();
+    void roster.load(value);
+  }
   useEffect(() => {
     navigation.setOptions({
       headerLeft: () => (
@@ -288,6 +277,7 @@ export function SessionsScreen({
       ),
       headerRight: () => (
         <Action
+          label="New session"
           disabled={!activeProfile || state !== "ready"}
           onPress={() => {
             if (activeProfile)
@@ -297,19 +287,73 @@ export function SessionsScreen({
               });
           }}
         >
-          New session
+          {fontScale > 1.4 ? "New" : "New session"}
         </Action>
       ),
     });
-  }, [navigation, activeProfile, state]);
+  }, [navigation, activeProfile, state, fontScale]);
   return (
     <SafeAreaView
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
       <ConnectionStatus />
+      <View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
+        <View style={[styles.row, { flexWrap: "wrap" }]}>
+          <TextInput
+            accessibilityLabel="Search sessions"
+            placeholder="Search sessions"
+            placeholderTextColor={colors.secondary}
+            value={searchText}
+            onChangeText={setSearchText}
+            onSubmitEditing={() => search(searchText)}
+            returnKeyType="search"
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={[
+              styles.input,
+              styles.fill,
+              {
+                minWidth: fontScale > 1.4 ? "100%" : 120,
+                color: colors.text,
+                borderColor: colors.border,
+                backgroundColor: colors.surface,
+              },
+            ]}
+          />
+          <Action
+            disabled={state !== "ready"}
+            onPress={() => search(searchText)}
+          >
+            Search
+          </Action>
+          {searchText || query ? (
+            <Action
+              disabled={state !== "ready"}
+              onPress={() => {
+                setSearchText("");
+                search("");
+              }}
+            >
+              Clear
+            </Action>
+          ) : null}
+        </View>
+        {query ? <Copy muted>{`Results for “${query}”`}</Copy> : null}
+      </View>
       <ErrorMessage message={error} />
+      {error ? (
+        <Action
+          disabled={state !== "ready" || refreshing}
+          onPress={() => {
+            void refresh();
+          }}
+        >
+          Retry sessions
+        </Action>
+      ) : null}
       <FlatList
+        keyboardShouldPersistTaps="handled"
         data={rows}
         keyExtractor={(item) => item.ref}
         refreshing={refreshing}
@@ -325,14 +369,16 @@ export function SessionsScreen({
                 ? "Connect to the hub to load sessions."
                 : error
                   ? "Pull down to retry loading sessions."
-                  : "No sessions on this hub yet."}
+                  : query
+                    ? "No sessions match your search."
+                    : "No sessions on this hub yet."}
           </Copy>
         }
         ListFooterComponent={
           hasMore ? (
             <Copy muted>
-              Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. More may be
-              available.
+              Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
+              search to find others.
             </Copy>
           ) : null
         }
@@ -360,20 +406,26 @@ export function SessionsScreen({
             ]}
           >
             <Text
+              allowFontScaling={Platform.OS !== "ios"}
               numberOfLines={2}
-              style={{ color: colors.text, fontSize: 17, fontWeight: "500" }}
+              style={{
+                color: colors.text,
+                fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
+                fontWeight: "500",
+              }}
             >
               {item.title || "Untitled session"}
             </Text>
             <Text
+              allowFontScaling={Platform.OS !== "ios"}
               numberOfLines={2}
               style={{
                 color:
                   item.attention === "needsYou"
                     ? colors.accent
                     : colors.secondary,
-                fontSize: 13,
-                lineHeight: 19,
+                fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
+                lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
               }}
             >
               {item.attention === "needsYou" ? "Needs you" : item.status}

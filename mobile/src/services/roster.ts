@@ -11,7 +11,7 @@
 //
 // list() requests one extra thread beyond the selected page size to detect
 // hasMore. The default page size is 500; smaller screens can choose less.
-// There is no cursor pagination — the roster is a single-page view.
+// The hub aggregate does not yet return cursors; search runs server-side.
 
 import type {
   Thread,
@@ -33,7 +33,9 @@ export interface RosterEntry {
 }
 
 export interface RosterService {
-  list(): Promise<{ threads: RosterEntry[]; hasMore: boolean }>;
+  list(
+    searchTerm?: string,
+  ): Promise<{ threads: RosterEntry[]; hasMore: boolean }>;
   refresh(): Promise<void>;
 }
 
@@ -78,9 +80,10 @@ export function createRosterService(
     );
   }
   return {
-    async list() {
+    async list(searchTerm) {
       const response: ThreadListResponse = await client.request("thread/list", {
         limit: pageSize + 1,
+        ...(searchTerm ? { searchTerm } : {}),
       });
       const rows = response.data ?? [];
       // Multiple server thread records can resolve to the same navigable session.
