@@ -2896,6 +2896,9 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("read did not finish after barrier release")
 			}
+			if got := appServer.SubscriberCount("local:stable"); got != 0 {
+				t.Fatalf("canceled stable subscriptions = %d", got)
+			}
 			if got := appServer.SubscriberCount("local:current"); got != 0 {
 				t.Fatalf("old stable/current read registered %d stale subscriptions after unsubscribe", got)
 			}
@@ -2912,6 +2915,7 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			if got := appServer.SubscriberCount("local:other"); got != 1 {
 				t.Fatalf("unrelated subscriptions = %d, want 1", got)
 			}
+			appServer.Broadcast("local:stable", "test/stale-admission", map[string]any{})
 			appServer.Broadcast("local:current", "test/stale-admission", map[string]any{})
 			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 			if got := aliasMethodCountUntilBarrier(t, client, "test/stale-admission"); got != 0 {
@@ -2920,12 +2924,12 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable"}); err != nil {
 				t.Fatalf("later read: %v", err)
 			}
-			if got := appServer.SubscriberCount("local:current"); got != 1 {
+			if got := appServer.SubscriberCount("local:stable"); got != 1 {
 				t.Fatalf("later read subscriptions = %d, want 1", got)
 			}
 			awaitLiveHubSubscriptions(t, appServer, 2)
-			appServer.Broadcast("local:current", "test/later-admission", map[string]any{})
-			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			daemon.Broadcast("current", "test/later-admission", map[string]any{"threadId": "current"})
+			daemon.Broadcast("current", "test/alias-barrier", map[string]any{"threadId": "current"})
 			if got := aliasMethodCountUntilBarrier(t, client, "test/later-admission"); got != 1 {
 				t.Fatalf("later read delivered %d notifications, want 1", got)
 			}
@@ -3013,15 +3017,19 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 			if readErr != nil {
 				t.Fatalf("child unsubscribe canceled unrelated pending root read: %v", readErr)
 			}
-			if got := appServer.SubscriberCount("local:current"); got != 1 {
+			deliveryKey := "local:stable"
+			if tc.read.ThreadID != "" {
+				deliveryKey = "local:" + tc.read.ThreadID
+			}
+			if got := appServer.SubscriberCount(deliveryKey); got != 1 {
 				t.Fatalf("root subscriptions = %d, want 1", got)
 			}
 			if got := appServer.SubscriberCount("local:other"); got != 1 {
 				t.Fatalf("unrelated subscriptions = %d, want 1", got)
 			}
 			awaitLiveHubSubscriptions(t, appServer, 2)
-			appServer.Broadcast("local:current", "test/root-admission", map[string]any{})
-			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			daemon.Broadcast("current", "test/root-admission", map[string]any{"threadId": "current"})
+			daemon.Broadcast("current", "test/alias-barrier", map[string]any{"threadId": "current"})
 			if got := aliasMethodCountUntilBarrier(t, client, "test/root-admission"); got != 1 {
 				t.Fatalf("root read delivered %d notifications, want 1", got)
 			}
