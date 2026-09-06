@@ -45,8 +45,8 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 		if read.Thread.Status.Type != "restartRequired" {
 			t.Errorf("status=%q", read.Thread.Status.Type)
 		}
-		if read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Capabilities.Queue {
-			t.Error("incompatible session advertises message delivery")
+		if read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Capabilities.Queue || read.Thread.Evener.Capabilities.Rename {
+			t.Error("incompatible session advertises unsupported mutations")
 		}
 		if len(read.Thread.Turns) != 2 {
 			t.Errorf("saved turns=%d", len(read.Thread.Turns))
@@ -66,6 +66,13 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 			}
 		})
 	}
+	t.Run("rename refuses while incompatible daemon owns metadata", func(t *testing.T) {
+		var response any
+		err := client.Request(context.Background(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "sentinel"}, &response)
+		if !isDaemonRestartRequiredError(err) {
+			t.Fatalf("error=%v", err)
+		}
+	})
 	t.Run("resume refuses before replacement spawn", func(t *testing.T) {
 		_, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: ref})
 		var wire appwire.WireError

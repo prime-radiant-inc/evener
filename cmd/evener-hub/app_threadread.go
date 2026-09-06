@@ -493,7 +493,7 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 	}
 	if _, required := restartRequiredDaemon(cfg, ref, entry.Meta.ID); required {
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
-		thread.Evener.Capabilities = appwire.ThreadCapabilities{Rename: true}
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
