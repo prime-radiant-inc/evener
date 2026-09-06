@@ -2933,6 +2933,100 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 	}
 }
 
+func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		read        appwire.ThreadReadParams
+		unsubscribe appwire.ThreadUnsubscribeParams
+	}{
+		{"child_ref", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
+		{"child_id", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{ThreadID: "child"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce, firstRead sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				id := "current"
+				if params.Ref == "local:other" || params.ThreadID == "other" {
+					id = "other"
+				} else {
+					firstRead.Do(func() {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					})
+				}
+				appserver.Subscribe(ctx, id)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}, SessionID: "child", OwnerSessionID: "current", ReadOnlyAlias: true},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "other", SessionID: "other", WorkspaceRef: "local:other", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+				}
+			}, http.DefaultClient)
+			sources := appsource.NewRegistry()
+			sources.Add(source)
+			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+				t.Fatalf("unrelated read: %v", err)
+			}
+			readDone := make(chan error, 1)
+			go func() {
+				_, err := client.ThreadRead(ctx, tc.read)
+				readDone <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("read did not reach the pre-capture daemon barrier")
+			}
+			if _, err := client.ThreadUnsubscribe(ctx, tc.unsubscribe); err != nil {
+				t.Fatalf("unsubscribe before capture: %v", err)
+			}
+			unblock()
+			var readErr error
+			select {
+			case readErr = <-readDone:
+			case <-ctx.Done():
+				t.Fatal("read did not finish after barrier release")
+			}
+			if readErr != nil {
+				t.Fatalf("child unsubscribe canceled unrelated pending root read: %v", readErr)
+			}
+			if got := appServer.SubscriberCount("local:current"); got != 1 {
+				t.Fatalf("root subscriptions = %d, want 1", got)
+			}
+			if got := appServer.SubscriberCount("local:other"); got != 1 {
+				t.Fatalf("unrelated subscriptions = %d, want 1", got)
+			}
+			awaitLiveHubSubscriptions(t, appServer, 2)
+			appServer.Broadcast("local:current", "test/root-admission", map[string]any{})
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/root-admission"); got != 1 {
+				t.Fatalf("root read delivered %d notifications, want 1", got)
+			}
+		})
+	}
+}
+
 func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

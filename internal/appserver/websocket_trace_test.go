@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"primeradiant.com/evener/appwire"
 )
 
 type decodedWebSocketTraceRecord struct {
@@ -273,6 +274,36 @@ func groupWebSocketTraceRecordsByConnection(records []decodedWebSocketTraceRecor
 }
 
 func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
+	testServerShutdownDrainsOpenTracedWebSocket(t, false)
+}
+
+func TestServerShutdownBeforeTracedWebSocketReceive(t *testing.T) {
+	testServerShutdownDrainsOpenTracedWebSocket(t, true)
+}
+
+func TestWebSocketReceiveCloseModes(t *testing.T) {
+	exerciseReceiveLoops(t)
+}
+
+// A canceled receive may return before entering the socket read (for example,
+// while acquiring coder/websocket's read lock), leaving the socket open. Keep
+// the real initialization exchange, then deterministically select that boundary.
+type shutdownBeforeReceiveTransport struct {
+	webSocketTransport
+	initialized bool
+}
+
+func (w *shutdownBeforeReceiveTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	if !w.initialized {
+		w.initialized = true
+		return w.webSocketTransport.Recv(ctx)
+	}
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+
+func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive bool) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
 	trace, err := NewWebSocketTrace(path)
 	if err != nil {
@@ -284,10 +315,17 @@ func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
 		SourceID:       "local",
 		WebSocketTrace: trace,
 	})
+	if beforeReceive {
+		server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+			return &shutdownBeforeReceiveTransport{webSocketTransport: inner}
+		}
+	}
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
 
 	ctx := context.Background()
 	conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
+	defer conn.CloseNow()
 	request := []byte(`{"id":51,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`)
 	if err := conn.Write(ctx, websocket.MessageText, request); err != nil {
 		t.Fatalf("write initialize: %v", err)
@@ -300,6 +338,9 @@ func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, _, err := conn.Read(shutdownCtx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("peer read after shutdown = %v, want closed socket", err)
 	}
 	conn.CloseNow()
 	httpServer.Close()

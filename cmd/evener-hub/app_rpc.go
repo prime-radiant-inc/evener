@@ -236,6 +236,21 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			// Stable refs and current IDs name one pending admission, but
 			// must not rewrite the relay's notification delivery identity.
 			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+				// Read-only descendants share the root's relay connection, not
+				// its downstream subscription. Keep their admission keys separate.
+				key, threadID, err := threadRelayTarget(source, params)
+				if err != nil {
+					return "", false
+				}
+				threads, err := daemon.ListThreads(context.Background(), appwire.ThreadListParams{})
+				if err != nil {
+					return "", false
+				}
+				for _, thread := range threads.Data {
+					if thread.Evener.Kind == "subagent" && thread.ID == threadID {
+						return key, true
+					}
+				}
 				ref, err := daemon.ResolveRelaySession(params)
 				return ref.String(), err == nil
 			}
