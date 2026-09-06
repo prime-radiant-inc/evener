@@ -3,6 +3,7 @@
 import { expect, test } from "vitest";
 import {
   createTranscriptSettleTracker,
+  describeTranscriptSettleBlocker,
   SETTLE_OVERFLOW_FACTOR,
   SETTLE_QUIESCENT_FRAMES,
   type TranscriptGeometry,
@@ -101,4 +102,24 @@ test("a stillness run still short of the requirement names how far it got", () =
     frames: SETTLE_QUIESCENT_FRAMES - 1,
     required: SETTLE_QUIESCENT_FRAMES,
   });
+});
+
+// --- the blocker's own account of itself -----------------------------------
+
+test("every blocker carries the numbers that decided it into its description", () => {
+  // The wording is free to change; what a reader has to be able to recover from
+  // a tripwire message is the geometry that withheld readiness, since that is
+  // the whole reason this reports a blocker instead of a ceiling.
+  const evidence: [TranscriptSettleBlocker, string[]][] = [
+    [{ kind: "unmounted" }, []],
+    [{ kind: "turns", turns: 17, expected: 42 }, ["17", "42"]],
+    [{ kind: "overflow", scrollHeight: 765, clientHeight: 725, required: 2900 }, ["765", "725", "2900"]],
+    [{ kind: "moving", scrollHeight: 11487, scrollTop: 10741 }, ["11487", "10741"]],
+    [{ kind: "quiescing", frames: 3, required: 20 }, ["3", "20"]],
+  ];
+  for (const [blocker, numbers] of evidence) {
+    const described = describeTranscriptSettleBlocker(blocker);
+    expect(described.length).toBeGreaterThan(0);
+    for (const number of numbers) expect(described).toContain(number);
+  }
 });
