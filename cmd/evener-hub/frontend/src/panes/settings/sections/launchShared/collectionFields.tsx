@@ -30,11 +30,11 @@ import { type ReactNode, useId } from "react";
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
 import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { Button, CollectionEditor, Input, ModelCatalog, PathField, Switch } from "../../../../widgets";
+import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./collectionFields.module.css";
 import { validatePathListAdd } from "./pathListAdd";
+import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {
   section: requireClass(styles.section, "collectionFields.module.css", "section"),
@@ -303,7 +303,7 @@ function ModelAddField({
   return (
     <>
       <span className={CLASS.modelAddField}>
-        <ModelCatalog value={value} onChange={onChange} loadCatalog={fetchModelCatalog} />
+        <SettingsModelCatalog value={value} onChange={onChange} />
       </span>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add

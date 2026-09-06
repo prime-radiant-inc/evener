@@ -32,7 +32,6 @@ import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
   FormRow,
   Input,
-  ModelCatalog,
   PathField,
   type PathFieldKind,
   RadioGroup,
@@ -42,8 +41,8 @@ import {
   Textarea,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./fields.module.css";
+import { SettingsModelCatalog } from "./SettingsModelCatalog";
 import { emptyChoiceLabel, PROMPT_COMPOSITE_SPECS, resolvedDefaultLabel, resolvedEmptyChoice } from "./schema";
 
 const CLASS = {
@@ -220,7 +219,7 @@ export function ScalarField({
     return (
       <div className={CLASS.modelBlock}>
         <span className={CLASS.modelLabel}>{option.label}</span>
-        <ModelCatalog value={value} onChange={onChange} loadCatalog={fetchModelCatalog} emptyLabel={resolvedLabel} />
+        <SettingsModelCatalog value={value} onChange={onChange} emptyLabel={resolvedLabel} />
         {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
         <DefaultHint text={globalDefaultHint} />
       </div>

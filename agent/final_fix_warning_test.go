@@ -92,6 +92,13 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 			t.Fatalf("warning message %q missing %q", message, want)
 		}
 	}
+	// A routine output clamp is budget arithmetic, not a failure: the title and
+	// hint must not classify it as an error the way an unexpected failure would
+	// (diagnostic.FromError's evenerFailure), or the Web UI renders it as an
+	// "Evener error" chip telling the reader to check the session log.
+	if warnings[0].Title == "Evener error" || strings.Contains(strings.ToLower(warnings[0].Hint), "session log") {
+		t.Fatalf("output-reduction warning classified as an error: title=%q hint=%q", warnings[0].Title, warnings[0].Hint)
+	}
 }
 
 func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {

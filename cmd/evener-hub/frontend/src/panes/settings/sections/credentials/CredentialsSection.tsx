@@ -33,6 +33,7 @@ import { InstanceDetailSheet } from "./InstanceDetailSheet";
 import { InstanceRow } from "./InstanceRow";
 import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
+import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
@@ -51,8 +52,7 @@ type OpenEditor =
   | { kind: "add" }
   | { kind: "apiKey"; name: string }
   | { kind: "edit"; name: string }
-  | { kind: "oauth-redirect"; name: string; flowId: string; authUrl: string }
-  | { kind: "device"; name: string; flowId: string; userCode: string; verificationUrl: string; intervalSeconds: number }
+  | OAuthEditor
   | null;
 
 type PendingConfirm = { kind: "clear" | "clearStoredKey" | "remove"; name: string } | null;
@@ -116,21 +116,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // startDeviceLogin (templates/partials/credentials.html:58-75).
   async function handleOAuthStart(name: string): Promise<void> {
     try {
-      const resp = await credentialsStore.getState().deviceStart(name);
-      if (resp.fallback) {
-        const login = await credentialsStore.getState().loginStart(name);
-        window.open(login.url, "_blank", "noopener");
-        setOpenEditor({ kind: "oauth-redirect", name, flowId: login.flowId, authUrl: login.url });
-      } else {
-        setOpenEditor({
-          kind: "device",
-          name,
-          flowId: resp.flowId,
-          userCode: resp.userCode,
-          verificationUrl: resp.verificationUrl,
-          intervalSeconds: resp.intervalSeconds,
-        });
-      }
+      setOpenEditor(await startOAuthFlow(name));
     } catch (err) {
       toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
     }

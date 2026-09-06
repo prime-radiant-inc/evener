@@ -44,6 +44,7 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { ConnectProviderDialog } from "../settings/sections/credentials/ConnectProviderDialog";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
@@ -72,6 +73,7 @@ import {
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
+import { useProviderSetup } from "./useProviderSetup";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -142,6 +144,13 @@ const MODEL_CHOOSE_LABEL = "Choose a model";
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const client = useClient();
   const toasts = useToasts();
+  const providerSetup = useProviderSetup();
+  const [connectingProvider, setConnectingProvider] = useState(false);
+  const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
+  const providerConnected = useCallback(() => {
+    setConnectingProvider(false);
+    void providerSetup.retry();
+  }, [providerSetup.retry]);
 
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState("");
@@ -217,6 +226,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // re-running (and re-issuing evener/launch/resolve + model/list) every time
   // the user picks a model - same rationale as busyRef, a ref read at async
   // resolution time rather than a dependency that reruns the effect.
+  const initialModelRef = useRef("");
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -245,18 +255,24 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const attachments = useAttachments(textEditor);
 
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
+  const providerRequired = usesEvenerModels && providerSetup.status === "missing";
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set.
   const modelRequired = model === "" && noDefaultModel;
 
-  const modelListCache = useRef<{ client: object; entries: Map<string, Promise<ModelListResponse>> }>({
+  const modelListCache = useRef<{
+    client: object;
+    instances: object;
+    entries: Map<string, Promise<ModelListResponse>>;
+  }>({
     client,
+    instances: providerSetup.instances,
     entries: new Map(),
   });
   const loadModelList = useCallback((): Promise<ModelListResponse> => {
-    if (modelListCache.current.client !== client) {
-      modelListCache.current = { client, entries: new Map() };
+    if (modelListCache.current.client !== client || modelListCache.current.instances !== providerSetup.instances) {
+      modelListCache.current = { client, instances: providerSetup.instances, entries: new Map() };
     }
     const cache = modelListCache.current.entries;
     const key = `${harness}\0${cwd}`;
@@ -271,7 +287,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     });
     cache.set(key, tracked);
     return tracked;
-  }, [client, harness, cwd]);
+  }, [client, harness, cwd, providerSetup.instances]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
@@ -347,13 +363,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
-  // (harnesses, advanced schema) and the stale-model sweep.
+  // (harnesses, advanced schema).
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only initialization; the closures it calls are stable for the first paint
   useEffect(() => {
     const urlPrefill = readUrlPrefill(window.location.search);
     const defaults = resolveInitialDefaults({ serverPrefillDir: urlPrefill.dir });
     if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
     if (defaults.harness) setHarness(defaults.harness);
+    initialModelRef.current = defaults.model ?? "";
     if (defaults.model) setModel(defaults.model);
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
@@ -375,16 +392,24 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       },
       () => {},
     );
-    // Stale-model cleanup (floor §1.10): sweep the persisted defaults against the
-    // live model list; if this project's prefilled model was discarded, clear it
-    // and surface the inline notice.
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Sweep persisted defaults using the current provider configuration. A
+  // credential refresh cancels older catalogs before they can discard a model.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sweep on provider changes, not on each working-directory keystroke; the request captures the current scope
+  useEffect(() => {
+    let active = true;
+    const initialModel = initialModelRef.current;
     loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
-        if (defaults.model && discarded.includes(defaults.model)) {
+        if (initialModel && modelRef.current === initialModel && discarded.includes(initialModel)) {
           setModel("");
-          setStaleNotice(defaults.model);
+          setStaleNotice(initialModel);
         }
       },
       () => {},
@@ -392,7 +417,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [client, providerSetup.instances]);
 
   // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
   // /new?dir=/?prompt= navigation while this pane is already open refocuses
@@ -729,7 +754,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
-    if (modelRequired) return;
+    if (modelRequired || providerRequired) return;
     if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
@@ -950,7 +975,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || pluginSelectionBlocked}
+                  disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
@@ -962,6 +987,25 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             }
           />
         </Dropzone>
+        {providerRequired && (
+          <div className={CLASS.notice} role="status">
+            <span>Connect a provider to use a model. Sign in or add an API key here.</span>
+            <Button onClick={() => setConnectingProvider(true)}>Connect provider</Button>
+            <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+              Retry provider check
+            </Button>
+          </div>
+        )}
+        {usesEvenerModels && providerSetup.status === "error" && (
+          <div className={CLASS.notice} role="status">
+            <span>Could not check provider configuration.</span>
+            <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
+            <Button variant="quiet" onClick={() => setConnectingProvider(true)}>
+              Review providers
+            </Button>
+          </div>
+        )}
+        {connectingProvider && <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />}
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         {/* The same AttachmentTile the session composer draws (kata kbg7):
