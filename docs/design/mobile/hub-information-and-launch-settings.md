@@ -59,6 +59,45 @@ uncertain save is reconciled by reading; do not replay a write on reconnect.
 External `evener/launch/updated` notifications must refresh clean views and warn
 an active editor about changed state before it overwrites another client's work.
 
+## Environment collection editor
+
+The native environment sheet uses separate name/value fields and compact rows
+with explicit removal. Adding an existing name replaces that override. Done
+includes a pending pair so typed input is not silently dropped. Cancel keeps the
+parent draft unchanged. Removing all entries unsets the override, matching the
+web collector; it does not emit an explicit empty map. Empty values and embedded
+equals signs are retained. A name containing an equals sign is rejected inline
+instead of silently deleting the character as the web input does.
+
+The sheet keeps its original field baseline and refuses stale edits, comparing
+maps by keys and values independently of key order. An identical concurrent
+result is accepted. Environment values are shown only inside this editor; the
+settings index summarizes names. The effective-name summary is not a preview of
+the unsaved draft. Path lists, fallback lists and MCP editors remain required.
+
+Four new deterministic tests exercise replacement/value preservation, invalid
+names, inheritance and stale/convergent edits. All 300 native tests, TypeScript,
+and touched-file Biome pass. On iOS, the initial environment sheet was exercised
+with the software keyboard: type MOBILE_ENV_FIXTURE with value a=b==, Done
+without Add, Save, Reload, reopen and observe the exact pair, Remove, Done and
+Save. Independent AppWire readback confirmed the owned SecondHub state root and
+unset env afterward. The initial screenshot exposed a redundant Remove row;
+the corrected layout places Remove beside the variable. Both iOS release builds
+passed. Android release build passed, and its final sheet added an empty-valued
+MOBILE_EMPTY_FIXTURE with the software keyboard visible, saved, reloaded and
+reopened it. Independent AppWire readback verified the explicit empty string.
+iOS read that saved pair in the final compact layout. Android restored inheritance
+while the iOS sheet remained open; iOS Done refused the stale edit and retained
+the draft with a conflict error. Final independent readback verified unset env.
+Removing the conflict guard caused the dedicated regression test to fail;
+restoring it passed all four environment tests.
+
+Screenshots: [iOS compact row](assets/launch-settings/ios-environment.png) and
+[Android empty-value row with keyboard](assets/launch-settings/android-environment.png).
+Large text, long lists, screen readers, environment draft background/reconnect,
+and native invalid-name/cancel checks remain pending. This is not full visual
+acceptance or completion of MOB-015.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,
