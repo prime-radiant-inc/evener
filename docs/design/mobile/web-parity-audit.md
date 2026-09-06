@@ -56,3 +56,9 @@ Native TypeScript, targeted formatting, and 107 tests across 19 files pass. The 
 The existing SQLite question draft record now merges selections and definitions by question key within each hub/session. Reads restore only entries whose individual definition still matches. Adding questions or saving a separate batch no longer invalidates or overwrites an existing question's saved answer. A changed definition invalidates only that question. This retains the existing database schema and JSON definition representation.
 
 The regression test failed with the prior whole-batch signature lookup. It now verifies adding a question, saving a sibling batch, database close/reopen, both answers retained, and selective invalidation when one definition changes. All 108 native tests and TypeScript pass. Native keyboard/focus behavior across a growing batch, active-tab persistence, and storage-failure interaction during definition changes still require validation.
+
+## Composer reasoning audit
+
+Current web StatusRow offers a default empty-string value, the advertised effort ladder (or minimal/low/medium/high when reasoning is supported but the ladder is empty), and an existing current value absent from the ladder. It distinguishes explicit none from the default via shell/reasoningEffort.ts. Native currently omits the default option, hides the control on an empty ladder, and rejects non-ladder efforts in SessionControls. These are confirmed parity gaps, not proposed new features. Model selection uses the existing thread/model/set operation; effort changes use thread/reasoning-effort/set.
+
+Android Release build at 54774a4c4 succeeded (359 tasks, 12 executed). The existing emulator answered one health echo but subsequent boot/activity inspection remained pending; a fresh install was started against that same device. No successful install or new Android manual test is claimed from the build result.
