@@ -292,8 +292,13 @@ agents and both-platform empty Codex/MCP states are verified. See
 [hub-information evidence](hub-information-evidence.md). The launch-layer controller now has ten deterministic tests and a real isolated-hub
 save/readback/restoration smoke pass. Native scalar editors are wired, with
 296 passing native tests and TypeScript. Numeric save/removal has evidence on
-both platforms; iOS also verifies invalid-number rejection. Collections remain
-open. Launch model fields now browse the real hub catalog,
+both platforms; iOS also verifies invalid-number rejection. The environment
+collection editor now has 300 passing native tests, both Release builds and
+native save/reload/removal evidence for embedded equals and empty values.
+iOS rejects a stale open environment sheet after Android removes its override;
+independent AppWire reads verify restoration. See
+[environment evidence and remaining checks](hub-information-and-launch-settings.md#environment-collection-editor).
+Path, fallback and MCP collections remain open. Launch model fields now browse the real hub catalog,
 reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
 Native iOS search/select/save and Android read/removal have evidence. Open scalar
 sheets reject newer field values, with two-device conflict/reopen/restoration
