@@ -685,22 +685,8 @@ func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 
 func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 	fixture := newBuildWebFixture(t)
-	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
-	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
-	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	retained := runFailedTestWeb(t, fixture)
 
-	command := exec.Command("make", "test-web")
-	command.Dir = fixture.root
-	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
-	output, err := command.CombinedOutput()
-	if err == nil {
-		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
-	}
-
-	retained := fullLogsPath(output)
-	if retained == "" {
-		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
-	}
 	if !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
 		t.Fatalf("retained web root = %q, want child of inherited TMPDIR %q", retained, fixture.root)
 	}
@@ -708,6 +694,42 @@ func TestMakeTestWebRetainsFailedProcessStateWithinTMPDIR(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(retained, relative)); statErr != nil {
 			t.Errorf("retained web evidence %s: %v", relative, statErr)
 		}
+	}
+}
+
+func TestMakeTestWebRetainsFailedProcessStateUnderSymlinkedTMPDIR(t *testing.T) {
+	// t.TempDir caches its base directory on the first call for the
+	// remainder of the test, so TMPDIR has to name the symlink before the
+	// fixture makes its first t.TempDir call; t.TempDir itself can't be
+	// used to build that symlink.
+	tempRoot, err := os.MkdirTemp("", "evener-symlinked-tmpdir")
+	if err != nil {
+		t.Fatalf("make temp root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempRoot) })
+	realTemp := filepath.Join(tempRoot, "real")
+	if err := os.Mkdir(realTemp, 0o755); err != nil {
+		t.Fatalf("mkdir real temp root: %v", err)
+	}
+	linked := filepath.Join(tempRoot, "link")
+	if err := os.Symlink(realTemp, linked); err != nil {
+		t.Fatalf("symlink temp root: %v", err)
+	}
+	t.Setenv("TMPDIR", linked)
+
+	fixture := newBuildWebFixture(t)
+
+	resolvedTemp, err := filepath.EvalSymlinks(realTemp)
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	if !strings.HasPrefix(fixture.root, resolvedTemp+string(os.PathSeparator)) {
+		t.Fatalf("fixture root = %q, want a path beneath the resolved temp root %q", fixture.root, resolvedTemp)
+	}
+
+	retained := runFailedTestWeb(t, fixture)
+	if !strings.HasPrefix(retained, fixture.root+string(os.PathSeparator)) {
+		t.Fatalf("retained web root = %q, want child of inherited TMPDIR %q", retained, fixture.root)
 	}
 }
 
@@ -860,6 +882,15 @@ func newRuntimeBuildFixture(t *testing.T) runtimeBuildFixture {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir fixture root: %v", err)
 	}
+	// The scripts under test resolve TMPDIR with `pwd -P`
+	// (scripts/lib/scratch-lib.sh) and report resolved paths back, so the
+	// fixture root has to be the resolved spelling for those paths to compare
+	// as children of it.
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve fixture root: %v", err)
+	}
+	root = resolved
 	fakeBin := filepath.Join(root, "fake-bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("mkdir fake bin: %v", err)
@@ -1282,6 +1313,29 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 		"EVENER_TEST_GO_LOG="+fixture.logPath,
 		"EVENER_TEST_GO_FAIL_PACKAGE="+failPackage,
 	)
+}
+
+// runFailedTestWeb runs `make test-web` in fixture with the frontend test step
+// failing, and returns the retained evidence root the run named.
+func runFailedTestWeb(t *testing.T, fixture runtimeBuildFixture) string {
+	t.Helper()
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+
+	command := exec.Command("make", "test-web")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "EVENER_TEST_NPM_FAIL_COMMAND=run test")
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("make test-web succeeded despite injected npm failure; output = %s", output)
+	}
+
+	retained := fullLogsPath(output)
+	if retained == "" {
+		t.Fatalf("make test-web did not name retained evidence; output = %s", output)
+	}
+	return retained
 }
 
 func browserEvidenceRoot(t *testing.T, fixture runtimeBuildFixture, command string) string {
