@@ -31,6 +31,7 @@ import type {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { HubDirectoryField } from "./HubDirectoryField";
+import { LaunchModelPicker } from "./LaunchModelPicker";
 import { parseLaunchScalar, scalarKinds } from "./launchScalar";
 import { LaunchSettings } from "./launchSettings";
 import type { Routes } from "./screens";
@@ -323,6 +324,24 @@ function ScalarEditor({
           { value: "false", label: "Off" },
         ]
       : option.choices?.filter((choice) => choice.value !== "");
+  const fieldHeader = (
+    <>
+      <Copy>{option.label}</Copy>
+      {option.description && <Copy muted>{option.description}</Copy>}
+      <Copy muted>
+        {effective
+          ? `Effective value · ${effective}`
+          : "Effective value unavailable"}
+      </Copy>
+      <Choice
+        label="Use inherited value"
+        selected={raw === ""}
+        disabled={busy}
+        onPress={() => setRaw("")}
+      />
+      <ErrorMessage message={error} />
+    </>
+  );
   return (
     <Modal
       visible
@@ -349,73 +368,69 @@ function ScalarEditor({
           behavior={Platform.OS === "android" ? "height" : undefined}
           enabled={Platform.OS === "android"}
         >
-          <ScrollView
-            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ padding: 20, gap: 12 }}
-          >
-            <Copy>{option.label}</Copy>
-            {option.description && <Copy muted>{option.description}</Copy>}
-            <Copy muted>
-              {effective
-                ? `Effective value · ${effective}`
-                : "Effective value unavailable"}
-            </Copy>
-            <Choice
-              label="Use inherited value"
-              selected={raw === ""}
-              disabled={busy}
-              onPress={() => setRaw("")}
+          {option.kind === "modelPicker" ? (
+            <LaunchModelPicker
+              client={client}
+              value={raw}
+              onChange={setRaw}
+              header={fieldHeader}
             />
-            {choices ? (
-              choices.map((choice) => (
-                <Choice
-                  key={choice.value}
-                  label={choice.label}
-                  selected={raw === choice.value}
-                  disabled={busy || !!choice.disabled}
-                  onPress={() => setRaw(choice.value)}
+          ) : (
+            <ScrollView
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ padding: 20, gap: 12 }}
+            >
+              {fieldHeader}
+              {choices ? (
+                choices.map((choice) => (
+                  <Choice
+                    key={choice.value}
+                    label={choice.label}
+                    selected={raw === choice.value}
+                    disabled={busy || !!choice.disabled}
+                    onPress={() => setRaw(choice.value)}
+                  />
+                ))
+              ) : client &&
+                option.kind === "path" &&
+                option.pathKind === "dir" ? (
+                <HubDirectoryField
+                  client={client}
+                  label={option.label}
+                  value={raw}
+                  onChange={setRaw}
+                  disabled={busy}
                 />
-              ))
-            ) : client &&
-              option.kind === "path" &&
-              option.pathKind === "dir" ? (
-              <HubDirectoryField
-                client={client}
-                label={option.label}
-                value={raw}
-                onChange={setRaw}
-                disabled={busy}
-              />
-            ) : (
-              <TextInput
-                accessibilityLabel={option.label}
-                value={raw}
-                onChangeText={setRaw}
-                editable={!busy}
-                autoCorrect={false}
-                autoCapitalize="none"
-                multiline={option.kind === "multilineText"}
-                keyboardType={
-                  option.kind === "integer"
-                    ? "numbers-and-punctuation"
-                    : "default"
-                }
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    minHeight: option.kind === "multilineText" ? 160 : 44,
-                  },
-                ]}
-              />
-            )}
-            <ErrorMessage message={error} />
-            {busy && (
-              <ActivityIndicator accessibilityLabel="Validating setting" />
-            )}
-          </ScrollView>
+              ) : (
+                <TextInput
+                  accessibilityLabel={option.label}
+                  value={raw}
+                  onChangeText={setRaw}
+                  editable={!busy}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  multiline={option.kind === "multilineText"}
+                  keyboardType={
+                    option.kind === "integer"
+                      ? "numbers-and-punctuation"
+                      : "default"
+                  }
+                  style={[
+                    styles.input,
+                    {
+                      color: colors.text,
+                      borderColor: colors.border,
+                      minHeight: option.kind === "multilineText" ? 160 : 44,
+                    },
+                  ]}
+                />
+              )}
+              {busy && (
+                <ActivityIndicator accessibilityLabel="Validating setting" />
+              )}
+            </ScrollView>
+          )}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>

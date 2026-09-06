@@ -293,7 +293,9 @@ agents and both-platform empty Codex/MCP states are verified. See
 save/readback/restoration smoke pass. Native scalar editors are now wired;
 all 285 native tests and TypeScript pass. iOS numeric save, invalid-number
 rejection and override removal have native evidence. Android editor acceptance,
-collections and model catalog remain open. Reconnect drafts now have controller
+collections remain open. Launch model fields now browse the real hub catalog,
+reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
+Native iOS search/select/save and Android read/removal have evidence. Reconnect drafts now have controller
 coverage and both-platform background/return evidence. Android save/removal and
 automatic iOS readback pass on retry; MOB-017 remains unresolved. See
 [launch progress](hub-information-and-launch-settings.md#native-scalar-editors).
