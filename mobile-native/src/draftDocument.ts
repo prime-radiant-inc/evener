@@ -90,21 +90,37 @@ export class DraftDocument {
 		}
 	}
 	async submit(operation: (text: string) => Promise<boolean>) {
+		return this.submitContent(this.snapshot.record.draft, false, operation);
+	}
+	async submitText(
+		text: string,
+		operation: (text: string) => Promise<boolean>,
+	) {
+		return this.submitContent(text, true, operation);
+	}
+	private async submitContent(
+		text: string,
+		preserveDraft: boolean,
+		operation: (text: string) => Promise<boolean>,
+	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		if (
 			!loaded ||
 			submitting ||
 			error ||
 			record.unconfirmed !== null ||
-			!record.draft.trim()
+			!text.trim()
 		)
 			return;
 		// Persist before invoking any transport operation. A crash after this point
 		// can only establish uncertainty, never that it is safe to replay the input.
-		this.persist({ draft: "", unconfirmed: record.draft }, false);
+		this.persist(
+			{ draft: preserveDraft ? record.draft : "", unconfirmed: text },
+			false,
+		);
 		this.update({ submitting: true });
 		try {
-			if (await operation(record.draft))
+			if (await operation(text))
 				this.persist({ ...this.snapshot.record, unconfirmed: null }, true);
 		} finally {
 			this.update({ submitting: false });

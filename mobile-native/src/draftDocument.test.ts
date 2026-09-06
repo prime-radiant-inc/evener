@@ -137,3 +137,36 @@ describe("durable draft lifecycle", () => {
 		expect(document.getSnapshot().record.draft).toBe("saved");
 	});
 });
+
+it("checkpoints a structured reply without consuming the ordinary draft", async () => {
+	const { document, repository, destination } = setup();
+	document.edit("ordinary draft");
+	await document.submitText("structured reply", async (text) => {
+		expect(text).toBe("structured reply");
+		expect(repository.read(destination)).toEqual({
+			draft: "ordinary draft",
+			unconfirmed: "structured reply",
+		});
+		return true;
+	});
+	expect(repository.read(destination)).toEqual({
+		draft: "ordinary draft",
+		unconfirmed: null,
+	});
+});
+it("retains uncertain structured replies and prevents a second dispatch", async () => {
+	const { document, repository, destination } = setup();
+	document.edit("ordinary draft");
+	await document.submitText("structured reply", async () => false);
+	const reopened = new DraftDocument(() => repository, destination);
+	let calls = 0;
+	await reopened.submitText("another reply", async () => {
+		calls++;
+		return true;
+	});
+	expect(calls).toBe(0);
+	expect(reopened.getSnapshot().record).toEqual({
+		draft: "ordinary draft",
+		unconfirmed: "structured reply",
+	});
+});

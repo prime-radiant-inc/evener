@@ -34,7 +34,13 @@ import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { drafts } from "./nativeDrafts";
+import { QuestionSheet } from "./QuestionSheet";
 import { QueueSheet } from "./QueueSheet";
+import {
+  composeQuestionAnswers,
+  pendingQuestions,
+  type QuestionSelections,
+} from "./questionAnswers";
 import { RosterSearch } from "./rosterSearch";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
@@ -478,6 +484,10 @@ export function ConversationScreen({
   const [queueOpen, setQueueOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
+  const [questionsOpen, setQuestionsOpen] = useState(false);
+  const [answeredQuestions, setAnsweredQuestions] = useState<string | null>(
+    null,
+  );
   const [composerSetting, setComposerSetting] =
     useState<ComposerSetting | null>(null);
   useFocusEffect(
@@ -486,6 +496,7 @@ export function ConversationScreen({
         setQueueOpen(false);
         setSessionOpen(false);
         setApprovalsOpen(false);
+        setQuestionsOpen(false);
         setComposerSetting(null);
       },
       [],
@@ -649,6 +660,56 @@ export function ConversationScreen({
     !refreshing &&
     !pending &&
     !settingsPending;
+  const questions = pendingQuestions(conversation);
+  const questionSignature = JSON.stringify(questions);
+  async function sendAnswers(selections: QuestionSelections) {
+    const current = store.getState();
+    const text = composeQuestionAnswers(questions, selections);
+    if (
+      !service ||
+      !ready ||
+      !connectionReady.current ||
+      !navigation.isFocused() ||
+      current.status !== "open" ||
+      current.conversationGeneration !== bindingGeneration ||
+      current.conversation?.instanceId !== bindingInstance ||
+      controls?.getSnapshot().pending != null ||
+      current.pendingMutation?.status === "pending" ||
+      !current.conversation?.capabilities.send ||
+      text === null ||
+      answeredQuestions === questionSignature ||
+      JSON.stringify(pendingQuestions(current.conversation)) !==
+        questionSignature
+    )
+      return;
+    setActionError(null);
+    let acceptedAnswers = false;
+    try {
+      await document.submitText(text, async (input) => {
+        const previous = store.getState().lastAcceptedMutation;
+        await store.getState().send(service, [{ type: "text", text: input }]);
+        const accepted = store.getState().lastAcceptedMutation;
+        if (!accepted || accepted === previous || accepted.kind !== "send")
+          return false;
+        setAnsweredQuestions(questionSignature);
+        setQuestionsOpen(false);
+        acceptedAnswers = true;
+        return true;
+      });
+      if (
+        acceptedAnswers &&
+        connectionReady.current &&
+        navigation.isFocused() &&
+        store.getState().conversationGeneration === bindingGeneration &&
+        store.getState().conversation?.instanceId === bindingInstance
+      )
+        await store.getState().rehydrate(service, activitySink);
+    } catch {
+      setActionError(
+        "Could not confirm delivery. Your answers are retained; check delivery before trying again.",
+      );
+    }
+  }
   async function mutate(kind: "send" | "steer" | "queue" | "interrupt") {
     if (
       !service ||
@@ -682,6 +743,30 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {questions.length ? (
+        <QuestionSheet
+          key={questionSignature}
+          visible={questionsOpen}
+          questions={questions}
+          hubName={activeProfile?.name ?? "Hub"}
+          ready={
+            ready &&
+            !!conversation?.capabilities.send &&
+            draft.loaded &&
+            !draft.error &&
+            unconfirmedSend === null &&
+            answeredQuestions !== questionSignature
+          }
+          pending={draft.submitting}
+          error={
+            unconfirmedSend !== null
+              ? "Delivery is unconfirmed. Close this sheet and check delivery before sending again."
+              : actionError
+          }
+          close={() => setQuestionsOpen(false)}
+          send={sendAnswers}
+        />
+      ) : null}
       {approvalsOpen && conversation && approvalControls ? (
         <ApprovalSheet
           approvals={conversation.pendingApprovals}
@@ -834,6 +919,20 @@ export function ConversationScreen({
             },
           ]}
         >
+          {questions.length ? (
+            <Action
+              disabled={!ready}
+              expanded={questionsOpen}
+              onPress={() => {
+                Keyboard.dismiss();
+                setQuestionsOpen(true);
+              }}
+            >
+              {answeredQuestions === questionSignature
+                ? "Answers sent · refresh to update"
+                : `${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
+            </Action>
+          ) : null}
           {conversation?.pendingApprovals.length ? (
             <Action
               disabled={!ready || !approvalControls}
