@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNormalizeTranscriptItemLimit(t *testing.T) {
@@ -75,7 +76,8 @@ func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
 
 func TestThreadTurnsListItemModeRejectsWhitespaceOnlyCursor(t *testing.T) {
 	for _, cursor := range []string{" ", "\t", "\n", "\u2003", "\u00a0"} {
-		t.Run(fmt.Sprintf("%U", []rune(cursor)[0]), func(t *testing.T) {
+		first, _ := utf8.DecodeRuneInString(cursor)
+		t.Run(fmt.Sprintf("%U", first), func(t *testing.T) {
 			if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Cursor: cursor}); err == nil {
 				t.Fatalf("whitespace-only cursor %q accepted", cursor)
 			}
