@@ -9,8 +9,9 @@ UI. This document does not mark those backlog items complete.
 `evener/settings/overview` supplies hub version/commit, listen address, run
 folder, spawn timeout, bearer-token age, past-index metadata, state folder,
 agents, Codex launch entries and discovered MCP servers. The native view must
-retain every exposed field; absent data is unavailable, not zero or an empty
-configured collection. Token age is metadata, never a token reveal.
+retain every exposed field; absent scalar/pointer data is unavailable. Go omitempty encodes empty agent and
+Codex collections, MCP server lists, and zero index counters as omitted fields;
+normalize those to the empty/zero values established by the server implementation. Token age is metadata, never a token reveal.
 
 Web authority: settings sections `general.tsx`, `hub.tsx`, `storage.tsx`,
 `agents.tsx`, `launchCodex.tsx` and `stores/settingsOverview.ts` under
