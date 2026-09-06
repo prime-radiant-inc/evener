@@ -1024,9 +1024,15 @@ func (r *Registry) resolveBaseURL(rec *record, t Transport) (string, []string, [
 
 // defaultVarLookup consults only the curated and upstream defaults — no user
 // vars, no environment (spec §10's "after substituting the curated defaults").
-func (r *Registry) defaultVarLookup(rec *record) func(string) (string, bool) {
+func (r *Registry) defaultVarLookup(rec *record, t Transport) func(string) (string, bool) {
 	return func(name string) (string, bool) {
+		// The provider's own default, or, for a name it does not set, the
+		// default of t, the transport shape being resolved — a row's own
+		// curated `vars` merged in by transportShape — mirroring varLookupWith.
 		v, ok := rec.head.Transport.Vars[name]
+		if !ok {
+			v, ok = t.Vars[name]
+		}
 		return v, ok && v != ""
 	}
 }

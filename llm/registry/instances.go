@@ -95,7 +95,7 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 	base := r.curated[rec.providerID]
 	own, _, _ := r.resolveBaseURL(rec, rec.head.Transport)
 	live, _, _ := r.resolveBaseURL(base, base.head.Transport)
-	defaults, _, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base))
+	defaults, _, _ := r.resolveBaseURLWith(base, base.head.Transport, r.defaultVarLookup(base, base.head.Transport))
 	if own == live || own == defaults {
 		return rec.head.APIKeyEnv
 	}
@@ -234,7 +234,7 @@ func (r *Registry) canonicalVarLookup(rec, base *record, shape Transport) func(s
 		authority[name] = true
 	}
 	actual := r.varLookup(rec, shape)
-	defaults := r.defaultVarLookup(base)
+	defaults := r.defaultVarLookup(base, shape)
 	return func(name string) (string, bool) {
 		if authority[name] {
 			if v, ok := actual(name); ok && hostRuleInputAdmissible(shape.HostRule, name, v) {

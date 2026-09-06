@@ -1117,3 +1117,21 @@ func TestResolve_RowMappedVarsEnvReadsTheEnvironment(t *testing.T) {
 		})
 	}
 }
+
+// TestResolve_WebSearchCanonicalGateRowDefault: a curated row's own `vars`
+// default is curated data like the provider's, so the canonical first-party
+// resolution reads it for an authority placeholder the row's base URL
+// names, exactly as the actual resolution does; the two sides agree and the
+// vendor's hosted tool survives (roborev PR #924 round 5).
+func TestResolve_WebSearchCanonicalGateRowDefault(t *testing.T) {
+	overlay := "[providers.rowdefault]\nimplicit = true\nprotocol = \"openai-chat\"\nbase_url = \"https://{HOST}/v1\"\nvars = { \"HOST\" = \"provider.example.test\" }\nweb_search = true\n" +
+		"[providers.rowdefault.models.\"m\"]\nbase_url = \"https://{ROW_HOST}/v1\"\nvars = { \"ROW_HOST\" = \"row.example.test\" }\n"
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(overlay)))
+	res := mustResolve(t, r, "rowdefault/m")
+	if res.Transport.BaseURL != "https://row.example.test/v1" {
+		t.Fatalf("row default must resolve the row's own base URL: %+v", res.Transport)
+	}
+	if bp(res.Caps.WebSearch) != "true" || hasWarning(res, "web_search disabled") {
+		t.Fatalf("a row resolved from its curated default is first-party: web_search = %s, warnings %v", bp(res.Caps.WebSearch), res.Warnings)
+	}
+}
