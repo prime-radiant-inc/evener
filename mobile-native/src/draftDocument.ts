@@ -195,10 +195,21 @@ export class DraftDocument {
 	) {
 		return this.submitContent(text, true, operation);
 	}
+	async submitWithQueue(
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+	) {
+		return this.submitContent(
+			this.snapshot.record.draft,
+			false,
+			operation,
+			true,
+		);
+	}
 	private async submitContent(
 		text: string,
 		preserveDraft: boolean,
 		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		queuedInput = false,
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
@@ -207,7 +218,7 @@ export class DraftDocument {
 			submitting ||
 			error ||
 			record.unconfirmed !== null ||
-			(!text.trim() && images.length === 0)
+			(!text.trim() && images.length === 0 && !queuedInput)
 		)
 			return;
 		// Persist before invoking any transport operation. A crash after this point

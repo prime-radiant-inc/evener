@@ -13,6 +13,12 @@ import { steerComposer } from "./composerSteering";
 describe("native composer steering wire routing", () => {
   it.each([
     {
+      name: "an empty composer with waiting messages",
+      depth: 2,
+      input: [],
+      method: "turn/drainAsSteer",
+    },
+    {
       name: "text with an empty queue",
       depth: 0,
       input: [{ type: "text", text: "direction" }],
@@ -95,6 +101,9 @@ describe("native composer steering wire routing", () => {
               turnId: "turn",
               projectionState: "pending",
               instanceId: "instance",
+              ...(method === "turn/drainAsSteer" && depth > 0
+                ? { queueEntryIds: ["queue_1", "queue_2"] }
+                : {}),
             },
           };
         },
@@ -119,6 +128,10 @@ describe("native composer steering wire routing", () => {
           reject ? undefined : "steer",
         );
         expect(store.getState().draft).toBe(reject ? "direction" : "");
+        if (!reject && method === "turn/drainAsSteer" && depth > 0)
+          expect(
+            store.getState().lastAcceptedMutation?.receipt.queueEntryIds,
+          ).toEqual(["queue_1", "queue_2"]);
       } finally {
         store.getState().close();
         service.close();

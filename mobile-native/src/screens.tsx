@@ -784,8 +784,14 @@ export function ConversationScreen({
       return;
     setActionError(null);
     try {
-      if (kind !== "interrupt")
-        await document.submit(async (text, images) => {
+      if (kind !== "interrupt") {
+        const submit = (
+          kind === "steer" &&
+          (store.getState().conversation?.queue.depth ?? 0) > 0
+            ? document.submitWithQueue
+            : document.submit
+        ).bind(document);
+        await submit(async (text, images) => {
           store.getState().setDraft(text);
           const previous = store.getState().lastAcceptedMutation;
           const input = buildComposerInput(text, images);
@@ -796,7 +802,7 @@ export function ConversationScreen({
             accepted != null && accepted !== previous && accepted.kind === kind
           );
         });
-      else await store.getState().interrupt(service);
+      } else await store.getState().interrupt(service);
     } catch {
       setActionError(
         "This action is unavailable. Refresh the conversation and try again.",
@@ -1166,7 +1172,9 @@ export function ConversationScreen({
                     draft.submitting ||
                     unconfirmedSend !== null ||
                     imageState.busy ||
-                    (!draft.record.draft.trim() && !draft.record.images?.length)
+                    (!draft.record.draft.trim() &&
+                      !draft.record.images?.length &&
+                      !(kind === "steer" && conversation.queue.depth > 0))
                   }
                   onPress={() => {
                     void mutate(kind);
