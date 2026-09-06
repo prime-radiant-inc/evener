@@ -88,7 +88,8 @@ func TestReclaimCrashedSessionScratchSkipsWorkspaceContainedTempBase(t *testing.
 // TestReclaimCrashedSessionScratchSweepsEveryAllocationBase covers the scratch
 // this host allocated for OTHER workspaces: a workspace containing the temp dir
 // allocates from the user cache dir, so a startup whose own temp dir is usable
-// still has to reclaim there.
+// still has to reclaim there — and a live owner in that base keeps its scratch
+// just as it does in the temp base.
 func TestReclaimCrashedSessionScratchSweepsEveryAllocationBase(t *testing.T) {
 	workspace := t.TempDir()
 	temp := t.TempDir()
@@ -97,7 +98,12 @@ func TestReclaimCrashedSessionScratchSweepsEveryAllocationBase(t *testing.T) {
 
 	fromTemp := newRetainedSessionScratch(t, temp, workspace)
 	fromCache := newRetainedSessionScratch(t, cache, workspace)
-	age(t, fromTemp, fromCache)
+	liveInCache, err := sandbox.NewSessionScratch(cache, workspace)
+	if err != nil {
+		t.Fatalf("NewSessionScratch: %v", err)
+	}
+	t.Cleanup(func() { _ = liveInCache.Cleanup() })
+	age(t, fromTemp, fromCache, liveInCache.Dir)
 
 	var warnings bytes.Buffer
 	reclaimCrashedSessionScratch(workspace, &warnings)
@@ -106,6 +112,9 @@ func TestReclaimCrashedSessionScratchSweepsEveryAllocationBase(t *testing.T) {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Errorf("abandoned scratch %q survived startup reclaim: %v", dir, err)
 		}
+	}
+	if _, err := os.Stat(liveInCache.Dir); err != nil {
+		t.Errorf("startup reclaim removed the leased scratch %q from the cache base: %v", liveInCache.Dir, err)
 	}
 	if warnings.Len() != 0 {
 		t.Errorf("startup reclaim reported a failure: %s", warnings.String())
