@@ -2512,6 +2512,76 @@ test("an even older omitted fragment does not erase an older provided text", () 
   expect(result.turns[0]?.items[0]?.text).toBe("A");
 });
 
+test.each([
+  ["omitted text recovers history", undefined, "settled"],
+  ["explicit empty text stays empty", "", ""],
+])("item/completed preserves text presence for later pagination: %s", (_case, text, expectedText) => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "item-1",
+            transcriptKey: "shared-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "shared-turn",
+        item: {
+          id: "item-1",
+          turnId: "shared-turn",
+          type: "agentMessage",
+          status: "completed",
+          ...(text === undefined ? {} : { text }),
+        },
+      },
+    },
+    1001,
+  );
+  expect(model.turns[0]?.items[0]).toMatchObject({
+    transcriptKey: "shared-key",
+    position: { entry: 2, item: 0 },
+    status: "completed",
+  });
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "settled-item",
+            transcriptKey: "shared-key",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "settled",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]?.text).toBe(expectedText);
+});
+
 test("agent message delta clone preserves omitted text presence for later pagination", () => {
   let model = testHydrate({
     turns: [

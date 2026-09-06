@@ -590,13 +590,13 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
 
 function mergeItemIdentityMetadata(existing: ItemModel, incoming: ItemModel): ItemModel {
   const transcriptKey = incoming.transcriptKey || existing.transcriptKey;
-  return {
+  return copyItemTextPresence(incoming, {
     ...incoming,
     ...(transcriptKey ? { transcriptKey } : {}),
     ...(incoming.position !== undefined || existing.position !== undefined
       ? { position: incoming.position ?? existing.position }
       : {}),
-  };
+  });
 }
 
 function itemIdentityMatches(left: ItemModel, right: ItemModel): boolean {
