@@ -1456,10 +1456,14 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	)
 	// The lane's admission is named for the create until an undo actually
 	// starts: a create still in flight must not read as a rollback in a fence
-	// warning (worktreeCreate renames its own for the same reason).
+	// warning (worktreeCreate renames its own for the same reason). It renames
+	// itself to the lane BEING UNDONE, which is the created path, not the
+	// reserved one the admission was opened under — the mismatch arm below is
+	// the case where those differ, and it is the created lane the rollback
+	// removes.
 	rollback := func() {
 		if laneFenced {
-			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+workingDir)
+			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+isolation.worktreePath)
 		}
 		isolation.cleanup(s, reservation.delegateID)
 	}
