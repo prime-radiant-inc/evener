@@ -553,9 +553,6 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		if err := daemonRestartRequiredError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); err != nil {
-			return appwire.TurnStartResponse{}, err
-		}
 		resolved := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
 			source, err := withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
@@ -572,7 +569,7 @@ func registerThreadHandlers(
 			return resp, nil
 		}
 		if !resolved {
-			if isTargetDeletedError(err) {
+			if isTargetDeletedError(err) || isNotAcceptedMutationError(err) {
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {

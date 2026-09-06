@@ -3,7 +3,13 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -18,10 +24,10 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: "ws://127.0.0.1:1/rpc"},
-		SessionID: sessionID, Status: "restartRequired",
-	})
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: protocolMismatchPeer(t)})
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -70,4 +76,57 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 			t.Fatalf("rejection=%+v", wire)
 		}
 	})
+}
+
+func protocolMismatchPeer(t *testing.T) string {
+	t.Helper()
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		var request struct {
+			ID any `json:"id"`
+		}
+		if err := wsjson.Read(r.Context(), conn, &request); err != nil {
+			return
+		}
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"id": request.ID, "error": map[string]any{"code": appwire.CodeInvalidRequest, "message": "incompatible protocol"}})
+	}))
+	t.Cleanup(peer.Close)
+	return "ws" + strings.TrimPrefix(peer.URL, "http") + "/rpc"
+}
+
+func TestHubResumeRefreshesProtocolStateBeforeDeciding(t *testing.T) {
+	endpoint := protocolMismatchPeer(t)
+	for _, stopped := range []bool{false, true} {
+		t.Run(fmt.Sprint("stopped=", stopped), func(t *testing.T) {
+			dir := t.TempDir()
+			entry := rendezvous.Entry{PID: 1001, SessionID: "upgrade", ThreadID: "upgrade", Protocol: "evener-appwire-v3", Endpoint: endpoint}
+			roster := hubcore.NewRoster(dir, &hubcore.StatusProber{})
+			writeRendezvous(t, dir, entry)
+			if stopped {
+				roster.Refresh()
+				if err := rendezvous.Remove(dir, entry.PID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			spawned := false
+			cfg := hubcore.WebConfig{Roster: roster, ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawned = true
+				return rendezvous.Entry{}, errors.New("spawn sentinel")
+			}}}
+			_, err := hubThreadResume(context.Background(), cfg, nil, appwire.ThreadResumeParams{Session: "upgrade"})
+			if spawned != stopped {
+				t.Fatalf("spawned=%v stopped=%v error=%v", spawned, stopped, err)
+			}
+			if !stopped {
+				var wire appwire.WireError
+				if !errors.As(err, &wire) || wire.Data.(appwire.ErrorData).Cause != "daemonRestartRequired" {
+					t.Fatalf("error=%v", err)
+				}
+			}
+		})
+	}
 }

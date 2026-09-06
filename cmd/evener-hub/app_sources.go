@@ -84,6 +84,15 @@ func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID s
 	}
 }
 
+func isNotAcceptedMutationError(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	return ok && data.MutationOutcome == appwire.MutationOutcomeNotAccepted
+}
+
 func isTargetDeletedError(err error) bool {
 	var wireErr appwire.WireError
 	if !errors.As(err, &wireErr) {
