@@ -186,17 +186,19 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 // ping-inline-vs-enqueue decision), and stop when the transport or the
 // connection dies.
 func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) {
+	defer func() {
+		// Both Recv and a full inbound queue can observe cancellation without
+		// closing the socket. Local teardown must not wait for a peer handshake.
+		if ctx.Err() != nil {
+			_ = ws.CloseNow()
+		}
+	}()
 	for {
 		gate.readerAvailable()
 		msg, err := transport.Recv(ctx)
 		gate.readerUnavailable()
 		if err != nil {
-			if ctx.Err() != nil {
-				// Recv can observe cancellation before starting a socket read,
-				// so cancellation alone need not have closed the connection.
-				// Do not wait for a peer handshake during local teardown.
-				_ = ws.CloseNow()
-			} else if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			if ctx.Err() == nil && websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 				_ = ws.Close(websocket.StatusInternalError, err.Error())
 			}
 			return
