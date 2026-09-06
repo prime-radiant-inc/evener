@@ -20,7 +20,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Workflow | Native status | Work still required |
 | --- | --- | --- |
 | Hubs and connections | Named profiles, secure bearer credentials, switch, reconnect; one active foreground connection | Edit profiles, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
-| Browse conversations | First 50 distinct sessions, server-side search, paged project catalogs and current/recent/archived project sessions | Full navigation invalidation, nested sessions, favorites, pin sections and remaining paging acceptance |
+| Browse conversations | First 50 distinct sessions, server-side search, paged project catalogs and current/recent/archived project sessions | Full navigation invalidation, real subagent lifecycle acceptance, favorites, pin sections and remaining paging acceptance |
 | Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice; native Markdown/code installed with initial copy and dark-mode evidence | Complete rich-text interaction/accessibility validation, usable attachment viewing, long-transcript performance, reading-position restoration and accessible disclosure |
 | Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; real-daemon delivery evidence | Attachments, command selection, queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
@@ -125,3 +125,7 @@ Native project catalogs and session tiers now use the existing revisioned naviga
 ### Project invalidation
 
 Project browsing now observes live navigation invalidations, preserves visible rows, and requires refresh before continuing a stale snapshot. Both simulators manually exercised real isolated-hub rename notifications and refresh recovery. Native78 tests, TypeScript and both Release builds pass. Generation-restart and sequence-gap races have deterministic boundary coverage; full native fault acceptance remains open.
+
+### Related sessions
+
+Project browsing now exposes nested related sessions, omitted counts and partial-tree notices. Both simulators exercised two expansion levels and preserved them on return from a real session opened through a scripted hierarchy. Native81 tests and both Release builds pass. The fixture does not establish real daemon-created subagent lifecycle acceptance; see project-browsing-evidence.md for the boundary.
