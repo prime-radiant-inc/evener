@@ -1049,7 +1049,11 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	defer cancel()
 	// Wedge the unlock: it spends the cascade budget and then returns only once
 	// the context the pass is bound to is done, so a pass that ignored the
-	// cascade deadline would never return from here.
+	// cascade deadline would never return from here. The wedge is removed before
+	// the test returns: the fixture closes this session on cleanup, and a wedge
+	// still installed then would make that close wait out a whole fresh budget
+	// with the cascade context already spent.
+	t.Cleanup(func() { r.s.cfg.testOnly.worktreeGitRunner = nil })
 	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		run := gitRunner(runCtx, env)
 		return func(args ...string) (string, error) {
@@ -1062,7 +1066,9 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 		}
 	}
 
+	start := time.Now()
 	r.s.unlockOwnManagedWorktreeAtClose(ctx)
+	elapsed := time.Since(start)
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("lane reported unlocked despite a wedged unlock")
@@ -1070,6 +1076,15 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	msgs := warningMessages(r.s)
 	if !anyContainsAll(msgs, path, "unlocking own worktree", "failed") {
 		t.Errorf("no warning naming the lane the pass could not release: %v", msgs)
+	}
+	// TRIPWIRE: the wedge cancels the cascade context, so the pass returns as
+	// soon as it observes that cancellation — single-digit milliseconds. This
+	// bound derives from the budget under test rather than a wall-clock literal,
+	// and sits orders of magnitude above the expected time: it trips only if the
+	// pass stops honouring the deadline it was handed and waits out a budget of
+	// its own instead.
+	if bound := laneCloseReleaseBudget() / 4; elapsed > bound {
+		t.Errorf("pass took %s, want well under %s: it is waiting out a budget of its own instead of the cascade deadline", elapsed, bound)
 	}
 }
 
