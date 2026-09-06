@@ -38,6 +38,14 @@ export function QueueSheet({
   }, []);
   const queue = conversation.queue;
   const instanceId = conversation.instanceId;
+  const canRun =
+    conversation.capabilities.steer || conversation.capabilities.send;
+  const runLabel = conversation.capabilities.steer
+    ? "Use as steering"
+    : "Resume with this";
+  const runAllLabel = conversation.capabilities.steer
+    ? "Use all as steering"
+    : "Run all together";
   const disabled = !ready || pending || !!error || !instanceId;
   async function act(operation: () => Promise<unknown>) {
     if (disabled || busy.current) return;
@@ -92,8 +100,9 @@ export function QueueSheet({
         </View>
         <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
           <Copy muted>
-            Messages run in order. Use steering to bring one into the current
-            turn.
+            {conversation.capabilities.steer
+              ? "Messages run in order. Use steering to bring one into the current turn."
+              : "Resuming releases the remaining queue too. Use a selected message as steering, or combine all waiting messages into one input."}
           </Copy>
           <ErrorMessage message={error} />
           {error ? (
@@ -159,9 +168,9 @@ export function QueueSheet({
                   >
                     Cancel
                   </Action>
-                  {conversation.capabilities.steer ? (
+                  {canRun ? (
                     <Action
-                      label={`Use queued message ${index + 1} as steering`}
+                      label={`${runLabel}: queued message ${index + 1}`}
                       disabled={disabled || !id}
                       onPress={() => {
                         if (id && instanceId)
@@ -170,14 +179,14 @@ export function QueueSheet({
                           );
                       }}
                     >
-                      Use as steering
+                      {runLabel}
                     </Action>
                   ) : null}
                 </View>
               </View>
             );
           })}
-          {queue.depth > 1 && conversation.capabilities.steer ? (
+          {queue.depth > 1 && canRun ? (
             <Action
               disabled={disabled}
               onPress={() => {
@@ -187,7 +196,7 @@ export function QueueSheet({
                   );
               }}
             >
-              Use all as steering
+              {runAllLabel}
             </Action>
           ) : null}
         </ScrollView>
