@@ -185,3 +185,63 @@ func TestDelegateIsolation_FailedIsolationReleasesTheLaneAdmission(t *testing.T)
 		t.Errorf("the close waited out its budget on an admission the failed isolation step never released: %q", got)
 	}
 }
+
+// prepareIsolation admits the lane's create and the rollback it owes for its
+// OWN failures under one span, but a rollback isolation.cleanup reaches once
+// prepareIsolation has already returned — CommitStart failing,
+// failCommittedStart's arms, failAdoptedStart — is past that span and forks
+// git on the PARENT's environment with no admission of its own. A close that
+// begins while one of those rollbacks holds its git walks straight past the
+// join and reaps the process table underneath it, the same hazard the create
+// itself has above.
+func TestDelegateIsolation_CloseWaitsForTheLaneRollbackItRaces(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	runtime, reservation, project := reserveWorktreeIsolatedDelegate(t, root, "close under the lane rollback")
+
+	isolation, err := runtime.prepareIsolation(context.Background(), reservation, project, nil)
+	if err != nil {
+		t.Fatalf("prepareIsolation: %v", err)
+	}
+	lanePath := isolation.worktreePath
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	envCleaned := make(chan struct{})
+	var cleanedOnce sync.Once
+	var held, cleanupDuringRollback atomic.Bool
+
+	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
+		cleanedOnce.Do(func() { close(envCleaned) })
+	}
+	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == lanePath && held.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					root.Close()
+				}()
+				<-closeBegun
+				select {
+				case <-envCleaned:
+					cleanupDuringRollback.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	isolation.cleanup(root, reservation.delegateID)
+	if !held.Load() {
+		t.Fatal("the rollback never reached the lane's git; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringRollback.Load() {
+		t.Error("the close cleaned the environment while the delegate lane's rollback still held its git")
+	}
+	assertNoDelegateLane(t, r, reservation.delegateID, lanePath)
+}
