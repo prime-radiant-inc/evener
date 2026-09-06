@@ -6,6 +6,7 @@ import {
   effortLabel,
   effortOptionLevels,
 } from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationGoalActions,
@@ -15,17 +16,22 @@ import type {
 import type { DraftDocument } from "./draftDocument";
 
 const commands = [
-  { id: "goal", args: true, capability: "goal" },
-  { id: "compact", capability: "compact" },
-  { id: "shutdown", capability: "shutdown" },
-  { id: "model", args: true, capability: "changeModel" },
-  { id: "reasoning-effort", args: true, capability: null },
+  { id: "goal", args: true, capability: "goal", label: "Set goal" },
+  { id: "compact", capability: "compact", label: "Compact" },
+  { id: "shutdown", capability: "shutdown", label: "Shut down" },
+  { id: "model", args: true, capability: "changeModel", label: "Set model" },
+  { id: "reasoning-effort", args: true, capability: null, label: "Set effort" },
+  { id: "interrupt", capability: "interrupt", label: "Interrupt" },
+  { id: "steer", args: true, capability: "steer", label: "Steer" },
+  { id: "queue", args: true, capability: "queue", label: "Queue" },
+  { id: "drain-as-steer", capability: "steer", label: "Drain queue" },
 ] as const;
 
 export class CommandArgumentError extends Error {}
 
 interface CommandContext {
   isCurrent(): boolean;
+  turn(): { activeTurnId?: string; queue: { revision: number } } | null;
   reasoning(): Pick<
     MobileConversation,
     "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -41,7 +47,13 @@ export async function submitComposerCommand(
   document: DraftDocument,
   service: Pick<
     ConversationService,
-    "compact" | "shutdown" | "changeModel" | "setReasoningEffort"
+    | "compact"
+    | "shutdown"
+    | "changeModel"
+    | "setReasoningEffort"
+    | "steer"
+    | "queue"
+    | "interrupt"
   > &
     ConversationGoalActions &
     ConversationModelCatalog,
@@ -50,7 +62,7 @@ export async function submitComposerCommand(
   const record = document.getSnapshot().record;
   const match = composerCommand(record.draft, record.images?.length);
   if (!match || !context.isCurrent()) return null;
-  let operation: () => Promise<void>;
+  let operation: () => Promise<unknown>;
   const id = match.command.id;
   const invalid = () =>
     new CommandArgumentError(
@@ -58,7 +70,18 @@ export async function submitComposerCommand(
         ? `/${id}: unknown value "${match.argsText.trim()}"`
         : `/${id} needs a value`,
     );
-  if (id === "model") {
+  if (id === "steer" || id === "queue" || id === "drain-as-steer") {
+    const turn = context.turn();
+    if (!turn?.activeTurnId)
+      throw new CommandArgumentError(`/${id}: no active turn`);
+    const input = buildComposerInput(match.argsText);
+    // The explicit /steer command preserves waiting queue entries. Draining
+    // uses its own command and the observed queue revision, as on web.
+    operation =
+      id === "drain-as-steer"
+        ? () => service.steer([], turn.queue.revision)
+        : () => service[id](input);
+  } else if (id === "model") {
     const catalog = await service.models();
     // A catalog request must never consume text edited while it was loading,
     // or mutate the session after its screen loses ownership.
