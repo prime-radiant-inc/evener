@@ -283,3 +283,33 @@ open. No app implementation change was required by these observations.
 
 ![iOS expired authorization](assets/providers/ios-device-expired.jpg)
 ![iOS explicit poll recovery](assets/providers/ios-device-retry.jpg)
+
+
+## Android expiry, retry and canceled-flow hub switch
+
+On 6 September 2026, Pixel 7 API 35 Release used the expiry/poll controls from
+`1638900e3`. Cleared prior fixture credentials, started device sign-in and tapped
+Copy code. Advancing the fixture clock removed the old code and showed Start again.
+After restart and forced poll failure, the screen retained the code, reset Copy
+code feedback, displayed the fixed safe error and offered Retry status check.
+Cleared the fault and approved through fixture controls; `/status` remained
+false/none before retry. Tapped Retry status check: the editor showed Signed in
+and status became true/oauth. Expiry and retry screenshots were visually inspected;
+the expiry capture also shows Android's clipboard preview with NATIVE-TEST.
+
+Then cleared credentials and started a separate flow. Enabled poll failure, canceled
+the sheet, navigated to Hubs and selected SecondHub. Its Providers screen showed
+its own fake/default configuration rather than AuthFixture's work instance. Cleared
+the fixture fault and approved its abandoned flow while Android was on SecondHub:
+fixture status stayed false/none. Returned to AuthFixture and reopened Providers;
+work remained Not configured, no old sign-in sheet reopened and status remained
+false/none. The fixture is left signed out, with faults cleared in device mode.
+
+This proves the normal Android cancel-then-switch route and canceled-flow behavior.
+It does not prove a hub change during an outstanding completion response, iOS
+cancel/switch, process death, or real-provider denial. The modal requires dismissal
+before the hub picker is reachable, so this is not evidence of an active-sheet hub
+switch. Those distinctions remain in MOB-013's acceptance scope.
+
+![Android expired code](assets/providers/android-device-expired.png)
+![Android explicit status retry](assets/providers/android-device-retry.png)

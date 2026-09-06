@@ -190,8 +190,9 @@ now covers Chrome first-run interruption, browser return, provider refresh and
 credential clearing as well. [Browser redirect fallback](providers-evidence.md#browser-redirect-fallback-on-both-platforms)
 now has native browser copy/paste and keyboard-open completion evidence on both
 platforms. [iOS expiry/restart and explicit poll recovery](providers-evidence.md#ios-expiry-and-explicit-poll-recovery)
-are verified against clock and OAuth-boundary fixture controls. Android recovery,
-provider denial and cross-hub flow isolation remain unverified.
+are verified against clock and OAuth-boundary fixture controls. [Android expiry/retry and canceled-flow hub switching](providers-evidence.md#android-expiry-retry-and-canceled-flow-hub-switch)
+are also verified. iOS cancel/switch, a hub change during outstanding completion,
+process death and provider denial remain unverified.
 
 Visual follow-up: use proportionate space for the authorized state; show native
 sign-in guidance instead of a primary CLI instruction, with server diagnostics
