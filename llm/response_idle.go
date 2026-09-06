@@ -36,6 +36,9 @@ func (t *idleResponseTransport) RoundTrip(req *http.Request) (*http.Response, er
 	request := req.Clone(ctx)
 	addedGzip := t.compression && request.Header.Get("Accept-Encoding") == "" && request.Header.Get("Range") == "" && request.Method != http.MethodHead
 	if addedGzip {
+		if request.Header == nil {
+			request.Header = make(http.Header)
+		}
 		request.Header.Set("Accept-Encoding", "gzip")
 	}
 	resp, err := t.base.RoundTrip(request)

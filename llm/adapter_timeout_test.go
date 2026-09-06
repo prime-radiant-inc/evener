@@ -338,8 +338,8 @@ func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
 	if transport == originalTransport {
 		t.Fatal("expected a cloned transport")
 	}
-	if transport.ResponseHeaderTimeout != 7*time.Second {
-		t.Fatalf("ResponseHeaderTimeout = %v, want 7s", transport.ResponseHeaderTimeout)
+	if transport.ResponseHeaderTimeout != 3*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want preserved caller timeout 3s", transport.ResponseHeaderTimeout)
 	}
 	if transport.MaxIdleConnsPerHost != 23 {
 		t.Fatalf("MaxIdleConnsPerHost = %d, want 23", transport.MaxIdleConnsPerHost)

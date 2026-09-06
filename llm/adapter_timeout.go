@@ -136,8 +136,9 @@ func ApplyAdapterTimeout(ctx context.Context, at *AdapterTimeout, _ bool) (conte
 }
 
 // AdapterTransport returns a configured clone of http.DefaultTransport. Connect
-// bounds context-aware dialing without replacing caller hooks. Request, or
-// StreamRead when Request is disabled, bounds the wait for response headers. Context-free Dial and DialTLS remain
+// bounds context-aware dialing without replacing caller hooks. The shortest positive
+// Request, StreamRead, or existing header timeout bounds the wait for response headers.
+// Context-free Dial and DialTLS remain
 // caller-authoritative. Returns nil when neither timeout is configured.
 func AdapterTransport(at *AdapterTimeout) *http.Transport {
 	return configuredAdapterTransport(http.DefaultTransport.(*http.Transport), at)
@@ -175,10 +176,10 @@ func configuredAdapterTransport(base *http.Transport, at *AdapterTimeout) *http.
 		// Dial and DialTLS have no contexts to bound safely without goroutines that
 		// may leak. Preserve them unchanged as caller-authoritative transport policy.
 	}
-	if at.Request > 0 {
-		transport.ResponseHeaderTimeout = at.Request
-	} else if at.StreamRead > 0 && (transport.ResponseHeaderTimeout <= 0 || transport.ResponseHeaderTimeout > at.StreamRead) {
-		transport.ResponseHeaderTimeout = at.StreamRead
+	for _, timeout := range []time.Duration{at.Request, at.StreamRead} {
+		if timeout > 0 && (transport.ResponseHeaderTimeout <= 0 || transport.ResponseHeaderTimeout > timeout) {
+			transport.ResponseHeaderTimeout = timeout
+		}
 	}
 	return transport
 }
