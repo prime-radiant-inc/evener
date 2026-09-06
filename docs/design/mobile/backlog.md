@@ -185,7 +185,10 @@ Both Release builds, 253 native tests and TypeScript pass. The [local auth fixtu
 handlers and temporary credential storage using the native wire client.
 iOS device authorization now has [manual browser-return evidence](providers-evidence.md#ios-device-authorization-browser-round-trip), including same-flow reconnect,
 provider refresh and credential clearing, independently checked against fixture
-state. Android and browser redirect fallback remain unverified.
+state. [Android device-flow evidence](providers-evidence.md#android-device-authorization-browser-round-trip)
+now covers Chrome first-run interruption, browser return, provider refresh and
+credential clearing as well. Browser redirect fallback remains unverified on both
+platforms, as do native expiry/denial and cross-hub flow isolation.
 
 Visual follow-up: use proportionate space for the authorized state; show native
 sign-in guidance instead of a primary CLI instruction, with server diagnostics

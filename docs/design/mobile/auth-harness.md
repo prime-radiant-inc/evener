@@ -43,4 +43,6 @@ pass; the checked-in native wire smoke completes both flows and returns signed
 out. The first smoke exposed a missing fixture server version; the fixture now
 supplies one and passes the real client's handshake validation. The iOS device browser round trip and credential clearing now have
 [manual evidence](providers-evidence.md#ios-device-authorization-browser-round-trip).
-Android, browser redirect fallback and expiry/failure scenario controls remain.
+The [Android device round trip](providers-evidence.md#android-device-authorization-browser-round-trip)
+is also verified manually, including Chrome first-run interruption. Browser redirect
+fallback and expiry/failure scenario controls remain.

@@ -193,3 +193,31 @@ retain server diagnostic detail in a deliberate disclosure rather than using it
 as the primary mobile instruction.
 
 ![iOS device authorization completed](assets/providers/ios-device-authorized.jpg)
+
+
+## Android device authorization browser round trip
+
+On 6 September 2026, installed the current Release APK (built after `9a75d0479`)
+on Pixel 7 API 35 and created a separate AuthFixture profile for the same isolated
+real auth harness. Opened work → Sign in; the returned NATIVE-TEST code rendered
+with Copy code and Open authorization page. Tapping Copy code showed Code copied
+(captured and visually inspected; clipboard contents were not pasted).
+
+Open authorization page launched Chrome. Completed the emulator's Chrome first-run
+setup without an account and declined notifications. The local authorization page
+rendered; tapped Approve fixture sign-in, then used Android Back twice to return
+to Evener. The sheet displayed Signed in, independently confirmed by `/status`
+reporting `signedIn: true`, `activeSource: oauth`. Done returned to the refreshed
+provider list; work opened with Configured via OAuth and Refresh sign-in.
+Clear credentials → Confirm returned the detail to Not configured and Sign in,
+while `/status` reported `signedIn: false`, `activeSource: none`.
+
+The screenshot below was captured and visually inspected. This proves the Android
+device-flow browser round trip across a prolonged first-run interruption and
+credential clearing with the scripted OAuth boundary. It does not qualify real
+provider accounts, redirect fallback, expiry/denial or cross-hub flow isolation.
+UIAutomator could not reach idle while device polling ran at the fixture's one-second
+interval; fresh screenshots supplied targets during that phase. Observation failure
+did not cause a flow restart. The fixture is left signed out in device mode.
+
+![Android device authorization completed](assets/providers/android-device-authorized.png)
