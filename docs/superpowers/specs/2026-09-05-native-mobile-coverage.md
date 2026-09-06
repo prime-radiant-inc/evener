@@ -88,3 +88,5 @@ The subsequent shared-text correction makes iOS Action/Copy/ErrorMessage measure
 ## Last-location update — 5 September 2026
 
 Source `dc2dd032f` restores a validated saved-hub/conversation bookmark after native restart. Both-platform cold starts, Android font-change recreation, toolbar back navigation and Android cross-hub identity have [manual evidence](../../design/mobile/location-restoration-evidence.md). Native tests are 53/53. Android system Back exited the restored conversation instead of popping; this remains an explicit navigation defect. Reading offsets and form-draft restoration are not implemented.
+
+Android API 35 system Back is subsequently corrected by disabling the unsupported predictive opt-in for the current navigator. Final release checks verify restored-stack popping, keyboard-first dismissal, root exit and edge-swipe navigation; see the location evidence. Predictive transition previews and Android 16+ verification remain outstanding.
