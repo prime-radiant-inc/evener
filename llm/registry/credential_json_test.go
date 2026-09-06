@@ -126,6 +126,18 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "",
 		},
 		{
+			// Google's parser decodes quota_project_id as a string; a value of
+			// another type fails there, so the gate must fail first.
+			name: "authorized_user with a non-string quota_project_id",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","quota_project_id":7}`,
+			want: "credential JSON:",
+		},
+		{
+			name: "service_account with a non-string universe_domain",
+			raw:  `{"universe_domain":["googleapis.com"],` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
+			want: "credential JSON:",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",

@@ -116,6 +116,27 @@ func CheckCredentialJSON(raw []byte) error {
 			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(cred.TokenURI))
 		}
 	}
+	// Google's parser decodes these fields as strings and fails on any other
+	// type, after the gate had already chosen the credential over ADC; the
+	// same decode runs here so the mismatch is refused up front. It comes
+	// after the checks above so a field they cover gets their message.
+	var typed struct {
+		Type           string `json:"type"`
+		ClientEmail    string `json:"client_email"`
+		PrivateKeyID   string `json:"private_key_id"`
+		PrivateKey     string `json:"private_key"`
+		AuthURL        string `json:"auth_uri"`
+		TokenURL       string `json:"token_uri"`
+		ProjectID      string `json:"project_id"`
+		UniverseDomain string `json:"universe_domain"`
+		ClientSecret   string `json:"client_secret"`
+		ClientID       string `json:"client_id"`
+		RefreshToken   string `json:"refresh_token"`
+		QuotaProjectID string `json:"quota_project_id"`
+	}
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return fmt.Errorf("credential JSON: %w", err)
+	}
 	if t == "service_account" {
 		if err := checkServiceAccountKey(values["private_key"]); err != nil {
 			return fmt.Errorf("service_account credential JSON has an unusable private_key: %w", err)

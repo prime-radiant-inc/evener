@@ -468,8 +468,10 @@ file using any of them fails to load; see
    PKCS#8/PKCS#1 RSA key, a `token_uri` other than Google's own
    (`https://oauth2.googleapis.com/token` or the legacy
    `https://accounts.google.com/o/oauth2/token`, where the refresh token or
-   the signed assertion is sent), or a top-level `installed`/`web` block (an
-   OAuth client configuration, not a credential) — is ignored with a warning
+   the signed assertion is sent), a top-level `installed`/`web` block (an
+   OAuth client configuration, not a credential), or a value of the wrong
+   type in any field Google's parser reads (for example a numeric
+   `quota_project_id`) — is ignored with a warning
    naming the remedy, and resolution falls through to application-default
    credentials. The gate reads these fields the way Google's library does,
    matching key names case-insensitively.
