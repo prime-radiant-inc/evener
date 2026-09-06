@@ -261,6 +261,14 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "google-vertex-anthropic/claude-sonnet-4-6"); hasWarning(res, "regional") {
 		t.Fatal("Sonnet 4.6 and earlier are fine on regional endpoints")
 	}
+	// The warning is about the location the URL was built with: an instance
+	// whose own base_url carries no location placeholder reaches no regional
+	// endpoint, whatever the environment says.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.gw]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gw.example.test/v1\"\n")
+	if res := mustResolve(t, r, "gw/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1" {
+		t.Fatalf("literal base_url must not warn about a location it does not use: %+v", res)
+	}
 }
 
 func TestResolve_HeadersAndCredential(t *testing.T) {
