@@ -40,7 +40,7 @@ sessions. Each turn was stopped from the native UI. Direct thread/read checks
 found A's marker only on A and B's marker only on B. Android's distinct unsent
 B draft survived this cross-device activity.
 
-## Failed acceptance: observing a stopped session resumed elsewhere
+## Observing a stopped session resumed elsewhere
 
 Android had opened B while its session was stopped. When iOS resumed it by
 sending, Android remained on the old snapshot despite showing Connected.
@@ -60,14 +60,38 @@ failed replacement rollback, unsubscribe, and refusing saved fallback for a
 routable daemon. The hub suite passed (61.195 seconds); targeted tests also
 passed under the Go race detector.
 
-This is automated evidence only. A deterministic overlap test for snapshot
-capture versus resume, and both-platform cross-device E2E against a rebuilt
-isolated hub, remain required. The native acceptance check remains unverified
-after the fix. Production has not been restarted or changed.
+### Native retest against the rebuilt hub
+
+Rebuilt the isolated B binary from `01d49719f` and restarted only B at
+127.0.0.1:56501. Its existing proxy remains bound to all interfaces on 9200.
+The production hub and A were unchanged.
+
+- Shut down the owned B session and verified its run directory contained no
+  daemon rendezvous. Opened it on both native Release apps.
+- Sent IOSCOLDOBSERVERCHECK from iOS. Android received the message without
+  refresh/navigation, exposed Stop/Steer/Queue, and retained ANDROIDDRAFTB.
+  Stopping from Android ended the turn on iOS too.
+- Shut down the session again, reopened it on both apps, and verified it was
+  stopped before sending ANDROIDCOLDOBSERVERCHECK from Android. iOS received
+  that message and exposed Stop without refreshing. Stopping from iOS removed
+  Android's running controls too.
+- Direct reads found both new markers on B and neither on A, despite the
+  identical stable session ref on the two hubs.
+
+Screenshots were captured and visually inspected:
+[Android receives iOS](assets/cold-observer/android-receives-ios.png) and
+[iOS receives Android](assets/cold-observer/ios-receives-android.png).
+
+This closes the original manual failure in both directions on iPhone 17 Pro
+(iOS 26.5) and Pixel 7 (API 35) simulators. A deterministic overlap test for
+snapshot capture versus resume is still required; sequential native success
+and Go race-detector success do not prove that ordering. The screenshots also
+retain the known unfinished composer density and raw-notice presentation;
+these are functional evidence, not visual acceptance.
 
 ## Further work
 
-- Correct cold-observer handoff and rerun both-platform cross-device E2E.
+- Prove deterministic snapshot/resume overlap and audit relay lifetime across restarts.
 - Concurrent hub connections and deliberate per-hub navigation continuity.
 - Disconnect/reconnect and credential-rotation isolation, delayed requests and
   uncertain writes during switching, hub-removal recovery, physical networks.
