@@ -387,6 +387,11 @@ explicit Reconnect recovered; returning to1.0 connected automatically. Investiga
 activity/location restoration and capture the failed connection's cause before
 claiming lifecycle acceptance. The hub stayed reachable during the failure.
 
+A manifest-only `fontScale` candidate retained an open numeric draft but failed
+to resize its mounted text, even after background/resume. Reopening the editor
+used the new size. Keep this unresolved until both draft retention and live text
+resizing pass; see [candidate evidence](hub-information-and-launch-settings.md#android-font-scale-recreation-investigation).
+
 Acceptance: iOS/Android physical devices, signing/distribution, measured scrolling
 and input latency under streaming load, memory/leak checks where indicated,
 large text, screen readers, reduced motion, light/dark and native back/keyboard
