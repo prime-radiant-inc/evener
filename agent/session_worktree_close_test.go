@@ -688,7 +688,7 @@ func TestClose_UnlocksOwnManagedWorktree(t *testing.T) {
 		t.Fatal("own worktree not locked after create")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	if _, locked, _ := r.laneLocked(t, path); locked {
 		t.Error("own managed worktree still locked after close-unlock")
@@ -974,7 +974,7 @@ func TestUnlockOwnManagedWorktreeAtClose_ClearsStrandedOwnMarker(t *testing.T) {
 		t.Fatal("stranded lane not locked by the test setup")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	if _, locked, reason := r.laneLocked(t, strandedPath); locked {
 		t.Errorf("stranded own marker survived close: locked with %q", reason)
@@ -1014,7 +1014,7 @@ func TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker(t *tes
 		t.Fatal("session did not become a child session")
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	if _, locked, reason := r.laneLocked(t, childLane); locked {
 		t.Errorf("child's own marker survived its teardown: locked with %q", reason)
@@ -1028,11 +1028,10 @@ func TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker(t *tes
 	}
 }
 
-// TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget: the pass runs on the
-// close cascade's deadline rather than an unbounded context, so a wedged git
-// cannot hold shutdown for the per-command timeout on every lane. With git
-// wedged, the pass returns once the deadline it was handed expires, the lane is
-// left locked, and the warning names it.
+// TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget: the pass runs its
+// git on a context carrying its own release budget, so a wedged git holds
+// shutdown for that budget and no longer — rather than for the per-command
+// timeout on each of the 1+N commands an unbounded pass would issue.
 func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -1041,35 +1040,43 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	// TRIPWIRE: this deadline stands in for an effectively-unlimited cascade
-	// budget; the wedged runner below calls cancel() explicitly on the unlock, so
-	// this hour-long value is never awaited and only bounds the test if that
-	// manual cancellation itself regresses and never fires.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-	defer cancel()
-	// Wedge the unlock: it spends the cascade budget and then returns only once
-	// the context the pass is bound to is done, so a pass that ignored the
-	// cascade deadline would never return from here. The wedge is removed before
-	// the test returns: the fixture closes this session on cleanup, and a wedge
-	// still installed then would make that close wait out a whole fresh budget
-	// with the cascade context already spent.
+	// Observe the deadline on every context the pass hands git, and wedge the
+	// unlock so the pass also has to report the lane it could not release.
+	unbounded := false
+	longest := time.Duration(0)
 	t.Cleanup(func() { r.s.cfg.testOnly.worktreeGitRunner = nil })
 	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		run := gitRunner(runCtx, env)
 		return func(args ...string) (string, error) {
+			deadline, ok := runCtx.Deadline()
+			switch {
+			case !ok:
+				unbounded = true
+			default:
+				if left := time.Until(deadline); left > longest {
+					longest = left
+				}
+			}
 			if len(args) > 1 && args[0] == "worktree" && args[1] == "unlock" {
-				cancel()
-				<-runCtx.Done()
-				return "", runCtx.Err()
+				return "", errors.New("git wedged")
 			}
 			return run(args...)
 		}
 	}
 
 	start := time.Now()
-	r.s.unlockOwnManagedWorktreeAtClose(ctx)
+	r.s.unlockOwnManagedWorktreeAtClose()
 	elapsed := time.Since(start)
 
+	if unbounded {
+		t.Error("the pass handed git a context with no deadline; a wedged git would hold shutdown for the per-command timeout on every lane")
+	}
+	if longest <= 0 {
+		t.Fatal("no git command reached the interceptor; the pass never ran")
+	}
+	if budget := laneCloseReleaseBudget(); longest > budget {
+		t.Errorf("git ran with %s left on its deadline, want no more than the release budget %s", longest, budget)
+	}
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("lane reported unlocked despite a wedged unlock")
 	}
@@ -1077,23 +1084,22 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	if !anyContainsAll(msgs, path, "unlocking own worktree", "failed") {
 		t.Errorf("no warning naming the lane the pass could not release: %v", msgs)
 	}
-	// TRIPWIRE: the wedge cancels the cascade context, so the pass returns as
-	// soon as it observes that cancellation — single-digit milliseconds. This
-	// bound derives from the budget under test rather than a wall-clock literal,
-	// and sits orders of magnitude above the expected time: it trips only if the
-	// pass stops honouring the deadline it was handed and waits out a budget of
-	// its own instead.
+	// TRIPWIRE: the wedged unlock fails immediately, so the pass finishes in
+	// milliseconds. This bound derives from the release budget rather than a
+	// wall-clock literal and sits orders of magnitude above that, so it trips only
+	// if the pass starts waiting a budget out instead of honouring its deadline.
 	if bound := laneCloseReleaseBudget() / 4; elapsed > bound {
-		t.Errorf("pass took %s, want well under %s: it is waiting out a budget of its own instead of the cascade deadline", elapsed, bound)
+		t.Errorf("pass took %s, want well under %s", elapsed, bound)
 	}
 }
 
-// TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases: a close cascade
-// whose shared budget is already exhausted must still release this session's own
-// locks. Releasing them is tail work, like the P0 pass's budget-exempt
-// touch+unlock tail: leaving them held would strand exactly the markers this
-// pass exists to clear.
-func TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases(t *testing.T) {
+// TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases: the
+// close cascade's budget expiring partway through the pass — here while the
+// registry listing is in flight, but equally between the listing and an unlock —
+// must not leave this session's own markers held. The pass runs on a release
+// budget of its own precisely so the guarantee never depends on how much of the
+// cascade budget the steps before it consumed.
+func TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
@@ -1101,13 +1107,35 @@ func TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases(t *testing.T) 
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	spent, cancel := context.WithCancel(context.Background())
-	cancel()
+	cascade, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.Cleanup(func() { r.s.cfg.testOnly.worktreeGitRunner = nil })
+	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		run := gitRunner(runCtx, env)
+		return func(args ...string) (string, error) {
+			if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
+				cancel()
+			}
+			return run(args...)
+		}
+	}
 
-	r.s.unlockOwnManagedWorktreeAtClose(spent)
+	start := time.Now()
+	r.s.unlockOwnManagedWorktreeAtClose()
+	elapsed := time.Since(start)
 
+	if cascade.Err() == nil {
+		t.Fatal("the interceptor never cancelled the cascade context; the scenario did not run")
+	}
 	if _, locked, reason := r.laneLocked(t, path); locked {
-		t.Errorf("own marker held after a close with a spent budget: %q", reason)
+		t.Errorf("own marker still held after the cascade budget expired mid-pass: %q", reason)
+	}
+	// TRIPWIRE: the release runs real git against a two-lane fixture and finishes
+	// in milliseconds. This bound derives from the release budget rather than a
+	// wall-clock literal and sits orders of magnitude above that, so it trips only
+	// if the pass starts waiting out a budget instead of doing the release.
+	if bound := laneCloseReleaseBudget() / 4; elapsed > bound {
+		t.Errorf("pass took %s, want well under %s", elapsed, bound)
 	}
 }
 
@@ -1128,7 +1156,7 @@ func TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker(t *testing.T) {
 	dlgMarker := worktree.FormatDelegateMarker("dlg_close894", r.s.id)
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", dlgMarker, dlgLane)
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	_, locked, reason := r.laneLocked(t, dlgLane)
 	if !locked {
@@ -1156,7 +1184,7 @@ func TestUnlockOwnManagedWorktreeAtClose_LeavesForeignMarker(t *testing.T) {
 	foreignMarker := worktree.FormatSessionMarker(r.s.id + "-other")
 	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignMarker, foreignPath)
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	_, locked, reason := r.laneLocked(t, foreignPath)
 	if !locked {
@@ -1181,7 +1209,7 @@ func TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: path}
 	r.s.mu.Unlock()
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree wrongly unlocked through a non-local env")
@@ -1205,7 +1233,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnresolvableMainRootNoOp(t *testing.T) 
 	}
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1227,7 +1255,7 @@ func TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns(t *testing.T) {
 	path := res["path"].(string)
 	restore := hideGitInRepo(t, r.mainRoot)
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	restore()
 	if _, locked, _ := r.laneLocked(t, path); !locked {
@@ -1260,7 +1288,7 @@ func TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns(t *testing.T) {
 		}
 	}
 
-	r.s.unlockOwnManagedWorktreeAtClose(context.Background())
+	r.s.unlockOwnManagedWorktreeAtClose()
 
 	if _, locked, _ := r.laneLocked(t, path); !locked {
 		t.Error("own worktree reported unlocked despite a failed unlock")

@@ -115,7 +115,7 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"close-unlock-child", TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker},
 		{"close-unlock-delegate", TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker},
 		{"close-unlock-budget", TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget},
-		{"close-unlock-spent-budget", TestUnlockOwnManagedWorktreeAtClose_SpentBudgetStillReleases},
+		{"close-unlock-cascade-expiry", TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases},
 		{"close-unlock-listing-fails", TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns},
 		{"close-unlock-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns},
 		{"close-unlock-nonlocal", TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp},
@@ -208,7 +208,7 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	s := &Session{env: &worktreeFaultExecEnv{}, cfg: SessionConfig{}}
 	s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: "/tmp/not-local"})
 	s.disposeDelegateLanesAtClose(context.Background())
-	s.unlockOwnManagedWorktreeAtClose(context.Background())
+	s.unlockOwnManagedWorktreeAtClose()
 }
 
 func hooksRunResultZero() hooks.RunResult { return hooks.RunResult{} }
