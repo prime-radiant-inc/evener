@@ -74,12 +74,12 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
         if (current.client === previous.client && current.state === previous.state) return;
         operationVersion.current += 1;
         setTestState((test) =>
-          test?.pending
+          test?.pending || test?.notice
             ? {
                 name: test.name,
                 version: instanceVersion.current,
                 pending: false,
-                notice: "Connection changed while testing. Test the connection again.",
+                notice: test.notice ?? "Connection changed while testing. Test the connection again.",
               }
             : null,
         );
@@ -95,12 +95,12 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
   // biome-ignore lint/correctness/useExhaustiveDependencies: instances is a deliberate trigger-only dependency
   useEffect(() => {
     setTestState((current) =>
-      current?.pending
+      current?.pending || current?.notice
         ? {
             name: current.name,
             version: instanceVersion.current,
             pending: false,
-            notice: TEST_INTERRUPTED_MESSAGE,
+            notice: current.notice ?? TEST_INTERRUPTED_MESSAGE,
           }
         : null,
     );

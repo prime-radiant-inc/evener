@@ -70,6 +70,8 @@ export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
   loadCatalog: () => Promise<ModelCatalog>;
+  /** Changes when the caller knows the available catalog may have changed. */
+  revision?: unknown;
   /** Reports the full picked entry (with reasoningEffortLevels /
    * supportsReasoning) the moment a model is selected, so a caller that
    * derives per-model metadata (e.g. the spawn form's Effort ladder) doesn't
@@ -382,6 +384,7 @@ export function ModelCatalog({
   value,
   onChange,
   loadCatalog,
+  revision,
   onPickEntry,
   emptyLabel = "(default)",
 }: ModelCatalogProps): JSX.Element {
@@ -391,30 +394,33 @@ export function ModelCatalog({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision deliberately invalidates the supplied catalog
   useEffect(() => {
     if (!open) return;
     let canceled = false;
     setError(null);
     setCatalog(null);
     setLoading(true);
-    void loadCatalog().then(
-      (result) => {
-        if (!canceled) {
-          setCatalog(result);
-          setLoading(false);
-        }
-      },
-      (err) => {
-        if (!canceled) {
-          setError(`Couldn't load models: ${friendlyLaunchErrorMessage(err)}`);
-          setLoading(false);
-        }
-      },
-    );
+    void Promise.resolve()
+      .then(loadCatalog)
+      .then(
+        (result) => {
+          if (!canceled) {
+            setCatalog(result);
+            setLoading(false);
+          }
+        },
+        (err) => {
+          if (!canceled) {
+            setError(`Couldn't load models: ${friendlyLaunchErrorMessage(err)}`);
+            setLoading(false);
+          }
+        },
+      );
     return () => {
       canceled = true;
     };
-  }, [open, loadCatalog]);
+  }, [open, loadCatalog, revision]);
 
   // Popover's FocusScope is opted out of focus management entirely
   // (autoFocus={false}) so the panel's own input can hold focus and its

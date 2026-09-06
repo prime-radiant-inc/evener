@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
+import { credentialsStore } from "../../../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogClient";
 import { PromptCompositeField, ScalarField } from "./fields";
@@ -106,6 +107,23 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     expect(trigger.tagName).toBe("BUTTON");
     expect(trigger.textContent).toMatch(/\/tmp\/trace\.jsonl/);
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  test("an open model picker reloads after credentials refresh", async () => {
+    vi.mocked(fetchModelCatalog).mockResolvedValue({
+      models: [{ provider: "work", model: "old", displayName: "Old model" }],
+      recent: [],
+    });
+    render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={() => {}} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /change model/i }));
+    await screen.findByRole("option", { name: /Old model/ });
+    vi.mocked(fetchModelCatalog).mockResolvedValue({
+      models: [{ provider: "work", model: "new", displayName: "New model" }],
+      recent: [],
+    });
+    await act(async () => credentialsStore.setState({ instances: [...credentialsStore.getState().instances] }));
+    expect(await screen.findByRole("option", { name: /New model/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Old model/ })).toBeNull();
   });
 
   test("an empty value shows the layer's own default marker", () => {

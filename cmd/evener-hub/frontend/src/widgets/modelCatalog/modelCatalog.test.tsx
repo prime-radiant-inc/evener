@@ -63,6 +63,16 @@ async function openPicker(user: ReturnType<typeof userEvent.setup>): Promise<HTM
   return (await screen.findByRole("combobox", { name: "Model" })) as HTMLInputElement;
 }
 
+test("a synchronously throwing catalog loader shows an inline error", async () => {
+  renderPicker({
+    loadCatalog: () => {
+      throw new Error("no client");
+    },
+  });
+  await userEvent.setup().click(openTrigger());
+  expect(await screen.findByText(/Couldn't load models/)).toBeTruthy();
+});
+
 test("an open picker refreshes selectable models when provider configuration changes", async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();

@@ -418,6 +418,12 @@ describe("ConnectProviderDialog", () => {
       });
       expect(onConnected).not.toHaveBeenCalled();
       expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
+      await act(async () => {
+        connectionStore.getState().connect(fake);
+        fake.emitReady();
+        await credentialsStore.getState().fetch();
+      });
+      expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
     },
   );
 
