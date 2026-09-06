@@ -35,3 +35,39 @@ open, so MOB-011 is in progress.
 ![iOS running controls](assets/fullwidth-composer/ios-running.png)
 
 ![Android running controls with keyboard](assets/fullwidth-composer/android-running.png)
+
+## Keyboard and large-text follow-up
+
+Verified on the installed Release app at eb2ece322. The iOS software keyboard
+is now visible in the captured image after disconnecting Simulator's hardware
+keyboard. At the ordinary `large` content size, a multiline draft occupies the
+full width; attachment, model, reasoning, and Send share one row above the
+keyboard. This establishes the previously missing idle iOS keyboard evidence.
+No message was submitted in this follow-up.
+
+At `accessibility-extra-extra-extra-large`, the iOS composer still gives text
+its own full-width row, but consumes nearly all the space above the keyboard.
+Attachment, settings, and Send occupy three separate rows. The draft viewport
+also shows a clipped next line. This is a failed space-use acceptance case,
+not accessibility sign-off. The fixture contains an accidental `gu` from an
+earlier simulator interaction; it was corrected in the ordinary-size capture.
+
+Android at font scale 2.0 similarly stacks those controls into three rows.
+Its captured keyboard was hidden, including after focusing Message; that image
+does not establish large-text keyboard acceptance. Both platforms' controls
+remain semantically exposed, which does not establish screen-reader usability.
+
+The source explains the extra row: ComposerSettings has a full-width minimum
+above font scale 1.4, but follows attachment in the wrapping footer. Attachment
+therefore gets stranded before the settings row, with Send after it. The next
+layout correction should group actions deliberately at accessibility sizes,
+retain scalable text and native touch targets, and recheck the transcript and
+draft viewports with the real keyboard. MOB-011 and MOB-001 remain open.
+
+Simulator text settings were restored to iOS `large` and Android 1.0.
+
+![iOS ordinary text with actual keyboard](assets/fullwidth-composer/ios-keyboard.png)
+
+![iOS largest text exposes excessive composer height](assets/fullwidth-composer/ios-largest-keyboard.png)
+
+![Android large text, keyboard hidden](assets/fullwidth-composer/android-large.png)
