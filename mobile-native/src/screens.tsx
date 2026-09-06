@@ -37,7 +37,10 @@ import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import type { HubProfile } from "./connection";
 import { HubEditor } from "./HubEditor";
+import { ImageAttachments } from "./ImageAttachments";
+import { ImageSelection } from "./imageSelection";
 import { drafts } from "./nativeDrafts";
+import { nativeImagePicker } from "./nativeImagePicker";
 import { QuestionSheet } from "./QuestionSheet";
 import { QueueSheet } from "./QueueSheet";
 import {
@@ -553,6 +556,17 @@ export function ConversationScreen({
     [route.params.hubId, route.params.ref],
   );
   const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+  const imageSelection = useMemo(
+    () => new ImageSelection(document, nativeImagePicker),
+    [document],
+  );
+  const imageState = useSyncExternalStore(
+    imageSelection.subscribe,
+    imageSelection.getSnapshot,
+  );
+  useFocusEffect(
+    useCallback(() => () => imageSelection.cancel(), [imageSelection]),
+  );
   const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
   const connected =
     connectionState === "ready" && activeProfile?.id === route.params.hubId;
@@ -761,7 +775,8 @@ export function ConversationScreen({
       !ready ||
       controls?.getSnapshot().pending != null ||
       (kind !== "interrupt" &&
-        (unconfirmedSend !== null ||
+        (imageSelection.getSnapshot().busy ||
+          unconfirmedSend !== null ||
           pendingQuestions(store.getState().conversation).length > 0)) ||
       store.getState().pendingMutation?.status === "pending"
     )
@@ -906,6 +921,11 @@ export function ConversationScreen({
                   </Copy>
                   <ScrollView style={{ maxHeight: 100 }}>
                     <Copy>{unconfirmedSend}</Copy>
+                    <ImageAttachments
+                      document={document}
+                      selection={imageSelection}
+                      uncertain
+                    />
                   </ScrollView>
                   <View style={styles.row}>
                     <Action
@@ -1007,6 +1027,10 @@ export function ConversationScreen({
             </Action>
           ) : null}
           {questions.length === 0 ? (
+            <ImageAttachments document={document} selection={imageSelection} />
+          ) : null}
+          <ErrorMessage message={imageState.error} />
+          {questions.length === 0 ? (
             <TextInput
               accessibilityLabel="Message"
               multiline
@@ -1035,6 +1059,19 @@ export function ConversationScreen({
               { flexWrap: "wrap", justifyContent: "flex-end", gap: 4 },
             ]}
           >
+            {questions.length === 0 ? (
+              <Action
+                tone="quiet"
+                label="Attach images"
+                disabled={!draft.loaded || !!draft.error || imageState.busy}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  void imageSelection.choose();
+                }}
+              >
+                {imageState.busy ? "Processing…" : "+"}
+              </Action>
+            ) : null}
             {conversation ? (
               <ComposerSettings
                 conversation={conversation}
@@ -1125,7 +1162,8 @@ export function ConversationScreen({
                     !!draft.error ||
                     draft.submitting ||
                     unconfirmedSend !== null ||
-                    !draft.record.draft.trim()
+                    imageState.busy ||
+                    (!draft.record.draft.trim() && !draft.record.images?.length)
                   }
                   onPress={() => {
                     void mutate(kind);

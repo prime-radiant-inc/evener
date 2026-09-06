@@ -5,7 +5,7 @@ import {
 	stripMarker,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
 import type { InputAttachment } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
-import type { DraftImageData } from "./draftImages";
+import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type {
 	DraftDestination,
@@ -31,6 +31,18 @@ export class DraftDocument {
 	private listeners = new Set<() => void>();
 	private forgotten = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+
+	imagePreviews(
+		images: DraftImage[] = this.snapshot.record.images ?? [],
+	): InputAttachment[] {
+		return images.map((image) => {
+			const pending = this.unsavedImages.get(image.id);
+			if (pending) return pending;
+			const input = this.repository().imageInputs(this.destination, [image])[0];
+			if (!input) throw new Error("Saved image is unavailable.");
+			return input;
+		});
+	}
 
 	constructor(
 		private repository: () => Pick<
