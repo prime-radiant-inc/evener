@@ -10,6 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   AppState,
@@ -31,6 +32,7 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
@@ -542,6 +544,13 @@ export function ConversationScreen({
     hubName: string;
     client: NonNullable<typeof client>;
   } | null>(null);
+  const [activityContext, setActivityContext] = useState<{
+    hubId: string;
+    ref: string;
+    threadId: string;
+    hubName: string;
+    client: NonNullable<typeof client>;
+  } | null>(null);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [questionsOpen, setQuestionsOpen] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
@@ -709,22 +718,42 @@ export function ConversationScreen({
       headerRight: () => (
         <View style={styles.row}>
           <Action
-            disabled={!hasConversation}
+            disabled={!hasConversation || !connected}
             onPress={() => {
               const current = store.getState().conversation;
               if (!current || !client) return;
               Keyboard.dismiss();
-              setTaskContext({
+              const context = {
                 hubId: route.params.hubId,
                 ref: route.params.ref,
                 threadId: current.id,
-                hasTasks: current.tasks != null,
                 hubName: activeProfile?.name ?? "Hub",
                 client,
-              });
+              };
+              const tasks = () =>
+                setTaskContext({ ...context, hasTasks: current.tasks != null });
+              const activity = () => setActivityContext(context);
+              if (Platform.OS === "ios") {
+                ActionSheetIOS.showActionSheetWithOptions(
+                  {
+                    title: "Work",
+                    options: ["Tasks", "Activity", "Cancel"],
+                    cancelButtonIndex: 2,
+                  },
+                  (index) => {
+                    if (index === 0) tasks();
+                    else if (index === 1) activity();
+                  },
+                );
+              } else
+                Alert.alert("Work", undefined, [
+                  { text: "Tasks", onPress: tasks },
+                  { text: "Activity", onPress: activity },
+                  { text: "Cancel", style: "cancel" },
+                ]);
             }}
           >
-            Tasks
+            Work
           </Action>
           <Action
             disabled={!hasConversation}
@@ -741,6 +770,7 @@ export function ConversationScreen({
   }, [
     navigation,
     hasConversation,
+    connected,
     client,
     store,
     route.params.hubId,
@@ -977,7 +1007,8 @@ export function ConversationScreen({
           close={() => setComposerSetting(null)}
         />
       ) : null}
-      {taskContext?.hubId === route.params.hubId &&
+      {activeProfile?.id === route.params.hubId &&
+      taskContext?.hubId === route.params.hubId &&
       taskContext.ref === route.params.ref ? (
         <TasksSheet
           key={`${route.params.hubId}:${route.params.ref}`}
@@ -990,6 +1021,27 @@ export function ConversationScreen({
           connected={connected}
           hubName={taskContext.hubName}
           close={() => setTaskContext(null)}
+        />
+      ) : null}
+      {activeProfile?.id === route.params.hubId &&
+      activityContext?.hubId === route.params.hubId &&
+      activityContext.ref === route.params.ref ? (
+        <ActivitySheet
+          key={`${route.params.hubId}:${route.params.ref}`}
+          client={client ?? activityContext.client}
+          sessionRef={route.params.ref}
+          threadId={conversation?.id ?? activityContext.threadId}
+          connected={connected}
+          hubName={activityContext.hubName}
+          close={() => setActivityContext(null)}
+          openSession={(ref, title) => {
+            setActivityContext(null);
+            navigation.push("Conversation", {
+              hubId: route.params.hubId,
+              ref,
+              title,
+            });
+          }}
         />
       ) : null}
       {sessionOpen && conversation && controls ? (
