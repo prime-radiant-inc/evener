@@ -25,6 +25,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskBatch } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -771,7 +772,7 @@ export function ConversationScreen({
         await document.submit(async (text) => {
           store.getState().setDraft(text);
           const previous = store.getState().lastAcceptedMutation;
-          await store.getState()[kind](service, [{ type: "text", text }]);
+          await store.getState()[kind](service, buildComposerInput(text));
           const accepted = store.getState().lastAcceptedMutation;
           return (
             accepted != null && accepted !== previous && accepted.kind === kind
