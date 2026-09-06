@@ -242,7 +242,7 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.ThreadReadResponse{}, err
 			}
-			resp, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
+			resp, ok, pastErr := subscribedPastThreadReadResponse(ctx, cfg, sources, params)
 			if pastErr != nil {
 				return appwire.ThreadReadResponse{}, pastErr
 			}
@@ -254,7 +254,7 @@ func registerThreadHandlers(
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
 			if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
-				saved, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
+				saved, ok, pastErr := subscribedPastThreadReadResponse(ctx, cfg, sources, params)
 				if pastErr != nil {
 					return appwire.ThreadReadResponse{}, pastErr
 				}

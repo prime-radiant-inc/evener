@@ -47,16 +47,23 @@ sending, Android remained on the old snapshot despite showing Connected.
 This is not cross-hub leakage: the correct hub received the message, but the
 observer did not receive the live continuation.
 
-The current hub handler returns from both saved-transcript fallback paths in
-`cmd/evener-hub/app_rpc.go` before honoring thread/read's Subscribe flag. The
-existing `TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications` was extended
-locally with a second client that subscribes while cold. The actor receives the
-resumed event; the cold observer times out. The regression is deliberately
-uncommitted while its root-cause fix is in progress.
+Both saved-transcript fallback paths now capture the requested subscription on
+its stable local reference. Capture shares the hub's per-session resume lock,
+buffers notifications until the read response is queued, and rejects a saved
+fallback when a local relay route is already available. Reading a stopped
+session does not launch a daemon.
 
-The fix must honor cold subscriptions without launching a daemon just to read,
-preserve replacement/unsubscribe semantics, and close the snapshot/resume race.
-No polling workaround was added. This acceptance check remains failed.
+The two-client regression now passes. Reverting the handler calls reproduces
+both missing ownership and missed resumed-event failures. Additional network
+checks cover no-subscribe reads, additive and replacement subscriptions,
+failed replacement rollback, unsubscribe, and refusing saved fallback for a
+routable daemon. The hub suite passed (61.195 seconds); targeted tests also
+passed under the Go race detector.
+
+This is automated evidence only. A deterministic overlap test for snapshot
+capture versus resume, and both-platform cross-device E2E against a rebuilt
+isolated hub, remain required. The native acceptance check remains unverified
+after the fix. Production has not been restarted or changed.
 
 ## Further work
 
