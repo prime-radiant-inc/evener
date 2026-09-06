@@ -873,6 +873,14 @@ export function ConversationScreen({
             isCurrent: currentBinding,
             reasoning: () => store.getState().conversation,
             turn: () => store.getState().conversation,
+            openAside: (ref, title) => {
+              Keyboard.dismiss();
+              navigation.push("Conversation", {
+                hubId: route.params.hubId,
+                ref,
+                title,
+              });
+            },
             local: async (id) => {
               if (!currentBinding())
                 throw new CommandArgumentError(
@@ -918,7 +926,7 @@ export function ConversationScreen({
             },
           });
       if (!completed || !currentBinding()) return;
-      if (isLocalComposerCommand(completed)) return;
+      if (isLocalComposerCommand(completed) || completed === "aside") return;
       if (completed === "shutdown") {
         store.getState().close();
         service.close();

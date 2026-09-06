@@ -9,6 +9,7 @@ import {
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
+  ConversationForkActions,
   ConversationGoalActions,
   ConversationModelCatalog,
   ConversationService,
@@ -36,6 +37,7 @@ const commands = [
   { id: "steer", args: true, capability: "steer", label: "Steer" },
   { id: "queue", args: true, capability: "queue", label: "Queue" },
   { id: "drain-as-steer", capability: "steer", label: "Drain queue" },
+  { id: "aside", capability: "forkFromTurn", label: "Aside" },
 ] as const;
 
 export class CommandArgumentError extends Error {}
@@ -43,6 +45,7 @@ export class CommandArgumentError extends Error {}
 interface CommandContext {
   isCurrent(): boolean;
   local(command: LocalComposerCommand): Promise<void>;
+  openAside(ref: string, title: string): void;
   turn(): { activeTurnId?: string; queue: { revision: number } } | null;
   reasoning(): Pick<
     MobileConversation,
@@ -68,6 +71,7 @@ export async function submitComposerCommand(
     | "interrupt"
   > &
     ConversationGoalActions &
+    ConversationForkActions &
     ConversationModelCatalog,
   context: CommandContext,
 ): Promise<(typeof commands)[number]["id"] | null> {
@@ -83,6 +87,7 @@ export async function submitComposerCommand(
   const match = composerCommand(record.draft, record.images?.length);
   if (!match || !context.isCurrent()) return null;
   let operation: () => Promise<unknown>;
+  let afterSubmit = () => {};
   const id = match.command.id;
   if (isLocalComposerCommand(id)) {
     await context.local(id);
@@ -95,7 +100,16 @@ export async function submitComposerCommand(
         ? `/${id}: unknown value "${match.argsText.trim()}"`
         : `/${id} needs a value`,
     );
-  if (id === "steer" || id === "queue" || id === "drain-as-steer") {
+  if (id === "aside") {
+    operation = async () => {
+      const { thread } = await service.forkAside();
+      afterSubmit = () =>
+        context.openAside(
+          thread.evener.ref,
+          thread.name || thread.preview || "Aside",
+        );
+    };
+  } else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
     const turn = context.turn();
     if (!turn?.activeTurnId)
       throw new CommandArgumentError(`/${id}: no active turn`);
@@ -152,5 +166,6 @@ export async function submitComposerCommand(
     completed = match.command.id;
     return true;
   });
+  if (completed !== null && context.isCurrent()) afterSubmit();
   return completed;
 }
