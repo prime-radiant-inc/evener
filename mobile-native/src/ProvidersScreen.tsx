@@ -326,6 +326,25 @@ function Providers({
                     ) : (
                       <>
                         <Action
+                          disabled={
+                            state.busy ||
+                            state.loading ||
+                            !!state.credentialTest?.pending
+                          }
+                          onPress={() => {
+                            void model.testCredentials(instance.name);
+                          }}
+                        >
+                          {state.credentialTest?.provider === instance.name &&
+                          state.credentialTest.pending
+                            ? "Testing credentials…"
+                            : "Test credentials"}
+                        </Action>
+                        {state.credentialTest?.provider === instance.name &&
+                          state.credentialTest.result && (
+                            <Copy>{state.credentialTest.result.message}</Copy>
+                          )}
+                        <Action
                           disabled={state.busy || state.data?.writesRefused}
                           onPress={() => setConfiguration("edit")}
                         >
