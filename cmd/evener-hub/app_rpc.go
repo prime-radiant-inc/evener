@@ -450,17 +450,17 @@ func registerThreadHandlers(
 				return appwire.EmptyResponse{}, err
 			}
 			if parsed, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); parseErr == nil && parsed.SourceID != "" {
-				appserver.Unsubscribe(ctx, parsed.SourceID+":"+parsed.ThreadID)
+				appserver.UnsubscribeLifecycle(ctx, parsed.SourceID+":"+parsed.ThreadID)
 				return appwire.EmptyResponse{}, nil
 			}
-			appserver.Unsubscribe(ctx, "local:"+strings.TrimSpace(params.ThreadID))
+			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
 		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
-		appserver.Unsubscribe(ctx, relayKey)
+		appserver.UnsubscribeLifecycle(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

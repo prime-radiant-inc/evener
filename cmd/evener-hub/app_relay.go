@@ -54,6 +54,8 @@ type relayKeyState struct {
 }
 
 type hubThreadReadResult struct {
+	// relayKey is the acquired delivery owner, not the response's session ID.
+	relayKey          string
 	response          appwire.ThreadReadResponse
 	itemCandidates    appsource.ItemCandidateResult
 	hasItemCandidates bool
@@ -301,14 +303,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
 	}
-	registerSubscription := func(ctx context.Context, relayKey string, replace bool) bool {
+	registerSubscription := func(ctx context.Context, relayKey string, replace bool) error {
 		if cfg.RelayHooks.RegisterSubscription != nil {
-			return cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace)
+			if !cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace) {
+				return context.Canceled
+			}
+			return nil
 		}
-		if replace {
-			return appserver.ReplaceSubscriptions(ctx, relayKey)
-		}
-		return appserver.Subscribe(ctx, relayKey)
+		return appserver.SubscribeWithAdmission(ctx, relayKey, replace)
 	}
 	relayTarget := threadRelayTarget
 	var relayMu sync.Mutex
@@ -1139,7 +1141,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
 			return nil, err
 		}
-		handle, _, publish, release, err := acquireRelaySession(ctx, relaySource, source, params)
+		handle, state, publish, release, err := acquireRelaySession(ctx, relaySource, source, params)
 		if err != nil {
 			return nil, err
 		}
@@ -1161,6 +1163,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
 		if result.Handoff != nil {
 			read = &hubThreadReadResult{
+				relayKey: state.relayKey,
 				response: result.Response,
 				handoff:  result.Handoff,
 				release:  releaseCommand,
@@ -1195,20 +1198,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if read == nil || read.handoff == nil {
 			return true
 		}
-		sourceID := strings.TrimSpace(read.response.Thread.Source)
-		if ref, err := appwire.ParseRef(params.Ref); err == nil {
-			sourceID = ref.SourceID
-		}
-		if sourceID == "" {
-			sourceID = "local"
-		}
-		// Keyed on the response's Thread.ID rather than the request's
-		// ref.ThreadID: the daemon maps a stable ref back to the live session
-		// id before answering (server/appwire_runtime.go appThreadIDForRead),
-		// so the two coincide on every reachable path, and thread/unsubscribe
-		// resolves through the same mapping. Kept explicit so a future source
-		// that lets them diverge shows exactly where to look.
-		relayKey := sourceID + ":" + read.response.Thread.ID
+		relayKey := read.relayKey
 		captured, err := withDeletionTargetOwnership(
 			cfg,
 			params.Ref,
@@ -1263,7 +1253,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			return appwire.ThreadReadResponse{}, err
 		}
 		threadID := read.response.Thread.ID
-		relayKey := source.ID() + ":" + threadID
+		relayKey := read.relayKey
 		registered, err := withDeletionTargetOwnership(
 			cfg,
 			params.Ref,
@@ -1273,8 +1263,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if !read.handoff.Prepare() {
 					return false, appwire.SessionUnavailable("relay handoff could not be prepared")
 				}
-				if !registerSubscription(ctx, relayKey, params.ReplaceSubscription) {
-					return false, nil
+				if err := registerSubscription(ctx, relayKey, params.ReplaceSubscription); err != nil {
+					return false, err
 				}
 				if !read.finish(true) {
 					return false, appwire.SessionUnavailable("relay handoff could not be committed")
@@ -1359,8 +1349,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.BeforeExistingRegistration != nil {
 					cfg.RelayHooks.BeforeExistingRegistration(threadID)
 				}
-				if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
-					return false, context.Canceled
+				if err := registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription); err != nil {
+					return false, err
 				}
 				return true, nil
 			}
@@ -1424,9 +1414,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			cancelRelay()
 			return err
 		}
-		if !registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription) {
+		if err = registerSubscription(ctx, relayKey, subscribeParams.ReplaceSubscription); err != nil {
 			delete(relayedThreads, relayKey)
-			err = context.Canceled
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
 			cancelRelay()

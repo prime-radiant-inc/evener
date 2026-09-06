@@ -835,6 +835,73 @@ func Unsubscribe(ctx context.Context, threadID string) {
 	server.subs.Unsubscribe(conn.id, threadID)
 }
 
+type subscriptionLifecycleContextKey struct{}
+
+// UnsubscribeLifecycle uses the identity resolved at ordered request ingress.
+// Without a resolved identity, preserve the caller's raw delivery-key fallback.
+func UnsubscribeLifecycle(ctx context.Context, threadID string) {
+	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+	if conn == nil || threadID == "" {
+		return
+	}
+	key, _ := ctx.Value(subscriptionLifecycleContextKey{}).(string)
+	if key == "" {
+		Unsubscribe(ctx, threadID)
+		return
+	}
+	threadID = key
+	conn.cancelSubscriptionAdmissions(threadID)
+	conn.server.mu.Lock()
+	defer conn.server.mu.Unlock()
+	if conn.server.conns[conn.id] == conn {
+		conn.server.subs.UnsubscribeLifecycle(conn.id, threadID)
+	}
+}
+
+// SubscribeWithAdmission installs an immediate subscription and consumes the
+// request's admission at one boundary. Registration gates precede admissionMu,
+// matching capture; unsubscribe cannot pass eligibility before installation.
+func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool) error {
+	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+	if conn == nil {
+		return nil
+	}
+	if threadID == "" {
+		return context.Canceled
+	}
+	server := conn.server
+	if server.beforeSubscriptionRegistration != nil {
+		server.beforeSubscriptionRegistration()
+	}
+	conn.hydrationMu.Lock()
+	defer conn.hydrationMu.Unlock()
+	server.projectionMu.Lock()
+	defer server.projectionMu.Unlock()
+	server.deliveryMu.Lock()
+	defer server.deliveryMu.Unlock()
+	conn.admissionMu.Lock()
+	defer conn.admissionMu.Unlock()
+	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
+	admission, allowed := conn.claimSubscriptionAdmission(responseID)
+	if !allowed {
+		return appwire.SessionUnavailable("thread subscription is unavailable")
+	}
+	server.mu.RLock()
+	defer server.mu.RUnlock()
+	if server.conns[conn.id] != conn {
+		return context.Canceled
+	}
+	owner := threadID
+	if admission != nil {
+		owner = admission.threadID
+	}
+	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
+	if admission != nil {
+		delete(conn.pendingAdmissions, admission)
+	}
+	return nil
+}
+
 func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
@@ -973,7 +1040,11 @@ func captureSubscription(
 	}
 	server.nextHydrationGeneration++
 	generation := server.nextHydrationGeneration
-	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation)
+	owner := targetThreadID
+	if admission != nil {
+		owner = admission.threadID
+	}
+	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1270,6 +1341,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil {
 			if key, ok := resolve(msg); ok && key != "" {
 				c.cancelSubscriptionAdmissions(key)
+				ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, key)
 			}
 		}
 	}

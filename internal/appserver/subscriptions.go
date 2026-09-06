@@ -3,8 +3,15 @@ package appserver
 import "sync"
 
 type subscription struct {
-	connID     string
-	threadID   string
+	connID   string
+	threadID string
+	// lifecycleKey groups raw delivery aliases for connection-local unsubscribe.
+	lifecycleKey string
+	// rollback belongs to this buffering generation from beginBuffered onward,
+	// including the snapshot interval before a response finalizer exists. Its
+	// displaced entries share withdrawal marks with the finalizer's value copy.
+	// Release or replacement drops this metadata; no tombstones outlive it.
+	rollback   *subscriptionCaptureRollback
 	buffering  bool
 	generation uint64
 	cut        uint64
@@ -63,15 +70,47 @@ func (s *Subscriptions) Subscribe(connID, threadID string) {
 func (s *Subscriptions) Unsubscribe(connID, threadID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub, ok := s.byConn[connID][threadID]
-	if !ok {
-		return
+	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool { return sub.threadID == threadID })
+}
+
+// UnsubscribeLifecycle withdraws all delivery aliases owned by this lifecycle,
+// including subscriptions displaced into an unresolved capture's rollback.
+func (s *Subscriptions) UnsubscribeLifecycle(connID, lifecycleKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool { return sub.lifecycleKey == lifecycleKey })
+}
+
+func (s *Subscriptions) unsubscribeMatchingLocked(connID string, matches func(*subscription) bool) {
+	var withdraw func(*subscription)
+	withdraw = func(sub *subscription) {
+		if matches(sub) {
+			sub.withdrawn = true
+		}
+		if r := sub.rollback; r != nil {
+			for i := range r.connection.subscriptions {
+				withdraw(&r.connection.subscriptions[i])
+			}
+			if r.threadPrevious != nil {
+				withdraw(r.threadPrevious)
+			}
+		}
 	}
-	if sub.buffering {
-		sub.withdrawn = true
-		return
+	for threadID, sub := range s.byConn[connID] {
+		withdraw(sub)
+		if sub.withdrawn && !sub.buffering {
+			s.removeThreadLocked(connID, threadID)
+		}
 	}
-	s.removeThreadLocked(connID, threadID)
+}
+
+func (s *Subscriptions) subscribeOwned(connID, threadID, lifecycleKey string, replace bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if replace {
+		s.removeConnectionLocked(connID)
+	}
+	s.subscribeLocked(&subscription{connID: connID, threadID: threadID, lifecycleKey: lifecycleKey})
 }
 
 func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) {
@@ -83,7 +122,7 @@ func (s *Subscriptions) ReplaceConnectionSubscriptions(connID, threadID string) 
 	}
 }
 
-func (s *Subscriptions) beginBuffered(connID, threadID string, replace bool, generation uint64) subscriptionCaptureRollback {
+func (s *Subscriptions) beginBuffered(connID, threadID string, replace bool, generation uint64, lifecycleKeys ...string) subscriptionCaptureRollback {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rollback := subscriptionCaptureRollback{replace: replace}
@@ -98,11 +137,17 @@ func (s *Subscriptions) beginBuffered(connID, threadID string, replace bool, gen
 		}
 		s.removeThreadLocked(connID, threadID)
 	}
+	owner := threadID
+	if len(lifecycleKeys) != 0 {
+		owner = lifecycleKeys[0]
+	}
 	s.subscribeLocked(&subscription{
-		connID:     connID,
-		threadID:   threadID,
-		buffering:  true,
-		generation: generation,
+		lifecycleKey: owner,
+		rollback:     &rollback,
+		connID:       connID,
+		threadID:     threadID,
+		buffering:    true,
+		generation:   generation,
 	})
 	return rollback
 }
@@ -122,11 +167,10 @@ func (s *Subscriptions) withdrawBuffered(
 		s.removeConnectionLocked(connID)
 		for i := range rollback.connection.subscriptions {
 			sub := rollback.connection.subscriptions[i]
-			if sub.withdrawn || (current.withdrawn && sub.threadID == threadID) {
-				// The client explicitly unsubscribed this thread mid-capture;
-				// restoring it would resurrect a thread it asked to stop
-				// receiving. Everything else the capture displaced comes back
-				// unchanged.
+			if sub.withdrawn {
+				// Withdrawal marks reach displaced entries directly. The current
+				// generation may have a different lifecycle owner even when it
+				// shares this delivery key, so its mark cannot suppress this entry.
 				continue
 			}
 			s.subscribeLocked(&sub)
@@ -134,7 +178,7 @@ func (s *Subscriptions) withdrawBuffered(
 		return true
 	}
 	s.removeThreadLocked(connID, threadID)
-	if rollback.threadPrevious != nil && !current.withdrawn && !rollback.threadPrevious.withdrawn {
+	if rollback.threadPrevious != nil && !rollback.threadPrevious.withdrawn {
 		previous := *rollback.threadPrevious
 		s.subscribeLocked(&previous)
 	}
@@ -189,6 +233,7 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 			release = append(release, record)
 		}
 	}
+	sub.rollback = nil
 	sub.buffering = false
 	sub.buffer = nil
 	return release, true
@@ -255,6 +300,9 @@ func (s *Subscriptions) RemoveConnection(connID string) {
 }
 
 func (s *Subscriptions) subscribeLocked(sub *subscription) {
+	if sub.lifecycleKey == "" {
+		sub.lifecycleKey = sub.threadID
+	}
 	if s.byConn[sub.connID] == nil {
 		s.byConn[sub.connID] = map[string]*subscription{}
 	}
