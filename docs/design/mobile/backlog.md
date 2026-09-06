@@ -156,8 +156,9 @@ errors and consequential-action handling for each workflow.
 The hub-bound provider controller now has automated coverage for retained data,
 late responses after disposal, auth invalidation during reads, configuration write
 refusal, overlapping writes, uncertain-write reconciliation without replay, and
-pre-mutation read races. Native screens, credential testing, real-hub integration
-and both-platform manual acceptance remain unimplemented/unverified.
+pre-mutation read races. The first native list/detail/key-management screen now has [isolated-hub evidence](providers-evidence.md).
+Instance create/edit forms, credential testing, sign-in and the complete
+both-platform manual acceptance matrix remain open.
 
 Child of MOB-006. Implement the server-derived provider list, instance detail,
 create/edit/remove/default, credential test, set/clear stored key and logout.
