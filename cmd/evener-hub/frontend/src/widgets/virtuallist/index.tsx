@@ -1,5 +1,5 @@
 import { type ScrollToOptions, useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import { type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
+import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
 
@@ -139,6 +139,20 @@ export function VirtualList({
       : {}),
   });
 
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const intendedOffset = virtualizer.scrollOffset;
+    if (!anchorToEnd || !el || intendedOffset === null) return;
+    // Row measurement can request an end adjustment before React grows the
+    // sizer, so the browser clamps it to the old maximum. Complete that
+    // adjustment after the sizer commits, only while the virtualizer is
+    // following the end. A reader's position in history remains untouched.
+    if (totalSize - el.clientHeight - intendedOffset <= END_ANCHOR_THRESHOLD_PX && intendedOffset > el.scrollTop) {
+      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    }
+  }, [anchorToEnd, totalSize, virtualizer]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -157,7 +171,7 @@ export function VirtualList({
 
   return (
     <div ref={scrollRef} className={CLASS.root}>
-      <div className={CLASS.sizer} style={{ height: virtualizer.getTotalSize() }}>
+      <div className={CLASS.sizer} style={{ height: totalSize }}>
         {virtualizer.getVirtualItems().map((item) => (
           <div
             key={item.key}

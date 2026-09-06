@@ -298,6 +298,7 @@ async function waitForTranscriptSettled(): Promise<TranscriptScrollMetrics> {
         `transcript harness: transcript never settled into an overflow within 15s ` +
           `(turns=${modelTurnCount}/${INITIAL_TURN_COUNT}, section=${section !== null}, ` +
           `quiescentFrames=${quiescentFrames}, ` +
+          `metrics=${el instanceof HTMLElement ? JSON.stringify(metrics()) : "unmounted"}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")})`,
       );
     }
@@ -406,6 +407,7 @@ async function clickPillAndSettle(): Promise<
 
 declare global {
   interface Window {
+    growMeasuredRow: typeof growMeasuredRow;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     transcriptScrollMetrics: typeof metrics;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
@@ -414,6 +416,18 @@ declare global {
   }
 }
 
+/** Grow a measured row above the viewport after initial scrolling settles. */
+async function growMeasuredRow(): Promise<TranscriptScrollMetrics> {
+  const scroller = scrollElement();
+  const row = scroller.querySelector<HTMLElement>("[data-index]");
+  if (!row) throw new Error("transcript harness: measured row is not rendered");
+  if (row.getBoundingClientRect().bottom >= scroller.getBoundingClientRect().top)
+    throw new Error("transcript harness: growth target is not above the viewport");
+  row.style.paddingBottom = "21px";
+  return waitForTranscriptSettled();
+}
+
+window.growMeasuredRow = growMeasuredRow;
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
