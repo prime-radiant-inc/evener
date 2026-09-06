@@ -275,12 +275,19 @@ function delegateSendTranscriptRef(item: ItemModel): string | undefined {
 // metadata (delegate_id echo, started_job_id, "running in background") is
 // noise on a one-line summary and stays out of it.
 function delegateSendSummary(item: ItemModel): string {
+  return delegateSendBase(item) + delegateSendStatusSuffix(item);
+}
+
+function delegateSendBase(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   const target = clip(delegateSendTarget(args), ID_CLIP);
-  const base = target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+  return target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
+}
+
+function delegateSendStatusSuffix(item: ItemModel): string {
   const footer = delegateSendFooter(item.output ?? "");
   const status = footer ? statusWordFromText(footer.text) : undefined;
-  return status ? `${base} · ${status}` : base;
+  return status ? ` · ${status}` : "";
 }
 
 // DelegateSendBody renders the exchange as a two-party conversation through
@@ -334,6 +341,16 @@ registerToolRenderer({
   icon: "send",
   summary: delegateSendSummary,
   openTranscriptRef: delegateSendTranscriptRef,
+  // The summary quotes the delegate target verbatim before the status meta
+  // ("Sent a message to delegate <id> · <status>"), so the "open transcript"
+  // control rides INLINE between the delegate it opens and the running-state
+  // words that describe it (toolRenderers.ts's openTranscriptInline
+  // contract) - the complete base prefix, matching summary()'s own text
+  // exactly, so ToolRow can verify it with startsWith rather than search for
+  // it. Undefined when there is no transcript to open, so the row never
+  // builds a dead anchor-split wrapper for a button it will render nothing
+  // for (ToolCallItem's own fileDocParams-gating idiom).
+  openTranscriptInline: (item) => (delegateSendTranscriptRef(item) !== undefined ? delegateSendBase(item) : undefined),
   body: DelegateSendBody,
 });
 

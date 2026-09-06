@@ -16,6 +16,7 @@ import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
+import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -991,6 +992,32 @@ test("a read_file card's Open beside control rides inline between the file name 
   // is head+tail together - and the control sits right after it.
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe("Read /home/proj/src/widgets/sheet/sheet.test.tsx");
   expect(tail.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+// A delegate_send row's Open transcript control rides INLINE between the
+// delegate target and the running-state meta - next to the item it opens,
+// not off after the status words.
+test("a delegate_send card's Open transcript control rides inline between the delegate target and the status meta", () => {
+  const delegateSendItem = item({
+    toolName: "delegate_send",
+    argumentsJSON: JSON.stringify({ to: "dlg_abc123", message: "status?" }),
+    output: "on it\n[delegate_id dlg_abc123 · delivered · running]",
+    raw: { action: "steered", running_in_background: true, transcript_ref: "local:child1" },
+  });
+  // Intent-less rows never clamp (the middle-truncation split is the
+  // intent-bearing demoted line's), so the anchor split is the same
+  // collapsed or expanded: assert the control's siblings in both states.
+  renderTools(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
+  const trailing = screen.getByTestId("tool-row-trailing");
+  expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
+  expect(trailing.previousSibling?.textContent).toBe("Sent a message to delegate dlg_abc123");
+  expect(trailing.nextSibling?.textContent).toBe(" · running");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Sent a message to delegate dlg_abc123 · running");
+  cleanup();
+  render(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
+  const openTrailing = screen.getByTestId("tool-row-trailing");
+  expect(openTrailing.previousSibling?.textContent).toBe("Sent a message to delegate dlg_abc123");
+  expect(openTrailing.nextSibling?.textContent).toBe(" · running");
 });
 
 // --- summarySuffix (kata h70z): a descriptor may append text to the

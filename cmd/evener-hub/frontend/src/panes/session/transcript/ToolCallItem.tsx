@@ -172,7 +172,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // ToolRow verifies it with startsWith, never searches, kata ledger #97).
   // ToolRow falls back to the end placement when the value isn't a literal
   // prefix of the summary.
-  const trailingAfter = canOpenBeside ? descriptor.openBesideInline?.(item) : undefined;
+  const trailingAfterBase = canOpenBeside ? descriptor.openBesideInline?.(item) : undefined;
   // A child-targeting tool (delegate_send today) exposes its target's
   // transcript ref via descriptor.openTranscriptRef; ToolCallItem turns that
   // into the same "open ⤢" control delegate rows use, riding the
@@ -183,6 +183,16 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     openTranscriptRef !== undefined ? (
       <OpenTranscriptButton transcriptRef={openTranscriptRef} parentRef={sessionRef} />
     ) : null;
+  // The summary quotes the delegate target verbatim before the status meta
+  // ("Sent a message to delegate <id> · <status>"), so the control rides
+  // INLINE between the delegate it opens and the running-state words via the
+  // descriptor's openTranscriptInline anchor (the trailingAfter mechanism
+  // read_file's openBesideInline uses) - never off after the status meta.
+  // Gated on a defined ref like trailingAfterBase's own canOpenBeside gate:
+  // ToolRow must never see a truthy trailingAfter for a button that will
+  // render nothing.
+  const trailingAfter =
+    trailingAfterBase ?? (openTranscriptRef !== undefined ? descriptor.openTranscriptInline?.(item) : undefined);
   const trailingControls =
     openBesideButton !== null || openTranscriptButton !== null ? (
       <>
