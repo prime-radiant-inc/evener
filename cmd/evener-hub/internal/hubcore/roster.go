@@ -138,7 +138,8 @@ type Roster struct {
 	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
 	// refreshGen rejects a completed probe pass that started before a newer
 	// refresh attempt, while allowing probes to run without holding mu.
-	refreshGen uint64
+	refreshGen  uint64
+	refreshDone chan struct{}
 
 	// procAlive reports whether a daemon PID is still running. A failed AppWire
 	// probe to a live process means the daemon is busy, not gone, so its session
@@ -300,7 +301,10 @@ func (r *Roster) Refresh() {
 	r.mu.Lock()
 	r.refreshGen++
 	generation := r.refreshGen
+	done := make(chan struct{})
+	r.refreshDone = done
 	r.mu.Unlock()
+	defer close(done)
 
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
@@ -442,6 +446,24 @@ func (r *Roster) Refresh() {
 	}
 	if changed && onChange != nil {
 		onChange()
+	}
+}
+
+// RefreshAndWait waits for any superseding refresh before callers inspect
+// ownership. A discarded older probe pass is not a published snapshot.
+func (r *Roster) RefreshAndWait() {
+	r.Refresh()
+	for {
+		r.mu.RLock()
+		generation, done := r.refreshGen, r.refreshDone
+		r.mu.RUnlock()
+		<-done
+		r.mu.RLock()
+		current := generation == r.refreshGen
+		r.mu.RUnlock()
+		if current {
+			return
+		}
 	}
 }
 

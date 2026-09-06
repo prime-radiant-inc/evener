@@ -1409,9 +1409,15 @@ async function publishAndReconcileThreadHydration(
     // does not: a blockedUnknown record absent from every authoritative set
     // was never journaled, so it returns to dispatch here rather than parking
     // forever behind an outage that has since recovered (kata gwea).
-    // An incompatible daemon contributes no receipt history to its saved
-    // transcript fallback, so absence in that snapshot proves nothing.
-    if (published.status.type !== "restartRequired") {
+    // Saved snapshots contain no authoritative daemon receipt history, even
+    // after an incompatible daemon has been stopped. Persist uncertainty so
+    // reopening that saved snapshot cannot release an already accepted send.
+    if (published.status.type === "restartRequired") {
+      for (const record of await runtime.storage.listOutbox(ref)) {
+        if (record.state === "submitting") await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      }
+      notifyMutationPersistence([ref]);
+    } else if (published.status.type !== "notLoaded") {
       await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
     }
     await refreshMutationPins(runtime, [ref]);

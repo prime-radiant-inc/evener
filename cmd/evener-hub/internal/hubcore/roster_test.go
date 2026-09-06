@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -613,6 +614,7 @@ type overlappingRefreshProber struct {
 	firstStarted  chan struct{}
 	secondStarted chan struct{}
 	releaseFirst  chan struct{}
+	releaseSecond chan struct{}
 }
 
 func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
@@ -623,6 +625,9 @@ func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
 		return ProbeResult{SessionID: "parent", Status: "old", RunningSubagentIDs: []string{"old-child"}, OK: true}
 	case 2:
 		close(p.secondStarted)
+		if p.releaseSecond != nil {
+			<-p.releaseSecond
+		}
 		return ProbeResult{SessionID: "parent", Status: "new", RunningSubagentIDs: []string{"new-child"}, OK: true}
 	default:
 		return ProbeResult{SessionID: "parent", Status: "unexpected", OK: true}
@@ -957,4 +962,33 @@ func fuzzScenarioNewRosterWithEntries(t *testing.T) {
 	if e, ok := r.Find(""); ok {
 		t.Fatalf("Find(\"\") = {PID:%d}, want not found", e.PID)
 	}
+}
+
+func TestRosterOwnershipWaitsForSupersedingRefresh(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{}), releaseSecond: make(chan struct{})}
+		r := NewRoster(dir, prober)
+		ownerDone := make(chan struct{})
+		go func() { r.RefreshAndWait(); close(ownerDone) }()
+		<-prober.firstStarted
+		backgroundDone := make(chan struct{})
+		go func() { r.Refresh(); close(backgroundDone) }()
+		<-prober.secondStarted
+		close(prober.releaseFirst)
+		synctest.Wait()
+		select {
+		case <-ownerDone:
+			t.Error("ownership check returned before the superseding refresh published")
+		default:
+		}
+		close(prober.releaseSecond)
+		<-ownerDone
+		<-backgroundDone
+		entry, ok := r.Find("parent")
+		if !ok || entry.Status != "new" {
+			t.Fatalf("ownership snapshot=%+v, found=%v", entry, ok)
+		}
+	})
 }

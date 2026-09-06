@@ -32,7 +32,7 @@ var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
 	hubResolveLaunch   = launchconfig.Resolve
 	hubParseModelRef   = cmdutil.ParseModelRef
-	hubRosterRefresh   = func(r *hubcore.Roster) { r.Refresh() }
+	hubRosterRefresh   = func(r *hubcore.Roster) { r.RefreshAndWait() }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
