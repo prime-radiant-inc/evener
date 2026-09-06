@@ -274,6 +274,7 @@ describe("conversation-owned session controls", () => {
     await controls.setReasoningEffort("high");
     settings.reasoningEffortLevels = ["low", "high"];
     settings.supportsReasoning = false;
+    settings.reasoningEffortLevels = [];
     await controls.setReasoningEffort("high");
     settings.supportsReasoning = true;
     controls.dispose();
@@ -389,4 +390,29 @@ describe("conversation-owned session controls", () => {
     expect(await controls.changeModel("one", "model")).toBe(true);
     expect(applied).toEqual(["model"]);
   });
+});
+
+it("restores session-default reasoning and uses the current web fallback ladder", async () => {
+  const requests: string[] = [];
+  const settings = {
+    supportsReasoning: true,
+    reasoningEffort: "high",
+    reasoningEffortLevels: [] as string[],
+  };
+  const controls = new SessionControls(
+    await boundary({
+      reasoning: async (effort) => {
+        requests.push(effort);
+      },
+    }),
+    async () => {},
+    () => {},
+    () => true,
+    () => settings,
+    () => true,
+  );
+  await controls.setReasoningEffort("");
+  await controls.setReasoningEffort("medium");
+  await controls.setReasoningEffort("invented");
+  expect(requests).toEqual(["", "medium"]);
 });
