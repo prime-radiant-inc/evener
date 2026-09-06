@@ -2,6 +2,7 @@ import {
   findBuiltinArgument,
   matchBuiltinInvocation,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/builtinInvocation";
+import { mergeSlashCommands } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
 import type { ThreadClearResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import {
   effortLabel,
@@ -43,6 +44,21 @@ const commands = [
   { id: "aside", capability: "forkFromTurn", label: "Aside" },
   { id: "clear", capability: "clear", label: "Clear" },
 ] as const;
+
+/** Completion and submission share one supported-command registry. */
+export function builtinComposerItems(
+  capabilities: Partial<MobileConversation["capabilities"]>,
+) {
+  return mergeSlashCommands(
+    commands
+      .filter(
+        (command) =>
+          command.capability === null || capabilities[command.capability],
+      )
+      .map((command) => ({ id: command.id, hint: command.label })),
+    [],
+  );
+}
 
 export class CommandArgumentError extends Error {}
 
