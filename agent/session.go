@@ -98,10 +98,15 @@ type Session struct {
 	// them; a shared one belongs to the live parent and is left alone. The child
 	// records it because a teardown can reach a child no parent bookkeeping names
 	// — a runtime the stable controller holds for its own close.
-	ownsEnv   bool
-	clock     clock.Clock
-	stateDir  string
-	installID string
+	ownsEnv bool
+	// parentSharedEnv is the environment a child was handed when it is the live
+	// parent's own object (ownsEnv false) — the one environment this session must
+	// never settle and whose scratch it must never take. Nil on a root session and
+	// on a child whose environment was built for it.
+	parentSharedEnv execenv.ExecutionEnvironment
+	clock           clock.Clock
+	stateDir        string
+	installID       string
 	// origin marks how the session was launched: "test" for agentic-testing
 	// runs (set from EVENER_SESSION_ORIGIN on fresh create), empty for normal
 	// sessions. Preserved across resume from the persisted SessionMeta.Origin.

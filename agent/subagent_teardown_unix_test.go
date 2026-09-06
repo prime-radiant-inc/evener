@@ -600,3 +600,153 @@ func TestDiscardedRestoreCandidateDisposesItsCloneScratch(t *testing.T) {
 		t.Fatalf("the root's process after release: %v", err)
 	}
 }
+
+// A delegate spawned with neither a working dir nor a box of its own runs on
+// its parent's very environment object, and it keeps manage_worktree, so it can
+// enter a worktree from there. The environment it enters is a clone the child
+// built for itself, whatever it started on, and the scratch that clone
+// provisions is the child's own: its teardown is the only thing that will ever
+// reach that lease. It has to release it — while leaving the parent's own
+// environment alone, scratch and process table alike.
+func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
+	r := newWorktreeRepo(t)
+	parent := r.s
+	shared := currentLocalEnv(t, parent)
+	pid, done, release := startInFlightProcess(t, shared)
+	sharedScratch := heldParentScratch(t, shared)
+	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	child := prepared.sub.sess
+	if child.currentEnv() != parent.currentEnv() {
+		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
+	}
+	if child.ownsEnv {
+		t.Fatal("the spawned child recorded that it owns the parent's environment; this test would prove nothing")
+	}
+	child.mu.Lock()
+	child.worktreeGitVersionOK = true
+	child.stateDir = r.stateDir
+	child.mu.Unlock()
+
+	rt := child.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("registry is missing manage_worktree")
+	}
+	if _, err := rt.Exec(t.Context(), child.currentEnv(), map[string]any{"operation": "switch", "path": sibling}); err != nil {
+		t.Fatalf("switch by path onto the sibling worktree: %v", err)
+	}
+	clone := currentLocalEnv(t, child)
+	if clone == shared {
+		t.Fatal("the switch left the child on the parent's environment; this test would prove nothing")
+	}
+	if _, err := clone.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand on the entered clone: %v", err)
+	}
+	scratch := clone.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the entered clone minted no session scratch, so there is nothing to release")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatal("the entered clone's scratch lease is not held before the child's teardown")
+	}
+
+	teardownChildSession(context.Background(), child, retainChildScratch)
+
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("the child's teardown removed the entered clone's scratch %s, want it retained for the handoff: %v", scratch, err)
+	}
+	if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the entered clone's scratch %s lease is still held after the shared child's teardown", scratch)
+	}
+	assertParentScratchUntouched(t, "the shared child's teardown", sharedScratch)
+	assertInFlightProcessSurvived(t, "the shared child's teardown", pid, done)
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the parent's process after release: %v", err)
+	}
+}
+
+// The same shared-environment child must not take the scratch OFF the
+// environment it shares with its still-working parent: the parent is working in
+// that directory, and a child that carried it into a worktree would silently
+// change the parent's scratch and then release a lease the parent still needs.
+// The entered clone provisions one of its own, an exit hands it to nobody, and
+// the child's teardown settles the clone it left behind — the parent's scratch
+// is the parent's throughout.
+func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
+	r := newWorktreeRepo(t)
+	parent := r.s
+	shared := currentLocalEnv(t, parent)
+	if _, err := shared.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand to mint the parent's scratch: %v", err)
+	}
+	parentScratch := heldParentScratch(t, shared)
+	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	child := prepared.sub.sess
+	if child.currentEnv() != parent.currentEnv() {
+		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
+	}
+	if child.ownsEnv {
+		t.Fatal("the spawned child recorded that it owns the parent's environment; this test would prove nothing")
+	}
+	child.mu.Lock()
+	child.worktreeGitVersionOK = true
+	child.stateDir = r.stateDir
+	child.mu.Unlock()
+
+	rt := child.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("registry is missing manage_worktree")
+	}
+	if _, err := rt.Exec(t.Context(), child.currentEnv(), map[string]any{"operation": "switch", "path": sibling}); err != nil {
+		t.Fatalf("switch by path onto the sibling worktree: %v", err)
+	}
+	clone := currentLocalEnv(t, child)
+	if clone == shared {
+		t.Fatal("the switch left the child on the parent's environment; this test would prove nothing")
+	}
+	if _, err := clone.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand on the entered clone: %v", err)
+	}
+	cloneScratch := clone.SessionScratchDir()
+	if cloneScratch == "" {
+		t.Fatal("the entered clone minted no session scratch, so there is nothing to settle")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cloneScratch) })
+	if cloneScratch == parentScratch {
+		t.Errorf("the entered clone's scratch is the parent's own %s, want a scratch of its own", parentScratch)
+	}
+
+	if _, err := rt.Exec(t.Context(), child.currentEnv(), map[string]any{"operation": "exit"}); err != nil {
+		t.Fatalf("exit back to the parent's environment: %v", err)
+	}
+	if got := shared.SessionScratchDir(); got != parentScratch {
+		t.Errorf("the child's exit changed the parent's environment scratch to %q, want its own %q", got, parentScratch)
+	}
+	assertParentScratchUntouched(t, "the child's exit", parentScratch)
+
+	teardownChildSession(context.Background(), child, retainChildScratch)
+
+	if _, err := os.Stat(cloneScratch); err != nil {
+		t.Errorf("the child's teardown removed the entered clone's scratch %s, want it retained for the handoff: %v", cloneScratch, err)
+	}
+	if scratchLeaseHeld(t, cloneScratch) {
+		t.Errorf("the entered clone's scratch %s lease is still held after the child's teardown", cloneScratch)
+	}
+	assertParentScratchUntouched(t, "the shared child's teardown", parentScratch)
+}

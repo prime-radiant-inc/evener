@@ -193,33 +193,64 @@ const (
 //
 // Invariant: a session runs Cleanup only on an environment whose process table
 // it constructed, at its own close, and never on a child's. A child's
-// environment is either the parent's own (a delegate with neither a working
-// dir nor a box of its own) or a WithWorkingDirectory clone built for it, and a
-// clone shares the parent's process table by pointer, so Cleanup on either one
-// signals the parent's in-flight tools. A child's own processes end without it:
-// its job manager stops its shells and cancellation ends its tool commands at
+// environment is the parent's own (a delegate with neither a working dir nor a
+// box of its own), a WithWorkingDirectory clone built for it at spawn, or — a
+// delegate on the parent's own environment can still build one mid-life by
+// entering a worktree — a clone the child built for itself later. Every clone
+// shares the process table it was cloned from by pointer, so Cleanup on one
+// signals that table's live owner. A child's own processes end without it: its
+// job manager stops its shells and cancellation ends its tool commands at
 // close, and whatever survives is reaped when the table's owner closes. What a
-// child owns outright is its clone's scratch — the sandbox-provisioned dir and
-// the one an unsandboxed clone minted on its first command — and that is
+// child owns outright is its clone's scratch — the sandbox-provisioned dir, the
+// one an unsandboxed clone minted on its first command, and the one a
+// shared-environment child minted after entering a worktree — and that is
 // released here, both kinds together, per scratch: retained on a handoff,
-// disposed when the child is dropped. A shared environment is left untouched
-// in every respect: the parent is still working in it. Which of the two the
-// child runs on is the child's own record (Session.ownsEnv), so a teardown
-// reaching a child no parent bookkeeping names still settles it correctly.
+// disposed when the child is dropped. The parent's own environment is left
+// untouched in every respect: the parent is still working in it. Which
+// environment (if any) a teardown settles is Session.environmentOwnedAtTeardown's
+// decision, so a teardown reaching a child no parent bookkeeping names still
+// settles it correctly.
 func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
 	if sess == nil {
 		return
 	}
 	sess.close(ctx, false)
-	releaseOwnedChildEnvironment(sess.currentEnv(), sess.ownsEnv, scratch)
+	// Every entry is a clone the child built for itself by entering or switching
+	// worktrees and then swapped away from: no child close runs the cleanupEnv
+	// block that drains sess.abandonedEnvs, so this is the only teardown that
+	// reaches them. Retaining releases their leases without touching any process
+	// table — the parent's own object can never be in this list
+	// (recordAbandonedEnvironmentLocked excludes it by construction).
+	sess.retainAbandonedEnvironmentScratch()
+	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
+}
+
+// environmentOwnedAtTeardown returns the environment this session's own
+// teardown settles, or nil when the session is still holding the one its live
+// parent works in. Ownership is not frozen at spawn: a child handed its
+// parent's own environment builds one of its own the moment it enters a
+// worktree, and that clone's scratch is the child's — nothing else will ever
+// reach it. The parent's object is the one thing this never names.
+func (s *Session) environmentOwnedAtTeardown() execenv.ExecutionEnvironment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ownsEnv {
+		return s.env
+	}
+	if s.parentSharedEnv == nil || s.env == s.parentSharedEnv {
+		return nil
+	}
+	return s.env
 }
 
 // releaseOwnedChildEnvironment is teardownChildSession's environment step on
 // its own, for the one child close that is not a close(): a restore candidate
 // nothing adopted is discarded by discardRestoredCandidate, which settles the
 // candidate's own resources and then makes exactly this decision for its env.
-func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool, scratch childScratchDisposition) {
-	if !ownsEnv {
+// env is nil when the child is still holding its parent's own environment —
+// there is nothing for this teardown to settle.
+func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, scratch childScratchDisposition) {
+	if env == nil {
 		return
 	}
 	if scratch == disposeChildScratch {
@@ -228,6 +259,20 @@ func releaseOwnedChildEnvironment(env execenv.ExecutionEnvironment, ownsEnv bool
 	}
 	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
 		local.RetainSessionScratch()
+	}
+}
+
+// recordEnvironmentOwnership records whether env was built FOR this child
+// (ownsFresh) or is the live parent's own object it was handed instead. A
+// child that does not own env keeps a reference to it in parentSharedEnv so a
+// later teardown — including one that finds env swapped for a clone the child
+// built for itself mid-life — knows which environment, if either, is its own
+// to settle. Both call sites write this before the session is published
+// anywhere else reachable, so no lock is needed.
+func (s *Session) recordEnvironmentOwnership(env execenv.ExecutionEnvironment, ownsFresh bool) {
+	s.ownsEnv = ownsFresh
+	if !ownsFresh {
+		s.parentSharedEnv = env
 	}
 }
 
@@ -1008,7 +1053,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	// The child owns a fresh env iff we re-rooted to a lane and/or enforced a
 	// per-delegate sandbox; otherwise subEnv is the shared parent env.
-	subSess.ownsEnv = ownsFreshEnv
+	subSess.recordEnvironmentOwnership(subEnv, ownsFreshEnv)
 	disposeUnadopted := func() {
 		disposeUnadoptedSubagentSession(subSess)
 	}

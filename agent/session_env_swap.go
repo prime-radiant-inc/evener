@@ -65,9 +65,19 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// after them would find next already owning a fresh one, keep it, and retain
 	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an
 	// extra retained directory per enter.
+	//
+	// A session running on its parent's own environment object (parentSharedEnv)
+	// is exempt from the move in both directions: it neither takes the scratch
+	// the parent is working in (current == shared, an enter) nor hands its own
+	// clone's scratch off to the parent (next == shared, an exit). The clone
+	// provisions its own scratch on its first command instead, and the child's
+	// own teardown is what settles it — moving it here would either steal the
+	// live parent's scratch out from under it or leave the parent holding a
+	// lease that belongs to a session already gone.
 	s.mu.Lock()
 	closing := s.closing
 	current, _ := s.env.(*execenv.LocalExecutionEnvironment)
+	shared := s.parentSharedEnv
 	var admission envWorkID
 	if !closing {
 		admission = s.registerEnvWorkLocked("environment swap to " + next.WorkingDirectory())
@@ -77,7 +87,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return errSwapWhileClosing
 	}
 	defer s.endEnvWork(admission)
-	if current != nil {
+	if current != nil && shared != current && shared != next {
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks

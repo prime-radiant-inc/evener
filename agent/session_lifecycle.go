@@ -581,11 +581,15 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
 // installed over, when the session can no longer reach it: not the environment
-// just installed, and not the one an enter parked (worktreeRestoreEnv, which
-// close retains separately). The clone between two enters is the case that
-// matters — a switch does not re-park, so the environment the session came from
-// is dropped from every session reference while a child spawned in it still
-// holds the object and can mint a scratch there afterwards.
+// just installed, not the one an enter parked (worktreeRestoreEnv, which close
+// retains separately), and not the live parent's own environment
+// (parentSharedEnv) — a session on its parent's own environment never records
+// it as one of its own abandoned clones, structurally rather than as a
+// consequence of enter always parking it first. The clone between two enters
+// is the case that matters otherwise — a switch does not re-park, so the
+// environment the session came from is dropped from every session reference
+// while a child spawned in it still holds the object and can mint a scratch
+// there afterwards.
 //
 // The caller holds s.mu and has already run the swap's record, so
 // worktreeRestoreEnv is the parked environment this swap decided on. An
@@ -593,7 +597,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 // scan keeps that true by construction rather than by trust, so the slice is
 // bounded by the number of worktree switches a session actually made.
 func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExecutionEnvironment) {
-	if prior == nil || prior == next || prior == s.worktreeRestoreEnv {
+	if prior == nil || prior == next || prior == s.worktreeRestoreEnv || prior == s.parentSharedEnv {
 		return
 	}
 	if slices.Contains(s.abandonedEnvs, prior) {
@@ -607,12 +611,16 @@ func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExe
 // directories for the handoff, and retires their file-tool layers through the
 // drain — RetainSessionScratch does both.
 //
-// Only close calls it, after the current environment's Cleanup and for the same
-// reason the parked environment's retain runs there: an abandoned environment
-// shares the current clone's process table, so its processes are already reaped
-// and running Cleanup on it would reap that table a second time. What is left on
+// close calls it after the current environment's Cleanup, for the same reason
+// the parked environment's retain runs there: an abandoned environment shares
+// the current clone's process table, so its processes are already reaped and
+// running Cleanup on it would reap that table a second time. What is left on
 // it is what a shared child minted after the session moved on, which nothing
-// else will ever release.
+// else will ever release. teardownChildSession also calls it, unconditionally
+// and without a Cleanup of its own: a session whose environment is its live
+// parent's own never runs cleanupEnv at all, so this is the only place that
+// ever drains a worktree clone such a child built for itself and then swapped
+// away from.
 func (s *Session) retainAbandonedEnvironmentScratch() {
 	s.mu.Lock()
 	abandoned := s.abandonedEnvs
@@ -639,13 +647,13 @@ func (s *Session) retainParkedWorktreeEnvironmentScratch() {
 }
 
 // discardRestoredCandidate tears down a restore candidate nothing ever adopted.
-// The candidate's own ownsEnv says whether its execution environment is one
-// built FOR it (a working-dir re-root and/or a per-delegate box) rather than
-// the parent's own: prepareSubagentEnvironment returns the parent's environment
-// untouched when the delegate needs neither, and a shared environment belongs
-// to the live parent still working in it. It is the same distinction close()
-// makes before retaining a child's scratch, read here so an aborted candidate
-// never deletes a scratch dir out from under its parent.
+// The candidate's own environmentOwnedAtTeardown says whether its execution
+// environment is one built FOR it (a working-dir re-root and/or a per-delegate
+// box) rather than the parent's own: prepareSubagentEnvironment returns the
+// parent's environment untouched when the delegate needs neither, and a shared
+// environment belongs to the live parent still working in it. It is the same
+// distinction close() makes before retaining a child's scratch, read here so an
+// aborted candidate never deletes a scratch dir out from under its parent.
 func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
@@ -677,7 +685,7 @@ func (s *Session) discardRestoredCandidate() {
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		releaseOwnedChildEnvironment(s.currentEnv(), s.ownsEnv, disposeChildScratch)
+		releaseOwnedChildEnvironment(s.environmentOwnedAtTeardown(), disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
