@@ -355,6 +355,23 @@ naming the instance and "stored credential".
 None. The `evener providers` commands are untouched; the docs note that the
 same value can be placed in `credentials.toml` by hand.
 
+### 4.6 TUI (amended 2026-09-06)
+
+Originally out of scope: the credentials panel had no multi-line input, so
+Enter on a `credentialJson` instance showed a notice naming the web hub as
+the place to paste (roborev round 9 of PR #879). That notice is gone. Enter
+now opens a paste prompt and stores the document through the same
+`evener/auth/credentialJson/set` the hub calls.
+
+A terminal delivers a bracketed paste as one key message carrying every
+rune, newlines included, so a pretty-printed JSON document arrives whole and
+its newlines never reach the submit branch. The prompt also accepts the path
+to the file holding the document, which is how a terminal that does not
+bracket its pastes gets one in; the path is read on the machine the user
+typed it on, not the hub's, and the field keeps path completion for it. The
+field never echoes pasted material — it renders as a character count — while
+a typed path stays visible.
+
 ## 5. End-to-end flows the hub must support after this change
 
 1. **Express key.** Settings → Credentials → Add provider instance → base

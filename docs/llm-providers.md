@@ -517,9 +517,11 @@ tracked as
 else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-default
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
-pasted in the hub's instance sheet or written into `credentials.toml`;
-other credential types, such as `external_account`, are refused), which
-outranks the ADC file. Requests authenticated with user credentials — an
+pasted in the hub's instance sheet, pasted into the TUI's credentials panel
+with Enter on the instance — which also takes the path to the file, for a
+terminal that does not bracket its pastes — or written into
+`credentials.toml`; other credential types, such as `external_account`, are
+refused), which outranks the ADC file. Requests authenticated with user credentials — an
 `authorized_user` ADC file or a stored `authorized_user` JSON — carry
 `x-goog-user-project` = `GOOGLE_VERTEX_PROJECT`, which such credentials need
 for calls that have no project in their path (the model listing).

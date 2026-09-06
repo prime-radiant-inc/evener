@@ -1,6 +1,7 @@
 package tuipick
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +23,13 @@ type TextInputModal struct {
 	prompt string
 	input  string
 	mask   bool
-	paths  bool
-	done   bool
-	width  int
+	// summarize renders a value that is plainly pasted material — multi-line
+	// or long — as a character count instead of the value itself, so a
+	// credential is never echoed while a typed path stays visible.
+	summarize bool
+	paths     bool
+	done      bool
+	width     int
 }
 
 func NewTextInputModal(prompt, tag string) TextInputModal {
@@ -45,6 +50,17 @@ func NewPathTextInputModal(prompt, tag, input string) TextInputModal {
 
 func NewTextInputModalMasked(prompt, tag string) TextInputModal {
 	return TextInputModal{prompt: prompt, tag: tag, mask: true}
+}
+
+// NewCredentialPasteModal takes a credential the user pastes whole — a
+// terminal delivers a bracketed paste as one KeyRunes message carrying every
+// rune, newlines included, so a pretty-printed JSON document arrives intact
+// and its newlines never reach the Enter branch. The alternative input is a
+// path to the file holding it, for a terminal that does not bracket its
+// pastes; the field keeps path completion for that, and shows a pasted
+// credential as a character count rather than echoing it.
+func NewCredentialPasteModal(title, prompt, tag string) TextInputModal {
+	return TextInputModal{title: title, prompt: prompt, tag: tag, summarize: true, paths: true, width: 60}
 }
 
 func (m TextInputModal) Init() tea.Cmd { return nil }
@@ -73,8 +89,23 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// pastedMaterial reports whether the value is plainly a pasted document
+// rather than something typed into the field: a line break can only arrive by
+// paste, and no path a user types reaches this length.
+func (m TextInputModal) pastedMaterial() bool {
+	return strings.ContainsAny(m.input, "\n\r") || len([]rune(m.input)) > pastedValueRunes
+}
+
+// pastedValueRunes is the length past which a value is treated as pasted
+// material. The longest realistic credential path (a home-relative gcloud
+// application-default file) is about 55 runes.
+const pastedValueRunes = 80
+
 func (m TextInputModal) inputView() string {
 	display := m.input
+	if m.summarize && m.pastedMaterial() {
+		return fmt.Sprintf("> [%d characters pasted]", len([]rune(m.input)))
+	}
 	if m.mask {
 		display = ""
 		var displaySb80 strings.Builder

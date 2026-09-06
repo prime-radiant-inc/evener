@@ -2,12 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/envvars"
 )
 
 // Handlers for the auth / credentials / instance / launch-config domain of
@@ -141,6 +144,13 @@ func (m hubModel) handleCredentialsAction(msg launchconfig.CredentialsActionMsg)
 	switch msg.Action {
 	case "set":
 		modal := tuipick.NewTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
+		m.followupModal = &modal
+		return m, nil
+	case "setCredentialJson":
+		modal := tuipick.NewCredentialPasteModal(
+			"Credential JSON for "+msg.Instance,
+			"Paste a service-account key or application_default_credentials.json,\nor type the path to the file holding it:",
+			"credential-json-set:"+msg.Instance)
 		m.followupModal = &modal
 		return m, nil
 	case "logout":
@@ -315,6 +325,23 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 		}
 		return m, nil
 	}
+	if provider, ok := strings.CutPrefix(msg.Tag, "credential-json-set:"); ok {
+		m.followupModal = nil
+		value := strings.TrimSpace(msg.Value)
+		if msg.Cancelled || value == "" {
+			return m, nil
+		}
+		document, err := credentialJSONDocument(value)
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.err = nil
+		if m.client != nil {
+			return m, launchconfig.CmdAuthCredentialJsonSet(m.client, provider, document)
+		}
+		return m, nil
+	}
 	if rest, ok := strings.CutPrefix(msg.Tag, "oauth-redirect:"); ok {
 		parts := strings.SplitN(rest, ":", 2)
 		m.followupModal = nil
@@ -363,6 +390,28 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 		return m, launchconfig.CmdSetLayer(m.client, panel.CWD(), layer, updatedLayer)
 	}
 	return m, nil
+}
+
+// credentialJSONDocument resolves what the credential-JSON prompt collected
+// into the document to store: the paste itself, or the contents of the file
+// the user named instead. A terminal that brackets its pastes delivers the
+// whole document in one key message; naming the file is the way in from one
+// that does not, and the file is read here because the path is on the
+// machine the user typed it on, not the hub's. The hub validates whatever
+// this returns, so no parsing happens here.
+func credentialJSONDocument(value string) (string, error) {
+	if strings.HasPrefix(value, "{") {
+		return value, nil
+	}
+	path := value
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read credential JSON: %w", err)
+	}
+	return string(data), nil
 }
 
 func (m hubModel) handleAuthApiKeySetResult(msg launchconfig.AuthApiKeySetResultMsg) (tea.Model, tea.Cmd) {
