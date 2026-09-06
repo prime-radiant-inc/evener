@@ -1450,7 +1450,39 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	s := runtime.owner
 	isolation := delegateIsolation{worktreeProject: project}
 	workingDir := reservation.worktreePath
+	var (
+		laneAdmission envWorkID
+		laneFenced    bool
+	)
+	// The lane's admission is named for the create until an undo actually
+	// starts: a create still in flight must not read as a rollback in a fence
+	// warning (worktreeCreate renames its own for the same reason).
+	rollback := func() {
+		if laneFenced {
+			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+workingDir)
+		}
+		isolation.cleanup(s, reservation.delegateID)
+	}
 	if workingDir != "" {
+		// Cutting the lane forks git on the PARENT's environment, whose process
+		// table a close reaps, and so does the rollback every failure below owes
+		// it. Neither is a manage_worktree operation, so the dispatch's close
+		// fence never sees them; admit them here as ONE span, for the reason
+		// worktreeCreate's create/rollback admission is one span — an admission
+		// asked for where the rollback starts would be refused by the very close
+		// that made the rollback necessary, and an unfenced rollback races the
+		// environment cleanup it exists to keep residue out of.
+		//
+		// A refused admission refuses the spawn, which is the dispatch's answer
+		// for the dispatch's reason: no lane has been cut yet, and cutting one
+		// against an environment being reaped and stores being closed leaves
+		// exactly the locked worktree, branch and sidecar this admission is here
+		// to prevent.
+		laneAdmission, laneFenced = s.beginEnvWork("create delegate lane " + workingDir)
+		if !laneFenced {
+			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
+		}
+		defer s.endEnvWork(laneAdmission)
 		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
 		if err != nil {
 			return isolation, err
@@ -1458,13 +1490,13 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {
-			isolation.cleanup(s, reservation.delegateID)
+			rollback()
 			return delegateIsolation{}, fmt.Errorf("delegate isolation path %q does not match reserved path %q", path, workingDir)
 		}
 	}
 	env, ownsFresh, err := s.prepareSubagentEnvironment(workingDir, requestedSandbox)
 	if err != nil {
-		isolation.cleanup(s, reservation.delegateID)
+		rollback()
 		return delegateIsolation{}, err
 	}
 	isolation.env = env

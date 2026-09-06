@@ -161,8 +161,9 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 
 // beginEnvWork admits work that runs commands on the session's execution
 // environment and must therefore finish before Close reaps that environment's
-// process table: a whole manage_worktree call at its dispatch, and the rollback
-// a refused or failed operation owes after its swap has already released the
+// process table: a whole manage_worktree call at its dispatch, the cut of a
+// delegate's isolation lane and the rollback that undoes it, and the rollback a
+// refused or failed operation owes after its swap has already released the
 // swap's own admission. It is the beginDispose idiom again — the closing check
 // AND the envWorkWG Add happen under one s.mu hold, so a successful Add
 // happens-before Close()'s join. A true return MUST be paired with a (deferred)
@@ -181,10 +182,11 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 // is already being torn down, and the close may already be past its join — and
 // the two kinds of caller answer that differently, on purpose:
 //
-//   - The manage_worktree DISPATCH refuses the call (errWorktreeOpWhileClosing).
-//     The operation has not started, and running it unfenced would lock lanes
-//     and write sidecars against an environment being reaped and stores being
-//     closed. A closing session was never going to complete it anyway.
+//   - The manage_worktree DISPATCH refuses the call, and a delegate's
+//     isolation step refuses the spawn (errWorktreeOpWhileClosing). The work
+//     has not started, and running it unfenced would lock lanes and write
+//     sidecars against an environment being reaped and stores being closed. A
+//     closing session was never going to complete it anyway.
 //   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
 //     existed. Its admission failing is the expected case — the close is what
 //     made the rollback necessary — and it is an undo the session already owes,

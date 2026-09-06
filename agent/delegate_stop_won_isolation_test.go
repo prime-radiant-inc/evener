@@ -19,22 +19,8 @@ import (
 func TestDelegateResourceCreate_StopWinningConstructFailureCleansIsolation(t *testing.T) {
 	r := newWorktreeRepo(t)
 	root := r.s
-	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: "stop mid-construct", Isolation: "worktree", DelegationAllowance: new(0)}
-	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
-	if err != nil {
-		t.Fatalf("selectSubagentModel: %v", err)
-	}
-	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, args.Isolation)
-	descriptor, project, err := runtime.describe(ctx, args, args.Task, args.Isolation, nil, selection, toolNameCeiling)
-	if err != nil {
-		t.Fatalf("describe delegate: %v", err)
-	}
-	reservation, err := root.delegateController.ReserveCreate(rootDelegateActor(root.ID()), descriptor)
-	if err != nil {
-		t.Fatalf("ReserveCreate: %v", err)
-	}
+	runtime, reservation, project := reserveWorktreeIsolatedDelegate(t, root, "stop mid-construct")
 	isolation, err := runtime.prepareIsolation(ctx, reservation, project, nil)
 	if err != nil {
 		t.Fatalf("prepareIsolation: %v", err)
