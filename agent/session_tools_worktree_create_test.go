@@ -578,6 +578,14 @@ func newWorktreeRepoWithConfig(t *testing.T, cfg SessionConfig) *wtRepo {
 		t.Fatalf("EvalSymlinks state: %v", err)
 	}
 	s.stateDir = stateDir
+	// The delegate controller was already built off the pre-fixture default
+	// state dir (empty), and cfg.StateDir — what a fresh spawn's subCfg
+	// actually inherits for the child's own transcript writes — was never
+	// touched either. All three have to agree with the fixture's real state
+	// dir, or a spawned delegate's write and the parent's read-back land in
+	// different places.
+	s.delegateController.stateDir = stateDir
+	s.cfg.StateDir = stateDir
 	s.mu.Lock()
 	// Most worktree fixture tests cover lifecycle behavior, not the git-version
 	// preflight. The old-git tests reset this flag to exercise that path.

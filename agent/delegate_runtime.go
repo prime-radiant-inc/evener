@@ -1228,13 +1228,21 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	//
 	// It overlaps prepareIsolation's create admission for the length of the
 	// create. Two live admissions on the same fence are just two things the
-	// close waits for; this one is named for the undo it exists to cover.
+	// close waits for; this one is named for the spawn, not the rollback: a
+	// healthy spawn holds it for its whole run, and a fence warning printed
+	// during that ordinary run must not read as a rollback in progress, which
+	// is why worktreeCreate and prepareIsolation both rename theirs only once
+	// an undo actually starts.
 	//
 	// A refusal needs no answer of its own: `closing` only ever goes false to
 	// true, so prepareIsolation's own admission is refused too and the spawn
 	// fails with no lane cut and nothing to take back.
+	var (
+		laneAdmission envWorkID
+		laneFenced    bool
+	)
 	if reservation.worktreePath != "" {
-		laneAdmission, laneFenced := s.beginEnvWork("delegate lane rollback for " + reservation.worktreePath)
+		laneAdmission, laneFenced = s.beginEnvWork("delegate start on lane " + reservation.worktreePath)
 		if laneFenced {
 			defer s.endEnvWork(laneAdmission)
 		}
@@ -1245,6 +1253,12 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		abortErr := s.delegateController.AbortStart(reservation)
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(errors.Join(err, abortErr))
+	}
+	// Name the lane that actually exists: the reserved path is all the label
+	// could promise before the create ran, and the created one is where a
+	// warning naming this work should point a reader.
+	if laneFenced && isolation.worktreePath != "" {
+		s.relabelEnvWork(laneAdmission, "delegate start on lane "+isolation.worktreePath)
 	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
