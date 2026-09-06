@@ -78,6 +78,7 @@ function fixture() {
     },
   } as ConversationClientLike;
   return {
+    client,
     model: new LaunchSettings(client, "/", "global"),
     io,
     calls,
@@ -103,6 +104,95 @@ it("preserves untouched fields and explicit false/zero while removing an overrid
     env: { KEEP: "value" },
   });
   expect(f.model.getSnapshot().dirty).toBe(false);
+});
+it("retains a draft while offline and reconciles the same hub without writing", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  await f.model.setConnection(null);
+  expect(await f.model.save()).toBe(false);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  await f.model.setConnection(f.client);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  expect(f.model.getSnapshot().dirty).toBe(true);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(false);
+  expect(
+    f.calls.filter((call) => call.method.endsWith("setLayer")),
+  ).toHaveLength(0);
+  expect(await f.model.save()).toBe(true);
+});
+it("preserves a reconnect draft and rejects an externally changed baseline", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  await f.model.setConnection(null);
+  f.layer = { ...f.layer, maxRounds: 9 };
+  await f.model.setConnection(f.client);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  expect(f.model.getSnapshot().changedElsewhere).toBe(true);
+  expect(await f.model.save()).toBe(false);
+  expect(f.layer.maxRounds).toBe(9);
+});
+it("does not send a write after its preflight connection has been replaced", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  let release!: () => void;
+  const pending = new Promise<void>((done) => {
+    release = done;
+  });
+  const original = f.io.request;
+  f.io.request = async (method, params) => {
+    const value = await original(method, params);
+    await pending;
+    return value;
+  };
+  const save = f.model.save();
+  await f.model.setConnection(null);
+  f.io.request = original;
+  await f.model.setConnection(f.client);
+  release();
+  expect(await save).toBe(false);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
+  expect(
+    f.calls.filter((call) => call.method.endsWith("setLayer")),
+  ).toHaveLength(0);
+});
+it("reconciles a write applied before disconnect without replaying or accepting its late reply", async () => {
+  const f = fixture();
+  await f.model.refresh();
+  f.model.edit("maxRounds", 8);
+  let release!: () => void;
+  let sent!: () => void;
+  const pending = new Promise<void>((done) => {
+    release = done;
+  });
+  const written = new Promise<void>((done) => {
+    sent = done;
+  });
+  const original = f.io.request;
+  f.io.request = async (method, params) => {
+    const value = await original(method, params);
+    if (method.endsWith("setLayer")) {
+      sent();
+      await pending;
+    }
+    return value;
+  };
+  const save = f.model.save();
+  await written;
+  await f.model.setConnection(null);
+  f.io.request = original;
+  await f.model.setConnection(f.client);
+  expect(f.model.getSnapshot().dirty).toBe(false);
+  f.model.edit("maxRounds", 10);
+  release();
+  expect(await save).toBe(false);
+  expect(f.model.getSnapshot().draft?.maxRounds).toBe(10);
+  expect(f.model.getSnapshot().dirty).toBe(true);
+  expect(
+    f.calls.filter((call) => call.method.endsWith("setLayer")),
+  ).toHaveLength(1);
 });
 it("refuses fields outside the editable schema and layers", async () => {
   const f = fixture();

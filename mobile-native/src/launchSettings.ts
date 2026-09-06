@@ -51,7 +51,7 @@ export class LaunchSettings {
   private unsubscribe?: () => void;
   private listeners = new Set<() => void>();
   constructor(
-    private client: ConversationClientLike,
+    private client: ConversationClientLike | null,
     readonly cwd: string,
     readonly layer: "global" | "project",
   ) {}
@@ -68,7 +68,7 @@ export class LaunchSettings {
     for (const listener of this.listeners) listener();
   }
   start() {
-    if (this.disposed || this.unsubscribe) return;
+    if (this.disposed || this.unsubscribe || !this.client) return;
     this.unsubscribe = this.client.onNotification((event) => {
       if (event.method !== "evener/launch/updated") return;
       // A global update can change a project's inherited values too.
@@ -81,34 +81,56 @@ export class LaunchSettings {
       } else void this.refresh();
     });
   }
-  refresh = async (discardDraft = false) => {
+  /** Rebind only within the same hub. A different hub needs a different editor. */
+  async setConnection(client: ConversationClientLike | null) {
+    if (this.disposed || this.client === client) return;
+    this.version += 1;
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.client = client;
+    this.publish({ loading: false, saving: false });
+    if (client) {
+      this.start();
+      await this.load(false, true);
+    }
+  }
+  refresh = (discardDraft = false) => this.load(discardDraft, false);
+  private load = async (discardDraft: boolean, reconcile: boolean) => {
     if (
       this.disposed ||
+      !this.client ||
       this.state.saving ||
-      (this.state.dirty && !discardDraft)
+      (this.state.dirty && !discardDraft && !reconcile)
     )
       return;
+    const client = this.client;
     const version = ++this.version;
     this.publish({ loading: true, error: null });
     try {
       const [schema, current, resolved] = await Promise.all([
-        this.client.request("evener/launch/schema", {}),
-        this.client.request("evener/launch/getLayer", {
+        client.request("evener/launch/schema", {}),
+        client.request("evener/launch/getLayer", {
           cwd: this.cwd,
           layer: this.layer,
         }),
-        this.client
+        client
           .request("evener/launch/resolve", { cwd: this.cwd })
           .catch(() => null),
       ]);
       if (version !== this.version || this.disposed) return;
+      const preserve = reconcile && this.state.dirty && this.state.draft;
+      const draft = preserve ? this.state.draft : current;
+      const dirty = !equal(draft, current);
       this.publish({
         options: schema.options,
         current,
-        draft: current,
+        draft,
         resolved,
-        dirty: false,
-        changedElsewhere: false,
+        dirty,
+        changedElsewhere:
+          !!preserve &&
+          dirty &&
+          (this.state.changedElsewhere || !equal(current, this.state.current)),
         resolveError: resolved
           ? null
           : "Effective launch values could not be loaded.",
@@ -148,6 +170,7 @@ export class LaunchSettings {
   save = async (): Promise<boolean> => {
     if (
       this.disposed ||
+      !this.client ||
       this.state.saving ||
       this.state.loading ||
       !this.state.dirty ||
@@ -163,16 +186,18 @@ export class LaunchSettings {
     }
     const draft = this.state.draft;
     const baseline = this.state.current;
-    this.version += 1;
+    const client = this.client;
+    const version = ++this.version;
+    const active = () => !this.disposed && version === this.version;
     this.publish({ saving: true, error: null });
     let sent = false;
     let confirmed = false;
     try {
-      const latest = await this.client.request("evener/launch/getLayer", {
+      const latest = await client.request("evener/launch/getLayer", {
         cwd: this.cwd,
         layer: this.layer,
       });
-      if (this.disposed) return false;
+      if (!active()) return false;
       if (!equal(latest, baseline)) {
         this.publish({
           changedElsewhere: true,
@@ -181,44 +206,47 @@ export class LaunchSettings {
         return false;
       }
       sent = true;
-      const resolved = await this.client.request("evener/launch/setLayer", {
+      const resolved = await client.request("evener/launch/setLayer", {
         cwd: this.cwd,
         layer: this.layer,
         config: draft,
       });
-      if (this.disposed) return false;
+      if (!active()) return false;
       confirmed = true;
       this.publish({ resolved, resolveError: null });
     } catch {
+      if (!active()) return false;
       this.publish({
         error: sent
           ? "Could not confirm the save. Review the current layer before trying again."
           : "Could not check the current layer. Nothing was sent; try again when connected.",
       });
     } finally {
-      if (sent && !this.disposed) {
+      if (sent && active()) {
         try {
-          const current = await this.client.request("evener/launch/getLayer", {
+          const current = await client.request("evener/launch/getLayer", {
             cwd: this.cwd,
             layer: this.layer,
           });
-          this.publish({
-            current,
-            dirty: !equal(current, draft),
-            changedElsewhere: !equal(current, draft),
-          });
+          if (active())
+            this.publish({
+              current,
+              dirty: !equal(current, draft),
+              changedElsewhere: !equal(current, draft),
+            });
         } catch {
-          this.publish({
-            changedElsewhere: true,
-            error:
-              "Could not read the layer after saving. Reload to confirm its state.",
-          });
+          if (active())
+            this.publish({
+              changedElsewhere: true,
+              error:
+                "Could not read the layer after saving. Reload to confirm its state.",
+            });
           confirmed = false;
         }
       }
-      this.publish({ saving: false });
+      if (active()) this.publish({ saving: false });
     }
-    return confirmed && !this.disposed && !this.state.changedElsewhere;
+    return confirmed && active() && !this.state.changedElsewhere;
   };
   dispose() {
     this.disposed = true;
