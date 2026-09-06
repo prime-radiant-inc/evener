@@ -354,6 +354,11 @@ Never use the production hub as an upgrade test fixture.
 Finish path assistance, large model/harness catalogs, vision choices, launch
 layers/schema and repository trust against current web/server behavior.
 
+Directory browsing is now available in the creation form. Both native platforms
+selected a hub directory and created a session there, independently confirmed by
+AppWire. Hub rejection messages are retained alongside creation uncertainty;
+see [creation evidence and remaining scope](session-creation.md).
+
 Acceptance: real native creation with valid/invalid paths and configuration,
 trust decisions, creation failure/uncertainty, keyboard and accessibility
 coverage. Keep advertised options server-derived.
