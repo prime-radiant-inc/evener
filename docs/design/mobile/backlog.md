@@ -143,12 +143,68 @@ fork and removal; full navigation and final-head regression on both platforms.
 ### MOB-006 · P1 · Expose hub administration natively · Open
 
 Provider authentication, instances, plugins/marketplaces, hub preferences and
-upgrade are not yet complete native workflows.
+upgrade are not yet complete native workflows. The [contract inventory](hub-administration-inventory.md)
+splits implementation into MOB-012 through MOB-016; the parent remains open.
 
 Acceptance: inventory current web/server operations, then split into individual
 implementation issues before coding. Use purposeful native forms and lists,
 not a generic RPC console. Include auth/device flows, live invalidation,
 errors and consequential-action handling for each workflow.
+
+### MOB-012 · P1 · Provider instances and API keys · Open
+
+Child of MOB-006. Implement the server-derived provider list, instance detail,
+create/edit/remove/default, credential test, set/clear stored key and logout.
+Respect `writesRefused` for instance configuration while preserving independent
+credential actions. Show credential source and diagnostics without exposing keys.
+
+Acceptance: scripted provider tests plus both-platform native create/edit/default,
+invalid key, clear/remove and reconnect flows on an isolated hub. Auth updates
+refresh the correct hub; switching hubs during a request cannot apply its result
+to the other hub. Follow [the contract inventory](hub-administration-inventory.md).
+
+### MOB-013 · P1 · Provider browser and device sign-in · Open
+
+Child of MOB-006; builds on MOB-012. Device start/poll and browser fallback must
+use server-returned URLs, flow IDs and polling intervals. Provide code copy,
+open-browser and redirect completion as supported by the current web flow.
+
+Acceptance: pending, success, denial, expiry, restart, background/foreground and
+hub switch on both platforms. Never restart or replay sign-in merely because
+an observation timed out. Use scripted auth for deterministic automation;
+real provider acceptance requires an explicitly chosen test account.
+
+### MOB-014 · P1 · Marketplaces and installed plugins · Open
+
+Child of MOB-006. Browse/add/remove/refresh marketplaces; install, upgrade,
+remove, enable/disable and set automatic upgrade for plugins. Use compact lists
+with detail actions and preserve marketplace identity alongside plugin name.
+
+Acceptance: both-platform native lifecycle on an owned fixture marketplace,
+notification refresh, partial loading errors, cross-device changes, long lists,
+large text, disconnect during mutation and hub switching without blind replay.
+
+### MOB-015 · P1 · Hub information and launch settings · Open
+
+Child of MOB-006; coordinate editable launch layers with MOB-007. Show runtime,
+storage, agents, Codex launches and version information as read-only where the
+web is read-only. Support existing schema-backed launch configuration, plugin
+and skill directories, and MCP configuration through launch-layer contracts.
+
+Acceptance: distinguish inherited/effective/editable values; validate paths on
+the selected server; preserve unrelated launch fields; refresh launch changes.
+Test two hubs with different settings and a late response after switching.
+No fabricated hub.toml editor or server filesystem picker using phone paths.
+
+### MOB-016 · P1 · Hub upgrade and recovery · Open
+
+Child of MOB-006. Expose the existing hub upgrade operation with clear target hub,
+progress/result and recovery after a connection drop. Version information comes
+from the server; do not invent an available-update catalog.
+
+Acceptance: deterministic success/failure/disconnect behavior, no automatic
+mutation replay, and native end-to-end upgrade on an isolated disposable hub.
+Never use the production hub as an upgrade test fixture.
 
 ### MOB-007 · P1 · Complete creation and launch configuration · Open
 
