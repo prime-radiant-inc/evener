@@ -116,3 +116,5 @@ Keep pending decisions discoverable beside the composer through a compact count.
 ## Structured questions
 
 Show pending questions through a compact composer entry. Keep suggested choices and a written alternative together. Recommendations must never become automatic answers. Distinguish single and multiple selection through native accessibility roles, checked state and visible marks. Require explicit resolution, including Skip, for every question in a batch. Preserve the ordinary message draft and separate confirmed delivery from the following refresh. Optional notes and delegation belong to the same question context.
+
+Persist unfinished question selections separately from the ordinary message draft. Restore only when the hub, session and complete question definitions still match. Show failed saves explicitly and retain edits for retry; never silently enable sending after a failed load.

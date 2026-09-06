@@ -126,3 +126,51 @@ test("SQL-like text in identifiers and content remains literal data", () => {
 		unconfirmed: null,
 	});
 });
+
+test("question selections survive reopening only for the exact destination and questions", () => {
+	const selections = {
+		"call:0": {
+			resolution: { kind: "free" as const, text: "custom 🦋" },
+			note: "context",
+		},
+	};
+	repository.writeQuestions(destination, "question-definition", selections);
+	database.close();
+	openRepository();
+	expect(repository.readQuestions(destination, "question-definition")).toEqual(
+		selections,
+	);
+	expect(repository.readQuestions(destination, "changed-definition")).toEqual(
+		{},
+	);
+	expect(
+		repository.readQuestions(
+			{ ...destination, hubId: "other" },
+			"question-definition",
+		),
+	).toEqual({});
+	expect(
+		repository.readQuestions(
+			{ ...destination, sessionRef: "other" },
+			"question-definition",
+		),
+	).toEqual({});
+});
+test("hub removal also clears question selections without affecting another hub", () => {
+	const other = { ...destination, hubId: "other" };
+	const selections = {
+		"call:0": { resolution: { kind: "skip" as const }, note: "" },
+	};
+	for (const target of [destination, other])
+		repository.writeQuestions(target, "questions", selections);
+	repository.removeHub(destination.hubId);
+	expect(repository.readQuestions(destination, "questions")).toEqual({});
+	expect(repository.readQuestions(other, "questions")).toEqual(selections);
+});
+test("malformed question selections report corruption instead of enabling submission", () => {
+	repository.writeQuestions(destination, "questions", {});
+	database
+		.prepare("UPDATE question_drafts SET selections = ?")
+		.run('{"call:0":{"note":"","resolution":{"kind":"option","labels":42}}}');
+	expect(() => repository.readQuestions(destination, "questions")).toThrow();
+});

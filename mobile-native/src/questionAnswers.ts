@@ -46,3 +46,31 @@ export function composeQuestionAnswers(
     })),
   );
 }
+
+/** Stored input is validated before it becomes interactive state. */
+export function decodeQuestionSelections(json: string): QuestionSelections {
+  const value: unknown = JSON.parse(json);
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid question draft");
+  for (const item of Object.values(value)) {
+    if (!item || typeof item !== "object" || typeof item.note !== "string")
+      throw new Error("Invalid question draft");
+    const r = item.resolution;
+    if (r === null) continue;
+    if (
+      !r ||
+      typeof r !== "object" ||
+      !(
+        (r.kind === "option" &&
+          Array.isArray(r.labels) &&
+          r.labels.every((label: unknown) => typeof label === "string")) ||
+        (r.kind === "free" && typeof r.text === "string") ||
+        (r.kind === "decide" && typeof r.leaning === "string") ||
+        r.kind === "skip" ||
+        r.kind === "fallback"
+      )
+    )
+      throw new Error("Invalid question draft");
+  }
+  return value as QuestionSelections;
+}
