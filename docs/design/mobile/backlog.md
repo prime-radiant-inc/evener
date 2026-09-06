@@ -231,8 +231,11 @@ manual navigation and empty/error rendering are verified on both platforms
 against isolated hubs. [Owned-marketplace lifecycle evidence](plugins-evidence.md) now covers live row
 arrival on both devices, iOS disable, Android re-enable/auto-upgrade, Upgrade on
 both, Android removal and iOS detail closing through notifications. The fixture
-is directory-backed; fetching a newer Git revision remains unverified. Catalog
-management and Browse remain unbuilt; full visual and failure acceptance remain.
+is directory-backed; fetching a newer Git revision remains unverified. The marketplace controller now implements list/select/browse, add/remove/source
+refresh, external invalidation, separate read errors, selected-marketplace removal
+and disposed-hub/stale-response fencing. Six deterministic tests cover those
+contracts; all 264 native tests, TypeScript and touched-file Biome pass. Browse and
+marketplace management UI remain unwired; full visual and failure acceptance remain.
 
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.
