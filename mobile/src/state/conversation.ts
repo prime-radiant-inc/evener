@@ -576,6 +576,7 @@ export function createConversationStore() {
   let capabilityOwnerRev = 0;
   let approvalOwnerRev = 0;
   let goalOwnerRev = 0;
+  let turnOwnerRev = 0;
   let tasksOwnerRev = 0;
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
@@ -1326,6 +1327,7 @@ export function createConversationStore() {
         const entryCapRev = capabilityOwnerRev;
         const entryApprovalRev = approvalOwnerRev;
         const entryGoalRev = goalOwnerRev;
+        const entryTurnRev = turnOwnerRev;
         const entryTasksRev = tasksOwnerRev;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
@@ -1508,6 +1510,10 @@ export function createConversationStore() {
           const committedConversation = {
             ...conversation,
             items: committedItems,
+            activeTurnId:
+              entryTurnRev === turnOwnerRev
+                ? conversation.activeTurnId
+                : currentConv?.activeTurnId,
             goal:
               entryGoalRev === goalOwnerRev
                 ? conversation.goal
@@ -2222,20 +2228,36 @@ export function createConversationStore() {
           }
 
           case "turn/started": {
+            turnOwnerRev++;
             set({
-              conversation: { ...conv, status: "running" },
+              conversation: {
+                ...conv,
+                status: "running",
+                activeTurnId: n.params.turn.id,
+              },
             });
             break;
           }
 
           case "turn/completed": {
             const params = n.params as {
-              turn: { usage?: MobileUsage; status: string };
+              turnId?: string;
+              turn: { id: string; usage?: MobileUsage; status: string };
             };
+            const completedActive =
+              conv.activeTurnId === (params.turnId || params.turn.id);
+            // Completion is newer than an in-flight read even when this
+            // client missed the corresponding start notification.
+            turnOwnerRev++;
             set({
               conversation: {
                 ...conv,
-                status: conv.status === "running" ? "ready" : conv.status,
+                activeTurnId: completedActive ? undefined : conv.activeTurnId,
+                status:
+                  conv.status === "running" &&
+                  (!conv.activeTurnId || completedActive)
+                    ? "ready"
+                    : conv.status,
                 usage: params.turn.usage
                   ? { ...conv.usage, ...params.turn.usage }
                   : conv.usage,

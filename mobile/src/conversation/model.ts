@@ -177,6 +177,7 @@ export interface MobileApproval {
 
 export interface MobileConversation {
   id: string;
+  activeTurnId?: string;
   instanceId?: string;
   sessionId: string;
   name?: string;
