@@ -100,6 +100,21 @@
   background: var(--hover-1);
 }
 
+/* Disabled mirrors the model trigger's own (modelswitch.module.css's
+ * .trigger:disabled) and the disclosure widget's [aria-disabled]: no hover
+ * face, no pointer cursor, half opacity. Keyed off the data-disabled the pane
+ * sets beside the select's own disabled - a span wrapper takes no disabled
+ * attribute, and :has(:disabled) would couple this rule to the child's
+ * markup. */
+.effortTrigger[data-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.effortTrigger[data-disabled="true"]:hover {
+  background: transparent;
+}
+
 /* The focus ring belongs to the trigger's visible face even though focus lands
  * on the transparent <select> inside it - :focus-within is what carries it
  * across. */
