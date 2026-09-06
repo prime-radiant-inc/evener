@@ -2820,6 +2820,119 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 	}
 }
 
+// A stable workspace ref and its current session ID cancel the same pending
+// read, without changing the response identity used for notification delivery.
+func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		read        appwire.ThreadReadParams
+		unsubscribe appwire.ThreadUnsubscribeParams
+	}{
+		{"stable_ref_current_id", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{ThreadID: "current"}},
+		{"current_id_stable_ref", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce, firstRead sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				id := "current"
+				if params.Ref == "local:other" || params.ThreadID == "other" {
+					id = "other"
+				} else {
+					firstRead.Do(func() {
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					})
+				}
+				appserver.Subscribe(ctx, id)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Evener: appwire.EvenerThread{Ref: "local:" + id}}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "stable", SessionID: "current", WorkspaceRef: "local:stable", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+					{Entry: rendezvous.Entry{SourceID: "local", ThreadID: "other", SessionID: "other", WorkspaceRef: "local:other", Endpoint: daemonHTTP.URL, Protocol: appwire.ProtocolVersion}},
+				}
+			}, http.DefaultClient)
+			sources := appsource.NewRegistry()
+			sources.Add(source)
+			appServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+			hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+				t.Fatalf("unrelated read: %v", err)
+			}
+			readDone := make(chan error, 1)
+			go func() {
+				_, err := client.ThreadRead(ctx, tc.read)
+				readDone <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("read did not reach the pre-capture daemon barrier")
+			}
+			if _, err := client.ThreadUnsubscribe(ctx, tc.unsubscribe); err != nil {
+				t.Fatalf("unsubscribe before capture: %v", err)
+			}
+			unblock()
+			var readErr error
+			select {
+			case readErr = <-readDone:
+			case <-ctx.Done():
+				t.Fatal("read did not finish after barrier release")
+			}
+			if got := appServer.SubscriberCount("local:current"); got != 0 {
+				t.Fatalf("old stable/current read registered %d stale subscriptions after unsubscribe", got)
+			}
+			// The hub already reports an unavailable subscription when its
+			// handoff capture is rejected; cancellation preserves that contract.
+			var wire appwire.WireError
+			if !errors.As(readErr, &wire) || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("canceled read error = %v, want unavailable subscription", readErr)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok || data["evenerErrorInfo"] != string(appwire.ErrorSessionUnavailable) {
+				t.Fatalf("canceled read error data = %#v, want sessionUnavailable", wire.Data)
+			}
+			if got := appServer.SubscriberCount("local:other"); got != 1 {
+				t.Fatalf("unrelated subscriptions = %d, want 1", got)
+			}
+			appServer.Broadcast("local:current", "test/stale-admission", map[string]any{})
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/stale-admission"); got != 0 {
+				t.Fatalf("canceled read delivered %d notifications", got)
+			}
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable"}); err != nil {
+				t.Fatalf("later read: %v", err)
+			}
+			if got := appServer.SubscriberCount("local:current"); got != 1 {
+				t.Fatalf("later read subscriptions = %d, want 1", got)
+			}
+			awaitLiveHubSubscriptions(t, appServer, 2)
+			appServer.Broadcast("local:current", "test/later-admission", map[string]any{})
+			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
+			if got := aliasMethodCountUntilBarrier(t, client, "test/later-admission"); got != 1 {
+				t.Fatalf("later read delivered %d notifications, want 1", got)
+			}
+		})
+	}
+}
+
 func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

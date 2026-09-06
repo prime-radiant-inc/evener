@@ -73,6 +73,16 @@ func TestThreadTurnsListItemModeRequiresCursor(t *testing.T) {
 	}
 }
 
+func TestThreadTurnsListItemModeRejectsWhitespaceOnlyCursor(t *testing.T) {
+	for _, cursor := range []string{" ", "\t", "\n", "\u2003", "\u00a0"} {
+		t.Run(fmt.Sprintf("%U", []rune(cursor)[0]), func(t *testing.T) {
+			if err := ValidateThreadTurnsListParams(ThreadTurnsListParams{ItemLimit: 4, Cursor: cursor}); err == nil {
+				t.Fatalf("whitespace-only cursor %q accepted", cursor)
+			}
+		})
+	}
+}
+
 func TestThreadItemModeJSON(t *testing.T) {
 	position := &ThreadItemPosition{Entry: 12, Item: 4}
 	item := ThreadItem{Type: "agentMessage", ID: "display-1", TranscriptKey: "entry-12-item-4", Position: position}

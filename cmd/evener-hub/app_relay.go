@@ -235,9 +235,9 @@ var observeHubRelayFunctions func(hubRelayFunctions)
 var observeHubRelayWait func()
 
 // threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
-// bare threadID for a read-shaped request. thread/read's relay, its recovery
-// paths, and thread/unsubscribe all derive the key here so a subscribe and
-// its unsubscribe can never disagree about which registry entry they name.
+// bare threadID for a read-shaped request. This is the delivery routing
+// identity, not the canonical session identity used to cancel pending reads.
+// thread/read's relay, its recovery paths, and thread/unsubscribe use it.
 func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
 	threadID := strings.TrimSpace(params.ThreadID)
 	if threadID == "" && params.Ref != "" {

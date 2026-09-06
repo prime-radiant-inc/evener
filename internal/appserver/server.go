@@ -35,6 +35,11 @@ type ServerConfig struct {
 	// of the socket, including handler failures and connection lifecycle events.
 	// Nil means silent.
 	Logf func(format string, args ...any)
+	// SubscriptionAdmissionResolver returns the canonical pending-admission key
+	// for a subscribing thread/read or a thread/unsubscribe request. It must be
+	// pure and synchronous; ordered dispatch uses it before starting the read or
+	// invoking the unsubscribe handler. It does not determine delivery routing.
+	SubscriptionAdmissionResolver func(appwire.Message) (string, bool)
 }
 
 // requestQueueCap bounds each connection's inbound request queue. It must
@@ -109,6 +114,9 @@ type Server struct {
 	conns                          map[string]*Connection
 	afterUnregisterDelete          func()
 	beforeSubscriptionRegistration func()
+	// beforeSubscriptionBeginBuffered pins the short claim-to-registration
+	// admission section in package tests; production leaves it nil.
+	beforeSubscriptionBeginBuffered func()
 	// beforeHydrationCommit runs after a response removes its hydration
 	// finalizer and before that finalizer commits. Production leaves it nil;
 	// package tests use it to pin the response-visible activation boundary.
@@ -217,14 +225,60 @@ func (s *Server) NewConnection(id string) *Connection {
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
 	return &Connection{
-		id:               id,
-		server:           s,
-		send:             make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:         make(chan appwire.Message, s.requestQueueCapacity),
-		slowReadSlots:    make(chan struct{}, slowReadDispatchCap),
-		slowReadInflight: map[string]int{},
-		workerExited:     make(chan struct{}),
+		id:                id,
+		server:            s,
+		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:          make(chan appwire.Message, s.requestQueueCapacity),
+		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
+		slowReadInflight:  map[string]int{},
+		workerExited:      make(chan struct{}),
+		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
 	}
+}
+
+type subscriptionAdmission struct {
+	requestID string
+	threadID  string
+	canceled  bool
+}
+
+func (c *Connection) beginSubscriptionAdmission(requestID, threadID string) *subscriptionAdmission {
+	admission := &subscriptionAdmission{requestID: requestID, threadID: threadID}
+	c.admissionMu.Lock()
+	if c.pendingAdmissions == nil {
+		c.pendingAdmissions = map[*subscriptionAdmission]struct{}{}
+	}
+	c.pendingAdmissions[admission] = struct{}{}
+	c.admissionMu.Unlock()
+	return admission
+}
+
+func (c *Connection) finishSubscriptionAdmission(admission *subscriptionAdmission) {
+	if admission == nil {
+		return
+	}
+	c.admissionMu.Lock()
+	delete(c.pendingAdmissions, admission)
+	c.admissionMu.Unlock()
+}
+
+func (c *Connection) cancelSubscriptionAdmissions(threadID string) {
+	c.admissionMu.Lock()
+	for admission := range c.pendingAdmissions {
+		if admission.threadID == threadID {
+			admission.canceled = true
+		}
+	}
+	c.admissionMu.Unlock()
+}
+
+func (c *Connection) claimSubscriptionAdmission(requestID string) (*subscriptionAdmission, bool) {
+	for admission := range c.pendingAdmissions {
+		if admission.requestID == requestID {
+			return admission, !admission.canceled
+		}
+	}
+	return nil, true
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -459,12 +513,17 @@ type Connection struct {
 	// workerExited closes when the serial worker returns; tests assert
 	// worker teardown against it instead of sleeping.
 	workerExited chan struct{}
-	mu           sync.RWMutex
-	initialized  bool
-	cancel       context.CancelFunc
-	responseMu   sync.Mutex
-	hydrationMu  sync.Mutex
-	hydrations   map[string]*hydrationResponseFinalizer
+	// pendingAdmissions covers the wire-admitted-to-capture interval. Entries
+	// are removed on claim or read completion, so cancellation leaves no
+	// unbounded tombstones.
+	admissionMu       sync.Mutex
+	pendingAdmissions map[*subscriptionAdmission]struct{}
+	mu                sync.RWMutex
+	initialized       bool
+	cancel            context.CancelFunc
+	responseMu        sync.Mutex
+	hydrationMu       sync.Mutex
+	hydrations        map[string]*hydrationResponseFinalizer
 }
 
 func (c *Connection) ID() string {
@@ -767,6 +826,7 @@ func Unsubscribe(ctx context.Context, threadID string) {
 		return
 	}
 	server := conn.server
+	conn.cancelSubscriptionAdmissions(threadID)
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.conns[conn.id] != conn {
@@ -893,6 +953,15 @@ func captureSubscription(
 		return abortAfterUnlock()
 	}
 	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
+	conn.admissionMu.Lock()
+	admission, allowed := conn.claimSubscriptionAdmission(responseID)
+	if admission != nil && !allowed {
+		conn.admissionMu.Unlock()
+		return abortAfterUnlock()
+	}
+	if conn.server.beforeSubscriptionBeginBuffered != nil {
+		conn.server.beforeSubscriptionBeginBuffered()
+	}
 	superseded = conn.takeSupersededHydrations(responseID, targetThreadID, replace)
 	for _, finalizer := range superseded {
 		server.subs.withdrawBuffered(
@@ -905,6 +974,10 @@ func captureSubscription(
 	server.nextHydrationGeneration++
 	generation := server.nextHydrationGeneration
 	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation)
+	if admission != nil {
+		delete(conn.pendingAdmissions, admission)
+	}
+	conn.admissionMu.Unlock()
 	if !snapshot() {
 		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
 		return abortAfterUnlock()
@@ -1193,15 +1266,32 @@ func formatTally(tally map[string]int) string {
 // canceling the shared context is enough — the worker exits at its next
 // dequeue and the receive loop's next Recv fails into normal close handling.
 func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
+	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
+		if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil {
+			if key, ok := resolve(msg); ok && key != "" {
+				c.cancelSubscriptionAdmissions(key)
+			}
+		}
+	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
 		method := msg.Request.Method
+		var admission *subscriptionAdmission
+		if method == appwire.MethodThreadRead {
+			if c.server.cfg.SubscriptionAdmissionResolver != nil {
+				if key, subscribes := c.server.cfg.SubscriptionAdmissionResolver(msg); subscribes && key != "" {
+					admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), key)
+				}
+			}
+		}
 		if !c.acquireSlowReadSlot(ctx, method) {
+			c.finishSubscriptionAdmission(admission)
 			// Canceled while dequeued-awaiting-dispatch-capacity; the worker
 			// loop observes the same cancellation at its next select and
 			// exits without executing anything further.
 			return
 		}
 		go func() {
+			defer c.finishSubscriptionAdmission(admission)
 			defer c.releaseSlowReadSlot(method)
 			c.handleAndEnqueue(ctx, msg)
 		}()
