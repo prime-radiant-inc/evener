@@ -50,7 +50,8 @@
     <div class="controls" data-controls>
       <div class="leading">
         <button class="button quiet xs attachmentControl" data-attach type="button" aria-label="Attach image"><span class="icon">+</span></button>
-        <span class="modelTrigger" data-model-gate><span class="popoverTrigger"><button class="trigger" data-model-trigger type="button" title="(default)"><span class="value">(default)</span><span class="chevron">v</span> <span class="srOnly">&mdash; change model</span></button></span></span>
+        <span class="modelTrigger" data-model-gate><span class="popoverTrigger"><button class="trigger" data-model-trigger type="button" title="example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01"><span class="value" data-model-value>example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01</span><span class="chevron">v</span> <span class="srOnly">&mdash; change model</span></button></span></span>
+        <span class="effortTrigger" data-effort><span class="effortSeparator" aria-hidden="true">·</span><span class="effortValue" data-effort-value aria-hidden="true">high</span><span class="effortChevron" aria-hidden="true">v</span><label class="srOnly" for="spawn-reasoning-effort">Reasoning effort</label><select id="spawn-reasoning-effort" class="effortSelect" data-effort-select><option value="">(default)</option><option value="high" selected>high</option><option value="none">none (off)</option></select></span>
       </div>
       <div class="actions">
         <span class="wrapper"><button class="button primary xs" data-start type="button" aria-label="Start"><span class="icon">&gt;</span><span class="submitLabel">Start</span></button></span>
@@ -68,6 +69,8 @@ window.measure = () => {
   };
   const controls = document.querySelector("[data-controls]");
   const gate = document.querySelector("[data-model-gate]");
+  const modelValue = document.querySelector("[data-model-value]");
+  const effort = document.querySelector("[data-effort]");
   return {
     viewport: { width: window.innerWidth, height: window.innerHeight },
     card: box("[data-card]"),
@@ -76,6 +79,10 @@ window.measure = () => {
     attach: box("[data-attach]"),
     start: box("[data-start]"),
     modelTrigger: box("[data-model-trigger]"),
+    // scrollWidth vs clientWidth is the ellipsis verdict: a clipped value
+    // reports content past its box, an unconstrained one reports them equal.
+    modelValue: modelValue === null ? null : { ...box("[data-model-value]"), scrollWidth: modelValue.scrollWidth, clientWidth: modelValue.clientWidth },
+    effort: effort === null ? null : { ...box("[data-effort]"), computedHeight: getComputedStyle(effort).minHeight },
     // Read from the gating wrapper, not the button: it is the wrapper that
     // spawn.module.css switches on at the breakpoint, and a button under a
     // display:none ancestor keeps its own computed display while its box

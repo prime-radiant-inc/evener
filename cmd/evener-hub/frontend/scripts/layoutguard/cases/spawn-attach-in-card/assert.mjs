@@ -48,7 +48,9 @@ function escapes(child, parent) {
 
 export default function assert(m) {
   const failures = [];
-  const missing = ["card", "field", "controls", "attach", "start", "modelTrigger"].filter((k) => m[k] === null);
+  const missing = ["card", "field", "controls", "attach", "start", "modelTrigger", "modelValue", "effort"].filter(
+    (k) => m[k] === null,
+  );
   if (missing.length > 0) {
     return {
       pass: false,
@@ -65,6 +67,8 @@ export default function assert(m) {
     ["the control row", m.controls],
     ["the attach button", m.attach],
     ["the model trigger", m.modelTrigger],
+    ["the model value", m.modelValue],
+    ["the effort control", m.effort],
     ["the Start button", m.start],
   ]) {
     if (escapes(box, m.card)) {
@@ -80,6 +84,17 @@ export default function assert(m) {
     failures.push(
       `the attach button (${describe(m.attach)}) overlaps the writing surface (${describe(m.field)}) instead of sitting in the row beneath it`,
     );
+  }
+  // Composer unification: the ~100-char qualified model id must ellipsize
+  // inside the row (content past its box) rather than push effort/Start out,
+  // and the effort trigger must keep the 44px phone tap floor.
+  if (m.modelValue.scrollWidth <= m.modelValue.clientWidth + 1) {
+    failures.push(
+      `the long model id is not ellipsizing (scroll ${m.modelValue.scrollWidth}px vs client ${m.modelValue.clientWidth}px) - it renders at full min-content width`,
+    );
+  }
+  if (m.effort.height + TOLERANCE < 44) {
+    failures.push(`the effort control is ${m.effort.height}px tall, below the 44px phone tap floor`);
   }
 
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };

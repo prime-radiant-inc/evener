@@ -639,16 +639,16 @@ facts (`status-row-effort`, `status-row-context`, `status-row-cost`,
 **Spawn** (`panes/spawn/Spawn.tsx`): `[data-testid="spawn-prompt-card"]`
 and its control row `[data-testid="spawn-controls"]`,
 `[data-testid="spawn-submit"]`, `[data-testid="spawn-attach"]`,
-`[data-testid="spawn-branch"]`. Two model controls, and only one of them
-is ever on screen: `[data-testid="spawn-desktop-model"]` wraps the
-desktop Model field's `ModelCatalog` trigger, while
+`[data-testid="spawn-branch"]`. One model control and one effort control,
+both in the card's own control row at every width:
 `[data-testid="spawn-model-trigger"]` (readout
-`[data-testid="spawn-model-value"]`) is the prompt card's own
-`ModelSwitchTrigger`, which the phone uses and a desktop width hides
-behind `[data-testid="spawn-model-slot"]`. Both carry the `— change
-model` screen-reader suffix, so address them by testid or filter on
-`offsetParent`. The picker itself is the shared ARIA combobox in
-`widgets/modelCatalog/` — `role="option"` rows, not the legacy
+`[data-testid="spawn-model-value"]`) is the session composer's own
+`ModelSwitchTrigger` inside `[data-testid="spawn-model-slot"]`, and
+`[data-testid="spawn-effort"]` is the quiet effort overlay-select (real
+`<select>` labelled "Reasoning effort" over an aria-hidden readout). Both
+carry the `— change model` screen-reader suffix on the model side, so
+address the trigger by testid. The picker itself is the shared ARIA
+combobox in `widgets/modelCatalog/` — `role="option"` rows, not the legacy
 `.chip-picker-*` classes.
 
 **Toasts** are the error channel for actions that fail without a

@@ -475,22 +475,11 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
 });
 
-// The card's model + effort controls are the setting surface at EVERY width
-// now, so the narrow-pane compression and touch floors live on the card
-// itself - not in the phone-only breakpoint block. The container query compacts
-// the model label before effort/Start (mirroring the session status row's own
-// 399px rule), and a coarse pointer gets the platform tap floor on the effort
-// trigger to match the model trigger's own.
-test("the card's control row compresses in a narrow pane and keeps touch tap floors", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const spawnCss = readFileSync(join(here, "spawn.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-
-  expect(spawnCss).toContain("@container (max-width: 399px)");
-  expect(spawnCss).toContain(".effortTrigger .effortChevron");
-  expect(spawnCss).toContain(".effortTrigger");
-  expect(spawnCss).toContain("min-height: var(--tap-min)");
-});
-
+// The card's control-row compression and touch floors are pinned by the
+// spawn-attach-in-card layoutguard case (geometric assertions against the
+// real cascade at phone width: containment, active ellipsis on a long model
+// id, the 44px effort tap floor), not by source-text matching here - a CSS
+// grep passes even when the rules are unused or overridden.
 test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const spawnCss = readFileSync(join(here, "spawn.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
