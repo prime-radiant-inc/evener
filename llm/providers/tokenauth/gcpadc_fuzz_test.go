@@ -1,6 +1,7 @@
 package tokenauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -8,6 +9,7 @@ import (
 	"encoding/pem"
 	"testing"
 
+	"golang.org/x/oauth2/google"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -23,6 +25,9 @@ func FuzzCredentialJSON(f *testing.F) {
 	f.Add([]byte(`{"type":"external_account","audience":"//iam.googleapis.com/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"/etc/passwd"}}`))
 	f.Add([]byte(`{"type":"service_account"}`))
 	f.Add([]byte(`{"type":"authorized_user","client_id":"a"}`))
+	// A field the parser decodes but the gate never checks; the oracle
+	// below requires the gate to refuse it.
+	f.Add([]byte(`{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","delegates":"not-a-list"}`))
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{"type":1}`))
 	f.Add([]byte(`{"type":"authorized_user"`))
@@ -45,6 +50,15 @@ func FuzzCredentialJSON(f *testing.F) {
 		}
 		if !allowed && err == nil {
 			t.Fatalf("ValidateCredentialJSON(%q) accepted an out-of-allowlist type %q", raw, typ)
+		}
+		// The registry selects a stored credential on CheckCredentialJSON
+		// alone, so anything it accepts must be something Google's parser
+		// accepts too; otherwise the entry shadows ADC and fails at the
+		// first request with no fallback.
+		if registry.CheckCredentialJSON(raw) == nil {
+			if _, parseErr := google.CredentialsFromJSON(context.Background(), raw, cloudPlatformScope); parseErr != nil { //nolint:staticcheck // the gate mirrors this exact parser
+				t.Fatalf("CheckCredentialJSON(%q) accepted a credential the library rejects: %v", raw, parseErr)
+			}
 		}
 	})
 }

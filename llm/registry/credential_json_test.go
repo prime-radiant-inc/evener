@@ -138,6 +138,28 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "credential JSON:",
 		},
 		{
+			// The parser decodes every field of its credential file before it
+			// looks at type, external-account fields included.
+			name: "authorized_user with a non-list delegates",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","delegates":"sa@example.iam.gserviceaccount.com"}`,
+			want: "credential JSON:",
+		},
+		{
+			name: "service_account with a malformed credential_source block",
+			raw:  `{"credential_source":{"headers":"x"},` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
+			want: "credential JSON:",
+		},
+		{
+			name: "authorized_user with a string token_lifetime_seconds",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","service_account_impersonation":{"token_lifetime_seconds":"3600"}}`,
+			want: "credential JSON:",
+		},
+		{
+			name: "authorized_user with a malformed source_credentials block",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","source_credentials":{"client_id":5}}`,
+			want: "credential JSON:",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
 			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",

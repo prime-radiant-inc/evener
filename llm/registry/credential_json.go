@@ -78,7 +78,7 @@ func CheckCredentialJSON(raw []byte) error {
 		ClientID     json.RawMessage `json:"client_id"`
 		ClientSecret json.RawMessage `json:"client_secret"`
 		RefreshToken json.RawMessage `json:"refresh_token"`
-		TokenURI     json.RawMessage `json:"token_uri"`
+		TokenURL     json.RawMessage `json:"token_uri"`
 		Installed    json.RawMessage `json:"installed"`
 		Web          json.RawMessage `json:"web"`
 	}
@@ -110,30 +110,18 @@ func CheckCredentialJSON(raw []byte) error {
 	if isJSONValue(cred.Installed) || isJSONValue(cred.Web) {
 		return errors.New("credential JSON carries an OAuth client configuration (installed/web), not a credential")
 	}
-	if isJSONValue(cred.TokenURI) {
+	if isJSONValue(cred.TokenURL) {
 		var s string
-		if json.Unmarshal(cred.TokenURI, &s) != nil || !googleTokenEndpoints[s] {
-			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(cred.TokenURI))
+		if json.Unmarshal(cred.TokenURL, &s) != nil || !googleTokenEndpoints[s] {
+			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(cred.TokenURL))
 		}
 	}
-	// Google's parser decodes these fields as strings and fails on any other
-	// type, after the gate had already chosen the credential over ADC; the
+	// Google's parser decodes its whole credential file, every type's fields
+	// included, before it looks at type, and fails on any value of the wrong
+	// shape — after the gate had already chosen the credential over ADC. The
 	// same decode runs here so the mismatch is refused up front. It comes
 	// after the checks above so a field they cover gets their message.
-	var typed struct {
-		Type           string `json:"type"`
-		ClientEmail    string `json:"client_email"`
-		PrivateKeyID   string `json:"private_key_id"`
-		PrivateKey     string `json:"private_key"`
-		AuthURL        string `json:"auth_uri"`
-		TokenURL       string `json:"token_uri"`
-		ProjectID      string `json:"project_id"`
-		UniverseDomain string `json:"universe_domain"`
-		ClientSecret   string `json:"client_secret"`
-		ClientID       string `json:"client_id"`
-		RefreshToken   string `json:"refresh_token"`
-		QuotaProjectID string `json:"quota_project_id"`
-	}
+	var typed credentialFileShape
 	if err := json.Unmarshal(raw, &typed); err != nil {
 		return fmt.Errorf("credential JSON: %w", err)
 	}
@@ -143,6 +131,65 @@ func CheckCredentialJSON(raw []byte) error {
 		}
 	}
 	return nil
+}
+
+// credentialFileShape mirrors the struct Google's library decodes a
+// credential file into (golang.org/x/oauth2 v0.35.0, google.credentialsFile
+// with externalaccount.CredentialSource), field types included, so a value
+// the library cannot decode is refused by the gate. Field names are the
+// library's; the tokenauth fuzz target pins that the gate never accepts a
+// credential the library rejects, which is what catches this drifting.
+type credentialFileShape struct {
+	Type                           string                  `json:"type"`
+	ClientEmail                    string                  `json:"client_email"`
+	PrivateKeyID                   string                  `json:"private_key_id"`
+	PrivateKey                     string                  `json:"private_key"`
+	AuthURL                        string                  `json:"auth_uri"`
+	TokenURL                       string                  `json:"token_uri"`
+	ProjectID                      string                  `json:"project_id"`
+	UniverseDomain                 string                  `json:"universe_domain"`
+	ClientSecret                   string                  `json:"client_secret"`
+	ClientID                       string                  `json:"client_id"`
+	RefreshToken                   string                  `json:"refresh_token"`
+	Audience                       string                  `json:"audience"`
+	SubjectTokenType               string                  `json:"subject_token_type"`
+	TokenURLExternal               string                  `json:"token_url"`
+	TokenInfoURL                   string                  `json:"token_info_url"`
+	ServiceAccountImpersonationURL string                  `json:"service_account_impersonation_url"`
+	ServiceAccountImpersonation    credentialImpersonation `json:"service_account_impersonation"`
+	Delegates                      []string                `json:"delegates"`
+	CredentialSource               credentialSourceShape   `json:"credential_source"`
+	QuotaProjectID                 string                  `json:"quota_project_id"`
+	WorkforcePoolUserProject       string                  `json:"workforce_pool_user_project"`
+	RevokeURL                      string                  `json:"revoke_url"`
+	SourceCredentials              *credentialFileShape    `json:"source_credentials"`
+}
+
+type credentialImpersonation struct {
+	TokenLifetimeSeconds int `json:"token_lifetime_seconds"`
+}
+
+type credentialSourceShape struct {
+	File                        string                 `json:"file"`
+	URL                         string                 `json:"url"`
+	Headers                     map[string]string      `json:"headers"`
+	Executable                  *credentialExecutable  `json:"executable"`
+	EnvironmentID               string                 `json:"environment_id"`
+	RegionURL                   string                 `json:"region_url"`
+	RegionalCredVerificationURL string                 `json:"regional_cred_verification_url"`
+	IMDSv2SessionTokenURL       string                 `json:"imdsv2_session_token_url"`
+	Format                      credentialSourceFormat `json:"format"`
+}
+
+type credentialExecutable struct {
+	Command       string `json:"command"`
+	TimeoutMillis *int   `json:"timeout_millis"`
+	OutputFile    string `json:"output_file"`
+}
+
+type credentialSourceFormat struct {
+	Type                  string `json:"type"`
+	SubjectTokenFieldName string `json:"subject_token_field_name"`
 }
 
 // isJSONValue reports whether a raw field was present with a value other

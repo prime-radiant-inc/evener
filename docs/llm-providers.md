@@ -470,8 +470,9 @@ file using any of them fails to load; see
    `https://accounts.google.com/o/oauth2/token`, where the refresh token or
    the signed assertion is sent), a top-level `installed`/`web` block (an
    OAuth client configuration, not a credential), or a value of the wrong
-   type in any field Google's parser reads (for example a numeric
-   `quota_project_id`) — is ignored with a warning
+   type in any field Google's parser decodes, external-account fields
+   included (for example a numeric `quota_project_id`) — is ignored with a
+   warning
    naming the remedy, and resolution falls through to application-default
    credentials. The gate reads these fields the way Google's library does,
    matching key names case-insensitively.
