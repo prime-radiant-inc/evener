@@ -158,7 +158,8 @@ late responses after disposal, auth invalidation during reads, configuration wri
 refusal, overlapping writes, uncertain-write reconciliation without replay, and
 pre-mutation read races. The first native list/detail/key-management screen now has [isolated-hub evidence](providers-evidence.md).
 Creation and endpoint editing are implemented, with iOS creation and Android
-edit/reset/removal exercised on the isolated hub. Credential testing, sign-in,
+edit/reset/removal exercised on the isolated hub. Credential testing now has
+both-platform fixture success and automated sanitization/invalidation coverage. Sign-in,
 reverse-platform form coverage and the complete manual acceptance matrix remain
 open. iOS ordinary-text keyboard-open action reachability is now verified with
 short strokes inside the visible form, including Save validation and Cancel.

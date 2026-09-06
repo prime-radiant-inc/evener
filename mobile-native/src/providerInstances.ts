@@ -1,5 +1,7 @@
+import { safeCredentialTestResult } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
 import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
+  AuthTestResponse,
   InstanceCreateParams,
   InstanceEditParams,
   InstanceListResponse,
@@ -7,6 +9,11 @@ import type {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface ProviderState {
+  credentialTest: {
+    provider: string;
+    pending: boolean;
+    result?: AuthTestResponse;
+  } | null;
   data: InstanceListResponse | null;
   loading: boolean;
   busy: boolean;
@@ -16,6 +23,7 @@ interface ProviderState {
 /** Provider data and operations owned by one connected hub's screen lifetime. */
 export class ProviderInstances {
   private state: ProviderState = {
+    credentialTest: null,
     data: null,
     loading: false,
     busy: false,
@@ -26,6 +34,7 @@ export class ProviderInstances {
   private disposed = false;
   private dirty = false;
   private revision = 0;
+  private testRevision = 0;
   private inFlight?: Promise<void>;
   constructor(private client: ConversationClientLike) {}
   getSnapshot = () => this.state;
@@ -49,6 +58,8 @@ export class ProviderInstances {
   }
   refresh = (): Promise<void> => {
     if (this.disposed) return Promise.resolve();
+    this.testRevision += 1;
+    this.publish({ credentialTest: null });
     this.dirty = true;
     if (this.inFlight) return this.inFlight;
     if (this.state.busy) return Promise.resolve();
@@ -80,7 +91,8 @@ export class ProviderInstances {
     if (configuration && (!this.state.data || this.state.data.writesRefused))
       throw new Error("Provider configuration is unavailable for editing");
     this.revision += 1;
-    this.publish({ busy: true });
+    this.testRevision += 1;
+    this.publish({ busy: true, credentialTest: null });
     try {
       await action();
     } finally {
@@ -125,6 +137,32 @@ export class ProviderInstances {
       () => this.client.request("evener/auth/logout", { provider }),
       false,
     );
+  testCredentials = async (provider: string): Promise<void> => {
+    if (
+      this.disposed ||
+      this.state.busy ||
+      this.state.loading ||
+      this.state.credentialTest?.pending
+    )
+      return;
+    const revision = ++this.testRevision;
+    this.publish({ credentialTest: { provider, pending: true } });
+    let result: AuthTestResponse;
+    try {
+      result = safeCredentialTestResult(
+        provider,
+        await this.client.request("evener/auth/test", { provider }),
+      );
+    } catch {
+      result = safeCredentialTestResult(provider, {
+        provider,
+        status: "endpoint_failure",
+        message: "",
+      });
+    }
+    if (!this.disposed && revision === this.testRevision)
+      this.publish({ credentialTest: { provider, pending: false, result } });
+  };
   dispose() {
     this.disposed = true;
     this.unsubscribe?.();
