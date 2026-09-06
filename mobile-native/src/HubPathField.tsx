@@ -14,13 +14,15 @@ export function HubPathField({
   client,
   value,
   onChange,
+  onBlur,
   disabled,
   label,
   kind,
 }: {
   client: ConversationClientLike;
   value: string;
-  onChange(value: string): void;
+  onChange(value: string, selected?: boolean): void;
+  onBlur?(): void;
   disabled: boolean;
   label: string;
   kind: "dir" | "file" | "outputFile";
@@ -33,9 +35,9 @@ export function HubPathField({
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const [open, setOpen] = useState(false);
   useEffect(() => () => model.dispose(), [model]);
-  function edit(path: string) {
+  function edit(path: string, selected = false) {
     model.clear();
-    onChange(path);
+    onChange(path, selected);
   }
   return (
     <>
@@ -43,6 +45,7 @@ export function HubPathField({
         accessibilityLabel={label}
         value={value}
         onChangeText={edit}
+        onBlur={onBlur}
         editable={!disabled}
         autoCapitalize="none"
         autoCorrect={false}
@@ -109,7 +112,7 @@ export function HubPathField({
                       edit(path);
                       void model.load(path);
                     } else {
-                      edit(kind === "dir" ? childrenPrefix(path) : path);
+                      edit(kind === "dir" ? childrenPrefix(path) : path, true);
                       setOpen(false);
                     }
                   }}
