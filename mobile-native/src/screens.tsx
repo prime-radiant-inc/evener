@@ -1,5 +1,5 @@
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
@@ -34,6 +34,8 @@ import { createConversationStore } from "../../mobile/src/state/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { drafts } from "./nativeDrafts";
 import { QueueSheet } from "./QueueSheet";
+import { SessionSheet } from "./SessionSheet";
+import { SessionControls } from "./sessionControls";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -382,6 +384,7 @@ export function SessionsScreen({
 
 export function ConversationScreen({
   route,
+  navigation,
 }: NativeStackScreenProps<Routes, "Conversation">) {
   const { activeProfile, client, state: connectionState } = useConnection();
   const colors = useColors();
@@ -404,7 +407,16 @@ export function ConversationScreen({
   const timeline = useRef<FlatList>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
-  useFocusEffect(useCallback(() => () => setQueueOpen(false), []));
+  const [sessionOpen, setSessionOpen] = useState(false);
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        setQueueOpen(false);
+        setSessionOpen(false);
+      },
+      [],
+    ),
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const document = useMemo(
     () =>
@@ -440,6 +452,73 @@ export function ConversationScreen({
       setRefreshing(false);
     }
   }
+  const focused = useIsFocused();
+  const connectionReady = useRef(connected);
+  connectionReady.current = connected;
+  const bindingGeneration = snapshot.conversationGeneration;
+  const bindingInstance = snapshot.conversation?.instanceId;
+  const controls = useMemo(
+    () =>
+      service && connected && focused
+        ? new SessionControls(
+            service,
+            async () => {
+              await store.getState().rehydrate(service, activitySink);
+              const current = store.getState();
+              if (current.status !== "open" || current.error)
+                throw new Error("Session refresh failed");
+            },
+            () => {
+              store.getState().close();
+              service.close();
+              setSessionOpen(false);
+              if (navigation.isFocused()) navigation.goBack();
+            },
+            () => {
+              const current = store.getState();
+              return (
+                connectionReady.current &&
+                navigation.isFocused() &&
+                current.status === "open" &&
+                current.conversationGeneration === bindingGeneration &&
+                current.conversation?.instanceId === bindingInstance
+              );
+            },
+          )
+        : null,
+    [
+      service,
+      store,
+      activitySink,
+      navigation,
+      connected,
+      focused,
+      bindingGeneration,
+      bindingInstance,
+    ],
+  );
+  useEffect(() => () => controls?.dispose(), [controls]);
+  const hasConversation = snapshot.conversation !== null;
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <Action
+          disabled={!hasConversation}
+          onPress={() => {
+            Keyboard.dismiss();
+            setSessionOpen(true);
+          }}
+        >
+          Session
+        </Action>
+      ),
+    });
+  }, [navigation, hasConversation]);
+  const currentName = snapshot.conversation?.name;
+  useEffect(() => {
+    if (currentName && currentName !== route.params.title)
+      navigation.setParams({ title: currentName });
+  }, [navigation, currentName, route.params.title]);
   const conversation = snapshot.conversation;
   const timelineRows = useMemo(
     () => groupTimeline(conversation?.items ?? []),
@@ -480,6 +559,19 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {sessionOpen && conversation && controls ? (
+        <SessionSheet
+          conversation={conversation}
+          controls={controls}
+          hubName={
+            activeProfile?.id === route.params.hubId
+              ? activeProfile.name
+              : "Disconnected hub"
+          }
+          ready={ready}
+          close={() => setSessionOpen(false)}
+        />
+      ) : null}
       {queueOpen && conversation && service ? (
         <QueueSheet
           conversation={conversation}
