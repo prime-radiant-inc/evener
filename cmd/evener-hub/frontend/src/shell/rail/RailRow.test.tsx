@@ -2088,3 +2088,17 @@ test("restart-required navigation disables daemon actions in the sidebar menu", 
   expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
   expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
 });
+
+test.each(["subagent", "job"] as const)("restart explanation survives %s activity", (kind) => {
+  renderRow({
+    state: "restartRequired",
+    live: true,
+    branch: "",
+    children: kind === "subagent" ? [apiNode({ state: "active" })] : [],
+    running_jobs: kind === "job" ? [{ job_id: "job-a", job_type: "shell", status: "running" }] : [],
+  });
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+  const gloss = screen.getByTestId("rail-row-activity").textContent;
+  expect(gloss).toContain("restart required");
+  expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
+});

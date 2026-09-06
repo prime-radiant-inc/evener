@@ -252,9 +252,10 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
   const parts: string[] = [];
+  if (session.state === "restartRequired") parts.push(humanizeState(session.state, session.ask_pending === true));
   if (workingCount > 0) {
     parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
-  } else if (jobCount === 0 || session.state === "active") {
+  } else if (session.state !== "restartRequired" && (jobCount === 0 || session.state === "active")) {
     parts.push(humanizeState(session.state, session.ask_pending === true));
   }
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
