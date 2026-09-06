@@ -1012,7 +1012,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// nothing was re-rooted, that one is the caller's to dispose or to keep.
 	reenteredEnv := s.env
 	defer func() {
-		if restoreComplete || reenteredEnv == env {
+		if restoreComplete || sameEnvironment(reenteredEnv, env) {
 			return
 		}
 		disposeUnadoptedScratch(reenteredEnv)

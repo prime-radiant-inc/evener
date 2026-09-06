@@ -36,13 +36,14 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // still holds the OLD environment, which owns nothing any more: a close in that
 // window would leave next's lease with no teardown owner. So the swap refuses
 // to start once the session is closing, and re-checks under s.mu before
-// installing; a close that began meanwhile rolls the move back by retaining
-// what next adopted (lease released, directory kept, the handoff a close makes)
-// and returns errSwapWhileClosing for the op to surface. A swap exempt from the
-// move rolls back nothing: there is no adopted lease to release, and the
-// environment it would have released is the live parent's own. Both `closing`
-// and the install are written under s.mu, so one of the two always sees the
-// other.
+// installing; a close that began meanwhile undoes step 0 and returns
+// errSwapWhileClosing for the op to surface. What the undo is follows what step
+// 0 did: a swap that moved the scratch retains it on next (lease released,
+// directory kept, the handoff a close makes); an exempt ENTER drops what the
+// refresh minted on next, a clone nothing will reach again; an exempt EXIT
+// leaves next alone, because next is the live parent's own environment. Both
+// `closing` and the install are written under s.mu, so one of the two always
+// sees the other.
 //
 // A swap that passes that first check is ADMITTED: it registers on envWorkWG
 // under the same s.mu hold that read `closing` (the beginDispose idiom), so the
@@ -156,9 +157,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		// clone this session built and is now abandoning, and step 1's git
 		// snapshot mints a scratch on an environment that owns none — so the
 		// clone leaves with a directory and a lease nothing else will ever
-		// reference. It goes with the clone, the same decision every other
-		// discarded clone's takes (the re-entry probes, the worktree control
-		// env, a spawn that failed before adoption).
+		// reference. It goes with the clone, the decision every other discarded
+		// clone's scratch takes (the re-entry probes, the worktree control env,
+		// a spawn that failed before adoption).
 		switch {
 		case moved:
 			next.RetainSessionScratch()

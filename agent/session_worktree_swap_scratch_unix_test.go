@@ -919,16 +919,16 @@ func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *t
 	}
 }
 
-// A shared child (no working dir of its own) can enter a worktree it is
-// switching into while its own close races that very enter. moved is false on
-// such a child's enter — its current environment IS s.parentSharedEnv, so
-// step 0 has nothing to move — but step 1's git snapshot still runs real git
-// on next, the clone the enter built, and running a command is what mints
-// next its own scratch, with a lease, on an environment that owns none. If
-// the child's own close wins the race before step 2 installs next, the swap
-// refuses — but its rollback retains only what step 0 moved, and step 0
-// moved nothing here, so next's freshly minted scratch and lease are left
-// with no owner: nothing ever references next again.
+// A shared child (no working dir of its own) can enter a worktree while its own
+// close races that very enter. Step 0 moves nothing on such a child's enter —
+// its current environment IS the parent's own object — but step 1's git
+// snapshot runs real git on next, the clone the enter built, and running a
+// command is what mints a scratch, with a lease, on an environment that owns
+// none. When the close wins before step 2 installs next, nothing will ever
+// reference that clone again, so the refused enter leaves the scratch base
+// exactly as it found it: the clone's directory goes with the clone, lease and
+// all. The control enter below is what makes that an assertion about disposal
+// rather than about a scratch no one minted.
 //
 // The hook releases as soon as the child's own close has BEGUN, never waiting
 // for it to return: the enter runs inside the manage_worktree dispatch, which
@@ -966,6 +966,35 @@ func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *test
 	child.worktreeGitVersionOK = true
 	child.stateDir = r.stateDir
 	child.mu.Unlock()
+
+	// The control: the same enter with no close under it. The refresh alone
+	// mints the entered clone's scratch — nothing runs a command on that clone
+	// — which is the directory the racing arm below has to dispose.
+	controlPrepared, err := parent.prepareSubagentRun(ctx, "control task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun for the control: %v", err)
+	}
+	control := controlPrepared.sub.sess
+	control.mu.Lock()
+	control.worktreeGitVersionOK = true
+	control.stateDir = r.stateDir
+	control.mu.Unlock()
+	controlTool := control.reg.Get("manage_worktree")
+	if controlTool == nil {
+		t.Fatal("registry is missing manage_worktree on the control child")
+	}
+	if _, err := controlTool.Exec(t.Context(), control.currentEnv(), map[string]any{"operation": "switch", "path": sibling}); err != nil {
+		t.Fatalf("control switch by path onto the sibling worktree: %v", err)
+	}
+	controlScratch := currentLocalEnv(t, control).SessionScratchDir()
+	if controlScratch == "" {
+		t.Fatal("the enter's refresh minted no scratch on the entered clone, so the racing arm below would prove nothing")
+	}
+	if !scratchLeaseHeld(t, controlScratch) {
+		t.Fatal("the scratch the enter's refresh minted holds no lease, so the racing arm below would prove nothing")
+	}
+	teardownChildSession(context.Background(), control, retainChildScratch)
+	releasePreparedTreeSlot(controlPrepared)
 
 	before := scratchDirsIn(t, isolated)
 
