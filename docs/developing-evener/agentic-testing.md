@@ -644,8 +644,10 @@ both in the card's own control row at every width:
 `[data-testid="spawn-model-trigger"]` (readout
 `[data-testid="spawn-model-value"]`) is the session composer's own
 `ModelSwitchTrigger` inside `[data-testid="spawn-model-slot"]`, and
-`[data-testid="spawn-effort"]` is the quiet effort overlay-select (real
-`<select>` labelled "Reasoning effort" over an aria-hidden readout). Both
+`[data-testid="spawn-effort"]` is the wrapper holding the quiet effort
+overlay-select (real `<select>` labelled "Prompt reasoning effort" over an
+aria-hidden readout — "Prompt" distinguishes it from the Advanced Options
+schema field's own "Reasoning effort"). Both
 carry the `— change model` screen-reader suffix on the model side, so
 address the trigger by testid. The picker itself is the shared ARIA
 combobox in `widgets/modelCatalog/` — `role="option"` rows, not the legacy
