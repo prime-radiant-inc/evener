@@ -415,7 +415,10 @@ isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
 The generated catalog has 88 methods and 35 notifications at this snapshot; the
-first recipe covers five methods. The packaged coverage report lists gaps. This
+two recipes cover seven methods and one notification. The opt-in project-layer
+recipe verified mutation, notification, effective-value readback and restoration
+from a separate tarball consumer against the isolated hub. The packaged coverage
+report lists gaps. This
 is not completion: add fixture-backed creation, streaming/rejoin, mutation
 receipt, approval, queue, navigation/management, provider, plugin, trust and
 upgrade recipes, with method-specific errors, presence semantics and recovery.

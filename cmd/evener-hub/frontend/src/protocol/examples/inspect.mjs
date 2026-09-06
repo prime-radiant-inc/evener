@@ -1,20 +1,6 @@
-import { readFileSync } from "node:fs";
-import { AppwireClient } from "@evener/appwire-client";
-import { WebSocket } from "ws";
+import { clientFromEnvironment } from "./connection.mjs";
 
-const url = process.env.EVENER_RPC_URL;
-const cwd = process.env.EVENER_CWD;
-if (!url || !cwd) throw new Error("Set EVENER_RPC_URL and EVENER_CWD.");
-const tokenFile = process.env.EVENER_TOKEN_FILE;
-const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : "";
-const hub = new AppwireClient({
-  url,
-  clientInfo: { name: "appwire-reference", version: "0.1.0" },
-  socketFactory: (endpoint) =>
-    new WebSocket(endpoint, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }),
-});
+const { hub, cwd } = clientFromEnvironment();
 try {
   const hello = await hub.connect();
   const models = await hub.request("model/list", { cwd });
