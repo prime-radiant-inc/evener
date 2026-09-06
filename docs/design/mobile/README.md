@@ -30,6 +30,10 @@ The capability inventory remains in `docs/superpowers/specs/2026-09-05-native-mo
 
 ## Open design judgments
 
+[Interruption notice evidence](interruption-notices.md) records the first
+typed-notice implementation from the presentation study, including both
+native platforms and the remaining disclosure-state and visual gaps.
+
 [Presentation study 02](presentation-study.html) explores the whole-screen
 hierarchy using the actual isolated-session markers and interruption notice.
 It includes light/dark and illustrated keyboard states, expandable notices,

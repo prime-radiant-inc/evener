@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
-import { groupTimeline } from "./timeline";
+import { groupTimeline, isInterruptedNotice } from "./timeline";
 
 const setup: MobileTimelineItem = {
   kind: "notice",
@@ -27,6 +27,27 @@ const warning: MobileTimelineItem = {
   family: "warning",
   tone: "warning",
 };
+
+it("collapses only typed non-warning interruption notices", () => {
+  const interrupted = {
+    ...setup,
+    origin: "steering" as const,
+    steeringKind: "interrupted",
+  };
+  expect(isInterruptedNotice(interrupted)).toBe(true);
+  expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
+  expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
+  expect(
+    isInterruptedNotice({
+      ...interrupted,
+      steeringKind: undefined,
+      text: "Interrupted",
+    }),
+  ).toBe(false);
+  expect(
+    isInterruptedNotice({ ...interrupted, steeringKind: "notification" }),
+  ).toBe(false);
+});
 
 it("groups consecutive internal entries without losing order or contents", () => {
   const input = [setup, diagnostic, message, { ...setup, id: "later" }];

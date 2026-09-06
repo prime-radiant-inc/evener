@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import { View } from "react-native";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { TranscriptImages } from "./TranscriptImages";
-import type { TimelineRow } from "./timeline";
+import { isInterruptedNotice, type TimelineRow } from "./timeline";
 import { Action, Copy, useColors } from "./ui";
 
 export function TimelineItem({
@@ -45,7 +45,17 @@ export function TimelineItem({
       );
       break;
     case "notice":
-      content = (
+      content = isInterruptedNotice(item) ? (
+        <>
+          <Action
+            tone="quiet"
+            label="Interrupted, show notice"
+            expanded={expanded}
+            onPress={() => setExpanded(!expanded)}
+          >{`${expanded ? "▾" : "▸"} Interrupted`}</Action>
+          {expanded ? <Copy>{item.text}</Copy> : null}
+        </>
+      ) : (
         <>
           <Copy muted>{item.tone === "warning" ? "Warning" : "Notice"}</Copy>
           <Copy>{item.text}</Copy>

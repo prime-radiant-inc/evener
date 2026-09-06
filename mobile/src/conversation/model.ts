@@ -110,6 +110,7 @@ export type MobileTimelineItem =
       kind: "notice";
       id: string;
       origin: NoticeOrigin;
+      steeringKind?: string;
       family: NoticeFamily;
       tone: NoticeTone;
       text: string;
