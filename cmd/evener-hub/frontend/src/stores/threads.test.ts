@@ -7218,17 +7218,17 @@ describe("useThreadsStore read-only ready-gating (requireReadyClient)", () => {
   });
 });
 
-describe("retry-safe mutation outbox integration", () => {
-  function deferred<T>() {
-    let resolve!: (value: T) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-      resolve = resolvePromise;
-      reject = rejectPromise;
-    });
-    return { promise, resolve, reject };
-  }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
+describe("retry-safe mutation outbox integration", () => {
   test("send resolves from the local commit while a lost response leaves one durable intent", async () => {
     const response = deferred<TurnStartResponse>();
     const called = deferred<void>();
@@ -7953,3 +7953,49 @@ for (const state of ["blockedUnknown", "submitting"] as const) {
     inspector.close();
   });
 }
+
+test("compatible refresh wins over a delayed incompatible receipt write", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delayed-upgrade" });
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  const writeStarted = deferred<void>();
+  const releaseWrite = deferred<void>();
+  const markUnknown = storage.markUnknown.bind(storage);
+  vi.spyOn(storage, "markUnknown").mockImplementation(async (id, state) => {
+    writeStarted.resolve();
+    await releaseWrite.promise;
+    return markUnknown(id, state);
+  });
+  const settled = deferred<void>();
+  const settleReceipt = storage.settleReceipt.bind(storage);
+  vi.spyOn(storage, "settleReceipt").mockImplementation(async (id, projectionState) => {
+    const result = await settleReceipt(id, projectionState);
+    if (id === record.clientMutationId) settled.resolve();
+    return result;
+  });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  const receipt = deferred<{ receipt: ReturnType<typeof mutationReceipt> }>();
+  fake.on("turn/queue", () => receipt.promise);
+  fake.emitReady();
+  const firstRead = threadsStore.getState().ensureThread("ref_a");
+  await writeStarted.promise;
+  status = "idle";
+  const refresh = threadsStore.getState().refreshThread("ref_a");
+  await flushIndexedDBUntil(() => threadsStore.getState().threads.get("ref_a")?.status.type === "idle");
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+  releaseWrite.resolve();
+  await Promise.all([firstRead, refresh]);
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("submitting");
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  receipt.resolve({ receipt: mutationReceipt(record.clientMutationId) });
+  await settled.promise;
+});

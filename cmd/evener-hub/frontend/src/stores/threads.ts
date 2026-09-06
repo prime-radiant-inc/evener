@@ -287,6 +287,7 @@ type PendingThreadHydration = {
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
 // --- Notification routing index ---------------------------------------------
@@ -624,6 +625,7 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (targetRef && pendingMutationReconciliations.has(targetRef)) return null;
   if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
@@ -1403,24 +1405,48 @@ async function publishAndReconcileThreadHydration(
   if (pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
   const runtime = getMutationRuntime();
   if (runtime) {
-    const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
-    await runtime.dispatcher.reconcileIdentities(authoritativeIds);
-    // The same read that settles what the authority knows also proves what it
-    // does not: a blockedUnknown record absent from every authoritative set
-    // was never journaled, so it returns to dispatch here rather than parking
-    // forever behind an outage that has since recovered (kata gwea).
-    // Saved snapshots contain no authoritative daemon receipt history, even
-    // after an incompatible daemon has been stopped. Persist uncertainty so
-    // reopening that saved snapshot cannot release an already accepted send.
-    if (published.status.type === "restartRequired") {
-      for (const record of await runtime.storage.listOutbox(ref)) {
-        if (record.state === "submitting") await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown");
-      }
-      notifyMutationPersistence([ref]);
-    } else if (published.status.type !== "notLoaded") {
-      await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+    // A newer snapshot may publish while an older storage transaction is in
+    // flight. Serialize reconciliation and keep dispatch closed until the
+    // latest snapshot has reconciled; older writes then cannot undo recovery.
+    const previous = pendingMutationReconciliations.get(ref) ?? Promise.resolve();
+    const reconciliation: Promise<void> = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const current = () =>
+          pendingMutationReconciliations.get(ref) === reconciliation &&
+          isCurrentMutationRuntime(runtime) &&
+          pending.epoch === readyEpoch &&
+          pending.client === wiredClient;
+        if (!current()) return;
+        const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
+        await runtime.dispatcher.reconcileIdentities(authoritativeIds);
+        if (!current()) return;
+        // The same read that settles what the authority knows also proves what it
+        // does not: a blockedUnknown record absent from every authoritative set
+        // was never journaled, so it returns to dispatch here rather than parking
+        // forever behind an outage that has since recovered (kata gwea).
+        // Saved snapshots contain no authoritative daemon receipt history, even
+        // after an incompatible daemon has been stopped. Persist uncertainty so
+        // reopening that saved snapshot cannot release an already accepted send.
+        if (published.status.type === "restartRequired") {
+          for (const record of await runtime.storage.listOutbox(ref)) {
+            if (!current()) return;
+            if (record.state === "submitting")
+              await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown");
+          }
+          notifyMutationPersistence([ref]);
+        } else if (published.status.type !== "notLoaded") {
+          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+        }
+        if (!current()) return;
+        await refreshMutationPins(runtime, [ref]);
+      });
+    pendingMutationReconciliations.set(ref, reconciliation);
+    try {
+      await reconciliation;
+    } finally {
+      if (pendingMutationReconciliations.get(ref) === reconciliation) pendingMutationReconciliations.delete(ref);
     }
-    await refreshMutationPins(runtime, [ref]);
   }
   return published;
 }
