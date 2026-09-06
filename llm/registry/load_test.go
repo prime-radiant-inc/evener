@@ -796,6 +796,9 @@ func TestTemplateVarsEnv(t *testing.T) {
 		{id: "openai", want: map[string]string{"BASE_URL": "OPENAI_BASE_URL"}},
 		{id: "row-only", want: map[string]string{"REGION": "EXAMPLE_REGION"}},
 		{id: "rule-only", want: map[string]string{"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION"}},
+		// No curated base URL (models.dev publishes no api): the user types
+		// the URL, so every vars_env entry stays offered.
+		{id: "watsonx", want: map[string]string{"WATSONX_AI_PROJECT_ID": "WATSONX_AI_PROJECT_ID"}},
 		{id: "no-such-provider"},
 	} {
 		t.Run(tt.id, func(t *testing.T) {

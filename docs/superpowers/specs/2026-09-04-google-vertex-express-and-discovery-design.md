@@ -165,10 +165,7 @@ Also in this section:
 
 **Hub behaviour, no code change:** the add dialog lists the provider (with
 a `GOOGLE_VERTEX_EXPRESS_BASE_URL` input it renders for every `vars_env`
-name a URL template reads (`Registry.TemplateVarsEnv`, added 2026-09-06 so
-`google-vertex` no longer offers a `GOOGLE_APPLICATION_CREDENTIALS` input
-that instance vars never feed, roborev round 19) — optional; the dialog
-submits it under the template key `BASE_URL`,
+name — optional; the dialog submits it under the template key `BASE_URL`,
 so a typed value takes effect (fixed 2026-09-05, roborev round 1)); after
 creation the instance's `authModes` is `["apiKey"]`, so the sheet offers
 **Set API key**, which stores the key in `credentials.toml` under the
@@ -442,5 +439,12 @@ recorded per `docs/developing-evener/agentic-testing.md`.
   the sorted env-var-name list because the TUI decodes
   `evener/instance/list` through the shared types and `ProtocolVersion` is
   compared exactly, so no v3 wire shape may change.
+- **Resolved 2026-09-06, roborev round 19 (follow-up PR):** the add form
+  rendered a `GOOGLE_APPLICATION_CREDENTIALS` input for `google-vertex`
+  because models.dev's `env` list names it beside the project and location
+  and every entry became a `VarsEnv` input; instance `vars` only feed
+  template placeholders, so the value was persisted and ignored. The hub now
+  builds the descriptor from `Registry.TemplateVarsEnv`, the `vars_env`
+  entries a URL template reads or a host rule consumes.
 - User OAuth ("Sign in with Google") is the natural next spec if per-user
   credentials or remote hubs without pasteable JSON become a requirement.
