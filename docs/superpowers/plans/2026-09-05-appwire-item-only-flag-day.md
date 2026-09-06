@@ -60,7 +60,20 @@ Additional owned caller fixture found by controller: `cmd/evener/internal/launch
 - [ ] After shared contract is available, run `GOMAXPROCS=2 go test -p 1 ./internal/apptranscript ./cmd/evener-hub/internal/appsource ./cmd/evener-hub`; run focused new and existing critical source/ordinal regressions under race, not the whole hub race suite. Format/diff checks.
 - [ ] Commit explicit owned paths and report RED/GREEN, old symbols removed, retained surfaces and incomplete gates.
 
+### Task 3: Browser and active documentation
+
+**Ownership:** `cmd/evener-hub/frontend/` excluding generated `src/protocol/types.gen.ts`; `docs/` excluding generated `appwire-protocol.md` and this new design/plan. No Go production edits.
+
+**Consumes:** generated Task 1 types. `ThreadReadParams`/`ThreadTurnsListParams` no longer contain paging-unit selectors/turn limits; methods and response shape otherwise remain stable.
+
 Additional ownership: `cmd/evener-tui/`. Production `fetchHubSessionRead` and `fetchHubTranscript` in `hub_commands.go` assume complete transcripts. Add a regression containing more than 40 items and a logical turn split across pages; preserve full-view availability through explicit bounded native item-page collection and correct fragment merge. Preserve the initial snapshot/live capture cut. `fetchHubStatus` can avoid transcript fetching if its metadata is sufficient. Run covering TUI tests with `GOMAXPROCS=2 go test -p 1 ./cmd/evener-tui -run 'FlagDay|ItemOnly|HubSession|HubTranscript' -count=1 -v`; add actual new test names to the final report. This is native v4 consumption, not legacy fallback.
+
+- [ ] Add failing browser protocol/default request tests proving v4 initialization and no `pageUnit`/`turnLimit`/transcript-list `limit` request fields; preserve explicit rejection of an old daemon response version. Use existing test helpers and run the focused test to capture RED.
+- [ ] Set browser protocol v4; remove request/fixture mode switches and selectors. Keep item limit 40, fragment reducers, item key/position handling and the separate per-turn item API.
+- [ ] Migrate harnesses, fixtures, request assertions and active docs. Correct original atomic paging spec/plan compatibility sections without rewriting unrelated historical records. Never hand-edit generated types.
+- [ ] Install/copy dependencies into the fresh worktree before testing. Run focused Vitest via package scripts, `npx biome check --write` for touched `src` files, then `make test-web` once generated types are available. Report typecheck blocked on the contract if necessary; do not add old fields back.
+- [ ] Commit named owned paths; report RED/GREEN, dependencies, documentation inventory and any incomplete gates.
+
 ### Task 4: Integrate, verify, review and publish
 
 **Ownership:** controller coordinates, delegates fixes to owning lane. Cross-cutting compile-only callers outside lane ownership receive an explicit ownership grant before editing.

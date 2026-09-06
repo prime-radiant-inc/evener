@@ -70,6 +70,12 @@
 - `cmd/evener-hub/app_rpc.go`, `cmd/evener-hub/app_rpc_test.go` — enrichment followed by final-result fitting.
 - `cmd/evener-hub/internal/appsource/local_daemon.go`, `cmd/evener-hub/internal/appsource/transport_seams_test.go` — item-only local-daemon forwarding.
 - `cmd/evener-hub/internal/appsource/codex_source.go`, `cmd/evener-hub/internal/appsource/coverage_completion_test.go` — invoke the Codex atomic adapter instead of forwarding native turn cursors.
+- `cmd/evener-hub/frontend/src/protocol/errors.ts` — item-cursor invalid-params discriminator.
+- `cmd/evener-hub/frontend/src/protocol/model.ts` — transcript-key and position identity on normalized item state.
+- `cmd/evener-hub/frontend/src/protocol/reducer.ts`, `cmd/evener-hub/frontend/src/protocol/reducer.test.ts` — partial-turn and cross-page tool reconciliation.
+- `cmd/evener-hub/frontend/src/stores/threads.ts`, `cmd/evener-hub/frontend/src/stores/threads.test.ts` — 40-item requests, stale refresh, and in-flight generation fences.
+- `cmd/evener-hub/frontend/src/panes/session/Session.test.tsx` — automatic older-page integration coverage.
+- `cmd/evener-hub/frontend/src/dev/overflowharness-entry.tsx`, `cmd/evener-hub/frontend/scripts/overflowguard/run.mjs` — real-browser paging and scroll-anchor regression.
 
 ## Task 1: Publish the Item-Only v4 Contract
 
@@ -639,6 +645,132 @@ git add -- cmd/evener-hub/app_item_page_fit.go cmd/evener-hub/app_item_page_fit_
 git commit -m "feat(hub): pack enriched transcript item pages"
 ```
 
+## Task 7: Merge Partial Pages and Recover Stale Cursors in the Frontend
+
+**Files:**
+- Modify: `cmd/evener-hub/frontend/src/protocol/errors.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/model.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.ts`
+- Modify: `cmd/evener-hub/frontend/src/protocol/reducer.test.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.ts`
+- Modify: `cmd/evener-hub/frontend/src/stores/threads.test.ts`
+
+- [ ] **Step 1: Write failing reducer tests**
+
+Add tests which start with a newest page, apply an older page, and assert:
+
+- two fragments with the same turn ID become one turn;
+- every transcript key appears once and in transcript order, including when historical and live display IDs differ;
+- a duplicate older item cannot replace newer text, observed timings, reasoning chunks, output images, or settled status;
+- a repeated `item/started` for an existing transcript key upserts rather than appends;
+- an unmatched tool result remains visible;
+- loading an older tool call later folds the call/result into one settled item;
+- a result-only turn is removed only after its result was actually folded into a matching call.
+
+Run:
+
+```bash
+cd cmd/evener-hub/frontend && npm test -- src/protocol/reducer.test.ts
+```
+
+Expected: FAIL because `prependOlderTurns` concatenates duplicate turns and `mergeToolCallsByCallId` drops unmatched results.
+
+- [ ] **Step 2: Replace concatenation with identity-aware merging**
+
+Export:
+
+```ts
+export function mergeOlderItemPage(
+  model: ThreadModel,
+  resp: ThreadTurnsListResponse,
+): ThreadModel
+```
+
+Use these precedence rules:
+
+```ts
+const statusRank: Record<string, number> = {
+  inProgress: 0,
+  completed: 1,
+  failed: 1,
+};
+
+function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
+  return {
+    ...older,
+    ...newer,
+    argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
+    outputImages: newer.outputImages ?? older.outputImages,
+    reasoningSummaries: newer.reasoningSummaries ?? older.reasoningSummaries,
+    observedStartedAt: newer.observedStartedAt ?? older.observedStartedAt,
+    observedCompletedAt: newer.observedCompletedAt ?? older.observedCompletedAt,
+    status:
+      statusRank[newer.status] >= statusRank[older.status]
+        ? newer.status
+        : older.status,
+  };
+}
+```
+
+Add `transcriptKey` and `position` to `ItemModel`, and copy them in `wireItemToModel`. Build final turn order as older-page turn IDs followed by current turn IDs not already present. For a shared turn, merge by `transcriptKey` with older position order first and current-only items afterward; current/live items are the `newer` argument even when their display IDs differ. Change `item/started` to the same transcript-key upsert rule. Current turn scalar state wins over backfill.
+
+Fix tool reconciliation by first collecting both call IDs and result IDs. Skip a result item only when a matching call exists in the aggregate turn list. Run tool reconciliation after combining the complete loaded model, not independently on each page.
+
+- [ ] **Step 3: Write failing store tests for item limits and stale recovery**
+
+Assert that:
+
+- initial `thread/read` and older `thread/turns/list` both send `itemLimit: 40` and no retired paging fields;
+- a `WireError` with `evenerErrorInfo: "transcriptItemCursorStale"` triggers one fresh `thread/read`, replaces the model, and does not display an older-page error;
+- an ordinary list failure still rejects for the existing inline retry UI;
+- a page response is discarded if release, reconnect epoch change, fresh hydration, or another successful older-page request changed the captured cursor while the request was in flight;
+- a live notification arriving during the request survives the merge.
+- reconnect and `evener/thread/resync` each perform one fresh subscribed item-mode read, replace bounded history, and reject a pre-cut older-page completion.
+
+Run:
+
+```bash
+cd cmd/evener-hub/frontend && npm test -- src/stores/threads.test.ts
+```
+
+Expected: FAIL because requests still use turn limits and stale errors are not classified.
+
+- [ ] **Step 4: Implement stale-cursor detection and guarded publication**
+
+```ts
+export function isStaleCursorError(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
+}
+```
+
+Replace both old constants with:
+
+```ts
+const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
+```
+
+`threadReadParams` and `olderItemsParams` both send `itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE`. There are no legacy browser callers or turn-mode fallback paths.
+
+In `loadOlderTurns`, capture the client, ready epoch, and exact cursor. On stale error, call the existing targeted `refreshTrackedThread(client, epoch, ref, true)` path so the established subscription-cut and hydration-generation fences perform a fresh read. Do not retry the stale cursor. Before publishing a successful older page, re-read the current model and require the same client, epoch, tracked ref, and `current.olderCursor === capturedCursor`; then call `mergeOlderItemPage(current, response)`.
+
+- [ ] **Step 5: Verify frontend behavior**
+
+```bash
+cd cmd/evener-hub/frontend
+npx biome check --write src/protocol/errors.ts src/protocol/model.ts src/protocol/reducer.ts src/protocol/reducer.test.ts src/stores/threads.ts src/stores/threads.test.ts
+npm test -- src/protocol/reducer.test.ts src/stores/threads.test.ts
+cd ../../.. && make test-web
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit the named paths**
+
+```bash
+git add -- cmd/evener-hub/frontend/src/protocol/errors.ts cmd/evener-hub/frontend/src/protocol/model.ts cmd/evener-hub/frontend/src/protocol/reducer.ts cmd/evener-hub/frontend/src/protocol/reducer.test.ts cmd/evener-hub/frontend/src/stores/threads.ts cmd/evener-hub/frontend/src/stores/threads.test.ts
+git commit -m "feat(web): merge atomic transcript item pages"
+```
+
 ## Task 8: Add Protocol-Level and Real-Browser Regression Gates
 
 **Files:**
@@ -666,6 +798,48 @@ go test ./cmd/evener-hub -run 'TestAppRPCAtomicItemPagingEndToEnd'
 ```
 
 Expected: FAIL until all three source paths and the shared packer agree.
+
+- [ ] **Step 2: Add the React integration regression**
+
+In `Session.test.tsx`, script an initial result-only partial turn and an older page containing the call plus an earlier fragment of the same turn. Let the existing visible paging sentinel trigger without a click. Assert the DOM contains each message once, one settled tool row with call arguments and result output, no empty separator from the folded result turn, and no inline error. Add a stale-list variant which returns `transcriptItemCursorStale` and then a fresh read; assert the stale content is replaced and no retry row appears.
+
+Run:
+
+```bash
+cd cmd/evener-hub/frontend && npm test -- src/panes/session/Session.test.tsx
+```
+
+Expected: PASS after Task 7; if it fails, fix the reducer/store boundary rather than weakening the component assertion.
+
+- [ ] **Step 3: Extend the real-browser harness**
+
+Add `?paging=1` mode to `overflowharness-entry.tsx`. Seed the real `Session` tree through the real reducer with a 40-item newest page, script `thread/turns/list` to return an older fragment sharing the first visible turn, and expose:
+
+```ts
+declare global {
+  interface Window {
+    verifyItemPaging: () => Promise<{
+      duplicateItemIds: string[];
+      missingItemIds: string[];
+      toolRows: number;
+      anchorDelta: number;
+    }>;
+  }
+}
+```
+
+`verifyItemPaging` records the first visible row's ID and top coordinate, triggers the real store's `loadOlderTurns`, waits for two animation frames and virtualizer settlement, then reports duplicates, missing fixture IDs, settled tool-row count, and anchor displacement.
+
+In `overflowguard/run.mjs`, navigate one Chrome page to the paging mode and fail unless:
+
+```js
+result.duplicateItemIds.length === 0
+result.missingItemIds.length === 0
+result.toolRows === 1
+Math.abs(result.anchorDelta) <= 1
+```
+
+The test must use the existing CDP startup deadline and frame/font settling helpers; add no sleeps.
 
 - [ ] **Step 4: Run focused and complete gates**
 

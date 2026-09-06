@@ -61,7 +61,7 @@ const init = async (script: NavigationScript) => {
 };
 const initialize = (navigation: NavigationCapability): InitializeResponse => ({
   serverInfo: { name: "fake", version: "1" },
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: "evener-appwire-v4",
   sourceId: "fake",
   features: {
     threadList: false,
@@ -1029,7 +1029,7 @@ test("same-generation reconnect during manifest load continues booting resources
   });
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
     navigation: capability(),
@@ -1200,7 +1200,7 @@ test("sequence gaps revalidate demanded locations", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
     navigation: capability(),

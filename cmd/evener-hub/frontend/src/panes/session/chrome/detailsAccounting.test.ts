@@ -28,7 +28,7 @@ test("absent thread usage falls back to the sum over the turns the client loaded
   expect(tokens).toEqual({ inputTokens: 8237, outputTokens: 120, scope: "session" });
 });
 
-// thread/read windows turns via turnLimit and reports the truncation with
+// thread/read windows items via itemLimit and reports the truncation with
 // olderCursor. A sum over a truncated window is NOT the session total, so the
 // scope has to say so - never label a partial figure as a full session.
 test("a derived sum over a truncated turn window is scoped to the loaded turns only", () => {

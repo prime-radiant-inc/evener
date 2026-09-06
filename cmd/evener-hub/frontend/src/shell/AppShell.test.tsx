@@ -175,7 +175,7 @@ function navClient(initialState: ConnectionState = "ready"): FakeClient {
   client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
+    protocolVersion: "evener-appwire-v4",
     sourceId: "fake",
     features: {} as never,
     navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },

@@ -227,7 +227,7 @@ test("a session with no thread-level total falls back to summing the loaded turn
   expect(row.textContent).toContain("↓120");
 });
 
-// thread/read windows turns via turnLimit and reports the truncation through
+// thread/read windows items via itemLimit and reports the truncation through
 // olderCursor. A sum over that window is NOT the session total, so the label
 // must say what it actually counts instead of overstating its scope.
 test("a derived total over a truncated turn window is labelled as covering only the loaded turns", async () => {

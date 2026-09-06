@@ -12,6 +12,7 @@ import {
   chunkViewBackingForTests,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  mergeOlderItemPage,
   notificationTargetsThread,
   pendingTextJoined,
   prependOlderTurns,
@@ -731,6 +732,259 @@ test("wire items carry transcriptEntryIndex into the model - it is what thread/f
     1000,
   );
   expect(itemAt(turnAt(hydrated, 0), 0).transcriptEntryIndex).toBeUndefined();
+});
+
+test("keyless item/completed updates a keyed hydrated item without losing identity metadata", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            turnId: "turn_1",
+            transcriptKey: "transcript:item_1",
+            position: { entry: 4, item: 2 },
+            type: "agentMessage",
+            text: "old",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { id: "item_1", turnId: "turn_1", type: "agentMessage", text: "current", status: "completed" },
+      },
+    },
+    1001,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(turnAt(model, 0).items).toHaveLength(1);
+  expect(item).toMatchObject({
+    id: "item_1",
+    text: "current",
+    status: "completed",
+    transcriptKey: "transcript:item_1",
+    position: { entry: 4, item: 2 },
+  });
+});
+
+test("turn/completed only merges same-ID keyless items, not conflicting keys or unrelated IDs", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_1",
+            turnId: "turn_1",
+            transcriptKey: "transcript:item_1",
+            position: { entry: 4, item: 2 },
+            type: "agentMessage",
+            text: "old",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  const completed = (item: ThreadItem): AnyNotification => ({
+    method: "turn/completed",
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turnId: "turn_1",
+      turn: { id: "turn_1", status: "completed", itemsView: "full", items: [item] },
+    },
+  });
+
+  model = applyNotification(
+    model,
+    completed({ id: "item_1", turnId: "turn_1", type: "agentMessage", text: "keyless current", status: "completed" }),
+    1001,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).text).toBe("keyless current");
+
+  model = applyNotification(
+    model,
+    completed({
+      id: "item_1",
+      turnId: "turn_1",
+      transcriptKey: "transcript:other",
+      type: "agentMessage",
+      text: "conflicting key",
+      status: "completed",
+    }),
+    1002,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(2);
+
+  model = applyNotification(
+    model,
+    completed({ id: "item_unrelated", turnId: "turn_1", type: "agentMessage", text: "unrelated", status: "completed" }),
+    1003,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(3);
+});
+
+test("active full turn/completed preserves only identity-matched hydrated item metadata", () => {
+  const keepPosition = { entry: 8, item: 0 };
+  const conflictingPosition = { entry: 8, item: 1 };
+  const oldPosition = { entry: 8, item: 2 };
+  let model = testHydrate({
+    status: { type: "active" },
+    evener: { activeTurnId: "turn_active" },
+    turns: [
+      {
+        id: "turn_active",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_keep",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_keep",
+            position: keepPosition,
+            type: "reasoning",
+            text: "hydrated reasoning",
+            argumentsJson: '{"from":"hydrate"}',
+            status: "inProgress",
+          },
+          {
+            id: "item_conflicting",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_conflicting:old",
+            position: conflictingPosition,
+            type: "agentMessage",
+            text: "old conflicting item",
+            status: "completed",
+          },
+          {
+            id: "item_old",
+            turnId: "turn_active",
+            transcriptKey: "transcript:item_old",
+            position: oldPosition,
+            type: "agentMessage",
+            text: "removed by authoritative stamp",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(model.activeTurnId).toBe("turn_active");
+
+  // This live delta gives the hydrated item the model-only fields that the
+  // existing full-stamp merge must continue preserving.
+  model = applyNotification(
+    model,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_active",
+        itemId: "item_keep",
+        summaryIndex: 0,
+        delta: " + live",
+      },
+    },
+    1100,
+  );
+  const beforeCompletion = itemAt(turnAt(model, 0), 0);
+  expect(beforeCompletion.observedStartedAt).toBeDefined();
+  expect(beforeCompletion.reasoningSummaries).toEqual([["hydrated reasoning", " + live"]]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_active",
+        turn: {
+          id: "turn_active",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_conflicting",
+              turnId: "turn_active",
+              transcriptKey: "transcript:item_conflicting:new",
+              type: "agentMessage",
+              text: "new conflicting item",
+              status: "completed",
+            },
+            {
+              id: "item_keep",
+              turnId: "turn_active",
+              type: "reasoning",
+              text: "final reasoning",
+              status: "completed",
+            },
+            {
+              id: "item_new",
+              turnId: "turn_active",
+              type: "agentMessage",
+              text: "new unrelated item",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    },
+    1200,
+  );
+
+  const settledTurn = turnAt(model, 0);
+  expect(model.activeTurnId).toBeUndefined();
+  expect(settledTurn.status).toBe("completed");
+  expect(settledTurn.items.map((item) => item.id)).toEqual(["item_conflicting", "item_keep", "item_new"]);
+  expect(settledTurn.items).toHaveLength(3);
+
+  const conflicting = itemAt(settledTurn, 0);
+  expect(conflicting).toMatchObject({
+    id: "item_conflicting",
+    transcriptKey: "transcript:item_conflicting:new",
+    text: "new conflicting item",
+    status: "completed",
+  });
+  expect(conflicting.position).toBeUndefined();
+
+  const keep = itemAt(settledTurn, 1);
+  expect(keep).toMatchObject({
+    id: "item_keep",
+    text: "final reasoning",
+    status: "completed",
+    transcriptKey: "transcript:item_keep",
+    position: keepPosition,
+    argumentsJSON: '{"from":"hydrate"}',
+    observedStartedAt: beforeCompletion.observedStartedAt,
+    observedCompletedAt: new Date(1200).toISOString(),
+  });
+  expect(keep.reasoningSummaries).toEqual([["hydrated reasoning", " + live"]]);
+
+  const unrelated = itemAt(settledTurn, 2);
+  expect(unrelated).toMatchObject({ id: "item_new", text: "new unrelated item", status: "completed" });
+  expect(unrelated.transcriptKey).toBeUndefined();
+  expect(unrelated.position).toBeUndefined();
 });
 
 test("agentMessage/reset discards the in-flight item", () => {
@@ -1930,6 +2184,521 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
 
   expect(result.turns.map((t) => t.id)).toEqual(["turn_2"]);
   expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage merges shared turns and transcript items in position order with current precedence", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "live-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k1",
+            transcriptKey: "k1",
+            position: { entry: 2, item: 1 },
+            turnId: "live-turn",
+            type: "agentMessage",
+            text: "new text",
+            status: "completed",
+          },
+          {
+            id: "live-k2",
+            transcriptKey: "k2",
+            position: { entry: 3, item: 1 },
+            turnId: "live-turn",
+            type: "agentMessage",
+            text: "current-only",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const current = model.turns[0];
+  if (!current) throw new Error("expected current turn");
+  const currentItem = current.items[0];
+  if (!currentItem) throw new Error("expected current item");
+  currentItem.observedStartedAt = "1970-01-01T00:00:01.001Z";
+  currentItem.observedCompletedAt = "1970-01-01T00:00:01.002Z";
+  currentItem.reasoningSummaries = [["kept reasoning"]];
+  currentItem.outputImages = [{ src: "new-image" }];
+
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "historical-turn",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "historical-turn",
+            type: "agentMessage",
+            text: "older-only",
+            status: "completed",
+          },
+          {
+            id: "old-k1",
+            transcriptKey: "k1",
+            position: { entry: 2, item: 1 },
+            turnId: "historical-turn",
+            type: "agentMessage",
+            text: "old duplicate",
+            argumentsJson: "old arguments",
+            outputImages: [{ url: "old-image", source: "old-source" }],
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns).toHaveLength(1);
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["k0", "k1", "k2"]);
+  expect(result.turns[0]?.items.filter((item) => item.transcriptKey === "k1")).toHaveLength(1);
+  expect(result.turns[0]?.items[1]).toMatchObject({
+    id: "live-k1",
+    text: "new text",
+    argumentsJSON: "old arguments",
+    observedStartedAt: "1970-01-01T00:00:01.001Z",
+    observedCompletedAt: "1970-01-01T00:00:01.002Z",
+    reasoningSummaries: [["kept reasoning"]],
+    outputImages: [{ src: "new-image" }],
+    status: "completed",
+  });
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
+test("mergeOlderItemPage preserves older settled payload and usage when the current same-key fragment omits them", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "current-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer text wins",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+        itemsView: "fragment",
+        items: [
+          {
+            id: "older-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older text",
+            output: "older output",
+            error: "older error",
+            exitCode: 3,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.usage).toEqual({ inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "current-item",
+    text: "newer text wins",
+    output: "older output",
+    error: "older error",
+    exitCode: 3,
+    completedAt: "1970-01-01T00:00:00.002Z",
+    status: "completed",
+  });
+});
+
+test("mergeOlderItemPage retains the older status when an equal-rank newer item omits status", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "newer-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer text without status",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "older-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older text",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items[0]).toMatchObject({ text: "newer text without status", status: "inProgress" });
+});
+
+test("mergeOlderItemPage retains older identity when a newer matching item omits it", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer unkeyed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "older-key",
+            position: { entry: 1, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older keyed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    id: "same-id",
+    text: "newer unkeyed",
+    transcriptKey: "older-key",
+    position: { entry: 1, item: 0 },
+  });
+});
+
+test("mergeOlderItemPage lets newer defined identity replace older identity", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            transcriptKey: "newer-key",
+            position: { entry: 2, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "newer keyed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "same-id",
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "older unkeyed",
+          },
+        ],
+      },
+    ],
+  });
+  expect(result.turns[0]?.items).toHaveLength(1);
+  expect(result.turns[0]?.items[0]).toMatchObject({
+    transcriptKey: "newer-key",
+    position: { entry: 2, item: 0 },
+    text: "newer keyed",
+  });
+});
+
+test("mergeOlderItemPage position-orders the final items when pages arrive out of chronology", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "current-earlier",
+            transcriptKey: "key-1",
+            position: { entry: 1, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "current earlier position",
+          },
+        ],
+      },
+    ],
+  });
+
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "arrived-later",
+            transcriptKey: "key-3",
+            position: { entry: 3, item: 0 },
+            turnId: "shared-turn",
+            type: "agentMessage",
+            text: "later position arrived on older request",
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result.turns[0]?.items.map((item) => item.transcriptKey)).toEqual(["key-1", "key-3"]);
+});
+
+test("mergeOlderItemPage preserves unmatched results and folds a result-only turn only after its call arrives", () => {
+  const model = testHydrate();
+  const resultOnly = {
+    id: "result-turn",
+    status: "completed",
+    itemsView: "full",
+    items: [
+      {
+        id: "item_tool_result_orphan",
+        transcriptKey: "result-key",
+        position: { entry: 1, item: 1 },
+        turnId: "result-turn",
+        type: "commandExecution",
+        callId: "orphan-call",
+        output: "orphan output",
+        status: "completed",
+      },
+    ],
+  };
+  const visible = mergeOlderItemPage(model, { data: [resultOnly], nextCursor: "cursor_0" });
+  expect(visible.turns).toHaveLength(1);
+  expect(visible.turns[0]?.items[0]?.output).toBe("orphan output");
+
+  const withCall = mergeOlderItemPage(visible, {
+    data: [
+      {
+        id: "call-turn",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_call_orphan",
+            transcriptKey: "call-key",
+            position: { entry: 0, item: 1 },
+            turnId: "call-turn",
+            type: "commandExecution",
+            callId: "orphan-call",
+            argumentsJson: "{}",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_done",
+  });
+  expect(withCall.turns).toHaveLength(1);
+  expect(withCall.turns[0]?.items).toHaveLength(1);
+  expect(withCall.turns[0]?.items[0]).toMatchObject({
+    id: "item_tool_call_orphan",
+    argumentsJSON: "{}",
+    output: "orphan output",
+    status: "completed",
+  });
+});
+
+test("item/started upserts an existing transcript key instead of appending a duplicate", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            id: "historical-id",
+            transcriptKey: "same-key",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: "old",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          id: "live-id",
+          transcriptKey: "same-key",
+          position: { entry: 1, item: 1 },
+          turnId: "turn_1",
+          type: "agentMessage",
+          text: "new",
+          status: "inProgress",
+        },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({ id: "live-id", text: "new", transcriptKey: "same-key" });
+});
+
+test("item/completed settles an existing transcript key despite a different display ID", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "historical-id",
+            transcriptKey: "stable-key",
+            position: { entry: 1, item: 0 },
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: "partial",
+            status: "inProgress",
+          },
+        ],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          id: "live-id",
+          transcriptKey: "stable-key",
+          position: { entry: 1, item: 0 },
+          turnId: "turn_1",
+          type: "agentMessage",
+          text: "settled",
+          status: "completed",
+        },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({
+    id: "live-id",
+    text: "settled",
+    status: "completed",
+    transcriptKey: "stable-key",
+  });
+});
+
+test("item/completed retains legacy display-ID matching when stable identity is unavailable", () => {
+  let model = testHydrate({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [{ id: "legacy-id", turnId: "turn_1", type: "agentMessage", text: "partial", status: "inProgress" }],
+      },
+    ],
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { id: "legacy-id", turnId: "turn_1", type: "agentMessage", text: "settled", status: "completed" },
+      },
+    },
+    2000,
+  );
+  expect(model.turns[0]?.items).toHaveLength(1);
+  expect(model.turns[0]?.items[0]).toMatchObject({ id: "legacy-id", text: "settled", status: "completed" });
 });
 
 // askPending is a THREAD-level wire signal (EvenerThread.askPending, mirroring

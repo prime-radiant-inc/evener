@@ -10,14 +10,14 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
-import { ClientNotReadyError, mutationErrorData, WireError } from "../protocol/errors";
+import { ClientNotReadyError, isStaleCursorError, mutationErrorData, WireError } from "../protocol/errors";
 import type { ThreadModel } from "../protocol/model";
 import {
   applyNotification,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  mergeOlderItemPage,
   notificationRoutingKey,
-  prependOlderTurns,
   resolvePendingEscalation,
 } from "../protocol/reducer";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
@@ -258,6 +258,7 @@ function invalidateGoalResponseFallback(ref: string): void {
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
+const trackedHydrationCompletions = new Map<string, Promise<void>>();
 // The identity a pending hydration accepts frames for. Both facts come from an
 // authority, never from the stream: the routing is seeded from the published
 // model when the read starts and re-seeded from the authoritative snapshot at
@@ -549,6 +550,7 @@ let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
 const dispatchableMutationRefs = new Set<string>();
+const olderPageGenerations = new Map<string, number>();
 
 // Refs this connection generation holds a wire subscription for. thread/read
 // with subscribe:true is how a subscription is created, and every re-read of
@@ -883,6 +885,8 @@ const watchHydratedIncludeTurns = new Map<string, boolean>();
 // already-subscribed ref sends subscribe:false so the server skips the
 // buffered-capture cycle a second subscribe would run, and
 // releaseThread's unsubscribe is what drops the entry again.
+const TRANSCRIPT_ITEM_PAGE_SIZE = 40;
+
 function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean) {
   return {
     ref,
@@ -890,7 +894,7 @@ function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean
     itemsView: "full",
     subscribe,
     replaceSubscription: false,
-    turnLimit: 40,
+    itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE,
   } as const;
 }
 
@@ -1018,15 +1022,8 @@ async function hydrateAndSubscribeWatch(
   return model;
 }
 
-// Older-turn paging (loadOlderTurns): same 30-turn page size as the legacy
-// renderer's own OLDER_TURN_PAGE (cmd/evener-hub/assets/renderer.js, cited in
-// docs/web-ui/parity/parity-m4-transcript.md §18) - not load-bearing for
-// correctness, just a reasonable, parity-matching default a later wave can
-// retune once it owns the scroll-triggered paging UX (T4).
-const OLDER_TURNS_PAGE_SIZE = 30;
-
-function olderTurnsParams(ref: string, cursor: string) {
-  return { ref, cursor, itemsView: "full", limit: OLDER_TURNS_PAGE_SIZE } as const;
+function olderItemsParams(ref: string, cursor: string) {
+  return { ref, cursor, itemsView: "full", itemLimit: TRANSCRIPT_ITEM_PAGE_SIZE } as const;
 }
 
 // FRAME_TIMES_WINDOW_MS matches widgets/cadence's own WINDOW_MS exactly
@@ -1756,6 +1753,14 @@ async function refreshTrackedThread(
   const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) =>
     publishAndReconcileThreadHydration(ref, pending, result),
   );
+  const completion = hydration.then(
+    () => undefined,
+    () => undefined,
+  );
+  trackedHydrationCompletions.set(ref, completion);
+  void completion.then(() => {
+    if (trackedHydrationCompletions.get(ref) === completion) trackedHydrationCompletions.delete(ref);
+  });
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
@@ -2216,6 +2221,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrates.delete(ref);
     inflightHydrateClients.delete(ref);
     inflightHydrateEpochs.delete(ref);
+    trackedHydrationCompletions.delete(ref);
     pendingThreadHydrations.delete(ref);
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
@@ -2374,20 +2380,56 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // Read-only, so it waits out a reconnect (issue #195's RCA) instead of
     // failing with AppwireClient's synchronous "cannot call ... while
     // reconnecting" rejection - see requireReadyClient's own comment.
+    await requireReadyClient();
+    await trackedHydrationCompletions.get(ref);
     const client = await requireReadyClient();
+    const capturedEpoch = readyEpoch;
     const model = threadsStore.getState().threads.get(ref);
     if (!model?.olderCursor) return; // untracked, or no more history to page in
-    const resp: ThreadTurnsListResponse = await client.request(
-      "thread/turns/list",
-      olderTurnsParams(ref, model.olderCursor),
-    );
+    const capturedRef = model.ref;
+    const capturedCursor = model.olderCursor;
+    const capturedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+    const capturedPageGeneration = olderPageGenerations.get(ref) ?? 0;
+    let resp: ThreadTurnsListResponse;
+    try {
+      resp = await client.request("thread/turns/list", olderItemsParams(ref, capturedCursor));
+    } catch (error) {
+      if (isStaleCursorError(error)) {
+        const current = threadsStore.getState().threads.get(ref);
+        if (
+          !current ||
+          wiredClient !== client ||
+          readyEpoch !== capturedEpoch ||
+          current.ref !== capturedRef ||
+          current.olderCursor !== capturedCursor ||
+          (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
+          (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+          pendingThreadHydrations.has(ref)
+        )
+          return;
+        await refreshTrackedThread(client, capturedEpoch, capturedRef, true);
+        return;
+      }
+      throw error;
+    }
     // A concurrent releaseThread() may have dropped this ref while the page
     // was in flight; don't resurrect it. Re-read (rather than reusing
     // `model`) so a live notification that arrived during the await isn't
     // clobbered by prepending onto a stale snapshot.
     const current = threadsStore.getState().threads.get(ref);
-    if (!current) return;
-    putThreadModel(ref, prependOlderTurns(current, resp));
+    if (
+      !current ||
+      wiredClient !== client ||
+      readyEpoch !== capturedEpoch ||
+      current.ref !== capturedRef ||
+      current.olderCursor !== capturedCursor ||
+      (threadsStore.getState().hydrations.get(ref) ?? 0) !== capturedHydrations ||
+      (olderPageGenerations.get(ref) ?? 0) !== capturedPageGeneration ||
+      pendingThreadHydrations.has(ref)
+    )
+      return;
+    olderPageGenerations.set(ref, capturedPageGeneration + 1);
+    putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
   async send(ref, text, attachments) {
@@ -2686,10 +2728,12 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
+  olderPageGenerations.clear();
   goalUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();
+  trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();

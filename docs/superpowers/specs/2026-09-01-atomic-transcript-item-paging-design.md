@@ -234,6 +234,38 @@ The live source may return more positioned candidates than the final page can
 hold. The hub enriches and packs them, requesting another candidate batch only
 when needed to fill the 40-item/1-MiB page without skipping positions.
 
+## Frontend model and merge rules
+
+The browser normalizes loaded transcript state by `turnId` and
+`transcriptKey`. It keeps one logical turn even when three pages contribute
+three fragments.
+
+- Prepending a historical fragment inserts only unseen older keys at their
+  transcript positions.
+- When a historical item collides with a live item, the live/newer lifecycle
+  value wins.
+- `item/started` is an upsert, not unconditional append.
+- Completion, delta, reset, and tombstone events update the same key.
+- `turn/completed` merges fragment scalars and items. Only
+  `itemsView: "full"` may replace a turn's entire item list.
+- Tool call/result pairing runs over the complete loaded raw-item set, not one
+  page. A call and result on opposite page boundaries remain represented and
+  pair exactly once.
+- Display projection coalesces fragments before rendering. One logical turn
+  produces one React/virtual-list key and one set of separators.
+
+An in-flight older-page request captures its cursor and the thread hydration
+incarnation. If reconnect, resync, release, or a newer accepted page changes
+either fence, discard the late result.
+
+## Reconnect and resync
+
+A successful reconnect or `evener/thread/resync` performs a fresh item-mode
+read and replaces bounded transcript history. Previously backfilled history may
+be discarded. Live notifications that occur after the resync cut are then
+applied normally. A response issued before the cut cannot prepend into the new
+incarnation.
+
 ## Migration
 
 The v4 flag day replaces the former compatibility rollout: generated types and
