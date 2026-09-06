@@ -4,6 +4,10 @@
 
 Evener should feel like a place to build, not a remote console squeezed onto a phone. A person should be able to understand what is happening, make a decision, and continue work without decoding the system’s internal vocabulary.
 
+## Ground every feature in Evener
+
+Use the current web UI, server contracts, and Jesse’s explicit requests to establish product behavior. The old mobile UI has no authority over feature scope. Reused client code must be checked against current behavior; its existence does not establish a requirement. Research may shape presentation and native interaction, but must not introduce unsupported actions, states, or model options. Record unresolved differences in the [web parity audit](web-parity-audit.md).
+
 ## Make the work the visual center
 
 The session’s content deserves the largest share of attention. Navigation provides orientation; controls appear where the action belongs. Use typography, alignment and spacing before adding containers. A border must communicate a boundary the person cares about. Routine transcript entries do not each need their own rounded rectangle.
