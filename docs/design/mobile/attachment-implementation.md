@@ -21,7 +21,15 @@ Native composition must preserve selected images across hub switches and restart
 
 Shared input assembly and durable image storage/checkpoint ownership are implemented. Image bytes occupy separate immutable SQLite rows; draft and uncertain image references commit with text under a savepoint. This keeps one atomic persistence boundary and avoids rewriting bytes on text edits. Removed images are deleted only when neither draft nor uncertain submission references them. Native DraftDocument supports adding/removing images, preserving failed image saves for retry, image-only submission, and preserving ordinary images during structured answers.
 
-Native 123 tests, TypeScript and targeted Biome pass. Tests use real SQLite for close/reopen, hub isolation, byte immutability, failure rollback, uncertain recovery, newer-image retention, and cleanup. Picker/PNG normalization, pending-encoding cancellation, composer previews, queue-drain integration, native manual image delivery and performance evidence remain outstanding. There is no native attachment E2E claim yet.
+Native 127 tests, TypeScript and targeted Biome pass. Tests use real SQLite for close/reopen, hub isolation, byte immutability, failure rollback, uncertain recovery, newer-image retention, and cleanup. Selection tests exercise limits, cancellation, removal during encoding, and preservation of edits while encoding.
+
+## Native picker evidence
+
+Release builds on iPhone 17 Pro (iOS 26.5) and Pixel 7 emulator (API 35) selected the repository's icon.png fixture through the actual system photo picker. Both returned a visible image preview and editing marker. Stopping and relaunching each app retained the preview and marker in the same hub/session. Removing the image removed its marker; Android's image-only draft became empty and Send disabled, while iOS retained the pre-existing text. Android's picker supplied a generated filename; iOS retained icon.png. These are selection, normalization, and local recovery checks, not provider delivery evidence.
+
+The picker accepts images only and normalizes to PNG. Pending tiles are removable; encoding finishes before inserting a durable editing marker, so cancellation does not leave an orphan marker. Late results after leaving the destination are ignored. Native preview tiles are a presentation adaptation of the current web attachment flow.
+
+Queue-drain integration, native manual image delivery, transcript rendering, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding. Current web submitRouting.ts routes image steering and non-empty queues through turn/drainAsSteer; native ordinary steering still needs that correction. There is no native attachment delivery E2E claim yet.
 
 ## Native API references
 
