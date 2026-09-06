@@ -279,21 +279,24 @@ function nextFrame(): Promise<void> {
 // never reaches the check, the enclosing CDP call times out first, and the
 // blocker is lost with it (issue #919).
 //
-// It sits far above the work it covers, which is whatever of the mount, the
-// INITIAL_TURN_COUNT-turn hydration and the virtualizer's reconcile loop is
-// still outstanding when the spin starts, plus the quiescence run itself.
+// The value is derived, not picked. What it covers is whatever of the mount,
+// the INITIAL_TURN_COUNT-turn hydration and the virtualizer's reconcile loop
+// is still outstanding when the spin starts, plus the quiescence run itself.
 // Measured on one host: the mount reached stable end-anchored geometry within
 // ~1.1s of navigation, and the quiescence run then cost 21 frames - 350ms
-// unthrottled, 432ms under 10x and 730ms under 20x Chrome CPU throttling.
+// unthrottled, 432ms under 10x and 730ms under 20x Chrome CPU throttling. So
+// the worst measured readiness run is ~2s, and this is a wide multiple of it.
 //
-// It is also bounded ABOVE, by the runner's own Runtime.evaluate ceiling
+// It is bounded ABOVE as well, by the runner's own Runtime.evaluate ceiling
 // (browserGuardCdp.mjs, 30s): this whole spin runs inside one such call, so a
 // tripwire past that ceiling never fires - the transport times out first and
 // the guard reports `timeout calling Runtime.evaluate after 30000ms` with the
-// blocker lost. Verified by running the non-overflowing fixture against a 90s
-// value. Raising this without raising that ceiling trades a named condition
-// for a transport error.
-const SETTLE_TRIPWIRE_MS = 25_000;
+// blocker lost (verified against a 90s value). At 15s the spin reports its
+// own blocker with that ceiling still 15s away. Every second added here buys
+// a broken fixture another second of silence and spends margin against the
+// stall this cannot see (issue #919), so widening it needs a measurement that
+// says the run got slower, not a hunch that it might.
+const SETTLE_TRIPWIRE_MS = 15_000;
 
 // Callable, not a module-load one-shot: the runner awaits webfonts FIRST
 // (waitForFonts over CDP) and only then calls this, because a late-arriving
