@@ -274,3 +274,22 @@ On 6 September 2026, the repository-trust recipe ran from the independently
 installed tarball against the authenticated isolated hub. It verified rejection
 of the stale hash, approval of the new revision and effective maxRounds=12, then
 removed its owned temporary directory. Trust metadata remains in isolated state.
+
+
+### Per-session overrides versus saved layers
+
+Send per-session choices in `thread/start.launchOverrides`. Do not call
+`evener/launch/setLayer` for these choices. Use `evener/launch/resolve` with the
+same cwd and launchOverrides to preview the resulting configuration; never copy
+its entire effective result back into the draft. Omit launchOverrides when no
+fields are selected. Preserve explicit false, zero and empty values according to
+each field's merge semantics.
+
+The web and native creation flows give advanced model/reasoning fields precedence
+over their compact selectors. Because top-level thread/start model/reasoning
+fields win on the server, clients must hoist the advanced values into those
+fields too. An advanced qualified model (provider/model) replaces both the old
+model and its separate modelProvider selection. Use the perLaunch schema flag and
+driver support when advertising advanced fields. Plugin selection is a separate
+control in the web flow. Native scalar launch-only behavior has both-platform
+manual evidence; a complete session-creation SDK recipe remains outstanding.

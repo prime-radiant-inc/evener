@@ -100,3 +100,34 @@ was not counted as approval evidence. Full offline/reconnect and screen-reader
 qualification remains open. The two controller tests cover exact hash/scope,
 unsaved-draft fencing, lost-reply readback and a changed file after mutation.
 The native suite now has 316 tests; both Release builds and TypeScript pass.
+
+
+## Per-session launch options
+
+The new-session form now keeps a launchOverrides draft separate from saved
+layers. Session options use the same perLaunch/driver-support filter as the web
+spawn form. Scalar, environment, fallback, path-list and MCP editors are shared
+with project/global settings. A failed effective-value resolve retains the
+schema controls for correction. Plugin selection remains a separate unfinished
+flow, matching the web's separation from generic advanced fields.
+
+The submit path reuses the web resolveScalars helper: advanced model/reasoning
+values take precedence and are hoisted into top-level thread/start fields. A
+qualified advanced model must not retain the earlier modelProvider chip. Empty
+overrides are omitted; explicit false, zero and empty collection/map values are
+preserved. Drafts survive failed creation and connection changes and remain
+isolated between hubs. There is no launch/setLayer call in this path.
+
+Manual native checks on 6 September 2026 created empty sessions using the owned
+SecondHub fixture. iOS chose Fake Alternate and maxRounds=7, creating
+034KNWkmyxCslgXC3kYIpD. Android chose Fake Test Model and maxRounds=8, creating
+034KNaBKRJLBZ9QyGZ9Dh4. Independent thread/list located both, and each session's
+persisted config.max_tool_rounds_per_input matched its selected value. Independent
+getLayer reads confirmed no maxRounds override in either saved global or project
+layer. No provider request or production mutation was needed.
+
+318 native tests, TypeScript and both Release builds pass. The per-session row
+list is a functional baseline, not visual acceptance: density, model/reasoning
+presentation, large catalogs, keyboard and screen-reader behavior remain open.
+Native collection/per-launch precedence and reconnect/error cases still need
+expanded manual coverage. Creation images and plugin selection are not yet done.
