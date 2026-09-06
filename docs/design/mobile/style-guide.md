@@ -96,3 +96,7 @@ The [agent-product research](agent-mobile-research.md) adds interruption sequenc
 # Session search
 
 Search the hub, not just loaded rows. Keep the submitted query visible while results load and when returning from a conversation. Use keyboard Search and a visible action; Clear restores browsing. At accessibility text sizes, give the input its own row. Never advertise Load more until the hub can return a correct continuation across its combined sources.
+
+## Project browsing
+
+Use server project names and keys. Show current, recent and archived work as selected tabs, with shape and accessibility selection in addition to color. Keep loaded pages when returning from a conversation. Refresh replaces the list; Load more appends only within the same server generation and resource revision. Explain changed-list conflicts instead of silently mixing snapshots.

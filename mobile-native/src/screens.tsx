@@ -45,6 +45,8 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+  Projects: { hubId: string };
+  Project: { hubId: string; projectKey: string; title: string };
   Hubs: undefined;
   Sessions: undefined;
   NewSession: { hubId: string; hubName: string };
@@ -298,6 +300,15 @@ export function SessionsScreen({
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
       <ConnectionStatus />
+      <Action
+        disabled={!activeProfile || state !== "ready"}
+        onPress={() => {
+          if (activeProfile)
+            navigation.navigate("Projects", { hubId: activeProfile.id });
+        }}
+      >
+        Browse projects
+      </Action>
       <View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
         <View style={[styles.row, { flexWrap: "wrap" }]}>
           <TextInput
