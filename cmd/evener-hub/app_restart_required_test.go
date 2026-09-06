@@ -77,6 +77,21 @@ func testHubProtocolUpgrade(t *testing.T, cleared bool) {
 			}
 		})
 	}
+	for _, request := range []struct {
+		method string
+		params any
+	}{
+		{appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: "high"}},
+		{appwire.MethodEvenerSandboxEscalationResolve, appwire.SandboxEscalationResolveParams{Ref: ref, EscalationID: "escalation", Approve: true}},
+	} {
+		t.Run(request.method, func(t *testing.T) {
+			var response any
+			err := client.Request(context.Background(), request.method, request.params, &response)
+			if !isDaemonRestartRequiredError(err) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
 	t.Run("rename refuses while incompatible daemon owns metadata", func(t *testing.T) {
 		var response any
 		err := client.Request(context.Background(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "sentinel"}, &response)
