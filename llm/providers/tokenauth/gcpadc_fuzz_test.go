@@ -1,7 +1,11 @@
 package tokenauth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -15,7 +19,7 @@ import (
 // fuzzing-an-api-surface/SKILL.md).
 func FuzzCredentialJSON(f *testing.F) {
 	f.Add([]byte(`{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`))
-	f.Add([]byte(`{"type":"service_account","private_key":"not-a-real-key","client_email":"sa@example.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`))
+	f.Add(serviceAccountSeed(f))
 	f.Add([]byte(`{"type":"external_account","audience":"//iam.googleapis.com/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"/etc/passwd"}}`))
 	f.Add([]byte(`{"type":"service_account"}`))
 	f.Add([]byte(`{"type":"authorized_user","client_id":"a"}`))
@@ -43,4 +47,30 @@ func FuzzCredentialJSON(f *testing.F) {
 			t.Fatalf("ValidateCredentialJSON(%q) accepted an out-of-allowlist type %q", raw, typ)
 		}
 	})
+}
+
+// serviceAccountSeed is the service_account seed, carrying a freshly
+// generated PKCS#8 RSA key so no key material lives in the repository. It
+// duplicates testServiceAccountJSON because a seed is built from a
+// *testing.F, which that *testing.T helper cannot take.
+func serviceAccountSeed(f *testing.F) []byte {
+	f.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 1024) // test-only: small for speed
+	if err != nil {
+		f.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		f.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]string{
+		"type":         "service_account",
+		"client_email": "sa@example.iam.gserviceaccount.com",
+		"token_uri":    "https://oauth2.googleapis.com/token",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	return raw
 }

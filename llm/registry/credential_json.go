@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,7 +19,9 @@ var AllowedCredentialJSONTypes = map[string]bool{"service_account": true, "autho
 
 // requiredCredentialJSONFields lists, per accepted type, the fields a token
 // source needs to mint a token. Google's parser accepts their absence and
-// fails only at the first request, so the gate checks them here.
+// fails only at the first request, so the gate checks them here. Presence is
+// not the whole story for a service account: checkServiceAccountKey also
+// parses its private_key.
 var requiredCredentialJSONFields = map[string][]string{
 	"service_account": {"client_email", "private_key"},
 	"authorized_user": {"client_id", "client_secret", "refresh_token"},
@@ -36,7 +41,9 @@ func CredentialJSONType(raw []byte) string {
 
 // CheckCredentialJSON is the pre-parse gate every stored or pasted Google
 // credential must pass before anything mints a token from it: valid JSON,
-// then an allowed "type", then the fields that type needs to mint a token.
+// then an allowed "type", then the fields that type needs to mint a token,
+// and for a service account that its private_key is key material the signer
+// can use.
 // The registry runs it when a gcp-adc instance's credentials-store entry
 // resolves; the tokenauth authenticator and the hub's
 // evener/auth/credentialJson/set run the identical check, so a value the
@@ -59,14 +66,45 @@ func CheckCredentialJSON(raw []byte) error {
 		return fmt.Errorf("credential JSON: %w", err)
 	}
 	var missing []string
+	values := map[string]string{}
 	for _, name := range requiredCredentialJSONFields[t] {
 		var s string
 		if json.Unmarshal(fields[name], &s) != nil || s == "" {
 			missing = append(missing, name)
+			continue
 		}
+		values[name] = s
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%s credential JSON is missing %s", t, strings.Join(missing, ", "))
+	}
+	if t == "service_account" {
+		if err := checkServiceAccountKey(values["private_key"]); err != nil {
+			return fmt.Errorf("service_account credential JSON has an unusable private_key: %w", err)
+		}
+	}
+	return nil
+}
+
+// checkServiceAccountKey parses private_key the way Google's signer will
+// at the first request — a PEM block if present, then PKCS#8, then
+// PKCS#1, and the result must be an RSA key — so unusable key material
+// is refused here rather than at the first token request.
+func checkServiceAccountKey(pemOrDER string) error {
+	key := []byte(pemOrDER)
+	if block, _ := pem.Decode(key); block != nil {
+		key = block.Bytes
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(key)
+	if err != nil {
+		pkcs1, pkcs1Err := x509.ParsePKCS1PrivateKey(key)
+		if pkcs1Err != nil {
+			return errors.New("private_key is not a PEM or plain PKCS#8/PKCS#1 key")
+		}
+		parsed = pkcs1
+	}
+	if _, ok := parsed.(*rsa.PrivateKey); !ok {
+		return errors.New("private_key is not an RSA key")
 	}
 	return nil
 }

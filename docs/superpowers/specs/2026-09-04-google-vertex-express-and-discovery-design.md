@@ -279,7 +279,9 @@ local files or executables as credential sources and are refused at
 validation and at first request. Round 6: the fields each type needs to mint
 a token — `client_email` and `private_key`, or `client_id`, `client_secret`
 and `refresh_token` — must be present and non-empty; Google's parser does not
-check them and would fail only at the first request.)*
+check them and would fail only at the first request. Round 11: a
+service-account `private_key` must parse offline as Google's signer will
+parse it (PEM or PKCS#8/PKCS#1, RSA).)*
 
 ### 4.1 Storage
 

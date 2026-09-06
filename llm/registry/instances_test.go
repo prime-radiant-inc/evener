@@ -508,6 +508,33 @@ func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
 	}
 }
 
+// TestCredential_GCPADCIgnoresUnusableKeyStoreJSON_WithADC covers a stored
+// service_account whose private_key is not key material Google's signer can
+// parse: it would fail only at the first request, so the gate refuses it here
+// and a working ADC file still wins (roborev round 11, F1).
+func TestCredential_GCPADCIgnoresUnusableKeyStoreJSON_WithADC(t *testing.T) {
+	env := noADCEnv(t)
+	writeFakeADCFile(t, env)
+	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`}))
+	inst, ok := r.Instance("vertex")
+	if !ok || inst.CredentialSource != "adc" {
+		t.Fatalf("instance = %+v ok=%v; want source adc (a store value whose key will not parse must not shadow it)", inst, ok)
+	}
+	joined := strings.Join(inst.Warnings, "; ")
+	for _, want := range []string{"unusable private_key", "not a credential JSON"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings %q lack %q", joined, want)
+		}
+	}
+	res, err := r.Resolve("vertex/gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "adc" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v, want the adc source with no value", res.Credential)
+	}
+}
+
 func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
 	inst, ok := r.Instance("vertex")

@@ -82,6 +82,18 @@ func TestAuth_CredentialJsonSet_RejectsCredentialWithoutKeyMaterial(t *testing.T
 	}
 }
 
+func TestAuth_CredentialJsonSet_RejectsUnusableKeyMaterial(t *testing.T) {
+	ctrl, dir := newVertexController(t)
+	_, err := ctrl.CredentialJsonSet(appwire.AuthCredentialJsonSetParams{Provider: "vertex", Value: `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`})
+	if err == nil || !strings.Contains(err.Error(), "unusable private_key") {
+		t.Fatalf("err = %v; want a refusal naming the key material the signer cannot parse", err)
+	}
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if _, ok := store.Get("vertex"); ok {
+		t.Fatal("a rejected paste must not be stored")
+	}
+}
+
 func TestAuth_CredentialJsonSet_RefusesNonGCPADCInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()

@@ -2,6 +2,11 @@ package tokenauth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"strings"
@@ -288,12 +293,40 @@ func TestValidateCredentialJSON(t *testing.T) {
 	if err := ValidateCredentialJSON([]byte(`{"type":"service_account"}`)); err == nil || !strings.Contains(err.Error(), "missing client_email") {
 		t.Fatalf("err = %v, want a service_account with no key material refused", err)
 	}
-	// The parser does not read the key until a token is minted, so a
-	// placeholder private_key does not fail validation.
-	const serviceAccountJSON = `{"type":"service_account","private_key":"not-a-real-key","client_email":"sa@example.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`
-	if err := ValidateCredentialJSON([]byte(serviceAccountJSON)); err != nil {
+	if err := ValidateCredentialJSON([]byte(testServiceAccountJSON(t))); err != nil {
 		t.Fatalf("service_account JSON rejected: %v", err)
 	}
+	// Google's signer reads the key only when it mints the first token, so
+	// the gate parses it here instead.
+	const unusableKeyJSON = `{"type":"service_account","private_key":"not-a-real-key","client_email":"sa@example.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`
+	if err := ValidateCredentialJSON([]byte(unusableKeyJSON)); err == nil || !strings.Contains(err.Error(), "unusable private_key") {
+		t.Fatalf("err = %v, want a service_account whose key will not parse refused", err)
+	}
+}
+
+// testServiceAccountJSON returns a service_account credential JSON whose
+// private_key is a freshly generated PKCS#8 RSA key, so no key material
+// lives in the repository. llm/providers/tokenauth and llm/registry share no
+// test helper package, so each keeps its own copy.
+func testServiceAccountJSON(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 1024) // test-only: small for speed
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]string{
+		"type":         "service_account",
+		"client_email": "sa@example.iam.gserviceaccount.com",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestGCPADCRejectsUnsupportedStoredCredentialType(t *testing.T) {

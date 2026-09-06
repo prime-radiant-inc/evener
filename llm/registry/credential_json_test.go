@@ -1,6 +1,13 @@
 package registry
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"strings"
 	"testing"
 )
@@ -18,7 +25,7 @@ func TestCheckCredentialJSON(t *testing.T) {
 		},
 		{
 			name: "service_account",
-			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`,
+			raw:  testServiceAccountJSON(t),
 			want: "",
 		},
 		{
@@ -47,8 +54,23 @@ func TestCheckCredentialJSON(t *testing.T) {
 			want: "missing private_key",
 		},
 		{
+			name: "service_account with a PKCS#1 private key",
+			raw:  serviceAccountJSONWithKey(t, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(testRSAKey(t))})),
+			want: "",
+		},
+		{
+			name: "service_account with key material that will not parse",
+			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`,
+			want: "unusable private_key",
+		},
+		{
+			name: "service_account with an ECDSA private key",
+			raw:  serviceAccountJSONWithKey(t, testECDSAKeyPEM(t)),
+			want: "not an RSA key",
+		},
+		{
 			name: "service_account with an unrelated field Go cannot represent",
-			raw:  `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key","x":1e999}`,
+			raw:  `{"x":1e999,` + strings.TrimPrefix(testServiceAccountJSON(t), "{"),
 			want: "",
 		},
 		{
@@ -89,7 +111,7 @@ func TestCredentialJSONType(t *testing.T) {
 		want string
 	}{
 		{name: "authorized_user", raw: `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`, want: "authorized_user"},
-		{name: "service_account", raw: `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`, want: "service_account"},
+		{name: "service_account", raw: testServiceAccountJSON(t), want: "service_account"},
 		{name: "external_account", raw: `{"type":"external_account","audience":"x"}`, want: "external_account"},
 		{name: "empty object", raw: `{}`, want: ""},
 		{name: "json array", raw: `[1,2]`, want: ""},
@@ -101,4 +123,58 @@ func TestCredentialJSONType(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testServiceAccountJSON returns a service_account credential JSON whose
+// private_key is a freshly generated PKCS#8 RSA key, so no key material
+// lives in the repository. llm/registry and llm/providers/tokenauth share no
+// test helper package, so each keeps its own copy.
+func testServiceAccountJSON(t *testing.T) string {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(testRSAKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return serviceAccountJSONWithKey(t, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+}
+
+// serviceAccountJSONWithKey wraps PEM key material in a service_account
+// credential JSON; json.Marshal escapes the PEM's newlines.
+func serviceAccountJSONWithKey(t *testing.T, keyPEM []byte) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{
+		"type":         "service_account",
+		"client_email": "sa@example.iam.gserviceaccount.com",
+		"private_key":  string(keyPEM),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// testRSAKey generates a test-only RSA key; 1024 bits is too small to sign
+// with in production and is chosen here only for speed.
+func testRSAKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// testECDSAKeyPEM returns a PKCS#8 PEM of a freshly generated P-256 key:
+// material x509 parses but Google's RSA signer cannot use.
+func testECDSAKeyPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
