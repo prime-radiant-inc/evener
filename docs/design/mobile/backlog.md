@@ -218,7 +218,20 @@ hub switch on both platforms. Never restart or replay sign-in merely because
 an observation timed out. Use scripted auth for deterministic automation;
 real provider acceptance requires an explicitly chosen test account.
 
-### MOB-014 · P1 · Marketplaces and installed plugins · Open
+### MOB-014 · P1 · Marketplaces and installed plugins · In progress
+
+The installed-plugin controller now implements all six plugin mutations with
+plugin + marketplace identity, external-update refresh, stale-read fencing,
+disposed-hub isolation and read-back after uncertain writes without replay.
+Five deterministic tests pass; the full native suite passes 258 tests, TypeScript
+and touched-file Biome pass. This is controller coverage, not rendered native
+acceptance. Native screens, catalog management and owned-marketplace E2E remain.
+
+Presentation direction: compact Installed and Browse views, one tap target per
+plugin row, actions in detail, and marketplace source management alongside Browse.
+Keep hub identity visible and preserve source diagnostics in details. Match the
+current web's Git URL, GitHub owner/repo and hub-local directory inputs; a local
+path names the hub filesystem. Do not imply access to the phone filesystem.
 
 Child of MOB-006. Browse/add/remove/refresh marketplaces; install, upgrade,
 remove, enable/disable and set automatic upgrade for plugins. Use compact lists
