@@ -35,6 +35,11 @@ long drafts, and running-session states. Update the studies and style guide
 before claiming visual acceptance. No controls may overlap or steal width from
 the text area.
 
+Follow-up native evidence: ordinary iOS software-keyboard placement is now
+verified. Largest iOS text with keyboard and Android 2.0 text expose three
+stacked control rows; full-width settings strand attachment on its own row.
+This fails the space-use requirement. See [keyboard and large-text evidence](fullwidth-composer.md#keyboard-and-large-text-follow-up).
+
 The [initial implementation and native evidence](fullwidth-composer.md) show
 full-width drafts and controls-row submission. Android keyboard/send and iOS
 stop were exercised against the isolated runtime. Large text, iOS keyboard,
