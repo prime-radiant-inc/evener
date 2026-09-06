@@ -24,6 +24,11 @@ only provider administration/auth and an empty session list.
 - Device mode is the default. The returned local page has an Approve button.
 - `POST /mode/browser` switches subsequent device starts to browser fallback.
 - The browser authorization page displays a full redirect URL for paste-back.
+- `POST /clock/expire` advances the auth controller clock by 16 minutes, so the
+  real 15-minute expiry check rejects existing device flows. New flows start at
+  the advanced clock and remain usable. This affects every pending fixture flow.
+- `POST /fault/poll` makes the external OAuth poll boundary fail until
+  `POST /fault/clear`; it does not discard the hub's flow or fabricate wire state.
 - `GET /status` returns only signed-in state and active credential source.
 - `POST /stop` ends the fixture and lets Go clean up temporary storage.
 
@@ -33,8 +38,9 @@ Run the actual native client's wire smoke against localhost port 9201:
 ./mobile-native/node_modules/.bin/tsx mobile-native/scripts/auth-harness-smoke.mts
 ```
 
-This checks device pending → authorized, browser fallback → completion, stored
-OAuth source and logout. It leaves the fixture signed out in device mode. It does
+This checks device pending → authorized, clock-driven expiry, failed poll without
+credentials, same-flow recovery, browser fallback → completion, stored OAuth source
+and logout. It leaves the fixture signed out in device mode. It does
 not establish native UI/browser behavior. The fixture skips unless explicitly
 enabled, so default Go tests neither listen nor wait for interaction.
 
@@ -45,5 +51,6 @@ supplies one and passes the real client's handshake validation. The iOS device b
 [manual evidence](providers-evidence.md#ios-device-authorization-browser-round-trip).
 The [Android device round trip](providers-evidence.md#android-device-authorization-browser-round-trip)
 is also verified manually, including Chrome first-run interruption. [Browser redirect fallback](providers-evidence.md#browser-redirect-fallback-on-both-platforms)
-now has both-platform native copy/paste and completion evidence. Expiry/failure
-scenario controls and native acceptance remain.
+now has both-platform native copy/paste and completion evidence. Expiry and poll-failure controls now pass the wire smoke; iOS has
+[manual recovery evidence](providers-evidence.md#ios-expiry-and-explicit-poll-recovery).
+Android recovery and other failure scenarios remain.

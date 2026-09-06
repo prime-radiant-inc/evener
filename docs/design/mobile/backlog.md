@@ -189,7 +189,9 @@ state. [Android device-flow evidence](providers-evidence.md#android-device-autho
 now covers Chrome first-run interruption, browser return, provider refresh and
 credential clearing as well. [Browser redirect fallback](providers-evidence.md#browser-redirect-fallback-on-both-platforms)
 now has native browser copy/paste and keyboard-open completion evidence on both
-platforms. Native expiry/denial and cross-hub flow isolation remain unverified.
+platforms. [iOS expiry/restart and explicit poll recovery](providers-evidence.md#ios-expiry-and-explicit-poll-recovery)
+are verified against clock and OAuth-boundary fixture controls. Android recovery,
+provider denial and cross-hub flow isolation remain unverified.
 
 Visual follow-up: use proportionate space for the authorized state; show native
 sign-in guidance instead of a primary CLI instruction, with server diagnostics

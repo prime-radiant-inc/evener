@@ -256,3 +256,30 @@ screen readers and visual acceptance remain open. No production hub was mutated.
 
 ![Android redirect pasted with keyboard open](assets/providers/android-browser-pasted.png)
 ![iOS redirect pasted with keyboard open](assets/providers/ios-browser-pasted.jpg)
+
+
+## iOS expiry and explicit poll recovery
+
+The fixture now advances its injected clock through the real hub expiry check
+and can fail the scripted external OAuth poll boundary. The expanded wire smoke
+first failed against the old fixture's missing expiry control, then passed against
+the implementation: expired flow rejection, failed poll with no stored credentials,
+and authorization after recovery using the same flow ID. Targeted Go auth tests
+and default harness skip pass; native TypeScript and script Biome pass.
+
+On iPhone 17 Pro Release, started device sign-in and tapped Copy code. Advancing
+the fixture clock removed the code and rendered The code expired with Start again.
+Tapping Start again returned to a device code with Copy code (not Code copied).
+Enabled the fixture poll failure; the UI retained the code, displayed a fixed safe
+error and exposed Retry status check. Cleared the fault and approved the fixture
+through its control endpoint: server status remained false/none before retry.
+Tapping Retry status check completed sign-in; UI showed Signed in and independent
+server status became true/oauth. This recovery check used fixture control endpoints,
+not another browser round trip. The fixture is currently signed in in device mode.
+
+Both screenshots below were captured and visually inspected. Android recovery,
+real provider denial, interrupted completion and cross-hub flow isolation remain
+open. No app implementation change was required by these observations.
+
+![iOS expired authorization](assets/providers/ios-device-expired.jpg)
+![iOS explicit poll recovery](assets/providers/ios-device-retry.jpg)
