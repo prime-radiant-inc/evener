@@ -32,3 +32,13 @@ On the installed `2d73a9000` builds:
 - iOS table horizontal scrolling did not move under the attempted Simulator drag/scroll automation. This is not yet classified as a product defect: the native table uses an enabled horizontal RCTUIScrollView, but actual gesture delivery and offset changes need stronger runtime observation.
 
 Evidence screenshots: [iOS live font-change defect](assets/markdown/ios-live-font-change-clipping.png), [iOS after reopening at large text](assets/markdown/ios-large-reopened.png), [Android reading at 1.5 font scale](assets/markdown/android-large.png). These capture the defects and limits, not release acceptance.
+
+## Live iOS text-sizing correction
+
+The shared Action, Copy and ErrorMessage primitives now derive their iOS font size from the current `useWindowDimensions().fontScale`, supplying that size as a React layout prop and disabling a second native scaling pass. Copy also scales its line height. This keeps measurement and drawing on the same current value; it does not cap the user's preferred text size or remount controls. The reproduced failure used native scaling with unchanged base-size props: drawing changed while existing bounds remained stale.
+
+Android retains native font scaling and unscaled base sizes. Independent review caught that direct multiplication would bypass Android 14+ nonlinear SP conversion; the final platform-specific change resolves that finding.
+
+Both release apps rebuilt and installed. The final iOS app was opened at standard `large`, then switched live to `accessibility-large` without navigating away. Connection status and Latest/Send labels remained fully visible in their updated bounds. [Final live-change screenshot](assets/markdown/ios-live-type-corrected.png). A preceding run also changed back to standard size without remounting and rendered normal sizes correctly. The final Android APK SHA-256 is `7d8b9abb55044bdc70a1fd56a120abc19e6d75da5e8d2d0caa13173a2aae8a25`.
+
+Native tests remain 48/48 passing, TypeScript and targeted Biome pass. This corrects the shared-primitives iOS defect, not all app-wide Dynamic Type acceptance. Raw screen headings/inputs and the Android route-restoration defect still require work. No whole-repository merge gate was run.

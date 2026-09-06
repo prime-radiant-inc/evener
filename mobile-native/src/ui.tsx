@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   useColorScheme,
+  useWindowDimensions,
 } from "react-native";
 
 export function useColors() {
@@ -47,6 +48,8 @@ export function Action({
   tone?: "accent" | "quiet" | "primary";
 }) {
   const colors = useColors();
+  const { fontScale } = useWindowDimensions();
+  const textScale = Platform.OS === "ios" ? fontScale : 1;
   return (
     <Pressable
       accessibilityRole="button"
@@ -65,6 +68,7 @@ export function Action({
       ]}
     >
       <Text
+        allowFontScaling={Platform.OS !== "ios"}
         style={{
           color:
             tone === "primary"
@@ -72,7 +76,9 @@ export function Action({
               : tone === "quiet"
                 ? colors.secondary
                 : colors.accent,
-          fontSize: 16,
+          // Give native measurement and drawing the same current size when
+          // Dynamic Type changes while this control remains mounted.
+          fontSize: 16 * textScale,
           fontWeight: tone === "quiet" ? "400" : "600",
           flexShrink: 1,
         }}
@@ -93,14 +99,17 @@ export function Copy({
   label?: string;
 }) {
   const colors = useColors();
+  const { fontScale } = useWindowDimensions();
+  const textScale = Platform.OS === "ios" ? fontScale : 1;
   return (
     <Text
       selectable
+      allowFontScaling={Platform.OS !== "ios"}
       accessibilityLabel={label}
       style={{
         color: muted ? colors.secondary : colors.text,
-        fontSize: muted ? 13 : Platform.OS === "ios" ? 17 : 16,
-        lineHeight: muted ? 19 : 25,
+        fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
+        lineHeight: (muted ? 19 : 25) * textScale,
       }}
     >
       {children}
@@ -110,10 +119,13 @@ export function Copy({
 
 export function ErrorMessage({ message }: { message: string | null }) {
   const colors = useColors();
+  const { fontScale } = useWindowDimensions();
+  const textScale = Platform.OS === "ios" ? fontScale : 1;
   return message ? (
     <Text
       accessibilityRole="alert"
-      style={{ color: colors.error, padding: 12, fontSize: 16 }}
+      allowFontScaling={Platform.OS !== "ios"}
+      style={{ color: colors.error, padding: 12, fontSize: 16 * textScale }}
     >
       {message}
     </Text>
