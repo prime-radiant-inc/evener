@@ -102,6 +102,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
       blockquote: {
         ...body,
         color: colors.secondary,
+        backgroundColor: colors.background,
         borderColor: colors.border,
         borderWidth: 2,
         gapWidth: 12,
@@ -110,6 +111,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
       code: {
         color: colors.text,
         backgroundColor: colors.surface,
+        borderColor: colors.border,
         fontSize: 14,
       },
       codeBlock: {
