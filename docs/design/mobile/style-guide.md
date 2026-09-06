@@ -118,3 +118,20 @@ Keep pending decisions discoverable beside the composer through a compact count.
 Show pending questions through a compact composer entry. Keep suggested choices and a written alternative together. Recommendations must never become automatic answers. Distinguish single and multiple selection through native accessibility roles, checked state and visible marks. Require explicit resolution, including Skip, for every question in a batch. Preserve the ordinary message draft and separate confirmed delivery from the following refresh. Optional notes and delegation belong to the same question context.
 
 Persist unfinished question selections separately from the ordinary message draft. Restore only when the hub, session and complete question definitions still match. Show failed saves explicitly and retain edits for retry; never silently enable sending after a failed load.
+
+
+## Resource settings: scan first, inspect on demand
+
+A resource row leads with its filename, directory name, or MCP server name. A
+short parent-folder or executable hint distinguishes entries without repeating
+full paths. Tapping the row reveals exact path or command/argument details in
+place. The disclosure exposes its expanded state and has a native-sized touch
+target. Remove remains a separate adjacent action. Large text may grow the row;
+never shrink text to preserve a fixed height.
+
+Resolved effective values live in a separate disclosure, initially collapsed,
+with their entry count. Expanded effective entries use the same inspectable rows.
+Do not repeat effective and editable full paths by default. Verify viewport
+allocation with the same content before/after, keyboard reachability, and access
+to the entire expanded value. This direction does not constitute native visual
+acceptance.

@@ -15,6 +15,7 @@ import type {
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
+import { LaunchResourceRow } from "./LaunchResourceRow";
 import { assertLaunchListCurrent } from "./launchLists";
 import { addLaunchMcp, resourceKey } from "./launchMcp";
 import { addLaunchPath } from "./launchPaths";
@@ -42,6 +43,7 @@ export function LaunchResourceEditor({
   current.current = value;
   const [items, setItems] = useState(value ?? []);
   const [raw, setRaw] = useState("");
+  const [showEffective, setShowEffective] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
@@ -90,13 +92,7 @@ export function LaunchResourceEditor({
       if (active()) setBusy(false);
     }
   }
-  const occurrences = new Map<string, number>();
-  const rows = items.map((item) => {
-    const identity = resourceKey(item);
-    const occurrence = occurrences.get(identity) ?? 0;
-    occurrences.set(identity, occurrence + 1);
-    return { item, identity, key: `${identity}:${occurrence}` };
-  });
+  const rows = resourceRows(items);
   return (
     <Modal
       visible
@@ -140,48 +136,36 @@ export function LaunchResourceEditor({
                 setError(null);
               }}
             />
-            <Copy muted>
-              {isMcp ? "Effective servers" : "Effective paths"} ·{" "}
-              {effective
-                ?.map((item) => (typeof item === "string" ? item : item.name))
-                .join("\n") || "None"}
-            </Copy>
+            <Action
+              expanded={showEffective}
+              onPress={() => setShowEffective(!showEffective)}
+            >{`Effective values (${effective?.length ?? 0})`}</Action>
+            {showEffective && (
+              <View>
+                {effective?.length ? (
+                  resourceRows(effective).map(({ item, key }) => (
+                    <LaunchResourceRow key={key} item={item} />
+                  ))
+                ) : (
+                  <Copy muted>None</Copy>
+                )}
+              </View>
+            )}
             <ErrorMessage message={error} />
             <View>
               {rows.map(({ item, identity, key }) => (
-                <View
+                <LaunchResourceRow
                   key={key}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 8,
-                    paddingVertical: 4,
-                    borderBottomWidth: 0.5,
-                    borderColor: colors.border,
-                  }}
-                >
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Copy>{typeof item === "string" ? item : item.name}</Copy>
-                    {typeof item !== "string" && (
-                      <Copy muted>
-                        {[item.command, ...(item.args ?? [])].join(" ")}
-                      </Copy>
-                    )}
-                  </View>
-                  <Action
-                    disabled={busy}
-                    label={`Remove ${isMcp ? "server" : "path"} ${typeof item === "string" ? item : item.name}`}
-                    onPress={() =>
-                      setItems(
-                        items.filter(
-                          (entry) => resourceKey(entry) !== identity,
-                        ) as string[] | MCPServerSpec[],
-                      )
-                    }
-                  >
-                    Remove
-                  </Action>
-                </View>
+                  item={item}
+                  disabled={busy}
+                  remove={() =>
+                    setItems(
+                      items.filter(
+                        (entry) => resourceKey(entry) !== identity,
+                      ) as string[] | MCPServerSpec[],
+                    )
+                  }
+                />
               ))}
             </View>
             {client && !isMcp ? (
@@ -235,4 +219,14 @@ export function LaunchResourceEditor({
       </SafeAreaView>
     </Modal>
   );
+}
+
+function resourceRows(items: (string | MCPServerSpec)[]) {
+  const occurrences = new Map<string, number>();
+  return items.map((item) => {
+    const identity = resourceKey(item);
+    const occurrence = occurrences.get(identity) ?? 0;
+    occurrences.set(identity, occurrence + 1);
+    return { item, identity, key: `${identity}:${occurrence}` };
+  });
 }

@@ -218,6 +218,39 @@ launch/tool invocation, stale and interrupted validation, duplicate entries,
 long argument arrays, screen readers and visual acceptance. All launch schema
 collection kinds now have a native editor, but MOB-015/MOB-007 remain incomplete.
 
+## Resource presentation refinement
+
+Resource rows now lead with a filename/directory/server name and a short parent
+folder or executable hint. Each row expands to reveal its exact path or command
+and individually quoted arguments. Remove is separate from disclosure. Effective
+values are initially collapsed behind a count and expose the same detail rows;
+the default view no longer repeats effective and explicit full paths. Shared
+row keys distinguish duplicate occurrences without quadratic list scans.
+
+Android comparison uses the same saved MCP path, 1080x2400 viewport, density420,
+font scale1.0 and no keyboard. The previous input top was y1084; it is now y1038,
+a 46-physical-pixel improvement. Remove remains 126 pixels tall (48dp), and the
+new detail target is 147 pixels tall (56dp). This is a measured local improvement,
+not acceptance of the entire screen's density. Both editable and effective rows
+were expanded manually and showed the complete path. At font scale2.0, the title
+and parent hint remained readable; with the software keyboard visible, input
+stayed above it and scrolling exposed Find files/Add path while Done stayed fixed.
+
+Evidence: [collapsed](assets/launch-settings/android-resource-collapsed.png),
+[expanded](assets/launch-settings/android-resource-expanded.png),
+[large text and keyboard after scrolling](assets/launch-settings/android-resource-large-keyboard.png).
+All 311 native tests, TypeScript, Biome and both Release builds pass. Native
+inheritance restoration and an independent AppWire read confirmed mcpConfigs
+unset afterward. Android font scale was restored to1.0 and the app was connected.
+
+Changing system font scale recreated the Android activity and returned to the
+session list. The first change produced a closed connection; the hub remained
+reachable and the native Reconnect action succeeded. Changing back to1.0 connected
+automatically. The failed attempt's cause is unproven; activity/settings-location
+restoration and connection diagnostics remain lifecycle work. iOS native visual
+checks are still pending behind the host lock, alongside screen readers,
+MCP argument-detail interaction, same-named files and larger resource lists.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,

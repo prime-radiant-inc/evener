@@ -84,6 +84,12 @@ spend too much room on header controls, a separate healthy-connection row,
 uniform transcript gaps, large secondary actions and composer feedback.
 The result is less readable work visible at once, even after collapsing notices.
 
+Resource settings now use compact named rows with full details on demand and
+collapsed effective values. The same Android long-path fixture gains 46 physical
+pixels before the input with unchanged Remove touch size; detail disclosure and
+200% text/keyboard scrolling are exercised. See
+[resource presentation evidence and gaps](hub-information-and-launch-settings.md#resource-presentation-refinement).
+
 Acceptance:
 
 - Review the entire viewport with identical content before/after: roster,
@@ -374,6 +380,12 @@ viewing and errors, copy/open return paths, screen readers and process death.
 ### MOB-010 · P1 · Native accessibility, performance and release qualification · Open
 
 Simulator Release builds are not distribution or physical-device qualification.
+
+System font-scale changes recreate the Android activity and return resource
+settings to Sessions. In one 1.0-to-2.0 check, the initial connection failed and
+explicit Reconnect recovered; returning to1.0 connected automatically. Investigate
+activity/location restoration and capture the failed connection's cause before
+claiming lifecycle acceptance. The hub stayed reachable during the failure.
 
 Acceptance: iOS/Android physical devices, signing/distribution, measured scrolling
 and input latency under streaming load, memory/leak checks where indicated,
