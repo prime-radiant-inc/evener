@@ -31,8 +31,32 @@ export class DraftRepository {
           hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, signature TEXT NOT NULL,
           selections TEXT NOT NULL, PRIMARY KEY (hub_id, session_ref)
         )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS question_positions (
+      hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, question_key TEXT NOT NULL,
+      PRIMARY KEY (hub_id, session_ref)
+    )`);
 	}
 
+	readQuestionPosition(
+		destination: DraftDestination,
+		keys: string[],
+	): string | undefined {
+		const row = this.db.getFirstSync<{ question_key: string }>(
+			"SELECT question_key FROM question_positions WHERE hub_id = ? AND session_ref = ?",
+			destination.hubId,
+			destination.sessionRef,
+		);
+		return row && keys.includes(row.question_key) ? row.question_key : keys[0];
+	}
+	writeQuestionPosition(destination: DraftDestination, key: string): void {
+		this.db.runSync(
+			`INSERT INTO question_positions (hub_id, session_ref, question_key)
+      VALUES (?, ?, ?) ON CONFLICT (hub_id, session_ref) DO UPDATE SET question_key = excluded.question_key`,
+			destination.hubId,
+			destination.sessionRef,
+			key,
+		);
+	}
 	private questionRow(destination: DraftDestination) {
 		return this.db.getFirstSync<{ signature: string; selections: string }>(
 			"SELECT signature, selections FROM question_drafts WHERE hub_id = ? AND session_ref = ?",
@@ -114,6 +138,7 @@ export class DraftRepository {
 	removeHub(hubId: string): void {
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_drafts WHERE hub_id = ?", hubId);
+		this.db.runSync("DELETE FROM question_positions WHERE hub_id = ?", hubId);
 	}
 }
 
