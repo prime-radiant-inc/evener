@@ -12,7 +12,7 @@ Reference: cmd/evener-hub/frontend/src/panes/session/composer/askDock/.
 - askDockStore seeds recommended selections. Corrected in native: seed untouched answers without replacing edits or deliberately cleared choices.
 - AskDock presents one question at a time, maintains the active question, and advances through questions. Corrected in native: a question tab strip and one visible question, with forward/wrap progression and single-choice auto-advance. Active-tab restoration across a full remount remains open.
 - Web permits sending an untouched single question; a multi-question batch requires answers. Corrected in native: permit an untouched single question and require non-null resolutions in multi-question batches, including the web empty free-answer behavior.
-- reconcileBatches freezes sending batches and reconciles newly arriving questions into an open batch. Native currently uses one flattened definition signature; late arrivals and answered-elsewhere changes need equivalent ownership semantics.
+- reconcileBatches freezes sending batches and reconciles newly arriving questions into an open batch. Native now calls the current web reconciler and tracks submitting/accepted batches by question identity. Automated tests verify frozen membership, late-arrival separation, exclusion of accepted questions, stale/repeated submission rejection, and failed-submit retention. Native race testing and independent interaction with a second batch during an in-flight send remain open.
 - Web suppresses the ordinary composer while an ask is pending. Corrected: native hides ordinary input and send/steer/queue actions while questions are pending, and rechecks the live pending set at dispatch. The ordinary draft is retained.
 - Corrected: native answer serialization imports the current web askCompose.ts directly. The previous mobile formatter did not encode headers containing closing brackets or newlines, allowing answer framing to break.
 
@@ -44,3 +44,9 @@ Built and installed a Release app containing the revised question controls and o
 The check found stale transcript guidance saying reply below. That copy is corrected in source after the tested build; the copy-only correction has not been rebuilt. Multi-question navigation, race/batch semantics, and Android validation remain outstanding.
 
 ![iOS real harness answer and restored composer](assets/parity-question-ios-answer.png)
+
+## Batch ownership correction
+
+QuestionBatches wraps the current web reconcileBatches function; the conversation store subscription feeds current question snapshots into it. Submission rechecks the batch, freezes it when the durable dispatch starts, and settles only that batch on accepted send. The ordinary draft delivery checkpoint remains in use, including uncertain-delivery blocking. This replaces the single answered-definition marker. The sheet still displays the first batch, and a newly arriving batch is presented after that batch settles; simultaneous independent batch interaction remains incomplete.
+
+Native TypeScript, targeted formatting, and 107 tests across 19 files pass. The two ownership tests were added before the implementation. These tests exercise the actual shared reconciler, not a copied algorithm. Previously recorded manual iOS evidence predates this ownership change; it is not manual race evidence.
