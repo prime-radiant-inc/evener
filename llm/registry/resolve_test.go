@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1037,35 +1038,51 @@ func TestStripDatedSuffix(t *testing.T) {
 // per-model api template's placeholders on the row alone (convertModel), so
 // google-vertex's OpenAI-compatible rows are the only place
 // GOOGLE_VERTEX_ENDPOINT is mapped. The lookup consults the row's mapping
-// after the provider's, so the environment variable resolves the row's URL
-// (roborev PR #924 round 2); a user instance's own vars_env still wins.
+// when the provider has none, so the environment variable resolves the
+// row's URL (roborev PR #924 round 2). A user instance's own vars_env
+// remap wins, and when its variable is unset the URL stays unresolved with
+// a warning rather than silently reading the row's stock variable — the
+// user redirected that name on purpose.
 func TestResolve_RowMappedVarsEnvReadsTheEnvironment(t *testing.T) {
-	env := map[string]string{
+	const remap = "[providers.mine]\nbase = \"google-vertex\"\nvars_env = { \"GOOGLE_VERTEX_ENDPOINT\" = \"MY_ENDPOINT\" }\n"
+	stock := map[string]string{
 		"GOOGLE_VERTEX_PROJECT":  "p",
 		"GOOGLE_VERTEX_LOCATION": "us-central1",
 		"GOOGLE_VERTEX_ENDPOINT": "us-central1-aiplatform.googleapis.com",
-		"MY_ENDPOINT":            "my-endpoint.example.test",
 	}
-	r := fixtureLoad(t, env, "[providers.mine]\nbase = \"google-vertex\"\nvars_env = { \"GOOGLE_VERTEX_ENDPOINT\" = \"MY_ENDPOINT\" }\n")
+	withRemap := maps.Clone(stock)
+	withRemap["MY_ENDPOINT"] = "my-endpoint.example.test"
 	for _, tt := range []struct {
-		ref, host string
+		name, ref string
+		env       map[string]string
+		host      string // empty: the endpoint stays unresolved
 	}{
-		{ref: "google-vertex/meta/llama-3.3-70b-instruct-maas", host: "us-central1-aiplatform.googleapis.com"},
-		{ref: "mine/meta/llama-3.3-70b-instruct-maas", host: "my-endpoint.example.test"},
+		{name: "row mapping reads the environment", ref: "google-vertex/meta/llama-3.3-70b-instruct-maas", env: stock, host: "us-central1-aiplatform.googleapis.com"},
+		{name: "instance remap wins", ref: "mine/meta/llama-3.3-70b-instruct-maas", env: withRemap, host: "my-endpoint.example.test"},
+		{name: "unset instance remap stays unresolved", ref: "mine/meta/llama-3.3-70b-instruct-maas", env: stock},
 	} {
-		res, err := r.Resolve(tt.ref)
-		if err != nil {
-			t.Fatalf("Resolve(%q): %v", tt.ref, err)
-		}
-		want := "https://" + tt.host + "/v1/projects/p/locations/us-central1/endpoints/openapi"
-		if res.Transport.BaseURL != want {
-			t.Fatalf("Resolve(%q) BaseURL = %q, want %q (warnings %v)", tt.ref, res.Transport.BaseURL, want, res.Warnings)
-		}
-		if got := res.Transport.Vars["GOOGLE_VERTEX_ENDPOINT"]; got != tt.host {
-			t.Fatalf("Resolve(%q) Vars[GOOGLE_VERTEX_ENDPOINT] = %q, want %q", tt.ref, got, tt.host)
-		}
-		if hasWarning(res, "unresolved variable GOOGLE_VERTEX_ENDPOINT") {
-			t.Fatalf("Resolve(%q) warned about the row-mapped variable: %v", tt.ref, res.Warnings)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, tt.env, remap)
+			res, err := r.Resolve(tt.ref)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", tt.ref, err)
+			}
+			if tt.host == "" {
+				if !strings.Contains(res.Transport.BaseURL, "{GOOGLE_VERTEX_ENDPOINT}") || !hasWarning(res, "unresolved variable GOOGLE_VERTEX_ENDPOINT") {
+					t.Fatalf("Resolve(%q) BaseURL = %q warnings %v, want the endpoint unresolved and warned", tt.ref, res.Transport.BaseURL, res.Warnings)
+				}
+				return
+			}
+			want := "https://" + tt.host + "/v1/projects/p/locations/us-central1/endpoints/openapi"
+			if res.Transport.BaseURL != want {
+				t.Fatalf("Resolve(%q) BaseURL = %q, want %q (warnings %v)", tt.ref, res.Transport.BaseURL, want, res.Warnings)
+			}
+			if got := res.Transport.Vars["GOOGLE_VERTEX_ENDPOINT"]; got != tt.host {
+				t.Fatalf("Resolve(%q) Vars[GOOGLE_VERTEX_ENDPOINT] = %q, want %q", tt.ref, got, tt.host)
+			}
+			if hasWarning(res, "unresolved variable GOOGLE_VERTEX_ENDPOINT") {
+				t.Fatalf("Resolve(%q) warned about the row-mapped variable: %v", tt.ref, res.Warnings)
+			}
+		})
 	}
 }
