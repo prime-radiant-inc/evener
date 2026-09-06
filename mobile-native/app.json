@@ -24,7 +24,7 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": true,
+      "predictiveBackGestureEnabled": false,
       "package": "com.primeradiant.evener.mobile"
     },
     "web": {
