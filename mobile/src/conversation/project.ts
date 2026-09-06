@@ -378,6 +378,7 @@ function projectItem(
         kind: "notice",
         id: item.id,
         origin: "steering",
+        steeringKind: item.steeringKind,
         family: tone === "warning" ? "warning" : "informational",
         tone,
         text: item.text ?? "",

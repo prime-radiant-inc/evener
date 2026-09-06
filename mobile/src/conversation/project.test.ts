@@ -462,6 +462,26 @@ describe("projectThread", () => {
   });
 
   describe("steering items", () => {
+    it("preserves typed interruption identity independently of the notice prose", () => {
+      const projected = projectThread(
+        thread([
+          turn("t1", [
+            item({
+              id: "interrupted",
+              type: "steering",
+              steeringKind: "interrupted",
+              text: "opaque body",
+            }),
+          ]),
+        ]),
+      );
+      expect(projected.items[0]).toMatchObject({
+        kind: "notice",
+        origin: "steering",
+        steeringKind: "interrupted",
+        text: "opaque body",
+      });
+    });
     it("renders human steering as user input with its images", () => {
       const c = projectThread(
         thread([
