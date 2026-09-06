@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HubDirectories } from "./hubDirectories";
+import { HubPaths } from "./hubPaths";
 
 function pending() {
   let resolve!: (value: { data: string[] }) => void;
@@ -9,6 +9,29 @@ function pending() {
   });
   return { promise, resolve };
 }
+it("requests file suggestions without losing directory markers or spaces", async () => {
+  const calls: unknown[] = [];
+  const model = new HubPaths(
+    {
+      request: async (method: string, params: unknown) => {
+        calls.push({ method, params });
+        return { data: ["/work/My Project/", "/work/mcp config.json"] };
+      },
+    } as unknown as ConversationClientLike,
+    true,
+  );
+  await model.load("/work/");
+  expect(calls).toEqual([
+    {
+      method: "evener/paths/complete",
+      params: { prefix: "/work/", includeFiles: true, limit: 100 },
+    },
+  ]);
+  expect(model.getSnapshot().paths).toEqual([
+    "/work/My Project/",
+    "/work/mcp config.json",
+  ]);
+});
 it("requests directories only and preserves complete paths", async () => {
   const calls: unknown[] = [];
   const client = {
@@ -17,7 +40,7 @@ it("requests directories only and preserves complete paths", async () => {
       return { data: ["/work/My Project", "/work/other"] };
     },
   } as unknown as ConversationClientLike;
-  const model = new HubDirectories(client);
+  const model = new HubPaths(client);
   await model.load("/work/");
   expect(calls).toEqual([
     {
@@ -35,7 +58,7 @@ it("invalidates old suggestions immediately when the field changes or closes", a
   const client = {
     request: () => old.promise,
   } as unknown as ConversationClientLike;
-  const model = new HubDirectories(client);
+  const model = new HubPaths(client);
   const read = model.load("/old");
   model.clear();
   old.resolve({ data: ["/old/project"] });
@@ -49,7 +72,7 @@ it("invalidates old suggestions immediately when the field changes or closes", a
 it("only publishes the current query and permits retry after failure", async () => {
   const old = pending();
   let request = () => old.promise;
-  const model = new HubDirectories({
+  const model = new HubPaths({
     request: () => request(),
   } as unknown as ConversationClientLike);
   const stale = model.load("/old");
@@ -71,7 +94,7 @@ it("only publishes the current query and permits retry after failure", async () 
 });
 it("does not publish into a closed hub lifetime", async () => {
   const old = pending();
-  const model = new HubDirectories({
+  const model = new HubPaths({
     request: () => old.promise,
   } as unknown as ConversationClientLike);
   let updates = 0;
