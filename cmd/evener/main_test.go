@@ -796,7 +796,11 @@ func TestMakeRedirectURLReader_EmptyLine(t *testing.T) {
 
 func TestDispatchCLICommand_ServeError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	handled, label, err := dispatchCLICommand([]string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+	// runServe rather than the production runServeWithScratchReclaim: reclaiming
+	// scratch belongs to a real start, and a test that dispatches serve must not
+	// sweep the developer's own scratch bases.
+	handled, label, err := dispatchCLICommandWith([]string{"serve"}, strings.NewReader(""), &stdout, &stderr,
+		cliCommandRunners{serve: runServe})
 	if err == nil {
 		t.Fatal("dispatchCLICommand(serve) error = nil, want error")
 	}
