@@ -100,6 +100,32 @@ function EmptyTranscript({ active }: { active: boolean }) {
 // actions) follows that shape. Automatic older-turn paging is the deliberate
 // exception: nobody pressed anything, so its failure reports inline at the top
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
+function RestartRequiredNotice({ sessionRef }: { sessionRef: string }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      await threadsStore.getState().refreshThread(sessionRef);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return (
+    <div role="alert">
+      Session restart required. Stop the older daemon, then refresh this session to restore messages and activity.
+      Stopping interrupts active work.
+      <Button disabled={refreshing} onClick={() => void refresh()}>
+        Refresh session
+      </Button>
+      {error && <span>{error}</span>}
+    </div>
+  );
+}
+
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
 
@@ -379,12 +405,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               retry={model.modelRetry}
               primaryModel={model.model}
             />
-            {model.status.type === "restartRequired" && (
-              <div role="alert">
-                Session restart required. Stop the older daemon, then resume this session to restore messages and
-                activity. Stopping interrupts active work.
-              </div>
-            )}
+            {model.status.type === "restartRequired" && <RestartRequiredNotice sessionRef={ref} />}
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>

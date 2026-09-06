@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"fmt"
 
 	"primeradiant.com/evener/appwire"
@@ -29,11 +30,50 @@ func daemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID
 	if !ok {
 		return nil
 	}
-	data := appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict, Cause: "daemonRestartRequired"}
+	wire := appwire.WireError{Code: appwire.CodeConflict, Message: fmt.Sprintf("Session restart required: daemon pid %d speaks %s; this hub requires %s. Stop the daemon, then resume this session. Stopping interrupts active work.", entry.PID, entry.Protocol, appwire.ProtocolVersion), Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict, Cause: "daemonRestartRequired"}}
 	if mutationID != "" {
-		data.ClientMutationID = mutationID
-		data.MutationOutcome = appwire.MutationOutcomeNotAccepted
-		data.RetryDisposition = appwire.RetryDispositionNone
+		return restartRequiredMutationError(wire, mutationID)
 	}
-	return appwire.WireError{Code: appwire.CodeConflict, Message: fmt.Sprintf("Session restart required: daemon pid %d speaks %s; this hub requires %s. Stop the daemon, then resume this session. Stopping interrupts active work.", entry.PID, entry.Protocol, appwire.ProtocolVersion), Data: data}
+	return wire
+}
+
+func isDaemonRestartRequiredError(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.Cause == "daemonRestartRequired"
+	case map[string]any:
+		return data["cause"] == "daemonRestartRequired"
+	default:
+		return false
+	}
+}
+
+// A retry may name a mutation accepted before the protocol upgrade. Without
+// its daemon's receipt history, the hub cannot claim that ID was rejected.
+func restartRequiredMutationError(err error, mutationID string) error {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return err
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = mutationID
+		data.MutationOutcome = appwire.MutationOutcomeUnknown
+		data.RetryDisposition = appwire.RetryDispositionBlocked
+		wire.Data = data
+	case map[string]any:
+		copy := make(map[string]any, len(data)+3)
+		for key, value := range data {
+			copy[key] = value
+		}
+		copy["clientMutationId"] = mutationID
+		copy["mutationOutcome"] = string(appwire.MutationOutcomeUnknown)
+		copy["retryDisposition"] = string(appwire.RetryDispositionBlocked)
+		wire.Data = copy
+	}
+	return wire
 }

@@ -2041,3 +2041,20 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
+
+test("refreshes a restarted session without closing its pane", async () => {
+  const fake = connectFakeClient();
+  let replaced = false;
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: replaced ? "idle" : "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  replaced = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});

@@ -61,7 +61,7 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 				t.Fatalf("error=%v", err)
 			}
 			data, ok := wire.Data.(map[string]any)
-			if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) || data["clientMutationId"] != "upgrade-message" || data["cause"] != "daemonRestartRequired" {
+			if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["clientMutationId"] != "upgrade-message" || data["cause"] != "daemonRestartRequired" {
 				t.Fatalf("rejection=%+v", wire)
 			}
 		})
@@ -155,7 +155,113 @@ func TestHubTurnStartDiscoversRestartRequiredDuringRecovery(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 	data, ok := wire.Data.(map[string]any)
-	if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) || data["cause"] != "daemonRestartRequired" || data["clientMutationId"] != "upgrade-recovery" {
+	if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["cause"] != "daemonRestartRequired" || data["clientMutationId"] != "upgrade-recovery" {
 		t.Fatalf("rejection=%+v data=%+v", wire, wire.Data)
+	}
+}
+
+func TestHubUpgradeKeepsLostAcceptedReceiptUnknown(t *testing.T) {
+	accepted := make(chan string, 1)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		var request struct {
+			ID     any            `json:"id"`
+			Params map[string]any `json:"params"`
+		}
+		if err := wsjson.Read(r.Context(), conn, &request); err != nil {
+			return
+		}
+		if request.Params["protocolVersion"] != "evener-appwire-v3" {
+			_ = wsjson.Write(r.Context(), conn, map[string]any{"id": request.ID, "error": map[string]any{"code": appwire.CodeInvalidRequest, "message": "incompatible protocol"}})
+			return
+		}
+		if err := wsjson.Write(r.Context(), conn, map[string]any{"id": request.ID, "result": map[string]any{}}); err != nil {
+			return
+		}
+		if err := wsjson.Read(r.Context(), conn, &request); err != nil {
+			return
+		}
+		accepted <- request.Params["clientMutationId"].(string)
+		// The peer accepts the mutation, then loses the connection before its receipt.
+	}))
+	defer peer.Close()
+	endpoint := "ws" + strings.TrimPrefix(peer.URL, "http") + "/rpc"
+	ctx := t.Context()
+	transport, err := appwire.DialWebSocketWithHeaders(ctx, endpoint, peer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := appwire.NewClient(transport)
+	old.Start(ctx)
+	defer old.Close()
+	var response any
+	if err := old.Request(ctx, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "evener-appwire-v3"}, &response); err != nil {
+		t.Fatal(err)
+	}
+	mutationID := "accepted-before-upgrade"
+	if err := old.Request(ctx, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: mutationID}, &response); err == nil {
+		t.Fatal("expected lost receipt")
+	}
+	if got := <-accepted; got != mutationID {
+		t.Fatalf("accepted=%q", got)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: "upgrade", SessionID: "upgrade", Endpoint: endpoint})
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.TurnStart(ctx, appwire.TurnStartParams{Ref: "local:upgrade", ClientMutationID: mutationID, ExpectedInstanceID: "upgrade", Input: []appwire.InputItem{{Type: "text", Text: "sentinel"}}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error=%v", err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) || data["cause"] != "daemonRestartRequired" {
+		t.Fatalf("receipt=%+v", wire.Data)
+	}
+}
+
+func TestRestartRequiredRecoveryPreservesDecodedWireData(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		var request struct {
+			ID any `json:"id"`
+		}
+		if err := wsjson.Read(r.Context(), conn, &request); err != nil {
+			return
+		}
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"id": request.ID, "error": map[string]any{"code": appwire.CodeConflict, "message": "restart required", "data": map[string]any{"cause": "daemonRestartRequired", "evenerErrorInfo": "conflict", "detail": "preserved"}}})
+	}))
+	defer peer.Close()
+	transport, err := appwire.DialWebSocketWithHeaders(t.Context(), "ws"+strings.TrimPrefix(peer.URL, "http"), peer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	defer client.Close()
+	var response any
+	err = client.Request(t.Context(), appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: "local:upgrade"}, &response)
+	var wire appwire.WireError
+	if !errors.As(blockedUnknownMutationError("retry-id", err), &wire) {
+		t.Fatalf("error=%v", err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["cause"] != "daemonRestartRequired" || data["evenerErrorInfo"] != "conflict" || data["detail"] != "preserved" || data["clientMutationId"] != "retry-id" || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
+		t.Fatalf("data=%+v", wire.Data)
 	}
 }

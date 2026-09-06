@@ -136,6 +136,7 @@ export interface ThreadsStoreState {
   // an ordinary transient one.
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
+  refreshThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -2374,6 +2375,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       sendThreadUnsubscribe(ref);
     }
     removeWatchedThreadModel(ref);
+  },
+
+  async refreshThread(ref) {
+    const client = await requireReadyClient();
+    await refreshTrackedThread(client, readyEpoch, ref, true);
   },
 
   async loadOlderTurns(ref) {

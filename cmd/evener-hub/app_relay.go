@@ -1698,7 +1698,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					return appwire.TurnStartResponse{}, fenceErr
 				}
 			}
-			return appwire.TurnStartResponse{}, rejectedMutationError(params.ClientMutationID, err)
+			return appwire.TurnStartResponse{}, err
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)
