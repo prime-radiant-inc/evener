@@ -470,19 +470,35 @@ func TestSpawnedChildOnTheParentEnvironmentRecordsNoOwnership(t *testing.T) {
 	}
 }
 
-// A restored stable delegate never shares its root's environment: its committed
-// descriptor carries a working dir, so the restore re-roots a clone for it and
-// the clone owns whatever scratch it mints. The runtime has to record that, or
-// its teardown leaves the clone's lease held for the rest of the daemon's
-// uptime — and it must record it without reaching the root's environment, which
-// the clone shares a process table with while the root is mid-restore.
-func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
+// restoredCloneRuntime is a committed delegate brought up through the
+// production restore path, with everything the ownership pins measure against
+// it: the runtime, the clone the restore re-rooted for it, that clone's own
+// scratch, and a root still working — an in-flight process and a held scratch
+// of its own — so a teardown that reaches the root's environment shows up.
+type restoredCloneRuntime struct {
+	runtime     *Session
+	scratch     string
+	rootScratch string
+	pid         int
+	done        <-chan error
+	release     func()
+}
+
+// restoreDelegateRuntimeOnAClone restores a root from a cold committed
+// delegate and hands its runtime back through restoreIdle. It fails the test
+// unless the runtime really did land on a clone of its own holding a scratch
+// no one else holds, since that is the premise every assertion about ownership
+// rests on. The root's close is registered FIRST so it runs LAST: the
+// committed lease has to be failed before the close, or closeRuntimeTree
+// drains a still-committed stop for its whole budget.
+func restoreDelegateRuntimeOnAClone(t *testing.T) restoredCloneRuntime {
+	t.Helper()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
 	}
-	defer root.Close()
+	t.Cleanup(func() { root.Close() })
 	rootLocal, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
@@ -508,20 +524,18 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 	})
-	child := sub.sess
-	childEnv, ok := child.currentEnv().(*execenv.LocalExecutionEnvironment)
+
+	runtime := sub.sess
+	clone, ok := runtime.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		t.Fatalf("restored runtime env = %T, want a local environment", child.currentEnv())
+		t.Fatalf("restored runtime env = %T, want a local environment", runtime.currentEnv())
 	}
-	if childEnv == rootLocal {
+	if clone == rootLocal {
 		t.Fatal("the restore reused the root's environment; this test would prove nothing")
 	}
-	if !child.ownsEnv {
-		t.Error("a restored delegate on a clone of its own recorded that it does not own it")
-	}
-	scratch := childEnv.SessionScratchDir()
+	scratch := clone.SessionScratchDir()
 	if scratch == "" {
-		t.Fatal("the restored runtime holds no session scratch, so there is nothing to release")
+		t.Fatal("the restored runtime holds no session scratch, so there is nothing to settle")
 	}
 	if scratch == rootScratch {
 		t.Fatal("the restored runtime holds the root's scratch; this test would prove nothing")
@@ -530,23 +544,37 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatal("the restored runtime's scratch lease is not held before its teardown")
 	}
+	return restoredCloneRuntime{runtime: runtime, scratch: scratch, rootScratch: rootScratch, pid: pid, done: done, release: release}
+}
 
-	teardownChildSession(context.Background(), child, retainChildScratch)
+// A restored stable delegate never shares its root's environment: its committed
+// descriptor carries a working dir, so the restore re-roots a clone for it and
+// the clone owns whatever scratch it mints. The runtime has to record that, or
+// its teardown leaves the clone's lease held for the rest of the daemon's
+// uptime — and it must record it without reaching the root's environment, which
+// the clone shares a process table with while the root is mid-restore.
+func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
+	r := restoreDelegateRuntimeOnAClone(t)
+	if !r.runtime.ownsEnv {
+		t.Error("a restored delegate on a clone of its own recorded that it does not own it")
+	}
 
-	if got := child.State(); got != SessionClosed {
+	teardownChildSession(context.Background(), r.runtime, retainChildScratch)
+
+	if got := r.runtime.State(); got != SessionClosed {
 		t.Errorf("restored runtime state after its teardown = %q, want %q", got, SessionClosed)
 	}
-	if _, err := os.Stat(scratch); err != nil {
-		t.Errorf("the teardown removed the clone's scratch %s, want it retained for the handoff: %v", scratch, err)
+	if _, err := os.Stat(r.scratch); err != nil {
+		t.Errorf("the teardown removed the clone's scratch %s, want it retained for the handoff: %v", r.scratch, err)
 	}
-	if scratchLeaseHeld(t, scratch) {
-		t.Errorf("the clone's scratch %s lease is still held after the runtime's teardown", scratch)
+	if scratchLeaseHeld(t, r.scratch) {
+		t.Errorf("the clone's scratch %s lease is still held after the runtime's teardown", r.scratch)
 	}
-	assertInFlightProcessSurvived(t, "the restored runtime's teardown", pid, done)
-	assertParentScratchUntouched(t, "the restored runtime's teardown", rootScratch)
+	assertInFlightProcessSurvived(t, "the restored runtime's teardown", r.pid, r.done)
+	assertParentScratchUntouched(t, "the restored runtime's teardown", r.rootScratch)
 
-	release()
-	if err := <-done; err != nil {
+	r.release()
+	if err := <-r.done; err != nil {
 		t.Fatalf("the root's process after release: %v", err)
 	}
 }
@@ -557,60 +585,18 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 // candidate that believed it shared the root's environment would leak the dir
 // and its lease with no owner left to settle either.
 func TestDiscardedRestoreCandidateDisposesItsCloneScratch(t *testing.T) {
-	fixture := newColdStableDelegateFixture(t, "")
-	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
-	if err != nil {
-		t.Fatalf("restore root: %v", err)
-	}
-	defer root.Close()
-	rootLocal, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("root env = %T, want a local environment", root.currentEnv())
-	}
-	pid, done, release := startInFlightProcess(t, rootLocal)
-	rootScratch := heldParentScratch(t, rootLocal)
+	r := restoreDelegateRuntimeOnAClone(t)
 
-	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
-	if err != nil {
-		t.Fatalf("ReserveStart: %v", err)
-	}
-	started, err := root.delegateController.CommitStart(reservation)
-	if err != nil {
-		t.Fatalf("CommitStart: %v", err)
-	}
-	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
-	if err != nil {
-		t.Fatalf("restoreIdle: %v", err)
-	}
-	if !restored {
-		t.Fatal("restoreIdle reused a resident child; this test would prove nothing")
-	}
-	t.Cleanup(func() {
-		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
-	})
-	childEnv, ok := sub.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
-	if !ok {
-		t.Fatalf("restored candidate env = %T, want a local environment", sub.sess.currentEnv())
-	}
-	scratch := childEnv.SessionScratchDir()
-	if scratch == "" {
-		t.Fatal("the restored candidate holds no session scratch, so there is nothing to dispose")
-	}
-	if scratch == rootScratch {
-		t.Fatal("the restored candidate holds the root's scratch; this test would prove nothing")
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	r.runtime.discardRestoredCandidate()
 
-	sub.sess.discardRestoredCandidate()
-
-	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
-		t.Errorf("the discarded candidate retained its clone's scratch %s: stat err = %v", scratch, err)
+	if _, err := os.Stat(r.scratch); !os.IsNotExist(err) {
+		t.Errorf("the discarded candidate retained its clone's scratch %s: stat err = %v", r.scratch, err)
 	}
-	assertInFlightProcessSurvived(t, "the candidate's discard", pid, done)
-	assertParentScratchUntouched(t, "the candidate's discard", rootScratch)
+	assertInFlightProcessSurvived(t, "the candidate's discard", r.pid, r.done)
+	assertParentScratchUntouched(t, "the candidate's discard", r.rootScratch)
 
-	release()
-	if err := <-done; err != nil {
+	r.release()
+	if err := <-r.done; err != nil {
 		t.Fatalf("the root's process after release: %v", err)
 	}
 }
