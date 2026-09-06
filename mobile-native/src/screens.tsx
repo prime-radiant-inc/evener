@@ -33,6 +33,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { drafts } from "./nativeDrafts";
+import { QueueSheet } from "./QueueSheet";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -402,6 +403,8 @@ export function ConversationScreen({
   const snapshot = store();
   const timeline = useRef<FlatList>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  useFocusEffect(useCallback(() => () => setQueueOpen(false), []));
   const [actionError, setActionError] = useState<string | null>(null);
   const document = useMemo(
     () =>
@@ -477,6 +480,20 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {queueOpen && conversation && service ? (
+        <QueueSheet
+          conversation={conversation}
+          service={service}
+          ready={ready}
+          refresh={async () => {
+            await refresh();
+            const current = store.getState();
+            if (current.status !== "open" || current.error)
+              throw new Error("Queue refresh failed");
+          }}
+          close={() => setQueueOpen(false)}
+        />
+      ) : null}
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -580,7 +597,16 @@ export function ConversationScreen({
           ]}
         >
           {conversation?.queue.depth ? (
-            <Copy muted>{conversation.queue.depth} queued</Copy>
+            <Action
+              tone="quiet"
+              expanded={queueOpen}
+              onPress={() => {
+                Keyboard.dismiss();
+                setQueueOpen(true);
+              }}
+            >
+              {`${conversation.queue.depth} queued`}
+            </Action>
           ) : null}
           <TextInput
             accessibilityLabel="Message"
