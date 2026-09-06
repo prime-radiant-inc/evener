@@ -55,7 +55,8 @@ export function ApprovalSheet({
         <ScrollView contentContainerStyle={{ padding: 20, gap: 24 }}>
           {approvals.length ? (
             <Copy muted>
-              Evener is waiting for your decision about a blocked action.
+              Requested by Evener, not the agent. The sandbox blocked this
+              action and needs your decision.
             </Copy>
           ) : null}
           {state.error ? (
