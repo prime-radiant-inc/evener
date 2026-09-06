@@ -65,7 +65,7 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 		if res.Credential.Source == "store" {
 			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: stored credential JSON: %v", res.Instance, err), Cause: err}
 		}
-		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)", res.Instance, err), Cause: err}
+		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)", res.Instance, err), Cause: err}
 	}
 	tok, err := src.ts.Token()
 	if err != nil {
@@ -102,7 +102,10 @@ func ValidateCredentialJSON(data []byte) error {
 // resolution's source alone for application-default credentials or none
 // (so a source that changes — an ADC file removed and the instance
 // re-resolved without a credential — rebuilds rather than reuses), and the
-// source plus a digest of the stored JSON for a stored credential.
+// source plus a digest of the stored JSON for a stored credential. An ADC
+// file replaced in place keeps the identity "adc": the resolution does not
+// say which file backs it, so a re-login as another account takes effect
+// on the next process, not the next request.
 func credentialIdentity(res registry.Resolved) string {
 	if res.Credential.Source != "store" {
 		return res.Credential.Source

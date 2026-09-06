@@ -388,7 +388,10 @@ Deterministic (`make test`, no credentials, no network):
 - `llm/providers/tokenauth`: `x-goog-user-project` set from
   `Transport.Vars` and absent without it; stored-JSON token source chosen for `Source == "store"`
   (seam: `FindCredentials`/a `CredentialsFromJSON` seam); one source per
-  instance, rebuilt when the stored credential's digest changes.
+  instance, rebuilt when the credential's identity changes — a stored
+  credential replaced (digest), a stored credential arriving for an
+  ADC-backed instance, or an ADC-backed instance re-resolved with no
+  credential (source), which must error rather than reuse.
 - `envvars`: the two new variables registered.
 - `cmd/evener-hub`: `authModesFor` for `gcp-adc`; `credentialJson/set`
   validation, refusal for non-`gcp-adc` instances, store write, reload;

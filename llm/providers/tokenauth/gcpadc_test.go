@@ -55,6 +55,11 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "default credentials") {
 		t.Fatalf("err = %v", err)
 	}
+	// The remedy names every way the registry can resolve a gcp-adc
+	// credential, including a stored credential JSON, not just gcloud.
+	if !strings.Contains(err.Error(), "store a credential JSON") {
+		t.Fatalf("err = %v, want the remedy to offer a stored credential JSON", err)
+	}
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("no header on failure")
 	}
