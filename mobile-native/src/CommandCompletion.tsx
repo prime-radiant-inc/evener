@@ -46,17 +46,21 @@ export function CommandCompletion({
         borderBottomWidth: 0.5,
         borderColor: colors.border,
         paddingBottom: 4,
+        maxHeight: 160,
+        flexShrink: 0,
       }}
     >
       <View style={styles.row}>
         <View style={styles.fill}>
-          <Copy muted>Commands and skills</Copy>
+          <Copy muted numberOfLines={1}>
+            Commands and skills
+          </Copy>
         </View>
         <Action onPress={close}>Dismiss</Action>
       </View>
       <FlatList
         data={items}
-        style={{ maxHeight: 160 }}
+        style={{ maxHeight: 160, flexShrink: 1 }}
         keyboardShouldPersistTaps="always"
         ListHeaderComponent={
           <>

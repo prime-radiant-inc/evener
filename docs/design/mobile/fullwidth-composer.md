@@ -155,3 +155,34 @@ newer draft. No production sessions were changed.
 ![Android large-text command](assets/fullwidth-composer/command-android-large.png)
 
 ![Android large-text running controls](assets/fullwidth-composer/running-android-large.png)
+
+## Bounded composer overflow correction
+
+The composer now has an 80% maximum height within the keyboard-adjusted parent.
+Its draft, settings, attachments and actions use a content-sized ScrollView that
+scrolls when they exceed that boundary. The virtual command list is a sibling
+outside that scroll view. Its whole panel, including the single-line heading
+and Dismiss, is capped at 160 points; the results can scroll beneath the header.
+The heading may truncate, but its full accessible text remains. Draft fonts,
+action fonts, submission guards and command handlers are unchanged.
+
+Both final Release builds were installed. At the largest iOS accessibility
+size with the actual keyboard and `/project`, the suggestion remains visible,
+the draft is visible at the top of its scroll region, and scrolling exposes the
+complete Show in project action above the keyboard. Tapping it opened the
+project session list. Back returned to the conversation with the completed
+command cleared. Android at font scale 2.0 kept the command and controls visible
+above its actual keyboard; Show in project opened the same project listing.
+The font settings were restored to iOS large and Android 1.0.
+
+TypeScript, touched-file Biome, 228 native tests, and both final Release builds
+pass. This verifies the previously failing portrait command flow; it does not
+establish screen-reader navigation, landscape or smaller-device acceptance.
+The largest-text layout is reachable but still visually cramped. Those checks,
+long drafts and running controls in the new scroll region remain in MOB-011.
+
+![iOS bounded command and draft](assets/fullwidth-composer/ios-bounded-command.png)
+
+![iOS complete action reached by scrolling](assets/fullwidth-composer/ios-scrolled-command-action.png)
+
+![Android bounded command with keyboard](assets/fullwidth-composer/android-bounded-command.png)
