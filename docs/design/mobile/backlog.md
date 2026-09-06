@@ -228,8 +228,11 @@ and touched-file Biome pass. This is controller coverage, not rendered native
 acceptance. The installed list/detail screen is wired with filtering, native switches,
 upgrade, installation disclosure and confirmed removal. Both Release builds pass;
 manual navigation and empty/error rendering are verified on both platforms
-against isolated hubs. Installed rows and mutation controls still require the
-owned-marketplace lifecycle test; catalog management and Browse remain unbuilt.
+against isolated hubs. [Owned-marketplace lifecycle evidence](plugins-evidence.md) now covers live row
+arrival on both devices, iOS disable, Android re-enable/auto-upgrade, Upgrade on
+both, Android removal and iOS detail closing through notifications. The fixture
+is directory-backed; fetching a newer Git revision remains unverified. Catalog
+management and Browse remain unbuilt; full visual and failure acceptance remain.
 
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.
