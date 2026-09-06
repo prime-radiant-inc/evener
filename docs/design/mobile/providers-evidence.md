@@ -159,3 +159,37 @@ rendered sign-in, browser return, copy, successful device authorization or redir
 completion. Next acceptance uses a controlled local auth fixture for both flows,
 background/reconnect, expiry/failure and cross-hub isolation. Real-provider account
 acceptance remains separate. MOB-013 stays in progress.
+
+
+## iOS device authorization browser round trip
+
+On 6 September 2026, the iPhone 17 Pro Release app at native implementation
+`9a75d0479` connected to the isolated real auth harness from `73bbe2570` using a
+separate `auth fixture` hub profile. No production credentials were involved.
+
+Opened `work` → Sign in. The sheet showed the server's `NATIVE-TEST` device code;
+Copy code changed to Code copied. Open authorization page launched Safari and
+backgrounded Evener. The native connection closed while the sheet retained its
+device flow. Tapped the local page's Approve fixture sign-in button, observed
+“Approved. Return to Evener.”, then used Safari's return-to-Evener control.
+
+After reconnect, the same sheet displayed Signed in. Independently reading the
+fixture's `/status` returned `signedIn: true`, `activeSource: oauth`. Tapping Done
+returned to the provider list with Configured via OAuth. Reopening the detail
+showed Refresh sign-in and Clear credentials. Clear credentials → Confirm changed
+the detail to Not configured and restored Sign in; `/status` then returned
+`signedIn: false`, `activeSource: none`. The fixture was left signed out.
+
+The authorized screenshot was captured and visually inspected. This verifies the
+iOS device flow, browser return/reconnect, displayed copy feedback, provider refresh
+and credential clearing against real hub handlers with a scripted OAuth boundary.
+It does not verify clipboard contents by paste, real-provider authorization,
+Android sign-in, browser redirect fallback, expiry/denial, or hub-switch isolation.
+
+Visual acceptance remains open: the success-only sheet occupies nearly the entire
+screen for two short lines, and signed-out provider details expose a CLI login
+instruction despite having a native Sign in action. Track these under MOB-013;
+retain server diagnostic detail in a deliberate disclosure rather than using it
+as the primary mobile instruction.
+
+![iOS device authorization completed](assets/providers/ios-device-authorized.jpg)
