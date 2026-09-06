@@ -28,7 +28,7 @@ export class ProviderSignIn {
   private generation = 0;
   private timer?: ReturnType<typeof setTimeout>;
   constructor(
-    private client: ConversationClientLike,
+    private client: ConversationClientLike | null,
     private provider: string,
   ) {}
   getSnapshot = () => this.state;
@@ -54,6 +54,7 @@ export class ProviderSignIn {
     this.clearTimer();
     if (
       this.disposed ||
+      !this.client ||
       !this.active ||
       this.state.phase !== "device" ||
       this.state.busy ||
@@ -66,13 +67,34 @@ export class ProviderSignIn {
       void this.poll();
     }, delay * 1000);
   }
+  /** Replace only the transport for the same hub. Dispose when changing hubs. */
+  setConnection(client: ConversationClientLike | null) {
+    if (this.disposed || this.client === client) return;
+    this.clearTimer();
+    this.generation += 1;
+    this.client = client;
+    const interruptedWrite =
+      this.state.busy &&
+      (this.state.phase === "starting" || this.state.phase === "browser");
+    this.publish({
+      busy: false,
+      ...(this.state.phase === "starting" ? { phase: "error" as const } : {}),
+      ...(interruptedWrite
+        ? {
+            error:
+              "Sign-in could not be confirmed before the connection changed. Check credential status before trying again.",
+          }
+        : {}),
+    });
+    this.schedule();
+  }
   setActive(active: boolean) {
     this.active = active;
     if (active) this.schedule();
     else this.clearTimer();
   }
   start = async (): Promise<void> => {
-    if (this.disposed || this.state.busy) return;
+    if (this.disposed || !this.client || this.state.busy) return;
     const generation = ++this.generation;
     this.clearTimer();
     this.publish({
@@ -110,6 +132,7 @@ export class ProviderSignIn {
   private poll = async (): Promise<void> => {
     if (
       this.disposed ||
+      !this.client ||
       !this.active ||
       this.state.busy ||
       this.state.phase !== "device" ||
@@ -158,6 +181,7 @@ export class ProviderSignIn {
   complete = async (value: string): Promise<void> => {
     if (
       this.disposed ||
+      !this.client ||
       this.state.busy ||
       this.state.phase !== "browser" ||
       !this.state.browser

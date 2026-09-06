@@ -177,12 +177,22 @@ to the other hub. Follow [the contract inventory](hub-administration-inventory.m
 
 ### MOB-013 · P1 · Provider browser and device sign-in · In progress
 
-The hub/provider-bound sign-in controller now has eight deterministic tests for
+The hub/provider-bound sign-in controller now has eleven deterministic tests for
 poll timing, authorization, expiry, browser fallback/completion, background
 pause/resume, explicit poll retry and late-response disposal. Server states were
 checked against `app_auth.go` (`pending`, `expired`, `authorized`). Native editor,
 AppState wiring, URL opening/copy, fixture integration and both-platform manual
 sign-in acceptance remain to be implemented and verified.
+
+Integration constraint verified in `ConnectionProvider.tsx`: backgrounding closes
+the hub connection. The sign-in flow must therefore be owned above the connected
+provider list and survive same-hub transport replacement. `setConnection` now
+pauses/resumes that flow, fences late replies and marks interrupted start/browser
+completion uncertain without replay. Three additional tests cover same-flow
+reconnect, old-client replies and interrupted browser completion. Changing hubs
+must dispose the flow; never rebind it to a different hub. Browser URLs/redirect
+submissions are transient and must not be saved with hub profiles.
+
 
 Child of MOB-006; builds on MOB-012. Device start/poll and browser fallback must
 use server-returned URLs, flow IDs and polling intervals. Provide code copy,
