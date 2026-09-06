@@ -336,7 +336,7 @@ func TestNavigationDisablesRenameForRestartRequiredDaemon(t *testing.T) {
 }
 
 func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
-	for _, method := range []string{appwire.MethodTurnQueue, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadReasoningEffortSet, appwire.MethodEvenerSandboxEscalationResolve} {
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodTurnQueue, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadReasoningEffortSet, appwire.MethodEvenerSandboxEscalationResolve} {
 		t.Run(method, func(t *testing.T) {
 			root := t.TempDir()
 			sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
@@ -354,6 +354,16 @@ func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
 			defer client.Close()
 			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 				t.Fatal(err)
+			}
+			if method == appwire.MethodThreadRead {
+				read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if read.Thread.Status.Type != appwire.ThreadStatusRestartRequired || read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Capabilities.Queue || read.Thread.Evener.Capabilities.Rename {
+					t.Fatalf("undiscovered incompatible owner was not reflected: %+v", read.Thread)
+				}
+				return
 			}
 			var response any
 			err := client.Request(context.Background(), method, map[string]any{"ref": "local:" + sessionID, "clientMutationId": "uncertain", "expectedInstanceId": sessionID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}, "name": "renamed", "reasoningEffort": "high", "escalationId": "escalation", "approve": true}, &response)

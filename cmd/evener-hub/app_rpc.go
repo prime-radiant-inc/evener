@@ -325,6 +325,9 @@ func registerThreadHandlers(
 		read, err := relays.readThread(ctx, source, params)
 		if err != nil {
 			if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
+				if _, local := localPastThreadID(params); local && cfg.Roster != nil && isSessionUnavailableError(err) {
+					hubRosterRefresh(cfg.Roster)
+				}
 				saved, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
 				if pastErr != nil {
 					return appwire.ThreadReadResponse{}, pastErr
