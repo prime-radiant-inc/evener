@@ -4,6 +4,8 @@
 
 Fluency and beauty are requirements of the mobile app, alongside capability and reliability. The current React Native prototype proves some workflows; it does not establish the visual direction. Jesse’s assessment of its chunky rows is the starting point for this work.
 
+Product scope and behavior come from the current web UI, server contracts, and Jesse’s explicit requests. The old mobile UI is not a feature reference. Reusing its protocol or state code requires checking that code against these sources. Research references inform presentation and interaction; they do not add Evener capabilities. Screen studies must distinguish existing behavior from proposals and link their behavior to current sources. The [parity audit](web-parity-audit.md) records corrections and unresolved differences.
+
 Read the [philosophy](philosophy.md), [style guide](style-guide.md), and [annotated lookbook](lookbook.html). The [research ledger](sources.md) separates published evidence from our design judgments. The [workflow studies](workflow-studies.md) define realistic content and full-product scenarios for the next design step. This is a proposed direction, not an approved design or a claim that the app already meets it.
 
 ## Roadmap and review gates
