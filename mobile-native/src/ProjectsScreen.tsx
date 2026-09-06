@@ -15,6 +15,7 @@ import type {
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { useConnection } from "./ConnectionProvider";
 import { NavigationPages } from "./navigationPages";
+import { navigationTree } from "./navigationTree";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -57,6 +58,8 @@ function PageList<T>({
   detail,
   open,
   empty,
+  childRows,
+  omitted,
 }: {
   pages: NavigationPages<T>;
   ready: boolean;
@@ -65,9 +68,25 @@ function PageList<T>({
   detail: (row: T) => string;
   open: (row: T) => void;
   empty: string;
+  childRows?: (row: T) => readonly T[];
+  omitted?: (row: T) => number;
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(pages.subscribe, pages.getSnapshot);
+  const [expansion, setExpansion] = useState({
+    owner: pages,
+    keys: new Set<string>(),
+  });
+  const expanded =
+    expansion.owner === pages ? expansion.keys : new Set<string>();
+  const rows = navigationTree(state.rows, rowKey, childRows, expanded);
+  function toggle(row: T) {
+    const keys = new Set(expanded);
+    const key = rowKey(row);
+    if (keys.has(key)) keys.delete(key);
+    else keys.add(key);
+    setExpansion({ owner: pages, keys });
+  }
   useEffect(() => pages.watch(), [pages]);
   useFocusEffect(
     useCallback(() => {
@@ -98,8 +117,8 @@ function PageList<T>({
         </View>
       ) : null}
       <FlatList
-        data={state.rows}
-        keyExtractor={rowKey}
+        data={rows}
+        keyExtractor={({ item }) => rowKey(item)}
         refreshing={state.loading}
         onRefresh={() => {
           if (ready) void pages.refresh();
@@ -115,36 +134,59 @@ function PageList<T>({
           )
         }
         ListFooterComponent={
-          state.remaining > 0 ? (
-            <Action
-              disabled={!ready || state.loading || state.stale}
-              onPress={() => {
-                void pages.more();
-              }}
-            >
-              {state.loading
-                ? "Loading…"
-                : `Load more · ${state.remaining} remaining`}
-            </Action>
-          ) : null
+          <View style={{ gap: 8 }}>
+            {state.truncated ? (
+              <Copy muted>
+                The hub returned a partial session tree. Some related sessions
+                may be missing.
+              </Copy>
+            ) : null}
+            {state.remaining > 0 ? (
+              <Action
+                disabled={!ready || state.loading || state.stale}
+                onPress={() => {
+                  void pages.more();
+                }}
+              >
+                {state.loading
+                  ? "Loading…"
+                  : `Load more · ${state.remaining} remaining`}
+              </Action>
+            ) : null}
+          </View>
         }
-        renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${title(item)}`}
-            disabled={!ready}
-            onPress={() => open(item)}
+        renderItem={({ item: { item, depth } }) => (
+          <View
             style={{
-              paddingVertical: 13,
-              minHeight: 68,
-              gap: 4,
+              paddingLeft: Math.min(depth, 2) * 12,
               borderBottomWidth: 0.5,
               borderColor: colors.border,
             }}
           >
-            <Copy>{title(item)}</Copy>
-            <Copy muted>{detail(item)}</Copy>
-          </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${title(item)}`}
+              disabled={!ready}
+              onPress={() => open(item)}
+              style={{ paddingVertical: 13, minHeight: 68, gap: 4 }}
+            >
+              <Copy>{title(item)}</Copy>
+              <Copy muted>{detail(item)}</Copy>
+            </Pressable>
+            {childRows?.(item).length ? (
+              <Action
+                tone="quiet"
+                label={`${expanded.has(rowKey(item)) ? "Hide" : "Show"} related sessions for ${title(item)}`}
+                expanded={expanded.has(rowKey(item))}
+                onPress={() => toggle(item)}
+              >{`${expanded.has(rowKey(item)) ? "▾" : "▸"} ${childRows(item).length} related session${childRows(item).length === 1 ? "" : "s"}`}</Action>
+            ) : null}
+            {(omitted?.(item) ?? 0) > 0 ? (
+              <Copy
+                muted
+              >{`${omitted?.(item)} related sessions were omitted by the hub.`}</Copy>
+            ) : null}
+          </View>
         )}
       />
     </>
@@ -277,6 +319,10 @@ export function ProjectScreen({
           pages={pages}
           ready={state === "ready"}
           rowKey={sessionRef}
+          childRows={(row) => row.children ?? []}
+          omitted={(row) =>
+            (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)
+          }
           title={(row) => row.title || "Untitled session"}
           detail={(row) =>
             `${row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state}${row.branch ? ` · ${row.branch}` : ""}`
