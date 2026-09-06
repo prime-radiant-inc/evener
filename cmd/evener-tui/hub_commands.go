@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -201,13 +202,284 @@ func fetchHubSessionRead(feed *hubFrameFeed, client *appwire.Client, ref appwire
 	return func() tea.Msg {
 		capture := feed.BeginCapture()
 		ctx := appwire.WithRequestIDObserver(context.Background(), capture.CutOn)
-		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription})
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full", Subscribe: subscribe, ReplaceSubscription: replaceSubscription, ItemLimit: hubTranscriptItemPageSize})
 		if err != nil {
 			capture.Abandon()
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: transcript.MessagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
+		thread, err := collectHubThreadPages(ctx, client, ref.String(), resp.Thread, resp.OlderCursor)
+		if err != nil {
+			capture.Abandon()
+			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
+		}
+		return hubSessionMsg{detail: hubDetailFromThread(thread), messages: transcript.MessagesFromThread(thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
 	}
+}
+
+const hubTranscriptItemPageSize = 40
+
+// collectHubThreadPages expands the bounded v4 read into the complete view the
+// TUI expects. The initial read is the subscription cut; older pages are
+// collected while that same capture remains open so live frames cannot land
+// between a partial snapshot and its older fragments.
+func collectHubThreadPages(ctx context.Context, client *appwire.Client, ref string, thread appwire.Thread, olderCursor string) (appwire.Thread, error) {
+	seenCursors := make(map[string]struct{})
+	for olderCursor != "" {
+		if _, seen := seenCursors[olderCursor]; seen {
+			return appwire.Thread{}, errors.New("thread/turns/list cursor cycle")
+		}
+		seenCursors[olderCursor] = struct{}{}
+		page, err := client.ThreadTurnsList(ctx, appwire.ThreadTurnsListParams{Ref: ref, Cursor: olderCursor, ItemsView: "full", ItemLimit: hubTranscriptItemPageSize})
+		if err != nil {
+			return appwire.Thread{}, err
+		}
+		thread.Turns = mergeHubTurnPages(page.Data, thread.Turns)
+		if page.NextCursor == olderCursor {
+			return appwire.Thread{}, errors.New("thread/turns/list cursor cycle")
+		}
+		olderCursor = page.NextCursor
+	}
+	for index := range thread.Turns {
+		thread.Turns[index].ItemsView = appwire.TurnItemsViewFull
+		thread.Turns[index].HasEarlierItems = false
+		thread.Turns[index].HasLaterItems = false
+	}
+	return thread, nil
+}
+
+// mergeHubTurnPages receives the older page first and the newer page second.
+// A logical turn can straddle the boundary, so merge by turn ID and then by
+// stable transcript key (falling back to item ID only for malformed fixtures).
+// Older-only turns precede the newer page's order; an overlapping turn takes
+// its position from the newer page after its fragments have been merged.
+func mergeHubTurnPages(older, newer []appwire.Turn) []appwire.Turn {
+	merged := make([]appwire.Turn, 0, len(older)+len(newer))
+	olderByID := make(map[string]appwire.Turn, len(older))
+	newerIDs := make(map[string]struct{}, len(newer))
+	for _, turn := range newer {
+		if turn.ID != "" {
+			newerIDs[turn.ID] = struct{}{}
+		}
+	}
+	for _, turn := range older {
+		if turn.ID == "" {
+			merged = append(merged, turn)
+			continue
+		}
+		if _, seen := olderByID[turn.ID]; seen {
+			continue
+		}
+		olderByID[turn.ID] = turn
+		if _, overlaps := newerIDs[turn.ID]; !overlaps {
+			merged = append(merged, turn)
+		}
+	}
+	emittedNewerIDs := make(map[string]struct{}, len(newer))
+	for _, turn := range newer {
+		if turn.ID == "" {
+			merged = append(merged, turn)
+			continue
+		}
+		if _, emitted := emittedNewerIDs[turn.ID]; emitted {
+			continue
+		}
+		emittedNewerIDs[turn.ID] = struct{}{}
+		if olderTurn, overlaps := olderByID[turn.ID]; overlaps {
+			merged = append(merged, mergeHubTurnFragment(olderTurn, turn))
+			continue
+		}
+		merged = append(merged, turn)
+	}
+	allPositioned := true
+	for _, turn := range merged {
+		if _, ok := hubTurnFirstPosition(turn); !ok {
+			allPositioned = false
+			break
+		}
+	}
+	if allPositioned {
+		sort.SliceStable(merged, func(i, j int) bool {
+			left, _ := hubTurnFirstPosition(merged[i])
+			right, _ := hubTurnFirstPosition(merged[j])
+			if left.Entry != right.Entry {
+				return left.Entry < right.Entry
+			}
+			return left.Item < right.Item
+		})
+	}
+	return merged
+}
+
+func hubTurnFirstPosition(turn appwire.Turn) (appwire.ThreadItemPosition, bool) {
+	var first appwire.ThreadItemPosition
+	found := false
+	for _, item := range turn.Items {
+		if item.Position == nil {
+			continue
+		}
+		if !found || item.Position.Entry < first.Entry || (item.Position.Entry == first.Entry && item.Position.Item < first.Item) {
+			first = *item.Position
+			found = true
+		}
+	}
+	return first, found
+}
+
+func mergeHubTurnFragment(older, newer appwire.Turn) appwire.Turn {
+	if newer.ID == "" {
+		newer.ID = older.ID
+	}
+	newer.Items = mergeHubItems(older.Items, newer.Items)
+	if newer.Status == "" || tuiStatusRank(newer.Status) < tuiStatusRank(older.Status) {
+		newer.Status = older.Status
+	}
+	if newer.Error == nil {
+		newer.Error = older.Error
+	}
+	if newer.StartedAt == nil {
+		newer.StartedAt = older.StartedAt
+	}
+	if newer.CompletedAt == nil {
+		newer.CompletedAt = older.CompletedAt
+	}
+	if newer.DurationMS == nil {
+		newer.DurationMS = older.DurationMS
+	}
+	if newer.Usage == nil {
+		newer.Usage = older.Usage
+	}
+	if newer.Cost == "" {
+		newer.Cost = older.Cost
+	}
+	newer.ItemsView = appwire.TurnItemsViewFull
+	newer.HasEarlierItems = false
+	newer.HasLaterItems = false
+	return newer
+}
+
+func mergeHubItems(older, newer []appwire.ThreadItem) []appwire.ThreadItem {
+	merged := make([]appwire.ThreadItem, 0, len(older)+len(newer))
+	byKey := make(map[string]int, len(older)+len(newer))
+	key := func(item appwire.ThreadItem) string {
+		if item.TranscriptKey != "" {
+			return "key:" + item.TranscriptKey
+		}
+		if item.ID != "" {
+			return "id:" + item.ID
+		}
+		return ""
+	}
+	appendItem := func(item appwire.ThreadItem, current bool) {
+		itemKey := key(item)
+		if itemKey != "" {
+			if index, ok := byKey[itemKey]; ok {
+				if current {
+					merged[index] = mergeHubItem(merged[index], item)
+				}
+				return
+			}
+			byKey[itemKey] = len(merged)
+		}
+		merged = append(merged, item)
+	}
+	for _, item := range older {
+		appendItem(item, false)
+	}
+	for _, item := range newer {
+		appendItem(item, true)
+	}
+	return merged
+}
+
+func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
+	merged := newer
+	if merged.Type == "" {
+		merged.Type = older.Type
+	}
+	if merged.ID == "" {
+		merged.ID = older.ID
+	}
+	if merged.TranscriptKey == "" {
+		merged.TranscriptKey = older.TranscriptKey
+	}
+	if merged.Position == nil {
+		merged.Position = older.Position
+	}
+	if merged.TurnID == "" {
+		merged.TurnID = older.TurnID
+	}
+	if merged.TranscriptEntryIndex == 0 {
+		merged.TranscriptEntryIndex = older.TranscriptEntryIndex
+	}
+	if merged.Text == "" {
+		merged.Text = older.Text
+	}
+	if merged.Delta == "" {
+		merged.Delta = older.Delta
+	}
+	if merged.Images == nil {
+		merged.Images = older.Images
+	}
+	if merged.ToolName == "" {
+		merged.ToolName = older.ToolName
+	}
+	if merged.CallID == "" {
+		merged.CallID = older.CallID
+	}
+	if merged.ArgumentsJSON == "" {
+		merged.ArgumentsJSON = older.ArgumentsJSON
+	}
+	if merged.Description == "" {
+		merged.Description = older.Description
+	}
+	if merged.Output == "" {
+		merged.Output = older.Output
+	}
+	if merged.Error == "" {
+		merged.Error = older.Error
+	}
+	if merged.OutputImages == nil {
+		merged.OutputImages = older.OutputImages
+	}
+	if merged.Status == "" || tuiStatusRank(merged.Status) < tuiStatusRank(older.Status) {
+		merged.Status = older.Status
+	}
+	merged.PrevalOnly = merged.PrevalOnly || older.PrevalOnly
+	if merged.StartedAt == nil {
+		merged.StartedAt = older.StartedAt
+	}
+	if merged.CompletedAt == nil {
+		merged.CompletedAt = older.CompletedAt
+	}
+	if merged.DurationMS == nil {
+		merged.DurationMS = older.DurationMS
+	}
+	if merged.ExitCode == nil {
+		merged.ExitCode = older.ExitCode
+	}
+	if merged.Raw == nil {
+		merged.Raw = older.Raw
+	}
+	if merged.EventKind == "" {
+		merged.EventKind = older.EventKind
+	}
+	if merged.Source == "" {
+		merged.Source = older.Source
+	}
+	if merged.SteeringKind == "" {
+		merged.SteeringKind = older.SteeringKind
+	}
+	if merged.ClientMutationID == "" {
+		merged.ClientMutationID = older.ClientMutationID
+	}
+	return merged
+}
+
+func tuiStatusRank(status string) int {
+	if appwire.IsTerminalTurnStatus(status) || appwire.IsTerminalItemStatus(status) {
+		return 1
+	}
+	return 0
 }
 
 // subscribeChildActivity subscribes (additively, no turns) to a subagent
@@ -222,7 +494,7 @@ func subscribeChildActivity(client *appwire.Client, ref string) tea.Cmd {
 
 func fetchHubStatus(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
+		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String()})
 		if err != nil {
 			return hubStatusMsg{err: err}
 		}
@@ -245,11 +517,16 @@ func fetchHubTranscriptTargets(client *appwire.Client, ref appwire.Ref) tea.Cmd 
 
 func fetchHubTranscript(client *appwire.Client, target appwire.ThreadTranscriptTarget) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: target.Ref, IncludeTurns: true, ItemsView: "full"})
+		ctx := context.Background()
+		resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target.Ref, IncludeTurns: true, ItemsView: "full", ItemLimit: hubTranscriptItemPageSize})
 		if err != nil {
 			return hubTranscriptMsg{target: target, err: err}
 		}
-		return hubTranscriptMsg{target: target, messages: transcript.MessagesFromThread(resp.Thread)}
+		thread, err := collectHubThreadPages(ctx, client, target.Ref, resp.Thread, resp.OlderCursor)
+		if err != nil {
+			return hubTranscriptMsg{target: target, err: err}
+		}
+		return hubTranscriptMsg{target: target, messages: transcript.MessagesFromThread(thread)}
 	}
 }
 

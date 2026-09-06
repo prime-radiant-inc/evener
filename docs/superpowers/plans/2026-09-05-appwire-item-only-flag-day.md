@@ -60,6 +60,7 @@ Additional owned caller fixture found by controller: `cmd/evener/internal/launch
 - [ ] After shared contract is available, run `GOMAXPROCS=2 go test -p 1 ./internal/apptranscript ./cmd/evener-hub/internal/appsource ./cmd/evener-hub`; run focused new and existing critical source/ordinal regressions under race, not the whole hub race suite. Format/diff checks.
 - [ ] Commit explicit owned paths and report RED/GREEN, old symbols removed, retained surfaces and incomplete gates.
 
+Additional ownership: `cmd/evener-tui/`. Production `fetchHubSessionRead` and `fetchHubTranscript` in `hub_commands.go` assume complete transcripts. Add a regression containing more than 40 items and a logical turn split across pages; preserve full-view availability through explicit bounded native item-page collection and correct fragment merge. Preserve the initial snapshot/live capture cut. `fetchHubStatus` can avoid transcript fetching if its metadata is sufficient. Run covering TUI tests with `GOMAXPROCS=2 go test -p 1 ./cmd/evener-tui -run 'FlagDay|ItemOnly|HubSession|HubTranscript' -count=1 -v`; add actual new test names to the final report. This is native v4 consumption, not legacy fallback.
 ### Task 4: Integrate, verify, review and publish
 
 **Ownership:** controller coordinates, delegates fixes to owning lane. Cross-cutting compile-only callers outside lane ownership receive an explicit ownership grant before editing.
