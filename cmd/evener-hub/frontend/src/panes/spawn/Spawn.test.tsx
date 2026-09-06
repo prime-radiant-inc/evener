@@ -167,6 +167,14 @@ function effortControl(): HTMLElement {
   return screen.getByLabelText("Reasoning effort");
 }
 
+/** The visible effort readout (aria-hidden: the select speaks the value). */
+function effortReadout(): HTMLElement {
+  const trigger = screen.getByTestId("spawn-effort");
+  const readout = trigger.querySelector("[data-testid='spawn-effort-value']");
+  if (!readout) throw new Error("the card's effort control has no visible readout");
+  return readout as HTMLElement;
+}
+
 /** The trigger's rendered path. It also carries a chevron and a screen-reader
  * hint, so the value is matched inside the text rather than compared whole. */
 function expectWorkingDir(path: string): void {
@@ -1638,6 +1646,29 @@ test("Effort, Model, and the mobile rows name the resolved default once launch/r
   expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
 });
 
+// The visible effort readout is the selected option's own label - including
+// the resolved default's ("high (default)"), not the bare "(default)" the
+// empty value renders before the resolve lands.
+test("the card's effort readout names the resolved default once launch/resolve lands", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5", reasoningEffort: "high" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  expect(effortReadout().textContent).toBe("(default)");
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  await waitFor(() => expect(effortReadout().textContent).toBe("high (default)"));
+});
+
 // Access mode is the chip-level face of the launch-config sandbox field
 // (floor §1.8), so it follows the same resolved-default rule: its empty
 // option names the inherited sandbox in the chip's own friendly wording.
@@ -1960,6 +1991,30 @@ test("a model the catalog says cannot reason disables the Effort select and clea
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await waitFor(() => expect(effortSelect().disabled).toBe(true));
   expect(effortSelect().value).toBe("");
+});
+
+// A disabled effort control must LOOK disabled: the visible wrapper carries
+// the state (not just the transparent select inside it), so it drops its
+// hover face and pointer cursor like every other disabled control.
+test("a disabled effort control renders its disabled state on the visible wrapper", async () => {
+  const user = userEvent.setup();
+  scriptModelList([
+    {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "openai/gpt-5",
+      supportsReasoning: false,
+      reasoningEffortLevels: [],
+    },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await waitFor(() => expect(effortSelect().disabled).toBe(true));
+
+  const trigger = screen.getByTestId("spawn-effort");
+  expect(trigger.getAttribute("data-disabled")).toBe("true");
 });
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {

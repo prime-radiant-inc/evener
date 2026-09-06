@@ -989,18 +989,27 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     .effortTrigger): the current value IS the visible control -
                     a real native <select> laid over its own readout at zero
                     opacity - so the row stays one quiet line instead of
-                    growing a bordered box. Same ladder contract the removed
-                    FormRow select kept: the selected model's own levels, the
-                    fallback ladder when the catalog can't say, and a disabled
-                    control when the model cannot reason at all (effortDisabled)
-                    rather than no control - pre-launch the setting is still
-                    discoverable beside the model it belongs to. */}
-                <span className={CLASS.effortTrigger} data-testid="spawn-effort">
+                    growing a bordered box. The readout renders the SELECTED
+                    option's own label - including the resolved default's
+                    ("high (default)"), never the bare value - so what the
+                    user sees is what the select holds. Same ladder contract
+                    the removed FormRow select kept: the selected model's own
+                    levels, the fallback ladder when the catalog can't say,
+                    and a disabled control when the model cannot reason at all
+                    (effortDisabled) rather than no control - pre-launch the
+                    setting is still discoverable beside the model it belongs
+                    to. */}
+                <span
+                  className={CLASS.effortTrigger}
+                  data-testid="spawn-effort"
+                  data-disabled={effortDisabled ? "true" : undefined}
+                >
                   <span className={CLASS.effortSeparator} aria-hidden="true">
                     ·
                   </span>
-                  <span className={CLASS.effortValue} aria-hidden="true">
-                    {effortLabel(reasoningEffort, effortLevels)}
+                  <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
+                    {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
+                      effortLabel(reasoningEffort, effortLevels)}
                   </span>
                   <span className={CLASS.effortChevron} aria-hidden="true">
                     <Chevron direction="down" />
