@@ -1,5 +1,9 @@
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type { ModelListResponse } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import {
+  effortOptionLevels,
+  sessionEffortLevels,
+} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationModelCatalog,
@@ -75,10 +79,16 @@ export class SessionControls {
   }
   setReasoningEffort(effort: string) {
     const current = this.getReasoning();
+    if (!current) return Promise.resolve();
+    const levels = sessionEffortLevels(
+      current.reasoningEffortLevels,
+      current.supportsReasoning,
+    );
+    const selected = current.reasoningEffort ?? "";
     if (
-      !current?.supportsReasoning ||
-      !current.reasoningEffortLevels?.includes(effort) ||
-      current.reasoningEffort === effort
+      !levels.length ||
+      !effortOptionLevels(levels, selected).includes(effort) ||
+      selected === effort
     )
       return Promise.resolve();
     return this.run("setReasoningEffort", () =>

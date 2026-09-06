@@ -12,6 +12,11 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import {
+  effortLabel,
+  effortOptionLevels,
+  sessionEffortLevels,
+} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { ComposerSetting } from "./ComposerSettings";
 import { ModelPicker } from "./ModelPicker";
@@ -37,6 +42,11 @@ export function ComposerSettingsSheet({
   const insets = useSafeAreaInsets();
   const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
   const model = setting === "model";
+  const levels = sessionEffortLevels(
+    conversation.reasoningEffortLevels,
+    conversation.supportsReasoning,
+  );
+  const currentEffort = conversation.reasoningEffort ?? "";
   return (
     <Modal
       animationType="slide"
@@ -127,15 +137,15 @@ export function ComposerSettingsSheet({
               >
                 <Copy muted>{conversation.modelProvider}</Copy>
                 <Copy muted>Used by this session until you change it.</Copy>
-                {conversation.supportsReasoning ? (
-                  conversation.reasoningEffortLevels?.map((effort) => (
+                {levels.length > 0 ? (
+                  effortOptionLevels(levels, currentEffort).map((effort) => (
                     <Choice
                       key={effort}
-                      label={effort}
-                      selected={effort === conversation.reasoningEffort}
+                      label={effortLabel(effort, levels)}
+                      selected={effort === currentEffort}
                       disabled={!ready || state.pending !== null}
                       onPress={() => {
-                        if (effort === conversation.reasoningEffort) close();
+                        if (effort === currentEffort) close();
                         else
                           void controls
                             .setReasoningEffort(effort)

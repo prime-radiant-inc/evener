@@ -6,6 +6,10 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import {
+  effortLabel,
+  sessionEffortLevels,
+} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import { useColors } from "./ui";
 
@@ -26,9 +30,12 @@ export function ComposerSettings({
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const scale = Platform.OS === "ios" ? fontScale : 1;
-  const reasoning =
-    conversation.supportsReasoning &&
-    !!conversation.reasoningEffortLevels?.length;
+  const levels = sessionEffortLevels(
+    conversation.reasoningEffortLevels,
+    conversation.supportsReasoning,
+  );
+  const reasoning = levels.length > 0;
+  const currentEffort = effortLabel(conversation.reasoningEffort ?? "", levels);
   return (
     <View
       style={{
@@ -79,7 +86,7 @@ export function ComposerSettings({
       {reasoning ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Reasoning effort: ${conversation.reasoningEffort || "Default"}. Change reasoning effort`}
+          accessibilityLabel={`Reasoning effort: ${currentEffort}. Change reasoning effort`}
           accessibilityState={{ disabled }}
           disabled={disabled}
           onPress={() => open("reasoning")}
@@ -95,7 +102,7 @@ export function ComposerSettings({
             allowFontScaling={Platform.OS !== "ios"}
             style={{ fontSize: 13 * scale, color: colors.secondary }}
           >
-            {conversation.reasoningEffort || "Default"}
+            {currentEffort}
           </Text>
           <Text
             allowFontScaling={false}

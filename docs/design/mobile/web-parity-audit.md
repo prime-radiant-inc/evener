@@ -59,6 +59,10 @@ The regression test failed with the prior whole-batch signature lookup. It now v
 
 ## Composer reasoning audit
 
-Current web StatusRow offers a default empty-string value, the advertised effort ladder (or minimal/low/medium/high when reasoning is supported but the ladder is empty), and an existing current value absent from the ladder. It distinguishes explicit none from the default via shell/reasoningEffort.ts. Native currently omits the default option, hides the control on an empty ladder, and rejects non-ladder efforts in SessionControls. These are confirmed parity gaps, not proposed new features. Model selection uses the existing thread/model/set operation; effort changes use thread/reasoning-effort/set.
+Current web StatusRow offers a default empty-string value, the advertised effort ladder (or minimal/low/medium/high when reasoning is supported but the ladder is empty), and an existing current value absent from the ladder. It distinguishes explicit none from the default via shell/reasoningEffort.ts. Corrected: native uses the shared current-web level selection, option list, and labels, including default, explicit none, and the fallback ladder. SessionControls validates the same options before sending. These restore existing product behavior. Model selection uses the existing thread/model/set operation; effort changes use thread/reasoning-effort/set.
 
 Android Release build at 54774a4c4 succeeded (359 tasks, 12 executed). The existing emulator answered one health echo but subsequent boot/activity inspection remained pending; a fresh install was started against that same device. No successful install or new Android manual test is claimed from the build result.
+
+## Reasoning correction verification
+
+A native transport-boundary regression failed before the correction and now verifies empty-string default dispatch, fallback-level dispatch, and rejection of an invented level. All 109 native tests and TypeScript pass. Current web StatusRow uses the extracted sessionEffortLevels helper without changing its behavior; its existing tests cover fallback levels, unset default, explicit none, and provider-default none. The full make test-web gate was started and remains pending at this record. Native manual verification of the corrected picker has not yet been performed.
