@@ -18,3 +18,7 @@ Before implementation, inspect the server handler contracts and web implementati
 The prior MobileQueue projection dropped revision, entry IDs, client mutation IDs and full texts. It now preserves those fields through initial thread projection and `thread/queueChanged`, cloning arrays so source mutation cannot rewrite published state. Wire revision is required in the view model; fixture queues now declare it. Initial and notification paths use the same projection function.
 
 Behavioral tests first failed on the missing identity/revision fields, then passed with the implementation. Shared mobile Vitest: 2,230 tests across 90 files passed. `mobile` typecheck and Biome gate passed. Native TypeScript and 53 tests passed. This is a data-contract prerequisite, not an implemented queue-management screen or manual native acceptance of queue actions.
+
+## Implemented native slice
+
+The shared projection now carries the same instance identity as the service. Cancellation requires the observed instance; promotion and drain wrappers validate it and preserve the entry/revision guards. A native queue sheet exposes full text, cancel, individual steering and bulk steering for steering-capable sessions. The draft is untouched. Shared and native gates plus both Release builds passed; both simulators exercised the scripted queue operations and sheet dismissal. See `docs/design/mobile/queue-evidence.md` for exact evidence and remaining acceptance work. The final manual-E2E checkbox remains open for real-daemon, stale-native-view and reconnect/no-ACK cases.

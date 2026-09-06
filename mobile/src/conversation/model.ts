@@ -166,6 +166,7 @@ export interface MobileUsage {
 // Thread; React components consume only this shape, never the wire Thread.
 export interface MobileConversation {
   id: string;
+  instanceId?: string;
   sessionId: string;
   name?: string;
   preview: string;

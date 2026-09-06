@@ -26,6 +26,8 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
+  TurnDrainAsSteerResponse,
+  TurnPromoteQueuedAsSteerResponse,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   MobileConversation,
@@ -87,6 +89,7 @@ export interface ConversationService {
   cancelQueued(
     index: number,
     expectedEntryId: string,
+    expectedInstanceId: string,
   ): Promise<TurnCancelQueuedResponse>;
   close(): void;
 }
@@ -99,6 +102,18 @@ export interface ConversationService {
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
   refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
+}
+
+export interface QueueConversationService extends LiveConversationService {
+  promoteQueuedAsSteer(
+    index: number,
+    expectedEntryId: string,
+    expectedInstanceId: string,
+  ): Promise<TurnPromoteQueuedAsSteerResponse>;
+  drainAsSteer(
+    expectedQueueRevision: number,
+    expectedInstanceId: string,
+  ): Promise<TurnDrainAsSteerResponse>;
 }
 
 let defaultIdCounter = 0;
@@ -299,7 +314,7 @@ function decodeMutationResult(
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
-): LiveConversationService {
+): QueueConversationService {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -333,6 +348,13 @@ export function createConversationService(
   // completions (an older open resolving after a newer open, or a refresh
   // resolving after close/reopen) no-ops against the live pair.
   let openEpoch = 0;
+
+  function requireQueueInstance(expected: string): string {
+    const threadRef = requireRef();
+    if (nonemptyString(expected, "observed thread instance id") !== instanceId)
+      throw new Error("The session instance changed. Refresh its queue.");
+    return threadRef;
+  }
 
   function beginOpen(threadRef: string): number {
     opening = {
@@ -691,12 +713,8 @@ export function createConversationService(
       );
     },
 
-    async cancelQueued(index, expectedEntryId) {
-      const threadRef = requireRef();
-      const expectedInstanceId = nonemptyString(
-        instanceId,
-        "thread instance id",
-      );
+    async cancelQueued(index, expectedEntryId, expectedInstanceId) {
+      const threadRef = requireQueueInstance(expectedInstanceId);
       const clientMutationId = idFactory();
       return withCapabilityRefresh("cancelQueued", () =>
         client.request("turn/cancelQueued", {
@@ -705,6 +723,33 @@ export function createConversationService(
           clientMutationId,
           expectedEntryId,
           expectedInstanceId,
+        }),
+      );
+    },
+
+    async promoteQueuedAsSteer(index, expectedEntryId, expectedInstanceId) {
+      const threadRef = requireQueueInstance(expectedInstanceId);
+      requireCap("steer", "promoteQueuedAsSteer");
+      return withCapabilityRefresh("promoteQueuedAsSteer", () =>
+        client.request("turn/promoteQueuedAsSteer", {
+          ref: threadRef,
+          index,
+          expectedEntryId,
+          expectedInstanceId,
+          clientMutationId: idFactory(),
+        }),
+      );
+    },
+
+    async drainAsSteer(expectedQueueRevision, expectedInstanceId) {
+      const threadRef = requireQueueInstance(expectedInstanceId);
+      requireCap("steer", "drainAsSteer");
+      return withCapabilityRefresh("drainAsSteer", () =>
+        client.request("turn/drainAsSteer", {
+          ref: threadRef,
+          expectedQueueRevision,
+          expectedInstanceId,
+          clientMutationId: idFactory(),
         }),
       );
     },

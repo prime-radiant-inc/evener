@@ -564,6 +564,7 @@ export function projectThread(thread: Thread): MobileConversation {
 
   return {
     id: thread.id,
+    instanceId: thread.evener.instanceId ?? thread.id,
     sessionId: thread.sessionId,
     name: thread.name,
     preview: thread.preview,
