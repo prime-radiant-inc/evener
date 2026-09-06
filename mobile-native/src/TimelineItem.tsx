@@ -1,10 +1,17 @@
 import { type ReactNode, useState } from "react";
 import { View } from "react-native";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { TranscriptImages } from "./TranscriptImages";
 import type { TimelineRow } from "./timeline";
 import { Action, Copy, useColors } from "./ui";
 
-export function TimelineItem({ item }: { item: TimelineRow }) {
+export function TimelineItem({
+  item,
+  hubId,
+}: {
+  item: TimelineRow;
+  hubId: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const colors = useColors();
   let content: ReactNode;
@@ -20,7 +27,7 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
           >{`${expanded ? "▾" : "▸"} Session details · ${item.entries.length}`}</Action>
           {expanded
             ? item.entries.map((entry) => (
-                <TimelineItem key={entry.id} item={entry} />
+                <TimelineItem key={entry.id} item={entry} hubId={hubId} />
               ))
             : null}
         </>
@@ -57,11 +64,7 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
       content = (
         <>
           <Copy muted>Attachments</Copy>
-          {item.items.map((attachment) => (
-            <Copy key={attachment.id}>
-              {attachment.name ?? attachment.mediaType ?? "Attachment"}
-            </Copy>
-          ))}
+          <TranscriptImages images={item.items} hubId={hubId} />
         </>
       );
       break;

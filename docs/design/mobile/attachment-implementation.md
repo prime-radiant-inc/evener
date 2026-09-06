@@ -39,9 +39,15 @@ At source 8af2d1140, both installed Release apps selected the repository icon.pn
 
 The provider decoded the actual image_url data, rather than inspecting the AppWire request alone. Both images were 1024 × 1024 PNGs with RGBA pixel SHA-256 `3974c3ea814e66cd13a4f1a22d4b4d6c27611d2cb8619e6bf171766248088073`, identical to the original fixture. iOS encoded 747473 bytes and Android 409093 bytes. The second provider call contained both the earlier iOS image in conversation history and the newly sent Android image. This proves ordinary image send and history retention through the selected test provider, not steering, queue delivery, every provider, or physical-device behavior.
 
-The manual harness used test/e2e/fakellm on loopback 58877, selected by the NATIVE-IMAGE-HARNESS sentinel through the owned provider proxy. It logged only image format, dimensions, encoded length and pixel hash. Production hub 9180 was not involved. The transcript currently renders attachment names without the images themselves; this remains incomplete UI.
+The manual harness used test/e2e/fakellm on loopback 58877, selected by the NATIVE-IMAGE-HARNESS sentinel through the owned provider proxy. It logged only image format, dimensions, encoded length and pixel hash. Production hub 9180 was not involved.
 
-Empty-composer queue-only steering, manual image steering/queue delivery, transcript image rendering, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding.
+## Transcript gallery
+
+The current web ImageGallery is the interaction reference: thumbnails open an image viewer, and Previous/Next stay within the images attached to the same transcript item. Native now renders 112-point thumbnails and a full-screen viewer, with visible loading/failure states. Image sources preserve inline bytes, resolve relative URLs against the owning hub, and attach credentials only for that hub's origin. Tests cover source resolution, credential separation, and unsupported schemes. The existing wire projector remains the source of attachment identity and content.
+
+All 134 native tests and TypeScript pass; both Release builds succeed. Manual iOS and Android checks displayed the real session's inline image as a thumbnail and at full size. Native inspection found an iOS modal header under the status bar; giving the modal its own SafeAreaProvider corrected it. Verified settled aspect ratio, iOS Done dismissal, and Android system Back returning to the conversation. A transition capture showed temporary stretching before the iOS viewer settled; transition polish still needs checking. Multi-image navigation, authenticated HTTP image retrieval, failed-load recovery, large text and screen-reader behavior are not yet manually verified.
+
+Empty-composer queue-only steering, manual image steering/queue delivery, the gallery checks above, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding.
 
 ## Native API references
 
