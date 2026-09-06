@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
-import { groupTimeline, isInterruptedNotice } from "./timeline";
+import { groupTimeline, isInterruptedNotice, timelineGap } from "./timeline";
 
 const setup: MobileTimelineItem = {
   kind: "notice",
@@ -27,6 +27,25 @@ const warning: MobileTimelineItem = {
   family: "warning",
   tone: "warning",
 };
+
+it("uses tighter rhythm around routine details without compressing warnings or decisions", () => {
+  const ordinary = timelineGap(message, message);
+  const details = groupTimeline([setup])[0];
+  if (!details) throw new Error("missing details");
+  expect(timelineGap(message, details)).toBeLessThan(ordinary);
+  expect(timelineGap(details, message)).toBeLessThan(ordinary);
+  expect(timelineGap(details, warning)).toBe(ordinary);
+  expect(timelineGap(warning, details)).toBe(ordinary);
+  expect(
+    timelineGap(details, {
+      kind: "failure",
+      id: "failed",
+      title: "Failed",
+      detail: "reason",
+    }),
+  ).toBe(ordinary);
+  expect(timelineGap(details, undefined)).toBe(0);
+});
 
 it("collapses only typed non-warning interruption notices", () => {
   const interrupted = {

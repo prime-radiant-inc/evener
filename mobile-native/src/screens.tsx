@@ -73,7 +73,7 @@ import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
 import { TasksSheet } from "./TasksSheet";
 import { TimelineItem } from "./TimelineItem";
-import { groupTimeline } from "./timeline";
+import { groupTimeline, timelineGap } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
@@ -1312,15 +1312,20 @@ export function ConversationScreen({
             ref={timeline}
             data={timelineRows}
             keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <TimelineItem
-                item={item}
-                hubId={route.params.hubId}
-                sessionRef={route.params.ref}
-              />
+            renderItem={({ item, index }) => (
+              <View
+                style={{
+                  paddingBottom: timelineGap(item, timelineRows[index + 1]),
+                }}
+              >
+                <TimelineItem
+                  item={item}
+                  hubId={route.params.hubId}
+                  sessionRef={route.params.ref}
+                />
+              </View>
             )}
             contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
-            ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
             keyboardShouldPersistTaps="handled"
             refreshing={refreshing}
             onRefresh={() => {
@@ -1370,15 +1375,13 @@ export function ConversationScreen({
                     ) : null}
                   </View>
                 ) : null}
-                <View style={{ flexShrink: 1 }}>
-                  {connected &&
-                  conversation &&
-                  !conversation.capabilities.send &&
-                  !conversation.capabilities.steer &&
-                  !conversation.capabilities.queue ? (
-                    <Copy muted>Sending is unavailable for this session.</Copy>
-                  ) : null}
-                </View>
+                {connected &&
+                conversation &&
+                !conversation.capabilities.send &&
+                !conversation.capabilities.steer &&
+                !conversation.capabilities.queue ? (
+                  <Copy muted>Sending is unavailable for this session.</Copy>
+                ) : null}
                 {snapshot.olderCursor ? (
                   <Action
                     disabled={!ready || snapshot.loadingOlder}
