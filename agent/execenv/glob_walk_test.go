@@ -161,11 +161,11 @@ func TestGlobWalkFSBoundsAFilesystemWithoutFileIdentity(t *testing.T) {
 		t.Fatalf("fstest.MapFS should carry no file identity: (%v, %v)", info, err)
 	}
 
-	w := &globWalkFS{FS: tree, ctx: t.Context(), listed: map[string]fs.FileInfo{}}
+	w := &globWalkFS{FS: tree, ctx: t.Context(), budget: &globBudget{}}
 	if _, err := w.ReadDir("dir"); err != nil {
 		t.Fatalf("first listing: %v", err)
 	}
-	w.unidentified = maxUnidentifiedGlobDirs
+	w.budget.listings = maxGlobDirListings
 	_, err := w.ReadDir("dir")
 	if err == nil {
 		t.Fatal("listing past the bound succeeded, want a refusal")
@@ -176,19 +176,29 @@ func TestGlobWalkFSBoundsAFilesystemWithoutFileIdentity(t *testing.T) {
 }
 
 // TestGlobWalkFSKnowsWhenIdentityIsAvailable pins the discrimination the
-// backstop turns on: an os-backed filesystem carries file identity and is
-// bounded by the cycle check, so it must never be counted against the bound.
+// backstop turns on: identity decides how running out of budget is EXPLAINED,
+// not whether a listing counts toward it. An os-backed filesystem is bounded
+// by the cycle check too, so its listings are charged to the budget exactly
+// like an identity-less filesystem's — only the message a refusal gives once
+// the bound trips differs.
 func TestGlobWalkFSKnowsWhenIdentityIsAvailable(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), listed: map[string]fs.FileInfo{}}
+	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
 	if _, err := w.ReadDir("sub"); err != nil {
 		t.Fatalf("listing an os-backed directory: %v", err)
 	}
-	if w.unidentified != 0 {
-		t.Fatalf("os-backed listing counted %d unidentified directories, want 0", w.unidentified)
+	if w.budget.listings != 1 {
+		t.Fatalf("os-backed listing charged %d to the budget, want 1", w.budget.listings)
+	}
+	info, err := fs.Stat(w.FS, "sub")
+	if err != nil {
+		t.Fatalf("stat sub: %v", err)
+	}
+	if !hasFileIdentity(info) {
+		t.Fatalf("an os-backed directory must carry file identity")
 	}
 }
 

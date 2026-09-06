@@ -198,7 +198,7 @@ func TestGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered(t *testing.T) 
 	dir := writeScopingFixture(t)
 	env := NewLocalExecutionEnvironment(dir)
 
-	matches, excluded, err := env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", dir, false)
+	matches, excluded, _, err := env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", dir, false)
 	if err != nil {
 		t.Fatalf("GlobWithExclusions: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered(t *testing.T) 
 		t.Fatal("expected a non-zero excluded count for a fully-filtered glob")
 	}
 
-	matches, excluded, err = env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", dir, true)
+	matches, excluded, _, err = env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", dir, true)
 	if err != nil {
 		t.Fatalf("GlobWithExclusions include_ignored: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestSandboxedGlobWithExclusions_ReportsExcludedCountWhenFullyFiltered(t *te
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
 	writeScopingFixtureAt(t, worktree)
 
-	matches, excluded, err := env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", worktree, false)
+	matches, excluded, _, err := env.GlobWithExclusions(t.Context(), "node_modules/**/*.js", worktree, false)
 	if err != nil {
 		t.Fatalf("GlobWithExclusions: %v", err)
 	}

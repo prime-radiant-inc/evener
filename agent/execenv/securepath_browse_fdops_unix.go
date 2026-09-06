@@ -91,14 +91,14 @@ func toFsErr(err error) error {
 //
 // Dotfiles/dirs and gitignored paths are excluded by default (matching the
 // off path's Glob), unless includeIgnored is set.
-func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	baseFd, canonical, err := s.openReadBaseFd(tool, base)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
@@ -115,16 +115,17 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	seen := make(map[string]struct{})
 	var abs []string
 	excluded := 0
+	budget := &globBudget{}
 	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		for _, m := range matches {
 			if !includeIgnored {
 				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
 				if err != nil {
-					return nil, 0, err
+					return nil, 0, 0, err
 				}
 				if drop {
 					excluded++
@@ -143,9 +144,13 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 		}
 	}
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return abs, excluded, nil
+	truncatedAt := 0
+	if budget.full() {
+		truncatedAt = maxGlobMatches
+	}
+	return abs, excluded, truncatedAt, nil
 }
 
 // grepNative runs the native (ripgrep-absent) grep beneath a policy-checked base,

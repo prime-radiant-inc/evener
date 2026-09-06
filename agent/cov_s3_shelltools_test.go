@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -189,5 +191,55 @@ func TestS3Cov_GlobTool_FullyExcludedResultExplainsRatherThanEmpties(t *testing.
 	}
 	if !strings.Contains(res.Output, "index.js") {
 		t.Fatalf("expected include_ignored=true to find the match, got: %q", res.Output)
+	}
+}
+
+// truncatingGlobEnv wraps an execenv.ExecutionEnvironment and implements
+// execenv.GlobExcluder with a fixed, pre-truncated result, so the tool
+// boundary below can be tested without building a tree large enough to
+// actually trip the real match cap.
+type truncatingGlobEnv struct {
+	execenv.ExecutionEnvironment
+	matches     []string
+	truncatedAt int
+}
+
+func (e *truncatingGlobEnv) GlobWithExclusions(ctx context.Context, pattern, basePath string, includeIgnored bool) ([]string, int, int, error) {
+	return e.matches, 0, e.truncatedAt, nil
+}
+
+// TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches proves
+// the glob tool boundary surfaces GlobExcluder's truncatedAt (#497): when a
+// glob call hits the match cap, the tool result must still contain every
+// match it collected *and* say the listing was capped, so a model cannot
+// mistake a partial result for the whole answer. A bare
+// strings.Join(matches, "\n") is indistinguishable from an uncapped result,
+// which is exactly the failure mode this guards against.
+func TestS3Cov_GlobTool_TruncationNoteNamesTheCapWithoutDroppingMatches(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newSession(t, withDir(dir))
+
+	const capAt = 7
+	matches := make([]string, capAt)
+	for i := range matches {
+		matches[i] = fmt.Sprintf("/match/%02d.txt", i)
+	}
+	s.env = &truncatingGlobEnv{ExecutionEnvironment: s.env, matches: matches, truncatedAt: capAt}
+
+	res := s3cov_exec(t, s, "glob", `{"pattern":"**/*","path":"."}`)
+	if res.IsError {
+		t.Fatalf("glob error: %v", res.Output)
+	}
+	for _, m := range matches {
+		if !strings.Contains(res.Output, m) {
+			t.Fatalf("truncated glob result dropped match %q: %q", m, res.Output)
+		}
+	}
+	if !strings.Contains(res.Output, strconv.Itoa(capAt)) {
+		t.Fatalf("truncated glob result does not name the cap (%d): %q", capAt, res.Output)
+	}
+	if res.Output == strings.Join(matches, "\n") {
+		t.Fatal("truncated glob result is indistinguishable from the bare match list; a model can't tell truncation happened")
 	}
 }

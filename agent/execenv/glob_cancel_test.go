@@ -63,7 +63,7 @@ func TestGlobMatchesStopsOnContextCancellation(t *testing.T) {
 	tree := globCancelTree()
 
 	full := &countingFS{FS: cancelFS{ctx: t.Context(), fsys: tree}}
-	if _, err := globMatches(t.Context(), full, "**/needle.txt"); err != nil {
+	if _, err := globMatches(t.Context(), full, "**/needle.txt", &globBudget{}); err != nil {
 		t.Fatalf("uncancelled globMatches: %v", err)
 	}
 	if full.calls < 20 {
@@ -74,7 +74,7 @@ func TestGlobMatchesStopsOnContextCancellation(t *testing.T) {
 	defer cancel()
 	counter := &countingFS{FS: cancelFS{ctx: ctx, fsys: tree}, cancelOn: 3, cancel: cancel}
 
-	matches, err := globMatches(ctx, counter, "**/needle.txt")
+	matches, err := globMatches(ctx, counter, "**/needle.txt", &globBudget{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("globMatches after mid-walk cancellation = (%v, %v), want context.Canceled", matches, err)
 	}
@@ -133,7 +133,7 @@ func TestGlobWithExclusionsReportsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	matches, excluded, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(ctx, "**/needle.txt", root, true)
+	matches, excluded, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(ctx, "**/needle.txt", root, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("GlobWithExclusions with a cancelled context = (%v, %d, %v), want context.Canceled", matches, excluded, err)
 	}
@@ -157,7 +157,7 @@ func TestGlobWithExclusionsStopsMidWalk(t *testing.T) {
 	})
 
 	root := t.TempDir()
-	matches, excluded, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(ctx, "**/needle.txt", root, true)
+	matches, excluded, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(ctx, "**/needle.txt", root, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("GlobWithExclusions cancelled mid-walk = (%v, %d, %v), want context.Canceled", matches, excluded, err)
 	}
@@ -182,14 +182,14 @@ func TestSandboxedGlobReportsCancellation(t *testing.T) {
 
 	// Sanity: the same glob finds the file when nobody cancels it, so a
 	// cancelled empty result cannot be mistaken for "there was nothing here".
-	found, _, err := env.GlobWithExclusions(t.Context(), "**/needle.txt", worktree, true)
+	found, _, _, err := env.GlobWithExclusions(t.Context(), "**/needle.txt", worktree, true)
 	if err != nil || len(found) != 1 {
 		t.Fatalf("sandboxed glob = (%v, %v), want the one needle", found, err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	matches, excluded, err := env.GlobWithExclusions(ctx, "**/needle.txt", worktree, true)
+	matches, excluded, _, err := env.GlobWithExclusions(ctx, "**/needle.txt", worktree, true)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("sandboxed GlobWithExclusions with a cancelled context = (%v, %d, %v), want context.Canceled", matches, excluded, err)
 	}

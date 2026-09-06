@@ -178,6 +178,7 @@ type ExecutionEnvironment interface {
 type GlobExcluder interface {
 	// GlobWithExclusions behaves like Glob but also returns the number of
 	// candidate matches dropped by the default dotfile/gitignore exclusion
-	// (always 0 when includeIgnored is true).
-	GlobWithExclusions(ctx context.Context, pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
+	// (always 0 when includeIgnored is true), and truncatedAt: the match cap
+	// that cut the listing short, or 0 when every match is reported.
+	GlobWithExclusions(ctx context.Context, pattern, basePath string, includeIgnored bool) (matches []string, excluded int, truncatedAt int, err error)
 }

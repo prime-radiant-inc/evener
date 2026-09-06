@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -52,16 +53,67 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 	return fs.Stat(c.fsys, name)
 }
 
-// maxUnidentifiedGlobDirs bounds a walk over a filesystem whose directories
-// carry no file identity, where globWalkFS's cycle check cannot work. The
-// bound counts directories listed rather than capping depth because a symlink
-// cycle costs unbounded *work*, not merely unbounded depth: one
-// /proc/<pid>/root hop re-enters the entire tree, so a shallow depth cap would
-// still admit a combinatorial re-walk while a deep one would truncate real
-// results. os-backed filesystems never reach this — the cycle check bounds
-// them — so exceeding it means the walk has lost its footing, and it is
-// reported as an error rather than as a short list.
-const maxUnidentifiedGlobDirs = 100_000
+// maxGlobDirListings bounds how many directory listings one glob call may
+// make, across every brace-expanded pattern in it. It counts directories
+// listed rather than capping depth because a symlink cycle costs unbounded
+// *work*, not merely unbounded depth: one /proc/<pid>/root hop re-enters the
+// entire tree, so a shallow depth cap would still admit a combinatorial
+// re-walk while a deep one would truncate real results. It bounds every
+// listing, not only ones on a filesystem without file identity: even where
+// the cycle check works, an unbounded `**` over a huge tree (`/`) still costs
+// unbounded work and memory.
+var maxGlobDirListings = 100_000
+
+// maxGlobMatches bounds how many matches one glob call may accumulate.
+var maxGlobMatches = 10_000
+
+// globBudget bounds the total work and memory one glob call may spend, shared
+// by every brace-expanded pattern the call walks.
+type globBudget struct {
+	listings  int
+	matches   int
+	truncated bool
+}
+
+// listing charges one more directory listing to the budget regardless of
+// identified: an unbounded `**` over a huge tree costs unbounded work and
+// memory even where the cycle check works, so the bound has to apply whether
+// or not this filesystem can tell directories apart. identified only picks
+// which explanation the refusal gives once the bound trips.
+func (b *globBudget) listing(identified bool) error {
+	b.listings++
+	if b.listings <= maxGlobDirListings {
+		return nil
+	}
+	if !identified {
+		return fmt.Errorf("glob walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking", b.listings)
+	}
+	return fmt.Errorf("glob walk made %d directory listings, past the budget for one glob call: narrow the pattern or its base directory", b.listings)
+}
+
+// match reports whether the walk may keep the next match, so the caller can
+// end the walk itself rather than letting it run to completion and truncating
+// the result afterward — the cap has to bound the work a glob call spends,
+// not only the length of the answer it hands back.
+func (b *globBudget) match() bool {
+	if b.matches >= maxGlobMatches {
+		b.truncated = true
+		return false
+	}
+	b.matches++
+	return true
+}
+
+func (b *globBudget) full() bool {
+	return b.truncated
+}
+
+// listedDir is one entry on globWalkFS.chain: the identity of a directory on
+// the path currently being walked.
+type listedDir struct {
+	name string
+	info fs.FileInfo
+}
 
 // globWalkFS is the view of the filesystem a single doublestar walk runs over.
 // It supplies the two properties doublestar itself cannot:
@@ -85,13 +137,14 @@ const maxUnidentifiedGlobDirs = 100_000
 type globWalkFS struct {
 	fs.FS
 	ctx context.Context
-	// listed holds the identity of every directory already listed, keyed by
-	// the path it was listed under, so the ancestor check costs a map lookup
-	// per level instead of a stat per level.
-	listed map[string]fs.FileInfo
-	// unidentified counts listed directories whose FileInfo carries no file
-	// identity — the only case maxUnidentifiedGlobDirs bounds.
-	unidentified int
+	// chain holds the identity of every directory on the path currently being
+	// walked, root first, so the ancestor check in admit can compare against
+	// them without retaining one FileInfo for every directory the walk has
+	// ever listed. See push for how it stays pruned to that path.
+	chain []listedDir
+	// budget bounds the directory listings and matches this walk may spend,
+	// shared with the rest of the glob call's brace-expanded patterns.
+	budget *globBudget
 }
 
 func (w *globWalkFS) Stat(name string) (fs.FileInfo, error) {
@@ -120,11 +173,11 @@ func (w *globWalkFS) admit(name string) error {
 	if err != nil {
 		return w.hide("stat", name)
 	}
-	if !hasFileIdentity(info) {
-		w.unidentified++
-		if w.unidentified > maxUnidentifiedGlobDirs {
-			return fmt.Errorf("glob walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking", w.unidentified)
-		}
+	identified := hasFileIdentity(info)
+	if err := w.budget.listing(identified); err != nil {
+		return err
+	}
+	if !identified {
 		return nil
 	}
 	// The walk root is skipped: it has no ancestors to cycle back to, and
@@ -132,7 +185,7 @@ func (w *globWalkFS) admit(name string) error {
 	// entry and refuse the second listing doublestar makes of every directory.
 	if name != "." {
 		for dir := path.Dir(name); ; dir = path.Dir(dir) {
-			if ancestor, ok := w.listed[dir]; ok && os.SameFile(ancestor, info) {
+			if ancestor, ok := w.identity(dir); ok && os.SameFile(ancestor, info) {
 				return w.hide("readdir", name)
 			}
 			if dir == "." {
@@ -140,9 +193,51 @@ func (w *globWalkFS) admit(name string) error {
 			}
 		}
 	}
-	w.listed[name] = info
+	w.push(name, info)
 	return nil
 }
+
+// identity answers dir's FileInfo from the chain of directories currently
+// being walked, falling back to a fresh stat on a miss. The chain is only a
+// cache of the path being walked — push prunes it down to that path on every
+// listing — so a walk that jumps between subtrees still compares admit's
+// candidate against every real ancestor by re-stat'ing it, and pruning the
+// chain can never let a cycle slip past the check that costs nothing extra.
+func (w *globWalkFS) identity(dir string) (fs.FileInfo, bool) {
+	for _, d := range w.chain {
+		if d.name == dir {
+			return d.info, true
+		}
+	}
+	info, err := fs.Stat(w.FS, dir)
+	if err != nil {
+		return nil, false
+	}
+	return info, true
+}
+
+// push records name's identity as the innermost entry on the chain, first
+// dropping every entry that is not a proper ancestor of name. Nothing listed
+// under name can ever be compared against a non-ancestor, and retaining those
+// entries anyway is what made the walk hold one FileInfo for every directory
+// it had ever listed instead of only the ones on the path currently being
+// walked.
+func (w *globWalkFS) push(name string, info fs.FileInfo) {
+	kept := 0
+	for _, d := range w.chain {
+		if d.name != name && (d.name == "." || strings.HasPrefix(name, d.name+"/")) {
+			w.chain[kept] = d
+			kept++
+		}
+	}
+	w.chain = append(w.chain[:kept], listedDir{name: name, info: info})
+}
+
+// retained reports how many directory identities this walk is holding, which
+// is the walk's own memory cost: the cycle check consults only the ancestors
+// of the directory it is admitting, so this must track the depth of the path
+// being walked, not the number of directories the walk has ever listed.
+func (w *globWalkFS) retained() int { return len(w.chain) }
 
 // hide answers with the walk's cancellation when there is one — the walk runs
 // under WithFailOnIOErrors so that ends it immediately — and otherwise with
@@ -162,21 +257,38 @@ func hasFileIdentity(info fs.FileInfo) bool {
 	return os.SameFile(info, info)
 }
 
+// errGlobMatchesFull signals the GlobWalk callback's own cap trip back out to
+// globMatches: doublestar has no way to end a walk early other than the
+// callback returning an error, so the cap has to speak in that vocabulary and
+// then be told apart from a real failure once GlobWalk returns.
+var errGlobMatchesFull = errors.New("glob match cap reached")
+
 // globMatches runs one expanded glob pattern against fsys, which must already
 // observe ctx (see cancelFS), through a fresh globWalkFS — fresh per pattern,
 // because the directories one pattern listed say nothing about whether another
-// pattern's walk is re-entering itself.
+// pattern's walk is re-entering itself. budget is shared across every pattern
+// in the call: it is checked before the walk starts, so a pattern that runs
+// after the cap has already tripped does not re-walk the tree just to
+// discover it can keep nothing, and it is checked on every match the walk
+// finds, so a `**` with millions of hits stops there instead of accumulating
+// all of them before the caller gets a chance to see any.
 //
 // GlobWalk rather than Glob: it ends the walk the moment the callback returns
-// an error, so a cancellation that lands between two filesystem calls stops
-// the walk at the next match instead of being noticed only after the tree runs
-// out.
-func globMatches(ctx context.Context, fsys fs.FS, pattern string) ([]string, error) {
-	walk := &globWalkFS{FS: fsys, ctx: ctx, listed: map[string]fs.FileInfo{}}
+// an error, so a cancellation — or the match cap tripping — that lands
+// between two filesystem calls stops the walk at the next match instead of
+// being noticed only after the tree runs out.
+func globMatches(ctx context.Context, fsys fs.FS, pattern string, budget *globBudget) ([]string, error) {
+	if budget.full() {
+		return nil, nil
+	}
+	walk := &globWalkFS{FS: fsys, ctx: ctx, budget: budget}
 	var matches []string
 	err := doublestar.GlobWalk(walk, pattern, func(p string, _ fs.DirEntry) error {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
+		}
+		if !budget.match() {
+			return errGlobMatchesFull
 		}
 		matches = append(matches, p)
 		return nil
@@ -185,6 +297,12 @@ func globMatches(ctx context.Context, fsys fs.FS, pattern string) ([]string, err
 	// so answer with the cancellation however the walk happened to unwind.
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, cerr
+	}
+	// The match cap ending the walk is not a failure: it is the mechanism by
+	// which the cap bounds the work rather than only the result, so the
+	// matches collected before it tripped are the answer, not an error.
+	if errors.Is(err, errGlobMatchesFull) {
+		return matches, nil
 	}
 	if err != nil {
 		return nil, err

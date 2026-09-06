@@ -1703,7 +1703,7 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // (The sandboxed walk is stricter: it never follows a symlink at all, which is
 // a policy boundary rather than a termination measure.)
 func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
-	matches, _, err := e.GlobWithExclusions(ctx, pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
+	matches, _, _, err := e.GlobWithExclusions(ctx, pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
 	return matches, err
 }
 
@@ -1719,10 +1719,10 @@ var globBaseFS = os.DirFS
 // count never includes matches dropped by sandbox masking — that's a
 // separate security boundary, not something to describe to the caller as
 // "gitignored".
-func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	base := strings.TrimSpace(basePath)
 	if base == "" {
@@ -1746,16 +1746,17 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 	seen := make(map[string]struct{})
 	var abs []string
 	excluded := 0
+	budget := &globBudget{}
 	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		for _, m := range matches {
 			if !includeIgnored {
 				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
 				if err != nil {
-					return nil, 0, err
+					return nil, 0, 0, err
 				}
 				if drop {
 					excluded++
@@ -1771,9 +1772,13 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		}
 	}
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return abs, excluded, nil
+	truncatedAt := 0
+	if budget.full() {
+		truncatedAt = maxGlobMatches
+	}
+	return abs, excluded, truncatedAt, nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
