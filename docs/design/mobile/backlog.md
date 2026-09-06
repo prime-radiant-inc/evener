@@ -16,6 +16,25 @@ and linked evidence are historical detail; entries below describe open work.
 
 ## Next work
 
+### MOB-011 · P1 · Move Submit to the composer controls row · Open
+
+Jesse: “the composer puts the submit button on the same row as text, rather
+than putting it on the same row as controls. so it eats horizontal space from
+the user input section. that's bad.”
+
+The text input must use the full available composer width at ordinary text
+sizes too. Submit belongs on the controls row with attachment/model/reasoning,
+not beside the draft. This supersedes the earlier same-row draft/submit design
+in the style guide and screen studies.
+
+Acceptance: full-width short and multiline drafts on both platforms; Send/Steer
+on the controls row with an intact native touch target; reachable model,
+reasoning, attachment, Stop and Queue when applicable; deliberate wrapping at
+large text sizes. Verify real software keyboards, long model labels, empty and
+long drafts, and running-session states. Update the studies and style guide
+before claiming visual acceptance. No controls may overlap or steal width from
+the text area.
+
 ### MOB-001 · P1 · Use screen space deliberately · In progress
 
 Jesse: “you're not making good use of visual space.” Current native screens
