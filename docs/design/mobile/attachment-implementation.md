@@ -29,7 +29,11 @@ Release builds on iPhone 17 Pro (iOS 26.5) and Pixel 7 emulator (API 35) selecte
 
 The picker accepts images only and normalizes to PNG. Pending tiles are removable; encoding finishes before inserting a durable editing marker, so cancellation does not leave an orphan marker. Late results after leaving the destination are ignored. Native preview tiles are a presentation adaptation of the current web attachment flow.
 
-Queue-drain integration, native manual image delivery, transcript rendering, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding. Current web submitRouting.ts routes image steering and non-empty queues through turn/drainAsSteer; native ordinary steering still needs that correction. There is no native attachment delivery E2E claim yet.
+Native composer steering now uses current web submitRouting.ts: images or a non-empty queue select turn/drainAsSteer, carrying the observed queue revision and composed input. Plain text with an empty queue retains turn/steer. The shared store preserves its existing mutation ownership, receipt validation and failure recovery; routing stays in the native composer so the shared package does not acquire a web UI dependency.
+
+The regression tests failed on both wrong routes before the correction. Tests exercise the real store and conversation service through a scripted wire boundary, asserting method, instance and queue guards, unchanged input, accepted receipts and retained drafts after unconfirmed delivery without retry. All 131 native tests, 358 shared store/service tests and native TypeScript pass. Both Release builds succeed. These builds do not establish provider receipt of image steering.
+
+Empty-composer queue-only steering, native manual image delivery, transcript rendering, Android picker activity-death recovery, metadata/orientation checks, accessibility stress cases and memory/performance evidence remain outstanding. There is no native attachment delivery E2E claim yet.
 
 ## Native API references
 

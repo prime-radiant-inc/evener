@@ -364,7 +364,11 @@ export interface ConversationState {
   loadOlder(service: ConversationService): Promise<LoadOlderResult>;
   setDraft(text: string): void;
   send(service: ConversationService, input: InputItem[]): Promise<void>;
-  steer(service: ConversationService, input: InputItem[]): Promise<void>;
+  steer(
+    service: ConversationService,
+    input: InputItem[],
+    expectedQueueRevision?: number,
+  ): Promise<void>;
   queue(service: ConversationService, input: InputItem[]): Promise<void>;
   interrupt(service: ConversationService): Promise<void>;
   close(): void;
@@ -1797,7 +1801,7 @@ export function createConversationStore() {
         }
       },
 
-      async steer(service, input) {
+      async steer(service, input, expectedQueueRevision) {
         const state = get();
         if (state.conversation === null) return;
         requireCap(state.conversation, "steer", "steer");
@@ -1829,7 +1833,7 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = await service.steer(input);
+          const receipt = await service.steer(input, expectedQueueRevision);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
