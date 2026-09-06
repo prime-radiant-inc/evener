@@ -456,7 +456,7 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 func armMidMoveMint(t *testing.T, env *execenv.LocalExecutionEnvironment) *string {
 	t.Helper()
 	minted := new(string)
-	env.ObserveScratchMoveWindowForTesting(func() {
+	t.Cleanup(env.ObserveScratchMoveWindowForTesting(func() {
 		if *minted != "" {
 			return
 		}
@@ -464,8 +464,7 @@ func armMidMoveMint(t *testing.T, env *execenv.LocalExecutionEnvironment) *strin
 			t.Errorf("child command on the source environment mid-move: %v", err)
 		}
 		*minted = env.SessionScratchDir()
-	})
-	t.Cleanup(func() { env.ObserveScratchMoveWindowForTesting(nil) })
+	}))
 	return minted
 }
 
