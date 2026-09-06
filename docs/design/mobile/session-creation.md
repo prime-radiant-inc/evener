@@ -71,3 +71,32 @@ pass. This establishes the ordinary scalar project-settings round trip; collecti
 editing at project scope, concurrent writers, reconnects during this flow, full
 prompt preservation and accessibility still need native qualification. The form's
 spacing and per-launch/trust workflows remain open.
+
+
+## Repository configuration review
+
+Project settings now expose the current web/server repository trust flow. A
+review sheet shows hub identity, path, actual preview and the reviewed hash.
+Only untrusted/changed/rejected files with a preview can be trusted. Unsaved
+project edits must be saved or discarded first. The controller sends cwd/hash
+and independently resolves after either success or a lost mutation reply;
+confirmation requires the same hash to be trusted. A newer hash stays outside
+the open review and requires reopening. Closing the sheet works while offline.
+
+Manual Release evidence on 6 September 2026 used the owned skills directory on
+SecondHub. iOS reviewed max_rounds=11 and trusted it; independent SDK readback
+confirmed trusted status and effective maxRounds=11. Android opened a changed
+max_rounds=12 preview. The fixture changed to 13 while the review stayed open.
+Trust was rejected; the old preview remained visible with a changed-file message
+and disabled Trust button. Closing/reopening showed 13. Android then trusted
+that revision, independently confirmed as trusted with effective maxRounds=13.
+The temporary launch.toml was removed after testing; the isolated hub retains
+its trust history for the two reviewed hashes. No production config was touched.
+
+Android uiautomator stalled during an observation before the final approval.
+The same process remained alive, a screenshot showed the open review, and a
+later semantic read recovered without restarting. The first unconfirmed action
+was not counted as approval evidence. Full offline/reconnect and screen-reader
+qualification remains open. The two controller tests cover exact hash/scope,
+unsaved-draft fencing, lost-reply readback and a changed file after mutation.
+The native suite now has 316 tests; both Release builds and TypeScript pass.
