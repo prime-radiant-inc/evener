@@ -248,6 +248,60 @@ export class LaunchSettings {
     }
     return confirmed && active() && !this.state.changedElsewhere;
   };
+  trustRepository = async (hash: string): Promise<boolean> => {
+    const repo = this.state.resolved?.repo;
+    if (
+      this.disposed ||
+      !this.client ||
+      this.layer !== "project" ||
+      this.state.dirty ||
+      this.state.loading ||
+      this.state.saving ||
+      !hash ||
+      repo?.hash !== hash ||
+      !["untrusted", "changed", "rejected"].includes(repo.trust)
+    )
+      return false;
+    const client = this.client;
+    const version = ++this.version;
+    const active = () => !this.disposed && version === this.version;
+    this.publish({ saving: true, error: null });
+    let confirmed = false;
+    try {
+      try {
+        await client.request("evener/launch/trustRepo", {
+          cwd: this.cwd,
+          hash,
+        });
+      } catch {
+        // Resolve independently even if the mutation reply was lost.
+      }
+      if (!active()) return false;
+      const resolved = await client.request("evener/launch/resolve", {
+        cwd: this.cwd,
+      });
+      if (!active()) return false;
+      confirmed =
+        resolved.repo?.hash === hash && resolved.repo.trust === "trusted";
+      this.publish({
+        resolved,
+        resolveError: null,
+        error: confirmed
+          ? null
+          : "Repository trust was not confirmed. Review the current file before trying again.",
+      });
+    } catch {
+      if (active())
+        this.publish({
+          resolved: null,
+          error:
+            "Could not confirm repository trust. Reload before reviewing the file again.",
+        });
+    } finally {
+      if (active()) this.publish({ saving: false });
+    }
+    return active() && confirmed;
+  };
   dispose() {
     this.disposed = true;
     this.version += 1;

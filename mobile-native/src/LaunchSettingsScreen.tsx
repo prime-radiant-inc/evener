@@ -43,6 +43,7 @@ import {
   scalarKinds,
 } from "./launchScalar";
 import { LaunchSettings } from "./launchSettings";
+import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -218,6 +219,15 @@ function LaunchDefaults({
             {d.field ? `${d.field}: ${d.message}` : d.message}
           </Copy>
         ))}
+        {layer === "project" && (
+          <RepositoryLaunchReview
+            hubName={hubName}
+            repo={state.resolved?.repo}
+            disabled={!client || state.loading || state.saving || state.dirty}
+            error={state.error}
+            trust={model.trustRepository}
+          />
+        )}
         <TextInput
           accessibilityLabel="Search launch settings"
           value={query}
