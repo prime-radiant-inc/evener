@@ -20,6 +20,7 @@ const commandContext = {
   reasoning: () => null,
   turn: () => null,
   local: async () => {},
+  openAside: (_ref: string, _title: string) => {},
 };
 
 function boundary() {
@@ -87,6 +88,7 @@ function boundary() {
       )
         return io.lifecycle(method, params);
       if (method === "model/list") return io.models();
+      if (method === "thread/fork") return io.lifecycle(method, params);
       if (
         method === "thread/model/set" ||
         method === "thread/reasoning-effort/set"
@@ -665,3 +667,75 @@ it.each(["tasks", "status", "copy-id"] as const)(
     }
   },
 );
+
+it.each(["current", "obsolete", "failure"])(
+  "acknowledges an aside before navigation: %s",
+  async (outcome) => {
+    const { db, document } = commandDraft();
+    const { io, thread, service } = boundary();
+    thread.evener.capabilities.forkFromTurn = true;
+    let current = true;
+    const opened: string[] = [];
+    try {
+      await service.open("local:test");
+      document.edit("/aside");
+      io.lifecycle = async (method, params) => {
+        expect(method).toBe("thread/fork");
+        expect(params).toEqual({
+          ref: "local:test",
+          sourceTurnId: "",
+          aside: true,
+        });
+        expect(document.getSnapshot().record.unconfirmed).toBe("/aside");
+        document.edit("newer parent draft");
+        if (outcome === "failure") throw new Error("Lost fork acknowledgement");
+        if (outcome === "obsolete") current = false;
+        return {
+          thread: {
+            id: "child",
+            sessionId: "child",
+            evener: { ref: "local:child" },
+          },
+        };
+      };
+      const operation = submitComposerCommand(document, service, {
+        ...commandContext,
+        isCurrent: () => current,
+        openAside: (ref) => {
+          expect(document.getSnapshot().record.unconfirmed).toBeNull();
+          opened.push(ref);
+        },
+      });
+      if (outcome === "failure") await expect(operation).rejects.toThrow();
+      else expect(await operation).toBe("aside");
+      expect(opened).toEqual(outcome === "current" ? ["local:child"] : []);
+      expect(document.getSnapshot().record).toMatchObject({
+        draft: "newer parent draft",
+        unconfirmed: outcome === "failure" ? "/aside" : null,
+      });
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);
+
+it("blocks unavailable aside creation before the wire and rejects a parent returned as its own fork", async () => {
+  const { io, thread, service } = boundary();
+  let requests = 0;
+  io.lifecycle = async () => {
+    requests++;
+    return { thread };
+  };
+  try {
+    await service.open("local:test");
+    await expect(service.forkAside()).rejects.toThrow();
+    expect(requests).toBe(0);
+    thread.evener.capabilities.forkFromTurn = true;
+    await service.open("local:test");
+    await expect(service.forkAside()).rejects.toThrow();
+    expect(requests).toBe(1);
+  } finally {
+    service.close();
+  }
+});
