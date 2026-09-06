@@ -166,6 +166,8 @@ cross-device testing exposed a missing cold subscription in the hub. Fix
 `01d49719f` passes the network regression and native retesting in both directions:
 Android observes iOS resume, and iOS observes Android resume, without refresh.
 Either observer can stop the resumed turn. Markers remain confined to B.
-Deterministic snapshot/resume overlap coverage is still pending. Evidence and
+A filesystem-barrier regression also proves saved-read-first ordering against
+hub-managed resume, failing without the fix and passing ten race-detector runs.
+Independent daemon launches and other restart interleavings remain open. Evidence and
 acceptance limits are in `docs/design/mobile/multiple-hubs.md`. This is not
 multi-hub release acceptance.
