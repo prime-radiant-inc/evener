@@ -86,15 +86,26 @@ export function ModelSwitchTrigger({
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  // Generation guard for the catalog load below: open/close/reopen (or a
+  // loader-identity change from a cwd/harness/credential scope change) starts
+  // a new load, and a SUPERSEDED response must never overwrite the open
+  // picker - a dead request landing after the fresh one would swap the
+  // visible list out from under the user.
+  const loadGenerationRef = useRef(0);
 
   async function openPicker(): Promise<void> {
     if (disabled) return;
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
     setOpen(true);
     setError(null);
     setLoading(true);
     try {
-      setCatalog(await loadCatalog());
+      const loaded = await loadCatalog();
+      if (loadGenerationRef.current !== generation) return;
+      setCatalog(loaded);
     } catch (err) {
+      if (loadGenerationRef.current !== generation) return;
       // Not sessionActionError: that composes its detail from errorText, which
       // is the RAW rejection text - fine for a WireError (the hub wrote it for
       // a person) but not for AppwireClient's own internal "cannot call ...
@@ -106,7 +117,10 @@ export function ModelSwitchTrigger({
       const headline = sessionActionHeadline("Couldn't load models", err);
       setError(`${headline}: ${friendlyLaunchErrorMessage(err)}`);
     } finally {
-      setLoading(false);
+      // A superseded load clears neither the fresh load's spinner nor its
+      // result: without this, a dead request landing mid-fresh-load drops
+      // the loading state while the panel still has nothing to show.
+      if (loadGenerationRef.current === generation) setLoading(false);
     }
   }
 
