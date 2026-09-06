@@ -50,7 +50,7 @@ function makeConversation(
     status: "ready",
     items,
     capabilities: ALL_TRUE_CAPS,
-    queue: { depth: 0, preview: [] },
+    queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
     ...over,
@@ -250,7 +250,7 @@ describe("Composer — primary action visibility", () => {
     renderComposer(
       makeConversation([], {
         status: "running",
-        queue: { depth: 1, preview: ["q"] },
+        queue: { revision: 0, depth: 1, preview: ["q"] },
       }),
     );
     expect(screen.getByTestId("composer-queue")).toBeDefined();
@@ -307,7 +307,7 @@ describe("Composer — primary action invocation", () => {
     const { conversationStore, service } = renderComposer(
       makeConversation([], {
         status: "running",
-        queue: { depth: 1, preview: ["q"] },
+        queue: { revision: 0, depth: 1, preview: ["q"] },
       }),
       { draft: "queued msg" },
     );
@@ -359,7 +359,7 @@ describe("Composer — capability removal", () => {
     renderComposer(
       makeConversation([], {
         status: "running",
-        queue: { depth: 1, preview: ["q"] },
+        queue: { revision: 0, depth: 1, preview: ["q"] },
         capabilities: { ...ALL_TRUE_CAPS, queue: false },
       }),
       { draft: "hello" },
