@@ -109,7 +109,7 @@ type subagent struct {
 	stableDescriptor      *delegatestore.Descriptor // immutable committed identity/config for stable terminal evidence
 	closed                bool                      // session torn down; record retained as terminal history
 	closeTimedOut         bool                      // session-close wait exceeded its bound; close not confirmed
-	driving               bool                      // a drive-down notification turn (§3) is in flight on this idle child
+	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
 	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
 	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op

@@ -336,12 +336,38 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if len(ids) == 0 {
 		return false
 	}
+	// Claim the child for the WHOLE start, not just for this check. Everything
+	// between here and launchAcceptedDelegateAttention is durable work
+	// (ReserveAttention, acceptDelegateAttention's transcript append,
+	// CommitStart, the delegate update emit), and the run goroutine only sets
+	// running at the far end of it. Without the claim a wake-edge drive landing
+	// in that gap reads an idle child: the reservation is already consumed and
+	// the attention is no longer pending, so driveStableDelegateAttention itself
+	// declines, and driveChildIfNotStopGated falls through to
+	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
+	// session this generation is about to run. The two turns then share one
+	// drain ladder and the unleased one can pop the run's follow-up, leaving the
+	// generation to settle attention-only instead of report-required. The claim
+	// is the drive flag every other guard already reads, and it is handed over
+	// under the same sub.mu hold that sets running.
 	sub.mu.Lock()
 	blocked := sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing
+	if !blocked {
+		sub.driving = true
+	}
 	sub.mu.Unlock()
 	if blocked {
 		return true
 	}
+	launched := false
+	defer func() {
+		if launched {
+			return
+		}
+		sub.mu.Lock()
+		sub.driving = false
+		sub.mu.Unlock()
+	}()
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
 	s.mu.Unlock()
@@ -367,8 +393,13 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		s.delegateController.retryDelegateAttentionLater()
 		return true
 	}
+	if observer := s.cfg.testOnly.delegateAttentionStartCommitted; observer != nil {
+		observer(sub)
+	}
 	s.delegateController.emitDelegateUpdate(started.plan)
-	if launchErr := s.launchAcceptedDelegateAttention(sub, started); launchErr != nil {
+	launchErr := s.launchAcceptedDelegateAttention(sub, started)
+	launched = launchErr == nil
+	if launchErr != nil {
 		plans, finishErr := s.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(launchErr, "launch_failed"))
 		if executeErr := s.executeDelegateMutationPlans(plans); finishErr == nil {
 			finishErr = executeErr
@@ -395,6 +426,12 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	sub.mu.Lock()
 	sub.fatalRunGated = false
 	resetSubagentForRunLocked(sub, runCancel, started.startedAt)
+	// Hand the start claim over to the run under one hold, so the child never
+	// reads idle between the committed start and the run that owns it. The
+	// clear is unconditional: the owed-attention bootstrap reaches here
+	// without having taken the claim, and clearing a flag it never set is
+	// harmless because running is already true under this same hold.
+	sub.driving = false
 	sub.mu.Unlock()
 	bindStableDelegateActivity(sub.sess, s.delegateController, started.lease)
 	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(started.descriptor))

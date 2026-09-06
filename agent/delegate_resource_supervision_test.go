@@ -144,6 +144,77 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 	}
 }
 
+// TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn
+// pins the attention start hand-off. Between the committed start and the run
+// goroutine that takes the generation over, sub.running is still false, the
+// reservation is consumed, and the attention id is no longer pending -- so a
+// wake-edge drive arriving in that gap declines the attention drive (nothing
+// left to dispatch) and falls through to driveSubagentNotificationTurn, which
+// reads the child as idle and launches a second, UNLEASED EntryNotification
+// turn on the very session the generation is about to run.
+//
+// The two turns then share one session: whichever reaches its drain ladder
+// first pops the follow-up the attention turn queued, and when that is the
+// unleased turn the run never admits report-requiring work. The generation
+// settles attention-only/no-action instead of report-required, which is the
+// load-sensitive failure this pins:
+//
+//	attention follow-up evidence = {requirement:0x0 outcome:0x1 terminalSeen:false}
+func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	bare := func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("bare without communicate")}
+	}
+	var root *Session
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("warm result") },
+		func(llm.Request) llm.Response {
+			root.subagents.get(fixture.childID).sess.FollowUp("queued follow-up work")
+			return llm.Response{Message: llm.Assistant("attention requires no action")}
+		},
+		bare, bare, bare, bare,
+		func(llm.Request) llm.Response { return finalResponse("follow-up report") },
+	}
+	root = restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	snapshots := make(chan delegateCompletionSnapshot, 1)
+	updateSessionTestConfig(sub.sess, func(cfg *testConfig) {
+		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
+	})
+	var handoffMu sync.Mutex
+	var handoffSeen, secondTurnLaunched bool
+	updateSessionTestConfig(root, func(cfg *testConfig) {
+		cfg.delegateAttentionStartCommitted = func(committed *subagent) {
+			launched := root.driveSubagentNotificationTurn(committed)
+			handoffMu.Lock()
+			defer handoffMu.Unlock()
+			if handoffSeen {
+				return
+			}
+			handoffSeen, secondTurnLaunched = true, launched
+		}
+	})
+	armStableSupervisionAttention(t, sub, "attention:committed-start", "inspect before follow-up")
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	handoffMu.Lock()
+	seen, launched := handoffSeen, secondTurnLaunched
+	handoffMu.Unlock()
+	if !seen {
+		t.Fatal("the committed attention start hand-off was never observed")
+	}
+	if launched {
+		t.Fatal("a committed attention start left the child drivable as a plain notification turn")
+	}
+	snapshot := <-snapshots
+	if snapshot.requirement != delegateCompletionReportRequired || !snapshot.terminalSeen {
+		t.Fatalf("committed-start attention evidence = %#v, want report-required terminal", snapshot)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != 7 {
+		t.Fatalf("provider requests = %d, want warm, attention, four follow-up attempts, and recovery report", got)
+	}
+}
+
 func TestDelegateResourceSupervision_AttentionGoalContinuationRequiresReport(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
