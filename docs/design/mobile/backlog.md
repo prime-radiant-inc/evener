@@ -240,8 +240,12 @@ invalid-path recovery evidence on both platforms, plus cross-client removal in
 both directions. The Android pass exposed and repaired keyboard obstruction after
 a rejection. Directory-source refresh was exercised on Android; Git URL/GitHub
 cloning and iOS source refresh remain unverified. See the [form evidence](plugins-evidence.md#ios-add-form-keyboard-recovery-and-reverse-removal).
-Hub-path completion, realistic catalog density, visual hierarchy, large text,
-screen readers and full failure acceptance remain.
+Hub-directory selection now uses the web path-completion contract, with
+keyboard-open lookup/selection and child listing verified on both platforms;
+Android parent navigation is also verified. Four controller tests bring the native
+suite to 268. See [directory evidence](plugins-evidence.md#hub-directory-selection).
+Picker-to-marketplace submission, large directory lists, realistic catalog density,
+visual hierarchy, large text, screen readers and full failure acceptance remain.
 
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.
