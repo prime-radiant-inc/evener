@@ -67,6 +67,11 @@ Evidence: [presentation study](presentation-study.html),
 The study is not the implemented outcome. Header consolidation is being
 investigated; no header change has been made for this issue yet.
 
+The [first spacing correction](transcript-spacing.md) removes an empty header
+slot and tightens routine-detail gaps. Android measurements show 284 pixels
+reclaimed before the third user marker, with unchanged composer position and
+touch-target height. This is partial progress, not closure of the viewport issue.
+
 ### MOB-002 · P1 · Establish a coherent presentation for every content family · Open
 
 Routine notices, tool output, questions, failures and assistant prose still

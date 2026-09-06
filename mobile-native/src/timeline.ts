@@ -17,6 +17,20 @@ export type TimelineRow =
       entries: Notice[];
     };
 
+export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
+  if (!after) return 0;
+  const needsAttention = (item: TimelineRow) =>
+    item.kind === "failure" ||
+    item.kind === "question" ||
+    (item.kind === "notice" && item.tone === "warning") ||
+    (item.kind === "activity" && item.state === "failed");
+  if (needsAttention(before) || needsAttention(after)) return 24;
+  const routine = (item: TimelineRow) =>
+    item.kind === "details" ||
+    (item.kind === "notice" && isInterruptedNotice(item));
+  return routine(before) || routine(after) ? 8 : 24;
+}
+
 // Keep technical context available without putting it between the reader and the conversation.
 export function groupTimeline(
   items: readonly MobileTimelineItem[],
