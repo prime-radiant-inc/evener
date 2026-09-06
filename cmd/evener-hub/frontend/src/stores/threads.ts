@@ -624,6 +624,7 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
@@ -1408,7 +1409,11 @@ async function publishAndReconcileThreadHydration(
     // does not: a blockedUnknown record absent from every authoritative set
     // was never journaled, so it returns to dispatch here rather than parking
     // forever behind an outage that has since recovered (kata gwea).
-    await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+    // An incompatible daemon contributes no receipt history to its saved
+    // transcript fallback, so absence in that snapshot proves nothing.
+    if (published.status.type !== "restartRequired") {
+      await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+    }
     await refreshMutationPins(runtime, [ref]);
   }
   return published;
@@ -2379,6 +2384,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     if (client.state !== "ready") return threadsStore.getState().refreshThread(ref);
     await refreshTrackedThread(client, readyEpoch, ref, true, true);
+    const runtime = getMutationRuntime();
+    if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
 
   async loadOlderTurns(ref) {

@@ -22,8 +22,16 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 	if cfg.Roster == nil {
 		return hubcore.LiveEntry{}, false
 	}
-	entry, ok := cfg.Roster.Find(threadID)
-	return entry, ok && !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
+	if entry, ok := cfg.Roster.Find(threadID); ok && !entry.Crashed {
+		return entry, entry.Status == appwire.ThreadStatusRestartRequired
+	}
+	workspaceRef := localAppRef(threadID)
+	for _, entry := range cfg.Roster.List() {
+		if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
+			return entry, entry.Status == appwire.ThreadStatusRestartRequired
+		}
+	}
+	return hubcore.LiveEntry{}, false
 }
 
 func daemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {

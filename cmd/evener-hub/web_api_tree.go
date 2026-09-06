@@ -234,7 +234,11 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		if entry.SessionID == "" {
 			continue
 		}
-		for _, alias := range favoriteSessionAliases(entry.SessionID) {
+		aliases := favoriteSessionAliases(entry.SessionID)
+		if entry.WorkspaceRef != "" {
+			aliases = append(aliases, favoriteSessionAliases(entry.WorkspaceRef)...)
+		}
+		for _, alias := range aliases {
 			renameable[alias] = isLocalRouteID(alias) && entry.Status != appwire.ThreadStatusRestartRequired
 		}
 	}

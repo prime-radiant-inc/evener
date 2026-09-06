@@ -7919,3 +7919,33 @@ test("explicit refresh captures the replacement client with its ready epoch", as
   expect(oldClient.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
 });
+
+for (const state of ["blockedUnknown", "submitting"] as const) {
+  test(`incompatible refresh preserves ${state} until a compatible snapshot arrives`, async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "upgrade-pending" });
+    const record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    if (state === "blockedUnknown") await storage.markUnknown(record.clientMutationId, state);
+    storage.close();
+    const fake = connectFakeClient("connecting");
+    let compatible = false;
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: compatible ? "idle" : "restartRequired" } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().refreshThread("ref_a");
+    const inspector = new MutationOutboxIndexedDB();
+    expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe(state);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    compatible = true;
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    inspector.close();
+  });
+}

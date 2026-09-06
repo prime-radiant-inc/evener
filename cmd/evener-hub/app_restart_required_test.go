@@ -20,6 +20,12 @@ import (
 )
 
 func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubProtocolUpgrade(t, cleared) })
+	}
+}
+
+func testHubProtocolUpgrade(t *testing.T, cleared bool) {
 	root := t.TempDir()
 	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -27,7 +33,11 @@ func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t 
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: protocolMismatchPeer(t)})
+	daemonSessionID := sessionID
+	if cleared {
+		daemonSessionID = "02wMz5Txv1C3Hut0M8GCeC"
+	}
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: daemonSessionID, SessionID: daemonSessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)})
 	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster})
@@ -292,8 +302,10 @@ func TestRestartRequiredRecoveryPreservesDecodedWireData(t *testing.T) {
 func TestNavigationDisablesRenameForRestartRequiredDaemon(t *testing.T) {
 	tree := hubcore.Tree{Live: []hubcore.TreeNode{{ID: "02wMz5Txv1C3Hut0M8GCeB"}, {ID: "local:02wMz5Txv1C3Hut0M8GCeB"}, {ID: "02wMz5Txv1C3Hut0M8GCeC"}}}
 	live := []hubcore.LiveEntry{{SessionID: "02wMz5Txv1C3Hut0M8GCeB", Status: appwire.ThreadStatusRestartRequired}, {SessionID: "02wMz5Txv1C3Hut0M8GCeC", Status: appwire.ThreadStatusIdle}}
+	live[0].WorkspaceRef = "local:02wMz5Txv1C3Hut0M8GCeD"
+	tree.Live = append(tree.Live, hubcore.TreeNode{ID: "02wMz5Txv1C3Hut0M8GCeD"}, hubcore.TreeNode{ID: "local:02wMz5Txv1C3Hut0M8GCeD"})
 	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, nil, hubapi.AttentionSummary{}, live, nil, nil, nil, nil)
-	if inputs.Renameable["02wMz5Txv1C3Hut0M8GCeB"] || inputs.Renameable["local:02wMz5Txv1C3Hut0M8GCeB"] {
+	if inputs.Renameable["02wMz5Txv1C3Hut0M8GCeB"] || inputs.Renameable["local:02wMz5Txv1C3Hut0M8GCeB"] || inputs.Renameable["02wMz5Txv1C3Hut0M8GCeD"] || inputs.Renameable["local:02wMz5Txv1C3Hut0M8GCeD"] {
 		t.Fatal("navigation advertises rename for incompatible owner")
 	}
 	if !inputs.Renameable["02wMz5Txv1C3Hut0M8GCeC"] {
