@@ -2,12 +2,12 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { WorkingDirectoryPicker, type WorkingDirectoryPickerProps } from "./WorkingDirectoryPicker";
+import { DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 afterEach(cleanup);
 
-function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
-  const props: WorkingDirectoryPickerProps = {
+function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
+  const props: DirectoryPickerProps = {
     value: "/work",
     onClose: vi.fn(),
     onPick: vi.fn(),
@@ -19,7 +19,7 @@ function setup(overrides: Partial<WorkingDirectoryPickerProps> = {}, onCommit: (
   };
   render(
     <Profiler id="picker" onRender={onCommit}>
-      <WorkingDirectoryPicker {...props} />
+      <DirectoryPicker {...props} />
     </Profiler>,
   );
   return { ...props, user: userEvent.setup() };
@@ -193,4 +193,51 @@ test("first path focus lets typing replace the initial directory", async () => {
   await user.click(input);
   await user.keyboard("/replacement");
   expect((input as HTMLInputElement).value).toBe("/replacement");
+});
+
+test.each(["pending", "loaded"])("editing a path clears a %s listing until Go", async (listing) => {
+  let resolveListing: (paths: string[]) => void = () => {};
+  const oldListing = new Promise<string[]>((resolve) => {
+    resolveListing = resolve;
+  });
+  const complete = vi.fn((prefix: string) => (prefix === "/work/" ? oldListing : Promise.resolve(["/draft/child"])));
+  const { user, onPick } = setup({ complete });
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/work/", false));
+  if (listing === "loaded") await act(async () => resolveListing(["/work/stale"]));
+  const input = screen.getByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/draft");
+  const folders = screen.getByRole("region", { name: "Folders" });
+  expect(folders.getAttribute("aria-busy")).toBe("false");
+  expect(within(folders).queryByRole("button")).toBeNull();
+  if (listing === "pending") await act(async () => resolveListing(["/work/stale"]));
+  expect(within(folders).queryByRole("button")).toBeNull();
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect((input as HTMLInputElement).value).toBe("/draft");
+  expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  await within(folders).findByRole("button", { name: "Open /draft/child" });
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  expect(onPick).toHaveBeenCalledExactlyOnceWith("/draft");
+});
+
+test("typing before initial validation resolves preserves the unsubmitted path", async () => {
+  let resolveValidation: (result: { valid: boolean; path: string }) => void = () => {};
+  const initialValidation = new Promise<{ valid: boolean; path: string }>((resolve) => {
+    resolveValidation = resolve;
+  });
+  const validatePath = vi.fn(async (path: string) => ({ valid: true, path })).mockReturnValueOnce(initialValidation);
+  const { user, onPick } = setup({ validatePath });
+  const input = screen.getByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/draft");
+  await act(async () => resolveValidation({ valid: true, path: "/work" }));
+  expect((input as HTMLInputElement).value).toBe("/draft");
+  expect(screen.getByRole("region", { name: "Folders" }).getAttribute("aria-busy")).toBe("false");
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  expect(onPick).toHaveBeenCalledExactlyOnceWith("/draft");
 });

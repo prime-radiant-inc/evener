@@ -36,7 +36,7 @@ async function listRecents(): Promise<string[]> {
   return ["/opt/plugins/evener-lint", "/opt/skills"];
 }
 
-function LivePathField({
+export function LivePathField({
   kind,
   initial,
   withRecents = false,
@@ -53,6 +53,18 @@ function LivePathField({
         value={value}
         onChange={setValue}
         kind={kind}
+        directory={{
+          validatePath: async (path) => {
+            const canonical = path === "~" ? "/opt" : path;
+            return { valid: `${canonical}/` in TREE, path: canonical, error: "Directory does not exist" };
+          },
+          createDirectory: async (path) => {
+            const parent = path.slice(0, path.lastIndexOf("/") + 1);
+            if (`${path}/` in TREE) throw new Error("Directory already exists");
+            TREE[`${path}/`] = [];
+            TREE[parent]?.push(`${path}/`);
+          },
+        }}
         complete={complete}
         listRecents={withRecents ? listRecents : undefined}
       />
@@ -65,15 +77,13 @@ export default function PathFieldGallerySection() {
     <section>
       <h2>PathField</h2>
       <p className={CLASS.hint}>
-        Click the field to browse. A directory row descends AND becomes the value, so there is nothing to commit; a file
-        row commits and closes. Three kinds: dir (folders only), file, and outputFile (name a file that need not exist
-        yet).
+        Directory fields share the responsive DirectoryPicker: browse, create a folder, then confirm with Use this
+        folder. Cancel preserves the selected directory. File and output-file fields use file completion and accept
+        literal paths.
       </p>
       <ThemeFlip>
-        <LivePathField kind="dir" initial="/opt" withRecents />
         <LivePathField kind="file" initial="/opt/evener.toml" />
         <LivePathField kind="outputFile" initial="/tmp/atif.json" />
-        <LivePathField kind="dir" initial="" />
       </ThemeFlip>
     </section>
   );

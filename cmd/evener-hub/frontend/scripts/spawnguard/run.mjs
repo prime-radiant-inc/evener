@@ -42,8 +42,12 @@ async function measureAt(cdpEndpoint, vitePort, width) {
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });
+    // Focus handlers require a focused document even in a background headless tab.
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
     await evaluate(send, "window.settledSpawn");
+    const fieldFailures = await evaluate(send, "window.exerciseDirectoryField()");
+    if (fieldFailures.length) throw new Error(`Shared directory field at ${width}px: ${fieldFailures.join("; ")}`);
     const directoryFailures = await evaluate(send, "window.exerciseDirectoryPicker()");
     if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);

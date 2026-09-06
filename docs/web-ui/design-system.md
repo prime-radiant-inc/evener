@@ -227,6 +227,54 @@ during implementation (noted inline); this table is the one to trust.
 
 ---
 
+## Directory selection: one shared interaction
+
+Every web directory field **must use `DirectoryPicker`** from
+`src/widgets/directorypicker`, normally through `PathField kind="dir"`.
+This includes session start, schema-driven launch options, global/project settings,
+plugin and skill directories, In-repo config, and local marketplace sources. Use the same
+responsive dialog on desktop and mobile; do not add a directory popover, datalist,
+or a feature-local browser. The working example is `/dev/widgets` → DirectoryPicker.
+
+Directory mode requires injected `directory.validatePath` and
+`directory.createDirectory` actions plus `complete`; the widget remains wire-free.
+The TypeScript `PathFieldProps` contract requires these actions for directory mode.
+Use the settings store's `directoryActions` or the caller's existing client closures.
+Recent directories are optional and appear only where that history is meaningful.
+Pass the field label through `ariaLabel` on labeled `PathField` controls so the
+accessible name includes both the field name and selected path; a native label
+alone overrides the button contents.
+
+The behavioral contract is:
+
+- Browsing, breadcrumbs, Up, recent locations, and typed paths change a local draft.
+  **Go** (or Enter in Path) validates and navigates; **Use this folder** commits once.
+  Cancel, Escape, and outside dismissal preserve the committed value.
+- **New folder** explicitly creates a child of the viewed directory, displays errors
+  inline, and navigates into the result. Creation does not select the directory,
+  submit a settings row, save configuration, or start a session.
+- Only validated directories can be confirmed. A failed or pending child listing
+  does not invalidate a directory. Stale responses cannot overwrite newer navigation.
+- External committed-value changes reset the draft. Custom callers key the picker
+  by that value; `PathField` does this itself.
+- Keep long paths readable by wrapping. Preserve the shared modal focus scope,
+  restore focus to the trigger on close, and select Path text on its first focus.
+  Opening does not force the mobile keyboard up. Mobile confirmation stays above
+  the keyboard inset; desktop uses the roomy dialog.
+- Paths belong to the supported Linux/macOS hub filesystem, regardless of browser OS.
+
+`PathField kind="file"` and `kind="outputFile"` retain file completion and literal
+file-path entry. Their internal completion panel is not a directory-selection API.
+Collection **Add** and form **Save** remain separate actions after directory
+confirmation; changing the picker must not bypass their domain validation.
+
+Tests must exercise draft-versus-commit behavior, cancellation, creation/errors,
+external value changes, and real browser geometry. Do not encode the retired
+browse-immediately-commits behavior in new tests. This contract supersedes older
+path-picker behavior in dated plans and legacy parity checklists.
+
+---
+
 ## 4. The color-is-attention rule, machine-enforced
 
 **The rule:** chroma is scarce and means something specific. `--attention`/`--alive`/`--danger`

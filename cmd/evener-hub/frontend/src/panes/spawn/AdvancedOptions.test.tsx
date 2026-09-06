@@ -48,7 +48,8 @@ function renderPanel(
   children?: ReactNode,
 ) {
   const onOverridesChange = over.onOverridesChange ?? vi.fn();
-  const validatePath = over.validatePath ?? vi.fn().mockResolvedValue({ valid: true });
+  const validatePath =
+    over.validatePath ?? vi.fn(async (path: string) => ({ valid: true, path: path === "~" ? "/opt" : path }));
   const resolveConfig = over.resolveConfig ?? vi.fn().mockResolvedValue(RESOLVED);
   const loadCatalog = over.loadCatalog ?? vi.fn().mockResolvedValue(CATALOG);
   // Mirrors the hub's two modes: a dirs-only response is unsuffixed, and a
@@ -62,6 +63,7 @@ function renderPanel(
     });
   render(
     <AdvancedOptions
+      createDirectory={async () => {}}
       options={options}
       onOverridesChange={onOverridesChange as (o: unknown) => void}
       validatePath={validatePath as (p: string, k: string) => Promise<{ valid: boolean; error?: string }>}
@@ -99,10 +101,14 @@ function expectSightedText(element: HTMLElement, text: string): void {
  * browse panel is portaled to document.body, so it is queried from `screen`. */
 async function typePath(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement, path: string): Promise<void> {
   await user.click(trigger);
-  await screen.findByRole("combobox", { name: "Path" });
-  // keyboard, not type: the panel input is already focused with its pre-filled
-  // value selected, and clicking it would collapse that selection.
-  await user.keyboard(`${path}{Enter}`);
+  const input = await screen.findByLabelText("Path", { selector: "input" });
+  await user.clear(input);
+  await user.type(input, `${path}{Enter}`);
+  const confirm = screen.queryByRole("button", { name: "Use this folder" });
+  if (confirm) {
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+    await user.click(confirm);
+  }
 }
 
 test("is collapsed by default and reveals the panel on toggle", async () => {
@@ -397,7 +403,7 @@ test("a failing path validation flags the field invalid so it is dropped from th
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await typePath(user, pathTrigger("System prompt file"), "/etc");
+  await typePath(user, pathTrigger(/^System prompt file:/), "/etc");
 
   expect(await screen.findByText("path is a directory")).toBeTruthy();
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/etc", "file"));
@@ -420,7 +426,7 @@ test.each([
   ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await typePath(user, pathTrigger("Trace file"), "/opt/new.log");
+  await typePath(user, pathTrigger(/^Trace file:/), "/opt/new.log");
 
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/new.log", wireKind));
 });
@@ -545,7 +551,7 @@ test("a path field renders the browse widget and collects the picked path", asyn
 
   // The field is the browse trigger, not a text box to type a path into blind.
   expect(screen.queryByRole("textbox")).toBeNull();
-  await user.click(pathTrigger("System prompt file"));
+  await user.click(pathTrigger(/^System prompt file:/));
   await user.click(await screen.findByText("prompt.md"));
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ systemPromptFile: "/opt/prompt.md" }));
@@ -564,7 +570,7 @@ test.each([
   const { complete } = renderPanel([option({ wireField: "somePath", kind: "path", label: "Some path", pathKind })]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await user.click(pathTrigger("Some path"));
+  await user.click(pathTrigger(/^Some path:/));
 
   await waitFor(() => expect(complete).toHaveBeenCalledWith(expect.any(String), includeFiles));
 });
@@ -583,13 +589,11 @@ test("a command-kind path option stays a plain text input, since a command is no
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ agent: "evener" }));
 });
 
-/** Browses to a directory row and submits it, which is the add path the picker
- * exists for: a directory click writes the picked path into CollectionEditor's
- * own draft, which the Add button then submits. */
+/** Directory selection fills the draft; Add submits that confirmed path. */
 async function browseAndAdd(user: ReturnType<typeof userEvent.setup>, rowName: string): Promise<void> {
   await user.click(pathTrigger());
   await user.click(await screen.findByText(rowName));
-  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
   await user.click(screen.getByRole("button", { name: "Add" }));
 }
 
@@ -675,7 +679,9 @@ test.each([
 
 test("a pathList add the server rejects shows an inline error and is not collected", async () => {
   const user = userEvent.setup();
-  const validatePath = vi.fn().mockResolvedValue({ valid: false, error: "path does not exist" });
+  const validatePath = vi.fn(
+    async (path: string): Promise<{ valid: boolean; path: string; error?: string }> => ({ valid: true, path }),
+  );
   const { onOverridesChange } = renderPanel(
     [option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" })],
     { validatePath },
@@ -683,6 +689,7 @@ test("a pathList add the server rejects shows an inline error and is not collect
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await typePath(user, pathTrigger(), "/nope");
+  validatePath.mockResolvedValue({ valid: false, path: "/nope", error: "path does not exist" });
   await user.click(screen.getByRole("button", { name: "Add" }));
 
   expect(await screen.findByText("path does not exist")).toBeTruthy();
@@ -706,14 +713,16 @@ test("a pathList add stores the server-canonicalized path", async () => {
 
 test("a pathList add is not blocked when the validate RPC itself fails", async () => {
   const user = userEvent.setup();
-  const validatePath = vi.fn().mockRejectedValue(new Error("socket closed"));
+  const validatePath = vi.fn(async (path: string) => ({ valid: true, path: path === "~" ? "/opt" : path }));
   const { onOverridesChange } = renderPanel(
     [option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" })],
     { validatePath },
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await browseAndAdd(user, "skills");
+  await typePath(user, pathTrigger(), "/opt/skills");
+  validatePath.mockRejectedValue(new Error("socket closed"));
+  await user.click(screen.getByRole("button", { name: "Add" }));
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
 });

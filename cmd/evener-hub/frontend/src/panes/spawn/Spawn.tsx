@@ -32,6 +32,7 @@ import {
   useToasts,
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
+import { DirectoryIcon, DirectoryPicker } from "../../widgets/directorypicker";
 import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
@@ -73,7 +74,6 @@ import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
-import { DirectoryIcon, WorkingDirectoryPicker } from "./WorkingDirectoryPicker";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -871,7 +871,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           )}
         </div>
         {directoryOpen && (
-          <WorkingDirectoryPicker
+          <DirectoryPicker
             key={cwd}
             value={cwd}
             fallbackDir={getGlobalLastWorkingDir()}
@@ -1139,6 +1139,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
 
         <AdvancedOptions
+          createDirectory={createDirectory}
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
           validatePath={validatePath}

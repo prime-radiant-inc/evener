@@ -1284,7 +1284,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
   await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   const pathname = window.location.pathname;
   await user.keyboard("{Escape}");
-  expect(screen.queryByRole("dialog", { name: "Choose working directory" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose directory" })).toBeNull();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   expect(window.location.pathname).toBe(pathname);
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe(

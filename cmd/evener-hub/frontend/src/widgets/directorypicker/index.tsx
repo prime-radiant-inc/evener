@@ -1,17 +1,17 @@
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { friendlyErrorMessage } from "../../protocol/errors";
-import { Button, type PathFieldPanelProps } from "../../widgets";
-import { OverlayPanel } from "../../widgets/dialog/OverlayPanel";
-import { requireClass } from "../../widgets/internal/requireClass";
-import { basename, childrenPrefix, parentOf } from "../../widgets/pathfield/pathRows";
-import styles from "./workingDirectoryPicker.module.css";
+import { Button } from "../button";
+import { OverlayPanel } from "../dialog/OverlayPanel";
+import { requireClass } from "../internal/requireClass";
+import { basename, childrenPrefix, parentOf } from "../pathfield/pathRows";
+import styles from "./directorypicker.module.css";
 
-export interface WorkingDirectoryPickerProps {
+export interface DirectoryPickerProps {
   value: string;
   fallbackDir?: string;
-  complete: PathFieldPanelProps["complete"];
-  listRecents: () => Promise<string[]>;
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
+  listRecents?: () => Promise<string[]>;
   validatePath: (path: string, kind: string) => Promise<{ valid: boolean; path?: string; error?: string }>;
   createDirectory: (path: string) => Promise<void>;
   onPick: (path: string) => void;
@@ -19,24 +19,24 @@ export interface WorkingDirectoryPickerProps {
 }
 
 const CLASS = {
-  panel: requireClass(styles.panel, "workingDirectoryPicker.module.css", "panel"),
-  body: requireClass(styles.body, "workingDirectoryPicker.module.css", "body"),
-  browser: requireClass(styles.browser, "workingDirectoryPicker.module.css", "browser"),
-  recents: requireClass(styles.recents, "workingDirectoryPicker.module.css", "recents"),
-  browse: requireClass(styles.browse, "workingDirectoryPicker.module.css", "browse"),
-  navigation: requireClass(styles.navigation, "workingDirectoryPicker.module.css", "navigation"),
-  crumbs: requireClass(styles.crumbs, "workingDirectoryPicker.module.css", "crumbs"),
-  pathForm: requireClass(styles.pathForm, "workingDirectoryPicker.module.css", "pathForm"),
-  input: requireClass(styles.input, "workingDirectoryPicker.module.css", "input"),
-  listHeading: requireClass(styles.listHeading, "workingDirectoryPicker.module.css", "listHeading"),
-  folders: requireClass(styles.folders, "workingDirectoryPicker.module.css", "folders"),
-  row: requireClass(styles.row, "workingDirectoryPicker.module.css", "row"),
-  path: requireClass(styles.path, "workingDirectoryPicker.module.css", "path"),
-  footer: requireClass(styles.footer, "workingDirectoryPicker.module.css", "footer"),
-  destination: requireClass(styles.destination, "workingDirectoryPicker.module.css", "destination"),
-  actions: requireClass(styles.actions, "workingDirectoryPicker.module.css", "actions"),
-  create: requireClass(styles.create, "workingDirectoryPicker.module.css", "create"),
-  status: requireClass(styles.status, "workingDirectoryPicker.module.css", "status"),
+  panel: requireClass(styles.panel, "directorypicker.module.css", "panel"),
+  body: requireClass(styles.body, "directorypicker.module.css", "body"),
+  browser: requireClass(styles.browser, "directorypicker.module.css", "browser"),
+  recents: requireClass(styles.recents, "directorypicker.module.css", "recents"),
+  browse: requireClass(styles.browse, "directorypicker.module.css", "browse"),
+  navigation: requireClass(styles.navigation, "directorypicker.module.css", "navigation"),
+  crumbs: requireClass(styles.crumbs, "directorypicker.module.css", "crumbs"),
+  pathForm: requireClass(styles.pathForm, "directorypicker.module.css", "pathForm"),
+  input: requireClass(styles.input, "directorypicker.module.css", "input"),
+  listHeading: requireClass(styles.listHeading, "directorypicker.module.css", "listHeading"),
+  folders: requireClass(styles.folders, "directorypicker.module.css", "folders"),
+  row: requireClass(styles.row, "directorypicker.module.css", "row"),
+  path: requireClass(styles.path, "directorypicker.module.css", "path"),
+  footer: requireClass(styles.footer, "directorypicker.module.css", "footer"),
+  destination: requireClass(styles.destination, "directorypicker.module.css", "destination"),
+  actions: requireClass(styles.actions, "directorypicker.module.css", "actions"),
+  create: requireClass(styles.create, "directorypicker.module.css", "create"),
+  status: requireClass(styles.status, "directorypicker.module.css", "status"),
 };
 
 export function DirectoryIcon() {
@@ -47,9 +47,9 @@ export function DirectoryIcon() {
   );
 }
 
-/** The launch directory is committed once. Navigation, typing and creation
- * stay local so cancelled browsing cannot reload the session's configuration. */
-export function WorkingDirectoryPicker({
+/** The selected directory is committed once. Navigation, typing and creation
+ * stay local so cancelled browsing cannot reload the caller's configuration. */
+export function DirectoryPicker({
   value,
   fallbackDir,
   complete,
@@ -58,10 +58,11 @@ export function WorkingDirectoryPicker({
   createDirectory,
   onPick,
   onClose,
-}: WorkingDirectoryPickerProps) {
+}: DirectoryPickerProps) {
   const initialPath = value || fallbackDir || "~";
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
+  const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
   const [validated, setValidated] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
@@ -84,6 +85,7 @@ export function WorkingDirectoryPicker({
     // without opening the phone keyboard when browsing by touch.
     if (document.activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
+    setPathEdited(false);
     setValidated(false);
     setEntries(null);
     setError(null);
@@ -115,7 +117,7 @@ export function WorkingDirectoryPicker({
   useEffect(() => {
     mounted.current = true;
     void browse(initialPath);
-    listRecents().then(
+    listRecents?.().then(
       (paths) => {
         if (mounted.current) setRecents([...new Set(paths)]);
       },
@@ -141,7 +143,7 @@ export function WorkingDirectoryPicker({
     }
   }, [creating, busy]);
 
-  const ready = validated && typed === current && !busy;
+  const ready = validated && !pathEdited && typed === current && !busy;
   // Paths belong to the Linux/macOS hub, regardless of the browser OS.
   // Match the shared path helpers and supported hub builds in .goreleaser.yml.
   const segments = current.split("/").filter(Boolean);
@@ -152,6 +154,7 @@ export function WorkingDirectoryPicker({
 
   async function create(event: FormEvent) {
     event.preventDefault();
+    event.stopPropagation();
     if (!ready) return;
     const name = folderName.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
@@ -181,7 +184,7 @@ export function WorkingDirectoryPicker({
     <OverlayPanel
       open
       onClose={onClose}
-      title="Choose working directory"
+      title="Choose directory"
       panelClassName={CLASS.panel}
       bodyClassName={CLASS.body}
       footer={
@@ -203,8 +206,8 @@ export function WorkingDirectoryPicker({
       }
     >
       <div className={CLASS.browser}>
-        <aside className={CLASS.recents} aria-label="Recent directories">
-          <h3>Recent</h3>
+        <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
+          {listRecents && <h3>Recent</h3>}
           {recents.map((path) => (
             <button
               className={CLASS.row}
@@ -218,7 +221,7 @@ export function WorkingDirectoryPicker({
               <span className={CLASS.path}>{parentOf(path)}</span>
             </button>
           ))}
-          {recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -259,6 +262,7 @@ export function WorkingDirectoryPicker({
             className={CLASS.pathForm}
             onSubmit={(event) => {
               event.preventDefault();
+              event.stopPropagation();
               if (!busy) void browse(typed);
             }}
           >
@@ -280,6 +284,12 @@ export function WorkingDirectoryPicker({
               onChange={(event) => {
                 request.current++;
                 setTyped(event.target.value);
+                setPathEdited(true);
+                setEntries(null);
+                setValidated(false);
+                // Editing Path closes creation without moving focus away.
+                wasCreating.current = false;
+                setCreating(false);
                 setError(null);
               }}
             />
@@ -336,8 +346,16 @@ export function WorkingDirectoryPicker({
               {error}
             </p>
           )}
-          <section className={CLASS.folders} aria-label="Folders" aria-busy={entries === null && error === null}>
-            {entries === null ? (
+          <section
+            className={CLASS.folders}
+            aria-label="Folders"
+            aria-busy={!pathEdited && entries === null && error === null}
+          >
+            {pathEdited ? (
+              <p className={CLASS.status} role="status">
+                Press Go to browse this path.
+              </p>
+            ) : entries === null ? (
               !error && (
                 <p className={CLASS.status} role="status">
                   Loading directories…

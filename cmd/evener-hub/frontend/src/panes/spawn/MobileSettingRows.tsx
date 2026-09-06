@@ -7,14 +7,13 @@
 // happens, instead of being a bespoke sheet on this surface and a popover
 // picker on every other.
 import { useEffect, useRef, useState } from "react";
-import type { PathFieldPanelProps } from "../../widgets";
 import { Button, Sheet } from "../../widgets";
+import { DirectoryPicker, type DirectoryPickerProps } from "../../widgets/directorypicker";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import { type PluginSelectionState, selectedPluginNames } from "./pluginSelectionState";
 import type { PluginPreviewLoadState } from "./usePluginPreview";
-import { WorkingDirectoryPicker, type WorkingDirectoryPickerProps } from "./WorkingDirectoryPicker";
 
 export interface MobilePickerOption {
   value: string;
@@ -27,11 +26,11 @@ export interface MobileSettingRowsProps {
   onHarnessChange: (value: string) => void;
   cwd: string;
   onCwdChange: (value: string) => void;
-  complete: PathFieldPanelProps["complete"];
-  listRecents: NonNullable<PathFieldPanelProps["listRecents"]>;
+  complete: DirectoryPickerProps["complete"];
+  listRecents: NonNullable<DirectoryPickerProps["listRecents"]>;
   fallbackDir: string;
-  validatePath: WorkingDirectoryPickerProps["validatePath"];
-  createDirectory: WorkingDirectoryPickerProps["createDirectory"];
+  validatePath: DirectoryPickerProps["validatePath"];
+  createDirectory: DirectoryPickerProps["createDirectory"];
   onCwdPanelClose: (value: string) => void;
   branch: string;
   reasoningEffort: string;
@@ -299,7 +298,7 @@ export function MobileSettingRows({
       />
 
       {openPicker === "Working directory" && (
-        <WorkingDirectoryPicker
+        <DirectoryPicker
           key={cwd}
           value={cwd}
           fallbackDir={fallbackDir}
