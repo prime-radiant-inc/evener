@@ -230,16 +230,6 @@ func TestDelegateIsolation_LaneRollbackReleasesItsAdmission(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		root := r.s
-		// newWorktreeRepo points the session itself at its own temp state
-		// dir, but the delegate controller was already built off the
-		// pre-fixture default (empty), and cfg.StateDir — what a fresh
-		// spawn's subCfg actually inherits for the child's own transcript
-		// writes — was never touched at all. The launch path this subtest
-		// actually reaches needs both to agree with the fixture's real
-		// state dir, or the child's write and the parent's read-back land
-		// in different places.
-		root.delegateController.stateDir = r.stateDir
-		root.cfg.StateDir = r.stateDir
 
 		warnings := collectWarningsUntilClosed(root)
 
@@ -396,5 +386,92 @@ func TestDelegateIsolation_CloseBegunBeforeTheRollbackStillFencesIt(t *testing.T
 
 	if cleanupDuringRollback.Load() {
 		t.Error("the close cleaned the environment while the rollback still held its git, even though closing was already set before the rollback began")
+	}
+}
+
+// prepareIsolation's own admission fences the lane's create, but that
+// admission dies the instant prepareIsolation returns; the rollback the
+// design actually cares about runs well after that, from failCommittedStart,
+// under nothing but the admission delegateRuntime.create takes BEFORE calling
+// prepareIsolation and holds for the whole spawn. This test starts the close
+// while the lane create's own git is still in flight — under prepareIsolation's
+// admission, not the outer one — and proves the outer admission is already
+// live by then and stays live long enough to fence the rollback that follows.
+// Moving delegateRuntime.create's beginEnvWork to after prepareIsolation
+// returns would still pass every other test in this file; this is the one
+// that would catch it, because there would be no admission at all covering
+// the window this test opens.
+//
+// The construct fault is load-bearing, not incidental: a close that begins
+// this early sets Session.closing before prepareIsolation's git even resumes,
+// and delegateRuntime.adopt checks that flag directly, so an unforced spawn
+// fails there instead — after a full child session has already been built.
+// That child inherits this session's cfg.testOnly hooks, and its own close
+// would invoke closeAfterDisposeSweepJoin and envCleanupObserved a second
+// time, double-closing this test's channels. Forcing construct to fail at
+// "new_session" fails the spawn before any child session exists, which is
+// also the failure this test means to pin: the rollback of a lane whose
+// construction never got that far.
+func TestDelegateIsolation_CloseDuringTheLaneCreateStillFencesTheRollback(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+
+	wantErr := errors.New("injected construction failure")
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "new_session" {
+			return wantErr
+		}
+		return nil
+	}
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	envCleaned := make(chan struct{})
+	var cleanedOnce sync.Once
+	var heldCreate, heldRollback, cleanupDuringRollback atomic.Bool
+
+	root.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	root.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) {
+		cleanedOnce.Do(func() { close(envCleaned) })
+	}
+	root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		inner := gitRunner(ctx, env)
+		return func(args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" && heldCreate.CompareAndSwap(false, true) {
+				go func() {
+					defer close(closeDone)
+					root.Close()
+				}()
+				<-closeBegun
+			}
+			if len(args) >= 2 && args[0] == "worktree" && args[1] == "unlock" && heldRollback.CompareAndSwap(false, true) {
+				select {
+				case <-envCleaned:
+					cleanupDuringRollback.Store(true)
+				case <-time.After(closeFenceProbe):
+				}
+			}
+			return inner(args...)
+		}
+	}
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "close during the lane create still fences the rollback",
+		Isolation:           "worktree",
+		DelegationAllowance: new(0),
+	})
+	if !errors.Is(result.Err, wantErr) {
+		t.Fatalf("createDelegate error = %v, want the injected construction failure", result.Err)
+	}
+	if !heldCreate.Load() {
+		t.Fatal("the create never reached git worktree add; the test observed nothing")
+	}
+	if !heldRollback.Load() {
+		t.Fatal("the rollback never reached git worktree unlock; the test observed nothing")
+	}
+	<-closeDone
+
+	if cleanupDuringRollback.Load() {
+		t.Error("the close cleaned the environment while the rollback still held its git, even though the close began under the lane create's own admission rather than the rollback's")
 	}
 }
