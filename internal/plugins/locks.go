@@ -2,7 +2,9 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,6 +77,45 @@ func acquireLock(ctx context.Context, lockPath string, timeout time.Duration) (f
 	if err != nil {
 		return nil, fmt.Errorf("opening lock %s: %w", lockPath, err)
 	}
+	return flockUntil(ctx, f, lockPath, timeout)
+}
+
+// acquireExistingLock waits on a lock file that is already there, opening it
+// read-only, and hands back a release that does nothing when there is none.
+// Both differences from acquireLock make the same point: waiting on a lock is
+// not a write.
+//
+// Doctor's orphaned-cache walk reads under the lock, so acquireLock's O_CREATE
+// would leave a lock file behind in a store that has none — the one mutation a
+// read-only verb would make in a store that already exists. The read-only open
+// is the other half: flock is granted on a descriptor opened either way, so
+// asking for write access only turned a store the caller may read but not
+// write (root-owned, or a read-only mount) into a lock complaint where an
+// unlocked walk had reported its orphans fine.
+//
+// Walking unlocked when there is no lock file is safe because the writers
+// create theirs before they touch anything else: no lock file means no writer
+// has ever locked this store. In a real store the case cannot arise at all —
+// the cache directory the walk is there to read was made by a writer, which
+// created the lock file first. The window that is left needs the lock file
+// deleted out of band and a writer recreating it in the moment after this open
+// failed, which leaves the walk exactly where every walk was before it took a
+// lock at all.
+func acquireExistingLock(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
+	f, err := lockOpenFile(lockPath, os.O_RDONLY, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return func() {}, nil
+		}
+		return nil, fmt.Errorf("opening lock %s: %w", lockPath, err)
+	}
+	return flockUntil(ctx, f, lockPath, timeout)
+}
+
+// flockUntil is the wait both acquires share: retry the exclusive flock on an
+// already-open lock file until it is granted, ctx is canceled, or timeout
+// elapses.
+func flockUntil(ctx context.Context, f lockFile, lockPath string, timeout time.Duration) (func(), error) {
 	deadline := lockNow().Add(timeout)
 	backoff := 10 * time.Millisecond
 	for {

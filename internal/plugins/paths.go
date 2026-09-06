@@ -61,9 +61,10 @@ const (
 // is that each is only reached once the root is known to be usable: under the
 // store lock, which acquireStoreLock would not have granted otherwise (the
 // cache, marketplace and plugin directories in install, gc and the marketplace
-// verbs); past Doctor's own refusal (doctorOrphanCacheDirs walks cacheDir with
-// no lock at all); or in a test naming a path to plant a file at. A new caller
-// that fits none of those derives here instead.
+// verbs); past Doctor's own refusal (the cache directory and the lock file the
+// orphaned-cache walk names on its way to that lock); or in a test naming a
+// path to plant a file at. A new caller that fits none of those derives here
+// instead.
 func (m *Manager) storePath(parts ...string) (string, error) {
 	if err := m.storeRootError(); err != nil {
 		return "", err

@@ -23,6 +23,7 @@ var (
 	doctorCreateTemp   = func(dir, pattern string) (doctorTempFile, error) { return os.CreateTemp(dir, pattern) }
 	doctorRemove       = os.Remove
 	doctorGitAvailable = gitAvailable
+	doctorAcquireLock  = acquireExistingLock
 )
 
 // Doctor finding levels.
@@ -45,6 +46,13 @@ const (
 // fetch/pull before doctor flags it as stale. Directory sources have no
 // "pull" and are never flagged for staleness.
 const marketplaceStaleAfter = 30 * 24 * time.Hour
+
+// doctorOrphanLockWait is how long the orphaned-cache-directory walk waits for
+// the store lock. Doctor is a report somebody is sitting in front of, so it
+// does not queue behind the git fetches install, upgrade and marketplace
+// refresh hold that lock across; a lock still busy after this becomes a
+// finding of its own.
+const doctorOrphanLockWait = time.Second
 
 // DoctorFinding is one read-only plugin-store health check result. Level is
 // one of LevelOK, LevelWarn, LevelFail.
@@ -95,7 +103,6 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 	}
 
 	var findings []DoctorFinding
-	knownPaths := map[string]bool{}
 
 	keys := make([]string, 0, len(reg.Plugins))
 	for key := range reg.Plugins {
@@ -107,12 +114,10 @@ func (m *Manager) Doctor() ([]DoctorFinding, error) {
 		if len(entries) == 0 {
 			continue
 		}
-		e := entries[0]
-		knownPaths[filepath.Clean(e.InstallPath)] = true
-		findings = append(findings, m.doctorEntry(key, e)...)
+		findings = append(findings, m.doctorEntry(key, entries[0])...)
 	}
 
-	findings = append(findings, m.doctorOrphanCacheDirs(knownPaths)...)
+	findings = append(findings, m.doctorOrphanCacheDirs()...)
 
 	names := make([]string, 0, len(mk))
 	for name := range mk {
@@ -203,7 +208,41 @@ func sourceCannotUpgrade(src Source) bool {
 // doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any
 // sha-dir that no registry entry's InstallPath points at — left behind by a
 // crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
-func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFinding {
+//
+// Alone among Doctor's checks this one draws its conclusion from two pieces of
+// store state, so a writer caught between them invents it: a materialize
+// creates the sha-dir before it records the entry, and gc drops the entry
+// before it removes the dir, and either window makes a live plugin look
+// orphaned. Reading the registry and the cache under the store lock — the lock
+// both of those writers hold — is what makes "has no registry entry" true
+// rather than merely momentary. The registry Doctor's other checks read is the
+// one from before the lock, so this reads its own.
+func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
+	// A store with no cache directory has no orphans to report and no writer
+	// to wait for, so it is answered without going near the lock at all.
+	if _, err := doctorStat(m.cacheDir()); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	release, err := m.acquireStoreLock(context.Background(), doctorAcquireLock, m.lockPath(), doctorOrphanLockWait)
+	if err != nil {
+		return []DoctorFinding{{
+			Level: LevelWarn, Category: catRegistry,
+			Message:     fmt.Sprintf("skipped the check for unreferenced cache directories: %v", err),
+			Remediation: "re-run the check once the plugin operation holding the store lock has finished",
+		}}
+	}
+	defer release()
+
+	reg, err := m.loadRegistry()
+	if err != nil {
+		return []DoctorFinding{{
+			Level: LevelFail, Category: catRegistry,
+			Message: fmt.Sprintf("reading the registry for the unreferenced cache directory check: %v", err),
+		}}
+	}
+	referenced := referencedInstallPaths(reg)
+
 	marketplaceEnts, err := doctorReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -239,7 +278,7 @@ func (m *Manager) doctorOrphanCacheDirs(knownPaths map[string]bool) []DoctorFind
 					continue
 				}
 				shaPath := filepath.Join(plugPath, shaEnt.Name())
-				if knownPaths[filepath.Clean(shaPath)] {
+				if referenced[filepath.Clean(shaPath)] {
 					continue
 				}
 				findings = append(findings, DoctorFinding{

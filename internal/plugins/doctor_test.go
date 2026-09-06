@@ -124,6 +124,142 @@ func TestDoctor_OrphanCacheDir_NoneWhenReferenced(t *testing.T) {
 	}
 }
 
+// A materialize creates its sha directory before it records the registry
+// entry, and gc drops the entry before it removes the directory, so a walk
+// that runs between either pair calls a live install an orphan. Waiting for
+// the writer is only half of it: the registry the walk compares the cache
+// against has to be the one the writer left, not the one Doctor read on its
+// way in.
+func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatalf("materialize acquire: %v", err)
+	}
+	// The window a materialize leaves open: the directory is on disk and the
+	// registry does not name it yet.
+	writePlugin(t, dir, "widget", nil)
+
+	type report struct {
+		findings []DoctorFinding
+		err      error
+	}
+	reports := make(chan report, 1)
+	go func() {
+		findings, doctorErr := m.Doctor()
+		reports <- report{findings, doctorErr}
+	}()
+
+	// Long enough that a walk which does not wait for the lock has already
+	// made its (wrong) report by the time the entry lands.
+	time.Sleep(200 * time.Millisecond)
+	saveErr := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+		"widget@acme": {{InstallPath: dir, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "acme/widget"}}},
+	}})
+	release()
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
+
+	got := <-reports
+	if got.err != nil {
+		t.Fatalf("Doctor: %v", got.err)
+	}
+	if hasFinding(got.findings, "orphaned cache directory") {
+		t.Errorf("a materialize in flight was reported as an orphan: %+v", got.findings)
+	}
+}
+
+// A writer that holds the store lock for longer than the walk is willing to
+// wait is exactly the writer whose half-finished work the walk would
+// misreport, so the report says the check was skipped rather than guessing at
+// it.
+func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
+	writePlugin(t, dir, "widget", nil)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+	if err != nil {
+		t.Fatalf("writer acquire: %v", err)
+	}
+	defer release()
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if hasFinding(findings, "orphaned cache directory") {
+		t.Errorf("orphan claimed while a writer holds the store lock: %+v", findings)
+	}
+	f := findFinding(t, findings, "unreferenced cache directories")
+	if f.Level != LevelWarn {
+		t.Errorf("skipped check level = %s, want %s", f.Level, LevelWarn)
+	}
+	if f.Remediation == "" {
+		t.Error("skipped check has no remediation")
+	}
+}
+
+// storeTree is every path under root, relative and sorted: what a read-only
+// verb has to hand back untouched.
+func storeTree(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		paths = append(paths, rel)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// The store lock is a file the writers create, so waiting on it the way they
+// take it would leave one behind in a store that has never had a writer —
+// a mutation from the one verb that promises to make none. Such a store also
+// has nobody to wait for, so the walk still answers.
+func TestDoctor_OrphanCacheDir_LeavesAStoreWithNoLockFileAlone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	orphan := m.pluginCacheDir("acme", "widget", "deadbeef")
+	writePlugin(t, orphan, "widget", nil)
+	if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{}}); err != nil {
+		t.Fatal(err)
+	}
+	before := storeTree(t, m.Root)
+
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatalf("Doctor: %v", err)
+	}
+	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
+		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	}
+	if _, statErr := os.Stat(m.lockPath()); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("Doctor created the store lock %s (stat err = %v)", m.lockPath(), statErr)
+	}
+	if after := storeTree(t, m.Root); !slices.Equal(before, after) {
+		t.Errorf("Doctor changed the store\nbefore = %v\nafter  = %v", before, after)
+	}
+}
+
 func TestDoctor_VersionMismatchWarns(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := filepath.Join(t.TempDir(), "widget")
