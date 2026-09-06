@@ -84,9 +84,22 @@ func TestMCPBreaker_IsErrorFailuresParkAtThird(t *testing.T) {
 	if !third.IsError {
 		t.Fatalf("call 3: IsError=false, output=%q", third.Output)
 	}
-	want := "evener did not execute this call: s__probe with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
-	if !strings.HasPrefix(third.Output, want) {
-		t.Errorf("call 3 park text = %q, want prefix %q", third.Output, want)
+	if !strings.HasPrefix(third.Output, "evener did not execute this call:") {
+		t.Errorf("call 3 was not parked: %q", third.Output)
+	}
+	for _, want := range []string{
+		"has failed twice with the same error",
+		"The third attempt was not executed",
+		"semantic failure loop",
+		"normalized boundary",
+		"materially different valid action",
+	} {
+		if !strings.Contains(third.Output, want) {
+			t.Errorf("call 3 park text missing %q: %q", want, third.Output)
+		}
+	}
+	if third.BreakerSemanticSignature == "" {
+		t.Errorf("call 3 park omitted semantic signature: %#v", third)
 	}
 	if !strings.Contains(third.Output, "boom: upstream 400") {
 		t.Errorf("call 3 park text omits the failure snippets: %q", third.Output)

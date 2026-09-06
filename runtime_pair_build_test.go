@@ -100,6 +100,7 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_WEB_WAIT_RELEASE",
 		"EVENER_TEST_WEB_WAIT_REAPED",
 		"EVENER_TEST_WEB_STALE_JOB",
+		"EVENER_TEST_WEB_WAIT_PID",
 		"EVENER_TEST_WEB_WAIT_USED",
 		"EVENER_TEST_NODE_HOLD_COMMAND",
 		"EVENER_TEST_NODE_FAIL_COMMAND",
@@ -921,8 +922,10 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 	}
 	bashEnv := filepath.Join(fixture.root, "wait-shell")
 	writeTestFile(t, bashEnv, []byte(`wait() {
-  tracked_pid=$(cat "$EVENER_TEST_NPM_PID")
-  if [ "${1:-}" = "$tracked_pid" ] && [ "${EVENER_TEST_WEB_WAIT_USED:-0}" -eq 0 ]; then
+  tracked_pid=${EVENER_TEST_WEB_WAIT_PID:-}
+  if [ -n "${1:-}" ] && [ "${EVENER_TEST_WEB_WAIT_USED:-0}" -eq 0 ]; then
+    tracked_pid=$1
+    EVENER_TEST_WEB_WAIT_PID=$tracked_pid
     EVENER_TEST_WEB_WAIT_USED=1
     printf '%s\n' "$$" > "$EVENER_TEST_WEB_WAIT_READY"
     exec 9<> "$EVENER_TEST_WEB_WAIT_RELEASE"
@@ -938,7 +941,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 }
 jobs() {
   if [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
-    cat "$EVENER_TEST_NPM_PID"
+    printf '%s\n' "${EVENER_TEST_WEB_WAIT_PID:-}"
     return
   fi
   command jobs "$@"
@@ -1666,7 +1669,7 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
 			"EVENER_TEST_SHELL_WAIT_RELEASE",
 			"EVENER_TEST_WEB_CLEANUP_READY", "EVENER_TEST_WEB_CLEANUP_RELEASE", "EVENER_TEST_WEB_CLEANUP_PID",
-			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_STALE_JOB", "EVENER_TEST_WEB_WAIT_USED",
+			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_STALE_JOB", "EVENER_TEST_WEB_WAIT_PID", "EVENER_TEST_WEB_WAIT_USED",
 			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD",
 			"EVENER_TEST_PROCESS_STATE_DIR":
 			continue

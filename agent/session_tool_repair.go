@@ -27,10 +27,15 @@ const maxCommunicateOutputJSONDepth = 64
 // is non-empty, execTool returns it as the tool's error result WITHOUT calling
 // ExecuteCall — but still runs the full event/hook lifecycle.
 type prepareResult struct {
-	Call      llm.ToolCallData
-	Changes   []repair.Change
-	PrevalErr string
-	Err       error
+	Call              llm.ToolCallData
+	Changes           []repair.Change
+	Lifetime          tool.PrevalidationSnapshot
+	PreparedArguments json.RawMessage
+	SemanticArguments json.RawMessage
+	PrevalErr         string
+	Boundary          string
+	Err               error
+	RegisteredHookErr bool
 	// RawArgumentsRejected keeps unvalidated bytes out of hook input and
 	// prevents a hook from replacing them. It is separate from PrevalErr so an
 	// unknown tool can retain its established unknown-tool diagnostic.
@@ -59,6 +64,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 	if t == nil {
 		res.PrevalErr = repair.UnknownToolMessage(requestedVisible, visibleNames)
+		res.Boundary = "unknown_tool"
 		return res
 	}
 
@@ -72,6 +78,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			// diagnosis instead.
 			if finishReason == llm.FinishReasonLength {
 				res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+				res.Boundary = "truncated_call"
 				return res
 			}
 			repaired, c := repair.RepairJSON(res.Call.Arguments)
@@ -80,6 +87,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				// Show the model's own bytes and the original parse error
 				// (its offset refers to them, not the repaired form).
 				res.PrevalErr = repair.ExplainJSONError(requestedVisible, t.Definition.Parameters, err, res.Call.Arguments)
+				res.Boundary = "arguments_json"
 				return res
 			}
 			// Keep repair changes pending until their repaired arguments are
@@ -90,15 +98,18 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 	if errText := unsupportedDelegateWaitOption(call.Name, args); errText != "" {
 		res.PrevalErr = errText
+		res.Boundary = "delegate_wait_option"
 		return res
 	}
 	if errText := retiredTaskListShapeError(call.Name, args); errText != "" {
 		res.PrevalErr = errText
+		res.Boundary = "retired_task_shape"
 		return res
 	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
+		res.Boundary = "delegate_sandbox_control"
 		res.Err = err
 		return res
 	}
@@ -106,6 +117,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		normalized, err := normalizeAskArgs(args)
 		if err != nil {
 			res.PrevalErr = err.Error()
+			res.Boundary = "ask_user_normalization"
 			return res
 		}
 		args = normalized
@@ -138,11 +150,30 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 		args = filled
 	}
-	if t.PreValidate != nil {
-		if err := t.PreValidate(args); err != nil {
-			res.PrevalErr = err.Error()
-			return res
+	runRegisteredHooks := func() bool {
+		if t.NormalizeArgs != nil {
+			normalized, err := t.NormalizeArgs(args)
+			if err != nil {
+				res.PrevalErr = err.Error()
+				res.Err = err
+				res.RegisteredHookErr = true
+				return false
+			}
+			args = normalized
+			res.SemanticArguments, _ = json.Marshal(args)
 		}
+		if t.PreValidate != nil {
+			if err := t.PreValidate(args); err != nil {
+				res.PrevalErr = err.Error()
+				res.Err = err
+				res.RegisteredHookErr = true
+				return false
+			}
+		}
+		return true
+	}
+	if !t.NormalizeAfterRepair && !runRegisteredHooks() {
+		return res
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
@@ -152,6 +183,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		// truncation message exists to prevent.
 		if finishReason == llm.FinishReasonLength && len(res.Call.Arguments) == 0 {
 			res.PrevalErr = repair.ExplainTruncatedCall(requestedVisible)
+			res.Boundary = "truncated_call"
 			return res
 		}
 		healed, c := repair.RepairArgs(t.Definition.Parameters, args)
@@ -195,6 +227,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			if promotedOutputString && isCommunicateOutputSchemaPath(offendingPath) {
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
+			res.Boundary = "schema_validation"
+			if t.Definition.Name == "ask_user" || len(pendingJSONChanges) > 0 || t.NormalizeArgs != nil {
+				res.SemanticArguments, _ = json.Marshal(finalErrorArgs)
+			}
 			return res
 		}
 		args = healed
@@ -217,6 +253,29 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			return res
 		}
 	}
+	if t.NormalizeAfterRepair && !runRegisteredHooks() {
+		res.Call.Arguments = call.Arguments
+		res.Changes = nil
+		return res
+	}
+	if t.NormalizeAfterRepair {
+		if err := t.Schema.Validate(args); err != nil {
+			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, args, offendingField(err), offendingKeyword(err))
+			res.Boundary = "schema_validation"
+			res.SemanticArguments, _ = json.Marshal(args)
+			res.Call.Arguments = call.Arguments
+			res.Changes = nil
+			return res
+		}
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		res.PrevalErr = repairCommitError()
+		res.Call.Arguments = call.Arguments
+		res.Changes = nil
+		return res
+	}
+	res.PreparedArguments = encoded
 	return res
 }
 
@@ -384,7 +443,7 @@ func normalizeRetainedReadArgs(args map[string]any) (map[string]any, []repair.Ch
 	if value, present := normalized["output_match"]; present && (value == nil || value == "") {
 		remove("output_match")
 	}
-	if value, present := normalized["context_lines"]; present && (value == nil || (isNeutralRetainedInteger(value) && stringArg(normalized, "output_match") == "")) {
+	if value, present := normalized["context_lines"]; present && (isNeutralRetainedInteger(value) || isNeutralRetainedStringInteger(value)) {
 		remove("context_lines")
 	}
 	if jobRef {
@@ -428,12 +487,7 @@ func normalizeRetainedReadArgsForValidation(args map[string]any) (map[string]any
 		remove("expand_turn")
 	}
 	if value, present := normalized["context_lines"]; present && isNeutralRetainedStringInteger(value) {
-		if stringArg(normalized, "output_match") == "" {
-			remove("context_lines")
-		} else {
-			copyForWrite()
-			normalized["context_lines"] = float64(0)
-		}
+		remove("context_lines")
 	}
 	return normalized, nil
 }

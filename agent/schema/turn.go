@@ -163,6 +163,10 @@ type Turn struct {
 	Kind      TurnKind    `json:"kind"`      // category of this history item
 	Message   llm.Message `json:"message"`   // the underlying LLM message
 	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
+	// TransientContextOrigin links a request-only projected turn back to its
+	// durable source while context management runs. It is serialized so custom
+	// strategies can reconstruct retained turns, then cleared before publication.
+	TransientContextOrigin int `json:"context_projection_origin,omitempty"`
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
 	Usage llm.Usage `json:"usage"`

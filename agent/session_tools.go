@@ -243,15 +243,16 @@ func (s *Session) resultToolName() string {
 	return "communicate"
 }
 
-// RegisterTool registers a custom tool at runtime.
-func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
+// RegisterTool registers a custom tool at runtime. It returns an error when the
+// definition cannot be registered and leaves the session's tool caches unchanged.
+func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) error {
 	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
 	// Register itself can happen outside s.mu. But the cache rebuild below
 	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
 	// all of which mu guards — those must happen under lock, mirroring
 	// SetModel's pattern, so they can't race a concurrent env swap or model
 	// switch.
-	_ = s.reg.Register(tool.RegisteredTool{
+	if err := s.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        name,
 			Description: description,
@@ -260,13 +261,16 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return fn(ctx, args)
 		},
-	})
+	}); err != nil {
+		return err
+	}
 	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
 	promptWarning := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
+	return nil
 }
 
 const (
@@ -556,6 +560,17 @@ func (s *Session) canonicalToolName(name string) string {
 	return canonicalToolName(name, s.currentProfile().ToolNameMap())
 }
 
+// canonicalIncomingToolName reverse-maps a provider-visible alias only when the
+// exact incoming bytes already form a readable tool name. Malformed names must
+// remain unchanged so trimming during alias resolution cannot grant them the
+// behavior or presentation of a registered tool.
+func (s *Session) canonicalIncomingToolName(name string) string {
+	if !tool.IsReadableToolName(name) {
+		return name
+	}
+	return s.canonicalToolName(name)
+}
+
 func (s *Session) canonicalizeToolNames(names []string) []string {
 	return canonicalizeToolNames(names, s.currentProfile().ToolNameMap())
 }
@@ -664,12 +679,21 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
-	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	if !tool.IsReadableToolName(call.Name) {
+		requestedVisible = tool.DisplayToolName(call.Name)
+	}
+	// Repair events and hooks below observe the prepared call. Keep the provider
+	// bytes separately because, if that registration is replaced afterward, the
+	// successor's dispatch pipeline must start from the unprepared input.
+	originalArguments := append(json.RawMessage(nil), call.Arguments...)
+	registered, lifetime := s.reg.SnapshotPrevalidation(call.Name)
+	prep := prepareToolCall(call, registered, visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	prep.Lifetime = lifetime
 	call = prep.Call
-	prevalidated := true
+	displayName := tool.DisplayToolName(call.Name)
 	if len(prep.Changes) > 0 {
 		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
-			ToolName: call.Name,
+			ToolName: displayName,
 			CallID:   call.ID,
 			Changes:  changeStrings(prep.Changes),
 		})
@@ -678,13 +702,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPreToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(displayName)
 		hi.ToolUseID = call.ID
 		if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
 
-		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
+		preResult := s.hookRunner.RunPreToolUseMatching(s.apiLogContext(ctx), call.Name, hi)
 		for _, m := range preResult.ModelContext {
 			s.deliverHookContext(m)
 		}
@@ -697,7 +721,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 				denyMsg = preResult.DenyMessage
 			}
 			return tool.ExecResult{
-				ToolName:   call.Name,
+				ToolName:   displayName,
 				CallID:     call.ID,
 				Output:     denyMsg,
 				FullOutput: denyMsg,
@@ -708,18 +732,35 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
 				return tool.ExecResult{
-					ToolName:   call.Name,
+					ToolName:   displayName,
 					CallID:     call.ID,
 					Output:     msg,
 					FullOutput: msg,
 					IsError:    true,
 				}
 			}
+			// ExecutePreparedCall selects between this registration's prepared base
+			// and the original provider base under the registry lifetime check. Keep
+			// the hook's partial update on both valid JSON forms so a successor never
+			// inherits repairs produced for its predecessor. A malformed provider base
+			// cannot be merged; if the lifetime changes, the successor must see and
+			// reject those original bytes rather than inherit the repaired form.
+			originalCall := call
+			originalCall.Arguments = originalArguments
+			if applyUpdatedToolInput(&originalCall, preResult.UpdatedInput) == nil {
+				originalArguments = originalCall.Arguments
+			}
 			// Preparation validated the original arguments. A hook may replace
 			// any semantic task field, so dispatch this changed call through the
-			// normal PreValidate path while unchanged prepared calls still avoid
-			// running that hook twice.
-			prevalidated = false
+			// normal validation path, including when the update corrected an
+			// initial preparation failure. Unchanged prepared calls still avoid
+			// running that validation twice.
+			prep.PrevalErr = ""
+			prep.Boundary = ""
+			prep.Err = nil
+			prep.RegisteredHookErr = false
+			prep.SemanticArguments = nil
+			prep.PreparedArguments = nil
 		}
 	}
 	s.execToolCheckpoint("after_pre_hook")
@@ -729,7 +770,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 
 	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := events.ToolCallStartData{
-		ToolName:      call.Name,
+		ToolName:      displayName,
 		CallID:        call.ID,
 		ArgumentsJSON: string(argsJSON),
 	}
@@ -782,22 +823,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 	var res tool.ExecResult
-	if prep.PrevalErr != "" {
-		res = tool.ExecResult{
-			ToolName:   call.Name,
-			CallID:     call.ID,
-			Output:     prep.PrevalErr,
-			FullOutput: prep.PrevalErr,
-			IsError:    true,
-			PrevalOnly: true,
-			Err:        prep.Err,
-		}
+	if prep.RegisteredHookErr {
+		res = s.reg.FinalizeRegisteredHookFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Err)
+	} else if prep.PrevalErr != "" {
+		res = s.reg.FinalizePrevalidationFailure(ctx, prep.Lifetime, call, prep.SemanticArguments, prep.PrevalErr, prep.Boundary, prep.Err)
 	} else {
-		if prevalidated {
-			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
-		} else {
-			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
-		}
+		res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call, prep.Lifetime, prep.PreparedArguments, originalArguments)
 	}
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	// M7: on a sandbox denial in an interactive root session, raise a human approval
@@ -817,11 +848,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Lock()
 	s.execToolCheckpoint("after_side_effect_lock")
 	if err := s.errIfClosing(); err != nil {
+		canceled := skippedToolResult(call, err)
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName:      call.Name,
+			ToolName:      canceled.ToolName,
 			CallID:        call.ID,
 			ArgumentsJSON: string(call.Arguments),
-			Error:         skippedToolResult(call, err).FullOutput,
+			Error:         canceled.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -842,11 +874,14 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	}
 
 	endData := events.ToolCallEndData{
-		ToolName:      res.ToolName,
-		CallID:        res.CallID,
-		ArgumentsJSON: string(call.Arguments),
-		ToolState:     res.ToolState,
-		OutputRef:     outputRef,
+		ToolName:                 res.ToolName,
+		CallID:                   res.CallID,
+		ArgumentsJSON:            string(call.Arguments),
+		BreakerExactSignature:    res.BreakerExactSignature,
+		BreakerSemanticSignature: res.BreakerSemanticSignature,
+		BreakerBypassed:          res.BreakerBypassed,
+		ToolState:                res.ToolState,
+		OutputRef:                outputRef,
 	}
 	// A tool that returned image bytes says so here, by sha. The bytes
 	// themselves ride to the transcript with the tool-result turn and are never
@@ -870,11 +905,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// PostToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookPostToolUse)
-		hi.ToolName = toolname.EvenerToClaude(call.Name)
+		hi.ToolName = toolname.EvenerToClaude(displayName)
 		hi.ToolUseID = call.ID
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field
-		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
+		postResult := s.hookRunner.RunPostToolUseMatching(s.apiLogContext(ctx), call.Name, hi)
 		for _, m := range postResult.ModelContext {
 			s.deliverHookContext(m)
 		}
@@ -951,7 +986,7 @@ func skippedToolResult(call llm.ToolCallData, err error) tool.ExecResult {
 		msg = "tool skipped: " + err.Error()
 	}
 	return tool.ExecResult{
-		ToolName:   call.Name,
+		ToolName:   tool.DisplayToolName(call.Name),
 		CallID:     call.ID,
 		Output:     msg,
 		FullOutput: msg,
@@ -975,7 +1010,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 		if res.CallID == "" {
 			msg := "tool canceled: " + err.Error()
 			res = tool.ExecResult{
-				ToolName:   call.Name,
+				ToolName:   tool.DisplayToolName(call.Name),
 				CallID:     call.ID,
 				Output:     msg,
 				FullOutput: msg,
@@ -1118,6 +1153,8 @@ func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delega
 }
 
 func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted llm.Message, commits []delegateToolCallDeliveryCommit) error {
+	live = providerHistoryMessage(live)
+	persisted = providerHistoryMessage(persisted)
 	liveTurn := schema.NewTurn(schema.TurnToolResults, live)
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted

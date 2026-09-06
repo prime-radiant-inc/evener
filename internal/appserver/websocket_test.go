@@ -13,6 +13,43 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+type canceledReceiveTransport struct{}
+
+func (canceledReceiveTransport) Send(context.Context, appwire.Message) error { return nil }
+
+func (canceledReceiveTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+
+type recordingWebSocketCloser struct {
+	gracefulCloses  int
+	immediateCloses int
+}
+
+func (c *recordingWebSocketCloser) Close(websocket.StatusCode, string) error {
+	c.gracefulCloses++
+	return nil
+}
+
+func (c *recordingWebSocketCloser) CloseNow() error {
+	c.immediateCloses++
+	return nil
+}
+
+func TestWebSocketReceiveCancellationClosesImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	closer := &recordingWebSocketCloser{}
+	server := NewServer(ServerConfig{})
+
+	runWebSocketReceiveLoop(ctx, closer, canceledReceiveTransport{}, server.NewConnection("canceled"), newWebSocketReadGate())
+
+	if closer.immediateCloses != 1 || closer.gracefulCloses != 0 {
+		t.Fatalf("closes = immediate %d, graceful %d; want immediate 1, graceful 0", closer.immediateCloses, closer.gracefulCloses)
+	}
+}
+
 func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {

@@ -26,8 +26,16 @@ func wantRepetitionNudge(count int) string {
 // tests that only need to assert the nudge is absent.
 const repetitionNudgeMarker = "and received the identical result"
 
+type breakerFailureError struct {
+	class string
+	text  string
+}
+
+func (e breakerFailureError) Error() string        { return e.text }
+func (e breakerFailureError) FailureClass() string { return e.class }
+
 func wantFailurePark(toolName string) string {
-	return "evener did not execute this call: " + toolName + " with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach."
+	return "evener did not execute this call: " + toolName + " with these exact arguments has failed twice with the same error. The third attempt was not executed, and this call will remain parked; change the arguments or the approach."
 }
 
 // breakerFake is a registered tool whose executor is supplied by the test and
@@ -255,9 +263,9 @@ func TestBreakerDispatch_DifferentFailuresThenSuccessDoesNotPark(t *testing.T) {
 	fake := registerBreakerFake(t, r, "recovering", func(calls int) (any, error) {
 		switch calls {
 		case 1:
-			return nil, errors.New("alpha: no such host")
+			return nil, breakerFailureError{class: "host_unavailable", text: "alpha: no such host"}
 		case 2:
-			return nil, errors.New("beta: permission denied")
+			return nil, breakerFailureError{class: "permission_denied", text: "beta: permission denied"}
 		default:
 			return "finally worked", nil
 		}
@@ -420,8 +428,11 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 
 	for i := 1; i <= 3; i++ {
 		res := r.ExecuteCall(ctx, env, call)
-		if strings.HasPrefix(res.Output, "evener did not execute this call:") {
-			t.Fatalf("call %d was parked on a truncation-banner class: %q", i, res.Output)
+		if strings.HasPrefix(res.FullOutput, parkPrefix) {
+			t.Fatalf("call %d was parked on a truncation-banner class: %#v", i, res)
 		}
+	}
+	if calls != 3 {
+		t.Fatalf("different large failures executed %d times, want 3", calls)
 	}
 }

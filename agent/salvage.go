@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
@@ -27,7 +28,7 @@ func salvageText(partial *llm.Response) string {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "[incomplete tool call: %s — this call never executed]", tc.Name)
+		fmt.Fprintf(&b, "[incomplete tool call: %s — this call never executed]", tool.DisplayToolName(tc.Name))
 		for _, field := range partialJSONStringFields(string(tc.Arguments)) {
 			b.WriteString("\n")
 			fmt.Fprintf(&b, "%s: %s", field.Key, field.Value)

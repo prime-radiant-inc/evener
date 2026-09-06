@@ -329,6 +329,8 @@ func (s *Session) steerCompactionTranscriptReminderForFold(publishedRevision int
 // run under the same attentionMu hold that decided the publish. flush
 // commits the remaining deferred effects, outside the locks. A losing fold
 // runs none of them.
+// hasStagedEffects reports whether publication is still required when context
+// management leaves the history unchanged.
 //
 // publishedRevision is the historyRevision this fold's publish produced,
 // set by the publisher inside the publish's s.mu critical section: flush
@@ -339,6 +341,7 @@ type foldCommit struct {
 	claimNoteLocked         func()
 	commitTranscriptsLocked func()
 	flush                   func()
+	hasStagedEffects        func() bool
 	publishedRevision       int
 }
 
@@ -546,6 +549,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	}
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
 	commit.flush = flush
+	commit.hasStagedEffects = func() bool {
+		return preCompactRan || artifactProduced || len(pendingCompactionTurns) > 0 ||
+			len(pendingSteering) > 0 || strategyInjected > 0 || noteClaimLocked != nil || noteCommit != nil
+	}
 	return ctx, emitFn, commit, injectedTurns
 }
 

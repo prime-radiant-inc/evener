@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
 )
@@ -28,10 +29,11 @@ import (
 //     also reaches registerTaskTools' task_list handler (session_tools_task.go)
 //     by including task_list among the driven names with fuzzed view/append/update
 //     batches. Oracles: never-panic; dispatch preserves each call's identity
-//     positionally (result ToolName/CallID track the call); an unknown tool yields
-//     a clean structured tool error (IsError with an "unknown tool" message), never
-//     a panic; the dispatch decision is deterministic (an unknown call rendered
-//     twice agrees byte-for-byte). execTool's PreToolUse/PostToolUse hook blocks
+//     positionally (result ToolName uses the external display projection and
+//     CallID tracks the call); an unknown tool yields a clean structured tool
+//     error (IsError with an "unknown tool" message), never a panic; the dispatch
+//     decision is deterministic (an unknown call rendered twice agrees byte-for-byte).
+//     execTool's PreToolUse/PostToolUse hook blocks
 //     are NOT reached here: the only hook mechanism is external command execution,
 //     which a fuzzer must not spawn, so those branches stay owned by the unit
 //     suite (session_config_test.go) and this target plateaus below 100% for that
@@ -106,6 +108,7 @@ func FuzzStoolDispatch(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &jobtools_reader{data: data}
 		sess := newSession(t)
+		defer sess.Close()
 
 		// The curated known tools must actually be registered with an executor;
 		// otherwise the target would silently stop exercising them (and lose the
@@ -119,9 +122,10 @@ func FuzzStoolDispatch(f *testing.F) {
 		ctx := context.Background()
 
 		// Determinism oracle for the dispatch decision: a guaranteed-unknown call
-		// must render identically across back-to-back execTool calls and land on
-		// the clean-error contract. execTool's only side effects here are dropped
-		// events, so this stays a pure, repeatable read of the miss path.
+		// must render identically from equivalent fresh Session state and land on
+		// the clean-error contract. A sequential call intentionally advances the
+		// failure breaker (nudge, then park), so it is not a valid determinism
+		// comparison.
 		detCall := llm.ToolCallData{
 			ID:        "stool-det",
 			Name:      "stool_unknown_" + r.str(),
@@ -129,7 +133,9 @@ func FuzzStoolDispatch(f *testing.F) {
 			Type:      "function",
 		}
 		d1 := sess.execTool(ctx, detCall, "")
-		d2 := sess.execTool(ctx, detCall, "")
+		fresh := newSession(t)
+		defer fresh.Close()
+		d2 := fresh.execTool(ctx, detCall, "")
 		if d1.FullOutput != d2.FullOutput || d1.IsError != d2.IsError {
 			t.Fatalf("dispatch nondeterministic for unknown tool: %#v vs %#v", d1, d2)
 		}
@@ -204,9 +210,11 @@ func FuzzStoolDispatch(f *testing.F) {
 		}
 		for i, res := range results {
 			call := calls[i]
-			// Dispatch preserves call identity positionally.
-			if res.ToolName != call.Name {
-				t.Fatalf("result %d ToolName = %q, want %q", i, res.ToolName, call.Name)
+			// Dispatch preserves call identity positionally while projecting
+			// unreadable provider names at the external result boundary.
+			displayName := tool.DisplayToolName(call.Name)
+			if res.ToolName != displayName {
+				t.Fatalf("result %d ToolName = %q, want %q", i, res.ToolName, displayName)
 			}
 			if res.CallID != call.ID {
 				t.Fatalf("result %d CallID = %q, want %q", i, res.CallID, call.ID)

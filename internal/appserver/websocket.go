@@ -39,6 +39,7 @@ type webSocketTransport interface {
 
 type webSocketCloser interface {
 	Close(websocket.StatusCode, string) error
+	CloseNow() error
 }
 
 // wsPinger is the subset of *websocket.Conn the keepalive loop needs. Ping
@@ -190,6 +191,14 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 		msg, err := transport.Recv(ctx)
 		gate.readerUnavailable()
 		if err != nil {
+			// A canceled read may return before coder/websocket installs the
+			// context callback that closes its underlying connection. Do not enter
+			// its five-second graceful close handshake while Shutdown is waiting
+			// for this handler and the peer is waiting for Shutdown to return.
+			if ctx.Err() != nil {
+				_ = ws.CloseNow()
+				return
+			}
 			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 				_ = ws.Close(websocket.StatusInternalError, err.Error())
 			}

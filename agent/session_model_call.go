@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -193,7 +194,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// for both context management and message expansion.
 	s.repairOrphanedToolResults(ctx, "before model request")
 	s.mu.Lock()
-	historyTurns := append([]schema.Turn{}, s.history...)
+	historyTurns := providerHistoryTurns(s.history)
 	s.mu.Unlock()
 
 	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
@@ -236,7 +237,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		const maxFoldAttempts = 2
 		for range maxFoldAttempts {
 			s.mu.Lock()
-			historyTurns = append([]schema.Turn{}, s.history...)
+			durableHistoryTurns := append([]schema.Turn(nil), s.history...)
+			historyTurns = providerHistoryTurns(durableHistoryTurns)
+			projectedSnapshots := snapshotProjectedTurns(historyTurns)
 			preManageLen := len(historyTurns)
 			snapRevision := s.historyRevision
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
@@ -254,6 +257,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
+			if projectedHistoryUnchanged(historyTurns, projectedSnapshots) && !commit.hasStagedEffects() {
+				// Provider projection is request-only. A context no-op must not
+				// publish that projection into durable history or advance its
+				// revision. The guarded baseline initialization below takes a
+				// fresh snapshot, including any concurrent append.
+				break
+			}
+			foldedHistoryTurns := restoreUnchangedProjectedTurns(historyTurns, projectedSnapshots, durableHistoryTurns)
 
 			// publishFoldTransaction commits publish + baseline + note claim
 			// + transcript entries + flush as one transaction (see its
@@ -265,7 +276,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// the wrong version. inFlightFrom is captured there too, so the
 			// boundary this request expands with
 			// matches the exact history this fold published.
-			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn) {
+			pub, ok := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, foldedHistoryTurns, commit, func(published []schema.Turn) {
 				if round == 0 {
 					s.turnHistoryBaseline = len(published)
 				} else {
@@ -275,7 +286,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 				baselineSynced = true
 			})
 			if ok {
-				historyTurns = pub
+				historyTurns = providerHistoryTurns(pub)
 				break
 			}
 			// Conflict: loop retries with a fresh, atomically-paired
@@ -301,7 +312,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// corrects the boundary for whatever IT folds.
 	if !baselineSynced {
 		s.mu.Lock()
-		historyTurns = append([]schema.Turn{}, s.history...)
+		historyTurns = providerHistoryTurns(s.history)
 		if round == 0 {
 			s.turnHistoryBaseline = len(historyTurns)
 		}
@@ -361,6 +372,63 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// actually carries.
 	s.stageRootDelegateAttentionCoverage(req, historyTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
+}
+
+type projectedTurnSnapshot struct {
+	encoded string
+	valid   bool
+}
+
+func snapshotProjectedTurns(projected []schema.Turn) []projectedTurnSnapshot {
+	snapshots := make([]projectedTurnSnapshot, len(projected))
+	for i := range projected {
+		projected[i].TransientContextOrigin = i + 1
+		encoded, err := json.Marshal(projected[i])
+		if err == nil {
+			snapshots[i] = projectedTurnSnapshot{encoded: string(encoded), valid: true}
+		}
+	}
+	return snapshots
+}
+
+func projectedTurnMatches(turn schema.Turn, snapshot projectedTurnSnapshot) bool {
+	if !snapshot.valid {
+		return false
+	}
+	encoded, err := json.Marshal(turn)
+	return err == nil && string(encoded) == snapshot.encoded
+}
+
+func projectedHistoryUnchanged(managed []schema.Turn, snapshots []projectedTurnSnapshot) bool {
+	if len(managed) != len(snapshots) {
+		return false
+	}
+	for i, turn := range managed {
+		if turn.TransientContextOrigin != i+1 || !projectedTurnMatches(turn, snapshots[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// restoreUnchangedProjectedTurns keeps provider-only sanitization out of
+// durable history. Each projected turn carries its durable origin, while an
+// immutable snapshot distinguishes unchanged retained turns from a strategy's
+// intentional edits. New summaries and changed turns keep their projected
+// content, with the transient origin removed before publication.
+func restoreUnchangedProjectedTurns(managed []schema.Turn, snapshots []projectedTurnSnapshot, durable []schema.Turn) []schema.Turn {
+	consumed := make([]bool, len(snapshots))
+	for i := range managed {
+		origin := managed[i].TransientContextOrigin
+		matches := origin > 0 && origin <= len(snapshots) && origin <= len(durable) &&
+			!consumed[origin-1] && projectedTurnMatches(managed[i], snapshots[origin-1])
+		managed[i].TransientContextOrigin = 0
+		if matches {
+			managed[i] = durable[origin-1]
+			consumed[origin-1] = true
+		}
+	}
+	return managed
 }
 
 // shrinkTurnHistoryBaseline adjusts the N4 in-flight-turn boundary down so it
@@ -1572,6 +1640,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		}
 	}
 	flushDeferredSteering()
+	for i := range history {
+		history[i] = providerHistoryMessage(history[i])
+	}
 	return history
 }
 

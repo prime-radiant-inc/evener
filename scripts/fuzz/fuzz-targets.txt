@@ -302,6 +302,7 @@ native:agent:./internal/mcp:FuzzMCPManagerProgram
 native:agent:./internal/tool:FuzzToolRegistryProgram
 native:agent:./internal/tool:FuzzToolPackageUnion
 native:agent:./internal/tool:FuzzToolDefinitionsProgram
+native:agent:./internal/tool:FuzzStripPresentationTraceSuffix_ValidUTF8
 native:llm:.:FuzzGenerateCore
 native:llm:.:FuzzTryParsePartialJSON
 native:llm:.:FuzzCountInputTokensDispatch

@@ -42,6 +42,30 @@ func TestRerunToolWithGrant_HumanApprovedRetryIsNotParked(t *testing.T) {
 	}
 }
 
+// Runtime custom-tool replacement has the same name and raw arguments, but a
+// new executor is a new breaker lifetime. Old failures must not park it.
+func TestSessionRegisterToolReplacementStartsFreshBreakerLifetime(t *testing.T) {
+	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	oldCalls := 0
+	s.RegisterTool("runtime_probe", "old runtime tool", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		oldCalls++
+		return nil, errors.New("old runtime failure")
+	})
+	call := llm.ToolCallData{ID: "replacement", Name: "runtime_probe", Arguments: json.RawMessage(`{"value":"same"}`)}
+	for range 2 {
+		s.reg.ExecuteCall(context.Background(), s.currentEnv(), call)
+	}
+	newCalls := 0
+	s.RegisterTool("runtime_probe", "replacement runtime tool", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+		newCalls++
+		return "replacement executed", nil
+	})
+	res := s.reg.ExecuteCall(context.Background(), s.currentEnv(), call)
+	if oldCalls != 2 || newCalls != 1 || res.IsError || strings.Contains(res.Output, "evener did not execute this call:") {
+		t.Fatalf("replacement inherited old breaker history: old=%d new=%d result=%#v", oldCalls, newCalls, res)
+	}
+}
+
 // approveNextEscalation answers the next escalation this session raises the way
 // the daemon's resolve handler does when a human clicks Allow, and gives up when
 // the test ends so a never-raised card cannot log after completion.

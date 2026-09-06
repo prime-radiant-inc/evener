@@ -46,6 +46,36 @@ func TestToChatMessages_RoleAndContentCaps(t *testing.T) {
 	}
 }
 
+func TestToChatMessagesRecoversEmptyToolResultNameFromCallID(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "recover-name",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{}`),
+			},
+		}}},
+		{Role: llm.RoleTool, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "recover-name",
+				Content:    "result",
+			},
+		}}},
+	}
+	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
+	caps.ToolResultName = new(true)
+
+	out, err := toChatMessages(messages, caps, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out[1]["name"]; got != "read_file" {
+		t.Errorf("recovered tool-result name = %v, want read_file", got)
+	}
+}
+
 func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	base := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
 	turn := []llm.Message{assistantTurn("thought", "reasoning", "answer")}

@@ -4,10 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"strings"
 	"sync"
 	"unicode"
+
+	"primeradiant.com/evener/llm"
 )
 
 // maxFailureLedgerEntries bounds the ledger's memory. It has room for
@@ -34,6 +40,9 @@ type failureEntry struct {
 
 	bodyHash  string
 	bodyCount int
+
+	semanticFingerprint string
+	semanticBoundary    string
 }
 
 // failureLedger records consecutive identical-failure streaks per dispatch
@@ -52,12 +61,327 @@ func newFailureLedger() *failureLedger {
 	}
 }
 
+func (l *failureLedger) semanticMetadata(name string, args []byte) (fingerprint, boundary string) {
+	if l == nil {
+		return "", ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[signature(name, args)]; ok {
+		return entry.semanticFingerprint, entry.semanticBoundary
+	}
+	return "", ""
+}
+
 // signature returns the ledger key for a dispatch: the tool name plus a
 // hash of its raw argument bytes. Two calls with byte-identical arguments
 // share a signature; differing JSON formatting (key order, whitespace) does
 // not, matching the loop detector's existing behavior.
 func signature(name string, args []byte) string {
-	return name + ":" + shortHash(args)
+	return boundedLedgerToolIdentity(name) + ":" + shortHash(args)
+}
+
+// boundedLedgerToolIdentity keeps direct ledger use safe even when its caller
+// has not already replaced an invalid provider-supplied name with the
+// Registry's session-private identity. Registry dispatch does replace it first;
+// this fallback is internal-only and exists to preserve the key-size invariant.
+func boundedLedgerToolIdentity(name string) string {
+	if IsReadableToolName(name) {
+		return name
+	}
+	return "invalid_" + shortHash([]byte(name))
+}
+
+// IsReadableToolName is stricter than ValidateToolName because that
+// configuration validator tolerates surrounding whitespace. Incoming call names
+// are never normalized before lookup, so only the exact provider grammar is safe
+// to retain in user- or model-visible diagnostics.
+func IsReadableToolName(name string) bool {
+	return name == strings.TrimSpace(name) && len(name) <= 64 && llm.ValidateToolName(name) == nil
+}
+
+// DisplayToolName returns the tool identity safe to expose outside routing and
+// breaker internals. Readable names remain useful diagnostics; all other raw
+// provider identities collapse to a fixed, bounded label.
+func DisplayToolName(name string) string {
+	if IsReadableToolName(name) {
+		return name
+	}
+	return "invalid tool name"
+}
+
+// InvalidToolNameWire is reserved for projecting invalid historical tool names
+// onto the provider wire. Registry.Register rejects it so projected history can
+// never become indistinguishable from a callable tool definition.
+const InvalidToolNameWire = "invalid_tool_name"
+
+// IsReservedToolName reports whether name aliases an internal provider-wire
+// placeholder that must never identify a callable tool.
+func IsReservedToolName(name string) bool {
+	return strings.TrimSpace(name) == InvalidToolNameWire
+}
+
+// WireToolName returns a provider-valid tool identity for replayed assistant
+// calls and tool results. It keeps readable names and replaces every other raw
+// or display identity with one fixed placeholder.
+func WireToolName(name string) string {
+	if IsReadableToolName(name) {
+		return name
+	}
+	return InvalidToolNameWire
+}
+
+// semanticCallSignature returns the call half of a semantic failure
+// fingerprint. Registered-tool normalization has already happened when this
+// is called, so it intentionally preserves meaningful zero values such as an
+// explicit retained-output offset while inheriting a tool's own omission rules
+// (notably read_transcript's #827 neutral-default normalization).
+func semanticCallSignature(name string, args map[string]any) string {
+	encoded, err := semanticCanonicalBytes(name, args, false, false)
+	identity := boundedLedgerToolIdentity(name)
+	if err != nil {
+		// Args have passed JSON parsing and schema validation, so this is a
+		// defensive fallback rather than a normal path. It remains bounded and
+		// never exposes the original value.
+		return identity + ":" + shortHash([]byte("unencodable"))
+	}
+	return identity + ":" + shortHash(encoded)
+}
+
+func semanticCanonicalBytes(name string, args map[string]any, omitDescription, applyBuiltInDefaults bool) ([]byte, error) {
+	return json.Marshal(semanticArgumentValue(canonicalSemanticArgs(name, args, applyBuiltInDefaults), "", name == "read_file", omitDescription))
+}
+
+// canonicalSemanticArgs applies only runtime semantic defaults owned by built-in
+// handlers. JSON Schema annotations are descriptive contracts, not proof that a
+// custom or MCP executor treats omission like an explicit value.
+func canonicalSemanticArgs(name string, args map[string]any, applyBuiltInDefaults bool) map[string]any {
+	out := make(map[string]any, len(args)+1)
+	maps.Copy(out, args)
+	if !applyBuiltInDefaults {
+		return out
+	}
+	// These aliases share shell's runtime default, which intentionally lives in
+	// the handler rather than the wire schema.
+	switch name {
+	case "shell", "exec_command", "run_shell_command":
+		if _, present := out["mode"]; !present {
+			out["mode"] = "foreground"
+		}
+	case "job_stop":
+		// job_stop's zero wait is a documented handler default. Its schema
+		// deliberately omits a JSON Schema default so protocol consumers do not
+		// mistake it for a server-side wait request.
+		if _, present := out["max_wait_ms"]; !present {
+			out["max_wait_ms"] = float64(0)
+		}
+		if _, present := out["include_children"]; !present {
+			out["include_children"] = false
+		}
+	case "job_list":
+		// These are applied by jobListFilterFromArgs when callers omit them.
+		// They remain here, behind the core-registration metadata, because a
+		// replacement tool with the same name may give omission different meaning.
+		if _, present := out["include_nested"]; !present {
+			out["include_nested"] = false
+		}
+		if _, present := out["include_descendants"]; !present {
+			out["include_descendants"] = false
+		}
+		if _, present := out["limit"]; !present {
+			out["limit"] = float64(50)
+		}
+		if _, present := out["offset"]; !present {
+			out["offset"] = float64(0)
+		}
+	case "ask_user":
+		canonicalAskUserDefaults(out)
+	}
+	return out
+}
+
+// canonicalAskUserDefaults mirrors ask_user's handler behavior: omitted
+// multi_select means one choice, exactly as an explicit false does.
+func canonicalAskUserDefaults(args map[string]any) {
+	questions, _ := args["questions"].([]any)
+	canonical := make([]any, len(questions))
+	for i, value := range questions {
+		question, _ := value.(map[string]any)
+		if question != nil {
+			copyQuestion := make(map[string]any, len(question)+1)
+			maps.Copy(copyQuestion, question)
+			if _, present := question["multi_select"]; !present {
+				copyQuestion["multi_select"] = false
+			}
+			canonical[i] = copyQuestion
+			continue
+		}
+		canonical[i] = value
+	}
+	if questions != nil {
+		args["questions"] = canonical
+	}
+}
+
+// semanticArgumentValue removes only top-level built-in presentation metadata.
+// Every behavior-driving value, including nested custom/MCP fields and bodies,
+// stays in the canonical identity. The registry HMACs those bytes before any
+// signature leaves process memory, so retaining identity does not expose text.
+func semanticArgumentValue(value any, field string, preserveTopLevelIntent, omitTopLevelDescription bool) any {
+	switch value := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for key, item := range value {
+			if field == "" && ((key == "description" && omitTopLevelDescription) || (key == "intent" && !preserveTopLevelIntent)) {
+				continue
+			}
+			out[key] = semanticArgumentValue(item, key, preserveTopLevelIntent, omitTopLevelDescription)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = semanticArgumentValue(item, field, preserveTopLevelIntent, omitTopLevelDescription)
+		}
+		return out
+	case string:
+		return value
+	default:
+		return value
+	}
+}
+
+// semanticFailureLedger records failed semantic fingerprints independently of
+// the exact-call ledger. It is separately bounded so interleaved semantic runs
+// survive raw argument variations without changing existing exact behavior.
+type semanticFailureLedger struct {
+	mu      sync.Mutex
+	entries map[string]*semanticFailureEntry
+	order   []string
+}
+
+type semanticFailureEntry struct {
+	base     string
+	boundary string
+	count    int
+}
+
+func newSemanticFailureLedger() *semanticFailureLedger {
+	return &semanticFailureLedger{entries: make(map[string]*semanticFailureEntry)}
+}
+
+func semanticFailureSignature(base, class string) string { return base + ":" + class }
+
+func (l *semanticFailureLedger) check(base string) (count int, boundary, fingerprint string) {
+	if l == nil {
+		return 0, "", ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if entry.base != base || entry.count < count || (entry.count == count && fingerprint != "" && key > fingerprint) {
+			continue
+		}
+		count, boundary, fingerprint = entry.count, entry.boundary, key
+	}
+	return count, boundary, fingerprint
+}
+
+func (l *semanticFailureLedger) countForFingerprint(fingerprint string) int {
+	if l == nil || fingerprint == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if entry, ok := l.entries[fingerprint]; ok {
+		return entry.count
+	}
+	return 0
+}
+
+func (l *semanticFailureLedger) record(base, class, boundary string) (fingerprint string, count int) {
+	if l == nil {
+		return semanticFailureSignature(base, class), 0
+	}
+	fingerprint = semanticFailureSignature(base, class)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.entries[fingerprint]
+	if !ok {
+		entry = &semanticFailureEntry{base: base, boundary: boundary}
+		l.entries[fingerprint] = entry
+	}
+	entry.count++
+	l.touch(fingerprint)
+	return fingerprint, entry.count
+}
+
+// clear removes every failure class for one semantic call. A successful call
+// has established that this target/mode/meaningful-argument combination is no
+// longer stuck; unrelated semantic bases retain their independent histories.
+func (l *semanticFailureLedger) clear(base string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if entry.base != base {
+			continue
+		}
+		delete(l.entries, key)
+		for i, ordered := range l.order {
+			if ordered == key {
+				l.order = append(l.order[:i], l.order[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func (l *semanticFailureLedger) clearTool(name string) {
+	if l == nil {
+		return
+	}
+	prefix := boundedLedgerToolIdentity(name) + ":"
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, entry := range l.entries {
+		if strings.HasPrefix(entry.base, prefix) {
+			delete(l.entries, key)
+			for i, ordered := range l.order {
+				if ordered == key {
+					l.order = append(l.order[:i], l.order[i+1:]...)
+					break
+				}
+			}
+		}
+	}
+}
+
+func (l *semanticFailureLedger) touch(key string) {
+	for i, ordered := range l.order {
+		if ordered == key {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			break
+		}
+	}
+	l.order = append(l.order, key)
+	if len(l.order) <= maxFailureLedgerEntries {
+		return
+	}
+	oldest := l.order[0]
+	l.order = l.order[1:]
+	delete(l.entries, oldest)
+}
+
+func (l *semanticFailureLedger) len() int {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
 }
 
 // breakerThreshold is how many times a signature may produce the same answer
@@ -91,15 +415,49 @@ func repetitionNudgeText(count int) string {
 // the same way. It shows the failures themselves so the model can see what it
 // is being asked to stop repeating.
 func failureParkText(name string, snippets []string) string {
+	if !IsReadableToolName(name) {
+		name = DisplayToolName(name)
+		// Unknown-tool failure snippets repeat the raw provider-supplied name.
+		// Keep invalid names out of both model-facing and retained breaker text.
+		snippets = nil
+	}
 	var b strings.Builder
 	b.WriteString(parkPrefix)
 	b.WriteString(name)
-	b.WriteString(" with these exact arguments has now failed 3 times with the same error; it will not be executed again until you change the arguments or the approach.")
+	b.WriteString(" with these exact arguments has failed twice with the same error. The third attempt was not executed, and this call will remain parked; change the arguments or the approach.")
 	if len(snippets) > 0 {
 		b.WriteString("\n\nThe failures so far:")
 		for i, snippet := range snippets {
 			fmt.Fprintf(&b, "\n%d. %s", i+1, snippet)
 		}
+	}
+	return b.String()
+}
+
+func failureParkWithSemanticText(name string, snippets []string, fingerprint, boundary string) string {
+	text := failureParkText(name, snippets)
+	return text + fmt.Sprintf("\n\nThis is a semantic failure loop: the two prior failures shared normalized boundary %s (signature %s). Take a materially different valid action: change the target, mode, or meaningful arguments, or use another tool.", boundary, fingerprint)
+}
+
+func semanticFailureNudgeText(boundary string) string {
+	return fmt.Sprintf("You just ran a semantically equivalent tool call twice and hit the same normalized failure boundary (%s). Change the target, mode, or meaningful arguments before retrying.", boundary)
+}
+
+// semanticFailureParkText deliberately reports hashes and normalized boundary
+// labels rather than raw arguments or error snippets. The result is retained in
+// session telemetry, so this must remain useful without repeating secrets or
+// arbitrary user-provided bodies.
+func semanticFailureParkText(name, fingerprint, boundary string, attempts int) string {
+	if !IsReadableToolName(name) {
+		name = DisplayToolName(name)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%ssemantic failure loop for %s (signature %s) has already failed %d times at normalized boundary %s.", parkPrefix, name, fingerprint, attempts, boundary)
+	b.WriteString("\n\nTake a materially different valid action: ")
+	if name == "read_transcript" {
+		b.WriteString("use a transcript_ref compatible with the selected mode; for job: and artifact: refs, omit session-only range and expand_turn fields.")
+	} else {
+		b.WriteString("change the target, operation, or meaningful arguments, or use another tool.")
 	}
 	return b.String()
 }
@@ -153,6 +511,13 @@ func (l *failureLedger) check(name string, args []byte) (failStreak int, repeatS
 // longer deletes the entry — it zeroes the failure streak and clears the
 // class and snippets, but the entry survives so the body hash persists.
 func (l *failureLedger) record(name string, args []byte, isErr bool, output string) (failStreak int, repeatStreak int) {
+	return l.recordWithSemantic(name, args, isErr, output, "", "")
+}
+
+// recordWithSemantic updates exact failure state and its semantic annotation
+// under the same lock, so a concurrent pre-dispatch check never sees a
+// threshold exact entry without the metadata needed to explain it.
+func (l *failureLedger) recordWithSemantic(name string, args []byte, isErr bool, output, semanticFingerprint, semanticBoundary string) (failStreak int, repeatStreak int) {
 	if l == nil { // a zero-value Registry has no ledger and judges nothing
 		return 0, 0
 	}
@@ -164,6 +529,13 @@ func (l *failureLedger) record(name string, args []byte, isErr bool, output stri
 	if !ok {
 		e = &failureEntry{}
 		l.entries[key] = e
+	}
+	if semanticFingerprint != "" {
+		e.semanticFingerprint = semanticFingerprint
+		e.semanticBoundary = semanticBoundary
+	} else {
+		e.semanticFingerprint = ""
+		e.semanticBoundary = ""
 	}
 	l.touch(key)
 
@@ -222,7 +594,29 @@ func (l *failureLedger) clearFailures(name string, args []byte) {
 	e.class = ""
 	e.count = 0
 	e.snippets = nil
+	e.semanticFingerprint = ""
+	e.semanticBoundary = ""
 	l.touch(key)
+}
+
+func (l *failureLedger) clearTool(name string) {
+	if l == nil {
+		return
+	}
+	prefix := boundedLedgerToolIdentity(name) + ":"
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key := range l.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(l.entries, key)
+			for i, ordered := range l.order {
+				if ordered == key {
+					l.order = append(l.order[:i], l.order[i+1:]...)
+					break
+				}
+			}
+		}
+	}
 }
 
 // touch moves key to the most-recently-used end of the order and evicts the
@@ -260,6 +654,100 @@ func errorClass(output string) string {
 
 	sum := sha256.Sum256([]byte(line))
 	return hex.EncodeToString(sum[:4])
+}
+
+// FailureClasser lets an executor expose a stable machine-facing failure class
+// without putting presentation text into semantic loop identity. Typed classes
+// take precedence; untyped executor errors use the bounded normalized class
+// genericExecutionClass derives before telemetry HMACs it.
+type FailureClasser interface {
+	FailureClass() string
+}
+
+func semanticErrorClassFor(err error, output string) string {
+	var classer FailureClasser
+	if errors.As(err, &classer) && strings.TrimSpace(classer.FailureClass()) != "" {
+		return "typed:" + strings.ToLower(strings.TrimSpace(classer.FailureClass()))
+	}
+	boundary := failureBoundary(output)
+	if boundary != "tool_execution" {
+		return boundary
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "context_deadline"
+	case errors.Is(err, fs.ErrNotExist):
+		return "not_found"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission_denied"
+	}
+	return genericExecutionClass(output)
+}
+
+// genericExecutionClass derives a bounded, internal-only class for untyped
+// executor failures. It deliberately recognizes only the terminal trace suffix
+// convention produced by existing tool backends; other words remain meaningful.
+// finalizeBreaker passes this value directly into telemetryComponent, so neither
+// this prose nor an unsalted digest leaves the process.
+func genericExecutionClass(output string) string {
+	line := stripPresentationTraceSuffix(firstNonBlankLine(output))
+	line = strings.ToLower(collapseWhitespace(strings.TrimSpace(line)))
+	line = replaceDigitRuns(line, "#")
+	line = TruncateRunes(line, 200)
+	if line == "" {
+		return ""
+	}
+	return "generic:" + line
+}
+
+// stripPresentationTraceSuffix removes only a bounded terminal "[trace token]"
+// marker. The token grammar is deliberately narrow so bracketed error details
+// remain semantic identity rather than being mistaken for presentation noise.
+func stripPresentationTraceSuffix(line string) string {
+	trimmed := strings.TrimSpace(line)
+	const marker = "[trace "
+	if !strings.HasSuffix(trimmed, "]") {
+		return line
+	}
+	open := strings.LastIndexByte(trimmed, '[')
+	markerEnd := open + len(marker)
+	if open < 1 || trimmed[open-1] != ' ' || markerEnd > len(trimmed) || !strings.EqualFold(trimmed[open:markerEnd], marker) {
+		return line
+	}
+	token := trimmed[markerEnd : len(trimmed)-1]
+	if token == "" || len(token) > 64 {
+		return line
+	}
+	for _, b := range []byte(token) {
+		if (b < 'A' || b > 'Z') && (b < 'a' || b > 'z') && (b < '0' || b > '9') && b != '_' && b != '-' && b != '.' && b != ':' {
+			return line
+		}
+	}
+	return strings.TrimSpace(trimmed[:open-1])
+}
+
+// failureBoundary is the stable, presentation-free category displayed by the
+// semantic breaker. errorClass retains the full normalized first line as a
+// hash for fingerprint separation; this short label gives the model a safe
+// diagnosis without echoing attacker-controlled error prose.
+func failureBoundary(output string) string {
+	line := strings.ToLower(strings.TrimSpace(firstNonBlankLine(output)))
+	switch {
+	case strings.HasPrefix(line, "invalid_request:"):
+		return "invalid_request"
+	case strings.HasPrefix(line, "unknown tool:"):
+		return "unknown_tool"
+	case strings.HasPrefix(line, "invalid tool arguments json:"):
+		return "arguments_json"
+	case strings.HasPrefix(line, "tool args schema validation failed:"):
+		return "schema_validation"
+	case strings.HasPrefix(line, "tool arguments too large:"):
+		return "arguments_too_large"
+	default:
+		return "tool_execution"
+	}
 }
 
 func firstNonBlankLine(s string) string {

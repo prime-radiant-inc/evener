@@ -255,13 +255,18 @@ func imageSHA(data []byte) string {
 
 // ToolCallEndData is the payload for an EventToolCallEnd event.
 type ToolCallEndData struct {
-	ToolName      string        `json:"tool_name"`
-	CallID        string        `json:"call_id"`
-	ArgumentsJSON string        `json:"arguments_json,omitempty"`
-	Output        string        `json:"output,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	OutputRef     string        `json:"output_ref,omitempty"`
-	OutputImages  []OutputImage `json:"output_images,omitempty"`
+	ToolName      string `json:"tool_name"`
+	CallID        string `json:"call_id"`
+	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	// Breaker signatures are bounded hashes produced by the registry. They are
+	// observability data for retry-loop diagnosis, never raw argument payloads.
+	BreakerExactSignature    string        `json:"breaker_exact_signature,omitempty"`
+	BreakerSemanticSignature string        `json:"breaker_semantic_signature,omitempty"`
+	BreakerBypassed          bool          `json:"breaker_bypassed,omitempty"`
+	Output                   string        `json:"output,omitempty"`
+	Error                    string        `json:"error,omitempty"`
+	OutputRef                string        `json:"output_ref,omitempty"`
+	OutputImages             []OutputImage `json:"output_images,omitempty"`
 	// PrevalOnly is true when Error came from prepareToolCall's pre-dispatch
 	// repair step (an unknown tool name, or arguments that still fail schema
 	// validation after repair) and the tool's own ExecuteCall never ran (kata
