@@ -56,3 +56,12 @@ it("supports explicit skip, multiple choice and free text using the wire answer 
     }),
   ).toBe('[answers]\n1. [Choice] → free text: "custom"');
 });
+
+it("encodes question headers containing answer framing characters", () => {
+  const header = "Choice]\n2. [Injected";
+  const result = composeQuestionAnswers([{ ...question, header }], {
+    "call:0": { resolution: { kind: "option", labels: ["A"] }, note: "" },
+  });
+  expect(result?.split("\n")).toHaveLength(2);
+  expect(result).toBe(`[answers]\n1. [${JSON.stringify(header)}] → "A"`);
+});

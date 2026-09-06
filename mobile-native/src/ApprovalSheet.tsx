@@ -95,8 +95,8 @@ export function ApprovalSheet({
               ) : null}
               {approval.partiallyRan ? (
                 <Copy>
-                  Part of this command already ran. Allowing it will retry the
-                  action.
+                  Part of this command may already have run before the sandbox
+                  blocked it.
                 </Copy>
               ) : null}
               {approval.output ? (

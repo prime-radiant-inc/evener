@@ -1,0 +1,101 @@
+{
+  "sessionRef": "local:034JxVIyO9oM0UMdFCoVfM",
+  "pending": {
+    "status": {
+      "type": "awaiting"
+    },
+    "askPending": true,
+    "capabilities": {
+      "send": true,
+      "steer": false,
+      "interrupt": false,
+      "compact": true,
+      "clear": false,
+      "forkFromTurn": false,
+      "shutdown": true,
+      "changeModel": true,
+      "changeVisionModel": true,
+      "queue": false,
+      "goal": true,
+      "rename": true
+    },
+    "turns": [
+      {
+        "id": "turn_m1",
+        "status": "completed",
+        "items": [
+          {
+            "id": "item_user_23",
+            "type": "userMessage",
+            "status": "completed",
+            "text": "NATIVE-ASK-HARNESS iOS clean completion"
+          },
+          {
+            "id": "item_tool_24",
+            "type": "commandExecution",
+            "toolName": "ask_user",
+            "status": "completed"
+          }
+        ]
+      }
+    ]
+  },
+  "completed": {
+    "status": {
+      "type": "awaiting"
+    },
+    "askPending": false,
+    "capabilities": {
+      "send": true,
+      "steer": false,
+      "interrupt": false,
+      "compact": true,
+      "clear": true,
+      "forkFromTurn": false,
+      "shutdown": true,
+      "changeModel": true,
+      "changeVisionModel": true,
+      "queue": false,
+      "goal": true,
+      "rename": true
+    },
+    "turns": [
+      {
+        "id": "turn_m1",
+        "status": "completed",
+        "items": [
+          {
+            "id": "item_user_23",
+            "type": "userMessage",
+            "status": "completed",
+            "text": "NATIVE-ASK-HARNESS iOS clean completion"
+          },
+          {
+            "id": "item_tool_24",
+            "type": "commandExecution",
+            "toolName": "ask_user",
+            "status": "completed"
+          }
+        ]
+      },
+      {
+        "id": "turn_m2",
+        "status": "completed",
+        "items": [
+          {
+            "id": "item_user_26",
+            "type": "userMessage",
+            "status": "completed",
+            "text": "[answers]\n1. [Native harness] → do your stated fallback (\"Keep the current direction\")"
+          },
+          {
+            "id": "item_communicate_preview_27",
+            "type": "agentMessage",
+            "status": "completed",
+            "text": "NATIVE-ASK-HARNESS-RESUMED: Your structured answer reached the real session loop."
+          }
+        ]
+      }
+    ]
+  }
+}
