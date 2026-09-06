@@ -17,6 +17,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { useExtensionsStore } from "../../stores/extensions";
 import {
   Button,
+  Chevron,
   ConfirmDialog,
   chordLabel,
   Dropzone,
@@ -50,7 +51,6 @@ import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
-import { ModelField } from "./ModelField";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
 import {
@@ -113,9 +113,7 @@ function catalogEffortLevels(entry: ModelCatalogEntry | undefined): string[] | n
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
-  cfg: requireClass(styles.cfg, "spawn.module.css", "cfg"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
-  cfgModel: requireClass(styles.cfgModel, "spawn.module.css", "cfgModel"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
   directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
@@ -124,11 +122,16 @@ const CLASS = {
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
+  effortTrigger: requireClass(styles.effortTrigger, "spawn.module.css", "effortTrigger"),
+  effortSeparator: requireClass(styles.effortSeparator, "spawn.module.css", "effortSeparator"),
+  effortValue: requireClass(styles.effortValue, "spawn.module.css", "effortValue"),
+  effortChevron: requireClass(styles.effortChevron, "spawn.module.css", "effortChevron"),
+  effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
+  srOnly: requireClass(styles.srOnly, "spawn.module.css", "srOnly"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
   mobilePromptHeading: requireClass(styles.mobilePromptHeading, "spawn.module.css", "mobilePromptHeading"),
   mobilePromptSubtitle: requireClass(styles.mobilePromptSubtitle, "spawn.module.css", "mobilePromptSubtitle"),
-  fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
@@ -947,12 +950,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             }
             leading={
               /* The composer's own leading cluster (Composer.tsx's .leading):
-                 attach, then the model trigger. Both stay INSIDE the card's
-                 control row at every width, which is what "reuse the
-                 composer's UI" means (issue #198) - the pane used to hand
-                 this row a class that turned it into a fixed viewport band on
-                 a phone, stranding the paperclip at the bottom of the screen,
-                 far from the prompt it attaches to. */
+                 attach, then the model trigger, then effort. All stay INSIDE
+                 the card's control row at every width - choosing a model and
+                 an effort is the same act wherever it happens, so it is the
+                 same component (ModelSwitchTrigger) and the same StatusRow
+                 quiet-effort recipe rather than a bespoke boxed variant below
+                 the card. */
               <div className={CLASS.leading}>
                 <IconButton
                   label="Attach image"
@@ -963,15 +966,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   data-testid="spawn-attach"
                   onClick={() => fileInputRef.current?.click()}
                 />
-                {/* Phone only (the class is display:none until the 899px
-                    block): desktop sets the model in the configuration row
-                    below, so an in-card trigger there would be a second
-                    control for one setting. The label follows the same rules
-                    the desktop field's does - the required-choice word when
-                    the hub has confirmed no default (kata xgk8), otherwise
-                    the chosen model, the resolved default model's own
-                    "<model> (default)", or plain "(default)" until the
-                    resolve lands. */}
+                {/* The label follows the same rules the old desktop field's
+                    did - the required-choice word when the hub has confirmed
+                    no default (kata xgk8), otherwise the chosen model, the
+                    resolved default model's own "<model> (default)", or
+                    plain "(default)" until the resolve lands. */}
                 <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
                   <ModelSwitchTrigger
                     label={
@@ -985,6 +984,43 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     data-testid="spawn-model-trigger"
                     valueTestId="spawn-model-value"
                   />
+                </span>
+                {/* StatusRow's quiet-effort recipe (statusrow.module.css's
+                    .effortTrigger): the current value IS the visible control -
+                    a real native <select> laid over its own readout at zero
+                    opacity - so the row stays one quiet line instead of
+                    growing a bordered box. Same ladder contract the removed
+                    FormRow select kept: the selected model's own levels, the
+                    fallback ladder when the catalog can't say, and a disabled
+                    control when the model cannot reason at all (effortDisabled)
+                    rather than no control - pre-launch the setting is still
+                    discoverable beside the model it belongs to. */}
+                <span className={CLASS.effortTrigger} data-testid="spawn-effort">
+                  <span className={CLASS.effortSeparator} aria-hidden="true">
+                    ·
+                  </span>
+                  <span className={CLASS.effortValue} aria-hidden="true">
+                    {effortLabel(reasoningEffort, effortLevels)}
+                  </span>
+                  <span className={CLASS.effortChevron} aria-hidden="true">
+                    <Chevron direction="down" />
+                  </span>
+                  <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
+                    Reasoning effort
+                  </label>
+                  <select
+                    id="spawn-reasoning-effort"
+                    className={CLASS.effortSelect}
+                    value={reasoningEffort}
+                    onChange={(e) => setReasoningEffort(e.target.value)}
+                    disabled={effortDisabled}
+                  >
+                    {effortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </span>
               </div>
             }
@@ -1044,47 +1080,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
-        {/* Model and effort share the secondary settings row. */}
-        <div className={CLASS.cfg}>
-          {/* data-testid on the wrapper, not the trigger: the trigger is
-              ModelCatalog's own button and has no hook to give, and the pane
-              now renders a SECOND "— change model" button (the card's
-              phone-only ModelSwitchTrigger). A test or a scenario driving the
-              desktop field has to say which one it means. */}
-          <div className={CLASS.cfgModel} data-testid="spawn-desktop-model">
-            <span className={CLASS.fieldLabel} id="spawn-model-label">
-              Model
-            </span>
-            <ModelField
-              value={model}
-              onChange={handleModelChange}
-              onPickEntry={handleModelPickEntry}
-              loadCatalog={loadCatalog}
-              emptyLabel={
-                modelRequired
-                  ? MODEL_CHOOSE_LABEL
-                  : resolvedDefaultModel !== ""
-                    ? `${resolvedDefaultModel} (default)`
-                    : undefined
-              }
-            />
-            {modelRequired && (
-              <p className={CLASS.modelNote} role="alert">
-                This hub has no default model configured — choose one to start.
-              </p>
-            )}
-          </div>
-
-          <FormRow label="Effort" htmlFor="spawn-reasoning">
-            <Select
-              id="spawn-reasoning"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-              options={effortOptions}
-              disabled={effortDisabled}
-            />
-          </FormRow>
-        </div>
+        {/* The modelRequired note lives with the card's own model trigger
+            below: it explains why Start is disabled, so it sits beside the
+            control it names rather than in a form row that no longer exists. */}
+        {modelRequired && (
+          <p className={CLASS.modelNote} role="alert">
+            This hub has no default model configured — choose one to start.
+          </p>
+        )}
 
         {pluginSelectionSupported && (
           <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
@@ -1145,10 +1148,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             fallbackDir={getGlobalLastWorkingDir()}
             onCwdPanelClose={setGlobalLastWorkingDir}
             branch={branch}
-            reasoningEffort={reasoningEffort}
-            reasoningOptions={effortOptions}
-            reasoningDisabled={effortDisabled}
-            onReasoningChange={setReasoningEffort}
             accessMode={accessMode}
             accessOptions={accessOptions}
             onAccessChange={setAccessMode}

@@ -148,20 +148,23 @@ function workingDir(): HTMLElement {
   return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
 }
 
-// The DESKTOP Model field's closed trigger (ModelField -> ModelCatalog): a
-// plain button, not a labelable control (see AdvancedOptions.tsx's own note on
-// the composite-widget label pattern), so it is found by its "— change model"
-// accessible-name suffix rather than by label - scoped to its own field
-// wrapper, because the prompt card now carries a second such button (the
-// phone-only ModelSwitchTrigger) and Advanced options can carry a third.
+// The DESKTOP Model control lives in the prompt card's own control row (the
+// session composer's ModelSwitchTrigger, every width): a plain button, not a
+// labelable control, so it is found by its "— change model" accessible-name
+// suffix. Advanced options can carry a second such button, so the lookup stays
+// scoped to the card.
 function modelTrigger(): HTMLElement {
-  return within(screen.getByTestId("spawn-desktop-model")).getByRole("button", { name: /change model/i });
+  return within(screen.getByTestId("spawn-controls")).getByRole("button", { name: /change model/i });
 }
 
-/** The prompt card's own model trigger - the phone's way to set the model,
- * and the same control the session composer carries (issue #198). */
-function cardModelTrigger(): HTMLElement {
-  return screen.getByTestId("spawn-model-trigger");
+/** The trigger's value hook inside the card's control row. */
+function modelValue(): HTMLElement {
+  return screen.getByTestId("spawn-model-value");
+}
+
+/** The quiet effort control in the card's control row (StatusRow's overlay-select recipe). */
+function effortControl(): HTMLElement {
+  return screen.getByLabelText("Reasoning effort");
 }
 
 /** The trigger's rendered path. It also carries a chevron and a screen-reader
@@ -371,57 +374,67 @@ test("the desktop directory trigger announces the confirmed path", async () => {
   expect(screen.getByLabelText("Working directory: /tmp/project", { selector: "#spawn-cwd" })).toBe(workingDir());
 });
 
-test("the configuration row is working directory, model and effort - and nothing else", async () => {
+test("the directory and git info sit above the prompt; model and effort live in the card", async () => {
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" })).toBeTruthy();
-  expect(screen.getAllByText("Model").length).toBeGreaterThan(0);
-  expect(screen.getByLabelText("Effort")).toBeTruthy();
+  const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
+  const card = screen.getByTestId("spawn-prompt-card");
+  const controls = screen.getByTestId("spawn-controls");
+  expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Below-card model/effort fields are gone: the desktop field wrapper and the
+  // bordered Effort select no longer render.
+  expect(screen.queryByTestId("spawn-desktop-model")).toBeNull();
+  expect(screen.queryByLabelText("Effort")).toBeNull();
+  // Model + effort are the card's own controls, beside attach and Start.
+  expect(card.contains(controls)).toBe(true);
+  expect(card.contains(screen.getByTestId("spawn-attach"))).toBe(true);
+  expect(card.contains(modelTrigger())).toBe(true);
+  expect(card.contains(effortControl())).toBe(true);
+  expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
 });
 
-// Issue #198: the phone's attach button and model trigger are the composer's,
-// in the composer's place - the card's own control row - rather than a fixed
-// band at the foot of the viewport and a bespoke sheet in the settings list.
-// The row order below is the Treatment A list plus session-only Plugins. Model
-// left it when the card took the job.
-test("mobile Spawn sets attachments and the model from inside the prompt card, not from the settings rows", async () => {
+// Issue #198: the attach button, model trigger, and effort control are the
+// composer's, in the composer's place - the card's own control row - rather
+// than a fixed band at the foot of the viewport and bespoke rows in the
+// settings list. The row order below is the Treatment A list plus
+// session-only Plugins. Model AND effort left it when the card took the job.
+test("mobile Spawn sets attachments, the model, and effort from inside the prompt card", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
-  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode", "Plugins"]);
+  ).toEqual(["Harness", "Working directory", "Branch", "Access mode", "Plugins"]);
 
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
   expect(card.contains(controls)).toBe(true);
   expect(card.contains(screen.getByTestId("spawn-attach"))).toBe(true);
-  expect(card.contains(cardModelTrigger())).toBe(true);
+  expect(card.contains(modelTrigger())).toBe(true);
+  expect(card.contains(effortControl())).toBe(true);
   expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "Prompt" }).style.getPropertyValue("--textarea-min-lines")).toBe("6");
 });
 
-// The card's trigger is the phone's Model field, so it has to say what that
-// field says: "(default)" while the hub's own default will do, the chosen id
-// once someone picks one.
+// The card's trigger says what the Model field says: "(default)" while the
+// hub's own default will do, the chosen id once someone picks one.
 test("the card's model trigger reads (default) until a model is picked, then names it", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient());
   await settled();
 
-  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+  expect(modelValue().textContent).toBe("(default)");
 
-  await user.click(cardModelTrigger());
+  await user.click(modelTrigger());
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.clear(combo);
   await user.type(combo, "gpt-5");
   await user.click(await screen.findByText("openai/gpt-5"));
 
-  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("openai/gpt-5"));
-  // One model, one state: the desktop field reads the pick too.
-  expect(modelTrigger().textContent).toContain("openai/gpt-5");
+  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5"));
 });
 
 // kata xgk8: a hub with no default to fall back on must not offer "(default)"
@@ -438,7 +451,7 @@ test("the card's model trigger names the required choice when the hub has no def
   await settled();
   await setWorkingDir(user, "/tmp/project");
 
-  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("Choose a model"));
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
 });
 
 test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
@@ -452,6 +465,22 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
   expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+});
+
+// The card's model + effort controls are the setting surface at EVERY width
+// now, so the narrow-pane compression and touch floors live on the card
+// itself - not in the phone-only breakpoint block. The container query compacts
+// the model label before effort/Start (mirroring the session status row's own
+// 399px rule), and a coarse pointer gets the platform tap floor on the effort
+// trigger to match the model trigger's own.
+test("the card's control row compresses in a narrow pane and keeps touch tap floors", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const spawnCss = readFileSync(join(here, "spawn.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  expect(spawnCss).toContain("@container (max-width: 399px)");
+  expect(spawnCss).toContain(".effortTrigger .effortChevron");
+  expect(spawnCss).toContain(".effortTrigger");
+  expect(spawnCss).toContain("min-height: var(--tap-min)");
 });
 
 test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => {
@@ -1579,7 +1608,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
 // "(default)": an unresolved answer must never be dressed up as a known one.
 
 function effortOptionLabels(): (string | null)[] {
-  const select = screen.getByLabelText("Effort") as HTMLSelectElement;
+  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
   return Array.from(select.options).map((o) => o.textContent);
 }
 
@@ -1597,22 +1626,16 @@ test("Effort, Model, and the mobile rows name the resolved default once launch/r
 
   // No working directory yet, so no resolve has run: plain "(default)".
   expect(effortOptionLabels()[0]).toBe("(default)");
-  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+  expect(modelValue().textContent).toBe("(default)");
 
   await setWorkingDir(user, "/tmp/project");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
 
   // Effort's empty option names the inherited effort.
   await waitFor(() => expect(effortOptionLabels()[0]).toBe("high (default)"));
-  // The desktop Model field's closed trigger names the inherited model.
+  // The card's Model trigger names the inherited model.
   expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5 (default)");
-  // The card's phone trigger follows the same rule the desktop field does.
-  expect(screen.getByTestId("spawn-model-value").textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
-  // The mobile Reasoning effort row derives its resting label from the same
-  // options list, so it inherits the resolved wording too.
-  const mobileConfig = screen.getByTestId("spawn-mobile-config");
-  const effortRow = mobileConfig.querySelector('[data-label="Reasoning effort"]');
-  expect(effortRow?.textContent).toContain("high (default)");
+  expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
 });
 
 // Access mode is the chip-level face of the launch-config sandbox field
@@ -1668,7 +1691,7 @@ test("the (default) labels stay plain when the resolve fails", async () => {
 
   expect(effortOptionLabels()[0]).toBe("(default)");
   expect(modelTrigger().textContent).not.toContain("claude");
-  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+  expect(modelValue().textContent).toBe("(default)");
 });
 
 // The Advanced panel's own unset labels resolve the same way, off the same
@@ -1856,7 +1879,7 @@ function scriptModelList(models: ModelDescriptor[]): void {
 }
 
 function effortSelect(): HTMLSelectElement {
-  return screen.getByLabelText("Effort") as HTMLSelectElement;
+  return screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
 }
 
 function effortOptionValues(): string[] {

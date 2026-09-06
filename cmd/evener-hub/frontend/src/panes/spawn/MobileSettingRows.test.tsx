@@ -27,13 +27,6 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
     createDirectory: async () => {},
     onCwdPanelClose: vi.fn(),
     branch: "main",
-    reasoningEffort: "",
-    reasoningOptions: [
-      { value: "", label: "(default)" },
-      { value: "low", label: "low" },
-    ],
-    reasoningDisabled: false,
-    onReasoningChange: vi.fn(),
     accessMode: "",
     accessOptions: [
       { value: "", label: "(default)" },
@@ -60,7 +53,6 @@ test("renders all Treatment A rows in order with full-row controls", () => {
     "Harness",
     "Working directory",
     "Branch",
-    "Reasoning effort",
     "Access mode",
     "Plugins",
   ]);
@@ -163,31 +155,18 @@ test("confirming a typed working directory stamps the committed value, not the p
   expect(localStorage.getItem(GLOBAL_LAST_WORKING_DIR_KEY)).not.toBe("/old/project");
 });
 
-test("a disabled reasoning row is read-only and exposes no picker affordance", () => {
-  renderRows({ reasoningDisabled: true });
+// Issue #198 (extended): effort is one act too, so it uses one control
+// everywhere - the prompt card's quiet effort control. This list renders no
+// effort row and opens no effort sheet.
+test("no reasoning row and no reasoning sheet - the prompt card owns that setting now", () => {
+  renderRows();
 
-  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]') as HTMLElement;
-  expect(row).toBeTruthy();
-  expect(within(row).queryByRole("button")).toBeNull();
-  expect(row.querySelector('[aria-haspopup="dialog"]')).toBeNull();
-  expect(row.textContent).not.toContain("›");
-});
-
-// The Reasoning effort row's resting label is looked up by value in the same
-// options list the desktop Effort select renders (Spawn.tsx's effortOptions),
-// so once launch/resolve names the inherited effort there - "high (default)"
-// - the row says it too, with no mobile-side code of its own.
-test("the reasoning row inherits a resolved-default label from its options list", () => {
-  renderRows({
-    reasoningEffort: "",
-    reasoningOptions: [
-      { value: "", label: "high (default)" },
-      { value: "low", label: "low" },
-    ],
-  });
-
-  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]');
-  expect(row?.textContent).toContain("high (default)");
+  const labels = within(screen.getByTestId("mobile-spawn-config"))
+    .getAllByTestId("mobile-spawn-row")
+    .map((row) => row.getAttribute("data-label"));
+  expect(labels).not.toContain("Reasoning effort");
+  expect(screen.queryByRole("button", { name: /^Reasoning effort:/ })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Choose reasoning effort" })).toBeNull();
 });
 
 test("plugin sheet stays open across toggles, Done applies, and Cancel restores focus", async () => {

@@ -249,9 +249,9 @@ function measureAttachments() {
   };
 }
 
-// The prompt card and everything in its control row. Issue #198: attach, the
-// model trigger and Start belong INSIDE the card at every width, the way the
-// session composer has always had them - this pane used to hand the row a
+// The prompt card and everything in its control row. Attach, the model
+// trigger, effort, and Start belong INSIDE the card at every width, the way
+// the session composer has always had them - this pane used to hand the row a
 // class that turned it into a `position: fixed` viewport band on a phone, so
 // the paperclip sat at the foot of the screen instead of under the prompt.
 // Every reading here is a box the guard compares against the card's own.
@@ -263,6 +263,7 @@ function measurePromptCard() {
   const submit = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
   const modelTrigger = document.querySelector<HTMLElement>('[data-testid="spawn-model-trigger"]');
   const modelSlot = document.querySelector<HTMLElement>('[data-testid="spawn-model-slot"]');
+  const effort = document.querySelector<HTMLElement>('[data-testid="spawn-effort"]');
   return {
     card: card ? boxOf(card) : null,
     controls: controls ? { ...boxOf(controls), position: getComputedStyle(controls).position } : null,
@@ -270,10 +271,10 @@ function measurePromptCard() {
     attach: attach ? boxOf(attach) : null,
     submit: submit ? boxOf(submit) : null,
     modelTrigger: modelTrigger ? boxOf(modelTrigger) : null,
-    // The breakpoint switches the SLOT, and a button under a display:none
-    // ancestor keeps its own computed display while only its box collapses
-    // (kata bsq9) - so the verdict is read from the slot, by the same shared
-    // predicate every other reading here uses.
+    effort: effort ? boxOf(effort) : null,
+    // The model slot renders at every width now - the verdict is still read
+    // from the slot, by the same shared predicate every other reading here
+    // uses.
     modelSlot: readVisibility(modelSlot, "spawn model slot"),
   };
 }
