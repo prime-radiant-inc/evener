@@ -102,7 +102,12 @@ function Navigation() {
           <Stack.Screen
             name="LaunchSettings"
             component={LaunchSettingsScreen}
-            options={{ title: "Launch defaults" }}
+            options={({ route }) => ({
+              title:
+                route.params.projectCwd === undefined
+                  ? "Launch defaults"
+                  : "Project launch settings",
+            })}
           />
           <Stack.Screen name="Providers" component={ProvidersScreen} />
           <Stack.Screen name="Plugins" component={PluginsScreen} />

@@ -51,9 +51,13 @@ export function LaunchSettingsScreen({ route, navigation }: Props) {
   const { activeProfile, client, state, retry } = useConnection();
   if (activeProfile?.id !== route.params.hubId)
     return <Copy>This hub is no longer selected.</Copy>;
+  const cwd = route.params.projectCwd ?? "/";
+  const layer = route.params.projectCwd === undefined ? "global" : "project";
   return (
     <LaunchDefaults
-      key={activeProfile.id}
+      key={JSON.stringify([activeProfile.id, layer, cwd])}
+      cwd={cwd}
+      layer={layer}
       client={state === "ready" ? client : null}
       retry={retry}
       hubName={activeProfile.name}
@@ -74,18 +78,25 @@ function scalarValue(config: LaunchConfigLayer | null, field: string): string {
   return value === undefined ? "" : String(value);
 }
 function LaunchDefaults({
+  cwd,
+  layer,
   client,
   retry,
   hubName,
   navigation,
 }: {
+  cwd: string;
+  layer: "global" | "project";
   client: ConversationClientLike | null;
   retry(): void;
   hubName: string;
   navigation: Props["navigation"];
 }) {
   const colors = useColors();
-  const model = useMemo(() => new LaunchSettings(null, "/", "global"), []);
+  const model = useMemo(
+    () => new LaunchSettings(null, cwd, layer),
+    [cwd, layer],
+  );
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const [selected, setSelected] = useState<LaunchOption | null>(null);
   const [query, setQuery] = useState("");
@@ -118,7 +129,7 @@ function LaunchDefaults({
   });
   const options = (state.options ?? []).filter(
     (option) =>
-      option.defaultableLayers?.includes("global") &&
+      option.defaultableLayers?.includes(layer) &&
       (scalarKinds.has(option.kind) ||
         option.kind === "envMap" ||
         option.kind === "modelList" ||
@@ -146,8 +157,9 @@ function LaunchDefaults({
           </View>
         )}
         <Copy muted>
-          Defaults for new Evener sessions. Project and per-launch settings can
-          override these values.
+          {layer === "project"
+            ? `Defaults for new Evener sessions in ${cwd}. These override hub and trusted repository settings; per-launch values can override them.`
+            : "Defaults for new Evener sessions. Project and per-launch settings can override these values."}
         </Copy>
         <View style={[styles.row, { flexWrap: "wrap" }]}>
           <Action
