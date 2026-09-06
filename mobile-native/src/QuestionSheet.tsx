@@ -9,7 +9,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AskResolution } from "../../mobile/src/components/composer/composeAskAnswers";
+import type { AskResolution } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/askCompose";
 import type { MobileAskQuestion } from "../../mobile/src/conversation/model";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
