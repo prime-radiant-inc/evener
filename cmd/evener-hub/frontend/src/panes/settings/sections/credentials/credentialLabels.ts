@@ -7,6 +7,13 @@
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
+const STORED_CREDENTIAL_JSON_LABEL = "Configured via stored credential JSON";
+
+// storedLabel names the store layer for what the scheme reads from it: a
+// credential JSON for gcp-adc, an API key for everything else.
+function storedLabel(instance: InstanceEntry): string {
+  return instance.auth === "gcp-adc" ? STORED_CREDENTIAL_JSON_LABEL : STORED_KEY_LABEL;
+}
 
 export interface CredentialLayerView {
   source: string;
@@ -32,7 +39,7 @@ export function activeSourceLabel(instance: InstanceEntry): string {
     case "credential_headers":
       return "Configured via a credential header";
     case "store":
-      return STORED_KEY_LABEL;
+      return storedLabel(instance);
     case "oauth":
       return instance.storedEmail ? `Configured via OAuth (${instance.storedEmail})` : "Configured via OAuth";
     case "adc":
@@ -63,7 +70,7 @@ export function credentialLayers(instance: InstanceEntry): CredentialLayerView[]
     { source: instance.activeSource, label: activeSourceLabel(instance), effective: true },
   ];
   if (instance.hasStoredFile && instance.activeSource !== "store") {
-    layers.push({ source: "store", label: STORED_KEY_LABEL, effective: false });
+    layers.push({ source: "store", label: storedLabel(instance), effective: false });
   }
   if (instance.shadowedEnvVar) {
     layers.push({

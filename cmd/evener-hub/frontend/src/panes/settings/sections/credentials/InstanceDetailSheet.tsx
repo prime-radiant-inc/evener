@@ -48,6 +48,7 @@ export interface InstanceDetailSheetProps {
   name: string | null;
   onClose: () => void;
   onSetApiKey: () => void;
+  onSetCredentialJson: () => void;
   onOAuthStart: () => void;
   onEdit: () => void;
   onClear: () => void;
@@ -68,6 +69,7 @@ export function InstanceDetailSheet({
   name,
   onClose,
   onSetApiKey,
+  onSetCredentialJson,
   onOAuthStart,
   onEdit,
   onClear,
@@ -95,6 +97,7 @@ export function InstanceDetailSheet({
   const open = name !== null && instance !== undefined;
 
   const supportsApiKey = instance !== undefined && (instance.authModes ?? []).includes("apiKey");
+  const supportsCredentialJson = instance !== undefined && (instance.authModes ?? []).includes("credentialJson");
   const supportsOAuth = instance !== undefined && (instance.authModes ?? []).includes("oauth");
   const showClear = instance !== undefined && (instance.activeSource === "store" || instance.activeSource === "oauth");
   // showClearStoredKey: a stray stored key sits shadowed behind whatever IS
@@ -167,6 +170,13 @@ export function InstanceDetailSheet({
                 </Button>
               </div>
             )}
+            {supportsCredentialJson && (
+              <div className={CLASS.fullRow}>
+                <Button variant="quiet" onClick={onSetCredentialJson}>
+                  {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
+                </Button>
+              </div>
+            )}
             {supportsOAuth && (
               <div className={CLASS.fullRow}>
                 <Button variant="quiet" onClick={onOAuthStart}>
@@ -194,7 +204,7 @@ export function InstanceDetailSheet({
                 {showClearStoredKey && (
                   <div className={CLASS.fullRow}>
                     <Button variant="dangerQuiet" onClick={onClearStoredKey}>
-                      Clear stored key
+                      {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
                     </Button>
                   </div>
                 )}

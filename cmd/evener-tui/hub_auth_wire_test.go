@@ -107,6 +107,7 @@ func TestFormatAuthStatusSummarySpeaksTheRegistryVocabulary(t *testing.T) {
 		{"status/oauth-expired", "openai-codex auth: OAuth expired (bot@example.com)"},
 		{"status/oauth-none", "openai-codex auth: not configured"},
 		{"status/adc", "vertexish auth: application default credentials"},
+		{"status/store-credential-json", "vertexish auth: stored credential JSON"},
 		{"status/auth-none", "local auth: no credential required"},
 		{"status/missing-key", "anthropic auth: not configured"},
 		{"status/unsupported", `Auth is not supported for instance "not-a-provider".`},

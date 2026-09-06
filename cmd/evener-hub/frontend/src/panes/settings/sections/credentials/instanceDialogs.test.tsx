@@ -6,7 +6,7 @@ import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/typ
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
-import { AddInstanceDialog, ApiKeyDialog, EditInstanceDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog, EditInstanceDialog } from "./instanceDialogs";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -41,9 +41,24 @@ const VERTEX = provider({
   id: "google-vertex-anthropic",
   protocol: "anthropic",
   auth: "gcp-adc",
-  varsEnv: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+  varsEnv: ["GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"],
+  vars: { GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT", GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION" },
 });
-const BEDROCK = provider({ id: "amazon-bedrock", protocol: "anthropic", auth: "gcp-adc", varsEnv: ["AWS_REGION"] });
+const BEDROCK = provider({
+  id: "amazon-bedrock",
+  protocol: "anthropic",
+  auth: "gcp-adc",
+  varsEnv: ["AWS_REGION"],
+  vars: { AWS_REGION: "AWS_REGION" },
+});
+const VERTEX_EXPRESS = provider({
+  id: "google-vertex-express",
+  protocol: "google",
+  auth: "header",
+  apiKeyEnv: ["GOOGLE_VERTEX_API_KEY"],
+  varsEnv: ["GOOGLE_VERTEX_EXPRESS_BASE_URL"],
+  vars: { BASE_URL: "GOOGLE_VERTEX_EXPRESS_BASE_URL" },
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -75,18 +90,62 @@ describe("AddInstanceDialog", () => {
     expect(screen.getByRole("option", { name: "Anthropic" })).toBeTruthy();
   });
 
-  test("no variable inputs until a base with varsEnv is selected", () => {
+  test("no variable inputs until a base with vars is selected", () => {
     connectFakeClient();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
     expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
   });
 
-  test("selecting a base renders one input per varsEnv entry, labeled by name", async () => {
+  test("selecting a base renders one input per vars entry, labeled by name", async () => {
     connectFakeClient();
-    render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
-    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
+    const varsEnvOnly = provider({ id: "vars-env-only", varsEnv: ["LEGACY_ENV"] });
+    render(
+      <AddInstanceDialog
+        availableProviders={[ANTHROPIC, VERTEX, varsEnvOnly]}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-anthropic");
     expect(screen.getByLabelText("GOOGLE_VERTEX_PROJECT")).toBeTruthy();
     expect(screen.getByLabelText("GOOGLE_VERTEX_LOCATION")).toBeTruthy();
+    // varsEnv is the v3 name list, not a fallback: only vars drives the form.
+    await user.selectOptions(screen.getByLabelText("Base provider"), "vars-env-only");
+    expect(screen.queryByLabelText("LEGACY_ENV")).toBeNull();
+  });
+
+  test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
+    connectFakeClient();
+    render(
+      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
+    );
+    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
+    expect(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL")).toBeTruthy();
+    expect(screen.queryByLabelText("GOOGLE_VERTEX_PROJECT")).toBeNull();
+    expect(screen.queryByLabelText("GOOGLE_VERTEX_LOCATION")).toBeNull();
+  });
+
+  test("google-vertex-express's base-URL override is sent under its template key, not the env var name", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/create", (params) => {
+      expect(params).toEqual({
+        name: "vertex-express",
+        base: "google-vertex-express",
+        baseUrl: "",
+        vars: { BASE_URL: "https://example.test/v1" },
+      });
+      return { instances: [], availableProviders: [] };
+    });
+    const user = userEvent.setup();
+    render(
+      <AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX_EXPRESS]} onCancel={() => {}} onSuccess={() => {}} />,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "google-vertex-express");
+    await user.type(screen.getByLabelText("Name"), "vertex-express");
+    await user.type(screen.getByLabelText("GOOGLE_VERTEX_EXPRESS_BASE_URL"), "https://example.test/v1");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/create")).toBe(true));
   });
 
   test("switching base providers clears the previous base's variable inputs and values", async () => {
@@ -428,5 +487,76 @@ describe("ApiKeyDialog", () => {
       />,
     );
     expect(screen.getByLabelText(/api key/i, { selector: "input" }).getAttribute("type")).toBe("password");
+  });
+});
+
+describe("CredentialJsonDialog", () => {
+  test("submitting an empty (trimmed) value silently cancels - no RPC", async () => {
+    const fake = connectFakeClient();
+    const setJson = vi.fn();
+    fake.on("evener/auth/credentialJson/set", setJson);
+    const onCancel = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <CredentialJsonDialog
+        instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+        onCancel={onCancel}
+        onSuccess={() => {}}
+      />,
+    );
+    await user.type(screen.getByLabelText(/credential json/i, { selector: "textarea" }), "   ");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(setJson).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalled();
+  });
+
+  test("a pasted JSON calls credentialJson/set with the instance name, refreshes, toasts, and calls onSuccess", async () => {
+    const fake = connectFakeClient();
+    const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
+    fake.on("evener/auth/credentialJson/set", (params) => {
+      expect(params).toEqual({ provider: "vertex", value: json });
+      return { provider: "vertex", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <CredentialJsonDialog
+          instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByLabelText(/credential json/i, { selector: "textarea" }));
+    await user.paste(json);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(screen.getAllByText("Credential JSON saved for vertex").length).toBeGreaterThan(0);
+  });
+
+  test("a rejected paste shows the server's message inline", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/credentialJson/set", () => {
+      throw new Error("not a Google credential JSON: unexpected end of JSON input");
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <CredentialJsonDialog
+          instance={instance({ name: "vertex", providerId: "google-vertex", auth: "gcp-adc" })}
+          onCancel={() => {}}
+          onSuccess={() => {}}
+        />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByLabelText(/credential json/i, { selector: "textarea" }));
+    await user.paste("{");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("not a Google credential JSON");
   });
 });

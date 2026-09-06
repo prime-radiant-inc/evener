@@ -78,6 +78,7 @@ native:llm:./providers/chatcompletions:FuzzChatCompletionsBuildBody
 native:llm:./providers/chatcompletions:FuzzChatCompletionsStreamMetamorphic
 native:llm:./providers/responses:FuzzResponsesBuildBody
 native:llm:./providers/responses:FuzzResponsesStreamMetamorphic
+native:llm:./providers/tokenauth:FuzzCredentialJSON
 native:.:./cmd/evener-hub:FuzzWebHandler
 native:.:./appwire:FuzzCodexItemDecode
 native:.:./cmd/evener-hub/internal/launchconfig:FuzzLaunchConfigDecode

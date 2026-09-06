@@ -46,8 +46,12 @@ A section name matches either a curated implicit provider's id (`anthropic`,
 The store's file entry under the instance name is step 3 of the [credential
 resolution order](llm-providers.md#credential-resolution-order); see that
 doc for the authoritative full order. `ollama`, `none`/`optional-bearer`
-instances, `gcp-adc` instances, and `oauth-openai-codex` instances need no
-credentials-store entry at all.
+instances, and `oauth-openai-codex` instances need no credentials-store entry
+at all. A `gcp-adc` instance needs none either when application-default
+credentials are on the host, but its entry — when present — is read as a
+Google credential JSON (a service-account key or `authorized_user` file)
+rather than an API key, and outranks the ADC file; the hub writes it through
+`evener/auth/credentialJson/set`.
 
 The hub and `evener providers add`/`probe --write` write `providers.toml`
 through the registry's config writer, which writes exactly the entries it's
@@ -182,9 +186,9 @@ every instance write until the file is fixed by hand.
 
 The spawn credential gate keys on the instance's `Transport.Auth`: `none`
 and `optional-bearer` need nothing; `oauth-openai-codex` is satisfied by the
-instance's OAuth record; `gcp-adc` by the ADC variable or file; everything
-else needs a resolved key or credential header, or the launch fails before a
-process is spawned.
+instance's OAuth record; `gcp-adc` by a stored credential JSON, the ADC
+variable, or the well-known file; everything else needs a resolved key or
+credential header, or the launch fails before a process is spawned.
 
 ### Spawning `evener launch-check`
 

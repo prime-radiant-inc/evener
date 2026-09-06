@@ -61,6 +61,8 @@ set them by hand.
 | `GOOGLE_VERTEX_PROJECT` | GCP project for the `google-vertex`/`google-vertex-anthropic` instances; required for either to exist. |
 | `GOOGLE_VERTEX_LOCATION` | GCP location for the `google-vertex`/`google-vertex-anthropic` instances; required for either to exist. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to a GCP service-account file for Application Default Credentials; the well-known ADC file also works without it. |
+| `GOOGLE_VERTEX_API_KEY` | Google Cloud API key for Vertex AI express mode; its presence is what makes the `google-vertex-express` instance exist. |
+| `GOOGLE_VERTEX_EXPRESS_BASE_URL` | Base URL override for `google-vertex-express` (default `https://aiplatform.googleapis.com/v1`). |
 | `ZHIPU_API_KEY` | z.ai/Zhipu API key, used by both the `zai` and `zai-coding-plan` instances. Replaces `GLM_API_KEY`. |
 | `ZAI_BASE_URL` | z.ai base URL override (default `https://api.z.ai/api/paas/v4`). Replaces `GLM_BASE_URL`. |
 | `ZAI_CODING_PLAN_BASE_URL` | z.ai coding-plan base URL override (default `https://api.z.ai/api/coding/paas/v4`), for the `zai-coding-plan` instance. |

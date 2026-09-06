@@ -116,6 +116,16 @@ func matchGlob(pattern, id string) bool {
 	return strings.HasSuffix(id, parts[len(parts)-1])
 }
 
+// matchesAnyGlob reports whether id matches at least one pattern.
+func matchesAnyGlob(patterns []string, id string) bool {
+	for _, p := range patterns {
+		if matchGlob(p, id) {
+			return true
+		}
+	}
+	return false
+}
+
 // sortGlobs orders glob patterns shorter-first, then lexically, so the more
 // specific pattern applies last and wins (spec §4.1).
 func sortGlobs(patterns []string) []string {

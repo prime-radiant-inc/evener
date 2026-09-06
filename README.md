@@ -233,7 +233,7 @@ its shell tool and redirects the command's own logs:
 
 ### Provider and model
 
-Evener takes a provider-qualified model in one value: `--model <provider/model>`. Every provider with a resolvable credential is usable with no config file: `anthropic`, `openai-codex`, `openai`, `google`, `groq`, `zai`, `deepseek`, `openrouter`, `xai`, `mistral`, `cerebras`, `togetherai`, `moonshotai`, `kimi-for-coding`, `minimax`, `zai-coding-plan`, `google-vertex-anthropic`, `google-vertex`, `amazon-bedrock`, `azure`, `ollama`. A `providers.toml` entry adds anything else. See [docs/llm-providers.md](docs/llm-providers.md).
+Evener takes a provider-qualified model in one value: `--model <provider/model>`. Every provider with a resolvable credential is usable with no config file: `anthropic`, `openai-codex`, `openai`, `google`, `groq`, `zai`, `deepseek`, `openrouter`, `xai`, `mistral`, `cerebras`, `togetherai`, `moonshotai`, `kimi-for-coding`, `minimax`, `zai-coding-plan`, `google-vertex-anthropic`, `google-vertex`, `google-vertex-express`, `amazon-bedrock`, `azure`, `ollama`. A `providers.toml` entry adds anything else. See [docs/llm-providers.md](docs/llm-providers.md).
 
 Use `--model` or set `EVENER_MODEL` to the same `provider/model` format.
 

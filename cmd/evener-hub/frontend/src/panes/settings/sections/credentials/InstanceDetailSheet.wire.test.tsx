@@ -20,6 +20,7 @@ function renderHubInstance(name: string) {
       onClose={vi.fn()}
       onTestCredentials={vi.fn()}
       onSetApiKey={vi.fn()}
+      onSetCredentialJson={vi.fn()}
       onOAuthStart={vi.fn()}
       onEdit={vi.fn()}
       onClear={vi.fn()}

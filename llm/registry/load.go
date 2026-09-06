@@ -410,6 +410,7 @@ func (r *Registry) curatedRecord(id string, upstream map[string]Provider, ov *La
 			return nil, fmt.Errorf("providers.%s: base: %w", id, err)
 		}
 		rec.inherit(base)
+		rec.keepInheritedRows(ovp.InheritModelsMatching)
 	}
 	if hasUp {
 		if err := rec.fold(up, r.catalogTag, r.presets); err != nil {
@@ -441,6 +442,7 @@ func (r *Registry) instanceRecord(p Provider) (*record, error) {
 			return nil, fmt.Errorf("providers.%s: base %q is not a registry id", p.ID, baseID)
 		}
 		rec.inherit(base)
+		rec.keepInheritedRows(p.InheritModelsMatching)
 		rec.providerID = baseID
 	}
 	if err := rec.fold(p, LayerConfig, r.presets); err != nil {
@@ -479,6 +481,26 @@ func (rec *record) inherit(base *record) {
 	rec.notes = append([]string(nil), base.notes...)
 }
 
+// keepInheritedRows narrows the rows just copied by inherit to those whose
+// id matches a pattern (inherit_models_matching). It runs before any of the
+// record's own layers fold in, so a provider's own rows — its upstream entry
+// or its overlay/user rows — are never subject to the glob. The inherited
+// layers' row maps are shared with the base record, so they are rebuilt,
+// never edited in place.
+func (rec *record) keepInheritedRows(patterns []string) {
+	if len(patterns) == 0 {
+		return
+	}
+	for id := range rec.head.Models {
+		if !matchesAnyGlob(patterns, id) {
+			delete(rec.head.Models, id)
+		}
+	}
+	for i := range rec.layers {
+		rec.layers[i].rows = keepMatchingRows(rec.layers[i].rows, patterns)
+	}
+}
+
 func cloneTransport(t Transport) Transport {
 	out := t
 	out.Vars = mergeStringMap(nil, t.Vars)
@@ -503,6 +525,7 @@ func cloneModel(m Model) Model {
 func cloneProviderView(p Provider) Provider {
 	out := p
 	out.InheritModels = clonePointer(p.InheritModels)
+	out.InheritModelsMatching = slices.Clone(p.InheritModelsMatching)
 	out.Implicit = clonePointer(p.Implicit)
 	out.Transport = cloneTransportView(p.Transport)
 	out.APIKeyEnv = slices.Clone(p.APIKeyEnv)
@@ -659,7 +682,9 @@ func setIfNonEmpty(dst *string, src string) {
 
 // fold overlays one layer's record onto rec (spec §4.1, §4.2): scalars set
 // if non-empty, maps key-wise, transports field-wise after preset expansion,
-// the cross-protocol rule, and inherit_models = false.
+// the cross-protocol rule, and inherit_models = false. inherit_models_matching
+// is only recorded here; keepInheritedRows applies it at inherit time, before
+// any of the record's own layers fold in.
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
@@ -701,6 +726,9 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	if src.InheritModels != nil {
 		h.InheritModels = src.InheritModels
 	}
+	if src.InheritModelsMatching != nil {
+		h.InheritModelsMatching = slices.Clone(src.InheritModelsMatching)
+	}
 	if src.APIKeyEnv != nil {
 		h.APIKeyEnv = append([]string{}, src.APIKeyEnv...)
 	}
@@ -718,6 +746,22 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	}
 	rec.layers = append(rec.layers, layer)
 	return nil
+}
+
+// keepMatchingRows returns a fresh map holding only rows's entries whose id
+// matches at least one pattern (nil in, nil out): the caller's map may be
+// shared with a base record, so this never mutates rows in place.
+func keepMatchingRows(rows map[string]Model, patterns []string) map[string]Model {
+	if rows == nil {
+		return nil
+	}
+	out := make(map[string]Model, len(rows))
+	for id, m := range rows {
+		if matchesAnyGlob(patterns, id) {
+			out[id] = m
+		}
+	}
+	return out
 }
 
 // foldModel overlays one layer's row onto the merged row head. Hidden comes
@@ -980,6 +1024,42 @@ func (r *Registry) computeHidden(rec *record) {
 		hidden = url == "" || len(missing) > 0
 	}
 	rec.head.Hidden = hidden
+}
+
+// UnresolvedBaseURL explains why a curated provider's base URL does not
+// resolve in this environment: unset names the environment variables still
+// missing (VarsEnv's env name, or the placeholder itself when there is
+// none; a placeholder the host rule derives is reported as its input, so an
+// unset GOOGLE_VERTEX_LOCATION is named once), and problems carries the
+// resolver's warnings for values that are set but unusable (an invalid
+// Vertex location). Both nil when the URL resolves or the id is unknown.
+func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
+	rec, ok := r.curated[id]
+	if !ok {
+		return nil, nil
+	}
+	url, missing, warnings := r.resolveBaseURL(rec, rec.head.Transport)
+	if url != "" && len(missing) == 0 {
+		return nil, nil
+	}
+	for _, name := range missing {
+		if rec.head.Transport.HostRule == HostRuleVertexLocation && name == "GOOGLE_VERTEX_HOST" {
+			// The rule derives the host from the location, so it is the
+			// location's name to report — and only when the location is
+			// itself unset: a location that is set but refused is a warning.
+			if !slices.Contains(missing, "GOOGLE_VERTEX_LOCATION") {
+				continue
+			}
+			name = "GOOGLE_VERTEX_LOCATION"
+		}
+		if env, ok := rec.head.Transport.VarsEnv[name]; ok {
+			name = env
+		}
+		unset = append(unset, name)
+	}
+	slices.Sort(unset)
+	slices.Sort(warnings)
+	return slices.Compact(unset), slices.Compact(warnings)
 }
 
 // ProviderIDs lists the curated registry ids, sorted.

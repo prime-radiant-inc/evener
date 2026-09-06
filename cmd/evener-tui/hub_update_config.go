@@ -69,8 +69,9 @@ func (m hubModel) handleAuthLogout(msg hubAuthLogoutMsg) (tea.Model, tea.Cmd) {
 	m.authStatusSeen = true
 	m.clearSessionError()
 	// The hub removes whatever that instance actually holds — an OAuth
-	// record for the Codex transport, the stored key for everything else —
-	// and Removed says whether there was one. Naming the act "sign-out of
+	// record for the Codex transport, the stored credential (an API key, or
+	// a credential JSON for gcp-adc) for everything else — and Removed says
+	// whether there was one. Naming the act "sign-out of
 	// OpenAI OAuth" is what let /logout delete an API key and report an
 	// OAuth sign-out.
 	name := authStatusInstanceName(m.authStatus)

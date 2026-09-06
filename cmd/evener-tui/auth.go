@@ -50,6 +50,13 @@ func authSourceLabel(status authStatus) string {
 	case "credential_headers":
 		return "credential header"
 	case "store":
+		// The store slot holds whatever the scheme reads from it: a credential
+		// JSON for gcp-adc (the hub advertises "credentialJson" for exactly
+		// those instances), an API key for everything else — the same split
+		// the web pane's storedLabel makes.
+		if authModeOffered(status, "credentialJson") {
+			return "stored credential JSON"
+		}
 		return "stored API key"
 	case "oauth":
 		switch {

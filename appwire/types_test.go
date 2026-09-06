@@ -567,6 +567,7 @@ func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 			Protocol:  "openai-responses",
 			Auth:      "bearer",
 			VarsEnv:   []string{"OPENAI_BASE_URL"},
+			Vars:      map[string]string{"BASE_URL": "OPENAI_BASE_URL"},
 			APIKeyEnv: []string{"OPENAI_API_KEY"},
 			Implicit:  true,
 		}},
@@ -600,6 +601,7 @@ func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 		`"warnings":["no credential"]`,
 		`"availableProviders"`,
 		`"varsEnv":["OPENAI_BASE_URL"]`,
+		`"vars":{"BASE_URL":"OPENAI_BASE_URL"}`,
 		`"apiKeyEnv":["OPENAI_API_KEY"]`,
 		`"diagnostics":["user layer: none (disabled)"]`,
 		`"userLayer":"user layer: none (disabled)"`,
@@ -620,6 +622,31 @@ func TestInstanceListResponseJSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+}
+
+// TestProviderDescriptorKeepsVarsEnvAListOnV3 holds the v3 wire shape: a peer
+// built before Vars existed reads varsEnv as a list of environment variable
+// names, and Vars travels alongside it rather than in its place.
+func TestProviderDescriptorKeepsVarsEnvAListOnV3(t *testing.T) {
+	raw, err := json.Marshal(ProviderDescriptor{ID: "p", VarsEnv: []string{"A_ENV"}, Vars: map[string]string{"A": "A_ENV"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var v3 struct {
+		VarsEnv []string `json:"varsEnv"`
+	}
+	if err := json.Unmarshal(raw, &v3); err != nil {
+		t.Fatalf("v3 peer decode: %v", err)
+	}
+	if !reflect.DeepEqual(v3.VarsEnv, []string{"A_ENV"}) {
+		t.Fatalf("v3 peer read varsEnv = %v, want [A_ENV]", v3.VarsEnv)
+	}
+	got := string(raw)
+	for _, want := range []string{`"varsEnv":["A_ENV"]`, `"vars":{"A":"A_ENV"}`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
 	}
 }
 

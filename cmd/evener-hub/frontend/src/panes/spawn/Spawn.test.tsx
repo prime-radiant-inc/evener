@@ -2034,6 +2034,33 @@ test("the Effort select and picker share one scoped model/list response", async 
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
 });
 
+// A credential change can make models discoverable (a stored Vertex credential
+// JSON enables the publisher-model listing), so the pane's own scoped
+// model/list cache must not outlive evener/auth/updated: the catalog reloads
+// and the picker sees the new listing without a remount.
+test("evener/auth/updated drops the pane's model/list cache so the catalog and picker reload", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1));
+
+  modelListOverride = [
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+    { provider: "google-vertex", model: "gemini-3.8-flash", displayName: "google-vertex/gemini-3.8-flash" },
+  ];
+  act(() => fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2));
+
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.clear(combo);
+  await user.type(combo, "gemini");
+  await screen.findByText("google-vertex/gemini-3.8-flash");
+  // The picker shares the reloaded promise rather than issuing a third call.
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
+});
+
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
 // The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing

@@ -68,11 +68,15 @@ func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Res
 	})
 }
 
-// ListModels implements llm.Protocol: one page of up to 1000 models,
-// keeping those that support generateContent.
+// ListModels implements llm.Protocol. On Vertex it pages through the
+// publisher-model listing (listVertexModels); on the Gemini API it reads one
+// page of up to 1000 models, keeping those that support generateContent.
 func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]registry.Model, error) {
 	if res.Transport.ModelsEndpoint == registry.EndpointUnsupported {
 		return nil, llm.ErrModelListingUnsupported
+	}
+	if isVertexTransport(res) {
+		return p.listVertexModels(ctx, res)
 	}
 	u := protocolhttp.URL(res, res.Transport.ModelsEndpoint)
 	if strings.Contains(u, "?") {

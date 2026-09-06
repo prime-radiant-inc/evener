@@ -71,6 +71,39 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	}
 }
 
+func TestCredentialsPanel_EnterOnACredentialJsonInstanceExplainsWhereToPaste(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
+		{Name: "google-vertex", ProviderID: "google-vertex", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"adc", "credentialJson"}},
+	}}})
+	// The list opens on anthropic; Down lands on google-vertex.
+	onVertex, _ := updated.Update(tea.KeyMsg{Type: tea.KeyDown})
+	next, cmd := onVertex.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("Enter emitted %+v; the TUI has no credential-JSON action to run", cmd())
+	}
+	const label = "Providers & credentials" // the web hub's settings row (sections.ts)
+	view := next.View()
+	if !strings.Contains(view, "credential JSON") || !strings.Contains(view, "web hub") || !strings.Contains(view, label) {
+		t.Fatalf("view after Enter = %q, want a notice naming the credential JSON, the web hub, and %q", view, label)
+	}
+	moved, _ := next.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if strings.Contains(moved.View(), label) {
+		t.Fatal("the notice must clear when the cursor moves to another instance")
+	}
+	back, _ := moved.Update(tea.KeyMsg{Type: tea.KeyDown})
+	again, _ := back.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !strings.Contains(again.View(), label) {
+		t.Fatal("Enter on the instance again must show the notice again")
+	}
+	formOpen, _ := again.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	formClosed, _ := formOpen.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if strings.Contains(formClosed.View(), label) {
+		t.Fatal("the notice must not survive opening and closing the form")
+	}
+}
+
 // --- new instance-based tests ---
 
 func TestCredentialsPanel_GroupsByType(t *testing.T) {

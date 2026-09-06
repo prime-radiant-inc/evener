@@ -78,6 +78,7 @@ var goldenSecrets = map[string]string{
 	"OPENROUTER_API_KEY": "SECRET-openrouter", "KIMI_API_KEY": "SECRET-kimi", "MINIMAX_API_KEY": "SECRET-minimax",
 	"MOONSHOT_API_KEY": "SECRET-moonshot", "AZURE_API_KEY": "SECRET-azure", "AWS_BEARER_TOKEN_BEDROCK": "SECRET-bedrock",
 	"PORTKEY_KEY": "SECRET-portkey", "XAI_API_KEY": "SECRET-xai",
+	"GOOGLE_VERTEX_API_KEY": "SECRET-vertex-express",
 }
 
 var goldenEnv = map[string]string{
@@ -292,6 +293,11 @@ func TestGoldenResolved(t *testing.T) {
 		{"google-vertex-opus-5", "google-vertex/claude-opus-5", nil, func(t *testing.T, res Resolved) {
 			if res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Protocol != ProtocolAnthropic {
 				t.Errorf("%+v", res.Transport)
+			}
+		}},
+		{"google-vertex-express-gemini-2.5-flash", "google-vertex-express/gemini-2.5-flash", nil, func(t *testing.T, res Resolved) {
+			if res.Transport.Auth != AuthHeader || res.Transport.AuthHeader != "x-goog-api-key" || res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1" || res.Transport.Endpoint != "/publishers/google/models/{model}:generateContent" || res.Transport.ModelsEndpoint != EndpointUnsupported || res.Credential.Source != "env:GOOGLE_VERTEX_API_KEY" || res.Credential.Value != goldenSecrets["GOOGLE_VERTEX_API_KEY"] {
+				t.Errorf("express row: %+v %+v", res.Transport, res.Credential)
 			}
 		}},
 		{"openrouter-opus-5", "openrouter/anthropic/claude-opus-5", nil, func(t *testing.T, res Resolved) {

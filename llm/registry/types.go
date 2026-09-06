@@ -37,25 +37,26 @@ const EndpointUnsupported = "-"
 // Provider is a named endpoint definition (spec §4). The same struct is used
 // for registry records and for user instances.
 type Provider struct {
-	ID                string            `json:"id,omitempty"`
-	Base              string            `json:"base,omitempty"`
-	InheritModels     *bool             `json:"inherit_models,omitempty"`
-	Implicit          *bool             `json:"implicit,omitempty"`
-	Name              string            `json:"name,omitempty"`
-	Doc               string            `json:"doc,omitempty"`
-	Protocol          string            `json:"protocol,omitempty"`
-	Surface           string            `json:"surface,omitempty"`
-	Family            string            `json:"family,omitempty"`
-	Transport         Transport         `json:"transport"`
-	APIKeyEnv         []string          `json:"api_key_env,omitempty"`
-	APIKey            string            `json:"api_key,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	CredentialHeaders map[string]string `json:"credential_headers,omitempty"`
-	Caps              Caps              `json:"caps"`
-	Models            map[string]Model  `json:"models,omitempty"`
-	DefaultModel      string            `json:"default_model,omitempty"`
-	CheapModel        string            `json:"cheap_model,omitempty"`
-	Hidden            bool              `json:"hidden,omitempty"`
+	ID                    string            `json:"id,omitempty"`
+	Base                  string            `json:"base,omitempty"`
+	InheritModels         *bool             `json:"inherit_models,omitempty"`
+	InheritModelsMatching []string          `json:"inherit_models_matching,omitempty"`
+	Implicit              *bool             `json:"implicit,omitempty"`
+	Name                  string            `json:"name,omitempty"`
+	Doc                   string            `json:"doc,omitempty"`
+	Protocol              string            `json:"protocol,omitempty"`
+	Surface               string            `json:"surface,omitempty"`
+	Family                string            `json:"family,omitempty"`
+	Transport             Transport         `json:"transport"`
+	APIKeyEnv             []string          `json:"api_key_env,omitempty"`
+	APIKey                string            `json:"api_key,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	CredentialHeaders     map[string]string `json:"credential_headers,omitempty"`
+	Caps                  Caps              `json:"caps"`
+	Models                map[string]Model  `json:"models,omitempty"`
+	DefaultModel          string            `json:"default_model,omitempty"`
+	CheapModel            string            `json:"cheap_model,omitempty"`
+	Hidden                bool              `json:"hidden,omitempty"`
 
 	// notes are converter warnings that ride through to Resolved.Warnings
 	// ("protocol unverified"). Unexported: not part of the data schema.

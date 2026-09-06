@@ -138,11 +138,12 @@ func TestProvider_ReturnsIndependentValue(t *testing.T) {
 
 func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 	provider := Provider{
-		ID:            "example",
-		InheritModels: new(true),
-		Implicit:      new(true),
-		APIKeyEnv:     []string{"EXAMPLE_API_KEY"},
-		Headers:       map[string]string{"provider": "header"},
+		ID:                    "example",
+		InheritModels:         new(true),
+		InheritModelsMatching: []string{"alpha-*"},
+		Implicit:              new(true),
+		APIKeyEnv:             []string{"EXAMPLE_API_KEY"},
+		Headers:               map[string]string{"provider": "header"},
 		Transport: Transport{
 			Vars: map[string]string{"region": "test"},
 			Body: map[string]any{
@@ -180,6 +181,7 @@ func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 		t.Fatal("example provider is missing")
 	}
 	*got.InheritModels = false
+	got.InheritModelsMatching[0] = "changed"
 	got.APIKeyEnv[0] = "CHANGED"
 	got.Headers["provider"] = "changed"
 	got.Transport.Vars["region"] = "changed"
@@ -395,6 +397,177 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 	}
 }
 
+// A provider can have both an upstream (models.dev) entry and an overlay entry
+// naming a base with inherit_models_matching; the glob narrows the rows it
+// inherits from the base, never the rows the provider brings itself.
+func TestLoad_InheritModelsMatchingKeepsTheProviderOwnUpstreamRows(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["matchup"] = json.RawMessage(`{"id":"matchup","name":"Match Upstream","models":{"beta-9":{"id":"beta-9","name":"Beta 9","modalities":{"input":["text"],"output":["text"]},"limit":{"context":8000,"output":1000}}}}`)
+	data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := overlayWith(`
+[providers.matchbase]
+implicit = true
+name = "Match Base"
+protocol = "openai-chat"
+surface = "generic"
+base_url = "https://example.test/v1"
+auth = "none"
+
+[providers.matchbase.models."alpha-1"]
+[providers.matchbase.models."beta-1"]
+
+[providers.matchup]
+implicit = true
+base = "matchbase"
+inherit_models_matching = ["alpha-*"]
+`)
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(overlay))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := r.curated["matchup"]
+	if up == nil {
+		t.Fatal("matchup missing")
+	}
+	if got, want := sortedKeys(up.head.Models), []string{"alpha-1", "beta-9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("matchup model ids = %v, want %v (own upstream row kept, base's beta-1 dropped)", got, want)
+	}
+	if res, err := r.Resolve("matchup/beta-9"); err != nil || res.Synthesized {
+		t.Fatalf("matchup's own upstream row beta-9 must survive the inherited-row glob: res=%+v err=%v", res, err)
+	}
+}
+
+// The user layer takes the same key: an instance built on a curated base
+// narrows the rows it inherits and nothing else.
+func TestLoad_InheritModelsMatchingNarrowsAUserInstance(t *testing.T) {
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, `
+[providers.mine]
+base = "openai"
+inherit_models_matching = ["gpt-5*"]
+`)
+	kept, err := r.Resolve("mine/gpt-5-nano")
+	if err != nil || kept.Synthesized {
+		t.Fatalf("mine/gpt-5-nano must resolve as an inherited catalog row: res=%+v err=%v", kept, err)
+	}
+	dropped, err := r.Resolve("mine/gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dropped.Synthesized {
+		t.Fatalf("mine/gpt-4o must not resolve as a catalog row once the glob dropped it: %+v", dropped)
+	}
+	base, err := r.Resolve("openai/gpt-4o")
+	if err != nil || base.Synthesized {
+		t.Fatalf("openai's own gpt-4o must be untouched by the instance's glob: res=%+v err=%v", base, err)
+	}
+}
+
+func TestLoad_InheritModelsMatchingKeepsOnlyMatchingBaseRows(t *testing.T) {
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := overlayWith(`
+[providers.matchbase]
+implicit = true
+name = "Match Base"
+protocol = "openai-chat"
+surface = "generic"
+base_url = "https://example.test/v1"
+auth = "none"
+
+[providers.matchbase.models."alpha-1"]
+[providers.matchbase.models."alpha-2"]
+[providers.matchbase.models."beta-1"]
+
+[providers.matchderived]
+implicit = true
+name = "Match Derived"
+base = "matchbase"
+inherit_models_matching = ["alpha-*"]
+
+[providers.matchderived.models."gamma-9"]
+`)
+	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()), WithOverlay(overlay))
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived := r.curated["matchderived"]
+	if derived == nil {
+		t.Fatal("matchderived missing")
+	}
+	if got, want := sortedKeys(derived.head.Models), []string{"alpha-1", "alpha-2", "gamma-9"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("derived model ids = %v, want %v", got, want)
+	}
+	base := r.curated["matchbase"]
+	if _, ok := base.head.Models["beta-1"]; !ok {
+		t.Fatal("inherit_models_matching must not remove beta-1 from the base's own record")
+	}
+	if res, err := r.Resolve("matchbase/beta-1"); err != nil || res.Synthesized {
+		t.Fatalf("matchbase/beta-1 must still resolve as a real catalog row (no shared-map mutation): res=%+v err=%v", res, err)
+	}
+	p, ok := r.Provider("matchderived")
+	if !ok {
+		t.Fatal("matchderived provider missing")
+	}
+	if !reflect.DeepEqual(p.InheritModelsMatching, []string{"alpha-*"}) {
+		t.Fatalf("InheritModelsMatching = %v", p.InheritModelsMatching)
+	}
+	// beta-1 fell out of matchderived's catalog: an unresolvable id degrades
+	// to a synthesized pass-through row rather than an error (Resolve only
+	// hard-fails unknown ids on the Codex transport), so Synthesized is what
+	// proves the row is gone.
+	res, err := r.Resolve("matchderived/beta-1")
+	if err != nil {
+		t.Fatalf("matchderived/beta-1: %v", err)
+	}
+	if !res.Synthesized {
+		t.Fatalf("matchderived/beta-1 must not resolve as a real catalog row: %+v", res)
+	}
+}
+
+func TestLoad_InheritModelsMatchingValidation(t *testing.T) {
+	cases := map[string]string{
+		"no base": "[providers.x]\n" +
+			"inherit_models_matching = [\"alpha-*\"]\n",
+		"conflicts with inherit_models = false": "[providers.x]\n" +
+			"base = \"openai\"\n" +
+			"inherit_models = false\n" +
+			"inherit_models_matching = [\"alpha-*\"]\n",
+		"empty pattern": "[providers.x]\n" +
+			"base = \"openai\"\n" +
+			"inherit_models_matching = [\"\"]\n",
+	}
+	wantSubstr := map[string]string{
+		"no base":                               "inherit_models_matching needs base",
+		"conflicts with inherit_models = false": "conflicts with inherit_models = false",
+		"empty pattern":                         "empty pattern",
+	}
+	data, err := os.ReadFile("testdata/models.dev.sample.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
+				WithOverlay(overlayWith(cfg)))
+			if err == nil || !strings.Contains(err.Error(), wantSubstr[name]) {
+				t.Fatalf("%s: err = %v, want it to contain %q", name, err, wantSubstr[name])
+			}
+		})
+	}
+}
+
 func TestLoad_ExplicitInstances(t *testing.T) {
 	cfg := `
 [providers.groq]
@@ -549,6 +722,46 @@ func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
 	url, _, _ = r.resolveBaseURL(r.curated["google-vertex-anthropic"], r.curated["google-vertex-anthropic"].head.Transport)
 	if url != "https://aiplatform.googleapis.com/v1/projects/p/locations/global" {
 		t.Fatalf("vertex url = %q", url)
+	}
+}
+
+// TestUnresolvedBaseURL covers what a caller shows for a curated provider whose
+// base URL does not resolve here. GOOGLE_VERTEX_HOST is derived from the
+// location by the vertex-location host rule, so only the location is named,
+// and the credential's variable is none of the URL's business (roborev round
+// 6, F2). A location that is set but unusable is a problem to report, not a
+// variable to set (round 8, F2).
+func TestUnresolvedBaseURL(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		env         map[string]string
+		id          string
+		wantUnset   []string
+		wantProblem string
+	}{
+		{name: "no variables set", env: map[string]string{}, id: "google-vertex", wantUnset: []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}},
+		{name: "location set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global"}, id: "google-vertex", wantUnset: []string{"GOOGLE_VERTEX_PROJECT"}},
+		{name: "both set", env: map[string]string{"GOOGLE_VERTEX_LOCATION": "global", "GOOGLE_VERTEX_PROJECT": "p"}, id: "google-vertex"},
+		{name: "curated default", env: map[string]string{}, id: "openai"},
+		{name: "unknown id", env: map[string]string{}, id: "no-such-provider"},
+		{name: "invalid location", env: map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "bad.host"}, id: "google-vertex", wantProblem: `invalid GOOGLE_VERTEX_LOCATION "bad.host"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, tt.env, "")
+			unset, problems := r.UnresolvedBaseURL(tt.id)
+			if !slices.Equal(unset, tt.wantUnset) {
+				t.Fatalf("UnresolvedBaseURL(%q) unset = %v, want %v", tt.id, unset, tt.wantUnset)
+			}
+			if tt.wantProblem == "" {
+				if len(problems) != 0 {
+					t.Fatalf("UnresolvedBaseURL(%q) problems = %v, want none", tt.id, problems)
+				}
+				return
+			}
+			if len(problems) != 1 || !strings.Contains(problems[0], tt.wantProblem) {
+				t.Fatalf("UnresolvedBaseURL(%q) problems = %v, want one naming %s", tt.id, problems, tt.wantProblem)
+			}
+		})
 	}
 }
 

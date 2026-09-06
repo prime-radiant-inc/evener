@@ -2,6 +2,8 @@ package tokenauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"sync"
@@ -15,51 +17,144 @@ import (
 
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 
-// GCPADC sends a bearer token from Google application-default credentials
-// (spec §8.1): the credentials are looked up at an instance's first
-// request, never at load, and the token source refreshes itself.
+// GCPADC sends a bearer token minted from Google credentials (spec §8.1):
+// application-default credentials found on the host, or — when the
+// registry resolved a credentials-store entry for the instance — the
+// service-account / authorized_user JSON stored there (spec 2026-09-04
+// google-vertex-express §4.3). Credentials are looked up at an instance's
+// first request, never at load, and the token source refreshes itself.
 type GCPADC struct {
-	// FindCredentials is the lookup seam; nil means google.FindDefaultCredentials.
+	// FindCredentials is the ADC lookup seam; nil means google.FindDefaultCredentials.
 	FindCredentials func(ctx context.Context, scopes ...string) (*google.Credentials, error)
+	// CredentialsFromJSON is the stored-credential seam; nil means google.CredentialsFromJSON.
+	CredentialsFromJSON func(ctx context.Context, data []byte, scopes ...string) (*google.Credentials, error)
 
 	mu      sync.Mutex
-	sources map[string]oauth2.TokenSource
+	sources map[string]cachedSource
 }
 
-// Apply sets Authorization from the instance's cached token source.
+// cachedSource is one instance's token source plus the identity of the
+// credential it was built from (credentialIdentity), so a replaced or
+// removed credential is noticed on the next request and the old source
+// dropped instead of kept alongside the new one.
+type cachedSource struct {
+	identity string
+	tokenSource
+}
+
+// tokenSource pairs a cached token source with whether the credential it
+// came from is a user credential (authorized_user), decided once when the
+// credential is obtained.
+type tokenSource struct {
+	ts             oauth2.TokenSource
+	userCredential bool
+}
+
+// isUserCredential reports whether raw — a credential file's JSON — is an
+// authorized_user (user) credential rather than a service account or other
+// type. A nil/empty or unparsable raw is not a user credential.
+func isUserCredential(raw []byte) bool {
+	return registry.CredentialJSONType(raw) == "authorized_user"
+}
+
+// Apply sets Authorization from the instance's cached token source and, for
+// a user credential whose base URL named a project, x-goog-user-project.
 func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Resolved) error {
-	ts, err := a.tokenSource(ctx, res.Instance)
+	src, err := a.tokenSource(ctx, res)
 	if err != nil {
-		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS)", res.Instance, err), Cause: err}
+		if res.Credential.Source == "store" {
+			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: stored credential JSON: %v", res.Instance, err), Cause: err}
+		}
+		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)", res.Instance, err), Cause: err}
 	}
-	tok, err := ts.Token()
+	tok, err := src.ts.Token()
 	if err != nil {
 		return fmt.Errorf("instance %q: gcp-adc token: %w", res.Instance, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	// User credentials are not attributed to a project, and the publisher
+	// listing has no project in its path and 403s without this header
+	// naming one. Service accounts carry their own project and must not
+	// name one here: Google requires serviceusage.services.use on any
+	// project this header names, which a least-privilege service account
+	// may lack, turning a working request into a 403 (spec §2.2, ruling R6).
+	if project := res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]; src.userCredential && project != "" {
+		req.Header.Set("x-goog-user-project", project)
+	}
 	return nil
 }
 
-func (a *GCPADC) tokenSource(ctx context.Context, instance string) (oauth2.TokenSource, error) {
+// ValidateCredentialJSON reports whether data is a credential JSON the
+// gcp-adc scheme can mint tokens from: a service_account key or an
+// authorized_user file (spec §4; other types, such as external_account, are
+// refused by registry.CheckCredentialJSON). The hub calls it when a
+// credential is pasted so a bad paste fails at set time, not at the first
+// request (spec §4.4).
+func ValidateCredentialJSON(data []byte) error {
+	if err := registry.CheckCredentialJSON(data); err != nil {
+		return err
+	}
+	_, err := google.CredentialsFromJSON(context.Background(), data, cloudPlatformScope) //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
+	return err
+}
+
+// credentialIdentity names the credential a source was built from: the
+// resolution's source alone for application-default credentials or none
+// (so a source that changes — an ADC file removed and the instance
+// re-resolved without a credential — rebuilds rather than reuses), and the
+// source plus a digest of the stored JSON for a stored credential. An ADC
+// file replaced in place keeps the identity "adc": the resolution does not
+// say which file backs it, so a re-login as another account takes effect
+// on the next process, not the next request.
+func credentialIdentity(res registry.Resolved) string {
+	if res.Credential.Source != "store" {
+		return res.Credential.Source
+	}
+	sum := sha256.Sum256([]byte(res.Credential.Value))
+	return res.Credential.Source + "\x00" + hex.EncodeToString(sum[:])
+}
+
+func (a *GCPADC) tokenSource(ctx context.Context, res registry.Resolved) (tokenSource, error) {
+	identity := credentialIdentity(res)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if ts, ok := a.sources[instance]; ok {
-		return ts, nil
-	}
-	find := a.FindCredentials
-	if find == nil {
-		find = google.FindDefaultCredentials
+	if c, ok := a.sources[res.Instance]; ok && c.identity == identity {
+		return c.tokenSource, nil
 	}
 	// The source outlives the request that created it, so it must not
 	// inherit that request's cancellation.
-	creds, err := find(context.WithoutCancel(ctx), cloudPlatformScope)
+	bg := context.WithoutCancel(ctx)
+	var creds *google.Credentials
+	var err error
+	if res.Credential.Source == "store" {
+		if err := registry.CheckCredentialJSON([]byte(res.Credential.Value)); err != nil {
+			return tokenSource{}, err
+		}
+		fromJSON := a.CredentialsFromJSON
+		if fromJSON == nil {
+			fromJSON = google.CredentialsFromJSON //nolint:staticcheck // deprecated upstream in favour of typed parsers; this scheme must accept both authorized_user and service_account JSON (spec §4), and the cloud.google.com/go/auth migration is out of scope
+		}
+		creds, err = fromJSON(bg, []byte(res.Credential.Value), cloudPlatformScope)
+	} else {
+		find := a.FindCredentials
+		if find == nil {
+			find = google.FindDefaultCredentials
+		}
+		creds, err = find(bg, cloudPlatformScope)
+	}
 	if err != nil {
-		return nil, err
+		return tokenSource{}, err
 	}
-	ts := oauth2.ReuseTokenSource(nil, creds.TokenSource)
+	// A stored credential is classified from the bytes evener holds; only
+	// ADC has to trust the JSON the library read from the file.
+	credentialJSON := creds.JSON
+	if res.Credential.Source == "store" {
+		credentialJSON = []byte(res.Credential.Value)
+	}
+	src := tokenSource{ts: oauth2.ReuseTokenSource(nil, creds.TokenSource), userCredential: isUserCredential(credentialJSON)}
 	if a.sources == nil {
-		a.sources = map[string]oauth2.TokenSource{}
+		a.sources = map[string]cachedSource{}
 	}
-	a.sources[instance] = ts
-	return ts, nil
+	a.sources[res.Instance] = cachedSource{identity: identity, tokenSource: src}
+	return src, nil
 }

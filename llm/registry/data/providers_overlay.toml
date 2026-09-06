@@ -8,7 +8,7 @@
 default_order = [
   "anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
   "cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
-  "google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
+  "google-vertex-anthropic", "google-vertex", "google-vertex-express", "amazon-bedrock", "azure", "ollama",
 ]
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,9 @@ body = { anthropic_version = "vertex-2023-10-16" }
 auth = "gcp-adc"
 endpoint = "/publishers/google/models/{model}:generateContent"
 stream_endpoint = "/publishers/google/models/{model}:streamGenerateContent?alt=sse"
-models_endpoint = "-"
+# Host-relative on v1beta1 (the google protocol composes it; spec §2.3):
+# the publisher listing is not project-scoped and does not exist on v1.
+models_endpoint = "/publishers/google/models"
 count_tokens_endpoint = "-"
 
 [transports."bedrock-mantle-openai"]
@@ -294,7 +296,7 @@ api_key_env = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
 base_url = "{BASE_URL}"
 vars = { "BASE_URL" = "https://generativelanguage.googleapis.com/v1beta" }
 vars_env = { "BASE_URL" = "GOOGLE_BASE_URL" }
-default_model = "gemini-3.7-flash"
+default_model = "gemini-3.8-flash"
 cheap_model = "gemini-2.5-flash-lite"
 web_search = true
 
@@ -317,7 +319,32 @@ transport = "vertex-gemini"
 api_key_env = []
 base_url = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
 host_rule = "vertex-location"
-default_model = "gemini-3.7-flash"
+default_model = "gemini-3.8-flash"
+cheap_model = "gemini-2.5-flash-lite"
+web_search = true
+
+# Vertex AI in express mode (spec 2026-09-04-google-vertex-express-and-discovery
+# §1): the same Gemini publisher endpoints as google-vertex, addressed
+# without a project or location and authenticated with a Google Cloud API
+# key instead of ADC. Built on google and narrowed to its gemini-* rows
+# (google also carries Gemma, Lyria, and Deep Research rows, which the
+# express endpoint does not serve); the express key cannot call the
+# publisher-model listing (401 by policy), so models_endpoint stays "-" and
+# discovery is catalog-only.
+[providers."google-vertex-express"]
+implicit = true
+name = "Google Vertex (API key)"
+base = "google"
+inherit_models = true
+inherit_models_matching = ["gemini-*"]
+api_key_env = ["GOOGLE_VERTEX_API_KEY"]
+transport = "vertex-gemini"
+auth = "header"
+auth_header = "x-goog-api-key"
+models_endpoint = "-"
+vars = { "BASE_URL" = "https://aiplatform.googleapis.com/v1" }
+vars_env = { "BASE_URL" = "GOOGLE_VERTEX_EXPRESS_BASE_URL" }
+default_model = "gemini-3.8-flash"
 cheap_model = "gemini-2.5-flash-lite"
 web_search = true
 

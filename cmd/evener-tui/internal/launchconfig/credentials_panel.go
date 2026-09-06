@@ -56,6 +56,12 @@ type CredentialsPanel struct {
 	testPending    map[string]bool
 	testResults    map[string]appwire.AuthTestResponse
 	testGeneration uint64
+
+	// notice is an explanation shown under noticeFor's row when Enter has
+	// no action to run for that instance; any other key, or a list refresh,
+	// clears it.
+	notice    string
+	noticeFor string
 }
 
 func NewCredentialsPanel() CredentialsPanel {
@@ -137,6 +143,7 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.testGeneration++
 		p.testPending = nil
 		p.testResults = nil
+		p.notice, p.noticeFor = "", ""
 		p.loading = false
 		p.err = m.Err
 		if m.Err == nil {
@@ -185,6 +192,10 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The notice answers one Enter; any other key moves on from it.
+	if m.Type != tea.KeyEnter {
+		p.notice, p.noticeFor = "", ""
+	}
 	switch m.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
 		p.cancelled = true
@@ -209,6 +220,16 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if strings.Contains(modes, "oauth") {
 			return p, func() tea.Msg { return CredentialsActionMsg{Action: "oauth", Instance: cur.Name} }
+		}
+		// A gcp-adc instance is configured by application-default
+		// credentials or a pasted credential JSON; the TUI has no multiline
+		// paste, so say where the paste lives instead of doing nothing.
+		if strings.Contains(modes, "credentialJson") {
+			// Pre-broken into lines that fit the overlay under the row's
+			// indent, so the wrap never splits "credential JSON" or the
+			// section name.
+			p.notice = "Uses application-default credentials. To store a\ncredential JSON, paste it in the web hub under\nProviders & credentials."
+			p.noticeFor = cur.Name
 		}
 	case tea.KeyRunes:
 		s := string(m.Runes)
@@ -488,6 +509,11 @@ func (p CredentialsPanel) View() string {
 				rows = append(rows, "    Testing credentials…")
 			} else if result, ok := p.testResults[inst.Name]; ok {
 				rows = append(rows, "    "+result.Status+": "+result.Message)
+			}
+			if p.notice != "" && p.noticeFor == inst.Name {
+				for line := range strings.SplitSeq(p.notice, "\n") {
+					rows = append(rows, "    "+lipgloss.NewStyle().Foreground(th.TextDim).Render(line))
+				}
 			}
 		}
 		body = strings.Join(rows, "\n")

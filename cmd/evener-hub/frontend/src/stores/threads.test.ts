@@ -4747,6 +4747,102 @@ describe("useThreadsStore.listModels", () => {
     expect(b).toEqual(modelListResponse());
   });
 
+  test("evener/auth/updated clears the cache so the next call re-requests", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    fake.on("model/list", () => {
+      call += 1;
+      return { data: [{ provider: "google-vertex", model: `model-${call}` }] };
+    });
+
+    const before = await threadsStore.getState().listModels();
+    // A stored credential can make new models discoverable (a Vertex
+    // credential JSON enables the publisher-model listing), so the listing
+    // cached before it is stale.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const after = await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(before.data[0]?.model).toBe("model-1");
+    expect(after.data[0]?.model).toBe("model-2");
+  });
+
+  // deferredModelList scripts model/list to hang until the test resolves it,
+  // one resolver per request in arrival order, so a test can interleave the
+  // auth-updated notification with listings still in flight.
+  function deferredModelList(fake: FakeClient): Array<(resp: ModelListResponse) => void> {
+    const pending: Array<(resp: ModelListResponse) => void> = [];
+    fake.on(
+      "model/list",
+      () =>
+        new Promise<ModelListResponse>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    return pending;
+  }
+  const stale: ModelListResponse = { data: [{ provider: "google-vertex", model: "stale" }] };
+  const fresh: ModelListResponse = { data: [{ provider: "google-vertex", model: "fresh" }] };
+
+  test("a listing in flight when evener/auth/updated arrives still answers its caller but does not become the cache", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
+
+    const after = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[1]?.(fresh);
+    expect((await after).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a caller arriving after evener/auth/updated does not de-dupe onto a pre-credential listing still in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    expect(pending).toHaveLength(2);
+
+    pending[0]?.(stale);
+    pending[1]?.(fresh);
+    expect((await first).data[0]?.model).toBe("stale");
+    expect((await second).data[0]?.model).toBe("fresh");
+  });
+
+  test("a pre-credential listing settling does not evict the newer in-flight listing from the dedupe slot", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "google-vertex" } });
+    const second = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 2);
+    pending[0]?.(stale);
+    await first;
+
+    // The third caller must share the second request, not start a third: a
+    // task yield (not a turn count) lets any request it would have issued
+    // reach the fake before the negative assertion.
+    const third = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    expect((await second).data[0]?.model).toBe("fresh");
+    expect((await third).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
   test("refresh:true bypasses the cache and issues a fresh request", async () => {
     const fake = connectFakeClient();
     let call = 0;

@@ -261,18 +261,40 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // below for how noDefaultModel is set.
   const modelRequired = model === "" && noDefaultModel;
 
+  // A credential change can make models discoverable (a stored Vertex
+  // credential JSON enables the publisher-model listing) or take them away,
+  // so the scoped cache below is keyed on two signals of it: this generation,
+  // which evener/auth/updated advances the moment it arrives, and the
+  // instance list's identity, which follows the credentials store's debounced
+  // refetch and also covers an instance being added, edited or removed. On
+  // either, the loader identities change, and the catalog effect and the
+  // pickers reload (the mount-only stale-model sweep does not re-run).
+  const [credentialsGeneration, setCredentialsGeneration] = useState(0);
+  useEffect(
+    () =>
+      client.onNotification((n) => {
+        if (n.method === "evener/auth/updated") setCredentialsGeneration((generation) => generation + 1);
+      }),
+    [client],
+  );
   const modelListCache = useRef<{
     client: object;
     instances: object;
+    generation: number;
     entries: Map<string, Promise<ModelListResponse>>;
-  }>({
-    client,
-    instances: providerSetup.instances,
-    entries: new Map(),
-  });
+  }>({ client, instances: providerSetup.instances, generation: credentialsGeneration, entries: new Map() });
   const loadModelList = useCallback((): Promise<ModelListResponse> => {
-    if (modelListCache.current.client !== client || modelListCache.current.instances !== providerSetup.instances) {
-      modelListCache.current = { client, instances: providerSetup.instances, entries: new Map() };
+    if (
+      modelListCache.current.client !== client ||
+      modelListCache.current.instances !== providerSetup.instances ||
+      modelListCache.current.generation !== credentialsGeneration
+    ) {
+      modelListCache.current = {
+        client,
+        instances: providerSetup.instances,
+        generation: credentialsGeneration,
+        entries: new Map(),
+      };
     }
     const cache = modelListCache.current.entries;
     const key = `${harness}\0${cwd}`;
@@ -287,7 +309,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     });
     cache.set(key, tracked);
     return tracked;
-  }, [client, harness, cwd, providerSetup.instances]);
+  }, [client, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so

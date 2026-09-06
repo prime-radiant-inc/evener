@@ -1,13 +1,12 @@
 {
-  "case": "vertex-gemini-stream",
-  "ref": "google-vertex/gemini-2.5-flash",
-  "stream": true,
+  "case": "vertex-express-gemini",
+  "ref": "google-vertex-express/gemini-2.5-flash",
+  "stream": false,
   "method": "POST",
-  "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+  "url": "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent",
   "headers": {
-    "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json",
-    "X-Goog-User-Project": "my-project"
+    "X-Goog-Api-Key": "\u003ccredential\u003e"
   },
   "body": {
     "contents": [

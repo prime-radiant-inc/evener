@@ -661,6 +661,22 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
+		// gcp-adc reads no key either, and it can be unconfigured two ways
+		// (spec §5.1). Hidden means the base URL did not resolve — the
+		// registry says which variables this environment still owes it and
+		// what is wrong with the ones it has. Otherwise the URL resolves and
+		// it is the credential that did not.
+		if p.Transport.Auth == registry.AuthGCPADC {
+			if p.Hidden {
+				unset, problems := r.UnresolvedBaseURL(name)
+				reasons := append([]string(nil), problems...)
+				if len(unset) > 0 {
+					reasons = append(reasons, "set "+strings.Join(unset, ", "))
+				}
+				return appwire.HubLaunchError(fmt.Sprintf("provider %s is not configured: %s", name, strings.Join(reasons, "; ")))
+			}
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: it needs application-default credentials (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS) or a stored credential JSON (evener/auth/credentialJson/set)", name))
+		}
 		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set a key via evener/auth/apiKey/set or export one of %s", name, strings.Join(p.APIKeyEnv, ", ")))
 	}
 	return appwire.HubLaunchError(fmt.Sprintf("unknown instance %q: add a [providers.%s] entry to providers.toml", name, name))
