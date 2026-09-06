@@ -180,9 +180,9 @@ to the other hub. Follow [the contract inventory](hub-administration-inventory.m
 The hub/provider-bound sign-in controller now has eleven deterministic tests for
 poll timing, authorization, expiry, browser fallback/completion, background
 pause/resume, explicit poll retry and late-response disposal. Server states were
-checked against `app_auth.go` (`pending`, `expired`, `authorized`). Native editor,
-AppState wiring, URL opening/copy, fixture integration and both-platform manual
-sign-in acceptance remain to be implemented and verified.
+checked against `app_auth.go` (`pending`, `expired`, `authorized`). Native editor, AppState wiring and URL opening/code copy are implemented.
+Both Release builds, 253 native tests and TypeScript pass. Fixture integration
+and both-platform manual sign-in acceptance remain unverified.
 
 Integration constraint verified in `ConnectionProvider.tsx`: backgrounding closes
 the hub connection. The sign-in flow must therefore be owned above the connected
