@@ -16,7 +16,7 @@ and linked evidence are historical detail; entries below describe open work.
 
 ## Next work
 
-### MOB-011 · P1 · Move Submit to the composer controls row · Open
+### MOB-011 · P1 · Move Submit to the composer controls row · In progress
 
 Jesse: “the composer puts the submit button on the same row as text, rather
 than putting it on the same row as controls. so it eats horizontal space from
@@ -34,6 +34,11 @@ large text sizes. Verify real software keyboards, long model labels, empty and
 long drafts, and running-session states. Update the studies and style guide
 before claiming visual acceptance. No controls may overlap or steal width from
 the text area.
+
+The [initial implementation and native evidence](fullwidth-composer.md) show
+full-width drafts and controls-row submission. Android keyboard/send and iOS
+stop were exercised against the isolated runtime. Large text, iOS keyboard,
+running-control density and remaining acceptance states are still open.
 
 ### MOB-001 · P1 · Use screen space deliberately · In progress
 
