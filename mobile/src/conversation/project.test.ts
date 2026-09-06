@@ -462,6 +462,58 @@ describe("projectThread", () => {
   });
 
   describe("steering items", () => {
+    it("renders human steering as user input with its images", () => {
+      const c = projectThread(
+        thread([
+          turn("t1", [
+            item({
+              id: "human-steer",
+              type: "steering",
+              source: "user",
+              text: "input-sentinel",
+              images: [
+                {
+                  type: "image",
+                  name: "fixture.png",
+                  mediaType: "image/png",
+                  data: "BASE64",
+                },
+              ],
+            }),
+          ]),
+        ]),
+      );
+      expect(kinds(c)).toEqual(["user", "attachments"]);
+      expect(c.items[0]).toMatchObject({
+        kind: "user",
+        id: "human-steer",
+        text: "input-sentinel",
+      });
+      expect(c.items[1]).toMatchObject({
+        kind: "attachments",
+        items: [{ src: "data:image/png;base64,BASE64", name: "fixture.png" }],
+      });
+    });
+
+    it("does not turn daemon steering images into user attachments", () => {
+      const c = projectThread(
+        thread([
+          turn("t1", [
+            item({
+              id: "daemon-steer",
+              type: "steering",
+              source: "daemon",
+              text: "notice-sentinel",
+              images: [
+                { type: "image", mediaType: "image/png", data: "BASE64" },
+              ],
+            }),
+          ]),
+        ]),
+      );
+      expect(kinds(c)).toEqual(["notice"]);
+    });
+
     it("projects a steering item as a notice with its kind", () => {
       const t = thread([
         turn("t1", [

@@ -276,8 +276,8 @@ function projectItem(
   turn: Turn,
   pendingAsks: Set<string>,
 ): PreResult {
-  // User message — may carry input images that emit an attachments item.
-  if (isUserMessage(item)) {
+  // Human steering uses the same message and image presentation as user input.
+  if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     const attachments = itemInputAttachments(item);
     return {
       kind: "final",
@@ -366,7 +366,7 @@ function projectItem(
     };
   }
 
-  // Steering — notice.
+  // Daemon steering — notice, without user image attachments.
   if (isSteering(item)) {
     const tone: NoticeTone =
       item.steeringKind && WARNING_STEERING_KINDS.has(item.steeringKind)
