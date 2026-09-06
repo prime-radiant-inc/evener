@@ -80,3 +80,32 @@ an active editor about changed state before it overwrites another client's work.
 MOB-016 hub upgrade remains separate and must use an isolated disposable hub for
 native mutation/restart acceptance. All broader app requirements remain open in
 the authoritative backlog.
+
+
+## Launch-layer controller progress
+
+6 September 2026: `mobile-native/src/launchSettings.ts` implements one connected
+hub/cwd/layer editor. It loads schema, explicit layer and effective resolution,
+keeps resolution failure separate from editable-layer failure, and preserves
+unrelated fields. Edits are constrained to schema fields applicable to the layer.
+False/zero are explicit overrides; undefined removes the override. Value-kind and
+path validation still belong to the forthcoming native editor/server validation.
+
+Before whole-layer save it reads the current layer and refuses a changed baseline.
+Dirty editors receiving relevant launch notifications retain their draft and require
+reload. Saves exclude overlapping edits/saves, read back uncertain outcomes, and
+never replay a mutation. There is no server compare-and-set; another client can
+still write between preflight and mutation. Do not claim atomic conflict safety.
+
+Ten deterministic controller tests cover override semantics, unrelated-field
+preservation, field applicability, stale preflight, dirty external notification,
+uncertain write/readback, partial resolution failure, disposal, overlapping saves,
+retry after failed preflight and obsolete loads (some tests cover multiple related
+assertions). All 282 native tests, TypeScript and touched-file Biome pass.
+
+`mobile-native/scripts/launch-settings-smoke.mts` checks the exact isolated hub
+state root before changing maxRounds, saving through the controller, independently
+reading back and checking untouched fields, then restoring and comparing the whole
+original layer. It passed against SecondHub; the original layer was restored.
+This is real AppWire/controller evidence, not native editor E2E. No native editor
+is wired yet; all schema field kinds, validation and native acceptance remain.
