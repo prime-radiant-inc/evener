@@ -305,6 +305,9 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
+		if _, required := restartRequiredDaemon(cfg, params.Ref, params.ThreadID); required {
+			hubRosterRefresh(cfg.Roster)
+		}
 		source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {

@@ -120,6 +120,13 @@ func testHubProtocolUpgrade(t *testing.T, cleared bool) {
 		if err := rendezvous.Remove(runDir, 1001); err != nil {
 			t.Fatal(err)
 		}
+		read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, Subscribe: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read.Thread.Status.Type == appwire.ThreadStatusRestartRequired || !read.Thread.Evener.Capabilities.Send {
+			t.Fatalf("stopped daemon still blocks refreshed session: %+v", read.Thread)
+		}
 		if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 			t.Fatal(err)
 		}

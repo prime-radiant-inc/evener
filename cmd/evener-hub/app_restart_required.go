@@ -40,7 +40,10 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 func refreshDaemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
 	if ref != "" {
 		parsed, err := appwire.ParseRef(ref)
-		if err != nil || parsed.SourceID != "local" {
+		if err != nil {
+			return appwire.InvalidParams(err.Error())
+		}
+		if parsed.SourceID != "local" {
 			return nil
 		}
 	}
