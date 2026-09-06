@@ -24,7 +24,6 @@ import { GeneralSection } from "./sections/general";
 import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
-import { CodexLaunchSection } from "./sections/launchCodex";
 import { LaunchServerSection } from "./sections/launchServer";
 import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
 import { McpSection } from "./sections/mcp";
@@ -71,7 +70,6 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   credentials: CredentialsSection,
   agents: AgentsSection,
   "launch-evener": LaunchServerSection,
-  "launch-codex": CodexLaunchSection,
   inrepo: InRepoSection,
   project: ProjectSection,
   "plugins-manager": MarketplacesPluginsSection,

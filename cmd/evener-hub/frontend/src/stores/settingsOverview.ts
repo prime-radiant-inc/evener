@@ -1,8 +1,7 @@
 // settingsOverview.ts is a fetch-once-cache mirror of evener/settings/
-// overview - the field bag behind Settings -> General/Hub/Storage (this
-// stream's own sections) AND Agents/Codex launch/MCP-discovered (T2/T3's
-// sections, in sibling worktrees). Its shape is PINNED across all three
-// streams (wave-7 plan): `{ data, loading, error, fetch() }`, plus an
+// overview - the field bag behind the five overview-backed Settings sections:
+// General, Hub, Storage, Agents, and MCP-discovered. Its shape is PINNED across
+// all three streams (wave-7 plan): `{ data, loading, error, fetch() }`, plus an
 // additive `refresh()` - do not change this surface without checking both
 // sibling streams' tests, which are written against it directly.
 //

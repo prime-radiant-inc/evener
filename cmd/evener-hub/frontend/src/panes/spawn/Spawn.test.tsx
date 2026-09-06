@@ -111,7 +111,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/harnesses/list", () => ({
     data: [
       { id: "evener", label: "evener", kind: "evener" },
-      { id: "codex-cli", label: "codex-cli", kind: "codex" },
+      { id: "external", label: "external", kind: "external" },
     ],
   }));
   fake.on("evener/launch/schema", () => ({ options: [] }));
@@ -484,8 +484,8 @@ test("harness moved into Advanced options, and still works there", async () => {
   expect(screen.queryByLabelText("Harness")).toBeNull();
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
-  await user.selectOptions(harness, "codex-cli");
-  expect(harness.value).toBe("codex-cli");
+  await user.selectOptions(harness, "external");
+  expect(harness.value).toBe("external");
 });
 
 // The approved mobile Treatment A action band uses the direct user-facing
@@ -1056,7 +1056,7 @@ test("switching to a non-Evener harness hides plugins and clears explicit select
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await user.selectOptions(screen.getByLabelText("Harness"), "codex-cli");
+  await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   expect(screen.queryByTestId("spawn-plugin-desktop")).toBeNull();
   expect(

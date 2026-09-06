@@ -64,7 +64,7 @@ func attachRecentModels(cfg hubcore.WebConfig, resp appwire.ModelListResponse) a
 func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	harness := strings.TrimSpace(params.Harness)
 	if harness != "" && harness != "evener" && harness != "local" {
-		source, err := sourceForModelHarness(ctx, cfg, sources, harness)
+		source, err := sourceForModelHarness(sources, harness)
 		if err != nil {
 			return appwire.ModelListResponse{}, err
 		}
@@ -100,10 +100,7 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	return appwire.ModelListResponse{}, nil
 }
 
-func sourceForModelHarness(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, harness string) (appsource.Source, error) {
-	if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(harness) {
-		return cfg.CodexLauncher.EnsureSource(ctx, harness, sources)
-	}
+func sourceForModelHarness(sources *appsource.Registry, harness string) (appsource.Source, error) {
 	source, ok := sources.Source(harness)
 	if !ok {
 		return nil, appwire.Unavailable("model list source is not available: " + harness)
@@ -358,30 +355,6 @@ func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwi
 	return out
 }
 
-func launchHarnessDescriptors(cfg hubcore.WebConfig) []appwire.HarnessDescriptor {
-	out := []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}}
-	seen := map[string]bool{"evener": true}
-	for _, source := range cfg.CodexSources {
-		id := strings.TrimSpace(source.ID)
-		if id == "" {
-			id = "codex"
-		}
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, appwire.HarnessDescriptor{ID: id, Label: id, Kind: "codex"})
-	}
-	for _, launch := range cfg.CodexLaunches {
-		id := strings.TrimSpace(launch.ID)
-		if id == "" {
-			id = "codex"
-		}
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, appwire.HarnessDescriptor{ID: id, Label: id, Kind: "codex"})
-	}
-	return out
+func launchHarnessDescriptors() []appwire.HarnessDescriptor {
+	return []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}}
 }

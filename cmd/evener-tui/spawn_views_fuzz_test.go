@@ -191,11 +191,11 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		_ = openOverrides()
 		m.spawnHarnesses = nil
 		m.cycleSpawnHarness()
-		m.spawnHarnesses = []string{"evener", "codex"}
+		m.spawnHarnesses = []string{"evener", "external"}
 		m.spawnHarness = "missing"
 		m.cycleSpawnHarness()
-		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-		m.spawnHarness = "codex"
+		m.spawnHarnessKinds = map[string]string{"external": "external"}
+		m.spawnHarness = "external"
 		_ = m.spawnHarnessKind()
 		m.spawnModel = "provider/model"
 		m.syncSpawnModelWithHarness()
@@ -212,11 +212,6 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnEmptyTaskReasons, m.spawnEmptyTaskNext = nil, nil
 		_ = m.spawnEmptyTaskUnsupportedReason()
 		_ = m.spawnEmptyTaskUnsupportedNextAction()
-		m.spawnHarness = "codex"
-		m.spawnModel = "model"
-		_ = m.spawnHarnessModelDisplay()
-		m.spawnModel = "provider/model"
-		_ = m.spawnHarnessModelDisplay()
 		m.rows, m.selected = nil, 0
 		_ = m.spawnWorkingDir()
 		_ = m.spawnProjectName()
@@ -248,12 +243,11 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		client := &appwire.Client{}
 		m.client = client
 		m.spawnSubmitting = false
-		m.spawnHarness = "codex"
-		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
+		m.spawnHarness = "external"
+		m.spawnHarnessKinds = map[string]string{"external": "external"}
 		m.spawnModels = nil
-		m.spawnHarnessModels = nil
 		_, _ = m.activateSpawnModelField()
-		m.spawnEmptyTaskReasons = map[string]string{"codex": "unsupported"}
+		m.spawnEmptyTaskReasons = map[string]string{"external": "unsupported"}
 		m.session.input.SetValue("")
 		_, _ = m.submitSpawnForm()
 		m.spawnEmptyTaskReasons = nil
@@ -271,9 +265,8 @@ func FuzzSpawnAndViewProgram(f *testing.F) {
 		m.spawnModel = "ok"
 		_, _ = m.submitSpawnForm()
 		m.spawnFocus = hubSpawnFieldModel
-		m.spawnHarness = "codex"
-		m.spawnHarnessKinds = map[string]string{"codex": "codex"}
-		m.spawnHarnessModels = nil
+		m.spawnHarness = "external"
+		m.spawnHarnessKinds = map[string]string{"external": "external"}
 		_ = m.spawnFieldHint()
 		m.spawnHarness = "evener"
 		m.spawnHarnessKinds = map[string]string{"evener": "evener"}

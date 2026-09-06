@@ -522,7 +522,7 @@ func TestReturnToDashboard_DeferredOverlayDoesNotHauntADifferentSession(t *testi
 	m.returnToDashboard()
 
 	// Enter a DIFFERENT session B.
-	m.detail = sampleSessionDetails()["codex-readonly"]
+	m.detail = sampleSessionDetails()["source-readonly"]
 	m.session.messages = nil
 	m.mode = hubModeSession
 

@@ -21,7 +21,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -70,10 +69,6 @@ func (s *listenerHTTPServer) ListenAndServe() error {
 	return s.Serve(s.ln)
 }
 
-type hubShutdowner interface {
-	Shutdown(context.Context) error
-}
-
 type navigationPublisher interface {
 	BroadcastAll(string, any)
 }
@@ -114,7 +109,7 @@ type mainDeps struct {
 	loadRegistry    hubcore.RegistryLoader
 	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	listen          func(context.Context, string, string) (net.Listener, error)
-	serve           func(context.Context, hubHTTPServer, hubShutdowner) error
+	serve           func(context.Context, hubHTTPServer) error
 	afterWeb        func(*WebServer)
 }
 
@@ -277,11 +272,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		CredentialsPath:     credentialsPath,
 		NoUserLayer:         noUserLayer,
 	}
-	var codexLauncher *codexlaunch.CodexLauncher
-	if len(cfg.CodexLaunches) > 0 {
-		codexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
-	}
-
 	// stateDir is the parent of the projects/ directory; used for ForkSession
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
@@ -397,9 +387,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		ProvidersConfigPath:       providersConfigPath,
 		CredentialsPath:           credentialsPath,
 		NoUserLayer:               noUserLayer,
-		CodexSources:              cfg.CodexSources,
-		CodexLaunches:             cfg.CodexLaunches,
-		CodexLauncher:             codexLauncher,
 		PokeAttention:             pokeAttention,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
@@ -518,7 +505,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
-	if err := deps.serve(ctx, srv, codexShutdowner(codexLauncher)); err != nil {
+	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
@@ -577,20 +564,7 @@ func advertisedHubHost(addr string, hostname func() (string, error)) string {
 	return host + port
 }
 
-// codexShutdowner converts a possibly-absent launcher into a companion
-// serveHub can honestly nil-check. Assigning a nil *CodexLauncher straight to
-// the interface yields a value with a type but no data, which is NOT equal to
-// nil - so serveHub's `if companion != nil` would pass and Shutdown would take
-// l.Mu.Lock() on a nil receiver. A hub with no codex launches configured is
-// the default, so that is every graceful shutdown.
-func codexShutdowner(l *codexlaunch.CodexLauncher) hubShutdowner {
-	if l == nil {
-		return nil
-	}
-	return l
-}
-
-func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) error {
+func serveHub(ctx context.Context, srv hubHTTPServer) error {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -598,9 +572,6 @@ func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) e
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-		if companion != nil {
-			_ = companion.Shutdown(shutdownCtx)
-		}
 	}()
 	err := srv.ListenAndServe()
 	if ctx.Err() != nil {

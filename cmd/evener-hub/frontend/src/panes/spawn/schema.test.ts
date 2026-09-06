@@ -20,7 +20,7 @@ describe("perLaunchEvenerOptions (floor §1.11, spawn.js:618-626)", () => {
       option({ wireField: "notPerLaunch", kind: "text", perLaunch: false }),
       option({ wireField: "evenerFalse", kind: "text", perLaunch: true, driverSupport: { evener: false } }),
       option({ wireField: "evenerTrue", kind: "text", perLaunch: true, driverSupport: { evener: true } }),
-      option({ wireField: "evenerUnset", kind: "text", perLaunch: true, driverSupport: { codex: true } }),
+      option({ wireField: "evenerUnset", kind: "text", perLaunch: true, driverSupport: { external: true } }),
       option({ wireField: "enabledPlugins", kind: "pluginSelection", perLaunch: true }),
     ];
     expect(perLaunchEvenerOptions({ options }).map((o) => o.wireField)).toEqual(["keep", "evenerTrue", "evenerUnset"]);

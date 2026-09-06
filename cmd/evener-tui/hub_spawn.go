@@ -157,16 +157,8 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
 	models := m.spawnSelectableModels()
-	if len(models) == 0 && !m.spawnHarnessUsesEvenerModels() && m.client != nil {
-		m.err = nil
-		return m, fetchHubModelsForHarness(m.client, m.spawnHarness, m.spawnDir)
-	}
 	if len(models) == 0 {
-		if !m.spawnHarnessUsesEvenerModels() {
-			m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
-		} else {
-			m.err = errors.New("no models available")
-		}
+		m.err = errors.New("no models available")
 		return m, nil
 	}
 	m.openSpawnModelPicker(models)
@@ -296,7 +288,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if m.spawnHarnessUsesEvenerModels() && strings.TrimSpace(m.spawnModel) == "" {
+	if strings.TrimSpace(m.spawnModel) == "" {
 		m.err = errors.New("choose a model before starting")
 		return m, nil
 	}
@@ -455,9 +447,6 @@ func (m hubModel) spawnFieldHint() string {
 	case hubSpawnFieldHarness:
 		return "enter/space: change harness"
 	case hubSpawnFieldModel:
-		if !m.spawnHarnessUsesEvenerModels() && len(m.spawnSelectableModels()) == 0 {
-			return "enter: fetch harness models"
-		}
 		return "enter: choose model"
 	case hubSpawnFieldDir:
 		return "type path  tab: recent/complete  enter: next  ctrl+u clear"
@@ -567,7 +556,6 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnEmptyTaskNext = nil
 	m.spawnModel = ""
 	m.spawnModels = nil
-	m.spawnHarnessModels = nil
 	m.spawnModelPicker = nil
 	m.spawnPluginsPanel = nil
 	m.invalidateSpawnPluginPreview()
@@ -601,14 +589,12 @@ func (m *hubModel) cycleSpawnHarness() tea.Cmd {
 	for i, harness := range m.spawnHarnesses {
 		if harness == m.spawnHarness {
 			m.spawnHarness = m.spawnHarnesses[(i+1)%len(m.spawnHarnesses)]
-			m.spawnModel = ""
 			m.spawnModelPicker = nil
 			m.syncSpawnModelWithHarness()
 			return m.finishSpawnHarnessCycle(wasPluginCapable)
 		}
 	}
 	m.spawnHarness = m.spawnHarnesses[0]
-	m.spawnModel = ""
 	m.spawnModelPicker = nil
 	m.syncSpawnModelWithHarness()
 	return m.finishSpawnHarnessCycle(wasPluginCapable)
@@ -647,32 +633,17 @@ func (m hubModel) spawnHarnessKind() string {
 	return "evener"
 }
 
-func (m hubModel) spawnHarnessUsesEvenerModels() bool {
-	return m.spawnHarnessKind() != "codex"
-}
-
 func (m hubModel) spawnHarnessSupportsPlugins() bool {
 	return m.spawnHarnessKind() == "evener"
 }
 
 func (m hubModel) spawnSelectableModels() []tuipick.ModelPickerItem {
-	if !m.spawnHarnessUsesEvenerModels() {
-		return m.spawnHarnessModels[m.spawnHarness]
-	}
 	return m.spawnModels
 }
 
 func (m *hubModel) syncSpawnModelWithHarness() {
-	if !m.spawnHarnessUsesEvenerModels() {
-		if strings.Contains(strings.TrimSpace(m.spawnModel), "/") {
-			m.spawnModel = ""
-		}
-		m.spawnModelPicker = nil
-		return
-	}
 	if strings.TrimSpace(m.spawnModel) == "" {
-		models := m.spawnSelectableModels()
-		if model, ok := firstEnabledModel(models); ok {
+		if model, ok := firstEnabledModel(m.spawnSelectableModels()); ok {
 			m.spawnModel = model.ID
 		}
 	}
@@ -722,18 +693,7 @@ func (m *hubModel) openSpawnModelPicker(models []tuipick.ModelPickerItem) {
 }
 
 func (m hubModel) spawnModelPickerTitle() string {
-	if m.spawnHarnessUsesEvenerModels() {
-		return "Select model"
-	}
-	return "Select " + m.spawnHarness + " model"
-}
-
-func (m hubModel) spawnHarnessModelDisplay() string {
-	model := strings.TrimSpace(m.spawnModel)
-	if model == "" || strings.Contains(model, "/") {
-		return model
-	}
-	return m.spawnHarness + "/" + model
+	return "Select model"
 }
 
 func (m hubModel) spawnDirView() string {
@@ -784,13 +744,7 @@ func (m hubModel) spawnView() string {
 	}
 	model := m.spawnModel
 	models := m.spawnSelectableModels()
-	if !m.spawnHarnessUsesEvenerModels() {
-		if model == "" {
-			model = "(harness default)"
-		} else {
-			model = m.spawnHarnessModelDisplay()
-		}
-	} else if model == "" && len(models) == 0 {
+	if model == "" && len(models) == 0 {
 		model = "(loading models...)"
 	} else if model == "" {
 		model = "(choose a model)"

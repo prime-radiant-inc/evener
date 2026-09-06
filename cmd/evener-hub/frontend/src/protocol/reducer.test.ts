@@ -3237,7 +3237,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
   expect(model.supportsReasoning).toBe(true);
 });
 
-test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / codex thread)", () => {
+test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / source-backed thread)", () => {
   const model = testHydrate(); // testThread()'s default evener carries none of these
 
   expect(model.goal).toBeNull();

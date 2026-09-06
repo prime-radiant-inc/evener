@@ -5,7 +5,7 @@
 
 AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
 the browser and `evener tui` talk to `evener hub`, and `evener hub` talks to each
-`evener serve` daemon (and to Codex app-server sources). The same message shapes
+`evener serve` daemon. The same message shapes
 and method catalog ride every hop.
 
 ```
@@ -170,7 +170,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
-| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, codex launch configs, and probed MCP servers — the six template-only settings sections' data. |
+| `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/settings/keybindings/get` | hub | `EmptyParams` | `KeybindingsOverrides` | Reads the canonical user keybinding overrides (version, revision, rules). |
@@ -1429,7 +1429,6 @@ _(no fields)_
 | `hub` | `*appwire.SettingsHubOverview` | yes |  |
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
-| `codexLaunches` | `[]appwire.SettingsCodexLaunchEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
 
 

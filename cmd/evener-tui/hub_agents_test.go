@@ -138,16 +138,16 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 
 func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	items := hubTranscriptPickerItems([]appwire.ThreadTranscriptTarget{
-		{Ref: "codex:01MAIN", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "codex"},
+		{Ref: "remote:01MAIN", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "remote"},
 		{Ref: "local:01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "evener", TurnsUsed: 2},
 	})
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)
 	}
-	if items[0].ID != "codex:01MAIN" {
+	if items[0].ID != "remote:01MAIN" {
 		t.Fatalf("main transcript ID=%q", items[0].ID)
 	}
-	if items[0].Display != "main session (codex, idle)" {
+	if items[0].Display != "main session (remote, idle)" {
 		t.Fatalf("main transcript display=%q", items[0].Display)
 	}
 	if items[1].ID != "local:01SUB" {
@@ -158,23 +158,23 @@ func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	}
 }
 
-func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
+func TestHubModelAgentsPickerShowsRemoteSourceAndLiveSubagent(t *testing.T) {
 	var readRefs []string
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
-			if params.Ref != "codex:01CODEX" {
-				t.Errorf("transcript list ref=%q, want codex:01CODEX", params.Ref)
+			if params.Ref != "remote:01REMOTE" {
+				t.Errorf("transcript list ref=%q, want remote:01REMOTE", params.Ref)
 				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
 			}
 			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
-				{Ref: "codex:01CODEX", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "codex"},
-				{Ref: "codex:01LIVE", Title: "live subagent", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "codex", TurnsUsed: 2},
+				{Ref: "remote:01REMOTE", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "remote"},
+				{Ref: "remote:01LIVE", Title: "live subagent", Kind: "subagent", Status: appwire.ThreadStatusActive, Source: "remote", TurnsUsed: 2},
 			}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readRefs = append(readRefs, params.Ref)
-			if params.Ref != "codex:01LIVE" || !params.IncludeTurns {
-				t.Errorf("thread/read params=%+v, want live Codex subagent full transcript", params)
+			if params.Ref != "remote:01LIVE" || !params.IncludeTurns {
+				t.Errorf("thread/read params=%+v, want live remote subagent full transcript", params)
 				return appwire.ThreadReadResponse{}, fmt.Errorf("unexpected params: %+v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -183,13 +183,13 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 				Name:          "live subagent",
 				ModelProvider: "gpt-5",
 				Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-				Source:        "codex",
-				Evener:        appwire.EvenerThread{Ref: "codex:01LIVE", Kind: "subagent", ParentRef: "codex:01CODEX"},
+				Source:        "remote",
+				Evener:        appwire.EvenerThread{Ref: "remote:01LIVE", Kind: "subagent", ParentRef: "remote:01REMOTE"},
 				Turns: []appwire.Turn{{
 					ID:     "turn_live",
 					Status: appwire.TurnStatusInProgress,
 					Items: []appwire.ThreadItem{
-						{Type: "agentMessage", ID: "agent-live", TurnID: "turn_live", Text: "live codex subagent answer", Status: "inProgress"},
+						{Type: "agentMessage", ID: "agent-live", TurnID: "turn_live", Text: "live remote subagent answer", Status: "inProgress"},
 					},
 				}},
 			}}, nil
@@ -198,21 +198,21 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.Ref = "codex:01CODEX"
-	m.detail.SourceLabel = "codex"
-	m.session.sessionID = "01CODEX"
-	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main codex answer"}}
+	m.detail.Ref = "remote:01REMOTE"
+	m.detail.SourceLabel = "remote"
+	m.session.sessionID = "01REMOTE"
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main remote answer"}}
 	m.session.setInputValue("/agents")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("/agents should fetch Codex transcript targets through Hub")
+		t.Fatal("/agents should fetch remote transcript targets through Hub")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
 	got := m.View()
-	for _, want := range []string{"main session (codex, idle)", "live subagent (codex, active, 2 turns)"} {
+	for _, want := range []string{"main session (remote, idle)", "live subagent (remote, active, 2 turns)"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("Codex transcript picker missing %q:\n%s", want, got)
+			t.Fatalf("remote transcript picker missing %q:\n%s", want, got)
 		}
 	}
 
@@ -222,17 +222,17 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 	}
 	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("selecting live Codex subagent should read it through Hub")
+		t.Fatal("selecting live remote subagent should read it through Hub")
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
-	if len(readRefs) != 1 || readRefs[0] != "codex:01LIVE" {
-		t.Fatalf("read refs=%v, want codex:01LIVE", readRefs)
+	if len(readRefs) != 1 || readRefs[0] != "remote:01LIVE" {
+		t.Fatalf("read refs=%v, want remote:01LIVE", readRefs)
 	}
 	got = m.View()
-	for _, want := range []string{"src codex", "Viewing live subagent [codex]", "live codex subagent answer"} {
+	for _, want := range []string{"src remote", "Viewing live subagent [remote]", "live remote subagent answer"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("Codex transcript view missing %q:\n%s", want, got)
+			t.Fatalf("remote transcript view missing %q:\n%s", want, got)
 		}
 	}
 }

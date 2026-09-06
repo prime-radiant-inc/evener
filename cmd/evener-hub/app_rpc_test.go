@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -24,7 +23,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
@@ -209,7 +207,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithManagedLaunch(context.Background(), cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -1337,73 +1335,6 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 	}
 }
 
-func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	}
-	sources := newHubSourceRegistry(cfg)
-
-	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("hubThreadList: %v", err)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-managed:th_fake" {
-		t.Fatalf("threads=%+v", resp.Data)
-	}
-	if _, ok := sources.Source("codex-managed"); !ok {
-		t.Fatal("managed Codex source was not registered")
-	}
-}
-
-func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	}
-	localThread := appwire.Thread{
-		ID:        "01LOCAL",
-		SessionID: "01LOCAL",
-		Source:    "local",
-		Preview:   "local thread",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-		Evener:    appwire.EvenerThread{Ref: "local:01LOCAL"},
-	}
-	sources := appsource.NewRegistry()
-	sources.Add(&listThreadSource{id: "local", thread: localThread})
-
-	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"local"}})
-	if err != nil {
-		t.Fatalf("hubThreadList: %v", err)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
-		t.Fatalf("threads=%+v", resp.Data)
-	}
-	if _, ok := sources.Source("codex-managed"); ok {
-		t.Fatal("managed Codex source was registered despite local-only source filter")
-	}
-}
-
-func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
-	defer shutdownCodexLauncher(t, launcher)
-	cfg := hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
-		CodexLauncher: launcher,
-	}
-	sources := newHubSourceRegistry(cfg)
-
-	_, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"codex-managed"}})
-	assertHubLaunchError(t, err)
-}
-
 func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	localThread := appwire.Thread{
 		ID:        "01LOCAL",
@@ -1452,23 +1383,6 @@ func TestHubThreadListReturnsErrorWhenAnySelectedSourceFails(t *testing.T) {
 	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"local", "codex"}})
 	if err == nil || !strings.Contains(err.Error(), "codex offline") {
 		t.Fatalf("hubThreadList error=%v, want codex offline", err)
-	}
-}
-
-func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
-	sources := newHubSourceRegistry(hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex-local",
-			Endpoint: "ws://127.0.0.1:9900",
-		}},
-	})
-	if _, ok := sources.Source("local"); !ok {
-		t.Fatal("local source missing")
-	}
-	if source, ok := sources.Source("codex-local"); !ok {
-		t.Fatal("codex source missing")
-	} else if source.ID() != "codex-local" {
-		t.Fatalf("source=%q", source.ID())
 	}
 }
 
@@ -7671,46 +7585,6 @@ func TestHubRPCModelListUsesWorkingDirForEvenerLaunchContract(t *testing.T) {
 	}
 }
 
-func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local", AdapterNativeInitialize: true})
-	var gotParams appwire.ModelListParams
-	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
-		gotParams = params
-		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex-local",
-			Endpoint: "ws" + codexHTTP.URL[len("http"):],
-		}},
-		Spawner: &fakeRPCModelContractSpawner{
-			contract: appwire.ModelListResponse{
-				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
-			},
-		},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-local"})
-	if err != nil {
-		t.Fatalf("ModelList: %v", err)
-	}
-	if gotParams.Harness != "" {
-		t.Fatalf("codex source received hub harness routing field: %+v", gotParams)
-	}
-	if len(resp.Data) != 1 || resp.Data[0].Provider != "codex-local" || resp.Data[0].Model != "gpt-5.3-codex" {
-		t.Fatalf("models=%+v", resp.Data)
-	}
-}
-
 func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
@@ -8474,246 +8348,6 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	}
 }
 
-func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var startCalled bool
-	var turnCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		startCalled = true
-		if params["cwd"] != "/work/project" || params["model"] != "gpt-5.1-codex" {
-			t.Fatalf("thread/start params=%+v", params)
-		}
-		if _, ok := params["harness"]; ok {
-			t.Fatalf("codex thread/start should not receive hub harness routing field: %+v", params)
-		}
-		if _, ok := params["sourceId"]; ok {
-			t.Fatalf("codex thread/start should not receive hub source routing field: %+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "codex task",
-			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     100,
-			"status":        map[string]any{"type": "idle"},
-			"cwd":           "/work/project",
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		turnCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("turn/start params=%+v", params)
-		}
-		return map[string]any{"turn": map[string]any{
-			"id":        "turn_codex",
-			"items":     []any{},
-			"itemsView": "full",
-			"status":    "inProgress",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex",
-		CWD:     "/work/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "hello codex"}},
-		Model:   "gpt-5.1-codex",
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if !startCalled || !turnCalled {
-		t.Fatalf("startCalled=%v turnCalled=%v", startCalled, turnCalled)
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "hello launched codex"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "first launched codex"}},
-	}); err != nil {
-		t.Fatalf("first ThreadStart: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex-managed",
-		CWD:     "/tmp/project",
-		Input:   []appwire.InputItem{{Type: "text", Text: "second launched codex"}},
-	})
-	if err != nil {
-		t.Fatalf("second ThreadStart: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex-managed:th_fake"})
-	if err != nil {
-		t.Fatalf("ThreadResume: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex-managed:th_fake"})
-	if err != nil {
-		t.Fatalf("ThreadFork: %v", err)
-	}
-	if resp.Thread.Evener.Ref != "codex-managed:th_fake_child" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", web.sources); err != nil {
-		t.Fatalf("EnsureSource: %v", err)
-	}
-	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.Cmd.Process.Kill(); err != nil {
-		t.Fatalf("kill first codex: %v", err)
-	}
-	waitLaunchedCodexExited(t, first)
-
-	hub := httptest.NewUnstartedServer(nil)
-	web.cfg.HubAddr = hub.Listener.Addr().String()
-	hub.Config.Handler = web.Handler()
-	hub.Start()
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_fake", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
-		t.Fatal("TurnStart succeeded for Codex source")
-	}
-	next := launcherRunningProcess(t, launcher, "codex-managed")
-	if next == first {
-		t.Fatal("turn/start reused the exited managed Codex process")
-	}
-}
-
 func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *hubcore.PastIndex) {
 	t.Helper()
 	stateDir := filepath.Join(root, "projects", "project-resume-0000000000")
@@ -8820,89 +8454,6 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 	}
 	if req.WorkingDir != restoreRoot {
 		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, restoreRoot)
-	}
-}
-
-func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var startCalled bool
-	var turnCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		startCalled = true
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_blank",
-			"sessionId": "th_blank",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
-		turnCalled = true
-		return nil, errors.New("blank prompt should not start a turn")
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Harness: "codex",
-		CWD:     "/work/project",
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	if !startCalled {
-		t.Fatal("Codex source was not started for blank prompt")
-	}
-	if turnCalled {
-		t.Fatal("Codex turn was started for blank prompt")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_blank" || resp.Turn.ID != "" {
-		t.Fatalf("resp=%+v", resp)
-	}
-}
-
-func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID: "codex-local",
-		}, {}},
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	var resp struct {
-		Data []struct {
-			ID    string `json:"id"`
-			Label string `json:"label"`
-			Kind  string `json:"kind"`
-		} `json:"data"`
-	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHarnessesList, map[string]any{}, &resp); err != nil {
-		t.Fatalf("evener/harnesses/list: %v", err)
-	}
-	got := map[string]string{}
-	for _, h := range resp.Data {
-		got[h.ID] = h.Kind
-	}
-	if got["evener"] != "evener" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
-		t.Fatalf("harnesses=%+v", resp.Data)
 	}
 }
 
@@ -9139,200 +8690,6 @@ func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *te
 	}
 }
 
-func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var resumeCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		resumeCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/resume params=%+v", params)
-		}
-		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
-			if _, present := params[field]; present {
-				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
-			}
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "resumed codex",
-			"modelProvider": "openai",
-			"status":        map[string]any{"type": "idle"},
-			"source":        "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadResume: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("codex resume was not routed")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var readCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		readCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"preview":   "read-only codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadRead: %v", err)
-	}
-	if !readCalled {
-		t.Fatal("codex read was not routed")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
-func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var compactCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"preview":   "compact codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		compactCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/compact/start params=%+v", params)
-		}
-		return map[string]any{}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "codex:th_codex"}); err != nil {
-		t.Fatalf("ThreadCompactStart: %v", err)
-	}
-	if !compactCalled {
-		t.Fatal("configured Codex source was not compacted")
-	}
-}
-
-func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	var forkCalled bool
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/read params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex",
-			"sessionId": "th_codex",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadFork, func(_ context.Context, params map[string]any) (map[string]any, error) {
-		forkCalled = true
-		if params["threadId"] != "th_codex" {
-			t.Fatalf("thread/fork params=%+v", params)
-		}
-		return map[string]any{"thread": map[string]any{
-			"id":        "th_codex_child",
-			"sessionId": "th_codex_child",
-			"status":    map[string]any{"type": "idle"},
-			"source":    "appServer",
-		}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past: hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_codex"})
-	if err != nil {
-		t.Fatalf("ThreadFork: %v", err)
-	}
-	if !forkCalled {
-		t.Fatal("configured Codex source was not forked")
-	}
-	if resp.Thread.Evener.Ref != "codex:th_codex_child" {
-		t.Fatalf("thread=%+v", resp.Thread)
-	}
-}
-
 func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	source := &startResumeRelaySource{
 		id: "codex",
@@ -9505,7 +8862,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 		{
 			name: "initial source resolution",
 			configure: func(_ *int) {
-				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+				resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 					return nil, errors.New("source unavailable")
 				}
 			},
@@ -9520,7 +8877,7 @@ func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
 						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
 					},
 				}
-				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+				resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
 					return source, nil
 				}
 			},
@@ -9964,135 +9321,6 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	}
 }
 
-// TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry guards the kata ws5f
-// fix: the MethodTurnStart resume gate must accept managed-launch refs (e.g.
-// codex:thread_xxx) even when they aren't in the local past index, so that an
-// auto-resume retry fires when the managed daemon dies mid-turn.
-func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
-	cfg := hubcore.WebConfig{Past: hubcore.NewPastIndex(""), CodexLauncher: launcher}
-	if !hubKnowsRef(cfg, "codex-managed:th_known") {
-		t.Fatal("hubKnowsRef should accept managed-launch ref")
-	}
-	if hubKnowsRef(cfg, "codex-unknown:th_known") {
-		t.Fatal("hubKnowsRef should reject ref whose source is not managed")
-	}
-	if hubKnowsRef(cfg, "local:th_not_in_past") {
-		t.Fatal("hubKnowsRef should reject local ref with no past entry")
-	}
-}
-
-// resumeAfterSessionUnavailableManagedSource simulates a managed codex daemon
-// that returns SessionUnavailable on the first StartTurn (the daemon just
-// died), then succeeds after the hub calls ResumeThread.
-type resumeAfterSessionUnavailableManagedSource struct {
-	relayLifecycleSource
-	id           string
-	mu           sync.Mutex
-	startCalls   int
-	resumeCalls  int
-	thread       appwire.Thread
-	startPrompts []string
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) ID() string { return s.id }
-
-func (s *resumeAfterSessionUnavailableManagedSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return appwire.ThreadReadResponse{Thread: s.thread}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) ResumeThread(_ context.Context, _ appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-	s.mu.Lock()
-	s.resumeCalls++
-	s.mu.Unlock()
-	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	s.mu.Lock()
-	s.startCalls++
-	calls := s.startCalls
-	s.startPrompts = append(s.startPrompts, inputTextForTest(params.Input))
-	s.mu.Unlock()
-	if calls == 1 {
-		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("managed daemon went away")
-	}
-	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_after_resume"}}, nil
-}
-
-func (s *resumeAfterSessionUnavailableManagedSource) counts() (start, resume int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.startCalls, s.resumeCalls
-}
-
-// seedManagedSource pokes a fake source into the CodexLauncher's caches so
-// that EnsureSource returns it without spawning a real process.
-func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string, source appsource.Source) {
-	t.Helper()
-	launcher.Mu.Lock()
-	defer launcher.Mu.Unlock()
-	launcher.Sources[sourceID] = source
-	launcher.Running[sourceID] = &codexlaunch.LaunchedCodex{
-		Cmd:    &exec.Cmd{},
-		Exited: make(chan struct{}),
-	}
-}
-
-// TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable verifies that
-// the auto-resume retry fires for a non-local managed-launch ref when the
-// backing daemon returns SessionUnavailable. Previously the past-index gate
-// at MethodTurnStart skipped the retry entirely for any non-local ref (kata
-// ws5f).
-func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
-	fake := &resumeAfterSessionUnavailableManagedSource{
-		canceled: make(chan struct{}, 1),
-		id:       "codex-managed",
-		thread: appwire.Thread{
-			ID:        "th_managed",
-			SessionID: "th_managed",
-			Source:    "codex-managed",
-			Evener: appwire.EvenerThread{
-				Ref:          "codex-managed:th_managed",
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		},
-	}
-	seedManagedSource(t, launcher, "codex-managed", fake)
-
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
-		CodexLauncher: launcher,
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
-		ExpectedInstanceID: "th_managed",
-		Ref:                "codex-managed:th_managed",
-		Input:              []appwire.InputItem{{Type: "text", Text: "keep going"}},
-	})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if resp.Turn.ID != "turn_after_resume" {
-		t.Fatalf("turn=%+v, want turn_after_resume", resp.Turn)
-	}
-	starts, resumes := fake.counts()
-	if starts != 2 {
-		t.Fatalf("StartTurn calls=%d, want 2 (initial + retry after resume)", starts)
-	}
-	if resumes != 1 {
-		t.Fatalf("ResumeThread calls=%d, want 1", resumes)
-	}
-}
-
 // sessionUnavailableOnceSource returns SessionUnavailable on the first
 // StartTurn and tracks ResumeThread calls.
 type sessionUnavailableOnceSource struct {
@@ -10134,23 +9362,21 @@ func (s *sessionUnavailableOnceSource) counts() (start, resume int) {
 	return s.startCalls, s.resumeCalls
 }
 
-// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the resume gate
-// still refuses non-local refs the hub does not know about (no managed launch,
-// no past entry) even after widening the gate to include managed-launch
-// sources (kata ws5f). The hub should bubble up the original SessionUnavailable
-// error without attempting a resume.
+// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the local
+// past-index retry gate refuses non-local refs. The hub should bubble up the
+// original SessionUnavailable error without attempting a resume.
 func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	srv := httptest.NewUnstartedServer(nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	fake := &sessionUnavailableOnceSource{
 		canceled: make(chan struct{}, 1),
-		id:       "codex",
+		id:       "remote",
 		thread: appwire.Thread{
 			ID:        "th_unknown",
 			SessionID: "th_unknown",
-			Source:    "codex",
+			Source:    "remote",
 			Evener: appwire.EvenerThread{
-				Ref:          "codex:th_unknown",
+				Ref:          "remote:th_unknown",
 				Capabilities: appwire.ThreadCapabilities{Send: true},
 			},
 		},
@@ -10168,7 +9394,7 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	}
 	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
 		ExpectedInstanceID: "th_unknown",
-		Ref:                "codex:th_unknown",
+		Ref:                "remote:th_unknown",
 		Input:              []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
 	if err == nil {
@@ -10732,26 +9958,6 @@ func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir stri
 		t.Fatal(err)
 	}
 	return parentID
-}
-
-func launcherRunningProcess(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string) *codexlaunch.LaunchedCodex {
-	t.Helper()
-	launcher.Mu.Lock()
-	defer launcher.Mu.Unlock()
-	launched := launcher.Running[sourceID]
-	if launched == nil || launched.Cmd == nil || launched.Cmd.Process == nil {
-		t.Fatalf("launcher has no running process for %s", sourceID)
-	}
-	return launched
-}
-
-func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) {
-	t.Helper()
-	select {
-	case <-launched.Exited:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for launched codex process to exit")
-	}
 }
 
 // TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate pins

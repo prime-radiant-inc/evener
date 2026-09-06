@@ -68,14 +68,11 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		}
 		return entries
 	}, http.DefaultClient))
-	for _, source := range cfg.CodexSources {
-		registry.Add(appsource.NewCodexSource(source, http.DefaultClient))
-	}
 	return registry
 }
 
 var (
-	resolveTurnStartSource = sourceForThreadWithManagedLaunchUnlocked
+	resolveTurnStartSource = sourceForThread
 	resumeTurnStartThread  = hubThreadResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
@@ -239,7 +236,7 @@ func registerThreadHandlers(
 		return hubThreadList(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.ThreadReadResponse{}, err
@@ -278,9 +275,8 @@ func registerThreadHandlers(
 		// /doc/image descriptors of its own.
 		resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
 		annotateThreadProjects([]appwire.Thread{resp.Thread})
-		// Window any turns the source itself didn't (Codex thread/read and the
-		// past-merge return the full transcript); a daemon read already set
-		// OlderCursor, so this is a no-op there.
+		// Window any full transcript returned by the source or past-merge.
+		// A bounded daemon read already set OlderCursor, so this is a no-op there.
 		if params.TurnLimit > 0 && resp.OlderCursor == "" {
 			resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
 		}
@@ -301,7 +297,7 @@ func registerThreadHandlers(
 	// from. The relay key is derived by the same helper thread/read's relay
 	// uses (threadRelayTarget), so the removal lands on the exact registry
 	// entry Subscribe created. Resolution deliberately uses the plain registry
-	// lookup — never the managed-launch path — because an unsubscribe must not
+	// lookup without session activation because an unsubscribe must not
 	// start a session just to stop delivering to it. When no source resolves,
 	// the ref's own namespace (parsed from the ref itself) is the best key
 	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
@@ -329,7 +325,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		// Live source first; fall back to the saved transcript (paged on the
 		// hub) for past/not-loaded sessions.
-		source, srcErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		source, srcErr := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
 		if isTargetDeletedError(srcErr) {
 			return appwire.ThreadTurnsListResponse{}, srcErr
 		}
@@ -370,7 +366,7 @@ func registerThreadHandlers(
 		if ref == "" {
 			return appwire.EvenerSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
+		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, "")
 		if err != nil {
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
@@ -436,7 +432,7 @@ func registerThreadHandlers(
 		resolved := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
 			source, err := withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
-				return resolveTurnStartSource(ctx, cfg, sources, params.Ref, params.ThreadID)
+				return resolveTurnStartSource(sources, params.Ref, params.ThreadID)
 			})
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
@@ -478,7 +474,7 @@ func registerThreadHandlers(
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
 			}
@@ -490,7 +486,7 @@ func registerThreadHandlers(
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnInterruptResponse{}, err
 			}
@@ -499,7 +495,7 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, params.ThreadID)
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.EmptyResponse{}, err
 			}
@@ -514,7 +510,7 @@ func registerThreadHandlers(
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnQueueResponse{}, err
 			}
@@ -529,7 +525,7 @@ func registerThreadHandlers(
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
 			}
@@ -547,7 +543,7 @@ func registerThreadHandlers(
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 			}
@@ -565,7 +561,7 @@ func registerThreadHandlers(
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
 		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnCancelQueuedResponse{}, err
 			}
@@ -595,7 +591,7 @@ func registerThreadHandlers(
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
-			source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
+			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.EmptyResponse{}, err
 			}
@@ -888,7 +884,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		return hubGitHead(ctx, cfg, params), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
-		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
+		return appwire.HarnessListResponse{Data: launchHarnessDescriptors()}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
 		return hubCommandList(ctx, cfg)

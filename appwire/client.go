@@ -17,7 +17,7 @@ var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 // deliberate loud failure (the connection is torn down rather than silently
 // dropping or buffering without bound), so the capacity must hold any single
 // legitimate burst even while the consumer waits for a scheduling slice: a
-// codex initial-turn replay is ~160 messages, and request paths that never
+// large initial-turn replay can be ~160 messages, and request paths that never
 // consume notifications (short-lived withClient calls) ride entirely on this
 // buffer.
 const NotificationBufferCap = 4096

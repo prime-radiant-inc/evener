@@ -1263,7 +1263,7 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 // the callers (thread/read, thread/turns/list, the live-thread merge) treat
 // found=false as "nothing to add" and an error as a failed read.
 //
-// The foreign-ref case seeds the index with a session whose id IS the codex
+// The foreign-ref case seeds the index with a session whose id IS the remote
 // ref's thread id: dropping the local-source check would answer another
 // source's caller out of local session state.
 func TestPastThreadForRead_PastGateMisses(t *testing.T) {
@@ -1280,7 +1280,7 @@ func TestPastThreadForRead_PastGateMisses(t *testing.T) {
 	}{
 		{"no past index", hubcore.WebConfig{}, appwire.ThreadReadParams{ThreadID: sessionID}},
 		{"no ref and no thread id", cfg, appwire.ThreadReadParams{}},
-		{"another source's ref", cfg, appwire.ThreadReadParams{Ref: "codex:" + sessionID}},
+		{"another source's ref", cfg, appwire.ThreadReadParams{Ref: "remote:" + sessionID}},
 		{"thread id absent from the index", hubcore.WebConfig{Past: emptyIndex}, appwire.ThreadReadParams{ThreadID: sessionID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

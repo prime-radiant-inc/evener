@@ -17,9 +17,9 @@
 //     parseTaskListData (pinned wire-true against agent/task/task_store.go's
 //     real Task shape) owns interpreting the raw `unknown` response.
 //
-// Failure handling: a Codex-source thread rejects the wire call outright
+// Failure handling: a source-backed thread may reject the wire call outright
 // (appwire.Unavailable, "actionUnavailable" - verified against
-// CodexSource.ListTasks) - an expected capability gap, not a bug, so it
+// a source that omits the capability) - an expected capability gap, not a bug, so it
 // gets an honest inline "not available" state and no toast. A resolved-
 // but-uninterpretable response (parseTaskListData returning null - e.g. an
 // old daemon with no tasksFn registered, which responds with null data

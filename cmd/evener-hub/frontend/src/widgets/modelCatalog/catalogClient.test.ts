@@ -73,9 +73,9 @@ describe("fetchModelCatalog", () => {
       return RESPONSE;
     });
 
-    await fetchModelCatalog({ harness: "codex-local", cwd: "/tmp/a b" }, client);
+    await fetchModelCatalog({ harness: "external", cwd: "/tmp/a b" }, client);
 
-    expect(client.calls).toEqual([{ method: "model/list", params: { harness: "codex-local", cwd: "/tmp/a b" } }]);
+    expect(client.calls).toEqual([{ method: "model/list", params: { harness: "external", cwd: "/tmp/a b" } }]);
   });
 
   test("propagates a model/list failure so the picker can surface it", async () => {

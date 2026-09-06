@@ -11,17 +11,17 @@ func TestPickerPanelFiltersAndRendersDisabledReasons(t *testing.T) {
 	panel := NewPickerPanel("Command palette", []PickerPanelItem{
 		{ID: "new", Label: "New session", Detail: "open spawn form"},
 		{ID: "clear", Label: "Clear current session", DisabledReason: "open a session first"},
-		{ID: "codex", Label: "Codex app-server smoke", Detail: "codex-local"},
+		{ID: "remote", Label: "Remote source smoke", Detail: "remote"},
 	}, 80)
 
-	updated, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("codex")})
+	updated, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("remote")})
 	panel = updated.(PickerPanel)
 	view := panel.View()
-	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: codex") {
+	if !strings.Contains(view, "Command palette") || !strings.Contains(view, "Filter: remote") {
 		t.Fatalf("picker view missing title/filter:\n%s", view)
 	}
-	if !strings.Contains(view, "Codex app-server smoke") {
-		t.Fatalf("filtered picker missing codex row:\n%s", view)
+	if !strings.Contains(view, "Remote source smoke") {
+		t.Fatalf("filtered picker missing remote row:\n%s", view)
 	}
 	if strings.Contains(view, "New session") {
 		t.Fatalf("filtered picker kept unrelated command row:\n%s", view)

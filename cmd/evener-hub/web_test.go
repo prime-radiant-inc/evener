@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/hubapi"
@@ -1023,22 +1022,6 @@ func TestLiveWorkspaceSnapshotSkipsTurns(t *testing.T) {
 	}
 	if !caps.Send || activeTurnID != "turn_active" {
 		t.Fatalf("caps=%+v activeTurnID=%q", caps, activeTurnID)
-	}
-}
-
-func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesDoNotExposeMutations(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:       "127.0.0.1:9180",
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-
-	caps := web.liveWorkspaceCapabilities("codex-managed:th_fake", hubapi.SessionCapabilities{})
-	if caps.Send || caps.Steer || caps.Interrupt || caps.Queue || caps.Clear {
-		t.Fatalf("capabilities=%+v", caps)
 	}
 }
 

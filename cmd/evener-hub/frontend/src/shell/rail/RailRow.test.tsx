@@ -1272,7 +1272,7 @@ describe("session row", () => {
   // the menu itself withholds Delete for a non-local session rather than
   // relying solely on the server's own isLocalRouteID refusal.
   test("menu omits Delete for a remote-source session", async () => {
-    render(<RailRow node={sessionRailNode(apiNode({ host_id: "codex" }))} info={info()} actions={actions()} />);
+    render(<RailRow node={sessionRailNode(apiNode({ host_id: "remote" }))} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
     expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
   });

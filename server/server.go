@@ -241,13 +241,14 @@ type StatusInfo struct {
 	// and seeded on resume from the file, so a running session's figure is
 	// complete rather than a floor (kata 12rq). A pointer because 0 and unknown
 	// are different claims: 0 means the session was measured and nothing failed,
-	// nil means nobody counted (no transcript, an old daemon, a Codex thread).
+	// nil means nobody counted (no transcript, an old daemon, or a source-backed
+	// thread that omits the field).
 	// Consumers render nil as nothing, never as a fabricated zero.
 	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
 	// PendingAsk mirrors the session's HasPendingAsk() — true while an
 	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
-	// daemon-truth: Codex-sourced threads and old daemons never set it, so
-	// absence decodes as false everywhere downstream.
+	// daemon-truth: old daemons and source-backed threads that omit the field
+	// never set it, so absence decodes as false everywhere downstream.
 	PendingAsk bool `json:"pending_ask,omitempty"`
 	// PendingEscalation mirrors the session's HasPendingEscalations() — true while a
 	// sandbox-exemption escalation (M7) is blocked awaiting a human. The hub's
