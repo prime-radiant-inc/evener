@@ -13,6 +13,7 @@ import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { locationForRoute, restoredStack } from "./src/location";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
+import { ProjectScreen, ProjectsScreen } from "./src/ProjectsScreen";
 import {
   ConversationScreen,
   HubsScreen,
@@ -89,6 +90,14 @@ function Navigation() {
             options={{ title: "Evener · Hubs" }}
           />
           <Stack.Screen name="Sessions" component={SessionsScreen} />
+          <Stack.Screen name="Projects" component={ProjectsScreen} />
+          <Stack.Screen
+            name="Project"
+            component={ProjectScreen}
+            options={({ route }) => ({
+              title: route.params.title || "Project",
+            })}
+          />
           <Stack.Screen
             name="NewSession"
             component={NewSessionScreen}
