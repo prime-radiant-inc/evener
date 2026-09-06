@@ -54,13 +54,17 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 			if !ok {
 				continue
 			}
+			// Only the variables a URL template reads become inputs; the
+			// rest of vars_env (a credential's own variable) has no
+			// instance-level meaning the add form could give it.
+			vars := r.TemplateVarsEnv(id)
 			providers = append(providers, appwire.ProviderDescriptor{
 				ID:        id,
 				Name:      p.Name,
 				Protocol:  p.Protocol,
 				Auth:      p.Transport.Auth,
-				VarsEnv:   slices.Sorted(maps.Values(p.Transport.VarsEnv)),
-				Vars:      maps.Clone(p.Transport.VarsEnv),
+				VarsEnv:   slices.Sorted(maps.Values(vars)),
+				Vars:      vars,
 				APIKeyEnv: append([]string(nil), p.APIKeyEnv...),
 				Implicit:  registry.BoolValue(p.Implicit),
 			})

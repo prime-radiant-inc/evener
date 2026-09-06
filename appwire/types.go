@@ -2662,10 +2662,12 @@ type InstanceEntry struct {
 
 // ProviderDescriptor is a registry provider the add form can build on: its
 // id and display name, the protocol and auth scheme it defaults to, and the
-// variables its transport and credential read. Vars maps a template
-// placeholder name to the environment variable name it is fed by (the same
-// shape as registry.Transport.VarsEnv), so a typed override can be sent
-// keyed by the name the registry actually substitutes. VarsEnv is the same
+// variables its URL templates read. Vars maps a template placeholder name
+// to the environment variable name it is fed by, so a typed override can be
+// sent keyed by the name the registry actually substitutes. It is
+// registry.Transport.VarsEnv restricted to the placeholders some URL
+// template reads (Registry.TemplateVarsEnv): a vars_env entry nothing
+// substitutes, such as a credential's own variable, gets no input. VarsEnv is the same
 // environment-variable names alone, sorted. It stays a list because v3
 // peers — a TUI built before Vars existed — decode it as one, and
 // ProtocolVersion is compared exactly, so a wire shape cannot change under
