@@ -49,8 +49,10 @@ hints. The list scrolls within a bounded height.
 ## Remaining command work
 
 The picker offers catalog commands, skills, and the native-supported built-in
-commands described below. Completion of model and reasoning argument values
-remains open; their composer settings pickers remain available. Offering a
+commands described below. Current web inline completion also inserts command
+names only; enum argument choices live in the web command palette and model
+settings. Native composer model/reasoning pickers already expose those settings.
+Inline argument completion is not a demonstrated web parity gap. Offering a
 command name does not establish full slash-command parity.
 
 Still required: native middle-of-draft/caret and IME tests, large catalogs and
@@ -79,6 +81,22 @@ The saved screenshots were visually inspected. The error panel consumes too
 much vertical space and needs refinement; these are functional evidence, not
 final visual acceptance. Large-text, screen-reader and argument-completion
 acceptance remain open.
+
+### Presentation and scope follow-up
+
+The argument-completion acceptance item above was an incorrect inference.
+Inspection of current `composer/Composer.tsx` and `slashCompletion.ts` confirms
+name-only inline insertion; enum selection is in `shell/palette/commands.ts`.
+Do not turn that inference into a product requirement.
+
+Catalog loading/error/retry now share the command list's 160-point scroll
+limit, preventing error text from extending an otherwise bounded list. Native
+226 tests, TypeScript and Biome pass; both Release builds succeeded. Manual
+catalog-failure and successful retry on both platforms retain `/pro`; Android
+was checked with its software keyboard visible. iOS keyboard-open validation
+is not established by this follow-up. No command was sent. The injected fault
+was removed. This containment change does not deliver the broader visual
+design in [presentation study 02](presentation-study.html).
 
 ![Android built-in available during catalog failure](assets/builtin-completion/android-catalog-failure.png)
 
