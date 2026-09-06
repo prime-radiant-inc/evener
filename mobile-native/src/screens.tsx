@@ -895,7 +895,9 @@ export function ConversationScreen({
           ref={timeline}
           data={timelineRows}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => <TimelineItem item={item} />}
+          renderItem={({ item }) => (
+            <TimelineItem item={item} hubId={route.params.hubId} />
+          )}
           contentContainerStyle={{ padding: 16 }}
           ItemSeparatorComponent={() => <View style={{ height: 24 }} />}
           keyboardShouldPersistTaps="handled"
