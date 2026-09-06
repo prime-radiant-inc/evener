@@ -34,6 +34,7 @@ import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
+import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
@@ -212,30 +213,16 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 }
               },
               onShutdown: async () => {
-                const invalidation =
-                  navigation.mode === "v1"
-                    ? navigationStore
-                        .getState()
-                        .awaitNavigationInvalidation((payload) =>
-                          payload.targets.some(
-                            (target) =>
-                              target.kind === "all_loaded_projects" ||
-                              (target.kind === "section" &&
-                                (target.section === "live" || target.section === "needs_you")) ||
-                              (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
-                              (target.kind === "project" && target.projectKey === location?.project_key),
-                          ),
-                        )
-                    : null;
-                void invalidation?.promise.catch(() => undefined);
+                const convergence = buildShutdownConvergence(sessionRef, {
+                  pinSectionId: menuSession?.pin_section_id,
+                  projectKey: location?.project_key,
+                });
+                const invalidation = convergence.arm();
                 try {
                   await threadsStore.getState().shutdown(sessionRef);
-                  if (invalidation) {
-                    const payload = await invalidation.promise;
-                    await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
-                  }
+                  await convergence.converge(invalidation);
                 } catch (err) {
-                  invalidation?.cancel();
+                  invalidation.cancel();
                   toasts.push("error", sessionActionError("Couldn't shut down session", err));
                   throw err;
                 }

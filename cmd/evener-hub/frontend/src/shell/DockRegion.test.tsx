@@ -6,6 +6,7 @@ import { FakeClient } from "../protocol/testing/fakeClient";
 import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
+import { wireV2 } from "../stores/navigation/testing";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";
@@ -56,14 +57,8 @@ const EMPTY_NAVIGATION_MANIFEST = {
 
 function scriptNavigationManifest(client: FakeClient): void {
   client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
-    expect(params).toEqual({ resource: "manifest" });
-    return {
-      status: "ok",
-      generationId: "test-generation",
-      revision: 1,
-      etag: '"test"',
-      data: EMPTY_NAVIGATION_MANIFEST,
-    };
+    expect(params).toEqual({ resource: "manifest", representationVersion: 2 });
+    return wireV2(params, EMPTY_NAVIGATION_MANIFEST, '"test"', 1, "test-generation");
   });
 }
 
@@ -150,7 +145,7 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0, readVersions: [2] },
   }));
   render(<AppShell client={client} />);
 

@@ -105,7 +105,7 @@ function setLocation(ref: string): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
   navigationStore.setState({
-    mode: "v1",
+    mode: "v2",
     clientGenerationID: "generation_test",
     resources: new Map([
       [

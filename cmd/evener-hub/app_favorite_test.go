@@ -39,7 +39,7 @@ func dispatchFavoriteSet(t *testing.T, server *appserver.Server, params appwire.
 func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	navigation := newTestNavigationService(t, source)
-	if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("changed")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,7 @@ func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
 			Version:      1,
 			GenerationID: "generation-a",
 			Sequence:     7,
+			ReadVersions: []int{1, 2},
 		},
 	})
 
@@ -80,7 +82,7 @@ func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
 	if response.Navigation == nil {
 		t.Fatal("navigation capability is absent")
 	}
-	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7}); got != want {
+	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7, ReadVersions: []int{1, 2}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("navigation capability = %+v, want %+v", got, want)
 	}
 }

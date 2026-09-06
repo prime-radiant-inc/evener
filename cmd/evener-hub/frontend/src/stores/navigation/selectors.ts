@@ -1,17 +1,51 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore } from "./store";
-import { isNavigationUnavailable, keyID, type ResourceKey, type ResourceState } from "./types";
+import {
+  canonicalResourceKey,
+  isNavigationUnavailable,
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  nextNavigationOffset,
+  type ResourceKey,
+  type ResourceState,
+} from "./types";
+
+export { nextNavigationOffset } from "./types";
+
+/** Relative display age for a session's updated_at, mirroring the rail's
+ * long-standing row contract (now/m/h/d). Computed at adapter time like the
+ * v1 path did, so staleness semantics are unchanged: a new value arrives
+ * with new data. */
+export function relativeAge(updatedAt?: string): string | undefined {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return undefined;
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+function normalizedRootCount(resource: ResourceState, slot: string): number | undefined {
+  const normalized = resource.normalized;
+  if (!normalized) return undefined;
+  return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
+}
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
-export const selectResource = (key: ResourceKey) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.resources.get(keyID(key));
+export const selectResource = (key: ResourceKey) => {
+  const resourceKey = canonicalResourceKey(key);
+  return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));
+};
 export const selectProjectResource = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID({ kind: "project", projectKey }));
 export const selectProjectPage =
   (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = 50) =>
   (s: ReturnType<typeof navigationStore.getState>) =>
     s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
-export const selectLocation = (ref: string) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.resources.get(keyID({ kind: "location", ref }));
+export const selectLocation = (ref: string) => selectResource({ kind: "location", ref });
 export function selectSectionRows(
   section: "live" | "needs_you",
   state = navigationStore.getState(),
@@ -49,10 +83,11 @@ export function selectNextSectionOffset(section: "live" | "needs_you", state = n
     )
     .at(-1);
   if (last?.key.kind !== "section") return 0;
-  // Use the canonical page limit as the stride, not the actual returned row
-  // count: the backend may truncate rows for byte/node limits, and starting
-  // the next page at offset + rows.length would overlap or repeat rows.
-  return last.key.offset + last.key.limit;
+  const returned =
+    normalizedRootCount(last, "sessions") ??
+    (last.data as { sessions?: NavigationSessionSummary[] } | null)?.sessions?.length ??
+    0;
+  return nextNavigationOffset(last.key.offset, returned);
 }
 export function selectCatalogRemaining(
   catalog: "projects" | "archived_projects" | "test_runs",
@@ -85,8 +120,11 @@ export function selectNextCatalogOffset(
     )
     .at(-1);
   if (last?.key.kind !== "catalog") return 0;
-  // Canonical page limit is the stride; the backend may truncate rows.
-  return last.key.offset + last.key.limit;
+  const returned =
+    normalizedRootCount(last, "projects") ??
+    (last.data as { projects?: NavigationProjectSummary[] } | null)?.projects?.length ??
+    0;
+  return nextNavigationOffset(last.key.offset, returned);
 }
 export function selectLiveRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   return selectSectionRows("live", state);
@@ -196,3 +234,198 @@ export function selectSessionSummary(ref: string, state = navigationStore.getSta
   return walk(rows);
 }
 export const findSessionNode = selectSessionSummary;
+
+import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
+import type { NormalizedResource } from "./codec";
+
+type NormalizedSessionCacheEntry = Readonly<{
+  childContainer: object | undefined;
+  children: readonly RailSession[];
+  contextKey: string;
+  value: RailSession;
+}>;
+type NormalizedNodeCacheEntry = Readonly<{
+  childContainer: object | undefined;
+  session: RailSession;
+  children: readonly SessionRailNode[];
+  expanded: boolean;
+  value: SessionRailNode;
+}>;
+
+const normalizedSessionCache = new WeakMap<object, NormalizedSessionCacheEntry>();
+const normalizedNodeCache = new WeakMap<object, WeakMap<IsExpanded, NormalizedNodeCacheEntry>>();
+const normalizedRailModelCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, NormalizedRailModel>>>();
+const collapsedNodeLookup: IsExpanded = (_id, defaultExpanded) => defaultExpanded;
+export interface NormalizedRailModel {
+  readonly sessions: ReadonlyMap<string, RailSession>;
+  readonly nodes: ReadonlyMap<string, SessionRailNode>;
+}
+export function selectRailModel(
+  resource: NormalizedResource,
+  isExpanded: IsExpanded = collapsedNodeLookup,
+): NormalizedRailModel {
+  const resourceContext = normalizedSessionContext(resource.key);
+  const contextKey = `${navigationViewScope(resource.key)}\0${normalizedSessionContextKey(resourceContext)}`;
+  const cachedModel = normalizedRailModelCache
+    .get(resource.graph as object)
+    ?.get(isExpanded)
+    ?.get(contextKey);
+  if (cachedModel) return cachedModel;
+  const sessions = new Map<string, RailSession>();
+  const nodes = new Map<string, SessionRailNode>();
+  const entityContexts = new Map<string, NormalizedSessionContext>();
+  if (resource.key.kind === "project") {
+    const projectKey = resource.key.projectKey;
+    const projectEntity = [...resource.graph.entities.values()].find(
+      (entity) =>
+        entity.kind === "project" &&
+        entity.value !== null &&
+        typeof entity.value === "object" &&
+        (entity.value as Record<string, unknown>).key === projectKey,
+    );
+    const visit = (entityKey: string, context: NormalizedSessionContext): void => {
+      entityContexts.set(entityKey, context);
+      const children =
+        resource.graph.containers.get(navigationOwnedContainerKey(entityKey, "children"))?.children ?? [];
+      for (const child of children) visit(child, context);
+    };
+    if (projectEntity) {
+      for (const tier of ["current", "recent", "archived"] as const) {
+        const children =
+          resource.graph.containers.get(navigationOwnedContainerKey(projectEntity.key, tier))?.children ?? [];
+        const context = { ...resourceContext, tier };
+        for (const child of children) visit(child, context);
+      }
+    }
+  }
+  const sameIdentities = (left: readonly unknown[], right: readonly unknown[]) =>
+    left.length === right.length && left.every((item, index) => item === right[index]);
+  const buildSession = (
+    entityKey: string,
+    stack = new Set<string>(),
+    context = entityContexts.get(entityKey) ?? resourceContext,
+  ): RailSession | undefined => {
+    if (stack.has(entityKey)) return undefined;
+    const alreadyBuilt = sessions.get(entityKey);
+    if (alreadyBuilt) return alreadyBuilt;
+    const entity = resource.graph.entities.get(entityKey);
+    if (entity?.kind !== "session" || !entity.value || typeof entity.value !== "object") return undefined;
+    const value = entity.value as Record<string, unknown>;
+    const nextStack = new Set(stack).add(entityKey);
+    const childContainer = resource.graph.containers.get(navigationOwnedContainerKey(entityKey, "children"));
+    const children = (childContainer?.children ?? []).flatMap((child) => {
+      const item = buildSession(child, nextStack, entityContexts.get(child) ?? context);
+      return item ? [item] : [];
+    });
+    const cached = normalizedSessionCache.get(entity as object);
+    if (
+      cached &&
+      cached.childContainer === childContainer &&
+      cached.contextKey === normalizedSessionContextKey(context) &&
+      sameIdentities(cached.children, children)
+    ) {
+      sessions.set(entityKey, cached.value);
+      return cached.value;
+    }
+    const frozenChildren = Object.freeze(children);
+    const session = Object.freeze({
+      ...(value as unknown as RailSession),
+      ...context,
+      row_id: entity.key,
+      age: relativeAge(typeof value.updated_at === "string" ? value.updated_at : undefined),
+      children: frozenChildren,
+    }) as unknown as RailSession;
+    normalizedSessionCache.set(
+      entity as object,
+      Object.freeze({
+        childContainer,
+        children: frozenChildren,
+        contextKey: normalizedSessionContextKey(context),
+        value: session,
+      }),
+    );
+    sessions.set(entityKey, session);
+    return session;
+  };
+  for (const entity of resource.graph.entities.values()) buildSession(entity.key);
+  const buildNode = (entityKey: string, stack = new Set<string>()): SessionRailNode | undefined => {
+    if (stack.has(entityKey)) return undefined;
+    const alreadyBuilt = nodes.get(entityKey);
+    if (alreadyBuilt) return alreadyBuilt;
+    const entity = resource.graph.entities.get(entityKey);
+    if (entity?.kind !== "session") return undefined;
+    const session = buildSession(entityKey, stack, entityContexts.get(entityKey) ?? resourceContext);
+    if (!session) return undefined;
+    const nextStack = new Set(stack).add(entityKey);
+    const childContainer = resource.graph.containers.get(navigationOwnedContainerKey(entityKey, "children"));
+    const children = (childContainer?.children ?? []).flatMap((child) => {
+      const childNode = buildNode(child, nextStack);
+      return childNode ? [childNode] : [];
+    });
+    const cacheEntries = normalizedNodeCache.get(entity as object);
+    const cached = cacheEntries?.get(isExpanded);
+    const expanded = isExpanded(entity.key, false);
+    let node: SessionRailNode;
+    if (
+      cached &&
+      cached.session === session &&
+      cached.childContainer === childContainer &&
+      cached.expanded === expanded &&
+      sameIdentities(cached.children, children)
+    ) {
+      node = cached.value;
+    } else {
+      const frozenChildren = Object.freeze(children);
+      node = Object.freeze({
+        id: entity.key,
+        kind: "session" as const,
+        session,
+        expanded,
+        children: frozenChildren,
+      }) as unknown as SessionRailNode;
+      const entries = cacheEntries ?? new WeakMap<IsExpanded, NormalizedNodeCacheEntry>();
+      entries.set(
+        isExpanded,
+        Object.freeze({ childContainer, session, children: frozenChildren, expanded, value: node }),
+      );
+      if (!cacheEntries) normalizedNodeCache.set(entity as object, entries);
+    }
+    nodes.set(entityKey, node);
+    return node;
+  };
+  for (const entity of resource.graph.entities.values()) buildNode(entity.key);
+  const model = Object.freeze({ sessions, nodes });
+  let models = normalizedRailModelCache.get(resource.graph as object);
+  if (!models) {
+    models = new WeakMap();
+    normalizedRailModelCache.set(resource.graph as object, models);
+  }
+  let contextModels = models.get(isExpanded);
+  if (!contextModels) {
+    contextModels = new Map();
+    models.set(isExpanded, contextModels);
+  }
+  contextModels.set(contextKey, model);
+  return model;
+}
+
+type NormalizedSessionContext = Readonly<Pick<RailSession, "tier" | "project_key" | "pin_section_id">>;
+
+function normalizedSessionContext(key: ResourceKey): NormalizedSessionContext {
+  switch (key.kind) {
+    case "section":
+      return { tier: key.section };
+    case "project":
+      return { project_key: key.projectKey };
+    case "project_page":
+      return { project_key: key.projectKey, tier: key.tier };
+    case "pin_section":
+      return { pin_section_id: key.sectionId };
+    default:
+      return {};
+  }
+}
+
+function normalizedSessionContextKey(context: NormalizedSessionContext): string {
+  return `${context.tier ?? ""}\0${context.project_key ?? ""}\0${context.pin_section_id ?? ""}`;
+}

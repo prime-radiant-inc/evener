@@ -75,7 +75,7 @@ function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSess
       generationID: "generation_test",
     });
   }
-  navigationStore.setState({ mode: "v1", clientGenerationID: "generation_test", resources });
+  navigationStore.setState({ mode: "v2", clientGenerationID: "generation_test", resources });
 }
 
 test('shows "No session open"', () => {

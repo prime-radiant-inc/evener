@@ -98,7 +98,7 @@ describe("baseTitle", () => {
     };
     const key = { kind: "location", ref: "local:r2" } as const;
     navigationStore.setState({
-      mode: "v1",
+      mode: "v2",
       clientGenerationID: "generation_test",
       resources: new Map([
         [

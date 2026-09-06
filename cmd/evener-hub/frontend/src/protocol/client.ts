@@ -121,8 +121,9 @@ export class AppwireClient {
   private handshakeReject: ((err: Error) => void) | null = null;
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
-  private readonly readyHandlers = new Set<() => void>();
+  private readonly readyHandlers = new Set<(initialize: InitializeResponse) => void>();
   private connectPromise: Promise<InitializeResponse> | null = null;
+  private latestInitialize: InitializeResponse | null = null;
 
   // Heartbeat: one interval timer, armed on entering "ready" and disarmed on
   // leaving it (drop or close()). Its ping rides the same request()/pending
@@ -256,7 +257,7 @@ export class AppwireClient {
 
   // onReady fires on every transition into "ready", including future
   // reconnects.
-  onReady(cb: () => void): () => void {
+  onReady(cb: (initialize: InitializeResponse) => void): () => void {
     this.readyHandlers.add(cb);
     return () => {
       this.readyHandlers.delete(cb);
@@ -349,7 +350,7 @@ export class AppwireClient {
       throw new ProtocolVersionMismatchError(result.protocolVersion);
     }
     this.sendFrame({ method: "initialized", params: {} });
-    this.setState("ready");
+    this.enterReady(result);
     // The handshake itself genuinely succeeded, so this still resolves with
     // `result` even if a reentrant close() just ran: only the side effect
     // (arming a timer this client will never get to disarm again) is guarded.
@@ -586,6 +587,12 @@ export class AppwireClient {
     this.socket?.send(JSON.stringify(frame));
   }
 
+  private enterReady(value: InitializeResponse): void {
+    this.latestInitialize = value;
+    this.connectPromise = Promise.resolve(value);
+    this.setState("ready");
+  }
+
   private failAllPending(err: Error): void {
     for (const slot of this.pending.values()) {
       clearTimeout(slot.timer);
@@ -610,7 +617,8 @@ export class AppwireClient {
     if (next === "ready") {
       for (const cb of Array.from(this.readyHandlers)) {
         try {
-          cb();
+          if (!this.latestInitialize) throw new Error("AppwireClient: ready without initialize result");
+          cb(this.latestInitialize);
         } catch {
           // See above.
         }
