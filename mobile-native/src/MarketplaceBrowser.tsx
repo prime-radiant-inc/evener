@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -357,80 +358,86 @@ function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
-        <ScrollView
-          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ padding: 20, gap: 12 }}
+        <KeyboardAvoidingView
+          style={styles.fill}
+          enabled={Platform.OS === "android"}
+          behavior="height"
         >
-          <Copy>Add marketplace</Copy>
-          <View style={[styles.row, { flexWrap: "wrap" }]}>
-            {(["url", "github", "directory"] as const).map((value) => (
-              <Choice
-                key={value}
-                label={
-                  value === "url"
-                    ? "Git URL"
-                    : value === "github"
-                      ? "GitHub repository"
-                      : "Hub directory"
-                }
-                selected={kind === value}
-                disabled={busy}
-                onPress={() => {
-                  setKind(value);
-                  setSource("");
-                }}
-              />
-            ))}
-          </View>
-          <Copy>
-            {kind === "url"
-              ? "Git URL"
-              : kind === "github"
-                ? "owner/repo"
-                : `Directory on ${hubName}`}
-          </Copy>
-          <TextInput
-            accessibilityLabel="Marketplace source"
-            value={source}
-            onChangeText={setSource}
-            editable={!busy}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={[
-              styles.input,
-              { color: colors.text, borderColor: colors.border },
-            ]}
-          />
-          {kind === "directory" && (
-            <Copy muted>This path is on the hub, not this phone.</Copy>
-          )}
-          <Copy>Name (optional)</Copy>
-          <TextInput
-            accessibilityLabel="Marketplace name"
-            value={name}
-            onChangeText={setName}
-            editable={!busy}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={[
-              styles.input,
-              { color: colors.text, borderColor: colors.border },
-            ]}
-          />
-          <ErrorMessage message={error} />
-          {busy && (
-            <ActivityIndicator accessibilityLabel="Adding marketplace" />
-          )}
-          <Action
-            disabled={busy || !source.trim()}
-            onPress={() => {
-              void submit();
-            }}
+          <ScrollView
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ padding: 20, gap: 12 }}
           >
-            Add marketplace
-          </Action>
-        </ScrollView>
+            <Copy>Add marketplace</Copy>
+            <View style={[styles.row, { flexWrap: "wrap" }]}>
+              {(["url", "github", "directory"] as const).map((value) => (
+                <Choice
+                  key={value}
+                  label={
+                    value === "url"
+                      ? "Git URL"
+                      : value === "github"
+                        ? "GitHub repository"
+                        : "Hub directory"
+                  }
+                  selected={kind === value}
+                  disabled={busy}
+                  onPress={() => {
+                    setKind(value);
+                    setSource("");
+                  }}
+                />
+              ))}
+            </View>
+            <Copy>
+              {kind === "url"
+                ? "Git URL"
+                : kind === "github"
+                  ? "owner/repo"
+                  : `Directory on ${hubName}`}
+            </Copy>
+            <TextInput
+              accessibilityLabel="Marketplace source"
+              value={source}
+              onChangeText={setSource}
+              editable={!busy}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={[
+                styles.input,
+                { color: colors.text, borderColor: colors.border },
+              ]}
+            />
+            {kind === "directory" && (
+              <Copy muted>This path is on the hub, not this phone.</Copy>
+            )}
+            <Copy>Name (optional)</Copy>
+            <TextInput
+              accessibilityLabel="Marketplace name"
+              value={name}
+              onChangeText={setName}
+              editable={!busy}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={[
+                styles.input,
+                { color: colors.text, borderColor: colors.border },
+              ]}
+            />
+            <ErrorMessage message={error} />
+            {busy && (
+              <ActivityIndicator accessibilityLabel="Adding marketplace" />
+            )}
+            <Action
+              disabled={busy || !source.trim()}
+              onPress={() => {
+                void submit();
+              }}
+            >
+              Add marketplace
+            </Action>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
   );
