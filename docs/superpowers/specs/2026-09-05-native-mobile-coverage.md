@@ -25,7 +25,7 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; real-daemon delivery evidence | Attachments, command selection, queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
 | Manage session | Native rename, context compaction and confirmed runtime stop; both-platform isolated real-daemon checks | Fork, clear, explicit lifecycle controls, disconnected/uncertain action acceptance, accessibility and physical-device verification |
-| Model and launch settings | Model/reasoning selection during creation only | Model, vision model, reasoning, launch layers, schema validation and repository trust |
+| Model and launch settings | Model/reasoning selection during creation; advertised reasoning levels in existing sessions | Existing-session model/vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
 | Goals and work | Not exposed | Goals, tasks, background jobs/output, subagent previews and navigation |
 | Approvals and questions | Question text/options rendered with instruction to reply through composer; no dedicated decision controls | Sandbox escalation resolution, structured question interaction, stale/resolved decisions and any other user decision surfaces |
 | Hub navigation | Not exposed | Favorite/archive, project/session removal, pin assign/unpin, section rename/delete |
@@ -104,3 +104,8 @@ The isolated real daemon accepted Android cancellation/promotion and iOS bulk st
 ### Native session controls
 
 The Session sheet adds rename, compaction and confirmed runtime stop. Native 59 tests and TypeScript pass; both Release builds passed and were installed. Both simulators exercised real isolated-daemon rename/stop, with persisted names and process-exit evidence; compaction persisted CHECKPOINT/SUMMARY records. Binding identity prevents stale confirmation dispatch after reconnect, and compaction refreshes cold-runtime projections. See `docs/design/mobile/session-controls-evidence.md` for exact coverage and remaining acceptance.
+
+
+### Existing-session reasoning
+
+The Session sheet exposes server-advertised effort levels, with current-binding validation, serialized actions and authoritative refresh. Native61 tests/TypeScript and both Release builds pass; both simulators changed effort through the real isolated daemon. A reproduced iOS live Dynamic Type clipping issue in radio rows was corrected and visually rechecked. See `docs/design/mobile/reasoning-controls-evidence.md` for evidence and remaining scope.

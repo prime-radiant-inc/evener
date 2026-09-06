@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { SessionControls } from "./sessionControls";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function SessionSheet({
   conversation,
@@ -106,13 +106,34 @@ export function SessionSheet({
               </Action>
             </View>
             <View style={{ gap: 8 }}>
-              <Copy muted>{`Provider · ${conversation.modelProvider}`}</Copy>
+              <Copy muted>{`Model · ${conversation.modelProvider}`}</Copy>
               <Copy muted>
                 {runtimeStopped
                   ? "Runtime stopped"
                   : `Status · ${conversation.status}`}
               </Copy>
             </View>
+            {conversation.supportsReasoning &&
+            conversation.reasoningEffortLevels?.length ? (
+              <View style={{ gap: 4 }}>
+                <Copy>Reasoning effort</Copy>
+                <Copy muted>
+                  Choose how much reasoning this session requests from its
+                  model.
+                </Copy>
+                {conversation.reasoningEffortLevels.map((effort) => (
+                  <Choice
+                    key={effort}
+                    label={effort}
+                    selected={conversation.reasoningEffort === effort}
+                    disabled={disabled}
+                    onPress={() => {
+                      void controls.setReasoningEffort(effort);
+                    }}
+                  />
+                ))}
+              </View>
+            ) : null}
             <ErrorMessage message={state.error} />
             {state.notice ? <Copy>{state.notice}</Copy> : null}
             {state.pending ? (

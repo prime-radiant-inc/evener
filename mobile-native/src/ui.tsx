@@ -89,6 +89,44 @@ export function Action({
   );
 }
 
+export function Choice({
+  label,
+  selected,
+  disabled,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  disabled: boolean;
+  onPress(): void;
+}) {
+  const colors = useColors();
+  const { fontScale } = useWindowDimensions();
+  const textScale = Platform.OS === "ios" ? fontScale : 1;
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityLabel={label}
+      accessibilityState={{ checked: selected, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.action, { opacity: disabled ? 0.4 : 1 }]}
+    >
+      <Text
+        allowFontScaling={Platform.OS !== "ios"}
+        style={{
+          color: selected ? colors.accent : colors.text,
+          fontSize: 16 * textScale,
+          flexShrink: 1,
+        }}
+      >
+        {selected ? "● " : "○ "}
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function Copy({
   children,
   muted = false,
