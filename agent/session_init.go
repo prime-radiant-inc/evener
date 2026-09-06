@@ -151,6 +151,9 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 // the initial SessionStart envelope. It returns an error if any input is nil or
 // if initialization fails.
 func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
+	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+		return nil, err
+	}
 	if client == nil {
 		return nil, errors.New("llm client is nil")
 	}
@@ -585,6 +588,7 @@ type RestoreSessionConfig struct {
 	OwnershipAlreadyAcquired    bool
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
+	ProviderIdleTimeout         string
 	LLMRetryPolicy              *llm.RetryPolicy
 	LLMSleep                    llm.SleepFunc
 	spawn                       spawnConfig
@@ -703,6 +707,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
+	}
+	if strings.TrimSpace(restoreCfg.ProviderIdleTimeout) != "" {
+		cfg.ProviderIdleTimeout = restoreCfg.ProviderIdleTimeout
+	}
+	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)

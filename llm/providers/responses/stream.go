@@ -340,8 +340,8 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		Attempt:    attempt,
 		StatusCode: resp.StatusCode,
 		FinalEvent: func() *llm.StreamEvent { return finalEvent },
-		SSEOpts:    llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:   &finished,
+		// HTTP response-byte idle is owned by ClientWithAdapterTimeout, below gzip decoding.
+		Finished: &finished,
 		// This transport has four ways to end without completing, and the
 		// runner's single IncompleteMsg cannot tell them apart, so it hands
 		// the classification back here instead. Every read failure is handled
@@ -352,7 +352,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		// implements.
 		TerminalError: func(parseErr error) error {
 			switch {
-			case errors.Is(parseErr, llm.ErrSSEReadTimeout):
+			case errors.Is(parseErr, llm.ErrSSEReadTimeout), errors.Is(parseErr, llm.ErrResponseIdleTimeout):
 				// The stream went idle past the read timeout. Named separately
 				// from the read failures below because a stall is the one an
 				// operator most often has to tell apart from a broken

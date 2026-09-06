@@ -320,6 +320,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
+	providerIdleTimeout := fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
 	sandboxMode := fs.String("sandbox", "off", "sandbox mode: off (default), read-only, workspace-write, or restricted")
 	sandboxNet := fs.String("sandbox-net", "on", "sandbox network egress on|off (default on; only applies with a non-off --sandbox mode)")
@@ -371,6 +372,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
+		return err
+	}
+	if _, err := agent.ParseProviderIdleTimeout(*providerIdleTimeout); err != nil {
 		return err
 	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
@@ -523,6 +527,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
+		ProviderIdleTimeout:         *providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
 	}
 	if *maxSubagentDepth >= 0 {
@@ -570,6 +575,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
+			ProviderIdleTimeout:         *providerIdleTimeout,
 		})
 		if err != nil {
 			// A resume provisions this environment's sandbox from the

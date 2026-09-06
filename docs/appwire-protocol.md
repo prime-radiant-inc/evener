@@ -978,6 +978,7 @@ _(no fields)_
 | `reasoningEffort` | `string` | yes |  |
 | `contextStrategy` | `string` | yes |  |
 | `openAIResponsesContinuation` | `string` | yes |  |
+| `providerIdleTimeout` | `string` | yes |  |
 | `sandbox` | `string` | yes |  |
 | `sandboxNet` | `*bool` | yes |  |
 | `maxRounds` | `*int` | yes |  |

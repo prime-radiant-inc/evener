@@ -59,6 +59,7 @@ type runCLIFlags struct {
 	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
+	providerIdleTimeout         *string
 	cpuProfile                  *string
 	traceFile                   *string
 	systemPromptAppend          stringSliceFlag
@@ -230,6 +231,7 @@ func mainWithDeps(deps mainDeps) {
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
+		providerIdleTimeout:         *flags.providerIdleTimeout,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
 		runTimeout:                  *flags.runTimeout,
@@ -284,6 +286,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
+	flags.providerIdleTimeout = fs.String("provider-idle-timeout", "", "Provider response-byte idle duration (default: 10m; no total request limit)")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
 	flags.traceFile = fs.String("trace", "", "write execution trace to this `file` path")

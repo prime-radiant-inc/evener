@@ -128,6 +128,8 @@ func launchOptionLayerValue(opt appwire.LaunchOption, l appwire.LaunchConfigLaye
 		return defaultString(l.FastCheapModel), l.FastCheapModel
 	case "context_strategy":
 		return defaultString(l.ContextStrategy), l.ContextStrategy
+	case "provider_idle_timeout":
+		return defaultString(l.ProviderIdleTimeout), l.ProviderIdleTimeout
 	case "openai_responses_continuation":
 		return defaultString(l.OpenAIResponsesContinuation), l.OpenAIResponsesContinuation
 	case "sandbox":

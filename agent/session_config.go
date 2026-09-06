@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -216,6 +218,7 @@ type SessionConfig struct {
 	// may be considered. Empty and "off" disable it; "auto" is still gated by
 	// endpoint support and continuation eligibility.
 	OpenAIResponsesContinuation string `json:"openai_responses_continuation,omitempty"`
+	ProviderIdleTimeout         string `json:"provider_idle_timeout,omitempty"`
 
 	// Sandbox is the sandbox mode name (off|read-only|workspace-write|restricted)
 	// requested at session start. Empty means off — today's behavior. Carried so a
@@ -272,8 +275,8 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
-	// visionSideChannelTimeout overrides the production vision timeout only for
-	// deterministic package tests. Zero preserves the production timeout.
+	// visionSideChannelTimeout supplies an explicit owned deadline only for
+	// deterministic package tests. Zero leaves caller deadlines authoritative.
 	visionSideChannelTimeout time.Duration
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
@@ -685,6 +688,9 @@ type spawnConfig struct {
 }
 
 func (c *SessionConfig) applyDefaults() {
+	if strings.TrimSpace(c.ProviderIdleTimeout) == "" {
+		c.ProviderIdleTimeout = "10m"
+	}
 	// MaxToolRoundsPerInput: zero or negative means unlimited. The previous
 	// default of 200 killed long-running agentic sessions doing real work from
 	// a single prompt. Loop detection (enabled by default) still guards against
@@ -756,6 +762,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ModelFallbacks:              c.ModelFallbacks,
 		SystemPromptAsUser:          c.SystemPromptAsUser,
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
+		ProviderIdleTimeout:         c.ProviderIdleTimeout,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
 		VisionModel:                 c.VisionModel,
@@ -797,8 +804,21 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ModelFallbacks:              s.ModelFallbacks,
 		SystemPromptAsUser:          s.SystemPromptAsUser,
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
+		ProviderIdleTimeout:         s.ProviderIdleTimeout,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
 		VisionModel:                 s.VisionModel,
 	}
+}
+
+// ParseProviderIdleTimeout parses a positive Go duration. Empty selects ten minutes.
+func ParseProviderIdleTimeout(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 10 * time.Minute, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("provider_idle_timeout must be a positive duration (for example 10m): %q", value)
+	}
+	return d, nil
 }

@@ -3,6 +3,7 @@ package protocolhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -47,7 +48,14 @@ func Stream(parentCtx context.Context, c *Call, decode StreamDecoder) (llm.Strea
 		if readErr != nil {
 			decodeErr = readErr
 		}
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returned}, llm.APITimeoutNone, decodeErr, nil)
+		timeoutSource := llm.APITimeoutSourceForContext(parentCtx, sctx)
+		if source := llm.APITimeoutSourceForSSE(readErr); source != llm.APITimeoutNone {
+			timeoutSource = source
+		}
+		if readErr != nil && (sctx.Err() != nil || errors.Is(readErr, llm.ErrResponseIdleTimeout)) {
+			returned = llm.WrapContextError(c.Res.Instance, readErr)
+		}
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returned}, timeoutSource, decodeErr, nil)
 		cancelAll()
 		return nil, returned
 	}

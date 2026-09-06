@@ -1,9 +1,11 @@
 package anthropic
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/llm"
@@ -15,24 +17,27 @@ import (
 const twoAnthropicEvents = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
 	"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
 
-// stallingSSEServer streams prefix, flushes it, and then holds the response
-// open until the test ends: the only way out of such a stream is the
-// StreamRead idle timeout.
-func stallingSSEServer(t *testing.T, prefix string) *httptest.Server {
+// stallingSSEClient delivers response headers synchronously, then stalls the
+// response body. It has no socket/header scheduling race with the idle timer.
+func stallingSSEClient(t *testing.T, prefix string) (*http.Client, *httptest.Server) {
 	t.Helper()
+	r, w := io.Pipe()
 	stall := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(prefix))
-		w.(http.Flusher).Flush()
-		<-stall
-	}))
-	// Cleanups run last-registered-first: release the handler before Close
-	// waits for it.
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(stall) })
-	return srv
+	t.Cleanup(func() { r.Close(); close(stall) })
+	client := &http.Client{Transport: idleAttemptRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if req.Body != nil {
+			io.Copy(io.Discard, req.Body)
+			req.Body.Close()
+		}
+		go func() { defer w.Close(); io.WriteString(w, prefix); <-stall }()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: r, Request: req}, nil
+	})}
+	return client, &httptest.Server{URL: "https://example.invalid"}
 }
+
+type idleAttemptRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // TestStreamAppendsTheAttemptBeforeTheTerminalEvent pins the ordering the
 // adapter's wire captures pinned before the protocols replaced them: the
@@ -75,26 +80,28 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 // reached the provider and the response headers arrived, so neither a
 // connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
-	srv := stallingSSEServer(t, twoAnthropicEvents)
-	sink := &captureSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_anthropic_sse_timeout")),
-		sink,
-	)
-	req := protoReq("")
-	req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
-	s, err := (&Protocol{Client: srv.Client()}).Stream(ctx, req, protoLive(srv))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
-	}
-	llm.WaitForPriorAPIAttempts(ctx)
-	attempts := sink.records()
-	if len(attempts) != 1 {
-		t.Fatalf("attempts = %d, want 1", len(attempts))
-	}
-	if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
-		t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		client, srv := stallingSSEClient(t, twoAnthropicEvents)
+		sink := &captureSink{}
+		ctx := llm.WithAPIAttemptSink(
+			llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_anthropic_sse_timeout")),
+			sink,
+		)
+		req := protoReq("")
+		req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: time.Millisecond}
+		s, err := (&Protocol{Client: client}).Stream(ctx, req, protoLive(srv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range s.Events() { //nolint:revive // Drain to the terminal timeout evidence.
+		}
+		llm.WaitForPriorAPIAttempts(ctx)
+		attempts := sink.records()
+		if len(attempts) != 1 {
+			t.Fatalf("attempts = %d, want 1", len(attempts))
+		}
+		if got := attempts[0].Outcome; got != apilog.AttemptProviderTimeout {
+			t.Fatalf("SSE-read timeout outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
+		}
+	})
 }

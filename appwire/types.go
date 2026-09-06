@@ -2829,6 +2829,7 @@ type LaunchConfigLayer struct {
 	ReasoningEffort             string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy             string            `json:"contextStrategy,omitempty"`
 	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
+	ProviderIdleTimeout         string            `json:"providerIdleTimeout,omitempty"`
 	Sandbox                     string            `json:"sandbox,omitempty"`
 	SandboxNet                  *bool             `json:"sandboxNet,omitempty"`
 	MaxRounds                   *int              `json:"maxRounds,omitempty"`

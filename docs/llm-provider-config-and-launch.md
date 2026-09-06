@@ -22,6 +22,39 @@ The **hub process never runs a model**. To validate or list models it spawns
 `evener launch-check` as a short-lived subprocess; to run a session it spawns
 the `evener serve` daemon.
 
+## Provider idle timeout
+
+Model HTTP responses have a **10-minute idle timeout**, not a total-duration
+limit. Incoming body bytes reset it, including partial SSE lines and heartbeat
+comments. This applies to streaming and nonstreaming responses, including vision side
+channels and gzip-compressed wire bytes: a response can
+continue indefinitely while bytes keep arriving within the idle interval.
+
+Set a positive Go duration (for example `45s`, `10m`, or `1h`):
+
+```sh
+evener --provider-idle-timeout 15m "your task"
+evener serve --provider-idle-timeout 15m
+```
+
+The hub/TUI launch setting is **Provider idle timeout**. Launch TOML uses
+`provider_idle_timeout = "15m"`; the launch API uses
+`"providerIdleTimeout": "15m"`. Session configuration and snapshots use
+`"provider_idle_timeout": "15m"`. Empty selects the default for new sessions
+and retains the saved setting on resume. Zero, negative, malformed, and
+overflowing durations are rejected. The setting is persisted
+across resume and inherited by delegates; an explicit resume value overrides
+the persisted setting, while a frozen delegate retains its own setting.
+
+Connection establishment and standard TLS handshakes remain bounded to 10
+seconds (shorter caller TLS limits are preserved). On standard HTTP
+transports, response-header waiting is bounded by the idle interval (or a
+shorter caller transport limit). Explicit caller cancellation, context
+deadlines, and HTTP client timeouts still apply. SDK callers can opt into a
+whole-attempt deadline with `llm.AdapterTimeout.Request`; its default is zero
+(disabled). `StreamRead` now controls response-byte idle time for both streaming
+and nonstreaming bodies. No default total request cap is imposed.
+
 ## Credentials store
 
 `credentials.toml` holds one section per instance:

@@ -14,7 +14,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	}
 	want := []string{
 		"agent", "model", "reasoning_effort", "fast_cheap_model",
-		"context_strategy", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
+		"context_strategy", "provider_idle_timeout", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
 		"max_concurrent_delegate_turns", "max_retained_terminal",
 		"no_project_prompts", "non_interactive", "app_replay_size",
 		"system_prompt_mode", "system_prompt_file", "system_prompt_text",
