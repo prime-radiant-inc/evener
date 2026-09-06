@@ -55,21 +55,22 @@ specific mutation-ID contract; the client does not invent those IDs for callers.
 Use one client and separate caches per hub. `close()` ends that connection and
 rejects pending requests; create a new client for a different hub or credential.
 
-## Runnable example
+## Runnable examples
 
-Copy `examples/inspect.mjs` to a project with this tarball and `ws` installed:
+Install the tarball and `ws` in a separate project, then run the packaged examples
+(they share `connection.mjs`):
 
 ```sh
 npm install /absolute/path/to/evener-appwire-client-0.1.0.tgz ws
 EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
 EVENER_TOKEN_FILE=/path/to/hub/auth-token \
-EVENER_CWD=/path/on/hub node inspect.mjs
+EVENER_CWD=/path/on/hub node node_modules/@evener/appwire-client/examples/inspect.mjs
 ```
 
 The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
-first runnable recipe, **not full protocol coverage**. Fixtures for creation,
+read-only recipe, **not full protocol coverage**. Fixtures for creation,
 streaming, approvals, queue control, reconnect recovery, management, providers,
 plugins, trust and upgrades remain to be added.
 
@@ -77,3 +78,22 @@ Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
+
+The project-layer recipe exercises a reversible settings mutation, independent
+readback, effective configuration, and the launch-update notification. Use an
+isolated project directory on a test hub:
+
+```sh
+EVENER_EXAMPLE_WRITE_PROJECT=1 \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/project-layer.mjs
+```
+
+It temporarily changes `maxRounds`, restores the original project layer, and
+checks that global settings stayed unchanged. It refuses restoration if another
+writer changed the project layer. AppWire has no atomic compare-and-set for this
+operation: run this example without concurrent writers. An interrupted process
+cannot restore settings; inspect the isolated project's layer before reusing it.
+Operation and restoration failures are both reported.
