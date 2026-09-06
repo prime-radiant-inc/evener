@@ -55,6 +55,7 @@ import { QuestionBatches } from "./questionBatches";
 import { RosterSearch } from "./rosterSearch";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
+import { TasksSheet } from "./TasksSheet";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline } from "./timeline";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -533,6 +534,14 @@ export function ConversationScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [taskContext, setTaskContext] = useState<{
+    hubId: string;
+    ref: string;
+    threadId: string;
+    hasTasks: boolean;
+    hubName: string;
+    client: NonNullable<typeof client>;
+  } | null>(null);
   const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [questionsOpen, setQuestionsOpen] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
@@ -698,18 +707,46 @@ export function ConversationScreen({
   useEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <Action
-          disabled={!hasConversation}
-          onPress={() => {
-            Keyboard.dismiss();
-            setSessionOpen(true);
-          }}
-        >
-          Session
-        </Action>
+        <View style={styles.row}>
+          <Action
+            disabled={!hasConversation}
+            onPress={() => {
+              const current = store.getState().conversation;
+              if (!current || !client) return;
+              Keyboard.dismiss();
+              setTaskContext({
+                hubId: route.params.hubId,
+                ref: route.params.ref,
+                threadId: current.id,
+                hasTasks: current.tasks != null,
+                hubName: activeProfile?.name ?? "Hub",
+                client,
+              });
+            }}
+          >
+            Tasks
+          </Action>
+          <Action
+            disabled={!hasConversation}
+            onPress={() => {
+              Keyboard.dismiss();
+              setSessionOpen(true);
+            }}
+          >
+            Session
+          </Action>
+        </View>
       ),
     });
-  }, [navigation, hasConversation]);
+  }, [
+    navigation,
+    hasConversation,
+    client,
+    store,
+    route.params.hubId,
+    route.params.ref,
+    activeProfile?.name,
+  ]);
   const currentName = snapshot.conversation?.name;
   useEffect(() => {
     if (currentName && currentName !== route.params.title)
@@ -938,6 +975,21 @@ export function ConversationScreen({
           }
           ready={ready}
           close={() => setComposerSetting(null)}
+        />
+      ) : null}
+      {taskContext?.hubId === route.params.hubId &&
+      taskContext.ref === route.params.ref ? (
+        <TasksSheet
+          key={`${route.params.hubId}:${route.params.ref}`}
+          client={client ?? taskContext.client}
+          sessionRef={route.params.ref}
+          threadId={conversation?.id ?? taskContext.threadId}
+          hasTasks={
+            conversation ? conversation.tasks != null : taskContext.hasTasks
+          }
+          connected={connected}
+          hubName={taskContext.hubName}
+          close={() => setTaskContext(null)}
         />
       ) : null}
       {sessionOpen && conversation && controls ? (
