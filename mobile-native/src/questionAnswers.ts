@@ -24,7 +24,10 @@ export function composeQuestionAnswers(
   if (!questions.length) return null;
   for (const question of questions) {
     const resolution = selections[question.key]?.resolution;
-    if (!resolution) return null;
+    if (!resolution) {
+      if (questions.length > 1) return null;
+      continue;
+    }
     if (
       resolution.kind === "option" &&
       (!resolution.labels.length ||
@@ -35,12 +38,11 @@ export function composeQuestionAnswers(
         ))
     )
       return null;
-    if (resolution.kind === "free" && !resolution.text.trim()) return null;
     if (resolution.kind === "fallback" && !question.ifUnanswered) return null;
   }
   return composeAskAnswers(
     questions.map((question) => ({
-      ...selections[question.key],
+      ...(selections[question.key] ?? { resolution: null, note: "" }),
       header: question.header,
       ifUnanswered: question.ifUnanswered,
     })),
@@ -73,4 +75,48 @@ export function decodeQuestionSelections(json: string): QuestionSelections {
       throw new Error("Invalid question draft");
   }
   return value as QuestionSelections;
+}
+
+/** Match the web dock: seed only untouched answers, never a cleared choice. */
+export function seedQuestionAnswers(
+  questions: MobileAskQuestion[],
+  saved: QuestionSelections,
+): QuestionSelections {
+  const answers = { ...saved };
+  for (const question of questions) {
+    if (answers[question.key]) continue;
+    const labels = question.options
+      .filter((option) => option.recommended)
+      .map((option) => option.label);
+    if (labels.length)
+      answers[question.key] = {
+        resolution: { kind: "option", labels },
+        note: "",
+      };
+  }
+  return answers;
+}
+
+/** The web dock walks forward, then wraps to unanswered questions. */
+export function questionAdvanceTarget(
+  questions: MobileAskQuestion[],
+  answers: QuestionSelections,
+  activeIndex: number,
+): number | undefined {
+  if (questions.length < 2) return undefined;
+  if (activeIndex < questions.length - 1) return activeIndex + 1;
+  return nextUnansweredQuestion(questions, answers, activeIndex);
+}
+
+export function nextUnansweredQuestion(
+  questions: MobileAskQuestion[],
+  answers: QuestionSelections,
+  activeIndex: number,
+): number | undefined {
+  for (let step = 1; step < questions.length; step++) {
+    const index = (activeIndex + step) % questions.length;
+    const question = questions[index];
+    if (question && !answers[question.key]?.resolution) return index;
+  }
+  return undefined;
 }

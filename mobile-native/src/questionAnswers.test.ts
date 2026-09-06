@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import type { MobileAskQuestion } from "../../mobile/src/conversation/model";
-import { composeQuestionAnswers } from "./questionAnswers";
+import {
+  composeQuestionAnswers,
+  questionAdvanceTarget,
+  seedQuestionAnswers,
+} from "./questionAnswers";
 
 const question: MobileAskQuestion = {
   key: "call:0",
@@ -12,8 +16,10 @@ const question: MobileAskQuestion = {
     { label: "B", detail: "" },
   ],
 };
-it("requires an explicit valid answer for every displayed question", () => {
-  expect(composeQuestionAnswers([question], {})).toBeNull();
+it("rejects invalid choices and unanswered multi-question batches", () => {
+  expect(
+    composeQuestionAnswers([question, { ...question, key: "second" }], {}),
+  ).toBeNull();
   expect(
     composeQuestionAnswers([question], {
       "call:0": {
@@ -64,4 +70,45 @@ it("encodes question headers containing answer framing characters", () => {
   });
   expect(result?.split("\n")).toHaveLength(2);
   expect(result).toBe(`[answers]\n1. [${JSON.stringify(header)}] → "A"`);
+});
+
+it("uses the web single-question unanswered and empty free-answer contracts", () => {
+  expect(composeQuestionAnswers([question], {})).toBe(
+    "[answers]\n1. [Choice] → skipped (no answer)",
+  );
+  expect(
+    composeQuestionAnswers([question], {
+      "call:0": { resolution: { kind: "free", text: "" }, note: "" },
+    }),
+  ).not.toBeNull();
+});
+it("seeds recommended options without replacing edits or deliberate clearing", () => {
+  const q = {
+    ...question,
+    options: [{ label: "A", detail: "", recommended: true }],
+  };
+  expect(seedQuestionAnswers([q], {})[q.key]?.resolution).toEqual({
+    kind: "option",
+    labels: ["A"],
+  });
+  const cleared = { [q.key]: { resolution: null, note: "kept" } };
+  expect(seedQuestionAnswers([q], cleared)).toEqual(cleared);
+  expect(seedQuestionAnswers([question], {})).toEqual({});
+});
+it("walks forward then returns to an unanswered question before sending", () => {
+  const qs = [
+    question,
+    { ...question, key: "second" },
+    { ...question, key: "third" },
+  ];
+  expect(questionAdvanceTarget(qs, {}, 0)).toBe(1);
+  expect(questionAdvanceTarget(qs, {}, 2)).toBe(0);
+  const answers = Object.fromEntries(
+    qs.map((q) => [
+      q.key,
+      { resolution: { kind: "option" as const, labels: ["A"] }, note: "" },
+    ]),
+  );
+  expect(questionAdvanceTarget(qs, answers, 2)).toBeUndefined();
+  expect(questionAdvanceTarget([question], {}, 0)).toBeUndefined();
 });
