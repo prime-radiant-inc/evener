@@ -237,11 +237,17 @@ func TestInstances_ListOffersOnlyTemplateVars(t *testing.T) {
 	if vertex == nil {
 		t.Fatalf("AvailableProviders has no google-vertex: %+v", resp.AvailableProviders)
 	}
-	wantVars := map[string]string{"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT": "GOOGLE_VERTEX_PROJECT"}
-	if !maps.Equal(vertex.Vars, wantVars) {
-		t.Fatalf("google-vertex descriptor Vars = %v, want only the URL template's variables %v", vertex.Vars, wantVars)
+	// GOOGLE_VERTEX_ENDPOINT is read only by the OpenAI-compatible rows' own
+	// base URL, which is also the only place models.dev maps it.
+	wantVars := map[string]string{
+		"GOOGLE_VERTEX_ENDPOINT": "GOOGLE_VERTEX_ENDPOINT",
+		"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION",
+		"GOOGLE_VERTEX_PROJECT":  "GOOGLE_VERTEX_PROJECT",
 	}
-	if want := []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}; !slices.Equal(vertex.VarsEnv, want) {
+	if !maps.Equal(vertex.Vars, wantVars) {
+		t.Fatalf("google-vertex descriptor Vars = %v, want only the URL templates' variables %v", vertex.Vars, wantVars)
+	}
+	if want := []string{"GOOGLE_VERTEX_ENDPOINT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}; !slices.Equal(vertex.VarsEnv, want) {
 		t.Fatalf("google-vertex descriptor VarsEnv = %v, want %v", vertex.VarsEnv, want)
 	}
 }

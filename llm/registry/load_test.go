@@ -773,12 +773,18 @@ func TestUnresolvedBaseURL(t *testing.T) {
 // no template reads and the registry never substitutes (roborev round 19).
 func TestTemplateVarsEnv(t *testing.T) {
 	r := fixtureLoad(t, nil, "")
+	// A row's own base URL carries its own vars_env mapping (models.dev's
+	// per-model api templates, convertModel): the row is the only place
+	// REGION is read or mapped, and the provider's UNREAD is read nowhere.
 	r.curated["row-only"] = &record{head: Provider{
 		Transport: Transport{
 			BaseURL: "https://example.test/v1",
-			VarsEnv: map[string]string{"REGION": "EXAMPLE_REGION", "UNREAD": "EXAMPLE_UNREAD"},
+			VarsEnv: map[string]string{"UNREAD": "EXAMPLE_UNREAD"},
 		},
-		Models: map[string]Model{"m": {Transport: &Transport{BaseURL: "https://{REGION}.example.test/v1"}}},
+		Models: map[string]Model{"m": {Transport: &Transport{
+			BaseURL: "https://{REGION}.example.test/v1",
+			VarsEnv: map[string]string{"REGION": "EXAMPLE_REGION"},
+		}}},
 	}}
 	r.curated["rule-only"] = &record{head: Provider{Transport: Transport{
 		BaseURL:  "{GOOGLE_VERTEX_HOST}/v1",
@@ -792,7 +798,9 @@ func TestTemplateVarsEnv(t *testing.T) {
 		id   string
 		want map[string]string
 	}{
-		{id: "google-vertex", want: map[string]string{"GOOGLE_VERTEX_PROJECT": "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION"}},
+		// GOOGLE_VERTEX_ENDPOINT is read and mapped only by the OpenAI-compatible
+		// rows' own base URL; GOOGLE_APPLICATION_CREDENTIALS by nothing.
+		{id: "google-vertex", want: map[string]string{"GOOGLE_VERTEX_PROJECT": "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_ENDPOINT": "GOOGLE_VERTEX_ENDPOINT"}},
 		{id: "openai", want: map[string]string{"BASE_URL": "OPENAI_BASE_URL"}},
 		{id: "row-only", want: map[string]string{"REGION": "EXAMPLE_REGION"}},
 		{id: "rule-only", want: map[string]string{"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION"}},
