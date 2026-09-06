@@ -269,6 +269,29 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "gw/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1" {
 		t.Fatalf("literal base_url must not warn about a location it does not use: %+v", res)
 	}
+	// A template that names only the host still reaches the regional endpoint:
+	// the vertex-location rule derives the host from the location, so the
+	// location counts as used, is exposed, and is warned about.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.hostonly]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n")
+	if res := mustResolve(t, r, "hostonly/claude-opus-5"); !hasWarning(res, "regional") || res.Transport.BaseURL != "https://europe-west1-aiplatform.googleapis.com/v1/custom" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "europe-west1" {
+		t.Fatalf("host derived from the location must warn and expose the location: %+v", res)
+	}
+	// A row's own literal base_url replaces the provider template, so the
+	// provider template's location is neither used nor exposed nor warned about.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.rowgw]\nbase = \"google-vertex-anthropic\"\n[providers.rowgw.models.\"claude-opus-5\"]\nbase_url = \"https://gw.example.test/v1\"\n")
+	if res := mustResolve(t, r, "rowgw/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "" {
+		t.Fatalf("row base_url must not use, expose, or warn about the provider template's location: %+v", res)
+	}
+	// A host supplied directly (an instance var) is used as-is: the rule
+	// derives nothing from the location, so the location is neither exposed
+	// nor warned about.
+	r = fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
+		"[providers.directhost]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n[providers.directhost.vars]\nGOOGLE_VERTEX_HOST = \"https://gw.example.test\"\n")
+	if res := mustResolve(t, r, "directhost/claude-opus-5"); hasWarning(res, "regional") || res.Transport.BaseURL != "https://gw.example.test/v1/custom" || res.Transport.Vars["GOOGLE_VERTEX_LOCATION"] != "" {
+		t.Fatalf("a directly supplied host must not expose or warn about the location: %+v", res)
+	}
 }
 
 func TestResolve_HeadersAndCredential(t *testing.T) {
