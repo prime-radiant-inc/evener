@@ -189,6 +189,7 @@ export const styles = StyleSheet.create({
     minHeight: 48,
   },
   action: {
+    minWidth: Platform.OS === "android" ? 48 : 44,
     minHeight: Platform.OS === "android" ? 48 : 44,
     justifyContent: "center",
     paddingHorizontal: 8,

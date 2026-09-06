@@ -1,5 +1,6 @@
 import type {
   NavigationInvalidatedPayload,
+  NavigationMutation,
   NavigationReadParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -112,7 +113,19 @@ export class NavigationPages<T> {
   more() {
     return this.load(false);
   }
-  private async load(reset: boolean) {
+  async refreshAfter(receipt: NavigationMutation) {
+    const notificationEpoch = this.notificationEpoch;
+    let verified = await this.load(true, receipt);
+    // A notification during verification invalidates that read. Read once more
+    // after the event, retaining the receipt floor and never replaying the write.
+    if (verified === false && notificationEpoch !== this.notificationEpoch)
+      verified = await this.load(true, receipt);
+    if (!verified)
+      throw new Error(
+        "The change was accepted, but the updated list could not be loaded. Refresh the list.",
+      );
+  }
+  private async load(reset: boolean, receipt?: NavigationMutation) {
     if (
       !reset &&
       (this.state.loading || this.state.stale || !this.state.remaining)
@@ -148,6 +161,30 @@ export class NavigationPages<T> {
         throw new Error(
           "The hub returned an invalid navigation page. Refresh to try again.",
         );
+      if (receipt) {
+        const targets = receipt.targets.filter(
+          (target) =>
+            (this.params.resource === "catalog" &&
+              target.kind === "catalog" &&
+              target.catalog === this.params.catalog) ||
+            (this.params.resource === "project_page" &&
+              (target.kind === "all_loaded_projects" ||
+                (target.kind === "project" &&
+                  target.projectKey === this.params.projectKey))),
+        );
+        const revision = Math.max(
+          0,
+          ...targets.map((target) => target.revision ?? 0),
+        );
+        if (
+          response.generationId !== receipt.generation_id ||
+          response.revision < revision
+        ) {
+          this.publish({ loading: false });
+          this.markStale();
+          return;
+        }
+      }
       // A reset read can establish a restarted hub unless a newer event raced it.
       if (
         reset &&
@@ -166,7 +203,7 @@ export class NavigationPages<T> {
       ) {
         this.publish({ loading: false });
         this.markStale();
-        return;
+        return false;
       }
       const version = JSON.stringify([
         response.generationId,
@@ -203,7 +240,9 @@ export class NavigationPages<T> {
         remaining: Number(data.remaining),
         loading: false,
         stale: false,
+        error: null,
       });
+      return true;
     } catch (cause) {
       if (request !== this.request) return;
       this.publish({
