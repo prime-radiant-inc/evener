@@ -153,7 +153,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-  printf '{"protocol":"evener-appwire-v3"}\n'
+	  printf '{"protocol":"evener-appwire-v4"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -661,7 +661,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3"}\n'
+	  printf '{"protocol":"evener-appwire-v4"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -716,7 +716,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3"}\n'
+	  printf '{"protocol":"evener-appwire-v4"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -786,7 +786,7 @@ func TestHubSpawnerListsModelsFromEvenerLaunchContract(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+	  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
@@ -808,7 +808,7 @@ func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testin
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
 case " $* " in
-  *" --protocol evener-appwire-v3 "*)
+	  *" --protocol evener-appwire-v4 "*)
     printf '{"protocol":"evener-appwire-v2"}\n'
     exit 0
     ;;
@@ -1330,7 +1330,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3"}\n'
+	  printf '{"protocol":"evener-appwire-v4"}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

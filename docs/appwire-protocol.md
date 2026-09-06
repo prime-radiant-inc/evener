@@ -88,9 +88,9 @@ no router (reserved).
 | `initialize` | connection | `InitializeParams` | `InitializeResponse` | Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set. |
 | `ping` | connection | `EmptyParams` | `EmptyResponse` | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
-| `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
+| `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | `ThreadUnsubscribeParams` | `EmptyResponse` | Drops this connection's live-update subscription to a thread without reading it. |
-| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit). |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages atomic projected items backward (older) for lazy transcript loading; requests require an opaque item cursor. |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -1614,7 +1614,7 @@ _(no fields)_
 | `itemsView` | `string` | yes |  |
 | `subscribe` | `bool` | yes |  |
 | `replaceSubscription` | `bool` | yes |  |
-| `turnLimit` | `int` | yes |  |
+| `itemLimit` | `int` | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -1755,8 +1755,8 @@ _(no fields)_
 | `threadId` | `string` | yes |  |
 | `ref` | `string` | yes |  |
 | `cursor` | `string` | yes |  |
-| `limit` | `int` | yes |  |
 | `itemsView` | `string` | yes |  |
+| `itemLimit` | `int` | yes |  |
 
 
 ### `ThreadTurnsListResponse`

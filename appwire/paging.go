@@ -1,50 +1,92 @@
 package appwire
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
-// DefaultTurnPageSize is the turn-page size used when a turns/list request
-// omits a positive limit.
-const DefaultTurnPageSize = 30
+const TranscriptItemPageLimit = 40
 
-// WindowTurns returns the latest turnLimit turns (oldest-first) for a bounded
-// thread/read, plus an olderCursor for paging further back via PageTurns. A
-// turnLimit <= 0, or one no smaller than the turn count, returns all turns and
-// an empty cursor (no windowing — the legacy full-read behavior).
-func WindowTurns(all []Turn, turnLimit int) (page []Turn, olderCursor string) {
-	if turnLimit <= 0 || len(all) <= turnLimit {
-		return all, ""
+// NormalizeTranscriptItemLimit applies the item-mode default and maximum. A
+// non-positive request means the protocol default; positive values are bounded
+// by the public page maximum. The returned limit is valid only when the error
+// is nil; on error it is zero and must not be used.
+func NormalizeTranscriptItemLimit(limit int) (int, error) {
+	if limit <= 0 {
+		return TranscriptItemPageLimit, nil
 	}
-	lo := len(all) - turnLimit
-	return all[lo:], strconv.Itoa(lo)
+	if limit > TranscriptItemPageLimit {
+		return 0, InvalidParams("itemLimit must be between 1 and " + strconv.Itoa(TranscriptItemPageLimit))
+	}
+	return limit, nil
 }
 
-// PageTurns returns up to limit turns older than cursor (oldest-first within the
-// page) plus the nextCursor for the page just before it. An empty or
-// unparseable cursor starts from the newest turn; a cursor past the end clamps
-// to it. nextCursor is empty once the oldest turn has been reached.
-//
-// Cursors are front-anchored positions (index 0 = oldest turn), so they stay
-// valid as new turns append to the end — the common live-session case.
-func PageTurns(all []Turn, cursor string, limit int) ThreadTurnsListResponse {
-	if limit <= 0 {
-		limit = DefaultTurnPageSize
+// ValidateThreadReadParams validates the item-only transcript read limit.
+func ValidateThreadReadParams(params ThreadReadParams) error {
+	_, err := NormalizeTranscriptItemLimit(params.ItemLimit)
+	return err
+}
+
+// ValidateThreadTurnsListParams validates the item-only transcript list cursor
+// and limit.
+func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
+	if params.Cursor == "" {
+		return InvalidParams("cursor is required for thread/turns/list")
 	}
-	hi := len(all)
-	if cursor != "" {
-		if c, err := strconv.Atoi(cursor); err == nil {
-			hi = c
+	if isLegacyNumericCursor(params.Cursor) {
+		return InvalidParams("cursor must be an opaque item cursor")
+	}
+	_, err := NormalizeTranscriptItemLimit(params.ItemLimit)
+	return err
+}
+
+func isLegacyNumericCursor(cursor string) bool {
+	cursor = strings.TrimSpace(cursor)
+	if cursor == "" {
+		return false
+	}
+	if cursor[0] == '+' || cursor[0] == '-' {
+		cursor = cursor[1:]
+	}
+	if cursor == "" {
+		return false
+	}
+	for i := 0; i < len(cursor); i++ {
+		if cursor[i] < '0' || cursor[i] > '9' {
+			return false
 		}
 	}
-	if hi > len(all) {
-		hi = len(all)
+	return true
+}
+
+// ValidateTranscriptItemTurns verifies the mandatory metadata on an item-mode
+// turn fragment. It deliberately does not impose ordering or uniqueness; those
+// source invariants belong to the atomic pager.
+func ValidateTranscriptItemTurns(turns []Turn) error {
+	for _, turn := range turns {
+		if turn.ItemsView != TurnItemsViewFragment {
+			return InvalidParams("item-mode turns must use itemsView \"fragment\"")
+		}
+		for _, item := range turn.Items {
+			if item.TranscriptKey == "" {
+				return InvalidParams("item-mode items require transcriptKey")
+			}
+			if item.Position == nil {
+				return InvalidParams("item-mode items require position")
+			}
+		}
 	}
-	if hi < 0 {
-		hi = 0
-	}
-	lo := max(hi-limit, 0)
-	next := ""
-	if lo > 0 {
-		next = strconv.Itoa(lo)
-	}
-	return ThreadTurnsListResponse{Data: all[lo:hi], NextCursor: next}
+	return nil
+}
+
+// ValidateThreadReadItemResponse verifies an item-mode read response before it
+// is sent to a client.
+func ValidateThreadReadItemResponse(response ThreadReadResponse) error {
+	return ValidateTranscriptItemTurns(response.Thread.Turns)
+}
+
+// ValidateThreadTurnsListItemResponse verifies an item-mode list response
+// before it is sent to a client.
+func ValidateThreadTurnsListItemResponse(response ThreadTurnsListResponse) error {
+	return ValidateTranscriptItemTurns(response.Data)
 }

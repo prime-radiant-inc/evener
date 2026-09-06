@@ -24,9 +24,10 @@ native:llm:.:FuzzParseSSE
 native:.:./cmd/evener-transcript-v2-upgrade:FuzzConvertHeader
 native:.:./appwire:FuzzMessageDecode
 native:.:./appwire:FuzzMessageDecodeStructured
-native:.:./appwire:FuzzTurnPagingEquivalence
+native:.:./appwire:FuzzTranscriptItemLimitNormalization
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
+native:.:./internal/appitempaging:FuzzCursorCodec
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
 native:agent:.:FuzzToolArgsValidate:./internal/tool,.
 native:agent:./schema:FuzzSessionMetaRoundTrip

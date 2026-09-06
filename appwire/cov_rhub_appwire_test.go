@@ -115,8 +115,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadTurnsList", MethodThreadTurnsList, `{"ref":"local:th","limit":5}`, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadTurnsList(ctx, ThreadTurnsListParams{Ref: "local:th", Limit: 5})
+		{"ThreadTurnsList", MethodThreadTurnsList, `{"ref":"local:th","cursor":"opaque","itemLimit":5}`, ThreadTurnsListResponse{NextCursor: "n1"}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadTurnsList(ctx, ThreadTurnsListParams{Ref: "local:th", Cursor: "opaque", ItemLimit: 5})
 			if err != nil {
 				return err
 			}

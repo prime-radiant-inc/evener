@@ -161,7 +161,7 @@ without crashing. Pick the strongest oracle the surface admits:
 | any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags evenerfuzz`, so the never-panic oracle catches it (see [Internal invariants under evenerfuzz](#internal-invariants-under-evenerfuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
 | an HTTP / RPC handler | **never 5xx**, **never wedge**, **never escape** the sandbox FS | `FuzzWebHandler`, `FuzzWebMutatingHandler`, `FuzzAppWireDispatch` |
 | a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded corpus output, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` |
-| two code paths that must compute the same thing | **differential** — drive both from one input, assert they agree modulo an allow-list (the strongest class; it found both real decoder bugs) | `FuzzCrossProviderDifferential`, `FuzzStreamVsNonStreamDifferential`, `FuzzTranscriptReadersAgree`, `FuzzTurnPagingEquivalence` |
+| two code paths that must compute the same thing | **differential** — drive both from one input, assert they agree modulo an allow-list (the strongest class; it found both real decoder bugs) | `FuzzCrossProviderDifferential`, `FuzzStreamVsNonStreamDifferential`, `FuzzTranscriptReadersAgree` |
 
 ## Internal invariants under evenerfuzz
 
@@ -206,8 +206,7 @@ found came from here:
   streaming decoder vs its non-streaming decoder for the same content. The axis
   both real bugs lived on; a standing regression guard for them.
 - **two-path equivalence** — independent code paths over the same data:
-  `FuzzTranscriptReadersAgree` (the three transcript scanners),
-  `FuzzTurnPagingEquivalence` (`WindowTurns` vs `PageTurns`).
+  `FuzzTranscriptReadersAgree` (the three transcript scanners).
 
 Each carries a documented **allow-list** of legitimately path-specific fields
 (raw payloads, provider ids, reasoning encoding, …) excluded from the comparison;
