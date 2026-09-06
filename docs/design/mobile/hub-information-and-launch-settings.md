@@ -188,3 +188,51 @@ Local diagnostic files: /tmp/launch-android-anr.log,
 contains historical entries too; the relevant entry starts at 13:51:29 on Sep 6.
 Android removal, native reconnect, path-validation interruptions, two-hub
 isolation, process-death persistence and accessibility acceptance remain unproven.
+
+### Android recovery and native checks
+
+6 September 2026, following the ANR:
+
+- The original app PID 4007 remained live. Even a simple adb pid query stalled
+  intermittently. Host sampling showed active virtual CPU execution, not a
+  terminated emulator.
+- A fresh native dump at 13:55:39 found both the app main thread and mqt_v_js
+  waiting in their message loops. A guest top snapshot showed 380% idle of four
+  CPUs; this is a later recovery observation, not the load at the ANR.
+- Android Permission Controller recorded a separate service-execution ANR at
+  13:54:41 (20545 ms). This supports broader emulator impairment but does not
+  establish the precise cause of either failure.
+- The ANR dialog remained after Wait. After collecting its screenshot and
+  stacks, explicitly force-stopped the app, confirmed PID absence, and launched
+  the same installed build. This was a controlled retry, not a repair.
+
+The new app process (5052) completed the following sequential native actions:
+
+1. Hub settings → Launch defaults → search round. The search completed and
+   displayed inherited Max rounds. A nearby top snapshot showed 361% idle.
+2. Opened Max rounds, entered 7, backgrounded with Home, then brought the same
+   task to the foreground. The open sheet retained 7.
+3. Tapped Done, backgrounded again, confirmed Nexus Launcher as the top resumed
+   activity, and returned. Search round and the unsaved 7 remained; Save was enabled.
+4. Saved on Android. The saved notice and 7 appeared; the already-open iOS
+   screen updated to 7 without Reload or navigation.
+5. Reopened the Android field, chose Use inherited value, Done, Save defaults.
+   Android showed Inherited · -1 and the saved notice. iOS updated to the same
+   inherited value without a manual reload. The owned fixture is restored.
+
+Screenshots: [Android saved](assets/launch-settings/android-saved.png),
+[iOS receiving the save](assets/launch-settings/ios-android-save.jpg),
+[Android restored](assets/launch-settings/android-restored.png),
+[original Android ANR](assets/launch-settings/android-anr.png).
+The final saved/restored Android screenshots have the keyboard dismissed; they
+do not prove all controls remain reachable with every keyboard or text size.
+
+The final event-log read still contained only the original Evener ANR and the
+Permission Controller ANR, with no new event during this retry. No production
+code changed in this investigation. MOB-017 stays open for causal diagnosis and
+repeatable performance acceptance. Native scalar path validation interruptions,
+large text, screen readers, collections and broader settings remain unqualified.
+
+Additional local diagnostics: /tmp/evener-emulator-sample.txt,
+/tmp/evener-android-live-stack.txt, /tmp/evener-android-anr-events-after.txt.
+Root adb was used temporarily to collect the app's native stack.

@@ -24,6 +24,11 @@ reported 5491 ms waiting for the R key. A delayed native stack caught the main
 thread in Fabric view preallocation. Guest CPU pressure was also high, so the
 trace does not yet establish app versus emulator causality.
 
+Follow-up: the same app's main and JS threads were idle in a fresh dump, and
+Android's Permission Controller also ANRed. After an explicit diagnostic app
+restart, the same search and numeric edit/save/removal worked with no new ANR
+events. Keep this issue open: recovery does not prove the cause or a fix.
+
 Acceptance: reproduce with sequential UI actions, collect timely main/JS/render
 thread evidence and system load, identify the cause, fix it where it originates,
 and repeat keyboard/search/navigation checks on Android. Do not dismiss the ANR
@@ -289,7 +294,8 @@ save/readback/restoration smoke pass. Native scalar editors are now wired;
 all 285 native tests and TypeScript pass. iOS numeric save, invalid-number
 rejection and override removal have native evidence. Android editor acceptance,
 collections and model catalog remain open. Reconnect drafts now have controller
-coverage and iOS background/return evidence; Android hit MOB-017. See
+coverage and both-platform background/return evidence. Android save/removal and
+automatic iOS readback pass on retry; MOB-017 remains unresolved. See
 [launch progress](hub-information-and-launch-settings.md#native-scalar-editors).
 Nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
 screen readers and visual acceptance remain open.
