@@ -498,12 +498,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		candidate := sub
 		tracked, inserted, trackErr := owner.subagents.admitReconstructed(candidate, attach)
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			finishRestore(nil, trackErr)
 			return nil, trackErr
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			sub = tracked
 			restored = false
 		}
@@ -669,7 +669,7 @@ func (s *Session) prepareDeferredOwedStart(start deferredOwedDelegateAttentionSt
 		return false, errors.New("owed candidate conflicts with controller runtime state")
 	}
 	start.owner.subagents.removeSession(start.sub.id, start.sub.sess)
-	start.sub.sess.discardRestoredCandidate(start.sub.ownsEnv)
+	start.sub.sess.discardRestoredCandidate()
 	return false, persistErr
 }
 
@@ -847,13 +847,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		})
 		if trackErr != nil {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			return runtime.failStableSendStartAfterDispatch(ctx, started, delegateID, waiter, maxWaitMS, trackErr, func() {
 				finishRestore(nil, trackErr)
 			})
 		}
 		if !inserted {
-			candidate.sess.discardRestoredCandidate(candidate.ownsEnv)
+			candidate.sess.discardRestoredCandidate()
 			sub = tracked
 			restored = false
 		}
@@ -1450,7 +1450,39 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 	s := runtime.owner
 	isolation := delegateIsolation{worktreeProject: project}
 	workingDir := reservation.worktreePath
+	var (
+		laneAdmission envWorkID
+		laneFenced    bool
+	)
+	// The lane's admission is named for the create until an undo actually
+	// starts: a create still in flight must not read as a rollback in a fence
+	// warning (worktreeCreate renames its own for the same reason).
+	rollback := func() {
+		if laneFenced {
+			s.relabelEnvWork(laneAdmission, "delegate lane rollback for "+workingDir)
+		}
+		isolation.cleanup(s, reservation.delegateID)
+	}
 	if workingDir != "" {
+		// Cutting the lane forks git on the PARENT's environment, whose process
+		// table a close reaps, and so does the rollback every failure below owes
+		// it. Neither is a manage_worktree operation, so the dispatch's close
+		// fence never sees them; admit them here as ONE span, for the reason
+		// worktreeCreate's create/rollback admission is one span — an admission
+		// asked for where the rollback starts would be refused by the very close
+		// that made the rollback necessary, and an unfenced rollback races the
+		// environment cleanup it exists to keep residue out of.
+		//
+		// A refused admission refuses the spawn, which is the dispatch's answer
+		// for the dispatch's reason: no lane has been cut yet, and cutting one
+		// against an environment being reaped and stores being closed leaves
+		// exactly the locked worktree, branch and sidecar this admission is here
+		// to prevent.
+		laneAdmission, laneFenced = s.beginEnvWork("create delegate lane " + workingDir)
+		if !laneFenced {
+			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
+		}
+		defer s.endEnvWork(laneAdmission)
 		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
 		if err != nil {
 			return isolation, err
@@ -1458,13 +1490,13 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {
-			isolation.cleanup(s, reservation.delegateID)
+			rollback()
 			return delegateIsolation{}, fmt.Errorf("delegate isolation path %q does not match reserved path %q", path, workingDir)
 		}
 	}
 	env, ownsFresh, err := s.prepareSubagentEnvironment(workingDir, requestedSandbox)
 	if err != nil {
-		isolation.cleanup(s, reservation.delegateID)
+		rollback()
 		return delegateIsolation{}, err
 	}
 	isolation.env = env
@@ -1676,14 +1708,15 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if err != nil {
 		return nil, false, err
 	}
+	child.ownsEnv = ownsFresh
 	discardEnv = false
 	if child.delegateController != s.delegateController || child.owningDelegateID != started.lease.delegateID {
-		child.discardRestoredCandidate(ownsFresh)
+		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
-			child.discardRestoredCandidate(ownsFresh)
+			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)
 		}
 	}
@@ -1700,7 +1733,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
-			child.discardRestoredCandidate(ownsFresh)
+			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
 	}
@@ -1717,7 +1750,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		startedAt:        now,
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
-		ownsEnv:          ownsFresh,
 	}
 	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 	return sub, true, nil
@@ -2272,7 +2304,5 @@ func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.closeRuntimeTree(ctx, func(child *Session, _ bool) {
-		child.close(ctx, false)
-	})
+	return s.delegateController.closeRuntimeTree(ctx)
 }

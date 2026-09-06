@@ -52,7 +52,7 @@ func (p *navigationPublisherRecorder) snapshot() ([]string, []appwire.Navigation
 func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	recorder := &navigationPublisherRecorder{
@@ -112,7 +112,7 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 func TestNavigationPublisherDrainDoesNotRefresh(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	before := source.captureCount()

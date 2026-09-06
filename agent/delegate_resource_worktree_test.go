@@ -416,7 +416,7 @@ func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *test
 		t.Fatal("stable descriptor restore unexpectedly reused a resident child")
 	}
 	defer func() {
-		sub.sess.discardRestoredCandidate(sub.ownsEnv)
+		sub.sess.discardRestoredCandidate()
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 	}()
 	if got := sub.sess.currentEnv().WorkingDirectory(); got != descriptorDir {

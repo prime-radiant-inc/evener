@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 const navigationTestSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -114,18 +116,19 @@ func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
 
-	manifest, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	manifestResult, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"})
+	projectResult, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	manifest, project := manifestResult.Response, projectResult.Response
 	if source.captureCount() != 1 {
 		t.Fatalf("captures = %d, want one core snapshot", source.captureCount())
 	}
-	if manifest.Generation != project.Generation || manifest.Revision == 0 || project.Revision == 0 {
+	if manifest.GenerationID != project.GenerationID || manifest.Revision == 0 || project.Revision == 0 {
 		t.Fatalf("manifest=%+v project=%+v", manifest, project)
 	}
 
@@ -148,7 +151,7 @@ func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T
 func TestNavigationServiceEmitsExactDependentTargetsAndWildcard(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,16 +188,16 @@ func TestNavigationServiceEmitsExactDependentTargetsAndWildcard(t *testing.T) {
 	}
 }
 
-func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
+func TestNavigationServicePublishesInvalidationRacingOrdinaryBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	source.entered = make(chan struct{})
 	source.release = make(chan struct{})
 	service := newTestNavigationService(t, source)
-	done := make(chan navigationRepresentation, 1)
+	done := make(chan navigationReadResult, 1)
 	errs := make(chan error, 1)
 	go func() {
-		representation, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"})
-		done <- representation
+		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+		done <- result
 		errs <- err
 	}()
 	<-source.entered
@@ -204,12 +207,66 @@ func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
 	if err := <-errs; err != nil {
 		t.Fatal(err)
 	}
-	representation := <-done
-	if representation.Revision != service.CurrentRevision((navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()) {
-		t.Fatalf("published stale revision %d", representation.Revision)
+	result := <-done
+	if !bytes.Contains(result.Response.Data, []byte("fresh")) {
+		t.Fatalf("read cached stale core bytes: %s", result.Response.Data)
 	}
-	if !bytes.Contains(representation.JSON, []byte("fresh")) {
-		t.Fatalf("representation cached stale core bytes: %s", representation.JSON)
+	// The invalidation raced an ordinary (non-mutating) build, which retried
+	// and committed the fresh state. Its publication must still reach
+	// clients; otherwise the change is committed but nobody is told, and a
+	// later forced refresh finds no further changes and clears the pending
+	// hint with nothing ever published.
+	publications := service.DrainPublications()
+	if len(publications) != 1 {
+		t.Fatalf("publications = %+v, want exactly the raced invalidation", publications)
+	}
+	// A cold first read observes every resource as changed, so the
+	// publication legitimately covers more than the raced hint; the
+	// property under test is that the raced change is published at all.
+	found := false
+	for _, target := range publications[0].Targets {
+		if target.Kind == appwire.NavigationTargetProject && target.ProjectKey == "p1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("publication targets = %+v, want project p1 covered", publications[0].Targets)
+	}
+	// The scheduler's follow-up forced refresh must not publish a second
+	// time: the change is already committed and published above.
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if extra := service.DrainPublications(); len(extra) != 0 {
+		t.Fatalf("follow-up refresh published %+v, want nothing further", extra)
+	}
+}
+
+func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	service := newTestNavigationService(t, source)
+	done := make(chan navigationReadResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		result, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil)
+		done <- result
+		errs <- err
+	}()
+	<-source.entered
+	source.changeTitle("fresh")
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	close(source.release)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.Response.Revision != service.CurrentRevision((navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()) {
+		t.Fatalf("published stale revision %d", result.Response.Revision)
+	}
+	if !bytes.Contains(result.Response.Data, []byte("fresh")) {
+		t.Fatalf("read cached stale core bytes: %s", result.Response.Data)
 	}
 	if source.captureCount() < 2 {
 		t.Fatalf("captures = %d, want retry after invalidation", source.captureCount())
@@ -226,7 +283,7 @@ func TestNavigationServiceLogicalOffPageChangeAndRemovalInvalidateProjectAndCata
 	source.inputs.Tree.Projects[0].Current = rows
 	source.mu.Unlock()
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -291,12 +348,860 @@ func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testin
 		{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1},
 		{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID},
 	} {
-		if _, err := service.Representation(t.Context(), key); err != nil {
+		if _, err := service.readV2(t.Context(), key, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if got := builds.Load(); got != 1 {
 		t.Fatalf("projection builds = %d, want one retained core build", got)
+	}
+}
+
+func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	result, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result.Response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maxNavigationResponseBytes || len(encoded) < maxNavigationResponseBytes-4096 {
+		t.Fatalf("normalized v2 response bytes=%d, want tightly fitted at or below %d", len(encoded), maxNavigationResponseBytes)
+	}
+}
+
+func TestNavigationJobHeavyPageRejectsZeroProgress(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	jobHeavy := hubcore.TreeNode{
+		ID:        navigationTestSessionID,
+		Title:     "job-heavy",
+		Project:   "p1",
+		State:     "active",
+		Kind:      "session",
+		UpdatedAt: now,
+	}
+	for index := range 1_024 {
+		suffix := fmt.Sprintf("-%04d", index)
+		jobHeavy.RunningJobs = append(jobHeavy.RunningJobs, appwire.EvenerJobInfo{
+			JobID:   strings.Repeat("j", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			JobType: strings.Repeat("t", maxNavigationLabelRunes),
+			Status:  "running",
+			Command: strings.Repeat("c", maxNavigationFullCommandRunes+1),
+			Task:    strings.Repeat("k", maxNavigationLabelRunes),
+			Reason:  strings.Repeat("r", maxNavigationLabelRunes),
+			Intent:  strings.Repeat("i", maxNavigationLabelRunes),
+		})
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Live = []hubcore.TreeNode{jobHeavy}
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	for attempt := 1; attempt <= 2; attempt++ {
+		result, err := service.readV2(t.Context(), key, nil)
+		if err == nil {
+			t.Fatalf("attempt %d returned successful page: %+v", attempt, result.Response)
+		}
+		if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
+			t.Fatalf("attempt %d error = %v, want page progress invariant", attempt, err)
+		}
+	}
+
+	object := hubapi.NavigationSectionResource{
+		GenerationID: "g",
+		Revision:     1,
+		Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{{
+			Ref:         "local:" + navigationTestSessionID,
+			HostID:      "local",
+			SessionID:   navigationTestSessionID,
+			Title:       "job-heavy",
+			Project:     "p1",
+			State:       "active",
+			Kind:        "session",
+			RunningJobs: navigationJobs(jobHeavy.RunningJobs),
+			Children:    hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
+		}},
+	}
+	response := appwire.NavigationReadResponse{Status: "ok", GenerationID: "g", Revision: 1, ETag: `"one"`}
+	if _, _, err := fitNavigationV2Snapshot(key, object, response, maxNavigationResponseBytes); err == nil {
+		t.Fatal("normalized fitting returned a successful zero-progress page")
+	} else if _, ok := errors.AsType[navigationPageProgressInvariantError](err); !ok {
+		t.Fatalf("normalized fitting error = %v, want page progress invariant", err)
+	}
+}
+
+func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
+	const roots = 40
+	rows := make([]hubcore.TreeNode, roots)
+	next := 0
+	makeNode := func() hubcore.TreeNode {
+		next++
+		return hubcore.TreeNode{
+			ID:        fmt.Sprintf("max-field-%04d", next),
+			Title:     strings.Repeat("t", maxNavigationTitleRunes),
+			Project:   strings.Repeat("p", maxNavigationLabelRunes),
+			Branch:    strings.Repeat("b", maxNavigationLabelRunes),
+			State:     "active",
+			Kind:      "session",
+			UpdatedAt: now,
+		}
+	}
+	for root := range rows {
+		rows[root] = makeNode()
+		rows[root].Children = make([]hubcore.TreeNode, 49)
+		for child := range rows[root].Children {
+			rows[root].Children[child] = makeNode()
+		}
+	}
+	return rows
+}
+
+func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := navigationBudgetTestSource(now)
+	service := newTestNavigationService(t, source)
+	keys := map[string]navigationResourceKey{
+		"section":     {Kind: navigationResourceLive, Limit: maxNavigationSectionRows},
+		"pin catalog": {Kind: navigationResourcePinCatalog, Limit: maxNavigationCatalogRows},
+		"catalog":     {Kind: navigationResourceProjects, Limit: maxNavigationCatalogRows},
+		"project":     {Kind: navigationResourceProject, ProjectKey: "p1"},
+		"project page": {
+			Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: maxNavigationSectionRows,
+		},
+		"location": {Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID},
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			result, err := service.readV2(t.Context(), key, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNavigationV2ResponseBudget(t, key, result.Response)
+		})
+	}
+}
+
+func TestNavigationReadV2OversizeManifestIsInternalInvariantWithoutPartialResponse(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service := newTestNavigationService(t, navigationBudgetTestSource(now))
+	key := navigationResourceKey{Kind: navigationResourceManifest}
+	_, versioned, projection, err := service.versionedCore(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, _, err := projection.Resource(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, ok := object.(hubapi.NavigationManifest)
+	if !ok {
+		t.Fatalf("manifest type = %T, want hubapi.NavigationManifest", object)
+	}
+	if len(complete.Sources) != 64 {
+		t.Fatalf("manifest sources=%d, want all 64", len(complete.Sources))
+	}
+	unbounded, err := normalizeNavigationResource(key, complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundedData, err := json.Marshal(unbounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundedResponse := appwire.NavigationReadResponse{
+		Status:         "ok",
+		GenerationID:   complete.GenerationID,
+		Revision:       complete.Revision,
+		ETag:           navigationETag(key, complete.GenerationID, complete.Revision),
+		Representation: appwire.NavigationRepresentationSnapshot,
+		Data:           unboundedData,
+	}
+	unboundedEncoded, err := json.Marshal(unboundedResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unboundedEncoded) <= maxNavigationManifestBytes {
+		t.Fatalf("complete normalized manifest response bytes=%d, want > %d to prove invariant", len(unboundedEncoded), maxNavigationManifestBytes)
+	}
+
+	result, err := service.readV2(t.Context(), key, nil)
+	if err == nil {
+		t.Fatalf("oversize complete manifest returned partial response with %d data bytes", len(result.Response.Data))
+	}
+	if !reflect.DeepEqual(result, navigationReadResult{}) {
+		t.Fatalf("oversize complete manifest returned partial result: %+v", result)
+	}
+	invariant, ok := errors.AsType[navigationV2ResponseInvariantError](err)
+	if !ok || invariant.kind != navigationResourceManifest || invariant.maxBytes != maxNavigationManifestBytes {
+		t.Fatalf("oversize manifest error = %T %v, want manifest response invariant", err, err)
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	wireErr := navigationReadError(server, err)
+	assertNavigationWireError(t, wireErr, appwire.CodeInternalError, appwire.ErrorInternal)
+}
+
+func TestNavigationReadV2UnderCapManifestRetainsCompleteAuthority(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := navigationBudgetTestSource(now)
+	source.mu.Lock()
+	source.inputs.Sources = source.inputs.Sources[:2]
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceManifest}
+
+	legacy, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacySnapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(legacy.Response.Data, &legacySnapshot); err != nil {
+		t.Fatal(err)
+	}
+	var complete hubapi.NavigationManifest
+	if err := json.Unmarshal(legacySnapshot.Metadata, &complete); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNavigationV2ResponseBudget(t, key, result.Response)
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var manifest hubapi.NavigationManifest
+	if err := json.Unmarshal(snapshot.Metadata, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(complete.Sources) != 2 || len(manifest.Sources) != len(complete.Sources) {
+		t.Fatalf("under-cap manifest sources: legacy=%d v2=%d, want complete two-source authority", len(complete.Sources), len(manifest.Sources))
+	}
+	for index := range complete.Sources {
+		if manifest.Sources[index] != complete.Sources[index] {
+			t.Fatalf("under-cap manifest source %d changed from authoritative value", index)
+		}
+	}
+}
+
+func TestNavigationReadV2FittingIsDeterministicAndPreservesMetadataAndReachability(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	first, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.Response.Data, second.Response.Data) {
+		t.Fatal("identical authoritative reads produced different bounded snapshots")
+	}
+	base := appwire.NavigationReadBase{
+		GenerationID: first.Response.GenerationID,
+		Revision:     first.Response.Revision,
+		ETag:         first.Response.ETag,
+	}
+	retained, ok := service.history.Lookup(key, base)
+	if !ok {
+		t.Fatal("fitted current snapshot was not admitted to history")
+	}
+	retainedData, err := json.Marshal(retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(retainedData, first.Response.Data) {
+		t.Fatal("history retained a different snapshot than the fitted current response")
+	}
+	assertNavigationV2ResponseBudget(t, key, first.Response)
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(first.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateNavigationResourceSnapshot(key, first.Response.GenerationID, first.Response.Revision, snapshot); err != nil {
+		t.Fatalf("bounded snapshot is not reachable: %v", err)
+	}
+	var metadata struct {
+		Remaining int  `json:"remaining"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(snapshot.Metadata, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !metadata.Truncated || metadata.Remaining == 0 {
+		t.Fatalf("bounded metadata = %+v, want truncated with omitted top-level rows", metadata)
+	}
+	foundOmittedDescendants := false
+	for _, entity := range snapshot.Entities {
+		var summary hubapi.NavigationSessionSummary
+		if err := json.Unmarshal(entity.Value, &summary); err != nil {
+			t.Fatal(err)
+		}
+		if summary.OmittedDescendants > 0 {
+			foundOmittedDescendants = true
+		}
+	}
+	if !foundOmittedDescendants {
+		t.Fatal("bounded node prefix did not account for omitted descendants")
+	}
+}
+
+func TestNavigationReadV2OversizeCompleteDeltaFallsBackToBoundedSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	if _, ok := service.history.Lookup(key, base); !ok {
+		t.Fatal("large-delta base snapshot was not retained")
+	}
+
+	source.mu.Lock()
+	var retitle func([]hubcore.TreeNode)
+	retitle = func(rows []hubcore.TreeNode) {
+		for index := range rows {
+			rows[index].Title = strings.Repeat("u", maxNavigationTitleRunes)
+			retitle(rows[index].Children)
+		}
+		for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+			rows[left], rows[right] = rows[right], rows[left]
+		}
+	}
+	retitle(source.inputs.Tree.Live)
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Response.Representation != appwire.NavigationRepresentationSnapshot || changed.Response.Base != nil {
+		t.Fatalf("oversized complete delta representation=%q base=%+v data=%d, want snapshot fallback without Base", changed.Response.Representation, changed.Response.Base, len(changed.Response.Data))
+	}
+	assertNavigationV2ResponseBudget(t, key, changed.Response)
+
+	service.history = newNavigationHistory(0, 0)
+	reconnect, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconnect.Response.Representation != appwire.NavigationRepresentationSnapshot || reconnect.Response.Base != nil {
+		t.Fatalf("history-missing reconnect representation=%q base=%+v data=%d, want snapshot without Base", reconnect.Response.Representation, reconnect.Response.Base, len(reconnect.Response.Data))
+	}
+	assertNavigationV2ResponseBudget(t, key, reconnect.Response)
+}
+
+func TestNavigationReadV2SmallRetainedDeltaRemainsBoundedDelta(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	source.changeTitle("small retained delta")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Response.Representation != appwire.NavigationRepresentationDelta || changed.Response.Base == nil || *changed.Response.Base != base {
+		t.Fatalf("small retained response = %+v, want delta with exact Base", changed.Response)
+	}
+	assertNavigationV2ResponseBudget(t, key, changed.Response)
+}
+
+func TestNavigationReadV2IrreducibleSnapshotOverflowIsInternalInvariant(t *testing.T) {
+	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
+	key := navigationResourceKey{Kind: navigationResourceLocation, ID: "local:" + navigationTestSessionID}
+	_, versioned, projection, err := service.versionedCore(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, _, err := projection.Resource(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := appwire.NavigationReadResponse{
+		Status: "ok", GenerationID: versioned.Generation, Revision: versioned.Revision,
+		ETag: navigationETag(key, versioned.Generation, versioned.Revision),
+	}
+	_, _, err = fitNavigationV2Snapshot(versioned, object, response, 1)
+	if err == nil || !strings.Contains(err.Error(), "navigation v2 response invariant") {
+		t.Fatalf("irreducible overflow error = %v, want internal invariant", err)
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
+	wireErr := navigationReadError(server, err)
+	assertNavigationWireError(t, wireErr, appwire.CodeInternalError, appwire.ErrorInternal)
+}
+
+func navigationBudgetTestSource(now time.Time) *testNavigationSource {
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.inputs.Sources = make([]hubapi.Source, 64)
+	for index := range source.inputs.Sources {
+		suffix := fmt.Sprintf("-%02d", index)
+		source.inputs.Sources[index] = hubapi.Source{
+			ID:     strings.Repeat("i", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Label:  strings.Repeat("😀", maxNavigationLabelRunes),
+			Kind:   strings.Repeat("k", 969),
+			Online: true,
+		}
+	}
+	source.inputs.PinSections = make([]hubcore.PinSection, maxNavigationCatalogRows)
+	for index := range source.inputs.PinSections {
+		suffix := fmt.Sprintf("-%03d", index)
+		source.inputs.PinSections[index] = hubcore.PinSection{
+			ID:   strings.Repeat("s", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Name: strings.Repeat("😀", maxNavigationLabelRunes), MemberCount: index,
+		}
+	}
+	projects := make([]hubcore.TreeProject, maxNavigationCatalogRows)
+	projects[0] = source.inputs.Tree.Projects[0]
+	for index := 1; index < len(projects); index++ {
+		suffix := fmt.Sprintf("-%03d", index)
+		projects[index] = hubcore.TreeProject{
+			Key:        strings.Repeat("q", maxNavigationIdentityBytes-len(suffix)) + suffix,
+			Name:       strings.Repeat("😀", maxNavigationLabelRunes),
+			WorkingDir: "/" + strings.Repeat("w", maxNavigationWorkingDirBytes-1),
+		}
+	}
+	source.inputs.Tree.Projects = projects
+	return source
+}
+
+func assertNavigationV2ResponseBudget(t *testing.T, key navigationResourceKey, response appwire.NavigationReadResponse) {
+	t.Helper()
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := maxNavigationResponseBytes
+	switch key.Kind {
+	case navigationResourceManifest:
+		limit = maxNavigationManifestBytes
+	case navigationResourcePinCatalog, navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
+		limit = maxNavigationCatalogBytes
+	}
+	if len(encoded) > limit {
+		t.Fatalf("%s exact response bytes=%d, want <= %d (data=%d)", key.Kind, len(encoded), limit, len(response.Data))
+	}
+}
+
+func TestNavigationReadV2ExactCurrentDoesNotReinsertHistory(t *testing.T) {
+	service := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{
+		GenerationID: initial.Response.GenerationID,
+		Revision:     initial.Response.Revision,
+		ETag:         initial.Response.ETag,
+	}
+
+	history := newNavigationHistory(1, 1<<20)
+	service.history = history
+	current, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Response.Status != "not_modified" {
+		t.Fatalf("exact-current response = %+v, want not_modified", current.Response)
+	}
+	history.mu.Lock()
+	entries, indexed, bytes := history.order.Len(), len(history.entries), history.bytes
+	history.mu.Unlock()
+	if entries != 0 || indexed != 0 || bytes != 0 {
+		t.Fatalf("exact-current read rebuilt history: order=%d entries=%d bytes=%d, want empty", entries, indexed, bytes)
+	}
+}
+
+func TestNavigationReadV2UsesOnlyExactCompleteViewBaseline(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	current := make([]hubcore.TreeNode, 6)
+	archived := make([]hubcore.TreeNode, 6)
+	for index := range current {
+		current[index] = hubcore.TreeNode{ID: fmt.Sprintf("current-%02d", index), Title: fmt.Sprintf("current %d", index), Project: "p1", Kind: "session", State: "idle", UpdatedAt: now}
+		archived[index] = hubcore.TreeNode{ID: fmt.Sprintf("archived-%02d", index), Title: fmt.Sprintf("archived %d", index), Project: "p1", Kind: "session", State: "ended", UpdatedAt: now}
+	}
+	source.inputs.Tree.Projects[0].Current = current
+	source.inputs.Tree.Projects[0].Archived = archived
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+
+	rootKey := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}
+	currentKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 2, Limit: 2}
+	archivedKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "archived", Offset: 2, Limit: 2}
+	readSnapshot := func(key navigationResourceKey) appwire.NavigationReadBase {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Representation != appwire.NavigationRepresentationSnapshot {
+			t.Fatalf("initial %s representation = %q, want snapshot", key.Kind, result.Response.Representation)
+		}
+		return appwire.NavigationReadBase{GenerationID: result.Response.GenerationID, Revision: result.Response.Revision, ETag: result.Response.ETag}
+	}
+	rootBase := readSnapshot(rootKey)
+	currentBase := readSnapshot(currentKey)
+	archivedBase := readSnapshot(archivedKey)
+
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current[2].Title = "changed exact current page"
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	exact, err := service.readV2(t.Context(), currentKey, &currentBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exact.Response.Representation != appwire.NavigationRepresentationDelta {
+		t.Fatalf("exact current-page base representation = %q, want delta", exact.Response.Representation)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(exact.Response.Data, &delta); err != nil {
+		t.Fatal(err)
+	}
+	foundChanged := false
+	for _, entity := range delta.UpsertedEntities {
+		if bytes.Contains(entity.Value, []byte("changed exact current page")) {
+			foundChanged = true
+		}
+	}
+	if !foundChanged {
+		t.Fatalf("exact-view delta omitted changed entity: %+v", delta.UpsertedEntities)
+	}
+
+	for name, crossViewBase := range map[string]appwire.NavigationReadBase{
+		"project root":  rootBase,
+		"archived page": archivedBase,
+	} {
+		result, err := service.readV2(t.Context(), currentKey, &crossViewBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Representation != appwire.NavigationRepresentationSnapshot {
+			t.Errorf("%s base representation = %q, want snapshot fallback", name, result.Response.Representation)
+		}
+	}
+}
+
+func TestNavigationReadV2EvictedExactViewFallsBackWithoutRecordCounters(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current = []hubcore.TreeNode{
+		{ID: navigationTestSessionID, Title: "one", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Title: "two", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)},
+	}
+	source.mu.Unlock()
+	// The history override gives this test exactly one history entry.
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.historyEntries, cfg.historyBytes = 1, 1<<20
+	})
+	originalKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+	otherKey := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 1, Limit: 1}
+	type readBase = appwire.NavigationReadBase
+	read := func(key navigationResourceKey) (readBase, hubapi.NavigationSnapshot) {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Response.Status != "ok" || result.Response.Representation != appwire.NavigationRepresentationSnapshot || result.Response.Base != nil {
+			t.Fatalf("initial %s representation = %q, want snapshot", key, result.Response.Representation)
+		}
+		var snapshot hubapi.NavigationSnapshot
+		if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		return readBase{GenerationID: result.Response.GenerationID, Revision: result.Response.Revision, ETag: result.Response.ETag}, snapshot
+	}
+	originalBase, originalSnapshot := read(originalKey)
+	otherBase, otherSnapshot := read(otherKey)
+	assertScope := func(key navigationResourceKey, snapshot hubapi.NavigationSnapshot, wantTitle string) {
+		t.Helper()
+		scope := navigationViewScope(key)
+		if len(snapshot.Entities) != 1 || len(snapshot.Containers) == 0 {
+			t.Fatalf("%s initial snapshot = %+v, want one entity and containers", key, snapshot)
+		}
+		for _, entity := range snapshot.Entities {
+			if !strings.HasPrefix(entity.Key, scope+"/entity/") {
+				t.Fatalf("%s entity key %q escaped requested scope %q", key, entity.Key, scope)
+			}
+			encoded, err := json.Marshal(entity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(encoded, []byte(`"revision"`)) {
+				t.Fatalf("%s entity %q emitted a record revision: %s", key, entity.Key, encoded)
+			}
+			if wantTitle != "" && !bytes.Contains(entity.Value, []byte(wantTitle)) {
+				t.Fatalf("%s entity %q omitted title %q", key, entity.Key, wantTitle)
+			}
+		}
+		for _, container := range snapshot.Containers {
+			if !strings.HasPrefix(container.Key, scope+"/") {
+				t.Fatalf("%s container key %q escaped requested scope %q", key, container.Key, scope)
+			}
+			encoded, err := json.Marshal(container)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(encoded, []byte(`"revision"`)) {
+				t.Fatalf("%s container %q emitted a record revision: %s", key, container.Key, encoded)
+			}
+			if container.Owner.Kind == "entity" && !strings.HasPrefix(container.Owner.EntityKey, scope+"/entity/") {
+				t.Fatalf("%s owner key %q escaped requested scope %q", key, container.Owner.EntityKey, scope)
+			}
+		}
+	}
+	assertScope(originalKey, originalSnapshot, "one")
+	assertScope(otherKey, otherSnapshot, "two")
+
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Current[0].Title = "original refreshed content"
+	source.inputs.Tree.Projects[0].Current[1].Title = "evicted fresh content"
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	otherResult, err := service.readV2(t.Context(), otherKey, &otherBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherResult.Response.Status != "ok" || otherResult.Response.Representation != appwire.NavigationRepresentationDelta {
+		t.Fatalf("retained other base response = %+v, want delta", otherResult.Response)
+	}
+	if otherResult.Response.Base == nil || *otherResult.Response.Base != otherBase {
+		t.Fatalf("retained other base echo = %+v, want exact %+v", otherResult.Response.Base, otherBase)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(otherResult.Response.Data, &delta); err != nil {
+		t.Fatal(err)
+	}
+	if len(delta.UpsertedEntities) != 1 {
+		t.Fatalf("retained other delta entities = %+v, want changed entity", delta.UpsertedEntities)
+	}
+	changedEntity := delta.UpsertedEntities[0]
+	if scope := navigationViewScope(otherKey) + "/entity/"; !strings.HasPrefix(changedEntity.Key, scope) {
+		t.Fatalf("retained other delta entity %q escaped requested scope %q", changedEntity.Key, scope)
+	}
+	if !bytes.Contains(changedEntity.Value, []byte("evicted fresh content")) {
+		t.Fatalf("retained other delta entity = %+v, want changed content", changedEntity)
+	}
+	if otherResult.Response.Revision <= otherBase.Revision || otherResult.Response.ETag == otherBase.ETag {
+		t.Fatalf("retained other authority = revision %d etag %q, want later than %+v", otherResult.Response.Revision, otherResult.Response.ETag, otherBase)
+	}
+	retainedOtherBase := appwire.NavigationReadBase{
+		GenerationID: otherResult.Response.GenerationID,
+		Revision:     otherResult.Response.Revision,
+		ETag:         otherResult.Response.ETag,
+	}
+	crossView, err := service.readV2(t.Context(), originalKey, &retainedOtherBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if crossView.Response.Status != "ok" || crossView.Response.Representation != appwire.NavigationRepresentationSnapshot || crossView.Response.Base != nil {
+		t.Fatalf("cross-View base response = %+v, want snapshot without Base", crossView.Response)
+	}
+	var crossSnapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(crossView.Response.Data, &crossSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertScope(originalKey, crossSnapshot, "original refreshed content")
+	if crossView.Response.Revision <= originalBase.Revision {
+		t.Fatalf("cross-View snapshot revision = %d, want later than original base %d", crossView.Response.Revision, originalBase.Revision)
+	}
+
+	result, err := service.readV2(t.Context(), originalKey, &originalBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Status != "ok" || result.Response.Representation != appwire.NavigationRepresentationSnapshot || result.Response.Base != nil {
+		t.Fatalf("evicted base response = %+v, want current snapshot without Base", result.Response)
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertScope(originalKey, snapshot, "original refreshed content")
+	if result.Response.Revision != crossView.Response.Revision || result.Response.ETag != crossView.Response.ETag {
+		t.Fatalf("evicted fallback authority = revision %d etag %q, want current %d/%q", result.Response.Revision, result.Response.ETag, crossView.Response.Revision, crossView.Response.ETag)
+	}
+}
+
+func TestNavigationReadV2PresentGoneTombstoneAndReappearLifecycle(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+	read := func(base *appwire.NavigationReadBase) appwire.NavigationReadResponse {
+		t.Helper()
+		result, err := service.readV2(t.Context(), key, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Response
+	}
+	present := read(nil)
+	if present.Status != "ok" || present.Representation != appwire.NavigationRepresentationSnapshot || len(present.Data) == 0 {
+		t.Fatalf("first present response = %+v, want snapshot with data", present)
+	}
+	presentBase := &appwire.NavigationReadBase{GenerationID: present.GenerationID, Revision: present.Revision, ETag: present.ETag}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	gone := read(presentBase)
+	if gone.Status != "gone" || gone.Data != nil || gone.Revision <= present.Revision || gone.ETag == present.ETag {
+		t.Fatalf("gone response = %+v, want later tombstone without data", gone)
+	}
+	tombstoneBase := &appwire.NavigationReadBase{GenerationID: gone.GenerationID, Revision: gone.Revision, ETag: gone.ETag}
+	if notModified := read(tombstoneBase); notModified.Status != "not_modified" || notModified.Data != nil {
+		t.Fatalf("exact tombstone response = %+v, want not_modified without data", notModified)
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = []hubcore.TreeProject{{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{
+		ID: navigationTestSessionID, Title: "reappeared", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now,
+	}}}}
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	reappeared := read(tombstoneBase)
+	if reappeared.Status != "ok" || reappeared.Representation != appwire.NavigationRepresentationSnapshot || reappeared.Revision <= gone.Revision {
+		t.Fatalf("reappeared response = %+v, want later snapshot", reappeared)
+	}
+	var snapshot hubapi.NavigationSnapshot
+	if err := json.Unmarshal(reappeared.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entities) != 1 || !bytes.Contains(snapshot.Entities[0].Value, []byte("reappeared")) {
+		t.Fatalf("reappeared entities = %+v, want only current row", snapshot.Entities)
+	}
+	neverKnown := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "never-known"}
+	if _, err := service.readV2(t.Context(), neverKnown, nil); err == nil {
+		t.Fatal("never-known resource fabricated a tombstone")
+	}
+}
+
+func TestNavigationReadV2MissingDecisionDoesNotMixReappearedAuthority(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Offset: 0, Limit: 1}
+
+	present, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentBase := &appwire.NavigationReadBase{
+		GenerationID: present.Response.GenerationID,
+		Revision:     present.Response.Revision,
+		ETag:         present.Response.ETag,
+	}
+	source.mu.Lock()
+	source.inputs.Tree.Projects = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneRevision := service.CurrentRevision(key.Semantic())
+	tombstoneETag := navigationETag(key, present.Response.GenerationID, tombstoneRevision)
+
+	previous := navigationReadV2MissingCaptured
+	var refreshOnce sync.Once
+	navigationReadV2MissingCaptured = func() {
+		refreshOnce.Do(func() {
+			source.mu.Lock()
+			source.inputs.Tree.Projects = []hubcore.TreeProject{{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{
+				ID: navigationTestSessionID, Title: "reappeared during read", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now,
+			}}}}
+			source.revision++
+			source.mu.Unlock()
+			if _, refreshErr := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); refreshErr != nil {
+				t.Errorf("reappear refresh: %v", refreshErr)
+			}
+		})
+	}
+	t.Cleanup(func() { navigationReadV2MissingCaptured = previous })
+
+	interleaved, err := service.readV2(t.Context(), key, presentBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentRevision := service.CurrentRevision(key.Semantic())
+	presentETag := navigationETag(key, present.Response.GenerationID, presentRevision)
+	if interleaved.Response.Status == "gone" && (interleaved.Response.Revision == presentRevision || interleaved.Response.ETag == presentETag) {
+		t.Fatalf("gone response mixed in reappeared authority: response=%+v present=%d/%q", interleaved.Response, presentRevision, presentETag)
+	}
+	if interleaved.Response.Status == "gone" && (interleaved.Response.Revision != tombstoneRevision || interleaved.Response.ETag != tombstoneETag) {
+		t.Fatalf("gone response authority=%d/%q, want captured tombstone %d/%q", interleaved.Response.Revision, interleaved.Response.ETag, tombstoneRevision, tombstoneETag)
+	}
+	if interleaved.Response.Status != "gone" && (interleaved.Response.Status != "ok" || interleaved.Response.Representation != appwire.NavigationRepresentationSnapshot || !bytes.Contains(interleaved.Response.Data, []byte("reappeared during read"))) {
+		t.Fatalf("interleaved response = %+v, want captured tombstone or current snapshot", interleaved.Response)
+	}
+
+	if interleaved.Response.Status == "gone" {
+		base := &appwire.NavigationReadBase{
+			GenerationID: interleaved.Response.GenerationID,
+			Revision:     interleaved.Response.Revision,
+			ETag:         interleaved.Response.ETag,
+		}
+		followUp, readErr := service.readV2(t.Context(), key, base)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if followUp.Response.Status == "not_modified" || followUp.Response.Representation != appwire.NavigationRepresentationSnapshot || !bytes.Contains(followUp.Response.Data, []byte("reappeared during read")) {
+			t.Fatalf("follow-up from gone authority = %+v, want present snapshot restoring graph", followUp.Response)
+		}
 	}
 }
 
@@ -308,13 +1213,13 @@ func TestNavigationServiceCancelledOwnerDoesNotCancelSharedBuild(t *testing.T) {
 	ownerCtx, cancelOwner := context.WithCancel(t.Context())
 	owner := make(chan error, 1)
 	go func() {
-		_, err := service.Representation(ownerCtx, navigationResourceKey{Kind: navigationResourceManifest})
+		_, err := service.readV2(ownerCtx, navigationResourceKey{Kind: navigationResourceManifest}, nil)
 		owner <- err
 	}()
 	<-source.entered
 	waiter := make(chan error, 1)
 	go func() {
-		_, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+		_, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 		waiter <- err
 	}()
 	cancelOwner()
@@ -330,7 +1235,7 @@ func TestNavigationServiceCancelledOwnerDoesNotCancelSharedBuild(t *testing.T) {
 func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("committed-without-waiter")
@@ -370,7 +1275,7 @@ func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T
 func TestNavigationServicePublicationFIFOHasExactSequencesAndRefreshNeverConsumes(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -444,7 +1349,7 @@ func TestNavigationServiceRefreshRegistersCausalTicketOnCommittedFlight(t *testi
 func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("joined")
@@ -489,7 +1394,7 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.entered, source.release = make(chan struct{}), make(chan struct{})
@@ -533,7 +1438,7 @@ func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()
@@ -603,7 +1508,7 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("cutoff")
@@ -667,7 +1572,7 @@ func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(
 func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()
@@ -732,7 +1637,7 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -789,7 +1694,7 @@ func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testi
 func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("concurrent")
@@ -840,7 +1745,7 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.changeTitle("mixed")
@@ -878,7 +1783,7 @@ func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 func TestNavigationServicePreservesLastGoodAndMapsChurnCancellationTo503(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	good, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	good, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,8 +1794,8 @@ func TestNavigationServicePreservesLastGoodAndMapsChurnCancellationTo503(t *test
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{Sources: true}); err == nil {
 		t.Fatal("refresh succeeded after source failure")
 	}
-	if got := service.CurrentRevision((navigationResourceKey{Kind: navigationResourceManifest}).Semantic()); got != good.Revision {
-		t.Fatalf("last-good revision = %d, want %d", got, good.Revision)
+	if got := service.CurrentRevision((navigationResourceKey{Kind: navigationResourceManifest}).Semantic()); got != good.Response.Revision {
+		t.Fatalf("last-good revision = %d, want %d", got, good.Response.Revision)
 	}
 
 	source.mu.Lock()
@@ -943,7 +1848,7 @@ func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublic
 	if capability := service.Capability(); capability.Sequence != 0 {
 		t.Fatalf("sequence advanced after canceled projection: %+v", capability)
 	}
-	if service.Stats().CoreBuilds != 0 || service.Stats().Cache.Entries != 0 || len(service.DrainPublications()) != 0 {
+	if service.Stats().CoreBuilds != 0 || len(service.DrainPublications()) != 0 {
 		t.Fatalf("canceled projection published state: stats=%+v", service.Stats())
 	}
 }
@@ -951,7 +1856,7 @@ func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublic
 func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -1006,7 +1911,7 @@ func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.
 	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
 		t.Fatalf("expired commit changed build/cache stats: before=%+v after=%+v", beforeStats, got)
 	}
-	if got := service.Capability(); got == nil || *got != beforeCapability {
+	if got := service.Capability(); got == nil || !reflect.DeepEqual(*got, beforeCapability) {
 		t.Fatalf("expired commit changed capability: before=%+v after=%+v", beforeCapability, got)
 	}
 	if publications := service.DrainPublications(); len(publications) != 0 {
@@ -1086,7 +1991,7 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	}
 	source.inputs.Tree.Projects[0].Current = rows
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
@@ -1142,7 +2047,7 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
 		t.Fatalf("canceled fingerprint changed build/cache stats: before=%+v after=%+v", beforeStats, got)
 	}
-	if got := service.Capability(); got == nil || *got != beforeCapability {
+	if got := service.Capability(); got == nil || !reflect.DeepEqual(*got, beforeCapability) {
 		t.Fatalf("canceled fingerprint changed capability: before=%+v after=%+v", beforeCapability, got)
 	}
 	if publications := service.DrainPublications(); len(publications) != 0 {
@@ -1251,7 +2156,7 @@ func TestNavigationServiceGenerationAndSafeIntegerOverflow(t *testing.T) {
 
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	service.mu.Lock()
@@ -1287,8 +2192,8 @@ func TestNavigationServiceGenerationFailureOmitsCapabilityAndFailsClosed(t *test
 	if capability := service.Capability(); capability != nil {
 		t.Fatalf("capability = %+v, want omitted", capability)
 	}
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err == nil {
-		t.Fatal("representation succeeded after generation failure")
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err == nil {
+		t.Fatal("read succeeded after generation failure")
 	}
 	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err == nil {
 		t.Fatal("refresh succeeded after generation failure")
@@ -1511,7 +2416,7 @@ func TestNavigationServiceStartRetriesFailedForcedRefreshWithoutWaitingForBounda
 			return timer
 		}
 	})
-	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+	if _, err := service.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
 	source.mu.Lock()

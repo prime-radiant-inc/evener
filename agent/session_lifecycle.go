@@ -161,8 +161,9 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 
 // beginEnvWork admits work that runs commands on the session's execution
 // environment and must therefore finish before Close reaps that environment's
-// process table: a whole manage_worktree call at its dispatch, and the rollback
-// a refused or failed operation owes after its swap has already released the
+// process table: a whole manage_worktree call at its dispatch, the cut of a
+// delegate's isolation lane and the rollback that undoes it, and the rollback a
+// refused or failed operation owes after its swap has already released the
 // swap's own admission. It is the beginDispose idiom again — the closing check
 // AND the envWorkWG Add happen under one s.mu hold, so a successful Add
 // happens-before Close()'s join. A true return MUST be paired with a (deferred)
@@ -181,10 +182,11 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 // is already being torn down, and the close may already be past its join — and
 // the two kinds of caller answer that differently, on purpose:
 //
-//   - The manage_worktree DISPATCH refuses the call (errWorktreeOpWhileClosing).
-//     The operation has not started, and running it unfenced would lock lanes
-//     and write sidecars against an environment being reaped and stores being
-//     closed. A closing session was never going to complete it anyway.
+//   - The manage_worktree DISPATCH refuses the call, and a delegate's
+//     isolation step refuses the spawn (errWorktreeOpWhileClosing). The work
+//     has not started, and running it unfenced would lock lanes and write
+//     sidecars against an environment being reaped and stores being closed. A
+//     closing session was never going to complete it anyway.
 //   - A ROLLBACK proceeds best-effort, exactly as it did before the fence
 //     existed. Its admission failing is the expected case — the close is what
 //     made the rollback necessary — and it is an undo the session already owes,
@@ -461,7 +463,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// parent owns cleanup of that env (step 4), so a child's teardown never
 		// runs it; what a child owns is its scratch, retained for the handoff.
 		for _, sub := range subs {
-			teardownChildSession(budgetCtx, sub.sess, sub.ownsEnv, retainChildScratch)
+			teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
@@ -631,14 +633,14 @@ func (s *Session) retainParkedWorktreeEnvironmentScratch() {
 }
 
 // discardRestoredCandidate tears down a restore candidate nothing ever adopted.
-// ownsEnv says whether the candidate's execution environment is one built FOR it
-// (a working-dir re-root and/or a per-delegate box) rather than the parent's own:
-// prepareSubagentEnvironment returns the parent's environment untouched when the
-// delegate needs neither, and a shared environment belongs to the live parent
-// still working in it. It is the same distinction close() makes before retaining
-// a child's scratch (subagent.ownsEnv), read here so an aborted candidate never
-// deletes a scratch dir out from under its parent.
-func (s *Session) discardRestoredCandidate(ownsEnv bool) {
+// The candidate's own ownsEnv says whether its execution environment is one
+// built FOR it (a working-dir re-root and/or a per-delegate box) rather than
+// the parent's own: prepareSubagentEnvironment returns the parent's environment
+// untouched when the delegate needs neither, and a shared environment belongs
+// to the live parent still working in it. It is the same distinction close()
+// makes before retaining a child's scratch, read here so an aborted candidate
+// never deletes a scratch dir out from under its parent.
+func (s *Session) discardRestoredCandidate() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -659,7 +661,7 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 			_ = s.jobManager.store.Close()
 		}
 		for _, sub := range subs {
-			sub.sess.discardRestoredCandidate(sub.ownsEnv)
+			sub.sess.discardRestoredCandidate()
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			_ = s.artifactStore.Close()
@@ -669,7 +671,7 @@ func (s *Session) discardRestoredCandidate(ownsEnv bool) {
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		releaseOwnedChildEnvironment(s.currentEnv(), ownsEnv, disposeChildScratch)
+		releaseOwnedChildEnvironment(s.currentEnv(), s.ownsEnv, disposeChildScratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}

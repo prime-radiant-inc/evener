@@ -43,6 +43,39 @@ test("adapts resource-local session summaries into stable recursive rail rows", 
   expect(rows[0]?.children[0]).toMatchObject({ id: "navigation:child", kind: "session" });
 });
 
+test("session node memo dependencies are complete and bottom-up", () => {
+  const unchangedSibling = session({ row_id: "sibling", ref: "sibling", title: "Sibling", state: "active" });
+  const grandchild = session({ row_id: "grandchild", ref: "grandchild", title: "Before", state: "active" });
+  const child = session({ row_id: "child", ref: "child", state: "active", children: [grandchild] });
+  const parent = session({ row_id: "parent", ref: "parent", state: "active", children: [child] });
+  const before = sessionNodes([parent, unchangedSibling], closed);
+  const repeated = sessionNodes([parent, unchangedSibling], closed);
+
+  expect(repeated[0]).toBe(before[0]);
+  expect(repeated[0]?.children).toBe(before[0]?.children);
+  expect(repeated[1]).toBe(before[1]);
+
+  const changedGrandchild = { ...grandchild, title: "After" };
+  const changedChild = { ...child, children: [changedGrandchild] };
+  const changedParent = { ...parent, children: [changedChild] };
+  const after = sessionNodes([changedParent, unchangedSibling], closed);
+
+  expect(after[0]).not.toBe(before[0]);
+  expect(after[0]?.children).not.toBe(before[0]?.children);
+  expect(after[0]?.children[0]).not.toBe(before[0]?.children[0]);
+  expect(after[0]?.children[0]).toMatchObject({ children: [{ session: { title: "After" } }] });
+  expect(after[1]).toBe(before[1]);
+  expect(after[1]?.children).toBe(before[1]?.children);
+
+  const expandedChild = (_id: string, defaultExpanded: boolean) => defaultExpanded;
+  const lookupBefore = sessionNodes([changedParent], expandedChild)[0];
+  const lookupAfter = sessionNodes([changedParent], (id, defaultExpanded) =>
+    id === changedChild.row_id ? true : defaultExpanded,
+  )[0];
+  expect(lookupAfter).not.toBe(lookupBefore);
+  expect(lookupAfter?.children[0]).toMatchObject({ id: changedChild.row_id, expanded: true });
+});
+
 describe("resource projection semantics", () => {
   test("preserves authoritative global/pin order and pin disclosure identity", () => {
     const section: RailPinSection = {
@@ -165,6 +198,65 @@ describe("resource projection semantics", () => {
     ).toEqual(["navigation:old", "projectnode:archived:overflow"]);
     expect(archivedCount([stub], [])).toBe(3);
     expect(archivedCount([hydrated], [])).toBe(3);
+  });
+  test("memoizes project and archived builders from complete child dependencies", () => {
+    const active = project({
+      key: "active",
+      sessions: [session({ ref: "current", row_id: "current", state: "active" })],
+    });
+    const archivedInActive = project({
+      key: "mixed",
+      sessions: [session({ ref: "old", row_id: "old", tier: "archived" })],
+    });
+    const archivedStub = project({ key: "archived", is_archived: true, session_count: 1 });
+    const archivedSibling = project({ key: "archived-sibling", is_archived: true, session_count: 1 });
+    const archivedDetail = project({
+      key: "archived",
+      is_archived: true,
+      sessions: [session({ ref: "detail", row_id: "detail", title: "Before" })],
+    });
+    const siblingDetail = project({
+      key: "archived-sibling",
+      is_archived: true,
+      sessions: [session({ ref: "sibling-detail", row_id: "sibling-detail" })],
+    });
+    const details = new Map([
+      [archivedStub.key, archivedDetail],
+      [archivedSibling.key, siblingDetail],
+    ]);
+
+    const activeBefore = projectNodes([active], closed)[0];
+    const activeRepeated = projectNodes([active], closed)[0];
+    expect(activeRepeated).toBe(activeBefore);
+    expect(activeRepeated?.children).toBe(activeBefore?.children);
+
+    const groupBefore = archivedSessionGroups([archivedInActive], closed)[0];
+    const groupRepeated = archivedSessionGroups([archivedInActive], closed)[0];
+    expect(groupRepeated).toBe(groupBefore);
+    expect(groupRepeated?.children).toBe(groupBefore?.children);
+
+    const archivedBefore = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
+    const archivedRepeated = archivedProjectNodes([archivedStub, archivedSibling], details, closed);
+    expect(archivedRepeated[0]).toBe(archivedBefore[0]);
+    expect(archivedRepeated[0]?.children).toBe(archivedBefore[0]?.children);
+    expect(archivedRepeated[1]).toBe(archivedBefore[1]);
+
+    const changedDetail = {
+      ...archivedDetail,
+      sessions: [{ ...archivedDetail.sessions[0], title: "After" } as RailSession],
+    };
+    const archivedAfter = archivedProjectNodes(
+      [archivedStub, archivedSibling],
+      new Map([
+        [archivedStub.key, changedDetail],
+        [archivedSibling.key, siblingDetail],
+      ]),
+      closed,
+    );
+    expect(archivedAfter[0]).not.toBe(archivedBefore[0]);
+    expect(archivedAfter[0]?.children[0]).toMatchObject({ session: { title: "After" } });
+    expect(archivedAfter[1]).toBe(archivedBefore[1]);
+    expect(archivedAfter[1]?.children).toBe(archivedBefore[1]?.children);
   });
   test("uses persisted overrides and location membership for deep-link reveal", () => {
     const p = project({

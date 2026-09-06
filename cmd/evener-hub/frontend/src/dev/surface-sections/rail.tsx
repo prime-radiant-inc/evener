@@ -157,8 +157,8 @@ export default function RailSurfaceSection() {
       resourceState({ kind: "project", projectKey: "proj_evener" }, PROJECT_RESOURCE),
     );
     navigationStore.setState({
-      mode: "v1",
-      capability: { version: 1, generationId: GENERATION, sequence: 0 },
+      mode: "v2",
+      capability: { version: 1, generationId: GENERATION, sequence: 0, readVersions: [2] },
       clientGenerationID: GENERATION,
       lastSequence: 0,
       manifest: resourceState({ kind: "manifest" }, MANIFEST),

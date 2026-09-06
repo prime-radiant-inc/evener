@@ -34,6 +34,7 @@ export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
 export interface FakeSocketOptions {
   autoInitialize?: boolean;
   emitCloseEventOnClientClose?: boolean;
+  initializeResult?: InitializeResponse;
 }
 
 export class FakeSocket implements WebSocketLike {
@@ -48,10 +49,12 @@ export class FakeSocket implements WebSocketLike {
   private isClosed = false;
   private clientClosePending = false;
   private readonly emitCloseEventOnClientClose: boolean;
+  private readonly initializeResult: InitializeResponse;
 
   constructor(options: FakeSocketOptions = {}) {
     this.autoInitialize = options.autoInitialize ?? false;
     this.emitCloseEventOnClientClose = options.emitCloseEventOnClientClose ?? true;
+    this.initializeResult = options.initializeResult ?? FAKE_INITIALIZE_RESULT;
   }
 
   send(data: string): void {
@@ -62,7 +65,7 @@ export class FakeSocket implements WebSocketLike {
     // heartbeat's "ping" liveness probe.
     const msg = JSON.parse(data) as { id?: number; method?: string };
     if (msg.method === "initialize" && msg.id != null) {
-      this.receive({ id: msg.id, result: FAKE_INITIALIZE_RESULT });
+      this.receive({ id: msg.id, result: this.initializeResult });
     } else if (msg.method === "ping" && msg.id != null) {
       this.receive({ id: msg.id, result: {} });
     }

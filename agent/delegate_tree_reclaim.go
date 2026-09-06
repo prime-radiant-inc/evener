@@ -376,14 +376,13 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 		if entry.runtime == nil {
 			continue
 		}
-		ownsEnv := entry.ownerRuntime.ownsChildEnvironment(entry.runtime)
 		if entry.ownerRuntime != nil && entry.ownerRuntime.subagents != nil {
 			entry.ownerRuntime.subagents.removeSession(entry.childSessionID, entry.runtime)
 		}
 		if closeRuntime := s.cfg.testOnly.delegateRuntimeReclaimClose; closeRuntime != nil {
 			closeRuntime(entry.runtime)
 		} else {
-			teardownChildSession(context.Background(), entry.runtime, ownsEnv, retainChildScratch)
+			teardownChildSession(context.Background(), entry.runtime, retainChildScratch)
 		}
 		closed[entry.delegateID] = entry.runtime
 	}

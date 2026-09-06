@@ -41,6 +41,13 @@ jobs:
       - name: Vet (all go.work modules)
         run: make vet
 
+      # Nothing ships for Windows (.goreleaser.yml builds linux and darwin
+      # only). This cross-vet is a build-tag discipline check: a source or test
+      # file that reaches for Mkfifo, Stat_t, or an fd-based sandbox seam has to
+      # say so in a constraint instead of compiling by accident (issue #897).
+      - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
+        run: GOOS=windows make vet
+
       - name: Fuzz gap check (every decode/parse package has a target — static, fast)
         run: make fuzz-gap-check
 

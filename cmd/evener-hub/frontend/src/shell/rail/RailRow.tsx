@@ -34,7 +34,7 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 
 import {
@@ -66,6 +66,7 @@ import {
   type RailSession,
   type SessionRailNode,
 } from "./railNodes";
+import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
 
 export { isTopLevelSession } from "./sessionKind";
@@ -306,6 +307,8 @@ export interface RailRowProps {
   node: RailNode;
   info: TreeRowInfo;
   actions: RailRowActions;
+  resourceError?: string;
+  retry?: () => void;
 }
 
 // The row's trailing chevron: a toggle rendered INLINE, right after the
@@ -632,7 +635,19 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   );
 }
 
-function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: TreeRowInfo; actions: RailRowActions }) {
+function ProjectRow({
+  node,
+  info,
+  actions,
+  resourceError,
+  retry,
+}: {
+  node: ProjectRailNode;
+  info: TreeRowInfo;
+  actions: RailRowActions;
+  resourceError?: string;
+  retry?: () => void;
+}) {
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
   return (
@@ -652,12 +667,12 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           <span className={CLASS.label} onClick={info.activate}>
             {node.displayName ?? project.name}
           </span>
-          {node.resourceError && node.retry && (
+          {resourceError && retry && (
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                node.retry?.();
+                retry();
               }}
             >
               Retry
@@ -806,7 +821,39 @@ function LoadingRow(): ReactNode {
   );
 }
 
-export function RailRow({ node, info, actions }: RailRowProps) {
+function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean {
+  if (
+    previous.info !== next.info ||
+    previous.actions !== next.actions ||
+    previous.resourceError !== next.resourceError ||
+    previous.retry !== next.retry
+  )
+    return false;
+  if (previous.node === next.node) return true;
+  if (previous.node.kind !== "project" || next.node.kind !== "project") return false;
+  const previousProject = previous.node.project;
+  const nextProject = next.node.project;
+  // Keep this list in lockstep with ProjectRow, projectMenuItems, and
+  // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
+  // presentation or action inputs, so they deliberately do not cross this
+  // memo boundary.
+  return (
+    previous.node.id === next.node.id &&
+    previous.node.displayName === next.node.displayName &&
+    previous.node.resourceError === next.node.resourceError &&
+    previous.node.retry === next.node.retry &&
+    previousProject.key === nextProject.key &&
+    previousProject.name === nextProject.name &&
+    previousProject.working_dir === nextProject.working_dir &&
+    previousProject.rollup_state === nextProject.rollup_state &&
+    previousProject.rollup_attn === nextProject.rollup_attn &&
+    previousProject.favorite === nextProject.favorite &&
+    previousProject.is_archived === nextProject.is_archived
+  );
+}
+
+export const RailRow = memo(function RailRow({ node, info, actions, resourceError, retry }: RailRowProps) {
+  useRailRenderObserver()?.(node.id);
   switch (node.kind) {
     case "loading":
       return LoadingRow();
@@ -819,8 +866,16 @@ export function RailRow({ node, info, actions }: RailRowProps) {
     case "overflow":
       return <OverflowRow node={node} info={info} />;
     case "project":
-      return <ProjectRow node={node} info={info} actions={actions} />;
+      return (
+        <ProjectRow
+          node={node}
+          info={info}
+          actions={actions}
+          resourceError={resourceError ?? node.resourceError}
+          retry={retry ?? node.retry}
+        />
+      );
     case "session":
       return <SessionRow node={node} info={info} actions={actions} />;
   }
-}
+}, railRowPropsEqual);

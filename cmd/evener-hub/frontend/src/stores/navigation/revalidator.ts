@@ -2,6 +2,7 @@ import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from 
 import {
   isProjectResource,
   keyID,
+  NavigationBaseInvalidError,
   type NavigationRequest,
   type NavigationResponse,
   type ResourceKey,
@@ -16,6 +17,7 @@ interface Entry {
   controller?: AbortController;
   promise?: Promise<ResourceState>;
   rerun: boolean;
+  recoveringBase: boolean;
   epoch: number;
 }
 interface TargetWaiter {
@@ -29,6 +31,28 @@ export interface NavigationInvalidationWaiter {
   cancel(): void;
 }
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
+
+/** True when error is a generation-mismatch rejection from this revalidator
+ * (stale waiters after resetGeneration, waiter calls against a new
+ * generation). Callers treat it as converged-by-reboot instead of failing. */
+export function isGenerationMismatch(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("generation mismatch");
+}
+
+/** True when error is a disposal rejection from this revalidator (client
+ * replacement tore down the waiter mid-flight). The replacement client
+ * reboots navigation from scratch, which converges the caller's change. */
+export function isRevalidatorDisposed(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("revalidator disposed");
+}
+/** True when error is a not-initialized rejection from the navigation store
+ * (a waiter armed while no revalidator existed — e.g. a shutdown action
+ * racing client replacement, with navigation becoming v2 before convergence
+ * begins). There is nothing to converge against yet the caller's mutation
+ * already committed, so callers treat it as a successful no-op. */
+export function isNavigationNotInitialized(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("navigation is not initialized");
+}
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
   if (typeof structuredClone === "function") return structuredClone(value);
@@ -173,6 +197,11 @@ export class NavigationRevalidator {
     if (this.disposed || generationID === this.generationIDValue) return;
     for (const waiter of this.targetWaiters) waiter.reject(protocolError("generation mismatch"));
     this.targetWaiters.clear();
+    // Invalidation waiters belong to the old generation too: a notification
+    // from the new generation must not resolve a wait armed for the old one.
+    // Callers treat generation mismatch as converged-by-reboot and re-arm.
+    for (const waiter of this.invalidationWaiters) waiter.reject(protocolError("generation mismatch"));
+    this.invalidationWaiters.clear();
     this.generationIDValue = generationID;
     this.epoch++;
     this.lastSequence = 0;
@@ -182,12 +211,14 @@ export class NavigationRevalidator {
       e.controller = undefined;
       e.epoch = this.epoch;
       e.rerun = false;
+      e.recoveringBase = false;
       e.state = frozen({
         ...e.state,
         generationID,
         loadedRevision: null,
         targetRevision: null,
         etag: null,
+        version: undefined,
         stale: true,
         loading: false,
         error: null,
@@ -201,7 +232,8 @@ export class NavigationRevalidator {
     const e = this.entry(key);
     e.request = request as NavigationRequest;
     if (e.promise) return e.promise as Promise<ResourceState<T>>;
-    if (!e.state.stale && e.state.data !== null) return Promise.resolve(e.state as ResourceState<T>);
+    if (!e.state.stale && (e.state.data !== null || e.state.normalized?.presence === "gone"))
+      return Promise.resolve(e.state as ResourceState<T>);
     return this.start(e) as Promise<ResourceState<T>>;
   }
   track<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): void {
@@ -226,6 +258,7 @@ export class NavigationRevalidator {
         generationID: this.generationIDValue,
       }),
       rerun: false,
+      recoveringBase: false,
       epoch: this.epoch,
     };
     this.entries.set(id, entry);
@@ -252,7 +285,7 @@ export class NavigationRevalidator {
     this.emit(e.state);
     let run!: Promise<ResourceState>;
     run = e
-      .request(controller.signal, e.state.etag)
+      .request(controller.signal, usableNavigationBase(e.state))
       .then((response) => {
         if (this.disposed || epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch)
           return e.state;
@@ -270,12 +303,15 @@ export class NavigationRevalidator {
           return this.fail(e, protocolError("late, below-target, or superseded response"));
         }
         e.rerun = false;
+        e.recoveringBase = false;
         e.state = frozen({
           ...e.state,
           data: response.status === 304 ? e.state.data : (response.data ?? null),
           loadedRevision: response.revision,
           targetRevision: response.revision,
           etag: response.etag,
+          version: { generationId: response.generationID, revision: response.revision, etag: response.etag },
+          normalized: response.status === 304 ? e.state.normalized : response.normalized,
           stale: false,
           loading: false,
           error: null,
@@ -283,14 +319,24 @@ export class NavigationRevalidator {
         this.emit(e.state);
         return e.state;
       })
-      .catch((cause) => (controller.signal.aborted ? e.state : this.fail(e, cause)))
+      .catch((cause) =>
+        controller.signal.aborted
+          ? e.state
+          : cause instanceof NavigationBaseInvalidError
+            ? this.recoverInvalidBase(e, cause)
+            : this.fail(e, cause),
+      )
       .then((state) => {
         if (e.promise === run && e.epoch === epoch) {
           e.promise = undefined;
           e.controller = undefined;
           if (e.rerun) {
             e.rerun = false;
-            void this.start(e);
+            // Chain the trailing run into this load promise instead of
+            // resolving stale/error first: the caller awaits recovery
+            // rather than failing while a retry it triggered is in flight
+            // (e.g. pagination surviving a superseded response).
+            return this.start(e);
           }
         }
         return state;
@@ -300,6 +346,22 @@ export class NavigationRevalidator {
   }
   private fail(e: Entry, cause: unknown): ResourceState {
     e.state = frozen({ ...e.state, loading: false, stale: true, error: cause });
+    this.emit(e.state);
+    return e.state;
+  }
+  private recoverInvalidBase(e: Entry, cause: NavigationBaseInvalidError): ResourceState {
+    if (e.recoveringBase) return this.fail(e, cause);
+    e.recoveringBase = true;
+    e.rerun = true;
+    e.state = frozen({
+      ...e.state,
+      version: undefined,
+      etag: null,
+      forceToken: ++this.forceSequence,
+      loading: false,
+      stale: true,
+      error: null,
+    });
     this.emit(e.state);
     return e.state;
   }
@@ -351,6 +413,19 @@ export class NavigationRevalidator {
       ),
     );
   }
+}
+function usableNavigationBase(state: ResourceState): NonNullable<ResourceState["version"]> | undefined {
+  const base = state.version;
+  const normalized = state.normalized;
+  if (
+    !base ||
+    !normalized ||
+    normalized.version.generationId !== base.generationId ||
+    normalized.version.revision !== base.revision ||
+    normalized.version.etag !== base.etag
+  )
+    return undefined;
+  return base;
 }
 function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
   if (key.kind !== base.kind) {

@@ -312,3 +312,23 @@ test("does not steal focus back into the tree when it was already elsewhere befo
   expect(document.activeElement).toBe(outside);
   outside.remove();
 });
+
+test("row info identity is stable for surviving rows across removal and re-add", () => {
+  const seen = new Map<string, unknown[]>();
+  const spyRow = (node: TreeNode, info: unknown) => {
+    const list = seen.get(node.id) ?? [];
+    list.push(info);
+    seen.set(node.id, list);
+    return node.id;
+  };
+  const { rerender } = render(
+    <Tree nodes={[{ id: "a" }, { id: "b" }]} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={spyRow} />,
+  );
+  // Remove b, then re-add it: a's info must stay identical throughout (the
+  // prune drops only absent rows).
+  rerender(<Tree nodes={[{ id: "a" }]} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={spyRow} />);
+  rerender(<Tree nodes={[{ id: "a" }, { id: "b" }]} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={spyRow} />);
+  const infosA = seen.get("a") ?? [];
+  expect(infosA.length).toBeGreaterThanOrEqual(3);
+  for (const info of infosA) expect(info).toBe(infosA[0]);
+});

@@ -12,43 +12,37 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
+const navigationInvalidParamsMessage = "invalid navigation params"
+
 func registerNavigationReadHandler(server *appserver.Server, navigation *NavigationService) {
 	server.Router().Handle(appwire.MethodEvenerNavigationRead, func(ctx context.Context, raw json.RawMessage) (any, error) {
 		params, fields, err := decodeNavigationReadParams(raw)
 		if err != nil {
-			return nil, appwire.InvalidParams(err.Error())
+			return nil, appwire.InvalidParams(navigationInvalidParamsMessage)
 		}
-		return navigationReadWithFields(ctx, navigation, params, fields)
+		return navigationReadWithFields(ctx, server, navigation, params, fields)
 	})
 }
 
-func navigationReadWithFields(ctx context.Context, navigation *NavigationService, params appwire.NavigationReadParams, fields map[string]json.RawMessage) (appwire.NavigationReadResponse, error) {
+func navigationReadWithFields(ctx context.Context, server *appserver.Server, navigation *NavigationService, params appwire.NavigationReadParams, fields map[string]json.RawMessage) (appwire.NavigationReadResponse, error) {
 	key, err := navigationReadKeyWithFields(params, fields)
 	if err != nil {
-		return appwire.NavigationReadResponse{}, appwire.InvalidParams(err.Error())
+		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
 	}
 	if navigation == nil {
 		return appwire.NavigationReadResponse{}, appwire.Unavailable("navigation unavailable")
 	}
 	if err := ctx.Err(); err != nil {
-		return appwire.NavigationReadResponse{}, navigationReadError(err)
+		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	representation, err := navigation.Representation(ctx, key)
+	if params.RepresentationVersion != 2 {
+		return appwire.NavigationReadResponse{}, appwire.InvalidParams(navigationInvalidParamsMessage)
+	}
+	result, err := navigation.readV2(ctx, key, params.Base)
 	if err != nil {
-		return appwire.NavigationReadResponse{}, navigationReadError(err)
+		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
-	response := appwire.NavigationReadResponse{
-		Status:       "ok",
-		GenerationID: representation.Generation,
-		Revision:     representation.Revision,
-		ETag:         representation.ETag,
-	}
-	if params.ETag == representation.ETag {
-		response.Status = "not_modified"
-		return response, nil
-	}
-	response.Data = json.RawMessage(append([]byte(nil), representation.JSON...))
-	return response, nil
+	return result.Response, nil
 }
 
 func navigationReadKey(params appwire.NavigationReadParams) (navigationResourceKey, error) {
@@ -159,16 +153,18 @@ func navigationReadKeyWithFields(params appwire.NavigationReadParams, fields map
 }
 
 var navigationReadParamNames = map[string]struct{}{
-	"resource":   {},
-	"section":    {},
-	"sectionId":  {},
-	"catalog":    {},
-	"projectKey": {},
-	"tier":       {},
-	"ref":        {},
-	"offset":     {},
-	"limit":      {},
-	"etag":       {},
+	"resource":              {},
+	"section":               {},
+	"sectionId":             {},
+	"catalog":               {},
+	"projectKey":            {},
+	"tier":                  {},
+	"ref":                   {},
+	"offset":                {},
+	"limit":                 {},
+	"etag":                  {},
+	"representationVersion": {},
+	"base":                  {},
 }
 
 func decodeNavigationReadParams(raw json.RawMessage) (appwire.NavigationReadParams, map[string]json.RawMessage, error) {
@@ -255,11 +251,12 @@ func navigationReadPage(params appwire.NavigationReadParams, maximum uint32) (ui
 	return offset, limit, nil
 }
 
-func navigationReadError(err error) error {
+func navigationReadError(server *appserver.Server, err error) error {
 	var unavailable navigationAvailabilityError
 	var notFound navigationNotFoundError
 	if errors.As(err, &unavailable) || errors.As(err, &notFound) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return appwire.Unavailable("navigation unavailable")
 	}
-	return appwire.InternalError("navigation read: " + err.Error())
+	server.Logf("navigation read failed: %v", err)
+	return appwire.InternalError("navigation read failed")
 }

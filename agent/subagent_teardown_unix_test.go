@@ -145,7 +145,8 @@ func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
 	if !scratchLeaseHeld(t, scratch) {
 		t.Fatal("the child's scratch lease is not held before the parent closes")
 	}
-	parent.subagents.track(&subagent{id: child.id, sess: child, ownsEnv: true, done: make(chan struct{})})
+	child.ownsEnv = true
+	parent.subagents.track(&subagent{id: child.id, sess: child, done: make(chan struct{})})
 
 	parent.Close()
 
@@ -285,7 +286,8 @@ func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(childScratch) })
 	ended := time.Now()
-	root.subagents.track(&subagent{id: "child-" + id, sess: child, ownsEnv: true, status: SubagentFailed, endedAt: &ended, done: make(chan struct{})})
+	child.ownsEnv = true
+	root.subagents.track(&subagent{id: "child-" + id, sess: child, status: SubagentFailed, endedAt: &ended, done: make(chan struct{})})
 	pid, done, release := startInFlightProcess(t, rootLocal)
 	rootScratch := heldParentScratch(t, rootLocal)
 
@@ -340,7 +342,7 @@ func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
 	}
 	seedDelegateReclaimRuntimeSession(t, c, "dlg_resident", "", time.Unix(5, 0).UTC(), false, false, resident)
 
-	if err := c.closeRuntimeTree(context.Background(), nil); err != nil {
+	if err := c.closeRuntimeTree(context.Background()); err != nil {
 		t.Fatalf("closeRuntimeTree: %v", err)
 	}
 
@@ -349,6 +351,70 @@ func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
 	}
 	assertInFlightProcessSurvived(t, "the controller close", pid, done)
 	assertParentScratchUntouched(t, "the controller close", sharedScratch)
+
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("the root's process after release: %v", err)
+	}
+}
+
+// A stable delegate's runtime can be resident in the controller's tree while
+// the owner's subagent map never tracked it: the create path attaches the
+// runtime to the controller before the owner adopts the child, so a start that
+// loses to a concurrent stop leaves the controller holding a runtime no map
+// entry names. Such a runtime still owns its clone's scratch, and the root's
+// close of the runtime tree is the only teardown it ever gets: it has to
+// release the lease and keep the directory, like every other child teardown.
+func TestRootCloseReleasesAnUntrackedResidentRuntimeScratchLease(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	shared := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(shared.Cleanup)
+	root := &Session{delegateController: c, ownsDelegateController: true, env: shared}
+	c.rootRuntime = root
+	pid, done, release := startInFlightProcess(t, shared)
+	sharedScratch := heldParentScratch(t, shared)
+
+	// The shape prepareSubagentEnvironment builds for a working_dir delegate.
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	childEnv := shared.WithWorkingDirectory(t.TempDir())
+	resident, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), childEnv, SessionConfig{
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession on the delegate's clone: %v", err)
+	}
+	resident.ownsEnv = true
+	if _, err := childEnv.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+		t.Fatalf("ExecCommand on the delegate's clone: %v", err)
+	}
+	scratch := childEnv.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("the resident runtime minted no session scratch, so there is nothing to release")
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
+	if !scratchLeaseHeld(t, scratch) {
+		t.Fatal("the resident runtime's scratch lease is not held before the root closes")
+	}
+	// Resident in the tree, and named by no entry in the root's subagent map.
+	seedDelegateReclaimRuntimeSession(t, c, "dlg_untracked", "", time.Unix(5, 0).UTC(), false, false, resident)
+
+	if err := root.closeOwnedDelegateRuntimeTree(context.Background()); err != nil {
+		t.Fatalf("closeOwnedDelegateRuntimeTree: %v", err)
+	}
+
+	if got := resident.State(); got != SessionClosed {
+		t.Errorf("untracked resident runtime state after the root close = %q, want %q", got, SessionClosed)
+	}
+	if _, err := os.Stat(scratch); err != nil {
+		t.Errorf("the root close removed the runtime's scratch %s, want it retained for the handoff: %v", scratch, err)
+	}
+	if scratchLeaseHeld(t, scratch) {
+		t.Errorf("the untracked runtime's scratch %s lease is still held after the root closed", scratch)
+	}
+	assertInFlightProcessSurvived(t, "the root's delegate tree close", pid, done)
+	assertParentScratchUntouched(t, "the root's delegate tree close", sharedScratch)
 
 	release()
 	if err := <-done; err != nil {
