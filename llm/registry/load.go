@@ -1084,7 +1084,8 @@ func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
 // or an endpoint template — the provider's own transport, one of its rows',
 // or a top-level glob row's when the glob matches one of its rows
 // (applyGlobs merges that transport into the row before substitution) — or
-// an input of the host rule. The mappings come from the same transports,
+// an input of any of those transports' host rules. The mappings come from
+// the same transports,
 // with the provider's own entry winning a name both carry: a models.dev
 // per-model api template maps its placeholders on the row alone
 // (convertModel), which is where google-vertex's OpenAI-compatible rows keep
@@ -1110,6 +1111,9 @@ func (r *Registry) TemplateVarsEnv(id string) map[string]string {
 				referenced[m[1]] = true
 			}
 		}
+		for _, name := range hostRuleAuthorityVars(t.HostRule) {
+			referenced[name] = true
+		}
 		mapped = mergeStringMap(mapped, t.VarsEnv)
 	}
 	matchesRow := func(glob string) bool {
@@ -1133,9 +1137,6 @@ func (r *Registry) TemplateVarsEnv(id string) map[string]string {
 		}
 	}
 	note(rec.head.Transport)
-	for _, name := range hostRuleAuthorityVars(rec.head.Transport.HostRule) {
-		referenced[name] = true
-	}
 	if rec.head.Transport.BaseURL == "" {
 		for name := range rec.head.Transport.VarsEnv {
 			referenced[name] = true
