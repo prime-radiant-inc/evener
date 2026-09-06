@@ -20,3 +20,14 @@ This uses evener/navigation/read catalog and project_page resources. It does not
 ## Open acceptance
 
 This is not full navigation completion. Pins, favorites/archive mutations, nested session disclosure, server truncation disclosure, live invalidation notifications and project-route restoration after process death remain open. Multi-page catalog and archived nonempty datasets, native revision-conflict recovery, screen readers and physical devices still need dedicated acceptance. The top-level thread/list roster retains its documented cap; project paging is the available path to older sessions. No full repository merge gate or release-readiness claim is made.
+
+## Live invalidation increment
+
+Project catalogs and session lists now subscribe to evener/navigation/invalidated. Matching revised targets, generation changes and notification sequence gaps mark the displayed snapshot stale without replacing its rows. A quiet update prompt offers Refresh; Load more is disabled until recovery. Reads racing an invalidation must meet the new revision, and unknown invalidations during a read require a new read. An explicit reset can establish a restarted hub generation when no newer event raced the request, clearing the old generation's revision requirements.
+
+Native tests increased to 78 and TypeScript passes. Both Release builds passed and were installed. Deterministic tests cover unrelated targets, stale rows, subscription cleanup, old versus already-current in-flight reads, notification gaps, and hub-generation recovery. Review reproduced an old-generation refresh deadlock; the added regression failed before the correction and passes afterward.
+
+Both simulators observed a real rename of the owned isolated-hub session to Navigation update verified, retained the old row with an update prompt, and displayed the new name after Refresh. Restoring Session controls verified repeated that flow successfully. Android also showed Load more disabled while stale. Final layout changes inset the quiet prompt to align with the screen. These checks do not establish native hub-restart or dropped-event recovery; those cases currently have network-boundary tests. The main flat roster still refreshes on focus rather than consuming navigation invalidation.
+
+![iOS update prompt](assets/navigation-update-ios.png)
+![Android update prompt and paused continuation](assets/navigation-update-android.png)

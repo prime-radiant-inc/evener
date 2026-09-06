@@ -1,4 +1,7 @@
-import type { NavigationReadParams } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type {
+  NavigationInvalidatedPayload,
+  NavigationReadParams,
+} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface PageState<T> {
@@ -23,6 +26,13 @@ export class NavigationPages<T> {
   private request = 0;
   private offset = 0;
   private version: string | null = null;
+  private generation = "";
+  private revision = 0;
+  private notifiedGeneration = "";
+  private requiredRevision = 0;
+  private sequence = 0;
+  private uncertain = 0;
+  private notificationEpoch = 0;
   constructor(
     private client: ConversationClientLike,
     private params: NavigationReadParams,
@@ -30,6 +40,55 @@ export class NavigationPages<T> {
     private key: (row: T) => string,
     private limit = 50,
   ) {}
+  watch() {
+    return this.client.onNotification((event) => {
+      if (event.method === "evener/navigation/invalidated")
+        this.invalidate(event.params);
+    });
+  }
+  private markStale() {
+    this.publish({
+      stale: true,
+      error: "This list changed while you were browsing. Refresh to continue.",
+    });
+  }
+  private invalidate(payload: NavigationInvalidatedPayload) {
+    const changedGeneration = this.notifiedGeneration !== payload.generationId;
+    if (changedGeneration) {
+      this.notifiedGeneration = payload.generationId;
+      this.sequence = 0;
+      this.requiredRevision = 0;
+    }
+    if (payload.sequence <= this.sequence) return;
+    const gap = payload.sequence > this.sequence + 1;
+    this.sequence = payload.sequence;
+    this.notificationEpoch += 1;
+    const targets = payload.targets.filter(
+      (target) =>
+        (this.params.resource === "catalog" &&
+          target.kind === "catalog" &&
+          target.catalog === this.params.catalog) ||
+        (this.params.resource === "project_page" &&
+          (target.kind === "all_loaded_projects" ||
+            (target.kind === "project" &&
+              target.projectKey === this.params.projectKey))),
+    );
+    const unknown =
+      gap || targets.some((target) => target.revision === undefined);
+    if (unknown) this.uncertain += 1;
+    for (const target of targets)
+      this.requiredRevision = Math.max(
+        this.requiredRevision,
+        target.revision ?? 0,
+      );
+    if (
+      this.state.loaded &&
+      (unknown ||
+        payload.generationId !== this.generation ||
+        this.requiredRevision > this.revision)
+    )
+      this.markStale();
+  }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -58,6 +117,8 @@ export class NavigationPages<T> {
     )
       return;
     const request = ++this.request;
+    const uncertain = this.uncertain;
+    const notificationEpoch = this.notificationEpoch;
     this.publish({ loading: true, error: null });
     try {
       const response = await this.client.request("evener/navigation/read", {
@@ -85,6 +146,26 @@ export class NavigationPages<T> {
         throw new Error(
           "The hub returned an invalid navigation page. Refresh to try again.",
         );
+      // A reset read can establish a restarted hub unless a newer event raced it.
+      if (
+        reset &&
+        notificationEpoch === this.notificationEpoch &&
+        response.generationId !== this.notifiedGeneration
+      ) {
+        this.notifiedGeneration = response.generationId;
+        this.requiredRevision = 0;
+        this.sequence = 0;
+      }
+      if (
+        (this.notifiedGeneration &&
+          response.generationId !== this.notifiedGeneration) ||
+        response.revision < this.requiredRevision ||
+        uncertain !== this.uncertain
+      ) {
+        this.publish({ loading: false });
+        this.markStale();
+        return;
+      }
       const version = JSON.stringify([
         response.generationId,
         response.revision,
@@ -111,6 +192,8 @@ export class NavigationPages<T> {
       }
       this.offset = (reset ? 0 : this.offset) + raw.length;
       this.version = version;
+      this.generation = response.generationId;
+      this.revision = response.revision;
       this.publish({
         loaded: true,
         rows: [...unique.values()],
