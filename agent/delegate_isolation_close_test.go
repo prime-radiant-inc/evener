@@ -149,3 +149,39 @@ func TestDelegateIsolation_LaneCreateAfterCloseBeganIsRefused(t *testing.T) {
 	}
 	assertNoDelegateLane(t, r, reservation.delegateID, lanePath)
 }
+
+// A failure arm of the isolation step owes the lane's admission a release the
+// moment its rollback returns: nothing later in the spawn will ever release it.
+// A leak stays invisible until a close arrives, and then the fence join waits
+// out the whole cascade budget on work that finished long ago and cleans the
+// environment under a warning naming a lane already taken back.
+func TestDelegateIsolation_FailedIsolationReleasesTheLaneAdmission(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	runtime, reservation, project := reserveWorktreeIsolatedDelegate(t, root, "isolation environment failure")
+	lanePath := reservation.worktreePath
+	// Fail the delegate's environment step, which is the arm that rolls the
+	// just-cut lane back from inside the admission the cut was made under.
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "working_dir_env" {
+			return errors.New("this environment does not support a working_dir override")
+		}
+		return nil
+	}
+	warnings := collectWarningsUntilClosed(root)
+
+	if _, err := runtime.prepareIsolation(context.Background(), reservation, project, nil); err == nil {
+		t.Fatal("prepareIsolation succeeded with the delegate's environment step faulted, want a failure")
+	}
+	assertNoDelegateLane(t, r, reservation.delegateID, lanePath)
+
+	// Bound the close only now: the rollback above needs the production budget
+	// for its own git, while the close needs a deadline short enough that
+	// waiting one out is a test failure rather than a slow test.
+	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	root.Close()
+
+	if got := fenceWarnings(<-warnings); len(got) != 0 {
+		t.Errorf("the close waited out its budget on an admission the failed isolation step never released: %q", got)
+	}
+}
