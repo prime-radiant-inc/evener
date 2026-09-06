@@ -31,13 +31,14 @@ interface Form {
   selectModel(value: ModelDescriptor | null): void;
   setReasoning(value: string): void;
   loadMetadata(): Promise<void>;
-  loadModels(): Promise<void>;
+  loadModels(refresh?: boolean): Promise<void>;
   submit(): Promise<Outcome>;
 }
 export function createNewSessionStore(hubId: string) {
   let service: NewSessionService | null = null;
   let connection = 0;
   let catalog = 0;
+  let refreshingModels = false;
   let loadedContext: string | null = null;
   return createStore<Form>((set, get) => ({
     cwd: "",
@@ -57,6 +58,7 @@ export function createNewSessionStore(hubId: string) {
       if (service === next) return;
       service = next;
       connection++;
+      refreshingModels = false;
       loadedContext = null;
       catalog++;
       set({
@@ -83,6 +85,7 @@ export function createNewSessionStore(hubId: string) {
       }
       loadedContext = null;
       catalog++;
+      refreshingModels = false;
       set({
         cwd,
         models: [],
@@ -137,13 +140,16 @@ export function createNewSessionStore(hubId: string) {
           });
       }
     },
-    async loadModels() {
+    async loadModels(refresh = false) {
       const current = service;
       const { cwd, harness } = get();
       const context = JSON.stringify([cwd.trim(), harness]);
-      if (current && loadedContext === context) return;
+      if (current && loadedContext === context && !refresh) return;
+      const selection = loadedContext === context ? get().model : null;
+      const reasoning = get().reasoning;
       loadedContext = null;
       const generation = ++catalog;
+      refreshingModels = !!current && refresh;
       set({
         models: [],
         model: null,
@@ -158,7 +164,20 @@ export function createNewSessionStore(hubId: string) {
         });
         if (generation === catalog) {
           loadedContext = context;
-          set({ models: result.data, modelError: null });
+          const model =
+            result.data.find(
+              (item) =>
+                item.provider === selection?.provider &&
+                item.model === selection.model,
+            ) ?? null;
+          set({
+            models: result.data,
+            model,
+            reasoning: model?.reasoningEffortLevels?.includes(reasoning)
+              ? reasoning
+              : "",
+            modelError: null,
+          });
         }
       } catch {
         if (generation === catalog)
@@ -167,14 +186,18 @@ export function createNewSessionStore(hubId: string) {
               "Could not load models. Retry options or use the hub default.",
           });
       } finally {
-        if (generation === catalog) set({ loadingModels: false });
+        if (generation === catalog) {
+          refreshingModels = false;
+          set({ loadingModels: false });
+        }
       }
     },
     async submit() {
       const current = service;
       const generation = connection;
       const { cwd, prompt, harness, model, reasoning, submitting } = get();
-      if (!current || submitting || !cwd.trim()) return { status: "blocked" };
+      if (!current || submitting || refreshingModels || !cwd.trim())
+        return { status: "blocked" };
       set({ submitting: true, error: null });
       try {
         const result = await current.start({
