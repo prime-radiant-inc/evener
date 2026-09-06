@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1042,12 +1043,14 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	path := res["path"].(string)
 	// Observe the deadline on every context the pass hands git, and wedge the
 	// unlock so the pass also has to report the lane it could not release.
+	commands := 0
 	unbounded := false
 	longest := time.Duration(0)
 	t.Cleanup(func() { r.s.cfg.testOnly.worktreeGitRunner = nil })
 	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		run := gitRunner(runCtx, env)
 		return func(args ...string) (string, error) {
+			commands++
 			deadline, ok := runCtx.Deadline()
 			switch {
 			case !ok:
@@ -1071,7 +1074,7 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	if unbounded {
 		t.Error("the pass handed git a context with no deadline; a wedged git would hold shutdown for the per-command timeout on every lane")
 	}
-	if longest <= 0 {
+	if commands == 0 {
 		t.Fatal("no git command reached the interceptor; the pass never ran")
 	}
 	if budget := laneCloseReleaseBudget(); longest > budget {
@@ -1093,49 +1096,95 @@ func TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget(t *testing.T) {
 	}
 }
 
-// TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases: the
-// close cascade's budget expiring partway through the pass — here while the
-// registry listing is in flight, but equally between the listing and an unlock —
-// must not leave this session's own markers held. The pass runs on a release
-// budget of its own precisely so the guarantee never depends on how much of the
-// cascade budget the steps before it consumed.
-func TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases(t *testing.T) {
-	t.Parallel()
+// TestUnlockOwnManagedWorktreeAtClose_ReleaseBudgetIsNotTheCascades: a real
+// Close must leave the lock-release pass holding a budget of its own, not a
+// child of the cascade budget. Waiting for the cascade to expire outright is
+// not enough to show that: a pass that re-derived from an already-dead cascade
+// could still notice at entry and start over. What only an independent budget
+// survives is a cascade that is still alive but has less left than the release
+// pass needs — so this drives a real close, burns most of the cascade budget
+// inside the residue sweep's registry read, and then compares the deadline the
+// release pass runs on against the cascade's own. A derived context would carry
+// the cascade's earlier deadline; an independent one carries a later deadline of
+// its own. Not parallel: shortenCloseCascadeBudget writes a package var.
+func TestUnlockOwnManagedWorktreeAtClose_ReleaseBudgetIsNotTheCascades(t *testing.T) {
+	cascadeBudget := 800 * time.Millisecond
+	shortenCloseCascadeBudget(t, cascadeBudget)
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	cascade, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	// The close issues exactly two registry listings: the P3 residue sweep's,
+	// which runs on the shared cascade budget, and then the release pass's. Hold
+	// the first until three quarters of the cascade budget is gone — a wait
+	// derived from the deadline the sweep was actually handed, not a literal — so
+	// the release pass starts while the cascade is alive with less left on it
+	// than the release budget. Then record both deadlines from inside the second.
+	var listings atomic.Int64
+	var cascadeDeadline, releaseDeadline atomic.Int64
+	var cascadeLeft atomic.Int64
+	var releaseBounded atomic.Bool
+	cascadeCtx := make(chan context.Context, 1)
 	t.Cleanup(func() { r.s.cfg.testOnly.worktreeGitRunner = nil })
 	r.s.cfg.testOnly.worktreeGitRunner = func(runCtx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		run := gitRunner(runCtx, env)
 		return func(args ...string) (string, error) {
 			if len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
-				cancel()
+				switch listings.Add(1) {
+				case 1:
+					deadline, ok := runCtx.Deadline()
+					if !ok {
+						t.Error("the residue sweep ran without the cascade deadline; this test can no longer burn the cascade budget")
+						break
+					}
+					cascadeCtx <- runCtx
+					burn := time.NewTimer(time.Until(deadline) * 3 / 4)
+					defer burn.Stop()
+					select {
+					case <-burn.C:
+					case <-runCtx.Done():
+					}
+				case 2:
+					// Compare the two ABSOLUTE deadlines, never the time left on
+					// each: an inherited context carries the cascade's own deadline
+					// instant, and two time.Until calls a few hundred nanoseconds
+					// apart on that one instant differ just enough to read as "later".
+					deadline, bounded := runCtx.Deadline()
+					releaseBounded.Store(bounded)
+					if bounded {
+						releaseDeadline.Store(deadline.UnixNano())
+					}
+					if cascade := <-cascadeCtx; cascade != nil {
+						if deadline, ok := cascade.Deadline(); ok {
+							cascadeDeadline.Store(deadline.UnixNano())
+							cascadeLeft.Store(int64(time.Until(deadline)))
+						}
+					}
+				}
 			}
 			return run(args...)
 		}
 	}
 
-	start := time.Now()
-	r.s.unlockOwnManagedWorktreeAtClose()
-	elapsed := time.Since(start)
+	r.s.Close()
 
-	if cascade.Err() == nil {
-		t.Fatal("the interceptor never cancelled the cascade context; the scenario did not run")
+	if got := listings.Load(); got != 2 {
+		t.Fatalf("close issued %d registry listings, want the residue sweep's then the release pass's", got)
+	}
+	if !releaseBounded.Load() {
+		t.Error("the release pass ran with no deadline at all")
+	}
+	if left := time.Duration(cascadeLeft.Load()); left <= 0 {
+		t.Fatalf("the cascade budget was already gone when the release pass started (%s left), so the window this test needs never opened; the host is too loaded to tell an inherited deadline from an independent one", left)
+	}
+	if gap := time.Duration(releaseDeadline.Load() - cascadeDeadline.Load()); gap <= 0 {
+		t.Errorf("the release pass's deadline sits %s past the cascade's, i.e. on or before it: the pass is bounded by the cascade budget, so a cascade expiring mid-pass would strand the markers", gap)
 	}
 	if _, locked, reason := r.laneLocked(t, path); locked {
-		t.Errorf("own marker still held after the cascade budget expired mid-pass: %q", reason)
-	}
-	// TRIPWIRE: the release runs real git against a two-lane fixture and finishes
-	// in milliseconds. This bound derives from the release budget rather than a
-	// wall-clock literal and sits orders of magnitude above that, so it trips only
-	// if the pass starts waiting out a budget instead of doing the release.
-	if bound := laneCloseReleaseBudget() / 4; elapsed > bound {
-		t.Errorf("pass took %s, want well under %s", elapsed, bound)
+		t.Errorf("own marker still held after the close: %q", reason)
 	}
 }
 

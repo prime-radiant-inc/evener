@@ -115,7 +115,6 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"close-unlock-child", TestUnlockOwnManagedWorktreeAtClose_DelegatingChildReleasesOwnMarker},
 		{"close-unlock-delegate", TestUnlockOwnManagedWorktreeAtClose_LeavesDelegateMarker},
 		{"close-unlock-budget", TestUnlockOwnManagedWorktreeAtClose_BoundedByCloseBudget},
-		{"close-unlock-cascade-expiry", TestUnlockOwnManagedWorktreeAtClose_CascadeExpiryMidPassStillReleases},
 		{"close-unlock-listing-fails", TestUnlockOwnManagedWorktreeAtClose_ListingFailsWarns},
 		{"close-unlock-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_UnlockFailsWarns},
 		{"close-unlock-nonlocal", TestUnlockOwnManagedWorktreeAtClose_NonLocalEnvNoOp},
