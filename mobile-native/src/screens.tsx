@@ -43,6 +43,7 @@ import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
+import { composerCommand, submitComposerCommand } from "./composerCommand";
 import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -826,11 +827,17 @@ export function ConversationScreen({
     draft.record.draft,
     draft.record.images?.length,
   );
-  async function applyGoal(clear = false) {
+  const command = composerCommand(
+    draft.record.draft,
+    draft.record.images?.length,
+  );
+  async function applyCommand(clear = false) {
+    const action = clear ? "goal" : command?.command.id;
     if (
       !service ||
       !ready ||
-      !conversation?.capabilities.goal ||
+      !action ||
+      !conversation?.capabilities[action] ||
       draft.submitting ||
       unconfirmedSend !== null ||
       imageState.busy ||
@@ -843,13 +850,22 @@ export function ConversationScreen({
       store.getState().conversationGeneration === bindingGeneration &&
       store.getState().conversation?.instanceId === bindingInstance;
     try {
-      await submitGoalCommand(document, service, clear);
-      if (!currentBinding()) return;
-      await store.getState().rehydrate(service, activitySink);
+      const completed = clear
+        ? (await submitGoalCommand(document, service, true))
+          ? "goal"
+          : null
+        : await submitComposerCommand(document, service);
+      if (!completed || !currentBinding()) return;
+      if (completed === "shutdown") {
+        store.getState().close();
+        service.close();
+        setSessionOpen(false);
+        navigation.goBack();
+      } else await store.getState().rehydrate(service, activitySink);
     } catch {
       if (!currentBinding()) return;
       setActionError(
-        "Could not confirm the goal change. Check the current goal before trying again.",
+        "Could not confirm the command. Check the session before trying again.",
       );
     }
   }
@@ -1078,7 +1094,7 @@ export function ConversationScreen({
           ready={ready}
           close={() => setSessionOpen(false)}
           editGoal={editGoal}
-          clearGoal={() => void applyGoal(true)}
+          clearGoal={() => void applyCommand(true)}
           goalError={actionError ?? draft.error}
           goalDisabled={
             !ready ||
@@ -1414,9 +1430,14 @@ export function ConversationScreen({
                 Stop
               </Action>
             ) : null}
-            {canCompose && questions.length === 0 && goalCommand !== null ? (
+            {canCompose && questions.length === 0 && command !== null ? (
               <Action
                 tone="primary"
+                label={
+                  command.command.id === "compact"
+                    ? "Compact transcript"
+                    : undefined
+                }
                 disabled={
                   !ready ||
                   !draft.loaded ||
@@ -1424,15 +1445,23 @@ export function ConversationScreen({
                   draft.submitting ||
                   unconfirmedSend !== null ||
                   imageState.busy ||
-                  (!goalCommand && !conversation?.goal) ||
-                  !conversation?.capabilities.goal
+                  (command.command.id === "goal" &&
+                    !goalCommand &&
+                    !conversation?.goal) ||
+                  !conversation?.capabilities[command.command.id]
                 }
-                onPress={() => void applyGoal()}
+                onPress={() => void applyCommand()}
               >
-                {goalCommand || !conversation?.goal ? "Set goal" : "Clear goal"}
+                {command.command.id === "compact"
+                  ? "Compact"
+                  : command.command.id === "shutdown"
+                    ? "Shut down"
+                    : goalCommand || !conversation?.goal
+                      ? "Set goal"
+                      : "Clear goal"}
               </Action>
             ) : null}
-            {goalCommand === null &&
+            {command === null &&
               (["send", "steer", "queue"] as const).map((kind) =>
                 canCompose &&
                 questions.length === 0 &&

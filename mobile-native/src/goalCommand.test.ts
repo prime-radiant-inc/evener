@@ -7,6 +7,7 @@ import {
 } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { type DraftDatabase, DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -47,6 +48,7 @@ function boundary() {
   };
   const objectives: string[] = [];
   const io = {
+    lifecycle: async (_method: string, _params: unknown) => ({}),
     read: async () => ({ thread: structuredClone(thread) }),
     set: async (objective: string) => {
       objectives.push(objective);
@@ -58,6 +60,8 @@ function boundary() {
       if (method === "thread/read") return io.read();
       if (method === "goal/set")
         return io.set((params as { objective: string }).objective);
+      if (method === "thread/compact/start" || method === "thread/shutdown")
+        return io.lifecycle(method, params);
       throw new Error(`Unexpected ${method}`);
     },
     onNotification: () => () => {},
@@ -76,6 +80,61 @@ it.each([
   expect(goalObjective(input)).toBe(expected);
   expect(goalObjective(input, 1)).toBeNull();
 });
+
+it.each([
+  ["/compact", "thread/compact/start"],
+  ["/shutdown", "thread/shutdown"],
+])(
+  "checkpoints %s and preserves a newer draft through acknowledgement loss",
+  async (command, method) => {
+    const db = new DatabaseSync(":memory:");
+    const repository = new DraftRepository({
+      execSync: (sql) => db.exec(sql),
+      runSync: (sql, ...params) => db.prepare(sql).run(...params),
+      getFirstSync: <T>(sql: string, ...params: string[]) =>
+        (db.prepare(sql).get(...params) as T | undefined) ?? null,
+    });
+    const destination = { hubId: "hub", sessionRef: "local:test" };
+    const document = new DraftDocument(() => repository, destination);
+    const { io, service } = boundary();
+    try {
+      await service.open(destination.sessionRef);
+      let received = 0;
+      io.lifecycle = async (actual, params) => {
+        received++;
+        expect(actual).toBe(method);
+        expect(params).toEqual({ ref: destination.sessionRef });
+        expect(repository.read(destination).unconfirmed).toBe(command);
+        return {};
+      };
+      document.edit(command);
+      expect(await submitComposerCommand(document, service)).toBe(
+        command.slice(1),
+      );
+      expect(received).toBe(1);
+      expect(repository.read(destination)).toMatchObject({
+        draft: "",
+        unconfirmed: null,
+      });
+      document.edit(command);
+      io.lifecycle = async () => {
+        document.edit("newer draft");
+        throw new Error("Lost acknowledgement");
+      };
+      await expect(submitComposerCommand(document, service)).rejects.toThrow();
+      expect(repository.read(destination)).toMatchObject({
+        draft: "newer draft",
+        unconfirmed: command,
+      });
+      document.edit(command);
+      expect(await submitComposerCommand(document, service)).toBeNull();
+      expect(repository.read(destination).unconfirmed).toBe(command);
+    } finally {
+      service.close();
+      db.close();
+    }
+  },
+);
 
 it("preserves newer live work state across an older hydration and isolates session notifications", async () => {
   const { thread, io, service } = boundary();
