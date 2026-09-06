@@ -82,7 +82,9 @@ export function TimelineItem({ item }: { item: TimelineRow }) {
               {question.why ? <Copy muted>{question.why}</Copy> : null}
             </View>
           ))}
-          <Copy muted>Reply in the message field below.</Copy>
+          <Copy muted>
+            Open Questions to answer by the composer, or reply below.
+          </Copy>
         </>
       );
       break;

@@ -112,3 +112,7 @@ Use a quiet More affordance beside project/session rows with a full platform tou
 ## Approval decisions
 
 Keep pending decisions discoverable beside the composer through a compact count. Open a dedicated platform sheet so the command, blocked path and partial execution warning can be read before deciding. Use explicit Allow once and Deny labels. Dismissal preserves the request. Update an open sheet when another client resolves it; an empty sheet should say no approvals remain. Let enlarged text wrap and scroll to actions rather than shrinking the decision context.
+
+## Structured questions
+
+Show pending questions through a compact composer entry. Keep suggested choices and a written alternative together. Recommendations must never become automatic answers. Distinguish single and multiple selection through native accessibility roles, checked state and visible marks. Require explicit resolution, including Skip, for every question in a batch. Preserve the ordinary message draft and separate confirmed delivery from the following refresh. Optional notes and delegation belong to the same question context.
