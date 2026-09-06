@@ -77,7 +77,7 @@ it.each([
   expect(goalObjective(input, 1)).toBeNull();
 });
 
-it("preserves a newer live goal across an older hydration and isolates session notifications", async () => {
+it("preserves newer live work state across an older hydration and isolates session notifications", async () => {
   const { thread, io, service } = boundary();
   thread.evener.goal = {
     objective: "initial",
@@ -85,10 +85,12 @@ it("preserves a newer live goal across an older hydration and isolates session n
     iterations: 1,
   };
   const store = createConversationStore();
+  thread.evener.tasks = { total: 2, done: 0 };
   const activity = createActivityStore().getState();
   try {
     await store.getState().openProjected(service, activity, "local:test");
     expect(store.getState().conversation?.goal?.objective).toBe("initial");
+    expect(store.getState().conversation?.tasks).toEqual({ total: 2, done: 0 });
     let finishRead!: () => void;
     let entered!: () => void;
     const enteredRead = new Promise<void>((resolve) => {
@@ -111,9 +113,24 @@ it("preserves a newer live goal across an older hydration and isolates session n
       method: "evener/goal/updated",
       params: { threadId: "thread", ref: "local:test", goal: updated },
     });
+    store.getState().applyNotification({
+      method: "evener/task/updated",
+      params: {
+        threadId: "thread",
+        ref: "local:test",
+        total: 3,
+        done: 1,
+        current: { id: 2, description: "task-sentinel" },
+      },
+    });
     finishRead();
     await refresh;
     expect(store.getState().conversation?.goal).toEqual(updated);
+    expect(store.getState().conversation?.tasks).toMatchObject({
+      total: 3,
+      done: 1,
+      current: { id: 2 },
+    });
     store.getState().applyNotification({
       method: "evener/goal/updated",
       params: { threadId: "thread", ref: "local:test", goal: null },

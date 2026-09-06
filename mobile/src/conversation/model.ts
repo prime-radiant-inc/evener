@@ -191,6 +191,13 @@ export interface MobileConversation {
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
   goal?: { objective?: string; status: string; iterations: number } | null;
+  tasks?: {
+    total: number;
+    done: number;
+    cancelled?: number;
+    remaining?: number;
+    current?: { id: number; description: string };
+  } | null;
   askPending: boolean;
   pendingApprovals: MobileApproval[];
 }

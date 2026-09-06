@@ -576,6 +576,7 @@ export function createConversationStore() {
   let capabilityOwnerRev = 0;
   let approvalOwnerRev = 0;
   let goalOwnerRev = 0;
+  let tasksOwnerRev = 0;
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -1325,6 +1326,7 @@ export function createConversationStore() {
         const entryCapRev = capabilityOwnerRev;
         const entryApprovalRev = approvalOwnerRev;
         const entryGoalRev = goalOwnerRev;
+        const entryTasksRev = tasksOwnerRev;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1510,6 +1512,10 @@ export function createConversationStore() {
               entryGoalRev === goalOwnerRev
                 ? conversation.goal
                 : currentConv?.goal,
+            tasks:
+              entryTasksRev === tasksOwnerRev
+                ? conversation.tasks
+                : currentConv?.tasks,
             pendingApprovals:
               entryApprovalRev === approvalOwnerRev
                 ? conversation.pendingApprovals
@@ -2156,6 +2162,18 @@ export function createConversationStore() {
               conversation: {
                 ...conv,
                 queue: projectQueue(params.queue),
+              },
+            });
+            break;
+          }
+
+          case "evener/task/updated": {
+            tasksOwnerRev++;
+            const { total, done, cancelled, remaining, current } = n.params;
+            set({
+              conversation: {
+                ...conv,
+                tasks: { total, done, cancelled, remaining, current },
               },
             });
             break;
