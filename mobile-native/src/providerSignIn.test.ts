@@ -161,3 +161,73 @@ it("does not publish late authorization after disposal", async () => {
   expect(flow.getSnapshot().phase).not.toBe("authorized");
   expect(vi.getTimerCount()).toBe(0);
 });
+it("retains the device flow across a hub connection replacement", async () => {
+  vi.useFakeTimers();
+  const { flow, calls } = boundary();
+  await flow.start();
+  flow.setConnection(null);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(calls).toHaveLength(1);
+  const replacementCalls: unknown[] = [];
+  flow.setConnection({
+    request: async (method, params) => {
+      replacementCalls.push({ method, params });
+      return { state: "authorized" };
+    },
+  } as ConversationClientLike);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(replacementCalls).toEqual([
+    {
+      method: "evener/auth/device/poll",
+      params: { provider: "work", flowId: "flow-1" },
+    },
+  ]);
+  expect(flow.getSnapshot().phase).toBe("authorized");
+  flow.dispose();
+});
+it("does not accept a late poll from the disconnected client", async () => {
+  vi.useFakeTimers();
+  const { flow, io } = boundary();
+  await flow.start();
+  let resolve!: (value: unknown) => void;
+  io.request = () =>
+    new Promise((done) => {
+      resolve = done;
+    });
+  const poll = flow.retryPoll();
+  flow.setConnection(null);
+  resolve({ state: "authorized" });
+  await poll;
+  expect(flow.getSnapshot().phase).toBe("device");
+  expect(flow.getSnapshot().busy).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  flow.dispose();
+});
+it("keeps browser continuation across reconnect without replaying completion", async () => {
+  const { flow, io } = boundary();
+  io.request = async (method) =>
+    method === "evener/auth/device/start"
+      ? { ...device, fallback: true }
+      : {
+          provider: "work",
+          flowId: "browser-flow",
+          url: "https://example.test/auth",
+        };
+  await flow.start();
+  let resolve!: (value: unknown) => void;
+  io.request = () =>
+    new Promise((done) => {
+      resolve = done;
+    });
+  const complete = flow.complete("https://example.test/callback?code=fixture");
+  flow.setConnection(null);
+  resolve({ status: {} });
+  await complete;
+  const request = vi.fn();
+  flow.setConnection({ request } as unknown as ConversationClientLike);
+  expect(request).not.toHaveBeenCalled();
+  expect(flow.getSnapshot().phase).toBe("browser");
+  expect(flow.getSnapshot().error).toContain("confirmed");
+  expect(flow.getSnapshot().browser?.flowId).toBe("browser-flow");
+  flow.dispose();
+});
