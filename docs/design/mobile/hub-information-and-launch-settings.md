@@ -236,3 +236,49 @@ large text, screen readers, collections and broader settings remain unqualified.
 Additional local diagnostics: /tmp/evener-emulator-sample.txt,
 /tmp/evener-android-live-stack.txt, /tmp/evener-android-anr-events-after.txt.
 Root adb was used temporarily to collect the app's native stack.
+
+## Launch model catalog
+
+Launch model fields now use a native virtualized catalog instead of requiring a
+typed ID. The unscoped model/list request matches web global launch defaults.
+The native list directly reuses the web's buildPickerRows: server ordering,
+Recent, provider headings, qualified IDs, capabilities/prices/context metadata
+when supplied, and unavailable-provider notices. Shared catalog types now live
+outside the web React/CSS module so these pure helpers are usable by both apps.
+
+Selecting a row changes only the scalar field's raw draft. Done applies it to
+the launch layer draft, and Save defaults writes it. Use inherited value clears
+the override. Existing IDs remain selected even if absent from the current list;
+opening or dismissing the catalog does not coerce them to an available model.
+The query and selected value survive same-hub reconnects. Catalog bindings are
+disposed on transport changes and ignore obsolete reads. Errors offer retry.
+
+Four loader tests cover the unscoped request and metadata/recent/diagnostic
+mapping, omitted lists and error/retry, disposal and out-of-order completion.
+All 293 native tests, native TypeScript, touched-file Biome, make test-web and
+make test-web-browser pass. The browser gate includes layout, overflow, shell,
+spawn and transcript-scroll guards.
+
+Manual native Release evidence on isolated SecondHub:
+
+- iOS displayed Recent, Fake Test Model, Fake Alternate, and the hub's Ollama
+  connection-refused notice. Search Alternate narrowed to Fake Alternate.
+- Selected Fake Alternate and used Home/foreground. The sheet retained the
+  search and checked selection fake/fake-alternate. Done and Save defaults
+  produced the saved notice and model row with that qualified ID.
+- Android opened Model and showed effective/selected fake/fake-alternate, with
+  Fake Alternate checked in the same catalog. Used Use inherited value, Done,
+  Save defaults; the model returned to Inherited · Default with a saved notice.
+  The fixture's originally unset model override is restored.
+
+Screenshots: [iOS catalog](assets/launch-settings/ios-model-catalog.jpg),
+[iOS saved](assets/launch-settings/ios-model-saved.jpg),
+[Android restored](assets/launch-settings/android-model-restored.png).
+These checks preceded a small error-message placement correction that makes
+Done errors visible in both scalar and catalog sheets.
+Final iOS and Android Release rebuilds after that correction pass and are installed.
+
+Remaining: large-catalog and accessibility native acceptance, native catalog
+failure/retry and offline selection checks, richer model metadata fixtures,
+creation/per-launch integration and collection editors. MOB-017 remains open;
+the functional checks do not establish Android performance reliability.

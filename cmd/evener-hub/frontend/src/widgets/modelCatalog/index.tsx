@@ -12,7 +12,11 @@
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { ModelDescriptor, ModelListDiagnostic } from "../../protocol/types.gen";
+import type { ModelCatalog as ModelCatalogData, ModelCatalogEntry } from "./types";
+
+export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
+export type ModelCatalog = ModelCatalogData;
+
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -53,23 +57,10 @@ const CLASS = {
 
 const SKELETON_LINES = 4;
 
-// The widget requires a display label, while the generated AppWire descriptor
-// makes it optional because daemon/source callers may know only an identity.
-// Keeping the generated type as the source of truth prevents this view model
-// from drifting when the model/list contract changes.
-export type ModelCatalogEntry = Omit<ModelDescriptor, "displayName"> & { displayName: string };
-export type ModelCatalogDiagnostic = ModelListDiagnostic;
-
-export interface ModelCatalog {
-  models: ModelCatalogEntry[];
-  recent: ModelCatalogEntry[];
-  diagnostics?: ModelCatalogDiagnostic[];
-}
-
 export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
-  loadCatalog: () => Promise<ModelCatalog>;
+  loadCatalog: () => Promise<ModelCatalogData>;
   /** Reports the full picked entry (with reasoningEffortLevels /
    * supportsReasoning) the moment a model is selected, so a caller that
    * derives per-model metadata (e.g. the spawn form's Effort ladder) doesn't
@@ -88,7 +79,7 @@ export interface ModelCatalogProps {
 export interface ModelCatalogPanelProps {
   loading: boolean;
   error: string | null;
-  catalog: ModelCatalog | null;
+  catalog: ModelCatalogData | null;
   /** The current qualified "provider/model" (or "" for the harness default):
    * pre-fills the input, marks the current row, and scrolls it into view. */
   value: string;
@@ -388,7 +379,7 @@ export function ModelCatalog({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalogData | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   async function openPicker() {
