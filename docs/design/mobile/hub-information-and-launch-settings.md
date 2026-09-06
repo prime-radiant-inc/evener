@@ -143,7 +143,48 @@ rejection. Full repository merge gates and visual acceptance are not established
 
 Remaining: collection/environment/MCP editors, model catalog selection (the
 current model field accepts an ID), file completion, project/per-launch layers,
-dirty-draft preservation across disconnects, path-error native checks, external
+path-error native checks, external
 update conflicts, two-hub isolation, large text and screen-reader acceptance.
-The current connection guard unmounts the editor on disconnect and therefore
-does not yet retain unsaved drafts. This slice does not close MOB-015.
+This slice does not close MOB-015.
+
+## Reconnect draft retention
+
+The editor now belongs to the hub screen rather than the current WebSocket.
+Disconnects detach notifications and invalidate in-flight reads/saves without
+discarding the layer draft or the open scalar sheet's text. Reconnecting reads
+the actual layer, preserves an unsaved draft, and flags changes to its baseline.
+No save is replayed. Save and Reload are unavailable offline; path validation
+requires the selected hub and ignores replies from a superseded connection.
+Changing the selected hub still disposes its editor.
+
+Four regression tests were observed failing before implementation, then passing:
+offline draft retention and explicit save, reconnect conflict, obsolete preflight
+without mutation, and an already-applied write with a late reply. The latter
+checks that a newer draft remains untouched and only one write was sent.
+All 289 native tests, TypeScript, touched-file Biome and both Release builds pass.
+
+Manual iOS Release on SecondHub:
+
+1. Entered 8 in the Max rounds sheet, pressed Simulator Home, confirmed the home
+   screen, and foregrounded the same app process. The open field still contained 8.
+2. Applied Done, backgrounded again, then foregrounded the same process. Search
+   and the unsaved 8 remained, with Save defaults enabled. See
+   [reconnected draft](assets/launch-settings/ios-reconnected-draft.jpg).
+3. Saved; iOS showed the success notice. Android's launch-default screen read 8
+   from the same hub. This proves cross-device readback, not notification delivery.
+4. Android hit an ANR during search, so restored the override using iOS.
+   The final iOS row showed Inherited · -1 with the saved notice.
+
+Android ANR: 6 September 2026, 13:51 PDT, PID 4007, input dispatch waited
+5491 ms for key R in MainActivity. The 13:51:21 native dump caught the main thread
+in GetLongField → HybridDestructor::getNativePointer → FabricUIManagerBinding::
+drainPreallocateViewsQueue. The dump was delayed and Java stack collection hit
+its deadline. Guest CPU pressure avg10 was 57.91; aggregate CPU was 89%, with
+Gboard, system_server, app, compositor and graphics service active.
+These observations do not isolate the cause. MOB-017 owns investigation.
+
+Local diagnostic files: /tmp/launch-android-anr.log,
+/tmp/launch-android-activity.log and /tmp/launch-android-anr-trace.txt. The latter
+contains historical entries too; the relevant entry starts at 13:51:29 on Sep 6.
+Android removal, native reconnect, path-validation interruptions, two-hub
+isolation, process-death persistence and accessibility acceptance remain unproven.
