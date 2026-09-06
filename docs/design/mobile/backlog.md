@@ -87,8 +87,11 @@ Acceptance:
 Evidence: [presentation study](presentation-study.html),
 [current native screenshots](interruption-notices.md),
 [composer and catalog behavior](command-completion.md).
-The study is not the implemented outcome. Header consolidation is being
-investigated; no header change has been made for this issue yet.
+The study is not the implemented outcome. [Header consolidation](session-menu.md)
+now replaces Work/Session with one overflow icon and preserves all three
+destinations. Both native destination/return paths pass; the narrow Android
+title frame grows from 34 to 381 physical pixels with the same touch minimum.
+Connection-row density and full-screen accessibility acceptance remain open.
 
 The [first spacing correction](transcript-spacing.md) removes an empty header
 slot and tightens routine-detail gaps. Android measurements show 284 pixels

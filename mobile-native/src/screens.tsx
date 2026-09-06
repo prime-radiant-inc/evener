@@ -12,7 +12,6 @@ import {
 } from "react";
 import {
   AccessibilityInfo,
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   AppState,
@@ -69,6 +68,7 @@ import {
 } from "./questionAnswers";
 import { QuestionBatches } from "./questionBatches";
 import { RosterSearch } from "./rosterSearch";
+import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
 import { TasksSheet } from "./TasksSheet";
@@ -533,6 +533,7 @@ export function ConversationScreen({
   const colors = useColors();
   const { fontScale, height: windowHeight } = useWindowDimensions();
   const [viewportHeight, setViewportHeight] = useState(windowHeight);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const headerHeight = useHeaderHeight();
   // biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
   const store = useMemo(
@@ -757,11 +758,17 @@ export function ConversationScreen({
   useEffect(() => () => approvalControls?.dispose(), [approvalControls]);
 
   const hasConversation = snapshot.conversation !== null;
-  useEffect(() => {
-    const openWork = () => {
-      const current = store.getState().conversation;
-      if (!current || !client) return;
+  const openSessionDestination = useCallback(
+    (destination: SessionDestination) => {
+      setSessionMenuOpen(false);
       Keyboard.dismiss();
+      const current = store.getState().conversation;
+      if (!current) return;
+      if (destination === "session") {
+        setSessionOpen(true);
+        return;
+      }
+      if (!client || !connected) return;
       const context = {
         hubId: route.params.hubId,
         ref: route.params.ref,
@@ -769,67 +776,84 @@ export function ConversationScreen({
         hubName: activeProfile?.name ?? "Hub",
         client,
       };
-      const tasks = () =>
+      if (destination === "tasks")
         setTaskContext({ ...context, hasTasks: current.tasks != null });
-      const activity = () => setActivityContext(context);
-      if (Platform.OS === "ios") {
-        ActionSheetIOS.showActionSheetWithOptions(
-          {
-            title: "Work",
-            options: ["Tasks", "Activity", "Cancel"],
-            cancelButtonIndex: 2,
-          },
-          (index) => {
-            if (index === 0) tasks();
-            else if (index === 1) activity();
-          },
-        );
-      } else
-        Alert.alert("Work", undefined, [
-          { text: "Tasks", onPress: tasks },
-          { text: "Activity", onPress: activity },
-          { text: "Cancel", style: "cancel" },
-        ]);
-    };
-    const openSession = () => {
-      Keyboard.dismiss();
-      setSessionOpen(true);
-    };
+      else setActivityContext(context);
+    },
+    [
+      store,
+      client,
+      connected,
+      route.params.hubId,
+      route.params.ref,
+      activeProfile?.name,
+    ],
+  );
+  useEffect(() => {
     navigation.setOptions({
       unstable_headerRightItems: () => [
         {
-          type: "button",
-          label: "Work",
-          disabled: !hasConversation || !connected,
-          onPress: openWork,
-        },
-        {
-          type: "button",
-          label: "Session",
+          type: "menu",
+          label: "Session actions",
+          accessibilityLabel: "Session actions",
+          icon: { type: "sfSymbol", name: "ellipsis" },
           disabled: !hasConversation,
-          onPress: openSession,
+          menu: {
+            items: [
+              {
+                type: "action",
+                label: "Session details",
+                onPress: () => openSessionDestination("session"),
+              },
+              {
+                type: "action",
+                label: "Tasks",
+                disabled: !connected,
+                onPress: () => openSessionDestination("tasks"),
+              },
+              {
+                type: "action",
+                label: "Activity",
+                disabled: !connected,
+                onPress: () => openSessionDestination("activity"),
+              },
+            ],
+          },
         },
       ],
       headerRight: () => (
-        <View style={styles.row}>
-          <Action disabled={!hasConversation || !connected} onPress={openWork}>
-            Work
-          </Action>
-          <Action disabled={!hasConversation} onPress={openSession}>
-            Session
-          </Action>
-        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Session actions"
+          accessibilityState={{ disabled: !hasConversation }}
+          disabled={!hasConversation}
+          onPress={() => {
+            Keyboard.dismiss();
+            setSessionMenuOpen(true);
+          }}
+          style={({ pressed }) => ({
+            minWidth: 48,
+            minHeight: 48,
+            alignItems: "center",
+            justifyContent: "center",
+            opacity: !hasConversation ? 0.4 : pressed ? 0.6 : 1,
+          })}
+        >
+          <Text
+            allowFontScaling={false}
+            style={{ fontSize: 24, color: colors.text }}
+          >
+            ⋮
+          </Text>
+        </Pressable>
       ),
     });
   }, [
     navigation,
     hasConversation,
     connected,
-    client,
-    store,
-    route.params.hubId,
-    route.params.ref,
-    activeProfile?.name,
+    openSessionDestination,
+    colors.text,
   ]);
   const currentName = snapshot.conversation?.name;
   useEffect(() => {
@@ -1191,6 +1215,15 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {sessionMenuOpen ? (
+        <SessionMenu
+          title={conversation?.name ?? route.params.title}
+          hubName={activeProfile?.name ?? "Hub"}
+          connected={connected}
+          close={() => setSessionMenuOpen(false)}
+          choose={openSessionDestination}
+        />
+      ) : null}
       {batches.map((batch, index) => (
         <QuestionSheet
           key={batch.id + JSON.stringify(batch.questions)}
