@@ -221,3 +221,38 @@ interval; fresh screenshots supplied targets during that phase. Observation fail
 did not cause a flow restart. The fixture is left signed out in device mode.
 
 ![Android device authorization completed](assets/providers/android-device-authorized.png)
+
+
+## Browser redirect fallback on both platforms
+
+On 6 September 2026, switched the isolated auth harness to browser mode before
+each native sign-in. Both apps displayed the fallback instructions, Open
+authorization page, an empty Redirect URL field and disabled Finish sign-in.
+The returned page opened in Chrome on Pixel 7 API 35 and Safari on iPhone 17 Pro.
+
+On Android, selected all of the fixture page's redirect text and copied it with
+native keyboard shortcuts. Returned using Back, focused Redirect URL and pasted
+with the native paste shortcut. The field contained the full matching redirect
+and Finish sign-in became enabled. Tapped Finish with the real software keyboard
+open; the editor displayed Signed in and `/status` independently reported
+`signedIn: true`, `activeSource: oauth`. Cleared credentials through iOS before
+starting its separate flow; this also verified cross-client auth notification.
+
+On iOS, used the Safari textarea's native Select All and Copy menu items, returned
+with the system Evener link, then used the native Paste menu in Redirect URL.
+The full redirect matched the page's state value. Before submission `/status` was
+`signedIn: false`, `activeSource: none`; after tapping Finish with the software
+keyboard open the editor showed Signed in and status became true/oauth. Done
+returned to Configured via OAuth. Cleared fixture credentials through the native
+confirmation dialog and restored device mode; final status was false/none.
+
+The keyboard-open screenshots below were captured and visually inspected. Both
+platforms kept Finish sign-in reachable without dismissing the keyboard. These
+are current Release builds from the sign-in implementation at `9a75d0479`, using
+real registered hub handlers and temporary storage with scripted OAuth exchange.
+The copy/paste checks here cover the browser redirect, not the device-code Copy
+button. Real provider accounts, native expiry/denial/retry, cross-hub flow isolation,
+screen readers and visual acceptance remain open. No production hub was mutated.
+
+![Android redirect pasted with keyboard open](assets/providers/android-browser-pasted.png)
+![iOS redirect pasted with keyboard open](assets/providers/ios-browser-pasted.jpg)
