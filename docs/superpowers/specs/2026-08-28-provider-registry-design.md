@@ -1868,7 +1868,9 @@ change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIKeyEnv` entry. `InstanceCreateParams` and `InstanceEditParams` follow;
 `InstanceListResponse.AvailableTypes` becomes `AvailableProviders` (registry
 ids with display names and `VarsEnv`, so the add form can render the right
-variable inputs). The credentials pane lists every curated implicit
+variable inputs — only the `VarsEnv` entries a URL template reads,
+`Registry.TemplateVarsEnv`, since a models.dev `env` list also names a
+credential's own variable that instance `vars` never feed). The credentials pane lists every curated implicit
 provider whether or not it currently has a credential (§5.2 resolves them
 regardless), which is where a fresh install signs in to `openai-codex` or
 enters its first key. That pane is fed by the `evener/auth/*` RPCs, which

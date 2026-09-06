@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -760,6 +761,46 @@ func TestUnresolvedBaseURL(t *testing.T) {
 			}
 			if len(problems) != 1 || !strings.Contains(problems[0], tt.wantProblem) {
 				t.Fatalf("UnresolvedBaseURL(%q) problems = %v, want one naming %s", tt.id, problems, tt.wantProblem)
+			}
+		})
+	}
+}
+
+// TestTemplateVarsEnv covers which vars_env entries an add form should offer:
+// the ones a URL template reads, wherever that template lives (a row's own
+// base URL counts), plus a host rule's inputs. The models.dev env list also
+// names the credential's own variable (GOOGLE_APPLICATION_CREDENTIALS), which
+// no template reads and the registry never substitutes (roborev round 19).
+func TestTemplateVarsEnv(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	r.curated["row-only"] = &record{head: Provider{
+		Transport: Transport{
+			BaseURL: "https://example.test/v1",
+			VarsEnv: map[string]string{"REGION": "EXAMPLE_REGION", "UNREAD": "EXAMPLE_UNREAD"},
+		},
+		Models: map[string]Model{"m": {Transport: &Transport{BaseURL: "https://{REGION}.example.test/v1"}}},
+	}}
+	r.curated["rule-only"] = &record{head: Provider{Transport: Transport{
+		BaseURL:  "{GOOGLE_VERTEX_HOST}/v1",
+		HostRule: HostRuleVertexLocation,
+		VarsEnv: map[string]string{
+			"GOOGLE_VERTEX_LOCATION":         "GOOGLE_VERTEX_LOCATION",
+			"GOOGLE_APPLICATION_CREDENTIALS": "GOOGLE_APPLICATION_CREDENTIALS",
+		},
+	}}}
+	for _, tt := range []struct {
+		id   string
+		want map[string]string
+	}{
+		{id: "google-vertex", want: map[string]string{"GOOGLE_VERTEX_PROJECT": "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION"}},
+		{id: "openai", want: map[string]string{"BASE_URL": "OPENAI_BASE_URL"}},
+		{id: "row-only", want: map[string]string{"REGION": "EXAMPLE_REGION"}},
+		{id: "rule-only", want: map[string]string{"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION"}},
+		{id: "no-such-provider"},
+	} {
+		t.Run(tt.id, func(t *testing.T) {
+			if got := r.TemplateVarsEnv(tt.id); !maps.Equal(got, tt.want) {
+				t.Fatalf("TemplateVarsEnv(%q) = %v, want %v", tt.id, got, tt.want)
 			}
 		})
 	}

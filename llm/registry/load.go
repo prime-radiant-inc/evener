@@ -1062,6 +1062,45 @@ func (r *Registry) UnresolvedBaseURL(id string) (unset, problems []string) {
 	return slices.Compact(unset), slices.Compact(warnings)
 }
 
+// TemplateVarsEnv lists the variables a curated provider's URL templates
+// read, as the vars_env map restricted to them: a placeholder in the base
+// URL or an endpoint template (the provider's own or a row's) or an input of
+// the host rule. A vars_env entry no template reads is left out — models.dev
+// lists GOOGLE_APPLICATION_CREDENTIALS beside the Vertex project and
+// location, but the credential is read from the environment or the store,
+// never substituted — so a form built on the result offers no input the
+// registry would ignore. Nil for an unknown id.
+func (r *Registry) TemplateVarsEnv(id string) map[string]string {
+	rec, ok := r.curated[id]
+	if !ok {
+		return nil
+	}
+	referenced := map[string]bool{}
+	note := func(t Transport) {
+		for _, tpl := range []string{t.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
+			for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
+				referenced[m[1]] = true
+			}
+		}
+	}
+	note(rec.head.Transport)
+	for _, row := range rec.head.Models {
+		if row.Transport != nil {
+			note(*row.Transport)
+		}
+	}
+	for _, name := range hostRuleAuthorityVars(rec.head.Transport.HostRule) {
+		referenced[name] = true
+	}
+	out := map[string]string{}
+	for name, env := range rec.head.Transport.VarsEnv {
+		if referenced[name] {
+			out[name] = env
+		}
+	}
+	return out
+}
+
 // ProviderIDs lists the curated registry ids, sorted.
 func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
 

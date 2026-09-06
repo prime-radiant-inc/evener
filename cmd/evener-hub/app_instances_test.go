@@ -8,6 +8,7 @@ package hub
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -216,6 +217,32 @@ func TestInstances_ListReportsAvailableProvidersAndUserLayer(t *testing.T) {
 	}
 	if resp.Instances == nil || resp.AvailableProviders == nil {
 		t.Fatal("both lists are always arrays on the wire, never null")
+	}
+}
+
+// TestInstances_ListOffersOnlyTemplateVars pins that a descriptor's variable
+// inputs are the ones the registry substitutes: google-vertex's snapshot env
+// list also names GOOGLE_APPLICATION_CREDENTIALS, which instance vars never
+// feed (the credential is read from the environment or the store), so an
+// input for it would persist a value nothing reads (roborev round 19).
+func TestInstances_ListOffersOnlyTemplateVars(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	resp := f.ctl.List()
+	var vertex *appwire.ProviderDescriptor
+	for i := range resp.AvailableProviders {
+		if resp.AvailableProviders[i].ID == "google-vertex" {
+			vertex = &resp.AvailableProviders[i]
+		}
+	}
+	if vertex == nil {
+		t.Fatalf("AvailableProviders has no google-vertex: %+v", resp.AvailableProviders)
+	}
+	wantVars := map[string]string{"GOOGLE_VERTEX_LOCATION": "GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT": "GOOGLE_VERTEX_PROJECT"}
+	if !maps.Equal(vertex.Vars, wantVars) {
+		t.Fatalf("google-vertex descriptor Vars = %v, want only the URL template's variables %v", vertex.Vars, wantVars)
+	}
+	if want := []string{"GOOGLE_VERTEX_LOCATION", "GOOGLE_VERTEX_PROJECT"}; !slices.Equal(vertex.VarsEnv, want) {
+		t.Fatalf("google-vertex descriptor VarsEnv = %v, want %v", vertex.VarsEnv, want)
 	}
 }
 

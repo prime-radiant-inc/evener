@@ -165,7 +165,10 @@ Also in this section:
 
 **Hub behaviour, no code change:** the add dialog lists the provider (with
 a `GOOGLE_VERTEX_EXPRESS_BASE_URL` input it renders for every `vars_env`
-name — optional; the dialog submits it under the template key `BASE_URL`,
+name a URL template reads (`Registry.TemplateVarsEnv`, added 2026-09-06 so
+`google-vertex` no longer offers a `GOOGLE_APPLICATION_CREDENTIALS` input
+that instance vars never feed, roborev round 19) — optional; the dialog
+submits it under the template key `BASE_URL`,
 so a typed value takes effect (fixed 2026-09-05, roborev round 1)); after
 creation the instance's `authModes` is `["apiKey"]`, so the sheet offers
 **Set API key**, which stores the key in `credentials.toml` under the
