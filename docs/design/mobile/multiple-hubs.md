@@ -83,15 +83,30 @@ Screenshots were captured and visually inspected:
 [iOS receives Android](assets/cold-observer/ios-receives-android.png).
 
 This closes the original manual failure in both directions on iPhone 17 Pro
-(iOS 26.5) and Pixel 7 (API 35) simulators. A deterministic overlap test for
-snapshot capture versus resume is still required; sequential native success
-and Go race-detector success do not prove that ordering. The screenshots also
+(iOS 26.5) and Pixel 7 (API 35) simulators. Deterministic overlap coverage is
+described below. The screenshots also
 retain the known unfinished composer density and raw-notice presentation;
 these are functional evidence, not visual acceptance.
 
+### Saved snapshot and resume ordering
+
+`TestHubRPCColdSnapshotOwnsResumeUntilSubscribed` holds the real saved
+projection at a filesystem journal read using a FIFO on Darwin/Linux. Once
+the reader has opened the journal, the test verifies the shared lifecycle
+lock excludes resume, starts a turn request, releases the journal, and checks
+that the observer receives the daemon's event. Only the filesystem and daemon
+network/process boundaries are scripted; the hub, saved projection, lifecycle
+lock, subscription capture, resume, and relay execute normally.
+
+Bypassing the fixed handler reproduces failure at the lock-exclusion check.
+With the fix restored, ten runs pass under the Go race detector. This covers
+saved-read-first ordering for hub-managed resume. It does not establish
+ordering for an independently launched daemon outside the hub's lifecycle
+lock or every stop/restart interleaving.
+
 ## Further work
 
-- Prove deterministic snapshot/resume overlap and audit relay lifetime across restarts.
+- Audit relay lifetime across restarts and independently launched daemons.
 - Concurrent hub connections and deliberate per-hub navigation continuity.
 - Disconnect/reconnect and credential-rotation isolation, delayed requests and
   uncertain writes during switching, hub-removal recovery, physical networks.
