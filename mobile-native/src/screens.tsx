@@ -484,6 +484,7 @@ export function ConversationScreen({
                 current.conversation?.instanceId === bindingInstance
               );
             },
+            () => store.getState().conversation,
           )
         : null,
     [

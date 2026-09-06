@@ -10,6 +10,7 @@ async function boundary(actions: {
   rename?: (name: string) => Promise<void>;
   compact?: () => Promise<void>;
   shutdown?: () => Promise<void>;
+  reasoning?: (effort: string) => Promise<void>;
 }) {
   const thread: Thread = {
     id: "thread",
@@ -51,6 +52,10 @@ async function boundary(actions: {
         await actions.rename?.((params as { name: string }).name);
       else if (method === "thread/compact/start") await actions.compact?.();
       else if (method === "thread/shutdown") await actions.shutdown?.();
+      else if (method === "thread/reasoning-effort/set")
+        await actions.reasoning?.(
+          (params as { reasoningEffort: string }).reasoningEffort,
+        );
       else throw new Error(`Unexpected method ${method}`);
       return {};
     },
@@ -82,6 +87,7 @@ describe("conversation-owned session controls", () => {
       },
       () => {},
       () => true,
+      () => null,
     );
     const first = controls.rename("  Mobile session  ");
     expect(controls.getSnapshot().pending).toBe("rename");
@@ -114,6 +120,7 @@ describe("conversation-owned session controls", () => {
         stopped++;
       },
       () => true,
+      () => null,
     );
     await controls.compact();
     expect(attempts).toBe(1);
@@ -144,6 +151,7 @@ describe("conversation-owned session controls", () => {
         callbacks++;
       },
       () => true,
+      () => null,
     );
     const request = controls.compact();
     controls.dispose();
@@ -166,6 +174,7 @@ describe("conversation-owned session controls", () => {
       async () => {},
       () => {},
       () => generation === 1,
+      () => null,
     );
     service.close();
     generation = 2;
@@ -182,8 +191,72 @@ describe("conversation-owned session controls", () => {
       },
       () => {},
       () => true,
+      () => null,
     );
     await controls.compact();
     expect(refreshed).toBe(1);
+  });
+  it("dispatches supported reasoning once and refreshes the authoritative value", async () => {
+    const settings = {
+      supportsReasoning: true,
+      reasoningEffort: "low",
+      reasoningEffortLevels: ["low", "high"],
+    };
+    const requests: string[] = [];
+    let resolve!: () => void;
+    const controls = new SessionControls(
+      await boundary({
+        reasoning: async (effort) => {
+          requests.push(effort);
+          await new Promise<void>((done) => {
+            resolve = done;
+          });
+        },
+      }),
+      async () => {
+        settings.reasoningEffort = "high";
+      },
+      () => {},
+      () => true,
+      () => settings,
+    );
+    const request = controls.setReasoningEffort("high");
+    await controls.setReasoningEffort("low");
+    expect(requests).toEqual(["high"]);
+    expect(settings.reasoningEffort).toBe("low");
+    resolve();
+    await request;
+    expect(settings.reasoningEffort).toBe("high");
+    expect(controls.getSnapshot().pending).toBeNull();
+  });
+  it("rejects stale or unsupported reasoning choices before dispatch", async () => {
+    const settings = {
+      supportsReasoning: true,
+      reasoningEffort: "low",
+      reasoningEffortLevels: ["low", "high"],
+    };
+    const requests: string[] = [];
+    const controls = new SessionControls(
+      await boundary({
+        reasoning: async (effort) => {
+          requests.push(effort);
+        },
+      }),
+      async () => {},
+      () => {},
+      () => true,
+      () => settings,
+    );
+    await controls.setReasoningEffort("low");
+    await controls.setReasoningEffort("invented");
+    settings.reasoningEffortLevels = ["low"];
+    await controls.setReasoningEffort("high");
+    settings.reasoningEffortLevels = ["low", "high"];
+    settings.supportsReasoning = false;
+    await controls.setReasoningEffort("high");
+    settings.supportsReasoning = true;
+    controls.dispose();
+    await controls.setReasoningEffort("high");
+    expect(requests).toEqual([]);
   });
 });
