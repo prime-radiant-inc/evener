@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -225,6 +226,24 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
 }
 
+// sameEnvironment reports whether a and b are the same execution environment.
+// Identity is what every ownership decision here asks, and each environment a
+// session runs on is a pointer, so `==` answers it — with one trap: `==` on two
+// interfaces holding the same NON-comparable dynamic type panics at runtime
+// instead of answering, and an environment is an interface a struct value may
+// satisfy. A value nothing else can alias is not the same environment as
+// anything, which is the answer this returns where `==` would end the process.
+func sameEnvironment(a, b execenv.ExecutionEnvironment) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta := reflect.TypeOf(a)
+	if ta != reflect.TypeOf(b) || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
 // environmentOwnedAtTeardown returns the environment this session's own
 // teardown settles, or nil when the session is still holding the one its live
 // parent works in. Ownership is not frozen at spawn: a child handed its
@@ -237,7 +256,7 @@ func (s *Session) environmentOwnedAtTeardown() execenv.ExecutionEnvironment {
 	if s.ownsEnv {
 		return s.env
 	}
-	if s.parentSharedEnv == nil || s.env == s.parentSharedEnv {
+	if s.parentSharedEnv == nil || sameEnvironment(s.env, s.parentSharedEnv) {
 		return nil
 	}
 	return s.env

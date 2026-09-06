@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -912,5 +913,99 @@ func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *t
 	assertParentScratchUntouched(t, "the exit refused under the child's close", parentScratch)
 	if _, err := os.Stat(cloneScratch); err != nil {
 		t.Errorf("the child's teardown removed its entered clone's scratch %s, want it retained for the handoff: %v", cloneScratch, err)
+	}
+	if scratchLeaseHeld(t, cloneScratch) {
+		t.Errorf("the entered clone's scratch %s lease is still held after the child's teardown", cloneScratch)
+	}
+}
+
+// A shared child (no working dir of its own) can enter a worktree it is
+// switching into while its own close races that very enter. moved is false on
+// such a child's enter — its current environment IS s.parentSharedEnv, so
+// step 0 has nothing to move — but step 1's git snapshot still runs real git
+// on next, the clone the enter built, and running a command is what mints
+// next its own scratch, with a lease, on an environment that owns none. If
+// the child's own close wins the race before step 2 installs next, the swap
+// refuses — but its rollback retains only what step 0 moved, and step 0
+// moved nothing here, so next's freshly minted scratch and lease are left
+// with no owner: nothing ever references next again.
+//
+// The hook releases as soon as the child's own close has BEGUN, never waiting
+// for it to return: the enter runs inside the manage_worktree dispatch, which
+// holds the close fence, so waiting would deadlock the two against each other
+// — the same deadlock TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease
+// avoids, there for a shared child's exit instead of its enter.
+func TestWorktreeSwap_CloseDuringASharedChildEnterDropsTheRefreshScratch(t *testing.T) {
+	// The shared base repo is built once per package run under the temp dir
+	// current at that moment; build it before this test redirects TMPDIR to a
+	// directory it will delete. (Same discipline as
+	// TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch.)
+	worktreeBaseRepo(t)
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+	cfg := worktreeTestSessionConfig()
+	cfg.testOnly.skipGitSnapshot = false
+	r := newWorktreeRepoWithConfig(t, cfg)
+	parent := r.s
+	sibling := r.addSiblingWorktree(t, "child-lane", "child-branch")
+
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 2)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	t.Cleanup(func() { releasePreparedTreeSlot(prepared) })
+	child := prepared.sub.sess
+	if child.currentEnv() != parent.currentEnv() {
+		t.Fatal("the spawned child did not land on the parent's environment; this test would prove nothing")
+	}
+	if child.ownsEnv {
+		t.Fatal("the spawned child recorded that it owns the parent's environment; this test would prove nothing")
+	}
+	child.mu.Lock()
+	child.worktreeGitVersionOK = true
+	child.stateDir = r.stateDir
+	child.mu.Unlock()
+
+	before := scratchDirsIn(t, isolated)
+
+	closeBegun := make(chan struct{})
+	closeDone := make(chan struct{})
+	child.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	child.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		go func() {
+			defer close(closeDone)
+			teardownChildSession(context.Background(), child, retainChildScratch)
+		}()
+		<-closeBegun
+	}
+
+	rt := child.reg.Get("manage_worktree")
+	if rt == nil {
+		t.Fatal("registry is missing manage_worktree")
+	}
+	_, enterErr := rt.Exec(t.Context(), child.currentEnv(), map[string]any{"operation": "switch", "path": sibling})
+	<-closeDone
+
+	if enterErr == nil {
+		t.Error("the enter succeeded while the child's own close began under it, want a refusal")
+	}
+	after := scratchDirsIn(t, isolated)
+	slices.Sort(before)
+	slices.Sort(after)
+	if !slices.Equal(before, after) {
+		t.Errorf("scratch dirs under %s changed from %v to %v; a refused enter must leave the scratch base exactly as it found it", isolated, before, after)
+	}
+	beforeSet := make(map[string]bool, len(before))
+	for _, dir := range before {
+		beforeSet[dir] = true
+	}
+	for _, dir := range after {
+		if beforeSet[dir] {
+			continue
+		}
+		if scratchLeaseHeld(t, dir) {
+			t.Errorf("the refused enter left %s behind with its lease still held", dir)
+		}
 	}
 }

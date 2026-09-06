@@ -597,7 +597,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 // scan keeps that true by construction rather than by trust, so the slice is
 // bounded by the number of worktree switches a session actually made.
 func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExecutionEnvironment) {
-	if prior == nil || prior == next || prior == s.worktreeRestoreEnv || prior == s.parentSharedEnv {
+	if prior == nil || prior == next || prior == s.worktreeRestoreEnv || sameEnvironment(prior, s.parentSharedEnv) {
 		return
 	}
 	if slices.Contains(s.abandonedEnvs, prior) {
