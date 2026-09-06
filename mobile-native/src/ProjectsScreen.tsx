@@ -1,6 +1,12 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
@@ -62,6 +68,7 @@ function PageList<T>({
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(pages.subscribe, pages.getSnapshot);
+  useEffect(() => pages.watch(), [pages]);
   useFocusEffect(
     useCallback(() => {
       if (ready && !pages.getSnapshot().loaded) void pages.refresh();
@@ -70,16 +77,25 @@ function PageList<T>({
   );
   return (
     <>
-      <ErrorMessage message={state.error} />
       {state.error ? (
-        <Action
-          disabled={!ready || state.loading}
-          onPress={() => {
-            void pages.refresh();
-          }}
-        >
-          Refresh list
-        </Action>
+        <View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+          <ErrorMessage message={state.stale ? null : state.error} />
+          {state.stale ? (
+            <Copy muted>
+              Updates are available. Refresh to see the latest list.
+            </Copy>
+          ) : null}
+          {state.error ? (
+            <Action
+              disabled={!ready || state.loading}
+              onPress={() => {
+                void pages.refresh();
+              }}
+            >
+              Refresh list
+            </Action>
+          ) : null}
+        </View>
       ) : null}
       <FlatList
         data={state.rows}

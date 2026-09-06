@@ -121,3 +121,7 @@ Server-side search, clear and query-preserving navigation are implemented. Nativ
 ### Project browsing
 
 Native project catalogs and session tiers now use the existing revisioned navigation API. Raw offsets, remaining counts and generation/revision checks govern Load more. Both Release builds and Native72 tests pass. Real isolated-hub checks cover both-platform navigation, iOS tier switching/large text and Android continuation/refresh through a page-size proxy. See `docs/design/mobile/project-browsing-evidence.md`; this does not complete nested navigation, pins, live invalidation or physical-device acceptance.
+
+### Project invalidation
+
+Project browsing now observes live navigation invalidations, preserves visible rows, and requires refresh before continuing a stale snapshot. Both simulators manually exercised real isolated-hub rename notifications and refresh recovery. Native78 tests, TypeScript and both Release builds pass. Generation-restart and sequence-gap races have deterministic boundary coverage; full native fault acceptance remains open.
