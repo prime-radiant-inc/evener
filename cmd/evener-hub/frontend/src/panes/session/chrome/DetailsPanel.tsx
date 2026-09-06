@@ -125,7 +125,7 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const tokens = sessionTokens(model);
   // A derived sum over a windowed transcript covers only the turns in hand
-  // (thread/read's turnLimit), so its label says exactly that rather than
+  // (thread/read's itemLimit), so its label says exactly that rather than
   // passing a partial figure off as the session's total.
   const tokensLabel = tokens?.scope === "loaded" ? "tokens (loaded turns)" : "tokens";
   const createdAt = formatTimestamp(model.createdAt);

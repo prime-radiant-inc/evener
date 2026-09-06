@@ -41,7 +41,7 @@ export function turnUsageTokens(turn: TurnModel): TokenPair | null {
 //     provably the WHOLE transcript. Either way it accounts for the entire
 //     session.
 //   "loaded"  - a sum over only the turns this client holds. thread/read
-//     windows turns via turnLimit and reports the truncation through
+//     windows items via itemLimit and reports the truncation through
 //     olderCursor, so once a cursor is present the earlier turns' tokens are
 //     simply not in hand. The panel must label such a figure as covering the
 //     loaded turns, never the session.

@@ -22,6 +22,7 @@ Keep grouped projection/index machinery, logical ordinals including empty groups
 
 ## Clients and documentation
 
+Migrate browser and harness requests and fixtures together; regenerate Go-derived TypeScript types and protocol reference. Correct active documentation and original design/plan compatibility requirements. No feature flag, compatibility facade, or dual-version rollout.
 
 The TUI also consumes transcript reads. Preserve its full-transcript views by explicitly consuming bounded native item pages and correctly merging fragments; do not silently truncate these views to the first page. Preserve the initial read's atomic snapshot/live cut while collecting older pages. This is a client using the single v4 contract, not legacy turn paging. Metadata/status-only consumers should avoid fetching transcript history they do not need.
 
