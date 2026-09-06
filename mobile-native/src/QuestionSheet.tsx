@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
@@ -15,7 +15,10 @@ import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
   composeQuestionAnswers,
+  nextUnansweredQuestion,
   type QuestionSelections,
+  questionAdvanceTarget,
+  seedQuestionAnswers,
 } from "./questionAnswers";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 export function QuestionSheet({
@@ -44,7 +47,10 @@ export function QuestionSheet({
   function loadSelections() {
     try {
       return {
-        selections: nativeDrafts().readQuestions(destination, signature),
+        selections: seedQuestionAnswers(
+          questions,
+          nativeDrafts().readQuestions(destination, signature),
+        ),
         loaded: true,
         error: null as string | null,
       };
@@ -58,6 +64,8 @@ export function QuestionSheet({
   }
   const [saved, setSaved] = useState(loadSelections);
   const selections = saved.selections;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const input = useRef<TextInput>(null);
   function setSelections(
     update: (values: QuestionSelections) => QuestionSelections,
   ) {
@@ -77,13 +85,27 @@ export function QuestionSheet({
   }
   const editable = ready && saved.loaded && !pending;
 
-  function select(key: string, resolution: AskResolution) {
-    setSelections((values) => ({
-      ...values,
-      [key]: { note: values[key]?.note ?? "", resolution },
-    }));
+  function select(key: string, resolution: AskResolution | null) {
+    const next = {
+      ...selections,
+      [key]: { note: selections[key]?.note ?? "", resolution },
+    };
+    setSelections(() => next);
+    if (
+      !selections[key]?.resolution &&
+      resolution?.kind === "option" &&
+      !questions[activeIndex]?.multiSelect
+    ) {
+      const target = nextUnansweredQuestion(questions, next, activeIndex);
+      if (target !== undefined) setActiveIndex(target);
+    }
   }
   const text = composeQuestionAnswers(questions, selections);
+  const advanceTarget = questionAdvanceTarget(
+    questions,
+    selections,
+    activeIndex,
+  );
   return (
     <Modal
       visible={visible}
@@ -133,7 +155,22 @@ export function QuestionSheet({
                 </Action>
               </View>
             ) : null}
-            {questions.map((question) => {
+            {questions.length > 1 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {questions.map((question, index) => (
+                  <Pressable
+                    key={question.key}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: index === activeIndex }}
+                    onPress={() => setActiveIndex(index)}
+                    style={{ padding: 12, minHeight: 48 }}
+                  >
+                    <Copy>{`${index + 1}. ${question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+            {questions.slice(activeIndex, activeIndex + 1).map((question) => {
               const answer = selections[question.key];
               return (
                 <View key={question.key} style={{ gap: 12 }}>
@@ -143,125 +180,118 @@ export function QuestionSheet({
                   {question.multiSelect ? (
                     <Copy muted>Choose any that apply.</Copy>
                   ) : null}
-                  {question.options.map((option) => {
-                    const checked =
-                      answer?.resolution?.kind === "option" &&
-                      answer.resolution.labels.includes(option.label);
-                    return (
-                      <Pressable
-                        key={option.label}
-                        accessibilityRole={
-                          question.multiSelect ? "checkbox" : "radio"
-                        }
-                        accessibilityState={{
-                          checked,
-                          disabled: !editable,
-                        }}
-                        disabled={!editable}
-                        onPress={() => {
-                          const labels =
-                            question.multiSelect &&
-                            answer?.resolution?.kind === "option"
-                              ? answer.resolution.labels
-                              : [];
-                          select(question.key, {
-                            kind: "option",
-                            labels: checked
-                              ? labels.filter((label) => label !== option.label)
-                              : [...labels, option.label],
-                          });
-                        }}
-                        style={{
-                          padding: 12,
-                          minHeight: 48,
-                          borderWidth: 1,
-                          borderRadius: 12,
-                          borderColor: checked ? colors.accent : colors.border,
-                          backgroundColor: colors.surface,
-                        }}
-                      >
-                        <Copy>
-                          {checked ? "✓ " : ""}
-                          {option.label}
-                          {option.recommended ? " · Recommended" : ""}
-                        </Copy>
-                        {option.detail ? (
-                          <Copy muted>{option.detail}</Copy>
-                        ) : null}
-                      </Pressable>
-                    );
-                  })}
+                  {[...question.options]
+                    .sort(
+                      (a, b) =>
+                        Number(!!b.recommended) - Number(!!a.recommended),
+                    )
+                    .map((option) => {
+                      const checked =
+                        answer?.resolution?.kind === "option" &&
+                        answer.resolution.labels.includes(option.label);
+                      return (
+                        <Pressable
+                          key={option.label}
+                          accessibilityRole={
+                            question.multiSelect ? "checkbox" : "radio"
+                          }
+                          accessibilityState={{
+                            checked,
+                            disabled: !editable,
+                          }}
+                          disabled={!editable}
+                          onPress={() => {
+                            const labels =
+                              question.multiSelect &&
+                              answer?.resolution?.kind === "option"
+                                ? answer.resolution.labels
+                                : [];
+                            const next =
+                              question.multiSelect && checked
+                                ? labels.filter(
+                                    (label) => label !== option.label,
+                                  )
+                                : question.multiSelect
+                                  ? [...labels, option.label]
+                                  : [option.label];
+                            select(
+                              question.key,
+                              next.length
+                                ? { kind: "option", labels: next }
+                                : null,
+                            );
+                          }}
+                          style={{
+                            padding: 12,
+                            minHeight: 48,
+                            borderWidth: 1,
+                            borderRadius: 12,
+                            borderColor: checked
+                              ? colors.accent
+                              : colors.border,
+                            backgroundColor: colors.surface,
+                          }}
+                        >
+                          <Copy>
+                            {checked ? "✓ " : ""}
+                            {option.label}
+                            {option.recommended ? " · Recommended" : ""}
+                          </Copy>
+                          {option.detail ? (
+                            <Copy muted>{option.detail}</Copy>
+                          ) : null}
+                        </Pressable>
+                      );
+                    })}
+                  <Pressable
+                    accessibilityRole="radio"
+                    accessibilityLabel="Something else…"
+                    accessibilityState={{
+                      checked: answer?.resolution?.kind === "free",
+                      disabled: !editable,
+                    }}
+                    disabled={!editable}
+                    onPress={() => {
+                      const free = answer?.resolution?.kind === "free";
+                      select(
+                        question.key,
+                        free ? null : { kind: "free", text: "" },
+                      );
+                      if (!free) input.current?.focus();
+                    }}
+                    style={{ minHeight: 48, justifyContent: "center" }}
+                  >
+                    <Copy>{`${answer?.resolution?.kind === "free" ? "✓ " : ""}Something else…`}</Copy>
+                  </Pressable>
                   <TextInput
-                    accessibilityLabel={`Written answer for ${question.header}`}
-                    placeholder="Or write your answer"
+                    ref={input}
+                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${question.header}`}
+                    placeholder={
+                      answer?.resolution?.kind === "free"
+                        ? "Type your answer"
+                        : "Note (optional)"
+                    }
                     placeholderTextColor={colors.secondary}
                     multiline
                     editable={editable}
                     value={
                       answer?.resolution?.kind === "free"
                         ? answer.resolution.text
-                        : ""
+                        : (answer?.note ?? "")
                     }
-                    onChangeText={(text) =>
-                      select(question.key, { kind: "free", text })
-                    }
-                    style={[
-                      styles.input,
-                      { color: colors.text, borderColor: colors.border },
-                    ]}
-                  />
-                  <View style={[styles.row, { flexWrap: "wrap" }]}>
-                    {(
-                      [
-                        { kind: "decide", leaning: "" },
-                        { kind: "skip" },
-                        ...(question.ifUnanswered
-                          ? [{ kind: "fallback" }]
-                          : []),
-                      ] as AskResolution[]
-                    ).map((resolution) => (
-                      <Action
-                        key={resolution.kind}
-                        disabled={!editable}
-                        onPress={() => select(question.key, resolution)}
-                      >{`${answer?.resolution?.kind === resolution.kind ? "✓ " : ""}${resolution.kind === "decide" ? "You decide" : resolution.kind === "skip" ? "Skip" : "Use fallback"}`}</Action>
-                    ))}
-                  </View>
-                  {answer?.resolution?.kind === "decide" ? (
-                    <TextInput
-                      accessibilityLabel={`Leaning for ${question.header}`}
-                      placeholder="Optional leaning"
-                      placeholderTextColor={colors.secondary}
-                      editable={editable}
-                      value={answer.resolution.leaning}
-                      onChangeText={(leaning) =>
-                        select(question.key, { kind: "decide", leaning })
-                      }
-                      style={[
-                        styles.input,
-                        { color: colors.text, borderColor: colors.border },
-                      ]}
-                    />
-                  ) : null}
-                  {question.ifUnanswered ? (
-                    <Copy muted>Fallback: {question.ifUnanswered}</Copy>
-                  ) : null}
-                  <TextInput
-                    accessibilityLabel={`Note for ${question.header}`}
-                    placeholder="Optional note"
-                    placeholderTextColor={colors.secondary}
-                    multiline
-                    editable={editable}
-                    value={answer?.note ?? ""}
-                    onChangeText={(note) =>
-                      setSelections((values) => ({
-                        ...values,
-                        [question.key]: {
-                          resolution: values[question.key]?.resolution ?? null,
-                          note,
-                        },
-                      }))
-                    }
+                    onChangeText={(value) => {
+                      if (answer?.resolution?.kind === "free")
+                        select(question.key, { kind: "free", text: value });
+                      else
+                        setSelections((values) => ({
+                          ...values,
+                          [question.key]: {
+                            resolution:
+                              values[question.key]?.resolution ?? null,
+                            note: value,
+                          },
+                        }));
+                    }}
                     style={[
                       styles.input,
                       { color: colors.text, borderColor: colors.border },
@@ -271,16 +301,25 @@ export function QuestionSheet({
               );
             })}
             <Copy muted>
-              Choose an answer or explicitly skip each question before sending.
+              {`${questions.filter((question) => selections[question.key]?.resolution).length} of ${questions.length} answered`}
             </Copy>
             <Action
               tone="primary"
-              disabled={!editable || !!saved.error || text === null}
+              disabled={
+                !editable ||
+                !!saved.error ||
+                (advanceTarget === undefined && text === null)
+              }
               onPress={() => {
-                void send(selections);
+                if (advanceTarget !== undefined) setActiveIndex(advanceTarget);
+                else void send(selections);
               }}
             >
-              {pending ? "Sending answers…" : "Send answers"}
+              {pending
+                ? "Sending answers…"
+                : advanceTarget !== undefined
+                  ? "Next question"
+                  : "Send answers"}
             </Action>
           </ScrollView>
         </KeyboardAvoidingView>

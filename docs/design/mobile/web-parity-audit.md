@@ -8,10 +8,10 @@ This audit is incomplete. Existing simulator screenshots and native tests do not
 
 Reference: cmd/evener-hub/frontend/src/panes/session/composer/askDock/.
 
-- AskQuestionCard sorts recommended options first and uses one text field for either a note or a Something else answer. It does not expose You decide, Skip, or fallback pills. Native currently differs on all these points.
-- askDockStore seeds recommended selections. Native currently leaves options unselected.
-- AskDock presents one question at a time, maintains the active question, and advances through questions. Native currently stacks every question.
-- Web permits sending an untouched single question; a multi-question batch requires answers. Native currently requires every question to have an explicit resolution.
+- AskQuestionCard sorts recommended options first and uses one text field for either a note or a Something else answer. It does not expose You decide, Skip, or fallback pills. Corrected in native: recommended-first options, Something else, one shared field, and removal of those obsolete controls.
+- askDockStore seeds recommended selections. Corrected in native: seed untouched answers without replacing edits or deliberately cleared choices.
+- AskDock presents one question at a time, maintains the active question, and advances through questions. Corrected in native: a question tab strip and one visible question, with forward/wrap progression and single-choice auto-advance. Active-tab restoration across a full remount remains open.
+- Web permits sending an untouched single question; a multi-question batch requires answers. Corrected in native: permit an untouched single question and require non-null resolutions in multi-question batches, including the web empty free-answer behavior.
 - reconcileBatches freezes sending batches and reconciles newly arriving questions into an open batch. Native currently uses one flattened definition signature; late arrivals and answered-elsewhere changes need equivalent ownership semantics.
 - Web suppresses the ordinary composer while an ask is pending. Native still allows ordinary composition.
 - Corrected: native answer serialization imports the current web askCompose.ts directly. The previous mobile formatter did not encode headers containing closing brackets or newlines, allowing answer framing to break.
@@ -32,3 +32,7 @@ Compare composer model/reasoning capabilities and defaults, queue operations, se
 ## First correction verification
 
 Native TypeScript check passed. All 102 native tests across 18 files passed. The header-framing regression failed before the formatter import changed. No fresh native build or simulator verification is claimed for this patch.
+
+## Question interaction correction verification
+
+The three new behavioral tests failed before implementation. Native TypeScript and all 105 tests pass; targeted Biome passes. An iOS Metro production export succeeds, including the direct current-web formatter import. This proves bundling, not a native build or manual interaction. Manual iOS/Android verification of the corrected controls is still required. Batch reconciliation, active-tab restoration across remount, and ordinary composer suppression are still open.
