@@ -2058,3 +2058,22 @@ test("refreshes a restarted session without closing its pane", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
+
+test("shows an explicit session refresh failure", async () => {
+  const fake = connectFakeClient();
+  let failRefresh = false;
+  fake.on("thread/read", () => {
+    if (failRefresh) throw new Error("refresh rejected");
+    return readResponse("ref_a", { status: { type: "restartRequired" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  failRefresh = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  expect(await screen.findByText("refresh rejected")).toBeTruthy();
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("restartRequired");
+});

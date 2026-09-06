@@ -1742,6 +1742,7 @@ async function refreshTrackedThread(
   epoch: number,
   ref: string,
   targetedResync: boolean,
+  reportFailure = false,
 ): Promise<void> {
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
   const previous = pendingThreadHydrations.get(ref);
@@ -1784,7 +1785,8 @@ async function refreshTrackedThread(
   try {
     const model = await hydration;
     if (model && pinnedMutationRefs.has(ref)) dispatchableMutationRefs.add(ref);
-  } catch {
+  } catch (error) {
+    if (reportFailure) throw error;
     // The stale model stays published. Convergence is the owned hydration
     // lifecycle's job now (scheduleOwnedHydrationRetry, above).
   } finally {
@@ -2379,7 +2381,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async refreshThread(ref) {
     const client = await requireReadyClient();
-    await refreshTrackedThread(client, readyEpoch, ref, true);
+    await refreshTrackedThread(client, readyEpoch, ref, true, true);
   },
 
   async loadOlderTurns(ref) {

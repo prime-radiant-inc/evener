@@ -3,6 +3,7 @@ package hub
 import (
 	"errors"
 	"fmt"
+	"maps"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -66,14 +67,11 @@ func restartRequiredMutationError(err error, mutationID string) error {
 		data.RetryDisposition = appwire.RetryDispositionBlocked
 		wire.Data = data
 	case map[string]any:
-		copy := make(map[string]any, len(data)+3)
-		for key, value := range data {
-			copy[key] = value
-		}
-		copy["clientMutationId"] = mutationID
-		copy["mutationOutcome"] = string(appwire.MutationOutcomeUnknown)
-		copy["retryDisposition"] = string(appwire.RetryDispositionBlocked)
-		wire.Data = copy
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = mutationID
+		updated["mutationOutcome"] = string(appwire.MutationOutcomeUnknown)
+		updated["retryDisposition"] = string(appwire.RetryDispositionBlocked)
+		wire.Data = updated
 	}
 	return wire
 }
