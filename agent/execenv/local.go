@@ -196,18 +196,25 @@ type LocalExecutionEnvironment struct {
 	// spawned on this env finds it owning nothing and mints a fresh scratch. It
 	// is an instance-local test seam, set through
 	// ObserveScratchMoveWindowForTesting, so a test can drive that interleaving
-	// deterministically instead of racing for it; nil in production, and not
-	// copied by either clone path.
+	// deterministically instead of racing for it. Guarded by scratchMu like the
+	// two fields above; nil in production, and not copied by either clone path.
 	scratchMovedOut func()
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's
-// scratch-move window observer (scratchMovedOut). It is exported because what
-// the window costs is settled by a SESSION's close, which lives in another
-// package and cannot reach the field. Install it before the move it observes;
-// changing it while one is in flight is not safe.
-func (e *LocalExecutionEnvironment) ObserveScratchMoveWindowForTesting(fn func()) {
+// scratch-move window observer (scratchMovedOut), returning a restore func. It
+// is exported because what the window costs is settled by a SESSION's close,
+// which lives in another package and cannot reach the field.
+func (e *LocalExecutionEnvironment) ObserveScratchMoveWindowForTesting(fn func()) (restore func()) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	orig := e.scratchMovedOut
 	e.scratchMovedOut = fn
+	return func() {
+		e.scratchMu.Lock()
+		defer e.scratchMu.Unlock()
+		e.scratchMovedOut = orig
+	}
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
@@ -824,19 +831,27 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	// Between the two, `from` owns nothing, and a command a child sharing it
 	// spawns there mints a scratch this move never sees. That interval needs no
 	// bookkeeping of its own: its outcome is the one a spawn landing just AFTER
-	// the move produces, which is how an emptied source already behaves, and
-	// what accounts for the scratch is the ENVIRONMENT, not the move. A session
-	// keeps every environment it swapped away from within its close's reach
-	// (worktreeRestoreEnv or abandonedEnvs, both recorded under the install's
-	// own lock hold and fenced against close), and that is what releases the
-	// lease. A "moving" flag making the mint wait would change no outcome, and
-	// it would put a blocking wait in commandEnvironment's overlay, which every
-	// spawn on every environment goes through.
+	// the move produces, which is how an emptied source already behaves. The
+	// one thing it does not reproduce is timing, not outcome — the source's
+	// invalidateSandboxFS below runs after the interval, so a layer the mint
+	// had just built is retired where the later ordering would have kept it,
+	// costing one lazy rebuild and nothing else.
+	//
+	// What accounts for the scratch is the ENVIRONMENT, not the move. A session
+	// keeps every environment it swapped away from within its close's reach:
+	// worktreeRestoreEnv or abandonedEnvs, and swapEnvAndRefresh writes the
+	// install and BOTH records under one s.mu hold, which close reads under the
+	// same lock — so a close can never observe an installed target without the
+	// source recorded. That record is what releases the lease. A "moving" flag
+	// making the mint wait would change no outcome, and it would put a blocking
+	// wait in commandEnvironment's overlay, which every spawn on every
+	// environment goes through.
 	from.scratchMu.Lock()
 	owned, unsandboxed := from.ownedSessionTmp, from.unsandboxedScratch
 	from.ownedSessionTmp, from.unsandboxedScratch = nil, nil
+	window := from.scratchMovedOut
 	from.scratchMu.Unlock()
-	if window := from.scratchMovedOut; window != nil {
+	if window != nil {
 		window()
 	}
 	e.scratchMu.Lock()
