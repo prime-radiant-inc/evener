@@ -9,7 +9,6 @@ import {
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -28,6 +27,7 @@ import {
 } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ProviderEditor } from "./ProviderEditor";
 import { ProviderInstances } from "./providerInstances";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -68,6 +68,9 @@ function Providers({
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const editorVersion = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const [configuration, setConfiguration] = useState<"create" | "edit" | null>(
+    null,
+  );
   const [editingKey, setEditingKey] = useState(false);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -81,6 +84,7 @@ function Providers({
   }, [model]);
   useEffect(() => {
     if (!instance) {
+      setConfiguration((value) => (value === "edit" ? null : value));
       setSelected(null);
       setEditingKey(false);
       setKey("");
@@ -89,6 +93,7 @@ function Providers({
   function close() {
     editorVersion.current += 1;
     setSelected(null);
+    setConfiguration(null);
     setEditingKey(false);
     setKey("");
     setActionError(null);
@@ -140,6 +145,15 @@ function Providers({
         ListHeaderComponent={
           <View style={{ gap: 8, paddingBottom: 12 }}>
             <Copy muted>{hubName}</Copy>
+            <Action
+              disabled={!state.data || state.busy || state.data.writesRefused}
+              onPress={() => {
+                close();
+                setConfiguration("create");
+              }}
+            >
+              Add provider instance
+            </Action>
             <ErrorMessage message={state.error} />
             {state.data?.diagnostics?.map((message) => (
               <Copy key={message}>{message}</Copy>
@@ -194,7 +208,7 @@ function Providers({
         )}
       />
       <Modal
-        visible={!!instance}
+        visible={!!instance || configuration === "create"}
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={close}
@@ -214,146 +228,171 @@ function Providers({
             </View>
             <Action onPress={close}>Done</Action>
           </View>
-          <KeyboardAvoidingView
-            style={styles.fill}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-          >
+          <View style={styles.fill}>
             <ScrollView
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+              keyboardDismissMode="interactive"
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{ padding: 20, gap: 12 }}
             >
-              {instance && (
-                <>
-                  <Text
-                    accessibilityRole="header"
-                    style={[styles.title, { color: colors.text }]}
-                  >
-                    {instance.name}
-                  </Text>
-                  <Copy muted>
-                    {instance.providerId} · {styleInfoText(instance)}
-                  </Copy>
-                  {instance.isDefault && <Copy>Default provider instance</Copy>}
-                  {instance.implicit && <Copy muted>From environment</Copy>}
-                  <Copy>{activeSourceLabel(instance)}</Copy>
-                  {credentialLayers(instance)
-                    .filter((layer) => !layer.effective)
-                    .map((layer) => (
-                      <Copy key={layer.source} muted>
-                        {layer.label} · Shadowed
-                      </Copy>
+              {configuration ? (
+                <ProviderEditor
+                  key={configuration === "create" ? "create" : instance?.name}
+                  instance={configuration === "edit" ? instance : undefined}
+                  providers={state.data?.availableProviders ?? []}
+                  model={model}
+                  disabled={state.busy || !!state.data?.writesRefused}
+                  onSaved={(name) => {
+                    setConfiguration(null);
+                    setSelected(name);
+                  }}
+                  onCancel={() => {
+                    if (configuration === "create") close();
+                    else setConfiguration(null);
+                  }}
+                />
+              ) : (
+                instance && (
+                  <>
+                    <Text
+                      accessibilityRole="header"
+                      style={[styles.title, { color: colors.text }]}
+                    >
+                      {instance.name}
+                    </Text>
+                    <Copy muted>
+                      {instance.providerId} · {styleInfoText(instance)}
+                    </Copy>
+                    {instance.isDefault && (
+                      <Copy>Default provider instance</Copy>
+                    )}
+                    {instance.implicit && <Copy muted>From environment</Copy>}
+                    <Copy>{activeSourceLabel(instance)}</Copy>
+                    {credentialLayers(instance)
+                      .filter((layer) => !layer.effective)
+                      .map((layer) => (
+                        <Copy key={layer.source} muted>
+                          {layer.label} · Shadowed
+                        </Copy>
+                      ))}
+                    {instance.warnings?.map((message) => (
+                      <Copy key={message}>{message}</Copy>
                     ))}
-                  {instance.warnings?.map((message) => (
-                    <Copy key={message}>{message}</Copy>
-                  ))}
-                  <ErrorMessage message={actionError} />
-                  {state.busy && (
-                    <ActivityIndicator accessibilityLabel="Updating provider" />
-                  )}
-                  {editingKey ? (
-                    <>
-                      <Copy>API key</Copy>
-                      <TextInput
-                        accessibilityLabel="API key"
-                        secureTextEntry
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        value={key}
-                        onChangeText={setKey}
-                        editable={!state.busy}
-                        style={[
-                          styles.input,
-                          { color: colors.text, borderColor: colors.border },
-                        ]}
-                      />
-                      <View style={styles.row}>
-                        <Action
-                          disabled={state.busy || !key.trim()}
-                          onPress={() => {
-                            const value = key.trim();
-                            setKey("");
-                            void act(
-                              () => model.setApiKey(instance.name, value),
-                              true,
-                            );
-                          }}
-                        >
-                          Save key
-                        </Action>
-                        <Action
-                          disabled={state.busy}
-                          onPress={() => {
-                            setEditingKey(false);
-                            setKey("");
-                          }}
-                        >
-                          Cancel
-                        </Action>
-                      </View>
-                    </>
-                  ) : (
-                    <>
-                      {instance.authModes?.includes("apiKey") && (
-                        <Action
-                          disabled={state.busy}
-                          onPress={() => setEditingKey(true)}
-                        >
-                          {instance.hasStoredFile ? "Replace key" : "Set key"}
-                        </Action>
-                      )}
-                      {!instance.isDefault && (
+                    <ErrorMessage message={actionError} />
+                    {state.busy && (
+                      <ActivityIndicator accessibilityLabel="Updating provider" />
+                    )}
+                    {editingKey ? (
+                      <>
+                        <Copy>API key</Copy>
+                        <TextInput
+                          accessibilityLabel="API key"
+                          secureTextEntry
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          value={key}
+                          onChangeText={setKey}
+                          editable={!state.busy}
+                          style={[
+                            styles.input,
+                            { color: colors.text, borderColor: colors.border },
+                          ]}
+                        />
+                        <View style={styles.row}>
+                          <Action
+                            disabled={state.busy || !key.trim()}
+                            onPress={() => {
+                              const value = key.trim();
+                              setKey("");
+                              void act(
+                                () => model.setApiKey(instance.name, value),
+                                true,
+                              );
+                            }}
+                          >
+                            Save key
+                          </Action>
+                          <Action
+                            disabled={state.busy}
+                            onPress={() => {
+                              setEditingKey(false);
+                              setKey("");
+                            }}
+                          >
+                            Cancel
+                          </Action>
+                        </View>
+                      </>
+                    ) : (
+                      <>
                         <Action
                           disabled={state.busy || state.data?.writesRefused}
-                          onPress={() => {
-                            void act(() => model.setDefault(instance.name));
-                          }}
+                          onPress={() => setConfiguration("edit")}
                         >
-                          Make default
+                          Edit instance
                         </Action>
-                      )}
-                      {instance.hasStoredFile &&
-                        instance.activeSource !== "store" && (
+                        {instance.authModes?.includes("apiKey") && (
+                          <Action
+                            disabled={state.busy}
+                            onPress={() => setEditingKey(true)}
+                          >
+                            {instance.hasStoredFile ? "Replace key" : "Set key"}
+                          </Action>
+                        )}
+                        {!instance.isDefault && (
+                          <Action
+                            disabled={state.busy || state.data?.writesRefused}
+                            onPress={() => {
+                              void act(() => model.setDefault(instance.name));
+                            }}
+                          >
+                            Make default
+                          </Action>
+                        )}
+                        {instance.hasStoredFile &&
+                          instance.activeSource !== "store" && (
+                            <Action
+                              disabled={state.busy}
+                              onPress={() =>
+                                confirm("Clear stored key?", () =>
+                                  model.clearStoredKey(instance.name),
+                                )
+                              }
+                            >
+                              Clear stored key
+                            </Action>
+                          )}
+                        {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
                             disabled={state.busy}
                             onPress={() =>
-                              confirm("Clear stored key?", () =>
-                                model.clearStoredKey(instance.name),
+                              confirm("Clear active credentials?", () =>
+                                model.logout(instance.name),
                               )
                             }
                           >
-                            Clear stored key
+                            Clear credentials
                           </Action>
                         )}
-                      {["store", "oauth"].includes(instance.activeSource) && (
-                        <Action
-                          disabled={state.busy}
-                          onPress={() =>
-                            confirm("Clear active credentials?", () =>
-                              model.logout(instance.name),
-                            )
-                          }
-                        >
-                          Clear credentials
-                        </Action>
-                      )}
-                      {!instance.implicit && (
-                        <Action
-                          disabled={state.busy || state.data?.writesRefused}
-                          onPress={() =>
-                            confirm("Remove provider instance?", () =>
-                              model.remove(instance.name),
-                            )
-                          }
-                        >
-                          Remove instance
-                        </Action>
-                      )}
-                    </>
-                  )}
-                </>
+                        {!instance.implicit && (
+                          <Action
+                            disabled={state.busy || state.data?.writesRefused}
+                            onPress={() =>
+                              confirm("Remove provider instance?", () =>
+                                model.remove(instance.name),
+                              )
+                            }
+                          >
+                            Remove instance
+                          </Action>
+                        )}
+                      </>
+                    )}
+                  </>
+                )
               )}
             </ScrollView>
-          </KeyboardAvoidingView>
+          </View>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>

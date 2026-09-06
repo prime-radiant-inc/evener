@@ -53,3 +53,44 @@ styling and navigation placement need refinement before beauty acceptance.
 Automated controller coverage exercises cross-hub disposal, auth invalidation,
 read failure retention, provider write refusal, mutation exclusion, no replay and
 read/mutation races. These tests do not establish rendered UI behavior.
+
+
+## Instance creation and endpoint editing
+
+The native create form now uses the server provider catalog with a collapsible
+searchable chooser. It collects name, optional endpoint, provider-specific
+variables, optional API-key environment variable and credential header. Header
+validation matches the web's variable-reference requirement. Editing changes only
+the endpoint; clearing an existing endpoint sends `clearBaseUrl`, with an explicit
+reset explanation. Four automated tests cover these request/validation decisions.
+
+Manual execution on the same isolated second hub:
+
+- iOS: searched for Ollama, selected it, created `native-provider-forms` with
+  `http://127.0.0.1:11434/v1`, and opened its returned detail. Return dismissed the
+  keyboard before Save. This is successful native creation, not keyboard-open
+  save acceptance or a test of the provider's inference API.
+- Android: opened that instance, changed its endpoint to
+  `http://127.0.0.1:11435/v1` and saved. The existing iOS detail updated live.
+- Android: emptied the endpoint, observed the reset explanation and saved with
+  the software keyboard open. iOS updated to `http://localhost:11434/v1`, the
+  server-returned default endpoint.
+- Android: removed the fixture using the confirmation naming instance and hub.
+  The iOS detail closed and the provider list returned to its original two rows.
+  The fixture was removed; the original default instance was untouched.
+
+![Android endpoint reset with keyboard](assets/providers/android-endpoint-reset.png)
+
+Both final Release builds succeeded; the native suite has 239 passing tests and
+TypeScript/touched-file Biome pass. Android creation and iOS editing, invalid form
+native checks, large text and screen readers still need acceptance. Credential
+testing and sign-in remain absent.
+
+### Open keyboard finding
+
+The first iOS create-form run could not reach Save above the keyboard with the
+existing keyboard-avoiding wrapper. The sheet now uses ScrollView native keyboard
+insets and interactive dismissal. Subsequent automated swipes did not conclusively
+establish bottom-action reachability with the keyboard open; a targeted gesture
+and geometry check is still required. Do not count successful saving after Return
+as proof this finding is fixed. Keep this under MOB-012/MOB-010 until verified.
