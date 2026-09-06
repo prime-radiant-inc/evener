@@ -364,7 +364,8 @@ valid selected model and revalidates reasoning against the refreshed catalog.
 Repository trust now has iOS approval and Android stale-file rejection/review/
 approval evidence, confirmed independently. 316 native tests and TypeScript pass.
 Per-launch configuration and complete project-layer/trust failure/accessibility
-qualification remain open. Add the repository-trust SDK recipe under MOB-018.
+qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
+independently under MOB-018.
 
 Acceptance: real native creation with valid/invalid paths and configuration,
 trust decisions, creation failure/uncertainty, keyboard and accessibility
@@ -422,10 +423,11 @@ isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
 The generated catalog has 88 methods and 35 notifications at this snapshot; the
-two recipes cover seven methods and one notification. The opt-in project-layer
+three recipes cover eight methods and one notification. The opt-in project-layer
 recipe verified mutation, notification, effective-value readback and restoration
 from a separate tarball consumer against the isolated hub. The packaged coverage
-report lists gaps. This
+report lists gaps. Repository trust also has an independently installed recipe
+for stale-hash rejection and fresh revision confirmation. This
 is not completion: add fixture-backed creation, streaming/rejoin, mutation
 receipt, approval, queue, navigation/management, provider, plugin, trust and
 upgrade recipes, with method-specific errors, presence semantics and recovery.
