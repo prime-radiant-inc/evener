@@ -18,6 +18,7 @@ import {
   ProjectsScreen,
   SessionLocationScreen,
 } from "./src/ProjectsScreen";
+import { ProvidersScreen } from "./src/ProvidersScreen";
 import {
   ConversationScreen,
   HubsScreen,
@@ -95,6 +96,7 @@ function Navigation() {
           />
           <Stack.Screen name="Sessions" component={SessionsScreen} />
           <Stack.Screen name="Projects" component={ProjectsScreen} />
+          <Stack.Screen name="Providers" component={ProvidersScreen} />
           <Stack.Screen
             name="SessionLocation"
             component={SessionLocationScreen}
