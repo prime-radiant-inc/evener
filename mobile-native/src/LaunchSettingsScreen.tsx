@@ -32,7 +32,12 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { useConnection } from "./ConnectionProvider";
 import { HubDirectoryField } from "./HubDirectoryField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
-import { parseLaunchScalar, scalarKinds } from "./launchScalar";
+import {
+  assertLaunchFieldCurrent,
+  launchFieldConflictMessage,
+  parseLaunchScalar,
+  scalarKinds,
+} from "./launchScalar";
 import { LaunchSettings } from "./launchSettings";
 import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -262,6 +267,9 @@ function ScalarEditor({
 }) {
   const colors = useColors();
   const [raw, setRaw] = useState(value);
+  const originalValue = useRef(value);
+  const currentValue = useRef(value);
+  currentValue.current = value;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
@@ -300,7 +308,14 @@ function ScalarEditor({
           return;
         }
       }
-      if (active()) apply(parsed);
+      if (active()) {
+        assertLaunchFieldCurrent(
+          originalValue.current,
+          currentValue.current,
+          parsed,
+        );
+        apply(parsed);
+      }
     } catch (err) {
       if (active())
         setError(
@@ -309,6 +324,7 @@ function ScalarEditor({
               "Enter a whole number.",
               "Choose an available value.",
               "Choose an on or off value.",
+              launchFieldConflictMessage,
             ].includes(err.message)
             ? err.message
             : friendlyErrorMessage(err),

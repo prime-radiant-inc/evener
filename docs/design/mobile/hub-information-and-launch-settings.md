@@ -282,3 +282,37 @@ Remaining: large-catalog and accessibility native acceptance, native catalog
 failure/retry and offline selection checks, richer model metadata fixtures,
 creation/per-launch integration and collection editors. MOB-017 remains open;
 the functional checks do not establish Android performance reliability.
+
+## Conflicts while a field sheet is open
+
+An open scalar sheet owns raw text separately from the layer draft. A clean
+layer can therefore refresh from another client's notification while the sheet
+still contains its original value. Applying that value without checking would
+silently replace the newer field. The sheet now captures its opening value and
+checks the latest explicit value immediately before applying Done, including
+after asynchronous path validation. A conflict keeps the sheet and text open
+with a review/reopen message. Unchanged fields and changes already equal to the
+desired value remain applicable. The whole-layer save preflight still applies;
+this is not server-side compare-and-set.
+
+Three new tests cover stale fields (including override removal and false),
+unchanged baselines and convergent edits. Disabling the guard makes the stale
+field test fail. All 296 native tests, TypeScript, touched-file Biome, diff checks
+and both Release builds pass.
+
+Manual native checks on SecondHub:
+
+1. Opened unset Max rounds on iOS. Android saved 7. iOS received effective 7
+   while its text stayed empty; Done kept the sheet open with the conflict
+   message instead of applying an override removal.
+2. Restored inheritance on Android, then installed its updated build.
+3. Opened unset Max rounds on Android. iOS saved 8. Android received effective 8;
+   Done kept the sheet and empty text with the conflict message.
+4. Cancelled and reopened on Android, intentionally removed the override, and
+   saved. The final row showed Inherited · -1 and the saved notice, restoring
+   the fixture. Reopening therefore provides a usable recovery path.
+
+Screenshots: [iOS conflict](assets/launch-settings/ios-field-conflict.jpg) and
+[Android conflict](assets/launch-settings/android-field-conflict.png).
+Native path-validation races, multiple unrelated-field edits, large text and
+screen-reader announcements still need acceptance.

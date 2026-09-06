@@ -290,13 +290,15 @@ empty/zero values; all 272 native tests and both Release builds pass. Runtime
 and storage are manually inspected on both platforms against SecondHub; iOS
 agents and both-platform empty Codex/MCP states are verified. See
 [hub-information evidence](hub-information-evidence.md). The launch-layer controller now has ten deterministic tests and a real isolated-hub
-save/readback/restoration smoke pass. Native scalar editors are now wired;
-all 285 native tests and TypeScript pass. iOS numeric save, invalid-number
-rejection and override removal have native evidence. Android editor acceptance,
-collections remain open. Launch model fields now browse the real hub catalog,
+save/readback/restoration smoke pass. Native scalar editors are wired, with
+296 passing native tests and TypeScript. Numeric save/removal has evidence on
+both platforms; iOS also verifies invalid-number rejection. Collections remain
+open. Launch model fields now browse the real hub catalog,
 reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
-Native iOS search/select/save and Android read/removal have evidence. Reconnect drafts now have controller
-coverage and both-platform background/return evidence. Android save/removal and
+Native iOS search/select/save and Android read/removal have evidence. Open scalar
+sheets reject newer field values, with two-device conflict/reopen/restoration
+checks on both platforms. Reconnect drafts have controller coverage and
+both-platform background/return evidence. Android save/removal and
 automatic iOS readback pass on retry; MOB-017 remains unresolved. See
 [launch progress](hub-information-and-launch-settings.md#native-scalar-editors).
 Nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
