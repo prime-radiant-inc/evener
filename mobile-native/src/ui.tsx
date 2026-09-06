@@ -131,10 +131,12 @@ export function Copy({
   children,
   muted = false,
   label,
+  numberOfLines,
 }: {
   children: ReactNode;
   muted?: boolean;
   label?: string;
+  numberOfLines?: number;
 }) {
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -144,6 +146,7 @@ export function Copy({
       selectable
       allowFontScaling={Platform.OS !== "ios"}
       accessibilityLabel={label}
+      numberOfLines={numberOfLines}
       style={{
         color: muted ? colors.secondary : colors.text,
         fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,

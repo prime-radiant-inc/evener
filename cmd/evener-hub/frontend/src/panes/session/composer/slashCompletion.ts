@@ -10,7 +10,7 @@
 // commandCatalog.ts), the same catalog the modal command palette reads.
 
 import type { CommandDescriptor, EvenerSkillInfo } from "../../../protocol/types.gen";
-import { type ScopedCommand, slashCommandInvocation } from "../../../shell/palette/commands";
+import { slashCommandInvocation } from "../../../shell/palette/catalogCommands";
 
 export interface SlashToken {
   // Index of the "/" itself, and the caret position the match was computed
@@ -89,7 +89,7 @@ export interface SlashMenuItem {
 // a momentarily-unavailable command still gets an honest "not available
 // right now" instead of silently being sent as a chat message.
 export function mergeSlashCommands(
-  builtins: ScopedCommand[],
+  builtins: { id: string; hint: string; unavailableReason?: string }[],
   catalog: CommandDescriptor[],
   skills: EvenerSkillInfo[] = [],
 ): SlashMenuItem[] {

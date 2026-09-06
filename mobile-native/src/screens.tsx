@@ -27,6 +27,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskBatch } from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/reconcileBatches";
+import {
+  parseSlashToken,
+  spliceSlashCommand,
+} from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
@@ -35,6 +39,7 @@ import { createConversationStore } from "../../mobile/src/state/conversation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
+import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
@@ -523,6 +528,13 @@ export function ConversationScreen({
   const snapshot = store();
   const timeline = useRef<FlatList>(null);
   const composerInput = useRef<TextInput>(null);
+  const [composerSelection, setComposerSelection] = useState({
+    start: 0,
+    end: 0,
+  });
+  const [completionClosedAt, setCompletionClosedAt] = useState<string | null>(
+    null,
+  );
   const focusAfterModal = useRef(false);
   useEffect(() => {
     const subscription = AppState.addEventListener("focus", () => {
@@ -805,6 +817,11 @@ export function ConversationScreen({
     (["send", "steer", "queue", "goal"] as const).some(
       (action) => conversation.capabilities[action],
     );
+  const slashToken =
+    composerSelection.start === composerSelection.end &&
+    draft.record.draft !== completionClosedAt
+      ? parseSlashToken(draft.record.draft, composerSelection.start)
+      : null;
   const goalCommand = goalObjective(
     draft.record.draft,
     draft.record.images?.length,
@@ -1240,6 +1257,39 @@ export function ConversationScreen({
               {`Goal · ${conversation.goal.status}`}
             </Action>
           ) : null}
+          {canCompose &&
+          questions.length === 0 &&
+          connected &&
+          client &&
+          slashToken ? (
+            <CommandCompletion
+              client={client}
+              sessionRef={route.params.ref}
+              query={slashToken.query}
+              close={() => setCompletionClosedAt(draft.record.draft)}
+              choose={(item) => {
+                if (document.getSnapshot().record.draft !== draft.record.draft)
+                  return;
+                const inserted = spliceSlashCommand(
+                  draft.record.draft,
+                  slashToken,
+                  item.invocation,
+                );
+                document.edit(inserted.text);
+                setCompletionClosedAt(inserted.text);
+                setComposerSelection({
+                  start: inserted.caret,
+                  end: inserted.caret,
+                });
+                requestAnimationFrame(() => {
+                  composerInput.current?.setNativeProps({
+                    selection: { start: inserted.caret, end: inserted.caret },
+                  });
+                  composerInput.current?.focus();
+                });
+              }}
+            />
+          ) : null}
           {canCompose && questions.length === 0 ? (
             <ImageAttachments document={document} selection={imageSelection} />
           ) : null}
@@ -1251,6 +1301,9 @@ export function ConversationScreen({
               multiline
               value={draft.record.draft}
               onChangeText={(text) => document.edit(text)}
+              onSelectionChange={(event) =>
+                setComposerSelection(event.nativeEvent.selection)
+              }
               editable={draft.loaded}
               placeholder="Message"
               placeholderTextColor={colors.secondary}
