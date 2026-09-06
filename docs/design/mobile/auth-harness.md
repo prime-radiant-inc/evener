@@ -53,4 +53,6 @@ The [Android device round trip](providers-evidence.md#android-device-authorizati
 is also verified manually, including Chrome first-run interruption. [Browser redirect fallback](providers-evidence.md#browser-redirect-fallback-on-both-platforms)
 now has both-platform native copy/paste and completion evidence. Expiry and poll-failure controls now pass the wire smoke; iOS has
 [manual recovery evidence](providers-evidence.md#ios-expiry-and-explicit-poll-recovery).
-Android recovery and other failure scenarios remain.
+[Android recovery](providers-evidence.md#android-expiry-retry-and-canceled-flow-hub-switch)
+is also verified, including cancellation followed by a hub switch. Other failure
+and interrupted-completion scenarios remain.
