@@ -327,6 +327,7 @@ function conversationFixture(): ConversationFixture {
       queue: { revision: 0, depth: 0, preview: [] },
       usage: SAMPLE_USAGE,
       askPending: false,
+      pendingApprovals: [],
     },
     draft: "",
   };
@@ -374,6 +375,7 @@ function activityFixture(): ActivityFixture {
       },
       usage: SAMPLE_USAGE,
       askPending: false,
+      pendingApprovals: [],
     },
     activityView: {
       tasks: [
@@ -531,6 +533,7 @@ function askFixture(): AskFixture {
       queue: { revision: 0, depth: 0, preview: [] },
       usage: SAMPLE_USAGE,
       askPending: true,
+      pendingApprovals: [],
     },
     draft: "",
   };
@@ -604,6 +607,7 @@ function attachmentsFixture(): AttachmentsFixture {
       queue: { revision: 0, depth: 0, preview: [] },
       usage: SAMPLE_USAGE,
       askPending: false,
+      pendingApprovals: [],
     },
     attachmentItems: [
       {
@@ -765,5 +769,6 @@ export function restrictedCapabilitiesConversation(): MobileConversation {
     queue: { revision: 0, depth: 0, preview: [] },
     usage: SAMPLE_USAGE,
     askPending: false,
+    pendingApprovals: [],
   };
 }

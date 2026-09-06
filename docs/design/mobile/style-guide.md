@@ -108,3 +108,7 @@ Related sessions use a separate disclosure action so opening a conversation neve
 ## Organization actions
 
 Use a quiet More affordance beside project/session rows with a full platform touch target and an accessible name containing the item title. Show the selected title and hub in the action surface. Archive and restore belong together through the Archived view. Keep organization separate from runtime stop and deletion. A successful mutation must be reflected by a server-confirmed read; retain visible failure information when that cannot be established.
+
+## Approval decisions
+
+Keep pending decisions discoverable beside the composer through a compact count. Open a dedicated platform sheet so the command, blocked path and partial execution warning can be read before deciding. Use explicit Allow once and Deny labels. Dismissal preserves the request. Update an open sheet when another client resolves it; an empty sheet should say no approvals remain. Let enlarged text wrap and scroll to actions rather than shrinking the decision context.

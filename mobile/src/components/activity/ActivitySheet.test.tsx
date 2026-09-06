@@ -122,6 +122,7 @@ class FakeConversationService implements ConversationService {
     queue: { revision: 0, depth: 0, preview: [] },
     usage: {},
     askPending: false,
+    pendingApprovals: [],
   };
 
   async open(ref: string) {

@@ -28,6 +28,8 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import { ApprovalSheet } from "./ApprovalSheet";
+import { ApprovalControls } from "./approvalControls";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
@@ -475,6 +477,7 @@ export function ConversationScreen({
   const [refreshing, setRefreshing] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [approvalsOpen, setApprovalsOpen] = useState(false);
   const [composerSetting, setComposerSetting] =
     useState<ComposerSetting | null>(null);
   useFocusEffect(
@@ -482,6 +485,7 @@ export function ConversationScreen({
       () => () => {
         setQueueOpen(false);
         setSessionOpen(false);
+        setApprovalsOpen(false);
         setComposerSetting(null);
       },
       [],
@@ -573,6 +577,40 @@ export function ConversationScreen({
     ],
   );
   useEffect(() => () => controls?.dispose(), [controls]);
+  const approvalControls = useMemo(
+    () =>
+      client && service && connected && focused
+        ? new ApprovalControls(
+            client,
+            route.params.ref,
+            () => store.getState().conversation?.pendingApprovals ?? [],
+            () =>
+              connectionReady.current &&
+              navigation.isFocused() &&
+              store.getState().status === "open" &&
+              store.getState().conversationGeneration === bindingGeneration &&
+              store.getState().conversation?.instanceId === bindingInstance,
+            async () => {
+              await store.getState().rehydrate(service, activitySink);
+              if (store.getState().error) throw new Error("Refresh failed");
+            },
+          )
+        : null,
+    [
+      client,
+      service,
+      connected,
+      focused,
+      route.params.ref,
+      store,
+      navigation,
+      bindingGeneration,
+      bindingInstance,
+      activitySink,
+    ],
+  );
+  useEffect(() => () => approvalControls?.dispose(), [approvalControls]);
+
   const hasConversation = snapshot.conversation !== null;
   useEffect(() => {
     navigation.setOptions({
@@ -644,6 +682,15 @@ export function ConversationScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {approvalsOpen && conversation && approvalControls ? (
+        <ApprovalSheet
+          approvals={conversation.pendingApprovals}
+          controls={approvalControls}
+          hubName={activeProfile?.name ?? "Hub"}
+          close={() => setApprovalsOpen(false)}
+          refresh={refresh}
+        />
+      ) : null}
       {composerSetting && conversation && controls ? (
         <ComposerSettingsSheet
           setting={composerSetting}
@@ -787,6 +834,16 @@ export function ConversationScreen({
             },
           ]}
         >
+          {conversation?.pendingApprovals.length ? (
+            <Action
+              disabled={!ready || !approvalControls}
+              expanded={approvalsOpen}
+              onPress={() => {
+                Keyboard.dismiss();
+                setApprovalsOpen(true);
+              }}
+            >{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
+          ) : null}
           {conversation?.queue.depth ? (
             <Action
               tone="quiet"

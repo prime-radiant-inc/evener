@@ -193,6 +193,7 @@ function buildConversation(
     reasoningEffortLevels: ["low", "medium", "high"],
     supportsReasoning: true,
     askPending: false,
+    pendingApprovals: [],
   };
 }
 
