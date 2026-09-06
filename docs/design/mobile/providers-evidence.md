@@ -139,3 +139,23 @@ Sign-in/device auth, error-state native E2E, large text and screen readers remai
 
 ![iOS credential test](assets/providers/ios-credential-test.png)
 ![Android credential test](assets/providers/android-credential-test.png)
+
+
+## Sign-in editor integration (manual acceptance pending)
+
+Native provider details now expose sign-in for server-advertised OAuth instances.
+The editor supports device code copy, browser opening, same-flow status retry,
+expiry/restart, browser redirect paste/completion and authorized status. URLs are
+opened only as HTTP(S); no redirect submission or authorization URL is persisted.
+
+The editor is owned above the connected provider list. AppState pauses polling,
+and the route rebinds the flow only to the same hub's replacement connection.
+Changing hubs or closing the editor disposes it. Closing remounts the list so it
+refreshes credential state, including after uncertain completion.
+
+Validation: iOS Release build/run and Android Release build succeeded; 253 native
+tests, TypeScript and touched-file Biome pass. These results do not establish
+rendered sign-in, browser return, copy, successful device authorization or redirect
+completion. Next acceptance uses a controlled local auth fixture for both flows,
+background/reconnect, expiry/failure and cross-hub isolation. Real-provider account
+acceptance remains separate. MOB-013 stays in progress.

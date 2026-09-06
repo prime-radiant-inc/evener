@@ -28,7 +28,9 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ProviderEditor } from "./ProviderEditor";
+import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderInstances } from "./providerInstances";
+import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -36,32 +38,70 @@ export function ProvidersScreen({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
   const { activeProfile, client, state, retry } = useConnection();
+  const [signIn, setSignIn] = useState<{
+    hubId: string;
+    name: string;
+    flow: ProviderSignIn;
+  } | null>(null);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => () => signIn?.flow.dispose(), [signIn]);
+  useEffect(() => {
+    if (!signIn) return;
+    if (activeProfile?.id !== signIn.hubId) {
+      signIn.flow.dispose();
+      setSignIn(null);
+      return;
+    }
+    signIn.flow.setConnection(state === "ready" ? client : null);
+  }, [signIn, activeProfile?.id, client, state]);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
     );
-  if (!client || state !== "ready")
-    return (
-      <View style={{ padding: 20 }}>
-        <Copy>Connect to {activeProfile.name} to manage providers.</Copy>
-        <Action onPress={retry}>Reconnect</Action>
-      </View>
-    );
   return (
-    <Providers
-      key={activeProfile.id}
-      client={client}
-      hubName={activeProfile.name}
-    />
+    <>
+      {client && state === "ready" ? (
+        <Providers
+          key={`${activeProfile.id}:${revision}`}
+          client={client}
+          hubName={activeProfile.name}
+          onSignIn={(name) => {
+            const flow = new ProviderSignIn(client, name);
+            setSignIn({ hubId: activeProfile.id, name, flow });
+            void flow.start();
+          }}
+        />
+      ) : (
+        <View style={{ padding: 20 }}>
+          <Copy>Connect to {activeProfile.name} to manage providers.</Copy>
+          <Action onPress={retry}>Reconnect</Action>
+        </View>
+      )}
+      {signIn && signIn.hubId === activeProfile.id && (
+        <ProviderSignInSheet
+          flow={signIn.flow}
+          name={signIn.name}
+          hubName={activeProfile.name}
+          connected={state === "ready"}
+          onClose={() => {
+            signIn.flow.dispose();
+            setSignIn(null);
+            setRevision((value) => value + 1);
+          }}
+        />
+      )}
+    </>
   );
 }
 
 function Providers({
   client,
   hubName,
+  onSignIn,
 }: {
   client: ConversationClientLike;
   hubName: string;
+  onSignIn(name: string): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => new ProviderInstances(client), [client]);
@@ -350,6 +390,20 @@ function Providers({
                         >
                           Edit instance
                         </Action>
+                        {instance.authModes?.includes("oauth") && (
+                          <Action
+                            disabled={state.busy}
+                            onPress={() => {
+                              const name = instance.name;
+                              close();
+                              onSignIn(name);
+                            }}
+                          >
+                            {instance.hasStoredOAuth
+                              ? "Refresh sign-in"
+                              : "Sign in"}
+                          </Action>
+                        )}
                         {instance.authModes?.includes("apiKey") && (
                           <Action
                             disabled={state.busy}
