@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -474,4 +475,139 @@ func TestDelegateIsolation_CloseDuringTheLaneCreateStillFencesTheRollback(t *tes
 	if cleanupDuringRollback.Load() {
 		t.Error("the close cleaned the environment while the rollback still held its git, even though the close began under the lane create's own admission rather than the rollback's")
 	}
+}
+
+// TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback pins the two
+// labels the outer admission wears through the fence's own diagnostics: a
+// reader of a shutdown warning sees the spawn's name while its lane create is
+// still in flight, and the rollback's name once a failed spawn's cleanup has
+// begun undoing that lane — never the other way around.
+func TestDelegateIsolation_FenceWarningNamesTheSpawnOrTheRollback(t *testing.T) {
+	// A close that gives up on a healthy spawn's lane create must not tell its
+	// reader a rollback is running: nothing has been rolled back, and naming
+	// this a rollback would send them looking for cleanup that never started.
+	t.Run("spawn", func(t *testing.T) {
+		r := newWorktreeRepo(t)
+		root := r.s
+		warnings := collectWarningsUntilClosed(root)
+		shortenCloseCascadeBudget(t, 200*time.Millisecond)
+
+		createHeld := make(chan struct{})
+		closeBegun := make(chan struct{})
+		closeDone := make(chan struct{})
+		var held atomic.Bool
+
+		// The close cannot reach the fence before the create is holding: it
+		// blocks here until createHeld closes.
+		root.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+			close(closeBegun)
+			<-createHeld
+		}
+		root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+			inner := gitRunner(ctx, env)
+			return func(args ...string) (string, error) {
+				if len(args) >= 2 && args[0] == "worktree" && args[1] == "add" && held.CompareAndSwap(false, true) {
+					go func() {
+						defer close(closeDone)
+						root.Close()
+					}()
+					close(createHeld)
+					time.Sleep(2 * LaneClosePassBudget)
+				}
+				return inner(args...)
+			}
+		}
+
+		// The outcome past this point is a race against the close's own
+		// teardown and is not what this test pins; only the label the fence
+		// already gave up and warned about matters.
+		root.createDelegate(context.Background(), delegateArgs{
+			Task:                "healthy spawn under the close fence",
+			Isolation:           "worktree",
+			DelegationAllowance: new(0),
+		})
+		<-closeDone
+
+		if !held.Load() {
+			t.Fatal("the create never reached git worktree add; the test observed nothing")
+		}
+		found := fenceWarnings(<-warnings)
+		if len(found) != 1 {
+			t.Fatalf("fence warnings = %q, want exactly one naming the spawn the close walked past", found)
+		}
+		if !strings.Contains(found[0], "delegate start on lane ") {
+			t.Errorf("fence warning %q does not name the spawn still cutting its lane", found[0])
+		}
+		if strings.Contains(found[0], "rollback") {
+			t.Errorf("fence warning %q calls the healthy spawn a rollback while nothing has been rolled back", found[0])
+		}
+	})
+
+	// A close that gives up on a failed spawn's cleanup must name the
+	// rollback, not the create the rollback has already begun undoing — the
+	// label tells the reader what is actually running on the environment the
+	// close is about to reap.
+	t.Run("rollback", func(t *testing.T) {
+		r := newWorktreeRepo(t)
+		root := r.s
+		warnings := collectWarningsUntilClosed(root)
+		shortenCloseCascadeBudget(t, 200*time.Millisecond)
+
+		rollbackStarted := make(chan struct{})
+		closeBegun := make(chan struct{})
+		closeDone := make(chan struct{})
+		var held atomic.Bool
+		var lanePath string
+
+		wantErr := errors.New("injected construction failure")
+		root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+			if point == "new_session" {
+				go func() {
+					defer close(closeDone)
+					root.Close()
+				}()
+				<-closeBegun
+				return wantErr
+			}
+			return nil
+		}
+		// The close reaches the fence only after cleanup has renamed the
+		// admission: it blocks here until rollbackStarted closes.
+		root.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+			close(closeBegun)
+			<-rollbackStarted
+		}
+		root.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+			inner := gitRunner(ctx, env)
+			return func(args ...string) (string, error) {
+				if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && held.CompareAndSwap(false, true) {
+					lanePath = args[2]
+					close(rollbackStarted)
+					time.Sleep(2 * LaneClosePassBudget)
+				}
+				return inner(args...)
+			}
+		}
+
+		result := root.createDelegate(context.Background(), delegateArgs{
+			Task:                "failed spawn's rollback under the close fence",
+			Isolation:           "worktree",
+			DelegationAllowance: new(0),
+		})
+		<-closeDone
+
+		if !errors.Is(result.Err, wantErr) {
+			t.Fatalf("createDelegate error = %v, want the injected construction failure", result.Err)
+		}
+		if !held.Load() {
+			t.Fatal("the rollback never reached git worktree unlock; the test observed nothing")
+		}
+		found := fenceWarnings(<-warnings)
+		if len(found) != 1 {
+			t.Fatalf("fence warnings = %q, want exactly one naming the rollback the close walked past", found)
+		}
+		if want := "delegate lane rollback for " + lanePath; !strings.Contains(found[0], want) {
+			t.Errorf("fence warning %q does not say %q", found[0], want)
+		}
+	})
 }
