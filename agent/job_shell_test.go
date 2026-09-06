@@ -80,13 +80,9 @@ func waitForShellReceiptResolved(t *testing.T, jm *jobManager, jobID string) {
 	t.Helper()
 	// TRIPWIRE: the receipt is dropped a few store appends past the removal, so
 	// this only bounds a genuine finalization hang.
-	deadline := time.Now().Add(30 * time.Second)
-	for shellReceiptHeld(jm, jobID) {
-		if time.Now().After(deadline) {
-			t.Fatalf("job %s still holds its delegate shell receipt", jobID)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	waitForCondition(t, 30*time.Second, "job "+jobID+" to release its delegate shell receipt", func() bool {
+		return !shellReceiptHeld(jm, jobID)
+	})
 }
 
 // shellReceiptPollHook observes a receipt wait's look at a job, so a test can
@@ -111,8 +107,10 @@ func setShellReceiptPollHook(t *testing.T, fire func(jobID string)) {
 }
 
 // shellReceiptHeld reports whether the stable-delegate controller still holds a
-// committed process receipt for jobID. Root-owned shells never take one, so it
-// is always false for a job manager with no controller.
+// committed process receipt for jobID. Only a job manager bound to a stable
+// delegate parent has a lease, and beginStableDelegateShellReceipt takes a
+// receipt only for a non-empty lease, so root-owned shells never hold one and
+// this is always false for them.
 func shellReceiptHeld(jm *jobManager, jobID string) bool {
 	shellReceiptPollHook.mu.Lock()
 	fire := shellReceiptPollHook.fire
