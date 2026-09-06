@@ -270,8 +270,10 @@ controller tests cover refresh failure, stale responses, disposal and Go omitted
 empty/zero values; all 272 native tests and both Release builds pass. Runtime
 and storage are manually inspected on both platforms against SecondHub; iOS
 agents and both-platform empty Codex/MCP states are verified. See
-[hub-information evidence](hub-information-evidence.md). Editable launch layers,
-nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
+[hub-information evidence](hub-information-evidence.md). The launch-layer controller now has ten deterministic tests and a real isolated-hub
+save/readback/restoration smoke pass; all 282 native tests pass. Native schema
+editors are not wired yet. See [launch progress](hub-information-and-launch-settings.md#launch-layer-controller-progress).
+Nonempty Codex/MCP fixtures, two-hub native isolation, failure/reconnect, large text,
 screen readers and visual acceptance remain open.
 
 Child of MOB-006; coordinate editable launch layers with MOB-007. Show runtime,
