@@ -5,9 +5,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
-  Text,
   TextInput,
   View,
 } from "react-native";
@@ -17,38 +15,7 @@ import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
 import { createNewSessionStore } from "./newSession";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-
-function Choice({
-  label,
-  selected,
-  disabled,
-  onPress,
-}: {
-  label: string;
-  selected: boolean;
-  disabled: boolean;
-  onPress(): void;
-}) {
-  const colors = useColors();
-  return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityLabel={label}
-      accessibilityState={{ checked: selected, disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      style={[styles.action, { opacity: disabled ? 0.4 : 1 }]}
-    >
-      <Text
-        style={{ color: selected ? colors.accent : colors.text, fontSize: 16 }}
-      >
-        {selected ? "● " : "○ "}
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
+import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function NewSessionScreen({
   route,

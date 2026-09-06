@@ -1,7 +1,8 @@
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
+import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { ConversationService } from "../../mobile/src/services/conversation";
 
-type Operation = "rename" | "compact" | "shutdown";
+type Operation = "rename" | "compact" | "shutdown" | "setReasoningEffort";
 interface ControlsState {
   pending: Operation | null;
   error: string | null;
@@ -18,6 +19,10 @@ export class SessionControls {
     private refresh: () => Promise<void>,
     private stopped: () => void,
     private isCurrent: () => boolean,
+    private getReasoning: () => Pick<
+      MobileConversation,
+      "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
+    > | null,
   ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -45,6 +50,18 @@ export class SessionControls {
   shutdown() {
     return this.run("shutdown", () => this.service.shutdown());
   }
+  setReasoningEffort(effort: string) {
+    const current = this.getReasoning();
+    if (
+      !current?.supportsReasoning ||
+      !current.reasoningEffortLevels?.includes(effort) ||
+      current.reasoningEffort === effort
+    )
+      return Promise.resolve();
+    return this.run("setReasoningEffort", () =>
+      this.service.setReasoningEffort(effort),
+    );
+  }
   private async run(kind: Operation, operation: () => Promise<void>) {
     if (this.disposed || !this.isCurrent() || this.state.pending) return;
     this.publish({ pending: kind, error: null, notice: null });
@@ -68,7 +85,9 @@ export class SessionControls {
         notice:
           kind === "compact"
             ? "Compaction requested. Progress appears in the conversation."
-            : "Session renamed.",
+            : kind === "setReasoningEffort"
+              ? "Reasoning effort updated."
+              : "Session renamed.",
       });
     } catch (cause) {
       if (this.disposed || !this.isCurrent()) return;
