@@ -347,7 +347,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := deps.ensureConfigDirs(); err != nil {
 		return err
 	}
-	go reclaimCrashedSessionScratch(os.Stderr)
 	resolvePlugins := deps.resolvePlugins
 	if resolvePlugins == nil {
 		resolvePlugins = func(ctx context.Context, explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {

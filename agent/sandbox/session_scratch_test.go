@@ -265,7 +265,7 @@ func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
 		sessionScratchTempDir = oldTemp
 		sessionScratchUserCacheDir = oldCache
 	})
-	if err := SweepCrashedSessionScratch(); err == nil {
+	if err := SweepCrashedSessionScratch(t.TempDir()); err == nil {
 		t.Error("sweep with no usable scratch base reported success")
 	}
 }
