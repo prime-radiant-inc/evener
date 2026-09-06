@@ -34,6 +34,8 @@ import { ApprovalControls } from "./approvalControls";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
+import type { HubProfile } from "./connection";
+import { HubEditor } from "./HubEditor";
 import { drafts } from "./nativeDrafts";
 import { QuestionSheet } from "./QuestionSheet";
 import { QueueSheet } from "./QueueSheet";
@@ -84,10 +86,18 @@ function ConnectionStatus() {
 export function HubsScreen({
   navigation,
 }: NativeStackScreenProps<Routes, "Hubs">) {
-  const { profiles, activeProfile, saveHub, selectHub, removeHub, loading } =
-    useConnection();
+  const {
+    profiles,
+    activeProfile,
+    saveHub,
+    updateHub,
+    selectHub,
+    removeHub,
+    loading,
+  } = useConnection();
   const colors = useColors();
   const headerHeight = useHeaderHeight();
+  const [editing, setEditing] = useState<HubProfile | null>(null);
   const [name, setName] = useState("");
   const [origin, setOrigin] = useState("");
   const [token, setToken] = useState("");
@@ -146,6 +156,13 @@ export function HubsScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
+      {editing ? (
+        <HubEditor
+          profile={editing}
+          save={updateHub}
+          close={() => setEditing(null)}
+        />
+      ) : null}
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -184,12 +201,25 @@ export function HubsScreen({
                 </Copy>
                 <Copy muted>{profile.origin}</Copy>
               </Pressable>
-              <Action
-                onPress={() => remove(profile.id, profile.name)}
-                label={`Remove ${profile.name}`}
+              <View
+                style={[
+                  styles.row,
+                  { justifyContent: "flex-end", flexWrap: "wrap" },
+                ]}
               >
-                Remove
-              </Action>
+                <Action
+                  onPress={() => setEditing(profile)}
+                  label={`Edit ${profile.name}`}
+                >
+                  Edit
+                </Action>
+                <Action
+                  onPress={() => remove(profile.id, profile.name)}
+                  label={`Remove ${profile.name}`}
+                >
+                  Remove
+                </Action>
+              </View>
             </View>
           ))}
           <Text style={[styles.title, { color: colors.text, marginTop: 16 }]}>

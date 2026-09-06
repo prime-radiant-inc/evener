@@ -11,6 +11,10 @@ export interface HubInput {
 	origin: string;
 	token: string;
 }
+export interface HubUpdate {
+	name: string;
+	token?: string;
+}
 export interface SecureStorage {
 	getItemAsync(key: string): Promise<string | null>;
 	setItemAsync(key: string, value: string): Promise<void>;
@@ -93,6 +97,20 @@ export class HubProfiles {
 	}
 	async token(id: string): Promise<string> {
 		return (await this.read(id))?.token ?? "";
+	}
+	update(id: string, input: HubUpdate): Promise<HubProfile> {
+		return this.write(async () => {
+			if (!(await this.ids()).includes(id))
+				throw new Error("This hub is no longer saved.");
+			const current = await this.read(id);
+			if (!current) throw new Error("This hub is no longer saved.");
+			return this.saveProfile({
+				id,
+				origin: current.origin,
+				name: input.name,
+				token: input.token ?? current.token,
+			});
+		});
 	}
 	save(input: HubInput & { id: string }): Promise<HubProfile> {
 		return this.write(() => this.saveProfile(input));
