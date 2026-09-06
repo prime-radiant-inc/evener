@@ -31,6 +31,11 @@ import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
+import {
+  createTranscriptSettleTracker,
+  describeTranscriptSettleBlocker,
+  type TranscriptGeometry,
+} from "./transcriptSettle";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -207,21 +212,29 @@ createRoot(rootEl).render(
 // The transcript's scroll container: TranscriptBody's
 // [data-testid="transcript-virtual-list"] section directly wraps the
 // VirtualList root (the one overflow-y:auto node the whole flow hangs off).
-function scrollElement(): HTMLElement {
+// Null before it mounts, which the settle tracker reads as a state to keep
+// waiting through rather than an error.
+function findScrollElement(): HTMLElement | null {
   const section = document.querySelector('[data-testid="transcript-virtual-list"]');
   const el = section?.querySelector(":scope > div");
-  if (!(el instanceof HTMLElement)) throw new Error("transcript VirtualList scroll element is not mounted");
+  return el instanceof HTMLElement ? el : null;
+}
+
+function scrollElement(): HTMLElement {
+  const el = findScrollElement();
+  if (el === null) throw new Error("transcript VirtualList scroll element is not mounted");
   return el;
+}
+
+function geometryOf(el: HTMLElement): TranscriptGeometry {
+  return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
 }
 
 function pillElement(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[data-testid="new-content-pill"]');
 }
 
-interface TranscriptScrollMetrics {
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
+interface TranscriptScrollMetrics extends TranscriptGeometry {
   /** Bottom gap: scrollHeight - clientHeight - scrollTop. 0 at the true bottom. */
   bottomGap: number;
   pill: boolean;
@@ -232,13 +245,11 @@ interface TranscriptScrollMetrics {
 }
 
 function metrics(): TranscriptScrollMetrics {
-  const el = scrollElement();
+  const geometry = geometryOf(scrollElement());
   const pill = pillElement();
   return {
-    scrollTop: el.scrollTop,
-    scrollHeight: el.scrollHeight,
-    clientHeight: el.clientHeight,
-    bottomGap: el.scrollHeight - el.clientHeight - el.scrollTop,
+    ...geometry,
+    bottomGap: geometry.scrollHeight - geometry.clientHeight - geometry.scrollTop,
     pill: pill !== null,
     pillText: pill?.textContent ?? null,
     turns: modelTurnCount,
@@ -251,54 +262,42 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-// Settle condition for the initial mount: the full scripted thread is in the
-// model, the scroll element exists, the transcript overflows the viewport by
-// a wide margin, AND the mount has gone QUIESCENT - geometry unchanged for
-// SETTLE_QUIESCENT_FRAMES consecutive frames with the reader at the bottom
-// and the pill hidden. The quiescence half is load-bearing: the mount's own
-// scrollToIndex(...) reconcile loop stays active while post-mount
-// measurement corrections keep moving its target, and while it is active it
-// claims ANY scroll-offset change (including the guard's scroll-away) as
-// part of its programmatic scroll and yanks back - a spurious failure the
-// runner cannot tell from a product regression. Waiting it out here makes
-// the phases downstream deterministic. The runner asserts the overflow
-// margin itself; here it is only the readiness signal, so a harness that
-// rendered nothing fails HERE (naming the harness) instead of as a geometry
-// mystery downstream (docs/developing-evener/testing.md's
-// unfalsifiable-fixture trap).
-const SETTLE_QUIESCENT_FRAMES = 20;
+// SETTLE_TRIPWIRE_MS bounds the readiness spin below. TRIPWIRE: it is a hang
+// guard, never the synchronisation mechanism - transcriptSettle.ts's own
+// conditions are, and the blocker they report is what the message names. It
+// sits far above the work it covers, which is SETTLE_QUIESCENT_FRAMES + 1
+// animation frames and nothing else: measured on one host at 350ms
+// unthrottled, 432ms under 10x and 730ms under 20x Chrome CPU throttling.
+//
+// It is also bounded ABOVE, by the runner's own Runtime.evaluate ceiling
+// (browserGuardCdp.mjs, 30s): this whole spin runs inside one such call, so a
+// tripwire past that ceiling never fires - the transport times out first and
+// the guard reports `timeout calling Runtime.evaluate after 30000ms` with the
+// blocker lost. Verified by running the non-overflowing fixture against a 90s
+// value. Raising this without raising that ceiling trades a named condition
+// for a transport error.
+const SETTLE_TRIPWIRE_MS = 25_000;
+
 // Callable, not a module-load one-shot: the runner awaits webfonts FIRST
 // (waitForFonts over CDP) and only then calls this, because a late-arriving
 // font changes row geometry after load - settling must measure the
-// post-font geometry, or a font-driven shift could surface the pill before
-// the scroll-away phase and make the runner's pill assertions pass for the
-// wrong reason.
+// post-font geometry, or a font-driven shift could move the pill under the
+// scroll-away phase and make the runner's pill assertions pass for the wrong
+// reason.
 async function waitForTranscriptSettled(): Promise<TranscriptScrollMetrics> {
-  const deadline = performance.now() + 15_000;
-  let quiescentFrames = 0;
-  let lastScrollHeight = -1;
-  let lastScrollTop = -1;
+  const tracker = createTranscriptSettleTracker(INITIAL_TURN_COUNT);
+  const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("initial render");
-    const section = document.querySelector('[data-testid="transcript-virtual-list"]');
-    const el = section?.querySelector(":scope > div");
-    if (el instanceof HTMLElement && modelTurnCount === INITIAL_TURN_COUNT) {
-      const overflowed = el.scrollHeight > el.clientHeight * 4;
-      const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop <= 1;
-      const still = el.scrollHeight === lastScrollHeight && el.scrollTop === lastScrollTop;
-      if (overflowed && atBottom && still && pillElement() === null) quiescentFrames++;
-      else quiescentFrames = 0;
-      if (quiescentFrames >= SETTLE_QUIESCENT_FRAMES) return metrics();
-      lastScrollHeight = el.scrollHeight;
-      lastScrollTop = el.scrollTop;
-    }
+    const el = findScrollElement();
+    const blocker = tracker.observe({ turns: modelTurnCount, geometry: el === null ? null : geometryOf(el) });
+    if (blocker === null) return metrics();
     if (performance.now() > deadline) {
       throw new Error(
-        `transcript harness: transcript never settled into an overflow within 15s ` +
-          `(turns=${modelTurnCount}/${INITIAL_TURN_COUNT}, section=${section !== null}, ` +
-          `quiescentFrames=${quiescentFrames}, ` +
-          `body children: ${[...document.body.children].map((el) => el.tagName).join(",")})`,
+        `transcript harness: the transcript never became ready to drive within ${SETTLE_TRIPWIRE_MS}ms - ` +
+          `${describeTranscriptSettleBlocker(blocker)} ` +
+          `(body children: ${[...document.body.children].map((child) => child.tagName).join(",")})`,
       );
     }
   }
