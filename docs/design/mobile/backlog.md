@@ -298,7 +298,11 @@ native save/reload/removal evidence for embedded equals and empty values.
 iOS rejects a stale open environment sheet after Android removes its override;
 independent AppWire reads verify restoration. See
 [environment evidence and remaining checks](hub-information-and-launch-settings.md#environment-collection-editor).
-Path, fallback and MCP collections remain open. Launch model fields now browse the real hub catalog,
+Fallback editing now preserves order, rejects duplicates and distinguishes
+explicit none from inheritance. Both native platforms and independent AppWire
+readbacks exercise these states; 304 native tests pass. See
+[fallback evidence and remaining checks](hub-information-and-launch-settings.md#model-fallback-collection-editor).
+Path and MCP collections remain open. Launch model fields now browse the real hub catalog,
 reuse the web's provider/recent/metadata rows, and retain selections on reconnect.
 Native iOS search/select/save and Android read/removal have evidence. Open scalar
 sheets reject newer field values, with two-device conflict/reopen/restoration

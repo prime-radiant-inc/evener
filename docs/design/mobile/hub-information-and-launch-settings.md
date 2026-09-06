@@ -98,6 +98,39 @@ Large text, long lists, screen readers, environment draft background/reconnect,
 and native invalid-name/cancel checks remain pending. This is not full visual
 acceptance or completion of MOB-015.
 
+## Model fallback collection editor
+
+The native fallback sheet preserves the web form's ordered list and the distinct
+unset versus explicit-empty states. Use inherited value removes the override;
+No model fallbacks writes an empty list. Adding a model turns off explicit-none,
+and removing the final added model restores inheritance, matching the web.
+Models are selected from the same unscoped hub catalog used by scalar launch
+model fields. A selection appends and returns to the list; duplicates remain in
+the picker with an inline error. Back returns without adding a model. Existing
+IDs remain in the draft even if the current catalog does not contain them.
+
+The sheet retains its original baseline and compares arrays in order before
+applying. Reordered arrays and undefined versus empty arrays are different;
+convergent changes are accepted. Four new tests cover ordering and duplicates,
+inheritance/explicit-none and stale/convergent edits. Removing explicit-empty
+handling caused its regression test to fail; restoring it passed. All 304 native
+tests, TypeScript, touched-file Biome, and both release builds pass.
+
+Manual native evidence against SecondHub: Android selected Fake Alternate,
+rejected adding it twice, then appended Fake Test Model, saved and reloaded.
+Independent AppWire readback verified that exact order. Android then selected
+No model fallbacks and saved; independent readback verified a real empty array.
+iOS opened the setting and showed No model fallbacks selected, searched Alternate
+with the software keyboard, selected it and returned to the draft list. iOS then
+chose inheritance and saved. Final independent readback verified modelFallbacks
+unset on the owned isolated hub, restoring its original state.
+
+Screenshots: [Android ordered draft](assets/launch-settings/android-fallbacks.png)
+and [iOS explicit none](assets/launch-settings/ios-fallbacks-none.png). These are
+functional evidence, not final visual acceptance: long lists, large text,
+screen-reader flow, native stale-sheet rejection and background/reconnect still
+need qualification. Path lists and MCP configuration remain required.
+
 ## Delivery and evidence
 
 1. Implement hub information loading and its native disclosures. Test late reads,
