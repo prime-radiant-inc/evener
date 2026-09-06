@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -55,7 +56,15 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	df := os.NewFile(uintptr(fd), name)
 	defer func() { _ = df.Close() }()
-	return df.ReadDir(-1)
+	entries, err := df.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	// os.DirFS sorts by name; the glob walk's match cap depends on that order
+	// to truncate to the same prefix every time, so this arm has to match it
+	// rather than hand back whatever order the kernel gave the readdir call.
+	slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+	return entries, nil
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
@@ -103,19 +112,22 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	defer func() { _ = unix.Close(baseFd) }()
 
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
+	budget := &globBudget{}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting
 		// .gitignore rules — secureDirFS enforces symlink-refusal and root
 		// confinement but not masking, so the skip must be supplied here.
-		ignores = loadIgnoreSet(fsys, func(relPath string) bool {
+		ignores, err = loadIgnoreSet(fsys, func(relPath string) bool {
 			return s.underMasked(filepath.Join(canonical, relPath))
-		})
+		}, budget)
+		if err != nil {
+			return nil, 0, 0, err
+		}
 	}
 	seen := make(map[string]struct{})
 	var abs []string
 	excluded := 0
-	budget := &globBudget{}
 	for _, pattern := range patterns {
 		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
@@ -146,11 +158,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
 		return nil, 0, 0, err
 	}
-	truncatedAt := 0
-	if budget.full() {
-		truncatedAt = maxGlobMatches
-	}
-	return abs, excluded, truncatedAt, nil
+	return abs, excluded, budget.truncatedAt(), nil
 }
 
 // grepNative runs the native (ripgrep-absent) grep beneath a policy-checked base,
@@ -180,9 +188,12 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
-	ignores := loadIgnoreSet(fsys, func(relPath string) bool {
+	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return s.underMasked(filepath.Join(canonical, relPath))
-	})
+	}, &globBudget{})
+	if err != nil {
+		return "", err
+	}
 	excludedByIgnore := 0
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {

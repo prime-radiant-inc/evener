@@ -260,7 +260,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				// before the cap tripped look exactly like the whole answer,
 				// and a fully-excluded or fully-masked capped walk would
 				// otherwise report its emptiness as if the walk had finished.
-				note := fmt.Sprintf("The glob stopped after reaching its cap of %d matches; results may be incomplete. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
+				// The cap counts candidate matches, before the dotfile/
+				// gitignore exclusion above drops any of them, so the number
+				// of paths actually shown can be smaller than the cap itself.
+				note := fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
 				if result == "" {
 					result = note
 				} else {

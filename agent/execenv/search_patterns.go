@@ -54,15 +54,25 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 }
 
 // maxGlobDirListings bounds how many directory listings one glob call may
-// make, across every brace-expanded pattern in it. It counts directories
-// listed rather than capping depth because a symlink cycle costs unbounded
-// *work*, not merely unbounded depth: one /proc/<pid>/root hop re-enters the
-// entire tree, so a shallow depth cap would still admit a combinatorial
-// re-walk while a deep one would truncate real results. It bounds every
-// listing, not only ones on a filesystem without file identity: even where
-// the cycle check works, an unbounded `**` over a huge tree (`/`) still costs
-// unbounded work and memory.
-var maxGlobDirListings = 100_000
+// make, across ignore discovery and every brace-expanded pattern in it. It
+// counts directories listed rather than capping depth because a symlink cycle
+// costs unbounded *work*, not merely unbounded depth: one /proc/<pid>/root hop
+// re-enters the entire tree, so a shallow depth cap would still admit a
+// combinatorial re-walk while a deep one would truncate real results. It
+// bounds every listing, not only ones on a filesystem without file identity:
+// even where the cycle check works, an unbounded `**` over a huge tree (`/`)
+// still costs unbounded work.
+//
+// The value itself is a WORK bound, not a memory bound — the match cap and the
+// O(depth) ancestor chain already hold memory to a small constant, so this
+// only has to be large enough that a legitimate call doesn't pay for it. One
+// call can spend this budget several times over: once on ignore discovery,
+// then again on each brace-expanded pattern (up to
+// globpattern.MaxExpansions). A 60,000-directory monorepo globbed with a
+// 5-way brace expansion costs on the order of 360,000 listings and must not
+// error; `/` on a developer's machine is 500,000 to several million
+// directories and must. 1,000,000 sits between the two.
+var maxGlobDirListings = 1_000_000
 
 // maxGlobMatches bounds how many matches one glob call may accumulate.
 var maxGlobMatches = 10_000
@@ -76,19 +86,40 @@ type globBudget struct {
 }
 
 // listing charges one more directory listing to the budget regardless of
-// identified: an unbounded `**` over a huge tree costs unbounded work and
+// cycleSafe: an unbounded `**` over a huge tree costs unbounded work and
 // memory even where the cycle check works, so the bound has to apply whether
-// or not this filesystem can tell directories apart. identified only picks
-// which explanation the refusal gives once the bound trips.
-func (b *globBudget) listing(identified bool) error {
+// or not this filesystem can tell directories apart. cycleSafe only picks
+// which explanation the refusal gives once the bound trips — true when the
+// walk that hit the bound could have detected a symlink cycle on its own
+// (the pattern walk can, only where the filesystem reports file identity;
+// ignore discovery never follows symlinks and so always can), false when it
+// could not.
+func (b *globBudget) listing(cycleSafe bool) error {
 	b.listings++
 	if b.listings <= maxGlobDirListings {
 		return nil
 	}
-	if !identified {
-		return fmt.Errorf("glob walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking", b.listings)
+	return &globBudgetError{listings: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe}
+}
+
+// globBudgetError reports that one glob call ran past its directory-listing
+// budget. cycleSafe records whether the walk that gave up could have detected
+// a symlink cycle on its own — the pattern walk can tell only where the
+// filesystem reports file identity, while ignore discovery never follows
+// symlinks and so always can — which picks which of Error's two explanations
+// applies; listings and budget are the values a caller can act on without
+// parsing either sentence.
+type globBudgetError struct {
+	listings  int
+	budget    int
+	cycleSafe bool
+}
+
+func (e *globBudgetError) Error() string {
+	if !e.cycleSafe {
+		return fmt.Sprintf("glob walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; narrow the pattern or its base directory", e.listings, e.budget)
 	}
-	return fmt.Errorf("glob walk made %d directory listings, past the budget for one glob call: narrow the pattern or its base directory", b.listings)
+	return fmt.Sprintf("glob walk made %d directory listings, past the budget of %d for one glob call: narrow the pattern or its base directory", e.listings, e.budget)
 }
 
 // match reports whether the walk may keep the next match, so the caller can
@@ -108,6 +139,16 @@ func (b *globBudget) full() bool {
 	return b.truncated
 }
 
+// truncatedAt reports the match cap that cut a glob call short, or 0 when
+// every match was reported, so a caller can hand the cap value to the model
+// without duplicating the truncated check at every call site that needs it.
+func (b *globBudget) truncatedAt() int {
+	if b.truncated {
+		return maxGlobMatches
+	}
+	return 0
+}
+
 // listedDir is one entry on globWalkFS.chain: the identity of a directory on
 // the path currently being walked.
 type listedDir struct {
@@ -125,7 +166,13 @@ type listedDir struct {
 // already reachable at a shorter path, so refusing costs no matches. A
 // directory symlink pointing anywhere other than at its own ancestors
 // (node_modules/lib -> ../packages/lib, or /etc -> /private/etc on macOS) is
-// walked normally and its files match under both names.
+// walked normally and its files match under both names. The check
+// deliberately admits one case: two sibling names for the same directory,
+// neither an ancestor of the other (a bind mount, or two symlinks pointing at
+// one shared target), are both listed and so walked twice. That case has no
+// unbounded recursion to catch — a sibling can't be its own ancestor — so it
+// is left to cost two listings against the budget rather than being detected
+// and refused.
 //
 // Abort. doublestar propagates a filesystem error only under
 // WithFailOnIOErrors; without it a cancelled walk keeps grinding through every
@@ -217,11 +264,11 @@ func (w *globWalkFS) identity(dir string) (fs.FileInfo, bool) {
 }
 
 // push records name's identity as the innermost entry on the chain, first
-// dropping every entry that is not a proper ancestor of name. Nothing listed
-// under name can ever be compared against a non-ancestor, and retaining those
-// entries anyway is what made the walk hold one FileInfo for every directory
-// it had ever listed instead of only the ones on the path currently being
-// walked.
+// dropping every entry that is not a proper ancestor of name. Only name's own
+// ancestors are ever consulted by the cycle check, so pruning everything else
+// loses nothing: the chain stays sized to the depth of the path currently
+// being walked rather than growing with the number of directories the walk
+// has listed in total.
 func (w *globWalkFS) push(name string, info fs.FileInfo) {
 	kept := 0
 	for _, d := range w.chain {
@@ -232,12 +279,6 @@ func (w *globWalkFS) push(name string, info fs.FileInfo) {
 	}
 	w.chain = append(w.chain[:kept], listedDir{name: name, info: info})
 }
-
-// retained reports how many directory identities this walk is holding, which
-// is the walk's own memory cost: the cycle check consults only the ancestors
-// of the directory it is admitting, so this must track the depth of the path
-// being walked, not the number of directories the walk has ever listed.
-func (w *globWalkFS) retained() int { return len(w.chain) }
 
 // hide answers with the walk's cancellation when there is one — the walk runs
 // under WithFailOnIOErrors so that ends it immediately — and otherwise with
@@ -279,6 +320,13 @@ var errGlobMatchesFull = errors.New("glob match cap reached")
 // being noticed only after the tree runs out.
 func globMatches(ctx context.Context, fsys fs.FS, pattern string, budget *globBudget) ([]string, error) {
 	if budget.full() {
+		// A cancelled walk must not come back as a plausible-looking short
+		// list: a cap that is already tripped when a cancellation lands must
+		// still answer with the cancellation, not with the truncated result
+		// the cap alone would produce.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		return nil, nil
 	}
 	walk := &globWalkFS{FS: fsys, ctx: ctx, budget: budget}

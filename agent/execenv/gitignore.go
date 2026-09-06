@@ -38,10 +38,13 @@ type ignoreDir struct {
 }
 
 // loadIgnoreSet walks fsys (rooted at the search base) collecting every
-// .gitignore file's rules. It is best-effort: unreadable files are skipped
-// rather than failing the search, and a base with no .gitignore files
-// anywhere (including one that is not inside a git repository at all) yields
-// an ignoreSet that matches nothing.
+// .gitignore file's rules. It is best-effort for I/O errors: unreadable files
+// are skipped rather than failing the search, and a base with no .gitignore
+// files anywhere (including one that is not inside a git repository at all)
+// yields an ignoreSet that matches nothing. The one error it does return is
+// budget refusing to let the walk keep going — that has to reach the caller,
+// since a partial ignoreSet built from a walk that gave up partway through
+// would silently under-exclude the rest of a huge tree.
 //
 // skip, when non-nil, is consulted for every path (relative to fsys' root,
 // slash-separated) before it is descended into or read; skip returning true
@@ -51,8 +54,14 @@ type ignoreDir struct {
 // this walk otherwise has no other way to honor, since fsys itself (a
 // symlink-refusing, root-confined secureDirFS) enforces confinement but not
 // masking. The off-path caller (no masking concept) passes a no-op skip.
-func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
+//
+// budget is the same one the caller's glob walk spends listings from, so
+// ignore discovery and pattern matching together are bounded as one call's
+// worth of work rather than each getting its own unbounded pass over the
+// tree.
+func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *globBudget) (*ignoreSet, error) {
 	set := &ignoreSet{}
+	var budgetErr error
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
@@ -71,6 +80,16 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
 			if p != "." && strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
+			// cycleSafe is always true here: fs.WalkDir never follows a
+			// symlink into a directory, so this walk can never re-enter
+			// itself the way the pattern walk's /proc/<pid>/root case does.
+			// The flag only picks the refusal's wording, not whether the
+			// bound applies — an unbounded walk over a huge tree costs
+			// unbounded work whether or not it could have looped.
+			if err := budget.listing(true); err != nil {
+				budgetErr = err
+				return err
+			}
 			return nil
 		}
 		if d.Name() != ".gitignore" {
@@ -85,7 +104,7 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
 		set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 		return nil
 	})
-	return set
+	return set, budgetErr
 }
 
 // matches reports whether relPath (slash-separated, relative to the search

@@ -1738,15 +1738,19 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
 	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
+	budget := &globBudget{}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
-		ignores = loadIgnoreSet(fsys, nil)
+		var err error
+		ignores, err = loadIgnoreSet(fsys, nil, budget)
+		if err != nil {
+			return nil, 0, 0, err
+		}
 	}
 	seen := make(map[string]struct{})
 	var abs []string
 	excluded := 0
-	budget := &globBudget{}
 	for _, pattern := range patterns {
 		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
@@ -1774,11 +1778,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
 		return nil, 0, 0, err
 	}
-	truncatedAt := 0
-	if budget.full() {
-		truncatedAt = maxGlobMatches
-	}
-	return abs, excluded, truncatedAt, nil
+	return abs, excluded, budget.truncatedAt(), nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
@@ -1946,7 +1946,10 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 		// file argument, which cannot contain a .gitignore tree of its own.
 		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
 	}
-	ignores := loadIgnoreSet(ignoreFS, nil)
+	ignores, err := loadIgnoreSet(ignoreFS, nil, &globBudget{})
+	if err != nil {
+		return "", err
+	}
 	excludedByIgnore := 0
 
 	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {

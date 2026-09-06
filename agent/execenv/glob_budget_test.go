@@ -1,12 +1,18 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"testing/fstest"
+	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // stubMaxGlobDirListings lowers the directory-listing budget for a test and
@@ -168,15 +174,21 @@ func TestGlobBudgetIsSharedAcrossBraceExpandedPatterns(t *testing.T) {
 	}
 }
 
-// TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked covers the third
-// defect behind #497: w.listed is a map keyed by every directory the walk has
-// ever listed, and nothing ever removes an entry once admit adds it. The
-// ancestor cycle check in admit only ever consults ancestors of the directory
-// currently being admitted, so a wide, shallow tree (siblings, not nesting)
-// should cost the walk O(1) retained identities, not one per directory
-// visited. This builds a wide real tree, so hasFileIdentity is true throughout,
-// and pins the failure via retained() rather than via a memory measurement
-// that would be flaky to assert on directly.
+// retained reports how many directory identities this walk is holding, which
+// is the walk's own memory cost: the cycle check consults only the ancestors
+// of the directory it is admitting, so this must track the depth of the path
+// being walked, not the number of directories the walk has ever listed.
+func (w *globWalkFS) retained() int { return len(w.chain) }
+
+// TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked pins the walk's own
+// memory cost, the third defect behind #497. The ancestor cycle check in
+// admit consults only the ancestors of the directory it is admitting, so what
+// the walk holds has to scale with the depth of the path it is on and not
+// with how many directories it has listed in total. A wide, shallow tree
+// (siblings, not nesting) separates the two: 30 siblings are 30 listings at
+// depth one. It builds a real tree so hasFileIdentity is true throughout, and
+// reads retained() rather than measuring memory, which would be flaky to
+// assert on directly.
 func TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked(t *testing.T) {
 	const siblingCount = 30
 	root := globBudgetFixture(t, siblingCount)
@@ -207,5 +219,180 @@ func TestGlobWalkRetainsIdentityOnlyForThePathBeingWalked(t *testing.T) {
 	_, err := w.ReadDir("loop")
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("ReadDir(loop) through a symlink back at the tree root = %v, want an fs.ErrNotExist PathError (the walk refusing an already-listed ancestor)", err)
+	}
+}
+
+// TestGlobIgnoreDiscoveryIsChargedToTheBudget proves loadIgnoreSet's own
+// fs.WalkDir has no bound of its own: it runs to completion before the first
+// globMatches call even exists, so a glob whose pattern walk touches almost
+// nothing can still spend unbounded work collecting .gitignore rules across a
+// huge tree. The pattern here names a file that does not exist anywhere in
+// the tree and has no glob metacharacters, so doublestar's no-meta-character
+// fast path resolves it with a single Stat and never lists a directory — any
+// charge against the budget has to come from ignore discovery, not from the
+// pattern walk. include_ignored skips ignore discovery entirely, so the
+// identical call must not trip the same budget: that is the control that
+// proves the failure is ignore discovery's, not some other unbounded walk.
+func TestGlobIgnoreDiscoveryIsChargedToTheBudget(t *testing.T) {
+	const dirCount = 40
+	root := globBudgetFixture(t, dirCount)
+	stubMaxGlobDirListings(t, 8)
+
+	matches, _, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "does-not-exist.txt", root, false)
+	if err == nil {
+		t.Fatalf("GlobWithExclusions(include_ignored=false) over a %d-directory tree with a listing budget of 8 returned no error and %d matches; ignore discovery is not charged to the budget", dirCount, len(matches))
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("budget refusal reported %v, which the walk skips silently; it must fail the glob visibly instead", err)
+	}
+
+	if _, _, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "does-not-exist.txt", root, true); err != nil {
+		t.Fatalf("GlobWithExclusions(include_ignored=true) = %v, want nil (ignore discovery is skipped entirely, so it cannot trip the budget)", err)
+	}
+}
+
+// TestGlobWalkRefusesACycleThroughAnUnlistedAncestor pins the ancestor check
+// for the exact shape doublestar creates when a pattern's meta-free prefix
+// names a path directly: the very first listing the walk ever makes can be
+// several levels below the root, so neither the root (".") nor the path's own
+// parent has ever been pushed onto the chain. identity's fallback (a fresh
+// fs.Stat on a chain miss) has to find the cycle anyway, by walking up to an
+// ancestor it has never listed and stat'ing it fresh.
+//
+// This is a characterization pin, not a red test: it already passes on the
+// current tree. It would fail if identity's chain-miss fallback were replaced
+// by an always-false lookup, since then nothing would catch the cycle before
+// the walk ever lists "." or "a".
+func TestGlobWalkRefusesACycleThroughAnUnlistedAncestor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(root, "a", "loop")); err != nil {
+		t.Skipf("directory symlinks unavailable on this platform: %v", err)
+	}
+
+	w := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	_, err := w.ReadDir("a/loop")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadDir(a/loop) as the walk's first-ever listing = %v, want an fs.ErrNotExist PathError (the ancestor cycle back to root, caught via a fresh stat rather than the chain)", err)
+	}
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
+		t.Fatalf("ReadDir(a/loop) = %v (%T), want an *fs.PathError", err, err)
+	}
+}
+
+// TestGlobBudgetErrorRecordsWhetherTheWalkCouldDetectCycles asserts the
+// budget refusal structurally rather than by matching its prose: a caller
+// (or a test) has to be able to tell "this filesystem could never have
+// detected a symlink cycle" from "this really is an enormous tree" without
+// parsing a sentence. cycleSafe carries that distinction — false for an
+// identity-less fstest.MapFS, which can never rule out a cycle, true for an
+// os.DirFS tree, which can — and budget records the bound that was crossed.
+func TestGlobBudgetErrorRecordsWhetherTheWalkCouldDetectCycles(t *testing.T) {
+	stubMaxGlobDirListings(t, 1)
+
+	mapTree := fstest.MapFS{"dir00/leaf.txt": &fstest.MapFile{Data: []byte("x")}}
+	mw := &globWalkFS{FS: mapTree, ctx: t.Context(), budget: &globBudget{}}
+	if _, err := mw.ReadDir("."); err != nil {
+		t.Fatalf("listing the MapFS root: %v", err)
+	}
+	_, err := mw.ReadDir("dir00")
+	var mapErr *globBudgetError
+	if !errors.As(err, &mapErr) {
+		t.Fatalf("tripping the budget over an identity-less MapFS = %v (%T), want a *globBudgetError", err, err)
+	}
+	if mapErr.cycleSafe {
+		t.Fatalf("globBudgetError.cycleSafe = true for an identity-less filesystem that can never detect a cycle, want false")
+	}
+	if mapErr.budget != maxGlobDirListings {
+		t.Fatalf("globBudgetError.budget = %d, want %d (the active budget)", mapErr.budget, maxGlobDirListings)
+	}
+
+	root := globBudgetFixture(t, 1)
+	ow := &globWalkFS{FS: os.DirFS(root), ctx: t.Context(), budget: &globBudget{}}
+	if _, err := ow.ReadDir("."); err != nil {
+		t.Fatalf("listing the os.DirFS root: %v", err)
+	}
+	_, err = ow.ReadDir("dir00")
+	var osErr *globBudgetError
+	if !errors.As(err, &osErr) {
+		t.Fatalf("tripping the budget over an os.DirFS tree = %v (%T), want a *globBudgetError", err, err)
+	}
+	if !osErr.cycleSafe {
+		t.Fatalf("globBudgetError.cycleSafe = false for an os-backed filesystem that can detect a cycle, want true")
+	}
+	if osErr.budget != maxGlobDirListings {
+		t.Fatalf("globBudgetError.budget = %d, want %d (the active budget)", osErr.budget, maxGlobDirListings)
+	}
+}
+
+// TestSandboxedGlobTruncatesToAStablePrefix proves the sandboxed walk's match
+// cap truncates to a deterministic prefix rather than to whichever entries
+// the filesystem's raw directory order happened to hand back first.
+// secureDirFS.ReadDir returns df.ReadDir(-1) unsorted, unlike os.DirFS (which
+// sorts), so which files survive a cap tripping mid-listing is otherwise the
+// filesystem's business, not the glob's. Every file is written in
+// reverse-lexical order and given an identical mtime, so neither creation
+// order nor modification time can accidentally line up with the alphabetical
+// order the fix is supposed to guarantee, and two back-to-back runs over the
+// unchanged tree must agree with each other and with that order.
+func TestSandboxedGlobTruncatesToAStablePrefix(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+
+	const fileCount = 12
+	fixedMod := time.Now()
+	for i := fileCount - 1; i >= 0; i-- {
+		p := filepath.Join(worktree, fmt.Sprintf("file%02d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, fixedMod, fixedMod); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stubMaxGlobMatches(t, 4)
+
+	want := []string{
+		filepath.Join(worktree, "file00.txt"),
+		filepath.Join(worktree, "file01.txt"),
+		filepath.Join(worktree, "file02.txt"),
+		filepath.Join(worktree, "file03.txt"),
+	}
+
+	first, _, truncatedAt, err := env.GlobWithExclusions(t.Context(), "*.txt", worktree, true)
+	if err != nil {
+		t.Fatalf("first sandboxed glob: %v", err)
+	}
+	if truncatedAt != 4 {
+		t.Fatalf("first run truncatedAt = %d, want 4", truncatedAt)
+	}
+	second, _, _, err := env.GlobWithExclusions(t.Context(), "*.txt", worktree, true)
+	if err != nil {
+		t.Fatalf("second sandboxed glob: %v", err)
+	}
+
+	if !slices.Equal(first, second) {
+		t.Fatalf("two sandboxed globs over the same unchanged tree returned different truncated prefixes: %v vs %v", first, second)
+	}
+	if !slices.Equal(first, want) {
+		t.Fatalf("sandboxed glob truncated to %v, want the lexically first 4: %v", first, want)
+	}
+}
+
+// TestGlobMatchesReportsCancellationAfterTheCapTripped proves globMatches's
+// cap fast path does not shadow a cancellation that landed at the same
+// moment: budget.full() returning early must still check ctx first, or a
+// call cancelled right after the cap tripped comes back reporting truncated
+// success instead of the cancellation the caller actually asked for.
+func TestGlobMatchesReportsCancellationAfterTheCapTripped(t *testing.T) {
+	budget := &globBudget{truncated: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	matches, err := globMatches(ctx, fstest.MapFS{}, "*.txt", budget)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("globMatches with a tripped cap and a cancelled context = (%v, %v), want context.Canceled", matches, err)
 	}
 }
