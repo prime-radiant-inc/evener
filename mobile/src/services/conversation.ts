@@ -25,6 +25,7 @@ import type {
   MutationReceipt,
   Thread,
   ThreadCapabilities,
+  ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
@@ -115,6 +116,10 @@ export interface ConversationModelCatalog {
 
 export interface ConversationGoalActions {
   setGoal(objective: string): Promise<void>;
+}
+
+export interface ConversationForkActions {
+  forkAside(): Promise<ThreadForkResponse>;
 }
 
 export interface QueueConversationService extends LiveConversationService {
@@ -346,7 +351,8 @@ export function createConversationService(
   options: ConversationServiceOptions = {},
 ): QueueConversationService &
   ConversationModelCatalog &
-  ConversationGoalActions {
+  ConversationGoalActions &
+  ConversationForkActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -727,6 +733,25 @@ export function createConversationService(
       await withCapabilityRefresh("compact", () =>
         client.request("thread/compact/start", { ref: threadRef }),
       );
+    },
+
+    async forkAside() {
+      requireCap("forkFromTurn", "forkAside");
+      const parentRef = requireRef();
+      const response = await withCapabilityRefresh("forkAside", () =>
+        client.request("thread/fork", {
+          ref: parentRef,
+          sourceTurnId: "",
+          aside: true,
+        }),
+      );
+      const childRef = nonemptyString(
+        response.thread?.evener?.ref,
+        "aside session reference",
+      );
+      if (childRef === parentRef)
+        throw new Error("The aside response did not identify a new session.");
+      return response;
     },
 
     async shutdown() {

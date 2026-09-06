@@ -51,8 +51,8 @@ hints. The list scrolls within a bounded height.
 This picker currently offers catalog commands and skills. Built-in session
 actions must be routed explicitly before advertising them here. Submission
 supports goal, compact, shutdown, model, reasoning-effort, interrupt, steer,
-queue, drain-as-steer, copy-id, tasks, and status. Remaining native slash
-routes are clear, aside, and project. Some already have other native controls,
+queue, drain-as-steer, copy-id, tasks, status, and aside. Remaining native
+slash routes are clear and project. Some already have other native controls,
 which does not establish slash-command parity. Unavailable-command feedback
 and full built-in completion integration remain acceptance work.
 
@@ -169,3 +169,34 @@ Project reveal remains separate: current web uses navigation location lookup
 and reveals the matching project/session. A generic project-list navigation
 would not satisfy that behavior. Offline local-command access and complete
 screen-reader navigation remain acceptance work.
+
+## Aside creation, 6 September 2026
+
+The native `/aside` command follows the web's thread/fork request exactly:
+parent ref, aside=true, and required sourceTurnId="". The shared service gates
+forkFromTurn and rejects a missing/empty child ref or the parent returned as
+its own fork. The response may be the server's minimal child identity rather
+than a hydrated thread; navigation loads the child's transcript separately.
+
+The command uses the durable draft checkpoint before dispatch. After a valid
+response the checkpoint clears before navigation. The current screen alone
+may open the returned session, on its existing hub and a pushed native route.
+A newer parent draft survives; a lost acknowledgement remains uncertain and
+is not automatically retried. If the screen loses ownership before the reply,
+the created session is not opened over another destination.
+
+Verification: 204 native tests and TypeScript, shared typecheck/lint and 432
+focused shared tests pass. Both Release builds passed. The isolated hub's
+running daemons advertised forkFromTurn=false, so the command was correctly
+disabled. After stopping the two owned test daemons and reopening their saved
+transcripts, the hub advertised the capability and both platforms created
+asides. Clipboard readback confirmed distinct child refs (iOS
+local:034K4P6zhjWGuxYhkYsjfj; Android local:034K4Odj0vXNqLqTJGaPIJ), inherited
+transcripts were visible, and native Back returned to the correctly named
+parent with an empty command draft. No message was sent in either child.
+The live-versus-saved capability behavior is a current server limitation,
+not a native override. Loss/stale-binding behavior has SQLite/transport tests;
+manual OS/network interruption and accessibility acceptance remain open.
+
+Clear is still pending: its response replaces the instance and must retire
+older reads instead of merging a normal refresh into old transcript state.
