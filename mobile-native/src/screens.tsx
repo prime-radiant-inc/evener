@@ -1172,6 +1172,19 @@ export function ConversationScreen({
       ) : null,
     );
 
+  const composerSettings =
+    conversation && canCompose ? (
+      <ComposerSettings
+        conversation={conversation}
+        disabled={!ready || !controls || draft.submitting}
+        pending={settingsPending}
+        open={(setting) => {
+          Keyboard.dismiss();
+          setComposerSetting(setting);
+        }}
+      />
+    ) : null;
+
   return (
     <SafeAreaView
       edges={["bottom", "left", "right"]}
@@ -1579,6 +1592,7 @@ export function ConversationScreen({
               />
             ) : null}
           </View>
+          {fontScale > 1.4 ? composerSettings : null}
           <View
             style={[
               styles.row,
@@ -1602,17 +1616,7 @@ export function ConversationScreen({
                 {imageState.busy ? "Processing…" : "+"}
               </Action>
             ) : null}
-            {conversation && canCompose ? (
-              <ComposerSettings
-                conversation={conversation}
-                disabled={!ready || !controls || draft.submitting}
-                pending={settingsPending}
-                open={(setting) => {
-                  Keyboard.dismiss();
-                  setComposerSetting(setting);
-                }}
-              />
-            ) : null}
+            {fontScale <= 1.4 ? composerSettings : null}
             {canCompose && questions.length === 0 && command !== null ? (
               <Action
                 tone="primary"

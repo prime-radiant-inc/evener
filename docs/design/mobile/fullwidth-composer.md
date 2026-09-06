@@ -71,3 +71,35 @@ Simulator text settings were restored to iOS `large` and Android 1.0.
 ![iOS largest text exposes excessive composer height](assets/fullwidth-composer/ios-largest-keyboard.png)
 
 ![Android large text, keyboard hidden](assets/fullwidth-composer/android-large.png)
+
+## Deliberate accessibility control rows
+
+The settings component now sits above the action footer when font scale exceeds
+1.4, with intrinsic height instead of expanding in the vertical composer.
+Ordinary sizes retain the original inline settings flex behavior. The same
+settings element and callbacks are used in either position; no protocol or
+submission behavior changes.
+
+Both final Release builds were installed and inspected with real software
+keyboards: iOS at its largest accessibility content size, Android at font scale
+2.0. Model/reasoning occupy one row, attachment and Send share the following
+row, and the full-width input remains above them. The stranded attachment row
+is gone. Android's keyboard-hidden draft top moved from y=1648 to y=1800 at the
+same scale, recovering 152 physical pixels for the transcript.
+
+The iOS reasoning picker opened and dismissed without losing the draft. Android
+also opened its reasoning choices; restoring font scale recreated the screen
+and dismissed the sheet, with the draft retained. No settings were changed and
+no messages were submitted in this pass. Font settings were restored to iOS
+large and Android 1.0. TypeScript, touched-file Biome, 228 native tests and both
+Release builds pass. Native screenshots verify this layout; unit tests cover
+the existing behavior, not screen geometry.
+
+This resolves the extra control row, not the entire accessibility acceptance:
+iOS at its largest size still has a cramped reading area, a clipped next draft
+line, and a truncated model label. Running and command controls at these sizes,
+long model labels, empty drafts and screen-reader interaction remain open.
+
+![iOS corrected control rows with keyboard](assets/fullwidth-composer/ios-large-controls.png)
+
+![Android corrected control rows with keyboard](assets/fullwidth-composer/android-large-controls.png)
