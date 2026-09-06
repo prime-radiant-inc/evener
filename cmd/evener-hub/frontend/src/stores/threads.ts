@@ -1355,16 +1355,11 @@ function replayHydrationNotifications(
   return { model: hydrated, appliedAt };
 }
 
-// A snapshot may only publish into the ready generation it was cut on, and the
-// epoch alone says that for the client too: rewireClient bumps readyEpoch
-// before it assigns wiredClient, the epoch only ever increases, and every
-// hydration captures its client and its epoch in the same synchronous step —
-// the one site that used to capture them either side of an await now re-reads
-// the client, and a test pins it there. So a hydration under a superseded
-// client necessarily carries a superseded epoch.
+// A snapshot may publish only for the client and ready generation that own
+// its hydration. Retired connections cannot overwrite replacement state.
 function publishThreadHydration(ref: string, pending: PendingThreadHydration, model: ThreadModel): ThreadModel | null {
   if (pendingThreadHydrations.get(ref) !== pending) return null;
-  if (readyEpoch !== pending.epoch) return null;
+  if (readyEpoch !== pending.epoch || wiredClient !== pending.client) return null;
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) {
     pendingThreadHydrations.delete(ref);
     return null;
@@ -2380,7 +2375,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async refreshThread(ref) {
-    const client = await requireReadyClient();
+    await requireReadyClient();
+    const client = requireClient();
+    if (client.state !== "ready") return threadsStore.getState().refreshThread(ref);
     await refreshTrackedThread(client, readyEpoch, ref, true, true);
   },
 

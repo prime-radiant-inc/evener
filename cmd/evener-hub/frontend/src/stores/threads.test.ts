@@ -7905,3 +7905,17 @@ describe("putThreadModel ref invariant (map key === model.ref)", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.ref).toBe("ref_a");
   });
 });
+
+test("explicit refresh captures the replacement client with its ready epoch", async () => {
+  const oldClient = connectFakeClient();
+  oldClient.on("thread/read", () => ({ thread: testThread("ref_a", { status: { type: "restartRequired" } }) }));
+  await threadsStore.getState().ensureThread("ref_a");
+  const refreshing = threadsStore.getState().refreshThread("ref_a");
+  const replacement = new FakeClient("ready");
+  replacement.on("thread/read", () => ({ thread: testThread("ref_a", { status: { type: "idle" } }) }));
+  connectionStore.getState().connect(replacement);
+  await refreshing;
+  await settleCallerContinuations();
+  expect(oldClient.calls.filter((call) => call.method === "thread/read")).toHaveLength(1);
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+});
