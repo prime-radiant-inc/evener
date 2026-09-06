@@ -164,8 +164,39 @@ function modelValue(): HTMLElement {
 
 /** The quiet effort control in the card's control row (StatusRow's overlay-select recipe). */
 function effortControl(): HTMLElement {
-  return screen.getByLabelText("Reasoning effort");
+  return screen.getByLabelText("Prompt reasoning effort");
 }
+
+// The card's effort control and the Advanced Options schema field share the
+// wording "Reasoning effort": with the panel open, AT and label automation
+// must still resolve each control unambiguously, so the card's own label
+// carries its surface ("Prompt reasoning effort").
+test("the card effort control keeps a distinct accessible name with Advanced options open", async () => {
+  const user = userEvent.setup();
+  const advancedOption: LaunchOption = {
+    field: "reasoning_effort",
+    wireField: "reasoningEffort",
+    label: "Reasoning effort",
+    group: "model",
+    kind: "select",
+    perLaunch: true,
+    choices: [
+      { value: "low", label: "low" },
+      { value: "high", label: "high" },
+    ],
+  };
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    }),
+  );
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByLabelText("Prompt reasoning effort")).toBe(effortControl());
+  expect(screen.getAllByLabelText(/reasoning effort/i)).toHaveLength(2);
+});
 
 /** The visible effort readout (aria-hidden: the select speaks the value). */
 function effortReadout(): HTMLElement {
@@ -1605,7 +1636,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
 // "(default)": an unresolved answer must never be dressed up as a known one.
 
 function effortOptionLabels(): (string | null)[] {
-  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  const select = screen.getByLabelText("Prompt reasoning effort") as HTMLSelectElement;
   return Array.from(select.options).map((o) => o.textContent);
 }
 
@@ -1899,7 +1930,7 @@ function scriptModelList(models: ModelDescriptor[]): void {
 }
 
 function effortSelect(): HTMLSelectElement {
-  return screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  return screen.getByLabelText("Prompt reasoning effort") as HTMLSelectElement;
 }
 
 function effortOptionValues(): string[] {
