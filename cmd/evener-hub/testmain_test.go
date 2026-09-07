@@ -104,6 +104,7 @@ func TestMain(m *testing.M) {
 	}
 
 	_ = os.Setenv("HOME", filepath.Join(root, "home"))
+	_ = os.Setenv("USERPROFILE", filepath.Join(root, "home")) // what os.UserHomeDir reads on Windows
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
@@ -119,6 +120,18 @@ func TestMain(m *testing.M) {
 	// TestHostEvenerEnvNeverReachesTheTestEnvironment is the guard.
 	for _, v := range productEvenerEnvVars() {
 		_ = os.Unsetenv(v.Name)
+	}
+	// Refuse to start when a default root still resolves outside the throwaway
+	// env: every test from here on would otherwise read and write the
+	// developer's own ~/.config/evener and ~/.local/state/evener, and a failing
+	// guard test cannot stop the tests that run beside it.
+	// TestHubDefaultRootsStayInsideTheTestEnvironment re-checks this mid-run.
+	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
+		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", root, strings.Join(escaped, "\n  "))
+		if !inherited {
+			_ = os.RemoveAll(root)
+		}
+		os.Exit(1)
 	}
 
 	code := m.Run()
@@ -163,25 +176,15 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 	}
 }
 
-// TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
-// TestMain's isolation: every filesystem root the hub falls back to when a
-// WebConfig field is left unset (the launch config root, the hub state root,
-// the plugin store root, the MCP config path) and the HOME and XDG bases they
-// derive from resolve inside the throwaway root, never in the developer's own
-// home.
-//
-// TestHubRPCRegistersExpectedHandlerSet is why this has to be pinned. It
-// dispatches every registered method with empty params, and for a handler
-// where an empty request is a valid write (evener/launch/setLayer today; any
-// "set this file's content" handler tomorrow) the write happens for real,
-// against whichever root the fixture left unset. The HOME/XDG redirect above
-// is what keeps that write out of ~/.config/evener; this is the test that
-// notices if the redirect stops covering a root, or a resolver stops deriving
-// from it.
-func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
+// defaultRootsOutsideTestEnv lists every filesystem root the hub falls back to
+// when a WebConfig field is left unset (the launch config root, the hub state
+// root, the plugin store root, the MCP config path), plus the HOME and XDG
+// bases they derive from, that resolves outside testEnvRoot. Empty means the
+// throwaway env contains them all.
+func defaultRootsOutsideTestEnv() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Fatalf("os.UserHomeDir: %v", err)
+		home = "(unresolved: " + err.Error() + ")"
 	}
 	roots := []struct{ name, path string }{
 		{"os.UserHomeDir", home},
@@ -194,10 +197,31 @@ func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
 		{"defaultMCPConfigPath", defaultMCPConfigPath()},
 	}
 	inside := testEnvRoot + string(os.PathSeparator)
+	var escaped []string
 	for _, root := range roots {
 		if !strings.HasPrefix(root.path, inside) {
-			t.Errorf("%s = %q, outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real", root.name, root.path, testEnvRoot)
+			escaped = append(escaped, fmt.Sprintf("%s = %q", root.name, root.path))
 		}
+	}
+	return escaped
+}
+
+// TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
+// TestMain's isolation: the hub's default roots resolve inside the throwaway
+// root, never in the developer's own home, for the whole run and not only at
+// startup. TestMain refuses to start when defaultRootsOutsideTestEnv reports
+// an escape; this catches one that opens mid-run, such as a test that swaps
+// configUserHomeDir or the XDG env without restoring it.
+//
+// TestHubRPCRegistersExpectedHandlerSet is why this has to be pinned. It
+// dispatches every registered method with empty params, and for a handler
+// where an empty request is a valid write (evener/launch/setLayer today; any
+// "set this file's content" handler tomorrow) the write happens for real,
+// against whichever root the fixture left unset. The HOME/XDG redirect in
+// TestMain is what keeps that write out of ~/.config/evener.
+func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
+	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
+		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnvRoot, strings.Join(escaped, "\n  "))
 	}
 }
 
