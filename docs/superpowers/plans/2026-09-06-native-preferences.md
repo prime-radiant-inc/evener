@@ -31,24 +31,29 @@ require explicit read-only reconciliation, never automatic mutation replay.
   passing tests across both domains after correction. Coverage includes stale
   GET after PATCH, GET during PATCH, duplicate/uncertain/disposed writes, late A
   events after opening B, nested custom config and load-error write rejection.
-- [ ] Preserve unfinished editor values and pending outcomes across navigation,
-  hub switching and process death before exposing editable surfaces. The current
-  controller only retains in-memory state for its own lifetime.
+- [x] Preserve transcript proposals and uncertain checkpoints in hub-scoped local
+  storage before exposing the editor. Restore synchronously and fence late
+  acknowledgements by operation identity. Simulator restart evidence is recorded
+  below; the complete hub-switch/death matrix remains in qualification.
 - [ ] Add native keybinding editing with meaningful action labels, complete rule
   preservation, explicit save and conflict/recovery UI. Verify hardware keyboard
   behavior separately from editing the hub's stored configuration.
-- [ ] Wire transcript display settings into the native projection and disclosure
-  path. Today the reader ignores them, so an editor alone would be incomplete.
-  Map all content/advanced fields from actual source; preserve questions,
-  failures, warnings and active decisions regardless of display preferences.
-- [ ] Add the mobile transcript editor only with matching renderer behavior,
+- [x] Wire confirmed transcript display settings into the native presentation
+  and disclosure path. Preserve the unfiltered store and source identity; apply
+  content/advanced settings while retaining critical context and attachments.
+- [x] Add the mobile transcript editor only with matching renderer behavior,
   including custom settings and metadata availability. Preserve unrelated fields.
 - [ ] Qualify both workflows on the isolated v4 hub and current iOS artifact:
   explicit save/readback, external changes, hub switches, keyboard/VoiceOver,
   large text, process restart and uncertain outcome recovery.
-- [ ] Add corresponding executable SDK recipes and document supported behavior.
+- [x] Add corresponding executable SDK recipes and document supported behavior
+  (625c59d4e, including outside-checkout qualification).
 
 No production settings changes, credential output, external messages or fault
 proxies are part of qualification. Deterministic client tests exercise ordering
 faults; native journeys exercise the real isolated hub and actual UI. Passing
 controller tests does not establish editor, renderer or release acceptance.
+
+The transcript editor and owned-hub read/write/conflict/restart journey now have
+[scoped evidence](../../design/mobile/transcript-preferences-evidence.md). Native
+keybinding UI and the complete preference acceptance matrix remain open.

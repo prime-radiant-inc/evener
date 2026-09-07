@@ -197,3 +197,32 @@ was installed. The simulator is back at normal `large` text size.
 The original unrelated Apple project and Info.plist modifications still match
 the preserved initial patch. Android remains deferred by Jesse's iOS-only v1
 decision. No push, merge or release publication has been performed.
+
+## Transcript preferences integration checkpoint
+
+The mobile transcript editor, confirmed-config reader projection, and durable
+hub-scoped drafts are now implemented. `cd85889d7` preserves proposal revisions
+and uncertain checkpoints before writes, fences late replies by operation
+identity, and requires an explicitly reviewed revision to rebase a conflict.
+
+The native provider binds one preferences model to each negotiated connection.
+The reader consumes the existing unfiltered conversation projection, preserves
+activity member/attachment identity, and avoids older-page requests for an
+anchor whose source is already loaded but hidden by preferences. Typed critical
+notices stay outside collapsed diagnostic groups. Manual disclosure choices
+retain the same source-scoped IDs.
+
+`make test-native` passed 436 tests in 54 files plus TypeScript. Release
+build/install/launch succeeded; the final bundle hash is
+`04f4ea31620e28a43983a53e7ab1d4b58f238cabea6759ace32cb6313bcfb0b9`.
+The owned-hub journey verified unsaved draft survival across app restart,
+explicit save/readback, external conflict review without an implicit write,
+all advanced setting flags, and restoration of the original hub config.
+See [transcript preference evidence](../../design/mobile/transcript-preferences-evidence.md)
+for artifact boundaries and screenshots.
+
+Remaining next work includes session pin/section and selected-turn fork/delete
+menus, native keybinding editing, further independent SDK recipes, and the
+cross-cutting lifecycle/reader/release matrix. The Dynamic Type drift remains
+an open failure. These scoped checks do not replace the final canonical merge
+gate and requirement-by-requirement acceptance audit.
