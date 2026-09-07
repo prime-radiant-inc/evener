@@ -454,8 +454,7 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					t.Errorf("%s error=%v", method, err)
 				}
 				if method == appwire.MethodTurnQueue {
-					var wire appwire.WireError
-					if errors.As(err, &wire) {
+					if wire, ok := errors.AsType[appwire.WireError](err); ok {
 						data, _ := wire.Data.(map[string]any)
 						if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
 							t.Errorf("receipt=%+v", data)
