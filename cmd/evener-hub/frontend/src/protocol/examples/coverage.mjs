@@ -57,6 +57,7 @@ const recipes = {
   "approvals.mjs": ["initialize", "thread/read", "evener/sandbox/escalation/resolve"],
   "questions.mjs": ["initialize", "thread/read", "thread/turns/list", "turn/start"],
   "goals.mjs": ["initialize", "thread/read", "goal/set"],
+  "tasks.mjs": ["initialize", "evener/tasks/list"],
   "queue.mjs": [
     "initialize",
     "thread/read",
