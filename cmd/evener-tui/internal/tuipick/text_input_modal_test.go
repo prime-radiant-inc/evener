@@ -153,14 +153,29 @@ func TestPathTextInputModal_ShowsThePath(t *testing.T) {
 }
 
 // TestTextInputModal_DoesNotRenderControlBytes: clipboard content reaches the
-// view, so an escape sequence in it must not reach the terminal.
+// view, so nothing a terminal would obey may reach it — the C1 block included,
+// where U+009B is CSI and U+009D is OSC, each a control introducer in its own
+// right rather than part of an escape sequence. The file prompt is the one
+// that renders what it is given, so it is the one tested.
 func TestTextInputModal_DoesNotRenderControlBytes(t *testing.T) {
 	withTestColorProfile(t)
-	m := NewCredentialPasteModal("Credential JSON", "Paste it:", "t")
-	pasted, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("adc\x1b[2J\x00.json"), Paste: true})
-	view := ansiPattern.ReplaceAllString(pasted.(TextInputModal).View(), "")
-	if strings.ContainsAny(view, "\x1b\x00") {
-		t.Fatalf("control bytes must not be rendered: %q", view)
+	for _, tt := range []struct{ name, pasted string }{
+		{name: "C0 and DEL", pasted: "adc\x1b[2J\x00\x7f.json"},
+		{name: "C1 introducers", pasted: "adc\u009b2J\u009d0;x\a.json"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewPathTextInputModal("path:", "t", "")
+			pasted, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.pasted), Paste: true})
+			view := ansiPattern.ReplaceAllString(pasted.(TextInputModal).View(), "")
+			for _, r := range view {
+				if r < 0x20 && r != '\n' || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+					t.Fatalf("view carries control character %U: %q", r, view)
+				}
+			}
+			if !strings.Contains(view, "adc") || !strings.Contains(view, ".json") {
+				t.Fatalf("the printable part of the value must survive: %q", view)
+			}
+		})
 	}
 }
 
