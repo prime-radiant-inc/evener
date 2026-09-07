@@ -178,7 +178,8 @@ func (m *OutputMatcher) FeedAtWithProvenance(chunk []byte, endOffset int64, p *p
 	// window's re-match as the same occurrence — so only the allocation is
 	// saved, never a match decision.
 	carryLen := len(m.carry)
-	window := append(m.windowBuf[:0], m.carry...)
+	window := m.windowBuf[:0]
+	window = append(window, m.carry...)
 	window = append(window, chunk...)
 	windowStart := endOffset - int64(len(window))
 
@@ -303,23 +304,6 @@ func findMatchRanges(re *regexp.Regexp, anchored []byte, windowStart int64) []ma
 		ranges = append(ranges, matchRange{start: windowStart + int64(loc[0]), end: windowStart + int64(loc[1])})
 	}
 	return ranges
-}
-
-// anchorText returns the bytes the pattern is actually run against: the window
-// with every CRLF's '\r' rewritten to '\n', so a line written by a CRLF producer
-// ends where $ expects it to. The rewrite is length-preserving, so match indices
-// still address the original window, and excerpts are always cut from the
-// original bytes.
-//
-// RE2 defines both ^ and $ by '\n' and offers no line-terminator setting, so a
-// rewrite that lets $ reach a CRLF line end necessarily lets ^ match one byte
-// later as well. Two consequences on a CRLF stream, both documented for the model
-// in docs/job-control.md: a bare `^$` sees one empty line per CRLF, and a pattern
-// matching a literal "\r\n" cannot match. Trading those for "$ works at all on
-// Windows-style output" is the better deal.
-func anchorText(window []byte) []byte {
-	anchored, _ := anchorBytes(nil, window)
-	return anchored
 }
 
 // anchoredFull returns the bytes the pattern runs against for window, reusing
