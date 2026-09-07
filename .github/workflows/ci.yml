@@ -73,25 +73,9 @@ jobs:
       - name: Lint (golangci-lint across all go.work modules)
         run: make lint-golangci
 
-  lint-tagged:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.work
-          cache: true
-          cache-dependency-path: |
-            go.work
-            go.work.sum
-            **/go.sum
-
-      - name: Install golangci-lint
-        run: |
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          make tools-golangci
-
+      # The tagged compile floors use the same golangci-lint binary, so they
+      # share this lane's install instead of paying a second checkout,
+      # toolchain setup, and `go install` on a parallel runner.
       - name: Lint tagged compile floors (evenerfuzz and eval)
         run: make lint-evenerfuzz lint-eval
 
@@ -121,7 +105,7 @@ jobs:
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-tagged, lint-repository]
+    needs: [static-build, lint-golangci, lint-repository]
     runs-on: ubuntu-latest
     steps:
       - name: Require every static lane
