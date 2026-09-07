@@ -22,6 +22,7 @@ import {
 	HubProfiles,
 	type HubUpdate,
 } from "./connection";
+import { connectionFailure } from "./connectionRecovery";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
@@ -133,10 +134,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 					) => WebSocketLike;
 					return new NativeWebSocket(url, null, options);
 				});
-				unsubscribe = connection.onStateChange((next) => {
+				const currentConnection = connection;
+				unsubscribe = currentConnection.onStateChange((next) => {
 					if (!cancelled) {
 						setState(next);
 						if (next === "ready") setError(null);
+						if (next === "closed")
+							setError(
+								connectionFailure(currentConnection.terminalReason).message,
+							);
 					}
 				});
 				setSession({ profileId: activeId, client: connection });
@@ -145,7 +151,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			.catch(() => {
 				if (!cancelled) {
 					setError(
-						"Could not connect. Check the hub address, token, and network, then retry.",
+						connectionFailure(connection?.terminalReason ?? null).message,
 					);
 					setState("closed");
 					connection?.close();
