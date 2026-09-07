@@ -13,6 +13,11 @@ providers, plugin management and upgrades still require dedicated chapters and
 runnable fixtures. A method
 being listed or callable is not evidence that its full workflow is documented.
 
+The [mobile delivery protocol inventory](design/mobile/protocol-coverage.md)
+accounts for every current method and notification, with router scope, reserved
+entries, cookbook associations and scoped acceptance links. It separates these
+observations from remaining client-author and release qualification work.
+
 ## Connecting
 
 Use a WebSocket URL ending in `/rpc`: `wss://hub.example/rpc`, or `ws://` for a
