@@ -1408,7 +1408,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	}
 	if resolverPanic {
 		ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
-	} else if intent == SubscriptionAdmissionUnresolved {
+	} else if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) && intent == SubscriptionAdmissionUnresolved {
 		ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {

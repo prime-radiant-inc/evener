@@ -20,6 +20,24 @@ func TestHubAdmissionInventoryChangeRejected(t *testing.T) {
 	testHubAdmissionInventoryChange(t, false)
 }
 
+func TestHubRPCSubscribedInvalidRefPreservesInvalidParams(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "bad-ref", Subscribe: true})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("invalid subscribed ref error=%v, want InvalidParams", err)
+	}
+}
+
 func TestSourceForThreadNilRegistryIsQuiet(t *testing.T) {
 	if _, err := sourceForThread(nil, "", "thread"); err == nil {
 		t.Fatal("nil source registry unexpectedly resolved a thread")
