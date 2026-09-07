@@ -87,7 +87,8 @@ func TestCredentialJsonResult_SendsThePasteAndReadsAPath(t *testing.T) {
 }
 
 // TestCredentialJsonResult_UnreadablePathIsReportedAndNotSent: a path that
-// cannot be read is the user's mistake to see, and nothing is stored.
+// cannot be read is the user's mistake to see — by its reason, since the
+// value itself is never repeated — and nothing is stored.
 func TestCredentialJsonResult_UnreadablePathIsReportedAndNotSent(t *testing.T) {
 	client, got, cleanup := credentialJSONHub(t)
 	defer cleanup()
@@ -99,11 +100,55 @@ func TestCredentialJsonResult_UnreadablePathIsReportedAndNotSent(t *testing.T) {
 		t.Fatalf("nothing should be sent for an unreadable path; got %+v", cmd())
 	}
 	err := updated.(hubModel).err
-	if err == nil || !strings.Contains(err.Error(), "no-such-credentials.json") {
-		t.Fatalf("err = %v, want one naming the path that could not be read", err)
+	if err == nil || !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("err = %v, want one giving the reason the read failed", err)
+	}
+	if strings.Contains(err.Error(), missing) {
+		t.Fatalf("err = %q, must not repeat what was submitted", err)
 	}
 	if got.Value != "" {
 		t.Fatalf("the hub must not be called; it received %q", got.Value)
+	}
+}
+
+// TestCredentialJsonResult_NeverEchoesWhatWasSubmitted: the error line is
+// rendered and persists after the panel closes, so a value that is neither a
+// document nor a readable path — the wrong secret pasted into this prompt —
+// must not put any of itself there. The reason it failed is what the user
+// needs.
+func TestCredentialJsonResult_NeverEchoesWhatWasSubmitted(t *testing.T) {
+	const wrongSecret = `sk-ant-api03-SECRET-MATERIAL-that-is-not-a-path-or-a-document`
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{name: "wrong secret", value: wrongSecret},
+		{name: "secret with a path separator", value: "AQ.Ab8RN6Jz/SECRET+MATERIAL/x"},
+		{name: "mistyped path", value: "/tmp/definitely-not-here/SECRET-MATERIAL.json"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client, got, cleanup := credentialJSONHub(t)
+			defer cleanup()
+			m := newHubModel(client, "http://hub.test")
+			m.followupModal = &tuipick.TextInputModal{}
+			updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: tt.value})
+			if cmd != nil {
+				t.Fatalf("nothing should be sent; got %+v", cmd())
+			}
+			err := updated.(hubModel).err
+			if err == nil {
+				t.Fatal("the failure must be reported")
+			}
+			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), tt.value) {
+				t.Fatalf("err = %q, must not repeat what was submitted", err)
+			}
+			if !strings.Contains(err.Error(), "credential JSON") {
+				t.Fatalf("err = %q, want it to name what failed", err)
+			}
+			if got.Value != "" {
+				t.Fatalf("the hub must not be called; it received %q", got.Value)
+			}
+		})
 	}
 }
 

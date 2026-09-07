@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,7 +411,14 @@ func credentialJSONDocument(value string) (string, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read credential JSON: %w", err)
+		// What was submitted is either a mistyped path or a secret pasted
+		// into the wrong prompt, and this error is rendered and outlives the
+		// panel — so report why it failed and none of the value itself. A
+		// PathError's message repeats the path, so only its reason is kept.
+		if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
+			err = pathErr.Err
+		}
+		return "", fmt.Errorf("credential JSON: it does not start with %q, and the path it was read as could not be opened: %w", "{", err)
 	}
 	return string(data), nil
 }
