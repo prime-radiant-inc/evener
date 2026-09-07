@@ -81,6 +81,17 @@ func (s *Subscriptions) UnsubscribeLifecycle(connID, lifecycleKey string) {
 	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool { return sub.lifecycleKey == lifecycleKey })
 }
 
+// UnsubscribeLifecycleAlias removes the requested delivery alias only when it
+// belongs to the resolved lifecycle. Other aliases sharing that delivery key
+// remain owned by their respective lifecycles.
+func (s *Subscriptions) UnsubscribeLifecycleAlias(connID, deliveryKey, lifecycleKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsubscribeMatchingLocked(connID, func(sub *subscription) bool {
+		return sub.threadID == deliveryKey && sub.lifecycleKey == lifecycleKey
+	})
+}
+
 func (s *Subscriptions) unsubscribeMatchingLocked(connID string, matches func(*subscription) bool) {
 	var withdraw func(*subscription)
 	withdraw = func(sub *subscription) {
