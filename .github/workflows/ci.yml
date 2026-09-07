@@ -59,6 +59,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
 
       - name: Install golangci-lint
         run: |
@@ -76,6 +81,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
 
       - name: Install golangci-lint
         run: |
@@ -93,6 +103,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
 
       - name: Install gitleaks
         run: |
