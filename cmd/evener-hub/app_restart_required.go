@@ -242,6 +242,10 @@ func unconfirmedDaemonForThread(roster *hubcore.Roster, threadID string) bool {
 		return false
 	}
 	for _, entry := range roster.UnconfirmedEntries() {
+		// A live claim without a usable identity cannot exclude this target.
+		if _, err := appwire.ParseRef(localSpawnWorkspaceRef(entry)); err != nil {
+			return true
+		}
 		if entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry) == localAppRef(threadID) {
 			return true
 		}

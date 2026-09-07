@@ -968,7 +968,7 @@ func buildUpgradeDelegate(t *testing.T, stateDir, ownerID string) string {
 }
 
 func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
-	for _, fault := range []string{"probe", "malformed", "unreadable", "missing-directory"} {
+	for _, fault := range []string{"probe", "unidentified", "malformed", "unreadable", "missing-directory"} {
 		for _, delegate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/delegate=%v", fault, delegate), func(t *testing.T) {
 				stateDir := filepath.Join(t.TempDir(), "projects", "upgrade-0000000000")
@@ -987,9 +987,14 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 				}
 				runDir := t.TempDir()
 				hiddenRunDir := filepath.Join(t.TempDir(), "hidden")
-				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID})
+				entry := rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID}
+				if fault == "unidentified" {
+					entry.ThreadID = ""
+					entry.SessionID = ""
+				}
+				writeRendezvous(t, runDir, entry)
 				roster := hubcore.NewRoster(runDir, failedRPCProber{})
-				if fault != "probe" {
+				if fault != "probe" && fault != "unidentified" {
 					roster = hubcore.NewRoster(runDir, fakeProber{sessionID: rootID, status: appwire.ThreadStatusRestartRequired})
 					roster.Refresh()
 					path := filepath.Join(runDir, fmt.Sprintf("%d.json", os.Getpid()))
@@ -1051,7 +1056,7 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 				if after.Name != before.Name || len(afterMetas) != len(metas) {
 					t.Error("unresolved owner allowed metadata writes")
 				}
-				if fault == "probe" {
+				if fault == "probe" || fault == "unidentified" {
 					web := &WebServer{cfg: hubcore.WebConfig{StateDir: stateDir, Past: past, Roster: roster}}
 					if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
 						t.Error("navigation published actions despite unresolved daemon ownership")
