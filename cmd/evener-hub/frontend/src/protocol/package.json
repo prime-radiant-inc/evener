@@ -17,7 +17,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "qualification": "node scripts/qualify-package.mjs"
   },
   "devDependencies": {
     "typescript": "~6.0.3"

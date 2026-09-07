@@ -28,6 +28,25 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  native-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            mobile-native/package-lock.json
+            cmd/evener-hub/frontend/src/protocol/package-lock.json
+
+      - name: Install native and protocol dependencies
+        run: npm ci --prefix mobile-native && npm ci --prefix cmd/evener-hub/frontend/src/protocol
+
+      - name: Test native app and qualify API package
+        run: make test-native test-api-package
+
   static-build:
     runs-on: ubuntu-latest
     steps:

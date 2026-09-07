@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -35,6 +35,28 @@ test-web: web-preflight
 test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
 
+## The native app's deterministic unit and TypeScript checks.
+## proves: mobile-native's Vitest suite and strict TypeScript compilation pass
+##   against the checked-in Expo/React Native sources.
+## trigger: Required native CI; local pre-merge when native sources change.
+## requires: Node/npm and an already-installed mobile-native dependency tree;
+##   does not install dependencies, contact a hub, or call a provider.
+## fails-when: Either `npm test` or `npm run check` fails.
+test-native:
+	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run check
+
+## The independently consumable AppWire package qualification gate.
+## proves: A packed package installs outside the checkout, exposes both ESM and
+##   CommonJS runtime entry points, passes strict declaration checking, and
+##   contains only its declared distribution/documentation surfaces.
+## trigger: Required native/package CI; local pre-merge when protocol sources change.
+## requires: Node/npm and the protocol package's installed TypeScript compiler;
+##   qualification uses a disposable directory and makes no network requests.
+## fails-when: Build, pack, outside-checkout install, runtime import/require,
+##   declaration check, or package-content assertion fails.
+test-api-package:
+	@cd cmd/evener-hub/frontend/src/protocol && NODE_DISABLE_COMPILE_CACHE=1 npm run build && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
+
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
@@ -64,10 +86,10 @@ test-short:
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
 # hosts are handled inside the tests themselves: the live/e2e families probe
 # their own capabilities and t.Skip (internal/e2ecap).
-## The canonical serial post-merge gate: lint, build, then the full test
-## suite.
-## proves: make lint, make build, then ROOT_FULL=1 make test all pass, in
-##   that order.
+## The canonical serial post-merge gate: lint, build, full tests, and native /
+##   package qualification.
+## proves: make lint, make build, ROOT_FULL=1 make test, make test-native, and
+##   make test-api-package all pass, in that order.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
@@ -77,7 +99,8 @@ test-short:
 merge-approval-gate:
 	@$(MAKE) lint && \
 		$(MAKE) build && \
-		ROOT_FULL=1 $(MAKE) test
+		ROOT_FULL=1 $(MAKE) test && \
+		$(MAKE) test-native test-api-package
 
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=6
 # keeps the agent wave at the runner's measured cap: under -race (~10x slower),
