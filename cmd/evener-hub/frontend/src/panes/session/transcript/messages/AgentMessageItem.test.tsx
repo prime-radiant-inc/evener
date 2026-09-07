@@ -345,14 +345,19 @@ test("a continuation fragment's bubble carries the uniform-radius continuation c
   expect(screen.queryByTestId("agent-speaker-header")).toBeNull();
 });
 
-test("the bubble fills are token color-mixes and the continuation radius is uniform", () => {
+test("agent prose is a document: the bubble wrapper has no fill, no radius, and spans the column", () => {
+  // typography-spacing-critique-2026-09-06 R9: with the column bounded, the
+  // neutral wash behind every agent paragraph stopped doing any work. The
+  // user's words keep their accent wash (usermessageitem.module.css).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const bubble = /\.bubble\s*\{([^}]*)\}/.exec(css);
   expect(bubble).not.toBeNull();
-  expect(bubble![1]).toMatch(/background:\s*color-mix\(in oklab, var\(--ink-mid\)/);
+  expect(bubble![1]).not.toMatch(/background\s*:/);
+  expect(bubble![1]).not.toMatch(/border-radius\s*:/);
+  expect(bubble![1]).toMatch(/width:\s*100%/);
   expect(bubble![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  expect(css).toMatch(/\.continuation\s*\{[^}]*border-radius:\s*var\(--radius-pane\);/);
+  expect(css).toMatch(/\.continuation\s*\{[^}]*margin-top:\s*var\(--rhythm-item\);/);
 });
 
 // The live path renders through the SAME Markdown widget as the settled

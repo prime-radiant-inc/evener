@@ -13,37 +13,34 @@
  * session, and cancelled itself. */
 .message {
   /* One rhythm step inside an exchange: consecutive agent fragments stack
-   * like chat rows - tight. The larger steps live on the user message
-   * (exchange) and the turn separator (group). */
+   * tight. The larger steps live on the user message (exchange) and the
+   * turn separator (group). */
   padding: var(--rhythm-line) 0;
 }
 
-/* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
- * 1-3): every agent fragment - opener and continuation alike - sits in a
- * neutral ink wash, hugging its content (width: fit-content + max-width).
- * The fill is a color-mix over --ink-mid, NOT --surface-2: in the light
- * theme --surface-1 and --surface-2 measure identical to the pane, so a
- * surface token would be invisible exactly where the transcript is densest
- * (the same trap toolcallitem.module.css's hover note records). The 4px
- * corner faces the avatar (top-left, the chat "tail") on openers; .column
- * is a flex column and this is a flex item, so align-self keeps it hugged
- * there too. */
+/* The agent's answer is the document, not a bubble (typography-spacing-
+ * critique-2026-09-06 R9, revising the 2026-07-30 chat-bubbles decision for
+ * the agent side only): with the column bounded to --session-measure the
+ * neutral wash stopped doing any work and read as a slab behind every
+ * paragraph. The user's own words keep their accent wash
+ * (usermessageitem.module.css) - short, and helped by a shape. The wrapper
+ * survives as the prose's layout box: full column width, one rhythm step of
+ * vertical padding, no fill, no radius. */
 .bubble {
-  align-self: flex-start;
-  width: fit-content;
+  align-self: stretch;
+  width: 100%;
   /* Bounded by the column (--session-measure on body), never by a
    * percentage of the pane: 92% of a full-bleed pane measured 149
    * characters per line at 1440 (typography-spacing-critique-2026-09-06). */
   max-width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: color-mix(in oklab, var(--ink-mid) 6%, transparent);
-  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  padding: var(--rhythm-line) 0;
 }
 
-/* Continuation fragments (no avatar, no header): fully rounded - with no
- * tile beside them there is nothing for a tail to point at. */
+/* Continuation fragments (no avatar, no header) follow a tool run or a
+ * thought: one item step above them separates the prose from the row it
+ * continues from. */
 .continuation {
-  border-radius: var(--radius-pane);
+  margin-top: var(--rhythm-item);
 }
 
 /* Below the gutter breakpoint (turnblock.module.css's 700px) the opener
