@@ -1240,7 +1240,10 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 		return envelope, nil
 	}
 	if envelope.Expansion == nil {
-		return boundReadMarkdownContentWithHint(envelope, hardCapChars, exactReadHint)
+		// Reuse the measurement above: the envelope is unchanged, and struct
+		// marshaling is deterministic, so re-serializing here would reproduce
+		// the exact same bytes. Skips one redundant full MarshalIndent probe.
+		return boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded)
 	}
 
 	raw, err := decodeTranscriptExpansion(envelope.Expansion)
@@ -1250,7 +1253,7 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 
 	// The caller's max_bytes budget applies to raw expansion bytes. Shrink the
 	// human markdown first so JSON escaping never changes that paging contract.
-	bounded, boundErr := boundReadMarkdownContentWithHint(envelope, hardCapChars, exactReadHint)
+	bounded, boundErr := boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded)
 	if boundErr == nil {
 		return bounded, nil
 	}
@@ -1289,12 +1292,23 @@ func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedB
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
 	}
+	return boundReadMarkdownContentWithHintSized(envelope, maxEncodedBytes, exactReadHint, encoded)
+}
+
+// boundReadMarkdownContentWithHintSized is boundReadMarkdownContentWithHint
+// with the initial serialized size already measured. Callers pass the exact
+// bytes from a MarshalIndent of the identical envelope value, so every size
+// comparison below observes the same length a fresh probe would produce and
+// truncation boundaries cannot shift; only the redundant re-serialize is gone.
+func boundReadMarkdownContentWithHintSized(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string, encoded []byte) (readMarkdownEnvelope, error) {
 	if len(encoded) <= maxEncodedBytes {
 		return envelope, nil
 	}
 
 	original := envelope.Content
-	keep := len([]rune(original))
+	// RuneCountInString reports the same count as len([]rune(original)) without
+	// allocating a full rune slice over up-to-200k content.
+	keep := utf8.RuneCountInString(original)
 	for len(encoded) > maxEncodedBytes && keep > 0 {
 		next := keep * maxEncodedBytes / len(encoded)
 		if next >= keep {
@@ -1303,6 +1317,7 @@ func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedB
 		keep = next
 		envelope.Content = boundOversizedTurnEvidenceWithHint(original, keep, exactReadHint)
 		envelope.Meta.Truncated = true
+		var err error
 		encoded, err = json.MarshalIndent(envelope, "", "  ")
 		if err != nil {
 			return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
