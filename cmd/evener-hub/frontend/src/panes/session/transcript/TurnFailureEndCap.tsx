@@ -42,6 +42,12 @@ const CLASS = {
 export interface RetryInput {
   text: string;
   attachments?: InputAttachment[];
+  // How many images the originating item carried, including ones whose bytes
+  // did not survive to the model (a sha-routed src with no inline data) and
+  // therefore could not become attachments. The retry clicker reports the
+  // difference as dropped; it must come from the ORIGINATING item, which for
+  // a reloaded failure sits in an earlier turn than the failed one.
+  sourceImageCount: number;
 }
 
 // retryImages recovers the originating input's image bytes from the model's
@@ -78,10 +84,14 @@ function retryItem(turn: TurnModel): ItemModel | undefined {
 
 function retryInput(turn: TurnModel): RetryInput | undefined {
   const item = retryItem(turn);
-  const text = item?.text.trim();
-  if (!text) return undefined;
+  const text = item?.text.trim() ?? "";
   const attachments = retryImages(item, text);
-  return attachments ? { text, attachments } : { text };
+  // An image-only input is retryable: buildInput and the server both accept
+  // empty text with attachments (parity-m5-composer §B). Text is required
+  // only when there is nothing else to send.
+  if (!text && !attachments) return undefined;
+  const sourceImageCount = item?.images?.length ?? 0;
+  return attachments ? { text, attachments, sourceImageCount } : { text, sourceImageCount };
 }
 
 /**
@@ -150,8 +160,7 @@ export function TurnFailureEndCap({
   async function retry() {
     if (sessionRef === undefined || input === undefined) return;
     try {
-      const item = retryItem(turn);
-      const dropped = (item?.images?.length ?? 0) - (input.attachments?.length ?? 0);
+      const dropped = input.sourceImageCount - (input.attachments?.length ?? 0);
       await threadsStore.getState().send(sessionRef, input.text, input.attachments);
       if (dropped > 0) {
         toasts.push(
