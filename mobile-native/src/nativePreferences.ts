@@ -11,6 +11,11 @@ import {
 	toWireConfig,
 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import {
+	type TranscriptDraftCheckpoint,
+	TranscriptDraftRepository,
+	type TranscriptDraftStorage,
+} from "./preferenceDraftRepository";
 
 type NativeFeatures = Pick<
 	FeatureSet,
@@ -27,6 +32,7 @@ export interface PreferenceState<T> {
 	error: string | null;
 	conflict: boolean;
 	writeUncertain: boolean;
+	storageUnavailable: boolean;
 }
 
 export interface NativePreferencesSnapshot {
@@ -46,6 +52,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	error: null,
 	conflict: false,
 	writeUncertain: false,
+	storageUnavailable: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -110,7 +117,8 @@ function decodeTranscriptPatch(value: unknown): {
 }
 
 function errorText(error: unknown): string {
-	return error instanceof Error
+	return error instanceof Error &&
+		error.message === "Hub returned invalid keybinding settings."
 		? error.message
 		: "The hub request could not be confirmed.";
 }
@@ -128,9 +136,17 @@ export class NativePreferences {
 	private readonly unsubscribe: () => void;
 	private generation = 0;
 	private disposed = false;
+	private readonly transcriptDrafts?: TranscriptDraftRepository;
 
-	constructor(client: ConversationClientLike, features: NativeFeatures) {
+	constructor(
+		client: ConversationClientLike,
+		features: NativeFeatures,
+		transcriptStorage?: TranscriptDraftStorage,
+	) {
 		this.client = client;
+		this.transcriptDrafts = transcriptStorage
+			? new TranscriptDraftRepository(transcriptStorage)
+			: undefined;
 		this.state = {
 			keybindings: {
 				...this.state.keybindings,
@@ -148,6 +164,7 @@ export class NativePreferences {
 		this.unsubscribe = client.onNotification((notification) =>
 			this.onNotification(notification),
 		);
+		if (this.transcriptDrafts) this.restoreTranscriptDraft();
 	}
 
 	getSnapshot = (): NativePreferencesSnapshot => this.state;
@@ -206,16 +223,14 @@ export class NativePreferences {
 				const value = decodeTranscriptPatch(params);
 				const current = this.state.transcriptMobile.confirmed;
 				if (current && value.revision < current.revision) return;
-				const pending =
-					this.state.transcriptMobile.saving ||
-					this.state.transcriptMobile.writeUncertain;
+				const draft = this.state.transcriptMobile.draft;
 				this.publish({
 					transcriptMobile: {
 						...this.state.transcriptMobile,
 						confirmed: value,
-						draft: pending ? this.state.transcriptMobile.draft : null,
-						error: pending ? this.state.transcriptMobile.error : null,
-						conflict: pending,
+						draft,
+						error: draft ? this.state.transcriptMobile.error : null,
+						conflict: draft ? value.revision > draft.revision : false,
 						writeUncertain: this.state.transcriptMobile.writeUncertain,
 					},
 				});
@@ -234,10 +249,15 @@ export class NativePreferences {
 	async refresh(): Promise<void> {
 		if (this.disposed) return;
 		const generation = ++this.generation;
+		if (this.state.transcriptMobile.storageUnavailable)
+			this.restoreTranscriptDraft();
 		const reads: Promise<void>[] = [];
 		if (this.state.keybindings.support === "supported")
 			reads.push(this.refreshKeybindings(generation));
-		if (this.state.transcriptMobile.support === "supported")
+		if (
+			this.state.transcriptMobile.support === "supported" &&
+			!this.state.transcriptMobile.storageUnavailable
+		)
 			reads.push(this.refreshTranscript(generation));
 		await Promise.all(reads);
 	}
@@ -306,14 +326,21 @@ export class NativePreferences {
 				});
 				return;
 			}
+			const draft = this.state.transcriptMobile.draft;
+			if (draft && this.state.transcriptMobile.writeUncertain)
+				this.persistTranscriptDraft({
+					baseRevision: draft.revision,
+					config: draft.config,
+					writeUncertain: false,
+				});
 			this.publish({
 				transcriptMobile: {
 					...this.state.transcriptMobile,
 					loading: false,
 					confirmed: value.mobile,
-					draft: null,
+					draft,
 					error: null,
-					conflict: false,
+					conflict: draft ? value.mobile.revision > draft.revision : false,
 					writeUncertain: false,
 				},
 			});
@@ -399,60 +426,65 @@ export class NativePreferences {
 	}
 
 	async saveTranscript(
-		config: TranscriptDisplayConfigV1,
+		config?: TranscriptDisplayConfigV1,
 	): Promise<{ revision: number; config: TranscriptDisplayConfigV1 }> {
 		const current = this.state.transcriptMobile.confirmed;
+		const existing = this.state.transcriptMobile.draft;
 		if (
 			this.disposed ||
 			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.storageUnavailable ||
 			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.conflict ||
 			this.state.transcriptMobile.support !== "supported" ||
 			current === null
 		)
 			throw new Error("Hub transcript display settings are unavailable.");
-		const normalized = normalizeConfig(config);
+		const normalized = normalizeConfig(
+			config ?? existing?.config ?? current.config,
+		);
+		const baseRevision = existing?.revision ?? current.revision;
+		let checkpoint: TranscriptDraftCheckpoint;
+		const pending = {
+			baseRevision,
+			config: normalized,
+			writeUncertain: true,
+		};
 		this.publish({
 			transcriptMobile: {
 				...this.state.transcriptMobile,
 				saving: true,
-				draft: { revision: current.revision, config: normalized },
+				draft: { revision: baseRevision, config: normalized },
 				error: null,
 				conflict: false,
 			},
 		});
 		try {
-			const value = decodeTranscriptPatch(
-				await this.client.request("evener/settings/transcriptDisplay/patch", {
-					layout: "mobile",
-					expectedRevision: current.revision,
-					config: toWireConfig(normalized),
-				}),
-			);
-			if (this.disposed) return value;
-			const latest = this.state.transcriptMobile.confirmed;
-			if (latest && value.revision < latest.revision) {
-				this.publish({
-					transcriptMobile: {
-						...this.state.transcriptMobile,
-						saving: false,
-						conflict: true,
-						writeUncertain: true,
-					},
-				});
-				return value;
-			}
+			checkpoint = this.persistTranscriptDraft(pending);
+		} catch (error) {
 			this.publish({
 				transcriptMobile: {
 					...this.state.transcriptMobile,
 					saving: false,
-					confirmed: value,
-					draft: null,
-					error: null,
-					conflict: false,
-					writeUncertain: false,
+					error:
+						error instanceof Error
+							? error.message
+							: "Could not save the transcript draft locally.",
 				},
 			});
-			return value;
+			throw error;
+		}
+		if (this.disposed)
+			throw new Error("Transcript preference save was cancelled.");
+		let value: { revision: number; config: TranscriptDisplayConfigV1 };
+		try {
+			value = decodeTranscriptPatch(
+				await this.client.request("evener/settings/transcriptDisplay/patch", {
+					layout: "mobile",
+					expectedRevision: baseRevision,
+					config: toWireConfig(normalized),
+				}),
+			);
 		} catch (error) {
 			this.publish({
 				transcriptMobile: {
@@ -464,6 +496,161 @@ export class NativePreferences {
 				},
 			});
 			throw error;
+		}
+		const latest = this.state.transcriptMobile.confirmed;
+		const conflict =
+			!this.disposed && !!latest && latest.revision > value.revision;
+		let storageError: string | null = null;
+		try {
+			if (conflict)
+				this.persistTranscriptDraft({ ...checkpoint, writeUncertain: false });
+			else this.transcriptDrafts?.removeIf(checkpoint);
+		} catch {
+			storageError =
+				"The hub confirmed this save, but the local draft could not be updated. Refresh settings to retry.";
+		}
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				saving: false,
+				confirmed: conflict ? latest : value,
+				draft: conflict ? this.state.transcriptMobile.draft : null,
+				conflict,
+				writeUncertain: false,
+				storageUnavailable: storageError !== null,
+				error: storageError,
+			},
+		});
+		return value;
+	}
+
+	async editTranscript(config: TranscriptDisplayConfigV1): Promise<void> {
+		const current = this.state.transcriptMobile.confirmed;
+		if (
+			this.disposed ||
+			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.storageUnavailable ||
+			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.support !== "supported" ||
+			!current
+		)
+			throw new Error("Hub transcript display settings are unavailable.");
+		const normalized = normalizeConfig(config);
+		const baseRevision =
+			this.state.transcriptMobile.draft?.revision ?? current.revision;
+		this.persistTranscriptDraft({
+			baseRevision,
+			config: normalized,
+			writeUncertain: false,
+		});
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: { revision: baseRevision, config: normalized },
+				conflict: current.revision > baseRevision,
+				error: null,
+			},
+		});
+	}
+
+	async discardTranscriptDraft(): Promise<void> {
+		if (
+			this.disposed ||
+			this.state.transcriptMobile.saving ||
+			this.state.transcriptMobile.writeUncertain ||
+			this.state.transcriptMobile.storageUnavailable
+		)
+			throw new Error(
+				"Check current transcript settings before discarding the draft.",
+			);
+		this.transcriptDrafts?.remove();
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: null,
+				conflict: false,
+				writeUncertain: false,
+				error: null,
+			},
+		});
+	}
+
+	async rebaseTranscriptDraft(reviewedRevision: number): Promise<void> {
+		const domain = this.state.transcriptMobile;
+		if (
+			this.disposed ||
+			!domain.draft ||
+			domain.storageUnavailable ||
+			domain.loading ||
+			domain.saving ||
+			domain.writeUncertain ||
+			domain.support !== "supported"
+		)
+			throw new Error(
+				"Review the current transcript settings before rebasing.",
+			);
+		const current = domain.confirmed;
+		if (!current || current.revision !== reviewedRevision)
+			throw new Error("The reviewed transcript settings are stale.");
+		const draft = domain.draft;
+		this.persistTranscriptDraft({
+			...draft,
+			baseRevision: reviewedRevision,
+			writeUncertain: false,
+		});
+		this.publish({
+			transcriptMobile: {
+				...this.state.transcriptMobile,
+				draft: { ...draft, revision: current.revision },
+				conflict: false,
+				writeUncertain: false,
+			},
+		});
+	}
+
+	private persistTranscriptDraft(
+		input: Omit<TranscriptDraftCheckpoint, "id">,
+	): TranscriptDraftCheckpoint {
+		try {
+			const checkpoint = {
+				...input,
+				id: this.transcriptDrafts?.createId() ?? "memory",
+			};
+			this.transcriptDrafts?.save(checkpoint);
+			return checkpoint;
+		} catch {
+			throw new Error("Could not save the transcript draft locally.");
+		}
+	}
+
+	private restoreTranscriptDraft(): void {
+		try {
+			const checkpoint = this.transcriptDrafts?.load();
+			if (this.disposed) return;
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					draft: checkpoint
+						? { revision: checkpoint.baseRevision, config: checkpoint.config }
+						: null,
+					writeUncertain: checkpoint?.writeUncertain ?? false,
+					storageUnavailable: false,
+					error: null,
+					conflict: checkpoint
+						? (this.state.transcriptMobile.confirmed?.revision ?? -1) >
+							checkpoint.baseRevision
+						: false,
+				},
+			});
+		} catch {
+			this.publish({
+				transcriptMobile: {
+					...this.state.transcriptMobile,
+					storageUnavailable: true,
+					error:
+						"Could not restore the saved transcript draft. Refresh settings to retry.",
+				},
+			});
 		}
 	}
 
