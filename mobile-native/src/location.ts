@@ -8,6 +8,14 @@ export interface SavedLocation {
 	deleteSession?: true;
 	fork?: ForkTarget;
 	pinned?: { section?: { id: string; title: string }; manage?: true };
+	projects?: {
+		archived: boolean;
+		project?: {
+			key: string;
+			title: string;
+			tier: "current" | "recent" | "archived";
+		};
+	};
 }
 interface Storage {
 	getItemSync(key: string): string | null;
@@ -48,6 +56,20 @@ function fork(value: unknown): ForkTarget | null {
 		return null;
 	}
 }
+function projects(
+	value: unknown,
+): value is NonNullable<SavedLocation["projects"]> {
+	if (!object(value) || typeof value.archived !== "boolean") return false;
+	const project = value.project;
+	return (
+		project === undefined ||
+		(object(project) &&
+			typeof project.key === "string" &&
+			!!project.key.trim() &&
+			typeof project.title === "string" &&
+			["current", "recent", "archived"].includes(String(project.tier)))
+	);
+}
 export class LocationRepository {
 	constructor(private readonly storage: Storage) {}
 	read(savedHubIds: readonly string[]): SavedLocation | null {
@@ -66,6 +88,18 @@ export class LocationRepository {
 		)
 			return null;
 		if (value.conversation !== undefined && !conversation(value.conversation))
+			return null;
+		if (
+			value.projects !== undefined &&
+			(!projects(value.projects) ||
+				[
+					"conversation",
+					"pinned",
+					"pinAssignment",
+					"fork",
+					"deleteSession",
+				].some((key) => value[key] !== undefined))
+		)
 			return null;
 		const target = fork(value.fork);
 		if (
@@ -100,6 +134,7 @@ export class LocationRepository {
 			return null;
 		return {
 			hubId: value.hubId,
+			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
 			...(value.pinAssignment === true ? { pinAssignment: true as const } : {}),
@@ -124,6 +159,22 @@ export function locationForRoute(
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
+	if (route.name === "Projects" || route.name === "Project") {
+		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		const destination = {
+			archived: route.params.archived ?? false,
+			...(route.name === "Project"
+				? {
+						project: {
+							key: route.params.projectKey,
+							title: route.params.title,
+							tier: route.params.tier ?? "current",
+						},
+					}
+				: {}),
+		};
+		return projects(destination) ? { hubId, projects: destination } : null;
+	}
 	if (route.name === "Fork") {
 		if (!object(route.params) || route.params.hubId !== hubId) return null;
 		const target = fork({
@@ -190,9 +241,26 @@ export function restoredStack(location: SavedLocation | null) {
 			instanceId?: string;
 			entryIndex?: number;
 			preview?: string;
+			projectKey?: string;
+			archived?: boolean;
+			tier?: "current" | "recent" | "archived";
 		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
+	if (location?.projects) {
+		const params = {
+			hubId: location.hubId,
+			archived: location.projects.archived,
+		};
+		routes.push({ name: "Projects", params });
+		if (location.projects.project) {
+			const { key, title, tier } = location.projects.project;
+			routes.push({
+				name: "Project",
+				params: { ...params, projectKey: key, title, tier },
+			});
+		}
+	}
 	if (location?.pinned) {
 		routes.push({ name: "PinSections", params: { hubId: location.hubId } });
 		if (location.pinned.section) {

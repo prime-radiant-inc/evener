@@ -1,39 +1,8 @@
 import { isThreadNotFound } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/sessionErrors";
-import type {
-	NavigationInvalidationTarget,
-	NavigationReadParams,
-} from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { decodeNavigationResponse } from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
-import { resourceKeyFor } from "./navigationPages";
+import { navigationReadback } from "./navigationReadback";
 import { localSessionId } from "./sessionDeletionResult";
-
-function resourceFor(
-	target: NavigationInvalidationTarget,
-): NavigationReadParams | null {
-	const base = { representationVersion: 2, resource: target.kind };
-	switch (target.kind) {
-		case "manifest":
-			return base;
-		case "section":
-			return { ...base, section: target.section, limit: 50 };
-		case "pin_catalog":
-			return { ...base, limit: 50 };
-		case "pin_section":
-			return { ...base, sectionId: target.sectionId, limit: 50 };
-		case "catalog":
-			return { ...base, catalog: target.catalog, limit: 50 };
-		case "project":
-			return { ...base, projectKey: target.projectKey };
-		// This target invalidates whatever project pages a client has loaded; it
-		// carries no individual resource version. The exact thread is read below.
-		case "all_loaded_projects":
-			return null;
-		default:
-			throw Error("Unknown navigation change.");
-	}
-}
 
 export async function readSessionDeletion(
 	client: ConversationClientLike,
@@ -59,43 +28,13 @@ export async function readSessionDeletion(
 		throw Error(
 			"Return to the previous organization screen to check that change first.",
 		);
-	const read = async (params: NavigationReadParams) => {
-		check();
-		const wire = await client.request("evener/navigation/read", params);
-		check();
-		const value = decodeNavigationResponse(
-			resourceKeyFor(params),
-			undefined,
-			wire,
-		);
-		if (value.status !== "snapshot" && value.status !== "gone")
-			throw Error("Navigation could not be refreshed.");
-		return value;
-	};
-	const params = { representationVersion: 2, resource: "manifest" };
-	const manifest = await read(params);
-	if (manifest.status !== "snapshot")
-		throw Error("Hub navigation is unavailable.");
-	const generationId = manifest.version.generationId;
-	const receipt = checkpoint?.receipt;
-	if (confirmReceipt && receipt && receipt.generation_id !== generationId)
-		throw Error(
-			"The hub restarted before deletion could be confirmed. Refresh to check the current state.",
-		);
-	if (receipt?.generation_id === generationId) {
-		for (const target of receipt.targets) {
-			const resource = resourceFor(target);
-			if (!resource) continue;
-			const response = await read(resource);
-			if (
-				response.version.generationId !== generationId ||
-				response.version.revision < (target.revision ?? 0)
-			)
-				throw Error(
-					"Navigation is older than the acknowledged deletion. Refresh to check again.",
-				);
-		}
-	}
+	const navigation = await navigationReadback(
+		client,
+		checkpoint?.receipt,
+		current,
+		confirmReceipt,
+	);
+	const generationId = navigation.generationId;
 	let missing = false,
 		eligible = false,
 		title = "",
@@ -131,14 +70,7 @@ export async function readSessionDeletion(
 		missing = true;
 	}
 	check();
-	const after = await read(params);
-	if (
-		after.status !== "snapshot" ||
-		after.version.generationId !== generationId
-	)
-		throw Error(
-			"The hub restarted while checking this session. Refresh to try again.",
-		);
+	await navigation.finish();
 	if (
 		!missing &&
 		(checkpoint?.deletion?.kind === "deleted" ||

@@ -219,3 +219,24 @@ artifacts, screenshots and limits.
 Next is durable archive/favorite recovery in Projects. The remaining lifecycle,
 multi-hub and accessibility matrix is still open, including conservative recovery
 when concurrent project deletion has fenced the target but not finished cleanup.
+
+### Durable archive and favorite recovery implementation
+
+1. Reuse the per-hub organization journal in Projects and project session lists.
+   Save intent before dispatch, retain late receipts, and never replay a saved
+   request. Reject old alert callbacks when their list or screen has changed.
+2. Read the exact project through paginated project catalogs or the exact local
+   session through its location. Check receipt revisions against their own
+   resources and fence the reads by hub generation and current screen identity.
+   A missing row, failed read, or unrelated journal operation cannot settle it.
+3. Archive placement is effective state, not proof of an explicit archive
+   decision. An unknown archive stays unresolved even when placement matches.
+   Show its current title and placement; an explicit continuation rereads that
+   same state and clears only the exact checkpoint without sending a mutation.
+   A known receipt with conflicting current state uses the same review path.
+4. Put recovery controls in the scrolling list header, block new organization
+   writes while recovery is pending, and restore project/filter destinations
+   after termination. Offer session archive only for local top-level sessions.
+5. Cover late replies, paging, independent resource revisions, restarts,
+   conflicting state, route restoration and no replay deterministically. Then
+   qualify archive/favorite and restart recovery in the owned iOS Release.

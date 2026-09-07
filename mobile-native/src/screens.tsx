@@ -113,13 +113,19 @@ export type Routes = {
 	PinSectionEditor: { hubId: string; sectionId: string; title: string };
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
-	Projects: { hubId: string };
+	Projects: { hubId: string; archived?: boolean };
 	Providers: { hubId: string };
 	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
 	TranscriptPreferences: { hubId: string };
 	LaunchSettings: { hubId: string; projectCwd?: string };
-	Project: { hubId: string; projectKey: string; title: string };
+	Project: {
+		hubId: string;
+		projectKey: string;
+		title: string;
+		archived?: boolean;
+		tier?: "current" | "recent" | "archived";
+	};
 	Hubs: undefined;
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };

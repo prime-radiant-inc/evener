@@ -18,6 +18,100 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("restores project filters and the exact project tier after restart", () => {
+		for (const archived of [false, true])
+			for (const tier of ["current", "recent", "archived"]) {
+				const disk = storage(),
+					repository = new LocationRepository(disk);
+				const params = {
+					hubId: "studio",
+					projectKey: "project",
+					title: "Workspace",
+					archived,
+					tier,
+				};
+				repository.save(
+					locationForRoute({ name: "Project", params }, "studio"),
+				);
+				const saved = new LocationRepository(disk).read(["studio"]);
+				expect(restoredStack(saved).routes).toEqual([
+					{ name: "Hubs" },
+					{ name: "Sessions" },
+					{ name: "Projects", params: { hubId: "studio", archived } },
+					{ name: "Project", params },
+				]);
+			}
+		const disk = storage(),
+			repository = new LocationRepository(disk);
+		repository.save(
+			locationForRoute(
+				{ name: "Projects", params: { hubId: "studio", archived: true } },
+				"studio",
+			),
+		);
+		expect(restoredStack(repository.read(["studio"])).routes.at(-1)).toEqual({
+			name: "Projects",
+			params: { hubId: "studio", archived: true },
+		});
+		expect(
+			locationForRoute(
+				{
+					name: "Project",
+					params: { hubId: "studio", projectKey: "p", title: "Workspace" },
+				},
+				"studio",
+			),
+		).toMatchObject({
+			projects: { archived: false, project: { tier: "current" } },
+		});
+	});
+	it("rejects corrupt project filters and mixed destinations", () => {
+		const disk = storage(),
+			repository = new LocationRepository(disk);
+		for (const extra of [
+			{ conversation: { ref: "local:s", title: "Session" } },
+			{ pinned: {} },
+			{ pinAssignment: true },
+			{ deleteSession: true },
+			{ fork: { instanceId: "i", entryIndex: 1, preview: "p" } },
+		]) {
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({
+					hubId: "studio",
+					projects: { archived: false },
+					...extra,
+				}),
+			);
+			expect(repository.read(["studio"])).toBeNull();
+		}
+		for (const extra of [
+			{ archived: "yes" },
+			{ tier: "other" },
+			{ projectKey: "" },
+		]) {
+			expect(
+				locationForRoute(
+					{
+						name: "Project",
+						params: {
+							hubId: "studio",
+							projectKey: "p",
+							title: "Workspace",
+							...extra,
+						},
+					},
+					"studio",
+				),
+			).toBeNull();
+		}
+		expect(
+			locationForRoute(
+				{ name: "Projects", params: { hubId: "other" } },
+				"studio",
+			),
+		).toBeNull();
+	});
 	it("restores deletion review without confirming or sending it", () => {
 		const disk = storage(),
 			repository = new LocationRepository(disk);

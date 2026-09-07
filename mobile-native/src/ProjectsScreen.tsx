@@ -23,12 +23,21 @@ import type {
 	NavigationSessionSummary,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { useConnection } from "./ConnectionProvider";
+import { organizationJournal } from "./nativeOrganization";
+import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
 import { navigationTree } from "./navigationTree";
+import {
+	type OrganizationObservation,
+	readOrganizationNavigation,
+} from "./organizationNavigation";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+const noSnapshot = () => null;
+const noSubscription = () => () => {};
 
 function FilterTab({
 	label,
@@ -42,7 +51,7 @@ function FilterTab({
 	const colors = useColors();
 	return (
 		<Pressable
-			accessibilityRole="tab"
+			accessibilityRole="button"
 			accessibilityLabel={label}
 			accessibilityState={{ selected }}
 			onPress={onPress}
@@ -73,9 +82,11 @@ export function PageList<T>({
 	childRows,
 	omitted,
 	organization,
+	organizationHubId,
 	revealRef,
 }: {
 	header?: ReactElement;
+	organizationHubId?: string;
 	revealRef?: string;
 	pages: NavigationPages<T>;
 	ready: boolean;
@@ -100,26 +111,85 @@ export function PageList<T>({
 	const { client, activeProfile } = useConnection();
 	const focused = useIsFocused();
 	const binding = useMemo(
-		() => ({ client, pages, ready, focused }),
-		[client, pages, ready, focused],
+		() => ({ client, pages, ready, focused, organizationHubId }),
+		[client, pages, ready, focused, organizationHubId],
 	);
 	const current = useRef(binding);
 	current.current = binding;
+	const [review, setReview] = useState<{
+		owner: typeof binding;
+		checkpoint: NavigationActionCheckpoint;
+		observation: OrganizationObservation;
+	} | null>(null);
 	const actions = useMemo(() => {
 		if (!client || !ready || !focused) return null;
-		const reconcileNavigation = async () => {
-			await pages.refresh();
-			if (pages.getSnapshot().error)
-				throw new Error("The current navigation could not be confirmed.");
+		let previous: {
+			checkpoint: NavigationActionCheckpoint;
+			observation: OrganizationObservation;
+		} | null = null;
+		let checkedPage: ReturnType<typeof pages.getSnapshot> | null = null;
+		const isCurrent = () => current.current === binding;
+		const refresh = async (
+			checkpoint?: NavigationActionCheckpoint,
+			confirmReceipt = false,
+			acceptCurrent = false,
+		) => {
+			const observation = checkpoint
+				? await readOrganizationNavigation(
+						client,
+						checkpoint,
+						isCurrent,
+						confirmReceipt,
+					)
+				: null;
+			if (confirmReceipt && checkpoint?.receipt)
+				await pages.refreshAfter(checkpoint.receipt);
+			else await pages.refresh();
+			const page = pages.getSnapshot();
+			if (
+				!isCurrent() ||
+				!page.loaded ||
+				page.loading ||
+				page.stale ||
+				page.error
+			)
+				throw Error("The current navigation could not be confirmed.");
+			if (
+				observation &&
+				pages.getResourceVersion()?.generationId !== observation.generationId
+			)
+				throw Error("The hub restarted during the check.");
+			const same =
+				previous !== null &&
+				JSON.stringify(previous) ===
+					JSON.stringify({ checkpoint, observation });
+			previous = checkpoint && observation ? { checkpoint, observation } : null;
+			setReview(
+				checkpoint && observation
+					? { owner: binding, checkpoint, observation }
+					: null,
+			);
+			if (observation && !observation.settled && !(acceptCurrent && same))
+				throw Error("Review the current organization before continuing.");
+			checkedPage = page;
 		};
 		return new NavigationActions(
 			client,
-			(receipt) => pages.refreshAfter(receipt),
-			() => current.current === binding,
-			reconcileNavigation,
+			(_receipt, checkpoint) => refresh(checkpoint, true),
+			isCurrent,
+			(checkpoint, acceptCurrent) => refresh(checkpoint, false, acceptCurrent),
+			organizationHubId ? organizationJournal(organizationHubId) : undefined,
+			() => {
+				if (!isCurrent() || pages.getSnapshot() !== checkedPage)
+					throw Error("Navigation changed before the check finished.");
+			},
 		);
-	}, [client, pages, ready, focused, binding]);
+	}, [client, pages, ready, focused, binding, organizationHubId]);
 	useEffect(() => () => actions?.dispose(), [actions]);
+	const actionState = useSyncExternalStore(
+		actions?.subscribe ?? noSubscription,
+		actions?.getSnapshot ?? noSnapshot,
+	);
 
 	const [expansion, setExpansion] = useState({
 		owner: pages,
@@ -232,9 +302,18 @@ export function PageList<T>({
 					) : null}
 				</View>
 			) : null}
-			{actions ? <OrganizationStatus actions={actions} /> : null}
 			<FlatList
-				ListHeaderComponent={header}
+				ListHeaderComponent={
+					<>
+						{header}
+						{actions ? (
+							<OrganizationStatus
+								actions={actions}
+								review={review?.owner === binding ? review : null}
+							/>
+						) : null}
+					</>
+				}
 				ref={list}
 				onScrollToIndexFailed={({ index, averageItemLength }) => {
 					list.current?.scrollToOffset({
@@ -318,12 +397,33 @@ export function PageList<T>({
 								<Action
 									tone="quiet"
 									label={`More actions for ${title(item)}`}
-									disabled={!ready || state.loading || state.stale}
+									disabled={
+										!ready ||
+										state.loading ||
+										state.stale ||
+										!!actionState?.pending ||
+										!!actionState?.uncertain ||
+										!!actionState?.storageUnavailable
+									}
 									onPress={() => {
 										const value = organization(item, depth);
-										if (!value || actions.getSnapshot().pending) return;
+										const actionState = actions.getSnapshot();
+										if (
+											!value ||
+											actionState.pending ||
+											actionState.uncertain ||
+											actionState.storageUnavailable
+										)
+											return;
+										const snapshot = pages.getSnapshot();
 										const invoke = (operation: () => void) => {
-											if (!pages.getSnapshot().stale) operation();
+											if (
+												current.current === binding &&
+												snapshot === pages.getSnapshot() &&
+												!snapshot.stale &&
+												!snapshot.loading
+											)
+												operation();
 										};
 										Alert.alert(
 											title(item),
@@ -383,15 +483,70 @@ export function PageList<T>({
 		</>
 	);
 }
-function OrganizationStatus({ actions }: { actions: NavigationActions }) {
+function OrganizationStatus({
+	actions,
+	review,
+}: {
+	actions: NavigationActions;
+	review: {
+		checkpoint: NavigationActionCheckpoint;
+		observation: OrganizationObservation;
+	} | null;
+}) {
 	const state = useSyncExternalStore(actions.subscribe, actions.getSnapshot);
 	if (!state.pending && !state.error) return null;
+	const observation =
+		review &&
+		JSON.stringify(review.checkpoint) === JSON.stringify(state.recovery)
+			? review.observation
+			: null;
+	const descriptions = {
+		archived: "Archived",
+		current: "Current sessions",
+		recent: "Recent sessions",
+		projects: "Projects",
+		pinned: "Pinned",
+		unpinned: "Not pinned",
+	};
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 8 }}>
+		<View style={{ gap: 8, paddingVertical: 8 }}>
 			{state.pending ? (
 				<ActivityIndicator accessibilityLabel="Updating organization" />
 			) : null}
 			<ErrorMessage message={state.error} />
+			{observation ? (
+				<Copy>
+					{observation.title} · {descriptions[observation.state]}
+				</Copy>
+			) : null}
+			{state.uncertain ? (
+				<>
+					<Action
+						disabled={state.pending}
+						onPress={() => {
+							void actions.reconcile();
+						}}
+					>
+						Refresh organization
+					</Action>
+					{observation && !observation.settled && review ? (
+						<>
+							<Copy muted>
+								The current state is shown above. Continue to keep it without
+								sending the previous request again.
+							</Copy>
+							<Action
+								disabled={state.pending}
+								onPress={() => {
+									void actions.keepOrganizationState(review.checkpoint);
+								}}
+							>
+								Continue with current state
+							</Action>
+						</>
+					) : null}
+				</>
+			) : null}
 		</View>
 	);
 }
@@ -404,7 +559,7 @@ export function ProjectsScreen({
 }: NativeStackScreenProps<Routes, "Projects">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
-	const [archived, setArchived] = useState(false);
+	const archived = route.params.archived ?? false;
 	const belongs = activeProfile?.id === route.params.hubId;
 	const pages = useMemo(
 		() =>
@@ -432,17 +587,18 @@ export function ProjectsScreen({
 					<FilterTab
 						label="Projects"
 						selected={!archived}
-						onPress={() => setArchived(false)}
+						onPress={() => navigation.setParams({ archived: false })}
 					/>
 					<FilterTab
 						label="Archived projects"
 						selected={archived}
-						onPress={() => setArchived(true)}
+						onPress={() => navigation.setParams({ archived: true })}
 					/>
 				</View>
 			</View>
 			{pages ? (
 				<PageList
+					organizationHubId={route.params.hubId}
 					pages={pages}
 					ready={state === "ready"}
 					rowKey={projectKey}
@@ -471,6 +627,7 @@ export function ProjectsScreen({
 							hubId: route.params.hubId,
 							projectKey: row.key,
 							title: row.name,
+							archived,
 						})
 					}
 				/>
@@ -486,9 +643,7 @@ export function ProjectScreen({
 }: NativeStackScreenProps<Routes, "Project">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
-	const [tier, setTier] = useState<"current" | "recent" | "archived">(
-		"current",
-	);
+	const tier = route.params.tier ?? "current";
 	const belongs = activeProfile?.id === route.params.hubId;
 	const pages = useMemo(
 		() =>
@@ -518,7 +673,7 @@ export function ProjectScreen({
 						<FilterTab
 							key={value}
 							selected={tier === value}
-							onPress={() => setTier(value)}
+							onPress={() => navigation.setParams({ tier: value })}
 							label={
 								value === "current"
 									? "Current"
@@ -532,11 +687,15 @@ export function ProjectScreen({
 			</View>
 			{pages ? (
 				<PageList
+					organizationHubId={route.params.hubId}
 					pages={pages}
 					ready={state === "ready"}
 					rowKey={sessionRef}
 					organization={(row, depth) =>
-						depth > 0 || ["subagent", "fork", "cluster"].includes(row.kind)
+						depth > 0 ||
+						row.host_id !== "local" ||
+						row.ref !== `local:${row.session_id}` ||
+						["subagent", "fork", "cluster"].includes(row.kind)
 							? null
 							: {
 									target: { kind: "session", id: row.session_id },
