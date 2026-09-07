@@ -5,7 +5,11 @@ multiple Evener hubs, and mobile access to Evener functionality. A working shell
 is an iteration milestone. It is not feature completeness. Voice with barge-in
 and control of other sessions is outside v1.
 
-## Current evidence and remaining workflows
+## Historical inventory and current acceptance
+
+The table below is a historical inventory, not a current absence or completion
+claim. Use the [current acceptance ledger](../../design/mobile/acceptance.md)
+for source verification, exact-build evidence and remaining work.
 
 Initial inventory at `fabdb86db`, updated through the queue and session-control increments on 5 September 2026. The current
 [design roadmap](../../design/mobile/README.md) and
@@ -29,10 +33,10 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Goals and work | Goal set/edit/clear through the composer, live status and iterations; native grouped task reader; Activity tree and paged job output, with both-platform real-hub evidence in goal-controls.md, task-list.md and activity.md | Goal/task accessibility, scale and final release acceptance; real delegate navigation and branch paging, native activity fault/reconnect checks, full metadata and output presentation |
 | Approvals and questions | Sandbox approval sheet, explicit allow/deny, live resolution and stale request guards; automated and controlled-wire native evidence in `docs/design/mobile/approval-evidence.md`. Structured question sheet with explicit choices, written alternatives, exact-definition selection persistence and durable answer delivery; evidence in `docs/design/mobile/question-evidence.md` | Real sandbox execution/resumption and native fault/accessibility acceptance; final-head multi-question and race acceptance (both platforms now have real harness pause/resume evidence in `docs/design/mobile/web-parity-audit.md`), question accessibility/fault acceptance and other user decision surfaces |
 | Hub navigation | Project pin/favorite and project/session archive/unarchive in row actions; both-platform isolated-hub checks | Project/session removal, session pin assign/unpin, section rename/delete and pinned browsing |
-| Provider authentication | Not exposed | Status, API keys, login/logout, device authorization, auth tests |
-| Instances | Not exposed | List/create/edit/remove/default |
-| Plugins and marketplaces | Not exposed | Browse/preview/install/upgrade/enable/disable/remove, source management, auto-upgrade |
-| Hub preferences | Not exposed | Overview, transcript display settings, upgrade |
+| Provider authentication | Implemented native provider and sign-in surfaces; v4 credential JSON migration at `06e879aa1` | Final-build both-platform login/key/JSON/device-flow, lifecycle and credential isolation acceptance |
+| Instances | Native list/create/edit/remove/default controllers and screen exist | Final-build both-platform mutation/reconciliation and large-catalog acceptance |
+| Plugins and marketplaces | Native plugin and marketplace screens/controllers exist | Verify every offered operation against current contracts; real Git update, failure and both-platform acceptance |
+| Hub preferences | Native hub overview and launch settings exist | Transcript preferences, keybindings and hub upgrade require current-source coverage and native qualification |
 | Native distribution | Standalone simulator/emulator release builds and installation recorded; iOS credential persistence checked | Distribution signing, physical devices, final-head both-platform regression and performance evidence |
 | Design quality | Approved research, philosophy, style guide, lookbook and screen studies; first visual slice installed on both platforms | Further native interaction refinement, rich rendering, accessible visual system and measured fluency |
 
