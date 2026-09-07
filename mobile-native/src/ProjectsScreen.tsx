@@ -134,6 +134,7 @@ export function PageList<T>({
 			confirmReceipt = false,
 			acceptCurrent = false,
 		) => {
+			setReview(null);
 			const observation = checkpoint
 				? await readOrganizationNavigation(
 						client,
@@ -497,6 +498,7 @@ function OrganizationStatus({
 	if (!state.pending && !state.error) return null;
 	const observation =
 		review &&
+		!review.observation.settled &&
 		JSON.stringify(review.checkpoint) === JSON.stringify(state.recovery)
 			? review.observation
 			: null;
@@ -513,11 +515,20 @@ function OrganizationStatus({
 			{state.pending ? (
 				<ActivityIndicator accessibilityLabel="Updating organization" />
 			) : null}
-			<ErrorMessage message={state.error} />
+			<ErrorMessage
+				message={state.pending || observation ? null : state.error}
+			/>
 			{observation ? (
-				<Copy>
-					{observation.title} · {descriptions[observation.state]}
-				</Copy>
+				<>
+					<Copy>
+						{review?.checkpoint.receipt
+							? "The current state differs from the requested change."
+							: "The previous request is still unconfirmed."}
+					</Copy>
+					<Copy>
+						{observation.title} · {descriptions[observation.state]}
+					</Copy>
+				</>
 			) : null}
 			{state.uncertain ? (
 				<>
