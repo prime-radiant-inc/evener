@@ -30,7 +30,10 @@
 .bubble {
   align-self: flex-start;
   width: fit-content;
-  max-width: 92%;
+  /* Bounded by the column (--session-measure on body), never by a
+   * percentage of the pane: 92% of a full-bleed pane measured 149
+   * characters per line at 1440 (typography-spacing-critique-2026-09-06). */
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   background: color-mix(in oklab, var(--ink-mid) 6%, transparent);
   border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
@@ -40,6 +43,30 @@
  * tile beside them there is nothing for a tail to point at. */
 .continuation {
   border-radius: var(--radius-pane);
+}
+
+/* Below the gutter breakpoint (turnblock.module.css's 700px) the opener
+ * becomes a grid: the avatar and the speaker header share the first row and
+ * the prose drops to a full-width second row. Measured before this: prose
+ * got 260px of a 375px screen (28 characters a line) because the avatar
+ * column indented the whole bubble. display: contents dissolves the column
+ * so its header and bubble become the grid's own items. */
+@media (max-width: 699px) {
+  .opener {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--speaker-gap);
+    row-gap: var(--space-1);
+    align-items: center;
+  }
+
+  .opener > .column {
+    display: contents;
+  }
+
+  .opener .bubble {
+    grid-column: 1 / -1;
+  }
 }
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The

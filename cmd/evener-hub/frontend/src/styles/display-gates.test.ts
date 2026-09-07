@@ -71,22 +71,22 @@ test("the type ramp no longer sits as raw px in :root (single source of truth is
   expect(rootBlock![1]).not.toMatch(/--font-size-body:/);
 });
 
-test("phone density is gated behind the <=900px phone media query", () => {
+test("phone density is gated behind the <=899px phone media query", () => {
   // Desktop must never inherit a density override: the whole gate lives inside
   // the phone media query. Assert the comfortable multiplier is inside a
-  // max-width:900px block, not at top level.
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:900px media block").not.toBeNull();
+  // max-width:899px block, not at top level.
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
   expect(media![1]).toMatch(/body\[data-phone-density="comfortable"\]\s*\{[^}]*--density-scale:\s*1\.25/);
 });
 
 test("phone density opens vertical rhythm by scaling line-height through --density-scale", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   expect(media![1]).toMatch(/--line-height-body:\s*calc\([^;]*var\(--density-scale\)/);
 });
 
 test("the compact density default leaves the base grid unscaled (multiplier 1)", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   // The base body rule inside the media query seeds --density-scale: 1 so
   // "compact" (and any unset value) holds the base line-height. Reads the
   // bare body rule's own value (baseDensityScale above) rather than
@@ -100,7 +100,7 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
 });
 
 test("the 44px touch-target floor is declared inside the phone media query (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:900px media block").not.toBeNull();
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
   expect(media![1]).toMatch(/--tap-min:\s*44px/);
 });

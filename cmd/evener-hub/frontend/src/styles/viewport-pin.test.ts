@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-// Regression net for the mobile "focus zooms the page" defect: iOS Safari
-// auto-zooms when an editable field under 16px (the composer textarea is
-// 13px via --font-size-ui) gains focus, because the viewport meta permitted
-// scaling. The fix pins the viewport instead of restyling the composer, so
-// the web UI behaves like an installed app. Reads index.html straight off
+// The viewport meta used to pin zoom (maximum-scale=1, user-scalable=no) to
+// stop iOS Safari auto-zooming into the 13px composer field. That disabled
+// pinch-zoom for the whole app (WCAG 1.4.4 resize text). Every editable
+// field is now 16px on phones - tokens.css's phone block sets
+// --font-size-body to 16px and widgets/textarea takes the body size - so
+// the lock is gone and must not come back. Reads index.html straight off
 // disk with node:fs, the same approach pwa-manifest-colors.test.ts uses.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,12 +23,12 @@ function viewportContent(): string {
   return match[1]!;
 }
 
-test("the viewport meta pins zoom so focusing a field cannot scale the page", () => {
+test("the viewport meta never disables zoom", () => {
   const content = viewportContent();
   expect(content).toContain("width=device-width");
   expect(content).toContain("initial-scale=1");
-  expect(content).toContain("maximum-scale=1");
-  expect(content).toContain("user-scalable=no");
+  expect(content).not.toContain("maximum-scale");
+  expect(content).not.toContain("user-scalable");
 });
 
 test("the viewport meta uses viewport-fit=cover so safe-area insets are nonzero", () => {

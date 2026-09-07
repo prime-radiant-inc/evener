@@ -134,8 +134,8 @@
   /* The type ramp itself is declared on <body> (see the font-size preference
    * gate below), not here, so the Settings → Theme font-size choice can scale
    * the whole ramp. Only the theme-invariant line-heights stay at the root. */
-  --line-height-body: 1.5;
-  --line-height-title: 1.3;
+  --line-height-body: 1.6; /* 15px -> 24px, on the 4px grid */
+  --line-height-title: 1.25;
   --line-height-ui: 1.4; /* dense chrome rows: rail, status row, tables */
 
   /* --- space + shape ------------------------------------------------- */
@@ -343,12 +343,21 @@
  */
 body {
   --font-scale: 1;
-  --font-size-caption: calc(12px * var(--font-scale));
-  --font-size-ui: calc(13px * var(--font-scale));
-  --font-size-body: calc(14px * var(--font-scale));
-  --font-size-pane-title: calc(16px * var(--font-scale));
-  --font-size-page-title: calc(20px * var(--font-scale));
+  --font-size-caption: calc(12px * var(--font-scale)); /* timestamps, meta */
+  --font-size-ui: calc(13px * var(--font-scale)); /* dense chrome: rail rows, status row, tables, chips, controls */
+  --font-size-body: calc(15px * var(--font-scale)); /* prose, composer, forms, settings values */
+  --font-size-pane-title: calc(18px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
+  --font-size-page-title: calc(22px * var(--font-scale)); /* section headings, the spawn heading */
   --font-size-display: calc(28px * var(--font-scale)); /* welcome hero only */
+  /* The conversation column and everything aligned to it (composer, cold
+   * start, the spawn form, settings content). 44rem = 704px: ~90 characters
+   * at 15px, room for a 100-column code block. Declared on body so the
+   * Settings -> Theme -> Transcript width preference below can widen it. */
+  --session-measure: 44rem;
+}
+
+body[data-transcript-measure="wide"] {
+  --session-measure: 64rem;
 }
 
 body[data-font-size="s"] { --font-scale: 0.9; }
@@ -356,17 +365,22 @@ body[data-font-size="m"] { --font-scale: 1; }
 body[data-font-size="l"] { --font-scale: 1.1; }
 body[data-font-size="xl"] { --font-scale: 1.25; }
 
-/* Phone density (≤900px only — the "phone" in phone-density). "comfortable"
+/* Phone density (≤899px, the same boundary as useIsMobile and every other
+ * phone rule — the "phone" in phone-density). "comfortable"
  * opens up vertical rhythm; "compact" (the default) holds the base grid. The
  * multiplier scales the body line-height — the app's global row-rhythm lever;
  * desktop never sees any of this, the whole gate lives inside the media query.
- * The 1.5 mirrors the :root --line-height-body base (a custom property can't
+ * The 1.6 mirrors the :root --line-height-body base (a custom property can't
  * reference its own inherited value without a cycle, so the base is repeated
  * here rather than aliased). */
-@media (max-width: 900px) {
+@media (max-width: 899px) {
   body {
     --density-scale: 1;
-    --line-height-body: calc(1.5 * var(--density-scale));
+    --line-height-body: calc(1.6 * var(--density-scale));
+    /* iOS Safari zooms into any focused field under 16px, and the body size
+     * IS the field size (widgets/textarea takes it), so the phone body is
+     * 16px and index.html no longer locks the viewport's zoom. */
+    --font-size-body: calc(16px * var(--font-scale));
     /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
      * decision 4): 44px per the platform HIG. Declared here, consumed by
      * button.module.css / iconbutton.module.css's own phone blocks as

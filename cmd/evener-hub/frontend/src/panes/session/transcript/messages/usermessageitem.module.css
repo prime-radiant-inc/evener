@@ -49,13 +49,14 @@
 }
 
 /* flex: 1 1 auto - the column SPANS the row, it does not shrink-to-fit. It
- * must: the bubble below caps itself at max-width: 92% OF THIS COLUMN, and a
+ * must: the bubble below caps itself at 100% OF THIS COLUMN, and a
  * shrink-to-fit column is sized by the bubble in turn - a cyclic percentage
- * the browser resolves to roughly 92% of the bubble's own max-content, so
- * every message wider than the header got its tail words wrapped even in a
- * wide window (live-DOM measurement 2026-07-30: "commit and merge" clamped
- * to 133px in a 651px row). With the column spanning the row, 92% resolves
- * against the row width and fit-content hugs short messages instead. Same
+ * the browser resolves against the bubble's own max-content, so every
+ * message wider than the header got its tail words wrapped even in a wide
+ * window (live-DOM measurement 2026-07-30, at the old 92% cap: "commit and
+ * merge" clamped to 133px in a 651px row). With the column spanning the row,
+ * the cap resolves against the row width and fit-content hugs short messages
+ * instead. Same
  * contract as the agent side's .column (agentmessageitem.module.css).
  * min-width: 0 - a flex item's automatic minimum size would otherwise pin the
  * column to its longest unbreakable word and defeat the text's break-word
@@ -115,7 +116,9 @@
   flex-direction: column;
   gap: var(--space-1);
   width: fit-content;
-  max-width: 92%;
+  /* Bounded by the column (--session-measure on body), not a percentage of
+   * the pane - see agentmessageitem.module.css's .bubble. */
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--accent-bg);
   border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
@@ -129,4 +132,26 @@
   line-height: var(--line-height-body);
   /* --ink-hi: spec decision 5 - see this file's header comment. */
   color: var(--ink-hi);
+}
+
+/* Below the gutter breakpoint the row becomes a grid so the bubble spans the
+ * pane under the avatar + header row (the agent side does the same - see
+ * agentmessageitem.module.css). The content column dissolves so its header
+ * and body are the grid's own items. */
+@media (max-width: 699px) {
+  .message {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--speaker-gap);
+    row-gap: var(--space-1);
+    align-items: center;
+  }
+
+  .message > .content {
+    display: contents;
+  }
+
+  .message .body {
+    grid-column: 1 / -1;
+  }
 }

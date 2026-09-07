@@ -14,7 +14,7 @@
   box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-body);
   line-height: var(--line-height-body);
   /* box-sizing is border-box app-wide (styles/global.css), so the floor has to
    * carry this variant's own vertical padding on top of the text lines. */
