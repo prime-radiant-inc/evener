@@ -2164,3 +2164,18 @@ test("explicitly resumes a stopped session before reconciling its uncertain send
     releaseReads();
   }
 });
+
+test("keeps storage recovery failure visible on a compatible session until reconciliation succeeds", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Message recovery is waiting for browser storage");
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set() }));
+  expect(screen.queryByText(/Message recovery is waiting for browser storage/)).toBeNull();
+});

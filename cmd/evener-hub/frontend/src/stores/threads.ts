@@ -103,6 +103,7 @@ export class ConflictError extends Error {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
+  mutationReconciliationFailures: ReadonlySet<string>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -627,7 +628,12 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
-  if (targetRef && (pendingMutationReconciliations.has(targetRef) || restartBlockingObligations.has(targetRef)))
+  if (
+    targetRef &&
+    (pendingMutationReconciliations.has(targetRef) ||
+      restartBlockingObligations.has(targetRef) ||
+      threadsStore.getState().mutationReconciliationFailures.has(targetRef))
+  )
     return null;
   if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
@@ -700,7 +706,12 @@ function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterabl
   if (!client) return;
   const epoch = dispatchReadyEpoch;
   for (const targetRef of refs) {
-    if (dispatchableMutationRefs.has(targetRef)) continue;
+    if (pendingMutationReconciliations.has(targetRef)) continue;
+    if (
+      dispatchableMutationRefs.has(targetRef) &&
+      !threadsStore.getState().mutationReconciliationFailures.has(targetRef)
+    )
+      continue;
     const pending = pendingThreadHydrations.get(targetRef);
     if (pending?.client === client && pending.epoch === epoch) continue;
     void handleReady(client, epoch, targetRef);
@@ -782,7 +793,11 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   if (record?.state !== "blockedUnknown") return false;
   const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
   if (!status || status === "restartRequired" || status === "notLoaded") return false;
-  if (pendingMutationReconciliations.has(record.targetRef) || restartBlockingObligations.has(record.targetRef))
+  if (
+    pendingMutationReconciliations.has(record.targetRef) ||
+    restartBlockingObligations.has(record.targetRef) ||
+    threadsStore.getState().mutationReconciliationFailures.has(record.targetRef)
+  )
     return false;
   await runtime.storage.markUnknown(clientMutationId, "submitting");
   notifyMutationPersistence([record.targetRef]);
@@ -1463,6 +1478,32 @@ async function publishAndReconcileThreadHydration(
     pendingMutationReconciliations.set(ref, reconciliation);
     try {
       await reconciliation;
+      if (
+        pendingMutationReconciliations.get(ref) === reconciliation &&
+        isCurrentMutationRuntime(runtime) &&
+        pending.epoch === readyEpoch &&
+        pending.client === wiredClient
+      ) {
+        threadsStore.setState((state) => {
+          const mutationReconciliationFailures = new Set(state.mutationReconciliationFailures);
+          mutationReconciliationFailures.delete(ref);
+          return { mutationReconciliationFailures };
+        });
+      }
+    } catch (error) {
+      if (
+        pendingMutationReconciliations.get(ref) === reconciliation &&
+        isCurrentMutationRuntime(runtime) &&
+        pending.epoch === readyEpoch &&
+        pending.client === wiredClient
+      ) {
+        // Discovery retries the authoritative read after storage recovers.
+        // Keep the failure visible and dispatch closed until that succeeds.
+        threadsStore.setState((state) => ({
+          mutationReconciliationFailures: new Set(state.mutationReconciliationFailures).add(ref),
+        }));
+      }
+      throw error;
     } finally {
       if (pendingMutationReconciliations.get(ref) === reconciliation) pendingMutationReconciliations.delete(ref);
     }
@@ -2140,6 +2181,7 @@ function replaceThread(
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
+  mutationReconciliationFailures: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),

@@ -8137,3 +8137,61 @@ for (const failure of ["listOutbox", "markUnknown"] as const) {
     },
   );
 }
+
+test("periodic discovery recovers failed compatible reconciliation after storage returns", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "recovery-after-storage" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    let faultEnabled = false;
+    let failures = 0;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      if (
+        faultEnabled &&
+        ref &&
+        (failures > 0 || threadsStore.getState().threads.get(ref)?.status.type === "restartRequired")
+      ) {
+        failures += 1;
+        throw new DOMException("IndexedDB transaction aborted", "AbortError");
+      }
+      return listOutbox(ref);
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    faultEnabled = true;
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(failures).toBeGreaterThan(0);
+    status = "idle";
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+    expect(failures).toBeGreaterThan(1);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    faultEnabled = false;
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
