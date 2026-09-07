@@ -305,3 +305,51 @@ No session is created by that recipe. The fixture has no plugin components;
 these checks prove selection/loading, not skill, hook, agent or MCP execution.
 Failed-preview UI, long catalogs/search keyboard, accessibility, two-hub return
 and creation-draft process-death qualification remain open.
+
+
+## Durable creation drafts
+
+Each hub has one SQLite creation draft containing the project, prompt, harness,
+model/reasoning, launch overrides and image metadata. Immutable image bytes are
+stored separately and are not rewritten on each text edit. Restored model IDs
+are validated against the current catalog before creation. Removing a hub clears
+its creation metadata and images without affecting another hub's draft.
+
+Before thread/start, the form commits an unconfirmed-creation checkpoint. A
+failed checkpoint blocks dispatch; a lost reply preserves the draft and warns
+on reopening that a session may already exist. Creation is never replayed
+automatically. A confirmed response clears the draft. Local storage failures
+remain visible, with explicit retry; a failed load blocks editing and picking
+images. A later failed checkpoint preserves any earlier uncertainty.
+
+Manual Release evidence, 2026-09-06, on the isolated scripted SecondHub:
+
+- iOS 26.5 / iPhone 17 Pro: chose the skills fixture directory, entered a prompt,
+  selected Fake Alternate and attached icon.png. Stopped and relaunched the app
+  process, reopened New session, and verified all four values. Created
+  local:034KQ2UxvoMu5J5bCcfCsa, observed the image and selected model in the
+  conversation, then stopped the scripted turn. Reopened New session and found
+  the project, prompt, model and attachment cleared.
+- Android API 35 / Pixel 7: entered a distinct prompt, selected the same directory,
+  Fake Test Model and 1000000267.png. Force-stopped and relaunched the app and
+  verified the restored values. Created local:034KQ6hXtTT2cqDKXM2QKf and observed
+  the image and selected model in the running conversation, then stopped it.
+  Reopening New session showed a cleared project, prompt, model and attachment.
+- Independent installed @evener/appwire-client thread/read calls confirmed both
+  session refs, directory, entered text and one image/png attachment each.
+- [iOS restored draft](assets/creation/draft-restored-ios.jpg) and
+  [Android restored draft](assets/creation/draft-restored-android.png).
+
+349 native tests, TypeScript, touched-file Biome checks and both Release builds
+pass. Eleven SQLite-backed tests cover hub isolation/removal, complete form
+restoration, model revalidation, rollback, missing images/corrupt metadata,
+uncertain dispatch/reply loss, creation cleanup, failed checkpoints and picker
+blocking before load. Two review findings were reproduced as failing tests and
+fixed: losing earlier uncertainty on checkpoint failure, and permitting image
+picking before a saved draft could load.
+
+This does not qualify every persistence state on devices. Storage exhaustion,
+corrupt-draft recovery/discard UX, explicit plugin/reasoning restoration through
+native controls, two-hub navigation and large image/text performance remain open.
+The creation screen still needs the planned density, keyboard and accessibility
+work; these screenshots are reliability evidence, not final visual acceptance.
