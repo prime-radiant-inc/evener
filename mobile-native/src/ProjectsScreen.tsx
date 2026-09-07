@@ -1,6 +1,7 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
+	type ReactElement,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -60,7 +61,8 @@ function FilterTab({
 	);
 }
 
-function PageList<T>({
+export function PageList<T>({
+	header,
 	pages,
 	ready,
 	rowKey,
@@ -73,6 +75,7 @@ function PageList<T>({
 	organization,
 	revealRef,
 }: {
+	header?: ReactElement;
 	revealRef?: string;
 	pages: NavigationPages<T>;
 	ready: boolean;
@@ -231,6 +234,7 @@ function PageList<T>({
 			) : null}
 			{actions ? <OrganizationStatus actions={actions} /> : null}
 			<FlatList
+				ListHeaderComponent={header}
 				ref={list}
 				onScrollToIndexFailed={({ index, averageItemLength }) => {
 					list.current?.scrollToOffset({
