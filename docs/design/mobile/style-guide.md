@@ -107,6 +107,12 @@ Related sessions use a separate disclosure action so opening a conversation neve
 
 ## Organization actions
 
+Session-list controls should scroll with the list when their enlarged text
+would otherwise crowd out its content. Keep native navigation fixed. Search
+and its actions can share a row at ordinary sizes; let the field take full width
+and wrap actions below at larger sizes. Preserve touch targets and verify
+continuous typing when the search field lives in a virtualized list header.
+
 Use a quiet More affordance beside project/session rows with a full platform touch target and an accessible name containing the item title. Show the selected title and hub in the action surface. Archive and restore belong together through the Archived view. Keep organization separate from runtime stop and deletion. A successful mutation must be reflected by a server-confirmed read; retain visible failure information when that cannot be established.
 
 ## Approval decisions

@@ -115,6 +115,11 @@ XDG config directory alongside `providers.toml`, not its state directory.
 Use `test/e2e/fakellm/cmd` at the provider boundary and separate HOME/XDG
 directories; do not connect these tests to production sessions.
 
+Connect native clients directly to an authenticated test hub. Do not introduce
+WebSocket forwarding or fault-injection proxies: they trigger security review
+pauses in this workflow. Exercise transport faults in deterministic client tests;
+native connection checks should use the real hub connection.
+
 The real-hub check exposed follow-up usability gaps: internal prompt-loading
 notices dominate the initial transcript, and session-creation failures do not
 yet show the specific hub rejection. These checks establish basic creation and
