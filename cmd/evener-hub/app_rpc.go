@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -585,6 +586,9 @@ func registerThreadHandlers(
 			return resp, nil
 		}
 		if !resolved {
+			if wire, ok := errors.AsType[appwire.WireError](err); ok && wire.Code == appwire.CodeInvalidParams {
+				return appwire.TurnStartResponse{}, err
+			}
 			if isTargetDeletedError(err) || isDaemonRestartRequiredError(err) {
 				return appwire.TurnStartResponse{}, err
 			}

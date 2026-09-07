@@ -96,6 +96,12 @@ func refreshDaemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mut
 }
 
 func daemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
+	if ref != "" {
+		if _, err := appwire.ParseRef(ref); err != nil {
+			return appwire.InvalidParams(err.Error())
+		}
+	}
+
 	entry, ok, err := restartRequiredDaemon(cfg, ref, threadID)
 	if err != nil {
 		wire := appwire.Unavailable(err.Error())

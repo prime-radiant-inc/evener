@@ -540,3 +540,27 @@ func TestThreadReadRejectsMalformedRefWithoutRoster(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestMalformedMutationRefsAreNotReportedAsUncertain(t *testing.T) {
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{appwire.MethodTurnStart, appwire.MethodTurnQueue, appwire.MethodTurnSteer} {
+		t.Run(method, func(t *testing.T) {
+			var response any
+			err := client.Request(t.Context(), method, map[string]any{"ref": "malformed", "clientMutationId": "invalid-" + method, "expectedInstanceId": "session", "expectedTurnId": "turn", "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("error=%v", err)
+			}
+			data, _ := wire.Data.(map[string]any)
+			if data["mutationOutcome"] == string(appwire.MutationOutcomeUnknown) {
+				t.Fatalf("invalid request reported as uncertain: %+v", data)
+			}
+		})
+	}
+}
