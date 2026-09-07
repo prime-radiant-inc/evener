@@ -386,8 +386,10 @@ and the launch/updated notification. It writes a project override, checks the
 layer and effective configuration, restores the original layer and checks that
 the global layer stayed unchanged. See the package README for invocation and
 concurrent-writer limitations. The repository-trust recipe adds trustRepo, stale-hash rejection and fresh
-revision confirmation. These recipes cover eight catalog methods and one
-notification; they do not establish whole-protocol or failure-path coverage.
+revision confirmation. The current cookbook contains eighteen recipes covering
+50 of 91 catalog method names and three notification names. These are
+recipe-presence counts, not whole-protocol or failure-path coverage. Run the
+packaged coverage report below for the current inventory and remaining gaps.
 
 The target is a fixture-backed cookbook covering every supported catalog method
 and notification, including alternate outcomes. Each recipe must describe its

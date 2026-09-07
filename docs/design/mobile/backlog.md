@@ -516,6 +516,15 @@ action verified above the open keyboard. Concurrent answers, native uncertainty,
 ordinary composer-draft interaction on v4 and the wider accessibility/device
 matrix remain open.
 
+[Second-client question handoff](real-question-harness-evidence.md#second-client-question-handoff--7-september)
+now proves a real SDK answer replacing the open iPhone batch and one native
+answer to the next question. Stale SDK review is rejected before another
+dispatch. [Approval recovery](approval-evidence.md#uncertain-decision-recovery--7-september)
+fixes the reproduced lost-acknowledgment retry gap with a current-session refresh
+gate; seventeen approval tests and the 620-test native suite pass. This does not
+close actual native uncertainty/reconnect, simultaneous decisions,
+ordinary-composer interaction or controller-lifetime recovery.
+
 ### MOB-009 · P1 · Complete rich transcript and attachment interaction · Open
 
 Finish authenticated image/gallery handling, multiple images, copy/link/code

@@ -721,3 +721,44 @@ qualification. Next prioritize concurrent/stale questions and decisions, uncerta
 delivery and reconnect, then reader continuity and multi-hub pending operations.
 iOS release, accessibility, physical-device and performance gates remain open;
 the global goal stays active, with Android qualification deferred.
+
+## Running-work recovery package — source 490b761a7
+
+Audit question and approval ownership, stale decisions, concurrent batches and
+lost replies against the current services, native sheets and SDK workflows.
+Luna medium independently reviews each decision family, identifying concrete
+contract failures and missing behavioral tests before edits. Bot inspects the
+existing real scripted-provider harness and prepares a fresh owned session.
+
+Reproduce confirmed defects with deterministic tests at the real service/client
+boundary, apply minimal fixes, and preserve drafts and pending selections.
+Then verify a real decision resolved from a second client while iOS is open,
+including stale UI prevention, authoritative readback and the next reachable
+pending decision. Do not claim uncertainty/reconnect qualification from a mock
+receipt alone or replay an uncertain mutation automatically. Record actual
+execution versus projection evidence, keep provider configuration cleanup
+explicit, and preserve the unrelated Apple patch and six prior drafts.
+
+### Running-work recovery checkpoint — approval fix 04dd97a46
+
+The real second-client question handoff passed: the SDK answered the first batch,
+the iPhone replaced the open sheet with the next question and cleared the old
+answer note, and the iPhone answered the next batch once. Provider ancestry checks
+and independent hub reads confirm both answer rounds. The stale SDK review was
+rejected before another dispatch. Source, artifacts, cleanup and limits are in
+[question recovery evidence](../../design/mobile/real-question-harness-evidence.md#second-client-question-handoff--7-september).
+
+The approval audit reproduced a lost-acknowledgment retry defect. The native
+controller and sheet now require successful current-session readback before
+another decision after uncertainty, reject malformed receipts and serialize
+recovery. Seventeen focused approval tests, all 620 native tests, TypeScript,
+and the iPhone Release build pass. See [approval recovery evidence](../../design/mobile/approval-evidence.md#uncertain-decision-recovery--7-september)
+for the actual regression and controller-lifetime limits. Luna medium supplied
+implementation and bounded review proposals; Bot verified causal findings,
+integrated the final code and ran the actual SDK/hub/iPhone journeys.
+
+Native lost-acknowledgment/reconnect acceptance, ordinary-composer interaction,
+simultaneous decisions, reader continuity, multi-hub operations and release gates
+remain open. The SDK has eighteen recipes covering 50 of 91 catalog method names
+and three notification names, with 141 behavioral contracts; these counts do not
+qualify every workflow outcome. iOS-only v1 and the global goal remain active.

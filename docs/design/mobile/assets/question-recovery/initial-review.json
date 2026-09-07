@@ -1,0 +1,83 @@
+{
+  "ref": "local:034KqNioFUIlbvv1lzFJgM",
+  "instanceId": "034KqNioFUIlbvv1lzFJgM",
+  "threadId": "034KqNioFUIlbvv1lzFJgM",
+  "calls": [
+    {
+      "id": "item_tool_24",
+      "callId": "call_fakellm_1",
+      "transcriptKey": "apptranscript-item-v1:turn_m1:1:1",
+      "position": {
+        "entry": 1,
+        "item": 1
+      },
+      "argumentsJson": "{\"questions\":[{\"header\":\"Delivery\",\"options\":[{\"detail\":\"Keep the change for review.\",\"label\":\"Keep as draft\",\"recommended\":true},{\"detail\":\"Apply the change immediately.\",\"label\":\"Apply now\"}],\"question\":\"How should this change be delivered?\"},{\"header\":\"Review\",\"multi_select\":true,\"options\":[{\"detail\":\"Inspect the change locally.\",\"label\":\"Review locally\",\"recommended\":true},{\"detail\":\"Prepare it for another reviewer.\",\"label\":\"Share for review\"}],\"question\":\"Which review steps should be included?\"}]}",
+      "questions": [
+        {
+          "header": "Delivery",
+          "options": [
+            {
+              "detail": "Keep the change for review.",
+              "label": "Keep as draft",
+              "recommended": true
+            },
+            {
+              "detail": "Apply the change immediately.",
+              "label": "Apply now"
+            }
+          ],
+          "question": "How should this change be delivered?"
+        },
+        {
+          "header": "Review",
+          "multi_select": true,
+          "options": [
+            {
+              "detail": "Inspect the change locally.",
+              "label": "Review locally",
+              "recommended": true
+            },
+            {
+              "detail": "Prepare it for another reviewer.",
+              "label": "Share for review"
+            }
+          ],
+          "question": "Which review steps should be included?"
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "header": "Delivery",
+      "options": [
+        {
+          "detail": "Keep the change for review.",
+          "label": "Keep as draft",
+          "recommended": true
+        },
+        {
+          "detail": "Apply the change immediately.",
+          "label": "Apply now"
+        }
+      ],
+      "question": "How should this change be delivered?"
+    },
+    {
+      "header": "Review",
+      "multi_select": true,
+      "options": [
+        {
+          "detail": "Inspect the change locally.",
+          "label": "Review locally",
+          "recommended": true
+        },
+        {
+          "detail": "Prepare it for another reviewer.",
+          "label": "Share for review"
+        }
+      ],
+      "question": "Which review steps should be included?"
+    }
+  ]
+}

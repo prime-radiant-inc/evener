@@ -1,0 +1,13 @@
+{
+  "ref": "local:034KqNioFUIlbvv1lzFJgM",
+  "instanceId": "034KqNioFUIlbvv1lzFJgM",
+  "threadId": "034KqNioFUIlbvv1lzFJgM",
+  "answerTurn": "turn_m2",
+  "mutationId": "f4c4c09e-6fc8-4394-b232-8579089061d2",
+  "answerWrites": 1,
+  "answerMessages": 1,
+  "staleRejectedBeforeDispatch": true,
+  "pendingQuestions": 1,
+  "priorCallId": "call_fakellm_1",
+  "currentCallId": "call_fakellm_2"
+}
