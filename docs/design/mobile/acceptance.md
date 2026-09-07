@@ -13,7 +13,7 @@ and release evidence needed to close it.
 artifact. The AppWire v4 migrations are committed through `3356848d4`, followed
 by protocol recovery at `9e6f232d7`. Both Release artifacts were rebuilt and
 installed from `9e6f232d7`; the iOS and Android version-mismatch journeys passed
-against an isolated old v3 hub. Successful v4 native workflows remain open.
+against an isolated old v3 hub. The [v4 integration record](v4-integration-evidence.md) now qualifies direct connection, roster/project navigation, native send/stop and cross-device publication on these artifacts; wider v4 acceptance remains open.
 The full native suite reported 359 tests, and the coordinator separately ran
 366 shared service/store tests plus 11 pretests. These checks are scoped
 integration evidence, not final release acceptance. The gate scope and creation
