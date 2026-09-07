@@ -10,7 +10,9 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -157,6 +159,44 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 		}
 		if strings.HasPrefix(got, testEnvRoot) {
 			t.Fatalf("go env %s = %q, inside the throwaway test root %q; the cache it writes there outlives the run", key, got, testEnvRoot)
+		}
+	}
+}
+
+// TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
+// TestMain's isolation: every filesystem root the hub falls back to when a
+// WebConfig field is left unset (the launch config root, the hub state root,
+// the plugin store root, the MCP config path) and the HOME and XDG bases they
+// derive from resolve inside the throwaway root, never in the developer's own
+// home.
+//
+// TestHubRPCRegistersExpectedHandlerSet is why this has to be pinned. It
+// dispatches every registered method with empty params, and for a handler
+// where an empty request is a valid write (evener/launch/setLayer today; any
+// "set this file's content" handler tomorrow) the write happens for real,
+// against whichever root the fixture left unset. The HOME/XDG redirect above
+// is what keeps that write out of ~/.config/evener; this is the test that
+// notices if the redirect stops covering a root, or a resolver stops deriving
+// from it.
+func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	roots := []struct{ name, path string }{
+		{"os.UserHomeDir", home},
+		{envvars.XDGConfigHome.Name, envvars.XDGConfigHome.Getenv()},
+		{envvars.XDGStateHome.Name, envvars.XDGStateHome.Getenv()},
+		{envvars.XDGCacheHome.Name, envvars.XDGCacheHome.Getenv()},
+		{"hubLaunchConfigRoot with LaunchConfigRoot unset", hubLaunchConfigRoot(hubcore.WebConfig{})},
+		{"cmdutil.DefaultStateRoot", cmdutil.DefaultStateRoot()},
+		{"plugins.DefaultRoot", plugins.DefaultRoot()},
+		{"defaultMCPConfigPath", defaultMCPConfigPath()},
+	}
+	inside := testEnvRoot + string(os.PathSeparator)
+	for _, root := range roots {
+		if !strings.HasPrefix(root.path, inside) {
+			t.Errorf("%s = %q, outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real", root.name, root.path, testEnvRoot)
 		}
 	}
 }
