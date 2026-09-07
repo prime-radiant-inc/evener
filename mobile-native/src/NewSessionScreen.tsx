@@ -15,6 +15,7 @@ import {
   Platform,
   ScrollView,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -42,6 +43,7 @@ export function NewSessionScreen({
   const { activeProfile, client, state, retry } = useConnection();
   const colors = useColors();
   const headerHeight = useHeaderHeight();
+  const { fontScale } = useWindowDimensions();
   const formScroll = useRef<ScrollView>(null);
   const promptFocused = useRef(false);
   useEffect(() => {
@@ -106,6 +108,19 @@ export function NewSessionScreen({
       borderColor: colors.border,
     },
   ];
+  const composerSettings = (
+    <CreationComposerSettings
+      key={hubId}
+      models={form.models}
+      model={form.model}
+      reasoning={form.reasoning}
+      overrides={form.launchOverrides}
+      disabled={disabled}
+      hubName={route.params.hubName}
+      selectModel={form.selectModel}
+      setReasoning={form.setReasoning}
+    />
+  );
   async function submit() {
     if (!latest.current.ready || imageSelection.getSnapshot().busy) return;
     const submittedClient = latest.current.client;
@@ -315,6 +330,10 @@ export function NewSessionScreen({
             >
               <TextInput
                 accessibilityLabel="Opening prompt"
+                onContentSizeChange={() => {
+                  if (promptFocused.current)
+                    formScroll.current?.scrollToEnd({ animated: false });
+                }}
                 onFocus={() => {
                   promptFocused.current = true;
                   formScroll.current?.scrollToEnd({ animated: false });
@@ -330,7 +349,13 @@ export function NewSessionScreen({
                 placeholderTextColor={colors.secondary}
                 style={[
                   ...inputStyle,
-                  { minHeight: 120, textAlignVertical: "top", borderWidth: 0 },
+                  {
+                    minHeight: fontScale > 1.6 ? 96 : 120,
+                    maxHeight: fontScale > 1.6 ? 96 : 160,
+                    textAlignVertical: "top",
+                    borderWidth: 0,
+                    padding: fontScale > 1.6 ? 2 : 12,
+                  },
                 ]}
               />
               <ImageAttachments
@@ -344,6 +369,7 @@ export function NewSessionScreen({
               !form.images.length ? (
                 <Copy muted>{emptyPromptReason}</Copy>
               ) : null}
+              {fontScale > 1.4 ? composerSettings : null}
               <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
                 <Action
                   label="Attach images"
@@ -356,19 +382,12 @@ export function NewSessionScreen({
                 >
                   {imageState.busy ? "Processing…" : "+"}
                 </Action>
-                <CreationComposerSettings
-                  key={hubId}
-                  models={form.models}
-                  model={form.model}
-                  reasoning={form.reasoning}
-                  overrides={form.launchOverrides}
-                  disabled={disabled}
-                  hubName={route.params.hubName}
-                  selectModel={form.selectModel}
-                  setReasoning={form.setReasoning}
-                />
+                {fontScale <= 1.4 ? composerSettings : null}
                 <Action
                   tone="primary"
+                  label={
+                    form.submitting ? "Creating session" : "Create session"
+                  }
                   disabled={
                     disabled ||
                     !form.cwd.trim() ||
@@ -380,7 +399,7 @@ export function NewSessionScreen({
                     void submit();
                   }}
                 >
-                  {form.submitting ? "Creating…" : "Create session"}
+                  {form.submitting ? "Creating…" : "Create"}
                 </Action>
               </View>
             </View>
