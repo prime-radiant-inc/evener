@@ -624,10 +624,17 @@ readback fail; this example does not wait through a reconnect loop.
 
 Exit 0 means a read or acknowledged operation with readback; exit 2 means an
 uncertain operation with readback; exit 1 means invalid input or an incomplete
-operation, including failed readback after an acknowledgment. The helpers retain
-the read failure after an acknowledgment, or both causes in `AggregateError`
-when mutation and readback fail. CLI errors omit those potentially private
-causes. After exit 1 or 2, run the default read-only command to inspect current
+operation, including failed readback after an acknowledgment. A valid acknowledgment
+followed by a failed read throws `AcknowledgedReadbackError`, exported from
+`examples/management-recovery.mjs`. Its `outcome` remains `"acknowledged"`,
+`execution` is `"unverified"`, `method` identifies the operation, and `cause`
+preserves the read failure, including an undefined or null thrown value.
+The CLI emits `{"outcome":"acknowledged","execution":"unverified","readback":"unavailable"}`
+to stderr and exits 1. This distinguishes an accepted change from an operation
+whose acknowledgment is unknown without claiming that current state was read.
+Both failures remain ordered in `AggregateError` when mutation and readback fail.
+CLI diagnostics omit potentially private causes. After exit 1 or 2, run the default
+read-only command to inspect current
 state before preparing a deliberate next edit; do not rerun the write command
 as a recovery shortcut.
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runGoals } from "./goals-logic.mjs";
 import { ownedHub, scriptedHub, withMutationEnv } from "./management-contract-fixtures.mjs";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 
 const ref = "local:goal",
   instanceId = "instance";
@@ -170,7 +171,7 @@ test("goal readback enforces binding and preserves ordered dual errors", () =>
         throw error;
       },
     ]);
-    await assert.rejects(run(ack, "clear"), (e) => e === error);
+    await assert.rejects(run(ack, "clear"), (e) => e instanceof AcknowledgedReadbackError && e.cause === error);
     const both = scriptedHub([
       () => read(),
       () => {

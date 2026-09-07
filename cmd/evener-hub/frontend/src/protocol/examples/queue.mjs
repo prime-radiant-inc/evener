@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { clientFromEnvironment } from "./connection.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 import { runQueue } from "./queue-logic.mjs";
 
 let hub;
@@ -40,8 +41,8 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
-  console.error("Queue operation failed.");
+} catch (error) {
+  console.error(managementErrorMessage(error, "Queue operation failed."));
   process.exitCode = 1;
 } finally {
   hub?.close();

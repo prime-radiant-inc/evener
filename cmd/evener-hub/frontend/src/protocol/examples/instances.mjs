@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { clientFromEnvironment } from "./connection.mjs";
 import { runInstanceOperation } from "./instances-logic.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 
 let hub;
 try {
@@ -23,10 +24,13 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
+} catch (error) {
   // Provider configuration and transport errors can contain private values.
   console.error(
-    "Instance operation could not be completed. Read current provider state before deliberately issuing another mutation.",
+    managementErrorMessage(
+      error,
+      "Instance operation could not be completed. Read current provider state before deliberately issuing another mutation.",
+    ),
   );
   process.exitCode = 1;
 } finally {

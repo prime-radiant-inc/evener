@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { clientFromEnvironment } from "./connection.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 import { runQuestions } from "./questions-logic.mjs";
 
 let hub;
@@ -46,8 +47,8 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
-  console.error("Question operation failed.");
+} catch (error) {
+  console.error(managementErrorMessage(error, "Question operation failed."));
   process.exitCode = 1;
 } finally {
   hub?.close();

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ownedHub, scriptedHub, withMutationEnv } from "./management-contract-fixtures.mjs";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 import { runQueue } from "./queue-logic.mjs";
 
 const ref = "local:queue";
@@ -240,7 +241,10 @@ test("readback rejects replacement bindings and retains dual failures", () =>
         throw readError;
       },
     ]);
-    await assert.rejects(run(ack, "queue"), (error) => error === readError);
+    await assert.rejects(
+      run(ack, "queue"),
+      (error) => error instanceof AcknowledgedReadbackError && error.cause === readError,
+    );
     const both = scriptedHub([
       () => snapshot(),
       () => {
