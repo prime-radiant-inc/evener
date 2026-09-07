@@ -1076,20 +1076,25 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}
-	threadID := s.appThreadIDForRead(params)
-	if threadID == "" {
-		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread is unavailable")
-	}
+	var threadID string
 	var response appwire.ThreadReadResponse
 	var readErr error
 	captured := appserver.CaptureSubscription(
 		ctx,
 		params.ReplaceSubscription,
-		func() string { return s.appNotificationTarget(threadID) },
+		nil,
 		s.appNotifier.CurrentSequence,
 		func() bool {
-			response, readErr = s.appThreadReadSnapshotChecked(params)
+			response, readErr = s.appThreadReadSnapshotForTarget(params, threadID)
 			return true
+		},
+		func() appserver.SubscriptionTarget {
+			threadID = s.appThreadIDForRead(params)
+			if threadID == "" {
+				return appserver.SubscriptionTarget{}
+			}
+			key := s.appNotificationTarget(threadID)
+			return appserver.SubscriptionTarget{ThreadID: key, LifecycleKey: key}
 		},
 	)
 	if !captured {
@@ -1125,7 +1130,12 @@ func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.
 }
 
 func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	threadID := s.appThreadIDForRead(params)
+	return s.appThreadReadSnapshotForTarget(params, s.appThreadIDForRead(params))
+}
+
+// appThreadReadSnapshotForTarget materializes the exact target selected under
+// the subscription projection gate, without resolving mutable request aliases.
+func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams, threadID string) (appwire.ThreadReadResponse, error) {
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {
 		return appwire.ThreadReadResponse{}, nil

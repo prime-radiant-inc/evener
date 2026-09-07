@@ -223,7 +223,13 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				return "", false
 			}
 			var params appwire.ThreadReadParams
-			if json.Unmarshal(msg.Request.Params, &params) != nil {
+			if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+				var unsubscribe appwire.ThreadUnsubscribeParams
+				if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
+					return "", false
+				}
+				params.Ref, params.ThreadID = unsubscribe.Ref, unsubscribe.ThreadID
+			} else if json.Unmarshal(msg.Request.Params, &params) != nil {
 				return "", false
 			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)

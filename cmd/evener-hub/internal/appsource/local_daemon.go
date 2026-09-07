@@ -101,24 +101,53 @@ func (s *LocalDaemonSource) ID() string {
 }
 
 func (s *LocalDaemonSource) ResolveRelaySession(params appwire.ThreadReadParams) (appwire.Ref, error) {
-	entry, err := s.entryForReadRef(params.Ref, params.ThreadID)
+	canonical, _, err := s.ResolveRelaySessionWithAdmission(params)
+	return canonical, err
+}
+
+// ResolveRelaySessionWithAdmission derives both identities from one inventory
+// entry. A descendant owns its admission even when it shares the root relay.
+func (s *LocalDaemonSource) ResolveRelaySessionWithAdmission(params appwire.ThreadReadParams) (appwire.Ref, string, error) {
+	item, err := s.localEntryForRefMode(params.Ref, params.ThreadID, true)
 	if err != nil {
-		return appwire.Ref{}, err
+		return appwire.Ref{}, "", err
 	}
-	return s.relaySessionRef(entry)
+	canonical, err := s.relaySessionRef(localDaemonRendezvousEntry(item))
+	if err != nil {
+		return appwire.Ref{}, "", err
+	}
+	owner := canonical.String()
+	if item.ReadOnlyAlias {
+		owner = (appwire.Ref{SourceID: s.sourceID, ThreadID: localDaemonThreadID(item)}).String()
+	}
+	return canonical, owner, nil
 }
 
 // ResolveSubscriptionAdmission preserves stable/current root aliases while
 // keeping read-only descendants distinct from their shared relay session.
 func (s *LocalDaemonSource) ResolveSubscriptionAdmission(params appwire.ThreadReadParams) (appwire.Ref, error) {
-	item, err := s.localEntryForRefMode(params.Ref, params.ThreadID, true)
+	_, owner, err := s.ResolveRelaySessionWithAdmission(params)
 	if err != nil {
 		return appwire.Ref{}, err
 	}
-	if item.ReadOnlyAlias {
-		return appwire.Ref{SourceID: s.sourceID, ThreadID: localDaemonThreadID(item)}, nil
+	return appwire.ParseRef(owner)
+}
+
+// relayEntry may refresh an endpoint, but a canonical key cannot fall back to
+// a newly reassociated current-ID alias with a different semantic owner.
+func (s *LocalDaemonSource) relayEntry(ref appwire.Ref) (rendezvous.Entry, error) {
+	entry, err := s.entryForReadRef(ref.String(), "")
+	if err != nil {
+		return rendezvous.Entry{}, err
 	}
-	return s.relaySessionRef(localDaemonRendezvousEntry(item))
+	canonical, err := s.relaySessionRef(entry)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	if canonical != ref {
+		return rendezvous.Entry{}, appwire.SessionUnavailable("relay session identity changed")
+	}
+	return entry, nil
 }
 
 func (s *LocalDaemonSource) relaySessionRef(entry rendezvous.Entry) (appwire.Ref, error) {
@@ -137,7 +166,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	if ref.SourceID != s.sourceID || ref.String() == "" {
 		return nil, appwire.SessionUnavailable("invalid relay session ref")
 	}
-	_, err := s.entryForReadRef(ref.String(), "")
+	_, err := s.relayEntry(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +185,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	if session == nil {
 		created := newRelaySession(
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
-				currentEntry, resolveErr := s.entryForReadRef(key, "")
+				currentEntry, resolveErr := s.relayEntry(ref)
 				if resolveErr != nil {
 					return nil, nil, resolveErr
 				}
