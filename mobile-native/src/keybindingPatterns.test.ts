@@ -1,6 +1,6 @@
 import { parseKeybinding } from "tinykeys";
+import { parseKeybinding as parseWeb } from "tinykeys-reference";
 import { describe, expect, it } from "vitest";
-import { parseKeybinding as parseWeb } from "../../cmd/evener-hub/frontend/node_modules/tinykeys/dist/tinykeys.mjs";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 
 const samples = [

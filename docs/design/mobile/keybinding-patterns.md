@@ -73,6 +73,7 @@ fs.writeFileSync("node_modules/regexpu-core/unicode-properties.js",
 
 `npm ci` applies both native dependency patches with `--error-on-fail`.
 Vitest resolves shared headless imports to the native tinykeys installation,
-matching Metro; the differential oracle explicitly imports the unpatched web
-installation. Bundle cost and simulator observations belong in the shortcut
+matching Metro; the differential oracle imports a separate unpatched tinykeys
+4.0.0 development dependency, so native CI needs no frontend dependency install.
+Bundle cost and simulator observations belong in the shortcut
 acceptance report, separate from these source-level decisions.
