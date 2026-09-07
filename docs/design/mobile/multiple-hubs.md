@@ -114,3 +114,30 @@ lock or every stop/restart interleaving.
   large cards and repeated Edit/Remove controls make switching cumbersome.
   Compact rows and a separate add/edit surface should be evaluated against the
   existing design guide. Current screenshots are evidence, not visual approval.
+
+## iPhone hub form with the keyboard open — 7 September 2026
+
+Observed on iPhone 17 Pro, iOS 26.5, with the Release bundle whose SHA-256 is
+`b8708d25356771c3409c8c8b6da09802a69fef91be608c9bf622e25c9a2ad9c9`
+(the completed-question and reader lifecycle build recorded in
+[reader evidence](reader-continuity-evidence.md)). No hub was added in this check.
+
+With five existing profiles, scrolling to Add hub and focusing Hub name opened
+the keyboard. A drag in the visible form area brought all three inputs and the
+disabled Save and connect control above the keyboard. Tapping the visible Hub
+origin and then Bearer token fields moved the caret to each field without losing
+access to them. Return dismissed the keyboard. The app then returned to the
+original v4 acceptance hub and Draft before questions conversation. Both draft
+verifiers confirmed all seven retained drafts were unchanged.
+
+Visually inspected captures:
+[all fields after scrolling](assets/multiple-hubs/ios-keyboard-all-fields-20260907.jpg),
+[origin focused](assets/multiple-hubs/ios-keyboard-origin-20260907.jpg), and
+[token focused](assets/multiple-hubs/ios-keyboard-token-20260907.jpg).
+
+This covers blank-field focus and scrolling on this simulator size. It does not
+qualify typed credential submission, other text sizes, iPad or physical devices,
+nor delayed save/selection ordering. Earlier setup automation targeted inputs
+covered by the keyboard; accessibility snapshots may list such inputs even when
+they cannot be tapped. This check used the visibly exposed fields and did not
+reproduce a focus/scroll defect.
