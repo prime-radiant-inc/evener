@@ -197,6 +197,16 @@ const TAIL_BLOCK_MARKER =
 // back to the full parse.
 const HEAD_SPLIT_HAZARD = /^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
 
+// HTML blocks (CommonMark types 1-6: pre/script/style/textarea, comments,
+// processing instructions, declarations, CDATA, block tags) run past blank
+// lines until their terminator, so a split inside one severs it with no
+// markdown marker in the tail for TAIL_BLOCK_MARKER to trip. A block start in
+// the head, or a block ender in the tail (whose opener may sit anywhere
+// upstream, including before the head), falls back to the full parse.
+const HTML_BLOCK_START =
+  /^ {0,3}(?:<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|\[CDATA\[|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>\/]|$))/im;
+const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>/i;
+
 // Splits a long live source into a settled head (ending on a blank line) and
 // the streaming tail after it, or null when there is no blank-line boundary
 // in range (one very long paragraph still streaming). Leading blank lines of
@@ -252,20 +262,31 @@ export function Markdown({ source, live = false }: MarkdownProps) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
     }
-    // The head must be closed at the boundary (no fence, code span, or
-    // emphasis left open - closeOpenMarkdown is identity exactly then), the
-    // head must hold no forward-reference hazards, and the tail must be
-    // paragraphs-only starting on fresh (non-indented) content. The tail
-    // keeps the full block parse - never an inline-only one - so headings,
-    // lists, and fences inside it render their real structure; but the gates
-    // above mean a tail carrying any of those never reaches this path.
+    // The windowed path is sound only when NOTHING spans the split. Its
+    // keystone is whole-source balance: closeOpenMarkdown is identity exactly
+    // when the live input has no construct left open, so no fence, code span,
+    // or emphasis can still be awaiting its closer in the tail - had one been
+    // severed, the whole would not be identity. The head must be closed at
+    // the boundary too (a fence opened in the head and closed in the tail is
+    // whole-balanced but still spans the split - the tail's fence run trips
+    // TAIL_BLOCK_MARKER for that shape, and this check backstops it). The
+    // only cross-boundary structure a balanced whole can otherwise carry is
+    // forward references (link definitions, table delimiters) and blank-line-
+    // spanning HTML blocks, excluded by HEAD_SPLIT_HAZARD and the HTML gates;
+    // the tail must be paragraphs-only on fresh content (TAIL_BLOCK_MARKER,
+    // tailStartsIndented). Anything else takes the full-parse fallback, which
+    // is exactly the pre-throttle behavior for every input. The tail keeps
+    // the full block parse - never an inline-only one.
     const split = splitLiveSource(source);
     if (
       split === null ||
       closeOpenMarkdown(split.head) !== split.head ||
       HEAD_SPLIT_HAZARD.test(split.head) ||
+      HTML_BLOCK_START.test(split.head) ||
+      HTML_BLOCK_END.test(split.tail) ||
       TAIL_BLOCK_MARKER.test(split.tail) ||
-      tailStartsIndented(split.tail)
+      tailStartsIndented(split.tail) ||
+      closeOpenMarkdown(source) !== source
     ) {
       const rawHtml = md.parse(closeOpenMarkdown(source), { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
