@@ -1457,10 +1457,7 @@ async function publishAndReconcileThreadHydration(
         // Saved snapshots contain no authoritative daemon receipt history, even
         // after an incompatible daemon has been stopped. Persist uncertainty so
         // reopening that saved snapshot cannot release an already accepted send.
-        if (
-          published.status.type === "restartRequired" ||
-          (published.status.type === "notLoaded" && blockingObligation)
-        ) {
+        if (published.status.type === "restartRequired" || published.status.type === "notLoaded") {
           for (const record of await runtime.storage.listOutbox(ref)) {
             if (!current()) return;
             if (record.state === "submitting")

@@ -7921,6 +7921,62 @@ test("explicit refresh captures the replacement client with its ready epoch", as
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
 });
 
+test("a new message composed after a saved snapshot can still dispatch", async () => {
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "notLoaded" } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().queue("ref_a", "new message");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+});
+
+test("reload after a failed restart write reconciles persisted uncertainty with the resumed daemon", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "reload-uncertain" });
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  setMutationStorageForTests(storage);
+  vi.spyOn(storage, "markUnknown").mockRejectedValue(new DOMException("storage unavailable", "AbortError"));
+  const old = connectFakeClient("connecting");
+  old.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  old.emitReady();
+  await threadsStore
+    .getState()
+    .ensureThread("ref_a")
+    .catch(() => undefined);
+  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("submitting");
+  resetThreadsStoreForTests();
+  const reloadedStorage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(reloadedStorage);
+  const reloaded = connectFakeClient("connecting");
+  let resumed = false;
+  reloaded.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: resumed ? "idle" : "notLoaded" },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, clientMutationIds: resumed ? [record.clientMutationId] : [] },
+      },
+    }),
+  );
+  reloaded.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  reloaded.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  expect((await reloadedStorage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+  expect(reloaded.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  resumed = true;
+  await threadsStore.getState().refreshThread("ref_a");
+  expect(await reloadedStorage.getOutbox(record.clientMutationId)).toBeUndefined();
+  expect(reloaded.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+});
+
 test("saved snapshots retain restart protection for subsequently discovered outbox records", async () => {
   const storage = new MutationOutboxIndexedDB({ createMutationId: () => "late-upgrade-record" });
   setMutationStorageForTests(storage);
