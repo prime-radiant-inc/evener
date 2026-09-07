@@ -992,9 +992,13 @@ export function createConversationService(
     async setGoal(objective) {
       requireCap("goal", "setGoal");
       const threadRef = requireRef();
-      await withCapabilityRefresh("setGoal", () =>
+      const result = await withCapabilityRefresh("setGoal", () =>
         client.request("goal/set", { ref: threadRef, objective }),
       );
+      const response = exactObject(result, ["started"], "goal result");
+      if (typeof response.started !== "boolean") {
+        throw new Error("ConversationService: invalid goal acknowledgment");
+      }
     },
 
     async rename(name) {

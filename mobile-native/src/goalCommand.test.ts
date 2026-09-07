@@ -292,6 +292,37 @@ it("checkpoints goal changes, retains uncertain delivery, and clears without con
 	}
 });
 
+it.each([false, true])(
+	"keeps malformed goal acknowledgment recoverable (clear: %s)",
+	async (clear) => {
+		const { db, document } = commandDraft();
+		const { io, service } = boundary();
+		let received = 0;
+		try {
+			await service.open("local:test");
+			const draft = clear ? "ordinary draft" : "/goal objective";
+			document.edit(draft);
+			io.set = async () => {
+				received++;
+				return {} as never;
+			};
+			await expect(
+				submitGoalCommand(document, service, clear),
+			).rejects.toThrow();
+			expect(document.getSnapshot().record).toMatchObject({
+				draft: clear ? draft : "",
+				unconfirmed: clear ? "/goal" : draft,
+			});
+			if (!clear) document.edit(draft);
+			await submitGoalCommand(document, service, clear);
+			expect(received).toBe(1);
+		} finally {
+			service.close();
+			db.close();
+		}
+	},
+);
+
 function commandDraft() {
 	const db = new DatabaseSync(":memory:");
 	const repository = new DraftRepository({
