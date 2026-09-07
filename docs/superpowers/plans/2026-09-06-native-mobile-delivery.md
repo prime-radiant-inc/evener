@@ -948,3 +948,15 @@ operation acceptance. See multiple-hubs.md for artifacts and source bundle hash.
 The full gate will be rerun on the committed integration; broader iOS release,
 multi-hub uncertain operations and complete SDK workflow qualification remain
 open. Android release qualification stays deferred.
+
+### Verified integration — b9e1b8926
+
+The complete canonical merge gate exited zero: lint/build, full root and other
+module/web tests, 639 native tests, native TypeScript and independent package
+qualification. `make vet` exited zero separately. Five browser guards passed
+before the native-only selection integration. Independent review found no
+remaining actionable issue in this change. The acceptance ledger now links the
+scoped hub/SDK evidence and explicitly applies iOS-only release requirements.
+Its updates are documentation only. The original hub, seven drafts and unrelated
+Apple patch remain preserved. The full project goal remains active; the release
+and workflow gaps above are still open.
