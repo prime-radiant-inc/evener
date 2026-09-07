@@ -116,7 +116,10 @@ test("the 44px touch-target floor is declared inside the phone media query (2026
 // selects that still took --font-size-ui after the lock was removed.
 const CONTROL_SELECTOR_RE =
   /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect)(\b|[:.[])/;
-const CONTROL_SIZE_RE = /font-size:\s*var\(--font-size-(control|body)\)/;
+// var(--font-size-control), or the textarea's max(control, body) - never the
+// body size alone, which the S preference scales under 16px on phones.
+const CONTROL_SIZE_RE =
+  /font-size:\s*(var\(--font-size-control\)|max\(var\(--font-size-control\), var\(--font-size-body\)\))/;
 
 function walkCss(dir: string): string[] {
   const found: string[] = [];

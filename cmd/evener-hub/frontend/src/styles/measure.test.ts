@@ -46,8 +46,15 @@ test("prose is bounded by the column, not a percentage of the pane", () => {
   expect(read("panes/session/transcript/messages/usermessageitem.module.css")).not.toMatch(/max-width:\s*92%/);
 });
 
-test("the composer field takes the body size", () => {
+test("the composer field takes the body size, floored at the control size on phones", () => {
+  // max(control, body): body on desktop (15px, where control is the 13px ui
+  // step), and never under the 16px control floor on phones - --font-size-body
+  // alone drops to 14.4px under the S preference (roborev on PR #947).
   expect(read("widgets/textarea/textarea.module.css")).toMatch(
-    /\.textarea\s*\{[^}]*font-size: var\(--font-size-body\)/,
+    /\.textarea\s*\{[^}]*font-size: max\(var\(--font-size-control\), var\(--font-size-body\)\)/,
   );
+  // The spawn pane's phone override used to re-set the body size; it now
+  // inherits the widget's floor and only keeps the writing-surface height.
+  const spawn = read("panes/spawn/spawn.module.css");
+  expect(spawn).not.toMatch(/\.form textarea\s*\{[^}]*font-size/);
 });

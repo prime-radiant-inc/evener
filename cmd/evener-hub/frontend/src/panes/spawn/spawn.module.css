@@ -335,12 +335,11 @@
     max-width: none;
   }
 
-  /* 16px is the floor iOS Safari zooms the page to reach; a smaller field font
-   * makes focusing the prompt scale the whole layout. The min-height keeps the
-   * field a usable writing surface on a short viewport where the card's
-   * line-count floor would otherwise be all it gets. */
+  /* The field's size comes from widgets/textarea (the 16px phone floor lives
+   * there); the min-height keeps the field a usable writing surface on a
+   * short viewport where the card's line-count floor would otherwise be all
+   * it gets. */
   .form textarea {
-    font-size: var(--font-size-body);
     min-height: 96px;
   }
 
