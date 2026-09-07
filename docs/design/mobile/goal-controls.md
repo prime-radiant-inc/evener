@@ -33,3 +33,58 @@ No goal result authorizes automatic replay or proves execution. The 112 SDK
 contracts and package gate pass; see the package README for runnable examples.
 Real successful autonomous goal continuation on the current iOS/SDK build and
 the remaining device/fault matrix are still unqualified.
+
+## Direct v4 iOS and SDK continuation — 7 September
+
+The Release app rebuilt from `d48fe9471` and a freshly packed SDK consumer now
+exercise the real goal loop through owned hub `ws://127.0.0.1:54211/rpc`.
+Only the provider boundary is scripted; the hub, daemon, goal store, continuation
+routing and file tool are real. The [receipt](assets/goals-v4-receipt.json) records
+source, bundle/package/binary hashes, fixture Git commits, session identities,
+terminal reads, file hashes and cleanup.
+
+Native set an idle goal through Session → Set goal in composer. While the first
+provider request was held, Edit goal in composer changed the objective; fresh
+reads confirmed the exact new objective with zero iterations. Ending that first
+turn with `communicate(end_turn: true)` produced the next provider request
+without Send or steering. A fresh read showed the first turn completed, the
+second running and one goal iteration **before** releasing its file operation.
+The real `write_file` created the expected 36-byte file. The provider then called
+`update_goal(status: "complete")` and ended the turn. An independent subscribed
+client observed completion; both turns were completed, the goal was complete
+with one iteration, and neither turn contained a user-message or steering item.
+
+The independently installed SDK repeated this sequence in a different session
+and wrote a different file. Idle set returned `started: true`. Editing during
+the running turn returned `started: false`; a wrapper deliberately discarded
+that valid reply. The recipe reported uncertain, did not replay, and read back
+the edited objective. A stale reviewed-goal clear dispatched zero writes. Across
+set, edit and final clear there were three counted `goal/set` requests. Clearing
+the completed goal returned acknowledged with `started: false` and absent goal
+readback. These SDK receipt results still report execution unverified; separate
+provider, transcript and filesystem evidence establishes this run's execution.
+
+Native kept an ordinary draft while the goal finished. Edit requested concrete
+draft replacement; Cancel preserved the text. Clear removed the goal without
+sending or replacing that draft. Actual app stop/launch restored the same session
+and exact draft, and an independent read still found no goal and only the two
+completed turns. SQLite verification confirmed its 36-byte hash and no unconfirmed
+delivery, together with unchanged hashes for five earlier drafts.
+
+![Native completed goal](assets/goals-v4-complete.jpg)
+
+![Cleared goal and draft after relaunch](assets/goals-v4-restarted-draft.jpg)
+
+Both fixture sessions are shut down, their goals are absent, the temporary
+provider exited successfully, and the complete provider registry matches its
+baseline. The unrelated Apple project/plist changes remain byte-for-byte intact
+and unstaged. Luna medium reviewed the implementation and acceptance boundaries;
+the coordinator executed the device, SDK and cleanup checks.
+
+This qualifies this simulator's set/edit/clear and successful continuation path.
+Native wire counts and actual `started` replies were not intercepted. SDK reply
+discard is a client-boundary fault, not a network disconnection. Native uncertainty,
+storage faults, another writer, draft-replacement confirmation, iPad, physical
+devices, VoiceOver and broader lifecycle cases remain open. The scripted tool
+responses omit descriptions, so the transcript displays “Action summary
+unavailable”; this run does not qualify settled action summaries.
