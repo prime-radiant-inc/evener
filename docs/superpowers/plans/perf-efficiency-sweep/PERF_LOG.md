@@ -96,6 +96,9 @@ Rule: small frequent commits; every claim backed by measurement.
 
 - Frontend #1 (2026-09-06): drop unused `react-router` dep — `cmd/evener-hub/frontend/package.json` + lockfile (29 deletions). Proof: `npm ls react-router` empty, `tsc --noEmit` clean, 121 scoped vitest green, `vite build` green. Commits `82bb54aa7` + merge `74705b469`.
 - Frontend #5 anser singleton: SKIPPED with evidence — Anser instances carry mutable fg/bg/decorations state across calls (behavioral leakage proven), singleton would corrupt output.
+- Backend #5 (2026-09-06): 64KiB bufio for job-output grep — `agent/internal/jobstore/output.go:526,565` (matches store.go 64KiB convention). Unmeasured (buffer-size-only, parity by construction); jobstore tests green. Commit `821671373` + merge `d488e6af8`.
+- Backend #3 (2026-09-06): O(1) retained-match size accounting — `agent/retained_output_read.go` running accumulator + `agent/retained_output_size_acc_test.go` (parity test vs wire bytes + kept benchmark). Measured 100-match search: 1,962,081 → 52,598 ns/op (~37×), 1,533,574 → 92,140 B/op (~16.6×), 15,469 → 615 allocs/op (~25×). Retained tests + parity test green. Commit `d4d457511` + merge `d488e6af8`.
+- Backend #9 SerializedBytes: SKIPPED with evidence — callers use distinct per-iteration trial copies (nothing to cache); Marshal would move truncation boundary; loop bounded (≤128 × ≤4KB, rare model_list path).
 
 ## Gates before PR
 
