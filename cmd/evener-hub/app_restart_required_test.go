@@ -402,7 +402,7 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 			if err := writer.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: childID, ParentSessionID: parentID, JobTreeRootSessionID: parentID, ProfileID: "openai", Model: "gpt-5"}); err != nil {
+			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: childID, ParentSessionID: parentID, IsSubagent: delegated, JobTreeRootSessionID: parentID, ProfileID: "openai", Model: "gpt-5"}); err != nil {
 				t.Fatal(err)
 			}
 			if delegated {
@@ -432,6 +432,23 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 			defer client.Close()
 			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
 				t.Fatal(err)
+			}
+
+			web := &WebServer{cfg: hubcore.WebConfig{Past: past, Roster: roster}}
+			snapshot := web.navigationSnapshotInputs(t.Context())
+			tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, nil, snapshot.projects)
+			inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, nil, hubapi.AttentionSummary{}, snapshot.live, nil, nil, nil, nil)
+			if delegated && inputs.Renameable[childID] {
+				t.Error("navigation advertises delegate rename")
+			}
+			childRestart := false
+			for _, live := range snapshot.live {
+				if live.SessionID == childID && live.Status == appwire.ThreadStatusRestartRequired {
+					childRestart = true
+				}
+			}
+			if childRestart != delegated {
+				t.Errorf("navigation child restart=%v, delegated=%v", childRestart, delegated)
 			}
 			ref := "local:" + childID
 			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})

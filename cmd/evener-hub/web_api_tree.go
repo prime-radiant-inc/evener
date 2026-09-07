@@ -272,6 +272,22 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			metas = append(metas, entry.Meta)
 		}
 	}
+	// Persisted delegates have no rendezvous of their own. Preserve the
+	// authenticated owner's restart restriction in every navigation projection.
+	for _, past := range pastEntries {
+		if past.Meta.ParentSessionID == "" {
+			continue
+		}
+		owner, incompatible := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
+		if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
+			continue
+		}
+		child := hubcore.LiveEntry{Entry: owner.Entry, SessionID: past.Meta.ID, Status: owner.Status}
+		child.ThreadID = past.Meta.ID
+		child.WorkspaceRef = localAppRef(past.Meta.ID)
+		child.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+		live = append(live, child)
+	}
 	fetch := s.remoteThreadFetch(ctx)
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
 	for _, thread := range fetch.threads {
