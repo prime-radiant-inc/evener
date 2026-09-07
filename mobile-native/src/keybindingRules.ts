@@ -1,4 +1,3 @@
-import { serializeChord } from "../../cmd/evener-hub/frontend/src/keybindings/chord";
 import {
 	DEFAULT_BINDINGS,
 	registerDefaultBindings,
@@ -43,12 +42,19 @@ export function keybindingPreview(
 			) ?? null,
 	}));
 	const result = validateOverrideRules(transformed, registry, platform);
-	const effective = new Map(
-		result.rules.map((rule) => [rule.action, rule.chord]),
-	);
+	const effective = new Set(result.rules.map((rule) => rule.action));
+	// Validation skips invalid repeats and removes conflicting candidates.
+	// Only surviving effective actions may use their last unreported source;
+	// a rejected candidate must show defaults, not promote an earlier repeat.
+	const rejected = new Set(result.warnings.map((warning) => warning.rule));
+	const authored = new Map<string, string | null>();
+	transformed.forEach((rule, index) => {
+		const source = rules[index];
+		if (source && !rejected.has(rule)) authored.set(rule.action, source.chord);
+	});
 	return {
 		rows: ACTION_DISPLAY_ROWS.map((row) => {
-			const chord = effective.get(row.actionId);
+			const chord = authored.get(row.actionId);
 			const defaults = DEFAULT_BINDINGS.filter(
 				(binding) => binding.actionId === row.actionId,
 			)
@@ -56,12 +62,11 @@ export function keybindingPreview(
 				.filter((value): value is string => typeof value === "string");
 			return {
 				...row,
-				shortcuts:
-					chord === null
-						? []
-						: chord === undefined
-							? defaults
-							: [serializeChord(chord)],
+				shortcuts: effective.has(row.actionId)
+					? typeof chord === "string"
+						? [chord]
+						: []
+					: defaults,
 				customized: effective.has(row.actionId),
 			};
 		}),
