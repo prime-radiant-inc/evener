@@ -86,7 +86,7 @@ it("retains activity through failed refresh and rejects a regressing root revisi
   });
 });
 
-it("loads only a currently advertised continuation and preserves authoritative root counts", async () => {
+it("loads only a currently advertised continuation and summarizes the accumulated jobs", async () => {
   const { list, io, requests } = boundary();
   io.read = async () => ({ data: tree(1, ["a"], "cursor") });
   await list.refresh();
@@ -109,7 +109,12 @@ it("loads only a currently advertised continuation and preserves authoritative r
         entry.kind === "shell" ? entry.job.jobId : entry.delegate.delegateId,
       ),
   ).toEqual(["a", "b"]);
-  expect(list.getSnapshot().tree?.root.counts.complete).toBe(false);
+  expect(list.getSnapshot().tree?.root.counts).toEqual({
+    active: 2,
+    completed: 0,
+    failed: 0,
+    complete: true,
+  });
   expect(list.branches()).toHaveLength(0);
 });
 
