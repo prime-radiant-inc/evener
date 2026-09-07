@@ -243,3 +243,21 @@ archive/favorite recovery, keybindings, further SDK recipes, the reader continui
 failure and the cross-cutting release matrix remain open. Android stays deferred
 for iOS-only v1. The preserved unrelated Apple project/plist edits still match
 their original patch.
+
+## Ordinary fork checkpoint
+
+The iOS selected-message fork is implemented in `ff3da051b`, with hub capability
+and return-to-parent subscription fixes in `0b2d95109` and `be164c5ad`. The final
+Release bundle is
+`045b7da4af947e8f2ccb77b3b7b2b1aa8d1a524fd32679ac42cc221b45ed3827`.
+Owned iOS and independent SDK reads verify the divergence boundary, preserved
+parent history, editable unsent child draft, exact draft/destination restoration
+after restart, and live parent updates after Back. Native tests pass 510 cases
+plus TypeScript; shared package checks, full hub tests and scoped hub lint pass.
+
+See [fork evidence](../../design/mobile/fork-evidence.md) for artifact boundaries,
+screenshots and the remaining concurrent-source protocol limitation. Next is
+ended-session deletion, followed by durable archive/favorite recovery. Native
+keybindings, further SDK recipes, Dynamic Type reader drift and the full iOS
+release matrix remain unfinished. Android remains deferred for v1. These scoped
+results do not replace the final canonical merge gate or release acceptance.
