@@ -1,0 +1,10 @@
+import pathlib,sqlite3,json,hashlib,subprocess,sys
+root=pathlib.Path(__file__).parent
+config=json.loads((root/"fixture.json").read_text());binding=json.loads((root/"binding.json").read_text())
+container=subprocess.check_output(["xcrun","simctl","get_app_container","F9170898-2B92-4420-BD12-9B54B3FC4AE0","com.primeradiant.evener.native","data"],text=True).strip()
+db=sqlite3.connect("file:"+container+"/Documents/SQLite/evener-drafts.db?mode=ro",uri=True)
+row=db.execute("select draft,unconfirmed from drafts where hub_id=? and session_ref=?",("65c1fdb3-9d81-4fee-a9a6-4e106e709226",binding["ref"])).fetchone()
+assert row and row[0]==config["ordinaryDraft"] and row[1] is None
+proof={"ref":binding["ref"],"bytes":len(row[0].encode()),"sha256":hashlib.sha256(row[0].encode()).hexdigest(),"unconfirmed":False}
+(root/(sys.argv[1]+".json")).write_text(json.dumps(proof,indent=2)+"\n")
+print(json.dumps(proof))

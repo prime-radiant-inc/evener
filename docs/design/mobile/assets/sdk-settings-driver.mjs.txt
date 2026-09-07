@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {clientFromEnvironment} from './node_modules/@evener/appwire-client/examples/connection.mjs';
+import {runCommands,summarizeCommands} from './node_modules/@evener/appwire-client/examples/commands-logic.mjs';
+import {runSessionSettings,safeSessionSettingsSummary} from './node_modules/@evener/appwire-client/examples/session-settings-logic.mjs';
+const fixture='/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-question-draft-s9czv_cp';
+const config=JSON.parse(await fs.readFile(fixture+'/fixture.json','utf8'));
+const binding=JSON.parse(await fs.readFile(fixture+'/binding.json','utf8'));
+const ownedHub='ws://127.0.0.1:54211/rpc';
+const {hub,cwd}=clientFromEnvironment();
+let stage='connect';
+try{
+ await hub.connect();
+ const catalog=await hub.request('model/list',{cwd});
+ assert.ok(catalog.data.some(m=>m.provider==='fake'&&m.model==='fake-test-model'));
+ assert.ok(catalog.data.some(m=>m.provider===config.provider&&m.model==='fake-test-model'));
+ const raw=await hub.request('thread/read',{ref:binding.ref,includeTurns:false,subscribe:true});
+ assert.equal(raw.thread.evener.instanceId,binding.instanceId);
+ assert.equal(await fs.realpath(raw.thread.cwd),await fs.realpath(cwd));
+ assert.notEqual(raw.thread.evener.askPending,true);
+ assert.notEqual(raw.thread.status.type,'active');
+ const before=await runSessionSettings(hub,{params:{ref:binding.ref}});
+ const notifications=[];
+ const stop=hub.onNotification(n=>{
+  if(n.params.ref===binding.ref&&['thread/model/changed','thread/reasoning-effort/changed','thread/vision-model/changed'].includes(n.method))
+   notifications.push({method:n.method,modelProvider:n.params.modelProvider,model:n.params.model,reasoningEffort:n.params.reasoningEffort,visionModel:n.params.visionModel});
+ });
+ const rows=[];let writes=0;
+ const counted={connect:()=>hub.connect(),request:(method,params)=>{if(['thread/model/set','thread/reasoning-effort/set','thread/vision-model/set'].includes(method))writes++;return hub.request(method,params)}};
+ async function mutate(setting,fields,reviewed){
+  const result=await runSessionSettings(counted,{setting,params:{ref:binding.ref,expectedInstanceId:binding.instanceId,reviewed:reviewed??(await runSessionSettings(hub,{params:{ref:binding.ref}})).settings,...fields},ownedHub});
+  assert.equal(result.outcome,'acknowledged');
+  assert.equal(result.execution,'unverified');
+  rows.push({setting,...safeSessionSettingsSummary(result)});
+  return result;
+ }
+ stage='reasoning high';
+ const high=await mutate('reasoning-effort',{reasoningEffort:'high'});
+ assert.equal(high.settings.reasoningEffort,'high');
+ stage='stale review';const beforeStale=writes;
+ await assert.rejects(()=>mutate('reasoning-effort',{reasoningEffort:'low'},before.settings));
+ assert.equal(writes,beforeStale);
+ stage='reasoning none';assert.equal((await mutate('reasoning-effort',{reasoningEffort:'none'})).settings.reasoningEffort,'none');
+ stage='reasoning reset';const reset=await mutate('reasoning-effort',{reasoningEffort:''});
+ assert.equal(Object.hasOwn(reset.settings,'reasoningEffort'),false);
+ stage='vision off';assert.equal((await mutate('vision-model',{visionModel:'off'})).settings.visionModel,'off');
+ stage='vision reset';const vision=await mutate('vision-model',{visionModel:''});
+ assert.equal(Object.hasOwn(vision.settings,'visionModel'),false);
+ stage='model switch';await mutate('model',{modelProvider:'fake',model:'fake-test-model'});
+ stage='model restore';await mutate('model',{modelProvider:config.provider,model:'fake-test-model'});
+ const restored=await runSessionSettings(hub,{params:{ref:binding.ref}});
+ assert.deepEqual(restored.settings,before.settings);
+ assert.equal(writes,7);
+ stop();
+ stage='empty commands';
+ const empty=await runCommands(hub);assert.deepEqual(empty.readback,[]);
+ const commandDir='/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-v4-80twi7qt/config/evener/commands';
+ const name='sdk-catalog-s9czv-cp',file=commandDir+'/'+name+'.md';
+ const source='---\ndescription: Owned catalog metadata\nargument-hint: "[value]"\n---\nFixture command body; never dispatched.\n';
+ await fs.mkdir(commandDir,{recursive:true});
+ await fs.writeFile(file,source,{flag:'wx',mode:0o600});
+ let populated;
+ try{
+  stage='populated commands';
+  populated=await runCommands(hub);
+  assert.equal(populated.readback.length,1);
+  assert.deepEqual(populated.readback[0],{name,description:'Owned catalog metadata',argumentHint:'[value]',source:'user'});
+ }finally{
+  assert.equal(await fs.readFile(file,'utf8'),source);
+  await fs.unlink(file);
+ }
+ const cleared=await runCommands(hub);assert.deepEqual(cleared.readback,[]);
+ const receipt={ref:binding.ref,instanceId:binding.instanceId,mutations:rows,writes,staleReviewBlockedBeforeDispatch:true,settingsRestored:true,notifications,commands:{empty:summarizeCommands(empty),populated:summarizeCommands(populated),restored:summarizeCommands(cleared),ownedCommandFileRemoved:true},execution:'No model turn or command execution requested by this SDK acceptance'};
+ await fs.writeFile('acceptance-receipt.json',JSON.stringify(receipt,null,2)+'\n');
+ console.log(JSON.stringify({writes,staleReviewBlockedBeforeDispatch:true,settingsRestored:true,commandCounts:[0,1,0],notificationCount:notifications.length}));
+}catch{console.error('SDK acceptance failed at '+stage);process.exitCode=1}
+finally{hub.close()}

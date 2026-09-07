@@ -1,0 +1,122 @@
+{
+  "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+  "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+  "mutations": [
+    {
+      "setting": "reasoning-effort",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 2
+    },
+    {
+      "setting": "reasoning-effort",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 2
+    },
+    {
+      "setting": "reasoning-effort",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 1
+    },
+    {
+      "setting": "vision-model",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 2
+    },
+    {
+      "setting": "vision-model",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 1
+    },
+    {
+      "setting": "model",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 1
+    },
+    {
+      "setting": "model",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "settingsPresent": 1
+    }
+  ],
+  "writes": 7,
+  "staleReviewBlockedBeforeDispatch": true,
+  "settingsRestored": true,
+  "notifications": [
+    {
+      "method": "thread/reasoning-effort/changed",
+      "reasoningEffort": "high"
+    },
+    {
+      "method": "thread/reasoning-effort/changed",
+      "reasoningEffort": "none"
+    },
+    {
+      "method": "thread/reasoning-effort/changed"
+    },
+    {
+      "method": "thread/vision-model/changed",
+      "visionModel": "off"
+    },
+    {
+      "method": "thread/vision-model/changed",
+      "visionModel": ""
+    },
+    {
+      "method": "thread/model/changed",
+      "modelProvider": "fake",
+      "model": "fake-test-model"
+    },
+    {
+      "method": "thread/model/changed",
+      "modelProvider": "question-draft-s9czv_cp",
+      "model": "fake-test-model"
+    }
+  ],
+  "commands": {
+    "empty": {
+      "outcome": "read",
+      "commandCount": 0,
+      "sourceCounts": {}
+    },
+    "populated": {
+      "outcome": "read",
+      "commandCount": 1,
+      "sourceCounts": {
+        "user": 1
+      }
+    },
+    "restored": {
+      "outcome": "read",
+      "commandCount": 0,
+      "sourceCounts": {}
+    },
+    "ownedCommandFileRemoved": true
+  },
+  "execution": "No model turn or command execution requested by this SDK acceptance",
+  "date": "2026-09-07",
+  "sourceCommit": "cd975b99171dd1fee3123a29298c242ef50292f3",
+  "package": {
+    "consumer": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-settings-wzv1nafe",
+    "tarball": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-settings-wzv1nafe/evener-appwire-client-0.1.0.tgz",
+    "sha256": "3bed5ef3942c79a2915ac647ab632b95b517fd6065bdbe43447cbb7ce1e9cace"
+  },
+  "driverSha256": "11c9a2b4b2f5b97bb1ef6db7a602a810215fbc9651842ac86ee91a816d2b5d73",
+  "contracts": 157,
+  "newContracts": 16,
+  "recipeCount": 20,
+  "catalogMethods": 91,
+  "coveredMethodNames": 54,
+  "coveredNotificationNames": 3,
+  "limits": [
+    "This is actual configuration mutation/readback and notification evidence, not model/provider or slash-command execution.",
+    "Deterministic faults are covered by contracts; actual native lost replies and a continuous reconnect workflow remain open.",
+    "Seven setter notifications were observed by the acceptance driver; the cookbook notification-presence count remains three because these recipes do not own subscriptions."
+  ]
+}

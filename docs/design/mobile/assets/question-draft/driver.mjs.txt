@@ -1,0 +1,151 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { composeAskAnswers } from '@evener/appwire-client';
+import { clientFromEnvironment } from './node_modules/@evener/appwire-client/examples/connection.mjs';
+import { runQuestions } from './node_modules/@evener/appwire-client/examples/questions-logic.mjs';
+import { validateQuestionSelections } from './node_modules/@evener/appwire-client/examples/questions-projection.mjs';
+
+const root='/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-question-draft-s9czv_cp';
+const config=JSON.parse(await fs.readFile(root+'/fixture.json','utf8'));
+const {hub}=clientFromEnvironment();
+const save=(name,value)=>fs.writeFile(root+'/'+name+'.json',JSON.stringify(value,null,2)+'\n',{mode:0o600});
+const read=(name)=>fs.readFile(root+'/'+name+'.json','utf8').then(JSON.parse);
+function observe(ref){
+ const seen=new Map(), waiters=new Set();
+ const stop=hub.onNotification(event=>{
+  if(event.params.ref!==ref || event.method!=='turn/completed')return;
+  seen.set(event.params.turn.id,event.params.turn); for(const check of waiters)check();
+ });
+ return {stop,completed:turnId=>new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>{waiters.delete(check);reject(new Error('completion missing'))},30000);
+  function check(){if(seen.has(turnId)){clearTimeout(timer);waiters.delete(check);resolve(seen.get(turnId))}}
+  waiters.add(check);check();
+ })};
+}
+let stage='connect';
+try{
+ await hub.connect();
+ if(process.argv[2]==='prepare-native'){
+  const old=await read('binding');
+  const observed=observe(old.ref);
+  try{
+   await hub.request('thread/read',{ref:old.ref,includeTurns:false,subscribe:true});
+   for(let round=0;round<2;round++){
+    const reviewed=await runQuestions(hub,{params:{ref:old.ref}});
+    const selections=round===0?[{resolution:{kind:'option',labels:['Apply now']},note:config.note},{resolution:{kind:'option',labels:['Review locally','Share for review']},note:''}]:[{resolution:{kind:'option',labels:['Continue verification']},note:''}];
+    const answer=await runQuestions(hub,{action:'answer',params:{ref:old.ref,expectedInstanceId:old.instanceId,reviewedCalls:reviewed.calls,selections,clientMutationId:randomUUID()},ownedHub:'ws://127.0.0.1:54211/rpc'});
+    assert.equal(answer.outcome,'acknowledged');
+    assert.equal((await observed.completed(answer.receipt.turnId)).status,'completed');
+   }
+   await hub.request('thread/shutdown',{ref:old.ref});
+   await save('excluded-setup',{...old,reason:'Question was already pending before the ordinary draft could be entered.',completed:true,shutdown:true});
+  }finally{observed.stop();await hub.request('thread/unsubscribe',{ref:old.ref})}
+  const {thread}=await hub.request('thread/start',{cwd:config.cwd,modelProvider:config.provider,model:'fake-test-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:4}});
+  const binding={ref:thread.evener.ref,instanceId:thread.evener.instanceId,threadId:thread.id};
+  assert.ok(binding.instanceId);await save('binding',binding);
+  await hub.request('evener/thread/name/set',{ref:binding.ref,name:'Draft before questions'});
+  console.log(JSON.stringify({stage:'idle native session ready',...binding}));
+ }else if(process.argv[2]==='ask'){
+  const binding=await read('binding');
+  const observed=observe(binding.ref);
+  try{
+   await hub.request('thread/read',{ref:binding.ref,includeTurns:false,subscribe:true});
+   const started=await hub.request('turn/start',{ref:binding.ref,expectedInstanceId:binding.instanceId,clientMutationId:randomUUID(),input:[{type:'text',text:'Owned question draft acceptance'}]});
+   assert.equal((await observed.completed(started.turn.id)).status,'completed');
+   const reviewed=await runQuestions(hub,{params:{ref:binding.ref}});
+   assert.equal(reviewed.questions.length,2);
+   await save('initial-review',{...binding,calls:reviewed.calls,questions:reviewed.questions});
+   console.log(JSON.stringify({stage:'native questions ready',...binding}));
+  }finally{observed.stop();await hub.request('thread/unsubscribe',{ref:binding.ref})}
+ }else if(process.argv[2]==='observe'){
+  const binding=await read('binding');
+  const {thread}=await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemsView:'full',subscribe:false});
+  assert.equal(thread.evener.instanceId,binding.instanceId);
+  const inputs=thread.turns.flatMap(turn=>turn.items??[]).filter(item=>item.type==='userMessage');
+  assert.ok(inputs.every(item=>!item.text.includes(config.ordinaryDraft)));
+  const proof={...binding,inputMessages:inputs.length,ordinaryDraftNotSent:true,firstAnswerNoteReceived:inputs.some(item=>item.text.includes(config.note)),pending:thread.evener.askPending===true,lastTurn:thread.turns.at(-1)?.id,lastTurnStatus:thread.turns.at(-1)?.status};
+  await save(process.argv[3]??'observation',proof);console.log(JSON.stringify(proof));
+ }else if(process.argv[2]==='start'){
+  stage='provider baseline';
+  const baseline=await hub.request('evener/instance/list',{});
+  assert.ok(!baseline.instances.some(item=>item.name===config.provider));
+  await save('provider-before',baseline.instances);
+  await hub.request('evener/instance/create',{name:config.provider,base:'openai-compatible',baseUrl:'http://127.0.0.1:50891/v1',protocol:'openai-chat'});
+  const models=await hub.request('model/list',{cwd:config.cwd});
+  assert.ok(models.data.some(item=>item.provider===config.provider&&item.model==='fake-test-model'));
+  stage='session creation';
+  const {thread}=await hub.request('thread/start',{cwd:config.cwd,modelProvider:config.provider,model:'fake-test-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:4}});
+  const binding={ref:thread.evener.ref,instanceId:thread.evener.instanceId,threadId:thread.id};
+  assert.ok(binding.instanceId);await save('binding',binding);
+  await hub.request('evener/thread/name/set',{ref:binding.ref,name:'Question draft recovery'});
+  const observer=observe(binding.ref);
+  try{
+   await hub.request('thread/read',{ref:binding.ref,includeTurns:false,subscribe:true});
+   stage='initial questions';
+   const started=await hub.request('turn/start',{ref:binding.ref,expectedInstanceId:binding.instanceId,clientMutationId:randomUUID(),input:[{type:'text',text:'Owned question recovery acceptance'}]});
+   assert.equal((await observer.completed(started.turn.id)).status,'completed');
+   const reviewed=await runQuestions(hub,{params:{ref:binding.ref}});
+   assert.equal(reviewed.questions.length,2);assert.equal(reviewed.calls.length,1);
+   await save('initial-review',{...binding,calls:reviewed.calls,questions:reviewed.questions});
+   console.log(JSON.stringify({stage:'initial questions ready',ref:binding.ref,questions:2}));
+  }finally{observer.stop();await hub.request('thread/unsubscribe',{ref:binding.ref})}
+ }else if(process.argv[2]==='answer-external'){
+  const binding=await read('binding'),reviewed=await read('initial-review');
+  const observer=observe(binding.ref);
+  try{
+   await hub.request('thread/read',{ref:binding.ref,includeTurns:false,subscribe:true});
+   const selections=[{resolution:{kind:'option',labels:['Apply now']},note:config.note},{resolution:{kind:'option',labels:['Review locally','Share for review']},note:''}];
+   const answer=composeAskAnswers(validateQuestionSelections(reviewed.questions,selections));
+   let writes=0;
+   const counted={connect:()=>hub.connect(),request:(method,params)=>{if(method==='turn/start')writes++;return hub.request(method,params)}};
+   const params={ref:binding.ref,expectedInstanceId:binding.instanceId,reviewedCalls:reviewed.calls,selections,clientMutationId:randomUUID()};
+   stage='external answer';
+   const result=await runQuestions(counted,{action:'answer',params,ownedHub:'ws://127.0.0.1:54211/rpc'});
+   assert.equal(result.outcome,'acknowledged');assert.equal(writes,1);
+   assert.equal((await observer.completed(result.receipt.turnId)).status,'completed');
+   const next=await runQuestions(hub,{params:{ref:binding.ref}});
+   assert.equal(next.questions.length,1);assert.equal(next.calls.length,1);
+   assert.notEqual(next.calls[0].callId,reviewed.calls[0].callId);
+   stage='stale answer rejection';
+   await assert.rejects(()=>runQuestions(counted,{action:'answer',params:{...params,clientMutationId:randomUUID()},ownedHub:'ws://127.0.0.1:54211/rpc'}));
+   assert.equal(writes,1);
+   const full=await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemsView:'full',subscribe:false});
+   const items=full.thread.turns.flatMap(turn=>turn.items??[]);
+   assert.equal(items.filter(item=>item.type==='userMessage'&&item.text===answer).length,1);
+   await save('replacement-review',{...binding,calls:next.calls,questions:next.questions});
+   const proof={...binding,answerTurn:result.receipt.turnId,mutationId:params.clientMutationId,answerWrites:writes,answerMessages:1,staleRejectedBeforeDispatch:true,pendingQuestions:1,priorCallId:reviewed.calls[0].callId,currentCallId:next.calls[0].callId};
+   await save('external-receipt',proof);console.log(JSON.stringify(proof));
+  }finally{observer.stop();await hub.request('thread/unsubscribe',{ref:binding.ref})}
+ }else if(process.argv[2]==='verify'){
+  stage='native completion read';
+  const binding=await read('binding');
+  const response=await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemsView:'full',subscribe:false});
+  assert.equal(response.thread.evener.instanceId,binding.instanceId);
+  assert.notEqual(response.thread.evener.askPending,true);
+  const items=response.thread.turns.flatMap(turn=>turn.items??[]);
+  const inputs=items.filter(item=>item.type==='userMessage');
+  assert.equal(inputs.length,3);
+  assert.ok(inputs[2].text.includes('"Continue verification"'));
+  assert.ok(!inputs[2].text.includes(config.note));
+  assert.equal(response.thread.turns.at(-1).status,'completed');
+  assert.ok(items.some(item=>item.type==='agentMessage'&&item.text));
+  const proof={...binding,inputMessages:inputs.length,nativeAnswerMessages:1,pending:false,lastTurn:response.thread.turns.at(-1).id,lastTurnCompleted:true,inputsExactlyInitialAndTwoAnswers:true};
+  await save('native-receipt',proof);console.log(JSON.stringify(proof));
+ }else if(process.argv[2]==='cleanup'){
+  stage='owned session cleanup';
+  const binding=await read('binding');
+  const {thread}=await hub.request('thread/read',{ref:binding.ref,includeTurns:false,subscribe:false});
+  assert.equal(thread.evener.instanceId,binding.instanceId);
+  assert.equal(await fs.realpath(thread.cwd),await fs.realpath(config.cwd));
+  assert.notEqual(thread.evener.askPending,true);assert.notEqual(thread.status.type,'active');
+  await hub.request('thread/shutdown',{ref:binding.ref});
+  stage='provider cleanup';
+  const current=await hub.request('evener/instance/list',{});
+  assert.ok(current.instances.some(item=>item.name===config.provider));
+  await hub.request('evener/instance/remove',{name:config.provider});
+  assert.deepEqual((await hub.request('evener/instance/list',{})).instances,await read('provider-before'));
+  await save('cleanup',{sessionShutdown:true,providerRegistryRestored:true});console.log('owned fixture cleanup passed');
+ }else throw new Error('invalid stage');
+}catch{console.error('Question recovery failed at '+stage);process.exitCode=1}
+finally{hub.close()}

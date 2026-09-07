@@ -1,0 +1,188 @@
+{
+  "date": "2026-09-07",
+  "sourceCheckpoint": "ab1e39fff07927fe0ae158bb5a3de4640ce726e5",
+  "native": {
+    "source": "04dd97a46",
+    "bundleSha256": "f126b96894e877b0042b83e94ac87875e016c7b2487c6c33f20def1c96d13e31",
+    "device": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "configuration": "Release",
+    "sourceChangedDuringJourney": false
+  },
+  "hub": {
+    "url": "ws://127.0.0.1:54211/rpc",
+    "source": "0f95ef200",
+    "binarySha256": "e5fd01f5dcc7dfa9f5757feb5c4e2066cc485ee0064e87c078b9745774cc46a2"
+  },
+  "setupSdk": {
+    "source": "ef12d750e434e25798782a40099dfb36f0c6a82d",
+    "tarballSha256": "be6651ac3f43f0270a009fc94f2c7641289d3010ba926b293ff57aec53124d9d"
+  },
+  "provider": {
+    "sourceFile": "question-recovery/provider.go.txt",
+    "sourceSha256": "5db419fa2ae8480d3380b53d2e902f2044823b21be16d3d2e09b8258787d9b75",
+    "binarySha256": "df022aa179bdf65223a7dfcca906667ded2e32f1306499094facffeb680c5f6a",
+    "nativeQuestionCallIds": [
+      "call_fakellm_4",
+      "call_fakellm_5"
+    ],
+    "nativeAnswersValidated": 2,
+    "processExitedCleanly": true
+  },
+  "binding": {
+    "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+    "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+    "threadId": "034Kr1zgMSNk9h2z1HH56T"
+  },
+  "excludedSetup": {
+    "ref": "local:034KqysNNJBapVCz8NP2Ki",
+    "instanceId": "034KqysNNJBapVCz8NP2Ki",
+    "threadId": "034KqysNNJBapVCz8NP2Ki",
+    "reason": "Question was already pending before the ordinary draft could be entered.",
+    "completed": true,
+    "shutdown": true
+  },
+  "observations": {
+    "before-restart": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "after-restart": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "after-restart-inputs": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+      "threadId": "034Kr1zgMSNk9h2z1HH56T",
+      "inputMessages": 1,
+      "ordinaryDraftNotSent": true,
+      "firstAnswerNoteReceived": false,
+      "pending": true,
+      "lastTurn": "turn_m1",
+      "lastTurnStatus": "completed"
+    },
+    "after-first-answer": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+      "threadId": "034Kr1zgMSNk9h2z1HH56T",
+      "inputMessages": 2,
+      "ordinaryDraftNotSent": true,
+      "firstAnswerNoteReceived": true,
+      "pending": true,
+      "lastTurn": "turn_m2",
+      "lastTurnStatus": "completed"
+    },
+    "after-first-answer-draft": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "after-second-answer": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+      "threadId": "034Kr1zgMSNk9h2z1HH56T",
+      "inputMessages": 3,
+      "ordinaryDraftNotSent": true,
+      "firstAnswerNoteReceived": true,
+      "pending": false,
+      "lastTurn": "turn_m3",
+      "lastTurnStatus": "completed"
+    },
+    "after-second-answer-draft": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "completed-restart-draft": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "post-settings-inputs": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "instanceId": "034Kr1zgMSNk9h2z1HH56T",
+      "threadId": "034Kr1zgMSNk9h2z1HH56T",
+      "inputMessages": 3,
+      "ordinaryDraftNotSent": true,
+      "firstAnswerNoteReceived": true,
+      "pending": false,
+      "lastTurn": "turn_1",
+      "lastTurnStatus": "completed"
+    },
+    "after-cleanup-draft": {
+      "ref": "local:034Kr1zgMSNk9h2z1HH56T",
+      "bytes": 63,
+      "sha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+      "unconfirmed": false
+    },
+    "cleanup": {
+      "sessionShutdown": true,
+      "providerRegistryRestored": true
+    }
+  },
+  "ui": {
+    "snapshots": [
+      827,
+      830,
+      834,
+      835,
+      837,
+      838,
+      840,
+      842,
+      843,
+      845
+    ],
+    "ordinaryDraftEnteredBeforeQuestions": true,
+    "firstSelectionAndNoteRestoredBeforeSend": true,
+    "firstNativeAnswerTapCount": 1,
+    "secondNativeAnswerTapCount": 1,
+    "secondQuestionNoteEmpty": true,
+    "ordinaryDraftVisibleAfterBothAnswersAndRestart": true,
+    "completionMessageVisible": true,
+    "images": {
+      "question-draft-restored.jpg": "6d1e0737dbdc1778794d87a122b9090823ef868b554570362e0b4c0d01593339",
+      "question-draft-completed.jpg": "05fa7da076b1b08da0fe6cd9fbb4cb7d71657920d414dc14be89a624aef552a2"
+    }
+  },
+  "sourceAndReceiptHashes": {
+    "after-cleanup-draft.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "after-first-answer-draft.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "after-first-answer.json": "322076b4884145967c465843ee04a70a3b0902b4a1075e760fba6071aadd4adc",
+    "after-restart-inputs.json": "a598db4ebcb91b501540494ed9438113ab5de7fdf67a9036b352319597491917",
+    "after-restart.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "after-second-answer-draft.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "after-second-answer.json": "f07b0df9b30919f894c44a26841d1c934e8bf8df32b91a62c3f8244a99a57231",
+    "before-restart.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "cleanup.json": "f2319e86ad65f0e104de35cc4044fd4740576826c9db6008fb29ad26d28dc14f",
+    "completed-restart-draft.json": "d90df2004c4054be449f653a8ec75a48273820494a2147c5696791f2d19e56be",
+    "driver.mjs.txt": "27b0fb1d7de153de2fe676973082fe48a47ebd90c21952ce6703d983d6b7045c",
+    "excluded-setup.json": "8732708da051e8429287a590f092911e47e408780b9598fe80a8e367d162d174",
+    "fixture.json": "b269a2f8a4cfc88fc8e2c864c1425852702010445ea905b746d67b173c352d2c",
+    "initial-review.json": "3bed0b1c1f657451fda16431936af1df1467973d83d1d9df958ae3fccf347212",
+    "post-settings-inputs.json": "9b69f60cb50a7c6e6a59340492bbefb9d4ee5613cc3e78b754915658da42053e",
+    "verify-native.py.txt": "57695e4652a0918f3321f2d81ea22aa1c59fa2d700e2cf80582c37050e91bcd1"
+  },
+  "cleanup": {
+    "sessionsShutdown": 2,
+    "providerRegistryRestored": true,
+    "providerStopped": true,
+    "priorDraftHashesVerified": 6,
+    "newDraftHashVerified": true,
+    "unrelatedApplePatchUnchanged": true
+  },
+  "limits": [
+    "Process stop/launch was before answer dispatch and after completion; this does not qualify death or lost acknowledgement during dispatch.",
+    "This is a plain text ordinary draft with selected question options and a note, not attachment-heavy or storage-fault qualification.",
+    "The existing missing-description fallback for settled question tools remains visible.",
+    "The later SDK settings acceptance reused the completed owned session and preserved its three input messages; persisted turn identifiers in post-settings readback differ from the original live turn IDs."
+  ]
+}
