@@ -285,7 +285,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			if past.Meta.ParentSessionID == "" {
 				continue
 			}
-			owner, incompatible, err := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
+			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
 					ownershipErr = err

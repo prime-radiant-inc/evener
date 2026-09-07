@@ -310,7 +310,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
 	}
-	if err := daemonRestartRequiredError(cfg, params.Ref, sessionID, ""); err != nil {
+	if err := daemonRestartRequiredError(ctx, cfg, params.Ref, sessionID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
 	if cfg.Spawner == nil {

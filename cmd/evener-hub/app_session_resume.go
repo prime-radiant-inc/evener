@@ -68,7 +68,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 				return appwire.Unavailable(err.Error())
 			}
 		}
-		if restartErr := daemonRestartRequiredError(cfg, params.Ref, "", ""); restartErr != nil {
+		if restartErr := daemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); restartErr != nil {
 			return restartErr
 		}
 		return nil

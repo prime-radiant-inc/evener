@@ -312,7 +312,7 @@ func registerThreadHandlers(
 			}
 		}
 		if cfg.Roster != nil {
-			if _, required, ownershipErr := restartRequiredDaemon(cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
+			if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
 				if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
 					return appwire.ThreadReadResponse{}, appwire.Unavailable(err.Error())
 				}

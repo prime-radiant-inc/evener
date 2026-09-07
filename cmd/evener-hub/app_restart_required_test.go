@@ -467,6 +467,23 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 			if childRestart != delegated {
 				t.Errorf("navigation child restart=%v, delegated=%v", childRestart, delegated)
 			}
+			if delegated && !scenario.unreadableSibling {
+				t.Run("canceled ownership check", func(t *testing.T) {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					_, err := withDeletionTargetOwnership(ctx, web.cfg, localAppRef(childID), "", "canceled-send", func() (struct{}, error) {
+						t.Error("canceled ownership check ran the mutation")
+						return struct{}{}, nil
+					})
+					wire, ok := errors.AsType[appwire.WireError](err)
+					if !ok || !strings.Contains(wire.Message, context.Canceled.Error()) {
+						t.Errorf("ownership check ignored cancellation: %v", err)
+					}
+					if snapshot := web.navigationSnapshotInputs(ctx); !errors.Is(snapshot.ownershipErr, context.Canceled) {
+						t.Errorf("navigation ownership error=%v, want cancellation", snapshot.ownershipErr)
+					}
+				})
+			}
 			ref := "local:" + childID
 			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
 			if err != nil {

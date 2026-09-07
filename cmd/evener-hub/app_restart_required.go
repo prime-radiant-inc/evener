@@ -13,7 +13,7 @@ import (
 
 // restartRequiredDaemon only uses an authenticated probe's mismatch verdict.
 // A rendezvous file or a live PID alone cannot establish daemon identity.
-func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore.LiveEntry, bool, error) {
+func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) (hubcore.LiveEntry, bool, error) {
 	if ref != "" {
 		parsed, err := appwire.ParseRef(ref)
 		if err != nil {
@@ -37,7 +37,7 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 			return entry, false, nil
 		}
 		for _, edge := range edges {
-			owned, err := agent.SessionOwnsDelegate(context.Background(), edge.parent.StateDir, edge.parent.Meta.ID, edge.childID)
+			owned, err := agent.SessionOwnsDelegate(ctx, edge.parent.StateDir, edge.parent.Meta.ID, edge.childID)
 			if err != nil {
 				return hubcore.LiveEntry{}, false, fmt.Errorf("read daemon ownership for %s: %w", edge.childID, err)
 			}
@@ -98,17 +98,17 @@ func refreshDaemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfi
 			return wire
 		}
 	}
-	return daemonRestartRequiredError(cfg, ref, threadID, mutationID)
+	return daemonRestartRequiredError(ctx, cfg, ref, threadID, mutationID)
 }
 
-func daemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
+func daemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
 	if ref != "" {
 		if _, err := appwire.ParseRef(ref); err != nil {
 			return appwire.InvalidParams(err.Error())
 		}
 	}
 
-	entry, ok, err := restartRequiredDaemon(cfg, ref, threadID)
+	entry, ok, err := restartRequiredDaemon(ctx, cfg, ref, threadID)
 	if err != nil {
 		wire := appwire.Unavailable(err.Error())
 		if mutationID != "" {
