@@ -710,7 +710,7 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(req.ID, appwire.InternalError("internal error handling request"))
 	}
 	if reason, ok := ctx.Value(subscriptionAdmissionFailureContextKey{}).(string); ok {
-		return appwire.ErrorMessage(req.ID, appwire.WireError{Code: appwire.CodeUnavailable, Message: reason})
+		return appwire.ErrorMessage(req.ID, appwire.SessionUnavailable(reason))
 	}
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
 	// frames from JS). It bypasses the router and is answered here, before
@@ -1007,8 +1007,11 @@ func captureSubscription(
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
 		if handoff.Commit == nil && handoff.Abort == nil {
-			if len(resolveTarget) != 0 && resolveTarget[0]().ThreadID == "" {
-				return false
+			if len(resolveTarget) != 0 {
+				target := resolveTarget[0]()
+				if target.ThreadID == "" && target.LifecycleKey == "" {
+					return false
+				}
 			}
 			return snapshot()
 		}
