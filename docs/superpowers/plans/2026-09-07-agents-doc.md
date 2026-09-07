@@ -1088,6 +1088,7 @@ Create `cmd/evener-hub/frontend/src/panes/settings/sections/agentsDoc.test.tsx`:
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { AgentsDocResponse, AnyNotification } from "../../../protocol/types.gen";
 import { resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
@@ -1196,10 +1197,13 @@ test("Save sends the draft, toasts, and the editor is clean afterwards", async (
   expect(editor().value).toBe("# hi\nmore");
 });
 
-test("a failed save shows the error inline and keeps the draft", async () => {
+test("a failed save shows the hub's error inline and keeps the draft", async () => {
   const fake = connectFakeClient();
+  // A WireError, as the hub really sends: friendlyErrorMessage passes a
+  // wire message through but replaces a plain Error with a generic line
+  // (mcp.test.tsx pins that), so a plain Error here would never reach the DOM.
   fake.on("evener/settings/agentsDoc/set", () => {
-    throw new Error("read-only file system");
+    throw new WireError("read-only file system", -1);
   });
   renderSection();
   await waitFor(() => expect(editor().value).toBe("# hi\n"));
@@ -1479,17 +1483,18 @@ git commit -m "feat(web): AGENTS.md settings section"
 ### Task 6: Docs, gates, and the pull request
 
 **Files:**
-- Modify: `docs/evener-hub.md` (the paragraph around line 230 that names `providers.toml` under the config root; add one sentence that `AGENTS.md` beside it holds personal instructions loaded ahead of every repo's project docs, editable under Settings → AGENTS.md)
-- Modify: `docs/llm-providers.md` is NOT touched; `docs/appwire-protocol.md` was regenerated in Task 2.
+- Modify: `docs/evener-hub.md` (the "Runtime directories" bullet list, lines 61-81, whose last bullet names the skills and plugins roots under `${XDG_CONFIG_HOME:-$HOME/.config}/evener`)
+- Modify: `docs/superpowers/plans/2026-09-07-agents-doc.md` is committed alongside (it carries pre-flight corrections made while this plan ran; see the workspace's `preflight-verification.md`).
+- `docs/llm-providers.md` is NOT touched; `docs/appwire-protocol.md` was regenerated in Task 2.
 
 - [ ] **Step 1: Document the file**
 
-In `docs/evener-hub.md`, find the sentence that describes the config root contents (grep `providers.toml` around line 230) and add, in the same paragraph:
+In `docs/evener-hub.md`, in the "Runtime directories" bullet list, add one bullet directly after the skills/plugins bullet (the list's last), using the file's own `${XDG_CONFIG_HOME:-$HOME/.config}` path convention:
 
 ```
-`AGENTS.md` beside it holds your personal standing instructions; every
-session loads it ahead of the repo's own AGENTS.md, and Settings → AGENTS.md
-edits it in place.
+- `${XDG_CONFIG_HOME:-$HOME/.config}/evener/AGENTS.md` is your personal
+  standing instructions file. Every session loads it ahead of the repo's own
+  AGENTS.md, and Settings → AGENTS.md in the web UI edits it in place.
 ```
 
 - [ ] **Step 2: Run every gate**
@@ -1506,12 +1511,12 @@ Expected: all green. `make lint` includes the generated-output freshness check, 
 
 - [ ] **Step 3: Live check against a throwaway hub**
 
-Follow the WebUI screenshot recipe in memory (`webui-screenshot-recipe.md`): start a throwaway hub with `XDG_CONFIG_HOME` pointed at a temp dir, open Settings → AGENTS.md in the browser pane, type a line, Save, and confirm with `cat "$XDG_CONFIG_HOME/evener/AGENTS.md"` that the file holds exactly what was typed. Then start a session in a temp repo and confirm the transcript's system-prompt view (or `evener` debug prompt dump, if the recipe records one) shows a `----- BEGIN ~/.config/evener/AGENTS.md -----` block before the repo's block. Attach a desktop and a phone-width screenshot of the section to the PR.
+Follow the WebUI screenshot recipe in memory (`webui-screenshot-recipe.md`): start a throwaway hub with `XDG_CONFIG_HOME` pointed at a temp dir, open Settings → AGENTS.md in the browser pane, type a line, Save, and confirm with `cat "$XDG_CONFIG_HOME/evener/AGENTS.md"` that the file holds exactly what was typed. Then start a session in a temp repo and confirm the transcript's system-prompt view (or `evener` debug prompt dump, if the recipe records one) shows a `----- BEGIN <XDG_CONFIG_HOME>/evener/AGENTS.md -----` block before the repo's `----- BEGIN AGENTS.md -----` block. The path is absolute here: the display path collapses to `~/.config/evener/AGENTS.md` only when the config root sits under the real `$HOME`, and a temp `XDG_CONFIG_HOME` does not. Attach a desktop and a phone-width screenshot of the section to the PR.
 
 - [ ] **Step 4: Commit and open the PR**
 
 ```bash
-git add docs/evener-hub.md
+git add docs/evener-hub.md docs/superpowers/plans/2026-09-07-agents-doc.md
 git commit -m "docs(hub): describe the personal AGENTS.md"
 git push -u origin HEAD
 gh pr create --repo prime-radiant-inc/evener --base main --title "Personal AGENTS.md: loaded into every session, editable in settings" --body-file - <<'EOF'
