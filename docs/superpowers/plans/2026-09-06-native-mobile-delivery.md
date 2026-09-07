@@ -325,3 +325,20 @@ Type drift. Full VoiceOver/iPad/physical-device coverage, multi-hub lifecycle an
 performance qualification, signing/install/update, protocol limitations already
 recorded above, and the final canonical merge gate remain open. Android sources
 remain preserved and deferred for iOS-only v1; voice/barge-in remains outside v1.
+
+## SDK management recipe checkpoint
+
+The packaged SDK now contains provider-instance and plugin-management examples
+with explicit owned-hub writes, independent readback, preserved uncertain
+outcomes and no mutation replay. All 52 example contract checks, the package
+qualification gate and the frontend gate pass. Owned-hub execution verified the
+provider create/edit/default/restore/remove sequence and restoration of the
+original instance list. Plugin mutation execution still requires a disposable
+marketplace fixture. See [SDK management evidence](../../design/mobile/sdk-management-evidence.md)
+for the tarball identity and precise execution boundaries.
+
+The current clean native Release reproduced the text-size reader drift again:
+marker 09 at maximum size became marker 16 after returning to normal size,
+while the persisted anchor remained marker 09. Root-cause tracing and repair
+are next. Additional SDK recovery work, native qualification and the final
+canonical merge gate remain open. iOS-only v1 scope is unchanged.

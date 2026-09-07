@@ -70,9 +70,10 @@ EVENER_CWD=/path/on/hub node node_modules/@evener/appwire-client/examples/inspec
 The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
-read-only recipe, **not full protocol coverage**. Additional creation cases, streaming, approvals, queue control, reconnect recovery,
-management, providers,
-plugin management and upgrades remain to be added.
+read-only recipe, **not full protocol coverage**. The recipes below cover selected
+management and recovery paths. Additional creation cases, approvals, queue
+control, continuous reconnect recovery, credentials, marketplace management and
+hub upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
@@ -283,3 +284,102 @@ replays the mutation or claims that readback proves which client made a change.
 
 Run `node --test examples/organization.contract.mjs` for deterministic boundary
 tests. Package qualification also runs these checks outside the checkout.
+
+### Plugin installation and management
+
+`plugin-management.mjs` connects and lists installed plugins by default. Select
+one action explicitly to install, upgrade, remove, enable, disable, or set auto
+upgrade on an owned fixture. A plugin is identified by its exact `plugin` and
+`marketplace` pair. Installation requires that pair to be absent from the fresh
+list; the other actions require it to be present. The marketplace must already
+be configured on the hub.
+
+```sh
+EVENER_PLUGIN_MUTATION=1 \
+EVENER_PLUGIN_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_PLUGIN_ACTION=setAutoUpgrade \
+EVENER_PLUGIN_TARGET='{"plugin":"fixture","marketplace":"owned"}' \
+EVENER_PLUGIN_AUTO_UPGRADE=false \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/plugin-management.mjs
+```
+
+The action names are `install`, `upgrade`, `remove`, `enable`, `disable`, and
+`setAutoUpgrade`. Only `setAutoUpgrade` uses `EVENER_PLUGIN_AUTO_UPGRADE`, which
+must be the JSON boolean `true` or `false`. Installation and upgrade may fetch
+and write plugin contents; use a disposable marketplace and hub. The script
+prints only the outcome and installed count. It never prints install paths.
+
+### Provider instance configuration
+
+`instances.mjs` lists provider instances and the registry write-refusal status
+by default. Write mode selects one `create`, `edit`, `remove`, or `setDefault`
+operation and reads its parameters from a JSON file:
+
+```sh
+EVENER_INSTANCE_MUTATION=1 \
+EVENER_INSTANCE_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_INSTANCE_ACTION=edit \
+EVENER_INSTANCE_PARAMS_FILE=/path/to/instance-edit.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/instances.mjs
+```
+
+Create requires `name` and `base`; optional fields are `baseUrl`, `protocol`,
+`surface`, `vars`, `apiKeyEnv`, and `credentialHeader`. The last two configure
+credential environment references, not a literal API key. Edit takes `name`
+and any of `baseUrl`, `clearBaseUrl`, `protocol`, `surface`, or `vars`. Remove
+and setDefault take only `name`. For example, `{ "name": "fixture",
+"clearBaseUrl": true }` restores the inherited endpoint. Omitted edit fields
+remain omitted: the example never fills them with displayed defaults. The hub
+merges nonempty `vars` maps; `{}` does not clear stored variables. Empty strings
+do not clear endpoint/protocol/surface overrides. `clearBaseUrl: true` takes
+precedence over an accompanying `baseUrl`.
+
+The recipe refuses writes when the fresh registry reports `writesRefused`.
+Create requires the name to be absent; the other actions require it to be
+present. The hub validates provider-specific constraints. No credentials are
+stored and no OAuth flow starts through this recipe. Output contains only the
+outcome, instance count and write-refusal flag.
+
+### Management mutation recovery
+
+Both management recipes require an explicit mutation opt-in and a separately
+supplied owned endpoint equal to `EVENER_RPC_URL`. Their logic helpers expect the
+client returned by `connection.mjs` for that endpoint. Ownership confirmation is
+an operator guard, not authentication or a check of an arbitrary client's URL.
+Preflight reads are not atomic with writes; use fixtures without concurrent
+writers. These methods have no mutation-ID or revision precondition in their
+current contracts.
+
+After one mutation attempt the recipe performs one independent list read. A
+valid acknowledgment followed by readback reports `acknowledged`. A rejected or
+lost reply reports `uncertain` even if readback shows the desired state. The
+recipes never replay mutations, restore configuration, or attribute a concurrent
+writer's change to themselves. A disconnected client can make the immediate
+readback fail; this example does not wait through a reconnect loop.
+
+Exit 0 means a read or acknowledged operation with readback; exit 2 means an
+uncertain operation with readback; exit 1 means invalid input or an incomplete
+operation, including failed readback after an acknowledgment. The helpers retain
+the read failure after an acknowledgment, or both causes in `AggregateError`
+when mutation and readback fail. CLI errors omit those potentially private
+causes. After exit 1 or 2, run the default read-only command to inspect current
+state before preparing a deliberate next edit; do not rerun the write command
+as a recovery shortcut.
+
+Deterministic contract checks exercise every action and recovery outcome at the
+SDK request boundary, including malformed lists, lost replies and both-error
+cases. `make test-api-package` also runs them from the packed, installed artifact:
+
+```sh
+node --test examples/plugin-management.contract.mjs examples/instances.contract.mjs
+```
+
+These checks do not establish actual plugin download/installation, provider
+connectivity, notification reconciliation, continuous reconnect recovery, or
+native release acceptance. Those require separate owned-hub qualification.
