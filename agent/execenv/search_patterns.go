@@ -107,6 +107,38 @@ var maxGlobDirEntries = 200_000
 // thousand live entries) and far below what would threaten the process.
 var maxGlobLiveEntries = 500_000
 
+// maxGlobIgnoreFileBytes bounds how much of one .gitignore discovery will
+// read. Entries are capped by size rather than by count because a rules file
+// is bytes, not records: at 1 MiB a single file already dwarfs anything a
+// repository writes by hand, where a few kilobytes is typical, so this only
+// ever refuses a pathological one.
+var maxGlobIgnoreFileBytes = 1 << 20
+
+// maxGlobIgnoreTotalBytes bounds the .gitignore SOURCE one call may take in
+// across every rules file it reads, plus a fixed charge per file. It is a
+// bound on how much a call reads and how many files it keeps, not on the
+// memory those files occupy once compiled: go-gitignore builds a regexp per
+// rule line, at a cost far larger than the line it came from, so retained
+// memory can exceed this figure by orders of magnitude. Bounding that would
+// mean charging per compiled rule rather than per byte, which is a separate
+// change from this one.
+//
+// The number follows the entry caps: one listing at maxGlobDirEntries costs
+// roughly 21 MB of directory entries and the live ceiling allows about 52 MB,
+// so 32 MiB sits between them, and a repository carrying a .gitignore in every
+// one of several thousand directories reads single-digit megabytes of source.
+var maxGlobIgnoreTotalBytes = 32 << 20
+
+// globIgnoreFileOverheadBytes is the fixed charge for keeping one rules file
+// at all, so that a .gitignore with nothing in it is not free. It is what
+// makes maxGlobIgnoreTotalBytes bound the NUMBER of retained files — about
+// 65,000 of them at 512 apiece — rather than only their combined source, so a
+// tree carrying an empty .gitignore in every directory cannot retain one per
+// directory up to the directory-listing limit with the byte budget untouched.
+// It is an accounting figure for that purpose and not a measurement of what a
+// retained file occupies; see maxGlobIgnoreTotalBytes.
+var globIgnoreFileOverheadBytes = 512
+
 // maxGlobMatches bounds how many matches one glob call may accumulate.
 var maxGlobMatches = 10_000
 
@@ -154,6 +186,14 @@ type GlobBudget struct {
 	// across b.live, recorded on every call rather than only the one that
 	// trips, so a test can see how far a walk actually got.
 	peakLiveEntries int
+	// ruleBytes is how many bytes of .gitignore source this call has
+	// retained; the compiled matchers scale with it and live as long as the
+	// call does, so it is cumulative rather than per traversal.
+	ruleBytes int
+	// truncatedAtCap is the match cap in force when truncated was set, so a
+	// caller reading it later is told the bound that actually tripped rather
+	// than whatever the global happens to be by then.
+	truncatedAtCap int
 }
 
 // liveDir is one directory whose listing the walk is still holding.
@@ -257,6 +297,30 @@ func (b *GlobBudget) resetLive() {
 	b.live = nil
 }
 
+// tooManyRuleBytes reports the refusal for a single .gitignore larger than
+// one call may read, or nil while it fits. path names the file so a caller
+// knows which one to act on.
+func (b *GlobBudget) tooManyRuleBytes(path string, read int) error {
+	if read <= maxGlobIgnoreFileBytes {
+		return nil
+	}
+	return &globBudgetError{count: read, dir: path, budget: maxGlobIgnoreFileBytes, cycleSafe: true, op: b.op, kind: budgetRulesFile}
+}
+
+// retainRuleBytes charges one retained rules file against what this call may
+// hold in compiled matchers: its n bytes of source plus the fixed overhead of
+// the entry and matcher built from them, so a file with no rules in it still
+// costs something. It refuses once the total crosses
+// maxGlobIgnoreTotalBytes. It is cumulative across every traversal of the
+// call, because the matchers are never released before the call ends.
+func (b *GlobBudget) retainRuleBytes(n int) error {
+	b.ruleBytes += n + globIgnoreFileOverheadBytes
+	if b.ruleBytes <= maxGlobIgnoreTotalBytes {
+		return nil
+	}
+	return &globBudgetError{count: b.ruleBytes, budget: maxGlobIgnoreTotalBytes, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
+}
+
 // globBudgetKind tells apart the three things a globBudgetError can report:
 // too many directory listings across a whole call, too many entries
 // materialized by a single one of them, or too many entries held live at once
@@ -267,6 +331,8 @@ const (
 	budgetListings globBudgetKind = iota
 	budgetEntries
 	budgetLiveEntries
+	budgetRulesFile
+	budgetRulesTotal
 )
 
 // globBudgetError reports that one glob call ran past one of its bounds: its
@@ -291,18 +357,27 @@ type globBudgetError struct {
 	kind      globBudgetKind
 }
 
-// advice names the lever that makes a whole call's listing count smaller.
-// Every budget here belongs to a glob, whose pattern decides how much of the
-// tree gets listed, so tightening it is the first thing to try.
+// advice names the lever that makes a whole call's listing count smaller,
+// which differs by operation. A glob's pattern decides how much of the tree
+// gets listed, so tightening it is the first thing to try. A grep's pattern is
+// a regex matched against file contents after the walk has already listed
+// everything, so narrowing it changes nothing about the listings; only a
+// smaller base directory does.
 func (e *globBudgetError) advice() string {
+	if e.op == "grep" {
+		return "narrow the base directory"
+	}
 	return "narrow the pattern or its base directory"
 }
 
 // entryAdvice names the lever that gets a caller past one oversized
-// directory, the entries kind's counterpart to advice. Every budget here
-// belongs to a glob, which can spell a pattern that matches inside such a
-// directory without listing all of it.
+// directory, the entries kind's counterpart to advice. A glob can spell a
+// pattern that matches inside the directory without listing all of it; a grep
+// cannot, so its only lever is a base that does not contain it.
 func (e *globBudgetError) entryAdvice() string {
+	if e.op == "grep" {
+		return "that directory is too large to list, so point the base at a smaller directory that does not contain it"
+	}
 	return "that directory is too large to list, so match inside it more specifically or point the base elsewhere"
 }
 
@@ -320,6 +395,12 @@ func (e *globBudgetError) Error() string {
 	if e.kind == budgetEntries {
 		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: %s", e.op, e.count, e.where(), e.budget, e.entryAdvice())
 	}
+	if e.kind == budgetRulesFile {
+		return fmt.Sprintf("%s walk read %d bytes of %s, past the per-file budget of %d for one .gitignore: that rules file is too large to load, so point the base at a directory that does not carry it", e.op, e.count, e.where(), e.budget)
+	}
+	if e.kind == budgetRulesTotal {
+		return fmt.Sprintf("%s walk retained %d bytes of .gitignore rules across the call, past the budget of %d: %s", e.op, e.count, e.budget, e.advice())
+	}
 	if e.kind == budgetLiveEntries {
 		return fmt.Sprintf("%s walk is holding %d directory entries live across the listings it has open, past the call-wide budget of %d: %s", e.op, e.count, e.budget, e.advice())
 	}
@@ -336,6 +417,7 @@ func (e *globBudgetError) Error() string {
 func (b *GlobBudget) match() bool {
 	if b.matches >= maxGlobMatches {
 		b.truncated = true
+		b.truncatedAtCap = maxGlobMatches
 		return false
 	}
 	b.matches++
@@ -351,7 +433,7 @@ func (b *GlobBudget) full() bool {
 // without duplicating the truncated check at every call site that needs it.
 func (b *GlobBudget) TruncatedAt() int {
 	if b.truncated {
-		return maxGlobMatches
+		return b.truncatedAtCap
 	}
 	return 0
 }

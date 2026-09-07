@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -37,13 +36,10 @@ type secureDirFS struct {
 	basePath string
 	fs       *sandboxFS
 	// budget bounds the entries a single ReadDir call may materialize, shared
-	// with the rest of the glob call's directory-listing budget. nil for a
-	// caller whose listing does not participate in that bound, in which case
-	// ReadDir falls back to reading the directory whole.
+	// with the rest of the glob or grep call's directory-listing budget.
 	budget *GlobBudget
 	// ctx is threaded down to readDirChunked the same way boundedDirFS.ctx is
-	// on the off-sandbox path; see that field for why. Only consulted when
-	// budget is set, since that is the only case that reads in chunks.
+	// on the off-sandbox path; see that field for why.
 	ctx context.Context
 }
 
@@ -58,15 +54,9 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
-// ReadDir lists name through readDirChunked when budget is set, the same
-// helper boundedDirFS uses on the off-sandbox path, so a huge directory here
-// cannot OOM the walk either. A caller with no budget reads the directory
-// whole and sorts it by name: os.DirFS's own ReadDir already returns entries
-// sorted, and the match cap downstream truncates to a deterministic,
-// lexically-first prefix of what a listing returns, so this arm has to
-// produce the same order or a capped walk here could stop on a different
-// prefix than the same walk over the plain filesystem. The raw fd-backed
-// listing both arms build on has no ordering guarantee of its own.
+// ReadDir lists name through readDirChunked, the same helper boundedDirFS
+// uses on the off-sandbox path, so a huge directory here cannot OOM the walk
+// either.
 func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -74,14 +64,6 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	df := os.NewFile(uintptr(fd), name)
 	defer func() { _ = df.Close() }()
-	if f.budget == nil {
-		entries, err := df.ReadDir(-1)
-		if err != nil {
-			return nil, err
-		}
-		slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
-		return entries, nil
-	}
 	return readDirChunked(f.ctx, df, name, f.budget)
 }
 
@@ -136,9 +118,10 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 		// Never list or read into a masked subtree while collecting
 		// .gitignore rules — secureDirFS enforces symlink-refusal and root
 		// confinement but not masking, so the skip must be supplied here.
+		var err error
 		ignores, err = loadIgnoreSet(fsys, func(relPath string) bool {
 			return s.underMasked(filepath.Join(canonical, relPath))
-		})
+		}, budget, ignoreScopeForPatterns(patterns))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -203,12 +186,13 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err != nil {
 		return "", err
 	}
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
+	budget := newGlobBudget("grep")
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return s.underMasked(filepath.Join(canonical, relPath))
-	})
+	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
@@ -218,6 +202,19 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			return cancelErr
 		}
 		if walkErr != nil {
+			// loadIgnoreSet's walk above already visits every directory this
+			// one would — its skip set (dot-prefixed and masked directories)
+			// is a strict subset of this walk's (which also skips gitignored
+			// ones) — so it always reaches an oversized directory first on
+			// any static tree and this guard cannot be reached that way. It
+			// is reachable only when a directory grows past the entry bound
+			// in the gap between the two passes, which
+			// TestSandboxedGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// forces by stubbing secureBrowseWalkDir itself to grow the tree
+			// after ignore discovery has already listed it.
+			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
+				return walkErr
+			}
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
 		}
 		abs := filepath.Join(canonical, rel)
@@ -236,6 +233,16 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 					excludedByIgnore++
 					return fs.SkipDir
 				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge above is always cycleSafe.
+			// Charged only here, once the masked/dot/gitignore skips above
+			// have already passed, so a directory the walk is about to skip
+			// anyway costs nothing.
+			if berr := budget.listing(true); berr != nil {
+				return berr
 			}
 			return nil
 		}
