@@ -32,6 +32,7 @@ import {
   parseSlashToken,
   spliceSlashCommand,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/slashCompletion";
+import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
@@ -496,58 +497,93 @@ export function SessionsScreen({
             </View>
           ) : null
         }
-        renderItem={({ item }) => (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Open ${item.title || "Untitled session"}`}
-            disabled={state !== "ready" || !activeProfile}
-            onPress={() => {
-              if (activeProfile)
-                navigation.navigate("Conversation", {
-                  hubId: activeProfile.id,
-                  ref: item.ref,
-                  title: item.title,
-                });
-            }}
-            style={[
-              {
-                marginHorizontal: 16,
-                paddingVertical: 13,
-                minHeight: Platform.OS === "android" ? 72 : 68,
-                borderBottomWidth: 0.5,
-                borderColor: colors.border,
-                gap: 4,
-              },
-            ]}
-          >
-            <Text
-              allowFontScaling={Platform.OS !== "ios"}
-              numberOfLines={2}
-              style={{
-                color: colors.text,
-                fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-                fontWeight: "500",
+        renderItem={({ item }) => {
+          const stateLabel = humanizeState(
+            item.status,
+            item.askPending === true,
+          );
+          const signals = [
+            ["active", "awaiting", "warning", "errored"].includes(item.status)
+              ? stateLabel
+              : "",
+            item.askPending && item.status !== "awaiting"
+              ? humanizeState("awaiting", true)
+              : "",
+          ].filter(Boolean);
+          const metadataStyle = {
+            fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
+            lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
+          };
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${item.title || "Untitled session"}`}
+              accessibilityHint={[
+                ...(signals.length ? signals : [stateLabel]),
+                item.project,
+              ]
+                .filter(Boolean)
+                .join(". ")}
+              disabled={state !== "ready" || !activeProfile}
+              onPress={() => {
+                if (activeProfile)
+                  navigation.navigate("Conversation", {
+                    hubId: activeProfile.id,
+                    ref: item.ref,
+                    title: item.title,
+                  });
               }}
+              style={[
+                {
+                  marginHorizontal: 16,
+                  paddingVertical: 13,
+                  minHeight: Platform.OS === "android" ? 72 : 68,
+                  borderBottomWidth: 0.5,
+                  borderColor: colors.border,
+                  gap: 4,
+                },
+              ]}
             >
-              {item.title || "Untitled session"}
-            </Text>
-            <Text
-              allowFontScaling={Platform.OS !== "ios"}
-              numberOfLines={2}
-              style={{
-                color:
-                  item.attention === "needsYou"
-                    ? colors.accent
-                    : colors.secondary,
-                fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
-                lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
-              }}
-            >
-              {item.attention === "needsYou" ? "Needs you" : item.status}
-              {item.project ? ` · ${item.project}` : ""}
-            </Text>
-          </Pressable>
-        )}
+              <Text
+                allowFontScaling={Platform.OS !== "ios"}
+                numberOfLines={2}
+                style={{
+                  color: colors.text,
+                  fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
+                  fontWeight: "500",
+                }}
+              >
+                {item.title || "Untitled session"}
+              </Text>
+              {signals.length ? (
+                <Text
+                  allowFontScaling={Platform.OS !== "ios"}
+                  style={[
+                    metadataStyle,
+                    {
+                      color:
+                        item.attention === "needsYou"
+                          ? colors.accent
+                          : colors.secondary,
+                    },
+                  ]}
+                >
+                  {signals.join(" · ")}
+                </Text>
+              ) : null}
+              {item.project ? (
+                <Text
+                  allowFontScaling={Platform.OS !== "ios"}
+                  numberOfLines={fontScale > 1.4 ? 2 : 1}
+                  ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
+                  style={[metadataStyle, { color: colors.secondary }]}
+                >
+                  {item.project}
+                </Text>
+              ) : null}
+            </Pressable>
+          );
+        }}
       />
     </SafeAreaView>
   );
