@@ -98,7 +98,7 @@ function retryInput(turn: TurnModel): RetryInput | undefined {
  * The input that opened the exchange `turnId` ended, searched backwards from
  * that turn.
  *
- * A LIVE failure keeps the input in its own turn, where retryText finds it. A
+ * A LIVE failure keeps the input in its own turn, where retryInput finds it. A
  * RELOADED one does not: one persisted transcript entry becomes one turn
  * (apptranscript.go's ProjectTurn), so a failure entry is a turn holding only
  * the failure, and the input sits in an earlier one. Retry was therefore
