@@ -143,6 +143,14 @@ to the entire expanded value. This direction does not constitute native visual
 acceptance.
 
 
+## Session-row metadata
+
+Session rows should spend state text on work, decisions, warnings and failures.
+Use the web rail's humanized vocabulary and omit quiet-state noise. Give decision
+signals their own wrapping space so a long project path cannot truncate them.
+Keep the full path in accessibility metadata, and allow more path lines at large
+text sizes without reducing the text or touch target.
+
 ## New-session composition
 
 Treat the opening prompt as a composer, with its model and reasoning choices and

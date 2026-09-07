@@ -122,6 +122,11 @@ first-session top moves from 809 to 651 pixels with identical content and touch
 minimums. Hub/search controls now scroll with the roster so largest-text users
 can reach usable session rows. Both platforms have final direct-hub typing,
 Search/Clear and large-text scrolling checks. See [roster evidence](roster-search.md).
+The roster now shares web state labels, omits quiet-state noise, and separates
+decision signals from truncatable project paths. Normal native comparisons and
+iOS largest text are recorded in [metadata evidence](roster-metadata.md).
+Android large-text metadata remains unqualified after a transient connection
+error; full screen-reader and long-path acceptance also remain open.
 
 The [first spacing correction](transcript-spacing.md) removes an empty header
 slot and tightens routine-detail gaps. Android measurements show 284 pixels
