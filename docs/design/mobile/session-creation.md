@@ -412,3 +412,27 @@ inserted into the fixture instead of reliably replacing it; therefore these
 captures establish geometry and focus, not exact long-text entry fidelity.
 Native selection/autocorrection, screen readers, attachment-heavy creation,
 long reasoning/model labels and smaller screens remain to be qualified.
+
+
+## Installed client lifecycle recipe
+
+The packaged session-lifecycle.mjs example now exercises a fresh idle session,
+subscription, unique-ID input submission, start and interrupt receipts,
+turn/started and turn/completed pushes, authoritative text/terminal-state
+readback and unsubscribe. It deliberately requires a held-open scripted
+provider and leaves the resulting idle session for inspection. It does not
+establish natural completion, transcript delta reconstruction or reconnect
+qualification.
+
+A separate npm tarball consumer ran the final recipe against the authenticated
+isolated SecondHub and created local:034KQlVEVwWYsH1nuXXy6t. The script verified
+turn_m1 interruption and its exact unique input. A separate client connection
+confirmed that session remained idle. Missing mutation opt-in and an invalid
+catalog model both failed before creation; the newest session stayed unchanged.
+The package build, touched Biome checks and canonical make test-web gate pass
+(typecheck, tests, lint); independent source review found
+no concrete protocol or cleanup issues. The coverage report now lists 14 of 88
+methods and 3 of 35 notifications across five recipes. These counts describe
+recipe presence, not exhaustive branches, supported-feature parity or release
+readiness. The current protocol/client guide documents the lifecycle and its
+uncertainty/cleanup limits.
