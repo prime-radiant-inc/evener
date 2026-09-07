@@ -385,6 +385,21 @@ six independent checks:
    `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but still
    present — and `widgets/dropzone/dropzone.module.css` keeps its dashed accent drag-target
    outline, which is drop-here signage, not a focus ring.
+7. **Every `var(--name)` without a fallback resolves to a declaration** somewhere under
+   `src/` (tokens.css or a module's own local property). Exempt: dockview's `--dv-*` and the
+   runtime-set names JS or an inline style declares (`--keyboard-inset`, `--rail-width`,
+   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-font-size`, `--prose-ink`,
+   `--density-scale`, `--font-scale`). Four undefined tokens had shipped before this check
+   (`--radius-sm` twice, `--edge-hi`, `--font-size-title`), each silently falling back to the
+   property's initial value.
+8. **No literal `font-size` in px outside `tokens.css`.** Only `var(--font-size-*)`, `inherit`,
+   and relative units (`em`, `%`) are legal; inline code is sized relative to its line, which
+   is why `em` stays.
+9. **`letter-spacing` only through the two tracking tokens** (`--tracking-display`,
+   `--tracking-eyebrow`), `inherit`, or `normal`.
+10. **Uppercase means the eyebrow recipe.** Any rule block with `text-transform: uppercase`
+    must also declare `font-size: var(--font-size-caption)` and
+    `letter-spacing: var(--tracking-eyebrow)`, and must not set `color: var(--ink-low)`.
 
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.

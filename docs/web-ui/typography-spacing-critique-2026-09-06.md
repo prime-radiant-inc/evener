@@ -339,9 +339,9 @@ disabled controls and hairline-adjacent chrome, which is what its comment says.
   measurement; it is the convention both major chat assistants converged on
   for long technical answers.
 
-As shipped: agent prose as a document is being applied in this same PR by
-the stream that owns that stylesheet, so the bubble wash is not yet gone
-at the commit this status line was written against. The run label grammar
+As shipped: agent prose is a document (`agentmessageitem.module.css`, the
+`.bubble` wrapper keeps only its layout role; recorded in `decisions.md`'s
+2026-09-06 entry). The run label grammar
 shipped as `N steps · <last consequential summary>` rather than the
 sketched "Read 4 files, edited 2 · 1.8s": the count and the consequential
 step survived, the per-run duration did not.

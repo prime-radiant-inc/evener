@@ -893,3 +893,16 @@ stroke weight it had, beside the app's own SVG chevrons and open-box icon.
 composer field, which disabled pinch-zoom for the entire app (WCAG 1.4.4
 resize text). The 16px phone body removed the reason for the lock, so the lock
 is gone, and `src/styles/viewport-pin.test.ts` fails if it comes back.
+
+**Agent prose is the document; the user's words keep the bubble.** The
+2026-07-30 chat-bubbles decision put every agent fragment in a neutral ink
+wash hugging its content. With the column bounded to `--session-measure` that
+wash stopped doing any work and read as a slab behind every paragraph, so
+`agentmessageitem.module.css`'s `.bubble` is now only the prose's layout box:
+full column width, one `--rhythm-line` step of padding, no fill, no radius.
+Continuation fragments take one `--rhythm-item` step above them instead of a
+uniform radius. The user's own message keeps its `--accent-bg` wash
+(`usermessageitem.module.css`), which a short line benefits from. This
+reverses the bubble decision for the agent side only, and it is the one
+2026-09-06 change that is taste rather than measurement; it is the shape
+both major chat assistants converged on for long technical answers.
