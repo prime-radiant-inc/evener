@@ -240,33 +240,43 @@ function planRetryImages(
   items.forEach((_, index) => {
     if (!claimedImage[index]) unpairedImages.push(index);
   });
-  // Unnamed occurrences pair positionally with the leftover images in order:
-  // the nth unnamed mention takes the nth unclaimed image. That pairing is
-  // only sound when the markers run in the same order as the images — an
-  // out-of-order (or gapped) marker sequence means the true marker-to-bytes
-  // identity was lost, and guessing would attach the wrong bytes to a tile.
+  // Unnamed occurrences pair positionally with the leftover UNNAMED images
+  // in order: the nth unnamed mention takes the nth unclaimed unnamed image.
+  // Named images left unclaimed (their marker was removed) sit out of the
+  // positional pairing entirely and take collision-free fallback markers
+  // below, so they can no longer break an otherwise exact unnamed pairing.
+  // That pairing is only sound when the markers run in the same order as the
+  // images — an out-of-order (or gapped) marker sequence means the true
+  // marker-to-bytes identity was lost, and guessing would attach the wrong
+  // bytes to a tile.
   // A repeated NAMED mention whose image is already claimed is the same claim
   // restated, not a new pairing: it stays unpaired (verbatim prose) rather
   // than consuming an unrelated leftover image under a duplicate marker.
-  // A FOREIGN named mention (no attachment carries the name) is worse: with
-  // unnamed images around, positional pairing could be aligning the leftovers
-  // against a shifted marker sequence — the foreign prose may be occupying
-  // the slot the real marker would have taken. Refuse rather than guess.
+  // A FOREIGN named mention (no attachment carries the name) only disturbs
+  // the pairing when positional pairing is actually performed: with pending
+  // unnamed mentions pairing against unclaimed unnamed images, the foreign
+  // prose may be occupying the slot the real marker would have taken, so
+  // positional alignment cannot be trusted and the pairing refuses rather
+  // than guesses. With no positional pairing to disturb, foreign prose is
+  // just user words left verbatim while the images ride fallback markers.
   // Images left without an occurrence keep a fallback marker below, which is
   // always safe (fresh numbers outside the used set).
   let positionalAmbiguous = false;
-  const hasForeignMention = occurrences.some(
-    (occurrence) => occurrence.name !== undefined && !byName.has(occurrence.name),
+  const unclaimedUnnamed = unpairedImages.filter(
+    (index) => items[index]?.name === undefined || items[index]?.name === "",
   );
-  const hasUnnamedImage = items.some((image) => image.name === undefined || image.name === "");
-  if (hasForeignMention && hasUnnamedImage) {
-    positionalAmbiguous = true;
-  }
   const pendingUnnamed: number[] = [];
   pendingOccurrences.forEach((occurrenceIndex) => {
     const occurrence = occurrences[occurrenceIndex];
     if (occurrence !== undefined && occurrence.name === undefined) pendingUnnamed.push(occurrenceIndex);
   });
+  const needsPositionalPairing = pendingUnnamed.length > 0 && unclaimedUnnamed.length > 0;
+  const hasForeignMention = occurrences.some(
+    (occurrence) => occurrence.name !== undefined && !byName.has(occurrence.name),
+  );
+  if (needsPositionalPairing && hasForeignMention) {
+    positionalAmbiguous = true;
+  }
   const unnamedMarkers = pendingUnnamed.map(
     (occurrenceIndex) => (occurrences[occurrenceIndex] as ImageOccurrence).marker,
   );
@@ -276,25 +286,25 @@ function planRetryImages(
     }
   });
   // Positional pairing is exact one-to-one or nothing: the unnamed mention
-  // count must EQUAL the leftover image count. A SUBSET (fewer mentions than
-  // images, e.g. an earlier marker removed) cannot be aligned — the nth
-  // mention is not necessarily the nth image — so refuse rather than assign
-  // marker 2's bytes to image A. A SUPERSET (more mentions than images, e.g.
-  // foreign "(attached image 1)" prose before real markers 2 and 3) is worse:
-  // pairing the first mentions positionally relabels the attachments as 1
-  // and 2, and the round-trip cannot see it — every "[image N]"
-  // re-translates to identical "(attached image N)" prose. Only provably
-  // repeated copies of an already-paired marker are harmless, and those never
-  // reach this path: the by-name claim above consumes the first copy, and a
-  // repeated UNNAMED marker trips the non-increasing check above.
-  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length !== unpairedImages.length) {
+  // count must EQUAL the unclaimed unnamed image count. A SUBSET (fewer
+  // mentions than images, e.g. an earlier marker removed) cannot be aligned —
+  // the nth mention is not necessarily the nth image — so refuse rather than
+  // assign marker 2's bytes to image A. A SUPERSET (more mentions than
+  // images, e.g. foreign "(attached image 1)" prose before real markers 2
+  // and 3) is worse: pairing the first mentions positionally relabels the
+  // attachments as 1 and 2, and the round-trip cannot see it — every
+  // "[image N]" re-translates to identical "(attached image N)" prose. Only
+  // provably repeated copies of an already-paired marker are harmless, and
+  // those never reach this path: the by-name claim above consumes the first
+  // copy, and a repeated UNNAMED marker trips the non-increasing check above.
+  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length !== unclaimedUnnamed.length) {
     positionalAmbiguous = true;
   }
   if (positionalAmbiguous) {
     ambiguous = true;
   } else {
     pendingUnnamed.forEach((occurrenceIndex, position) => {
-      const imageIndex = unpairedImages[position];
+      const imageIndex = unclaimedUnnamed[position];
       if (imageIndex === undefined) return;
       const occurrence = occurrences[occurrenceIndex];
       if (occurrence === undefined) return;

@@ -670,6 +670,69 @@ test("foreign prose beside an unnamed image refuses the images instead of misass
   expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
 });
 
+test("an unmentioned named image keeps a fallback marker beside an exact unnamed pairing", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1) describe it";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
+          { src: "data:image/png;base64,Ynl0ZXMtYg==" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYg==" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
+test("foreign prose beside an unmentioned unnamed image keeps the image on a fallback marker", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 9: ghost) hi";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,cmVhbA==" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", text, [{ marker: 1, mediaType: "image/png", data: "cmVhbA==" }]),
+  );
+});
+
+test("foreign prose occupying the pairing slot still refuses the images", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: ghost.png) then (attached image 1) then (attached image 2)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
 test("a repeated named mention plus an unmentioned image keeps both attachments", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: a.png) and again (attached image 1: a.png)";
