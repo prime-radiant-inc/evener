@@ -102,7 +102,8 @@ Rule: small frequent commits; every claim backed by measurement.
 
 ## Gates before PR
 
-- `go vet ./...` clean
-- `go test -count=1 ./...` green (or documented pre-existing failures, verified on base)
-- `make lint` if touched areas require it
+- `go vet ./agent/... ./agent/internal/jobstore/ ./agent/internal/modelavailability/`: clean (post-merge).
+- `gofmt -l` on touched Go files: clean.
+- `go test -count=1 ./...` post-merge: exit 0, 73 packages ok, zero FAIL (full output `$EVENER_SCRATCH_DIR/perf-verify.txt`).
+- Frontend `tsc`/`vite build`/scoped vitest: verified in lane before merge (see lane report).
 - No behavior change without a test proving parity
