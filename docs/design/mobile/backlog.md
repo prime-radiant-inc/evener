@@ -154,6 +154,10 @@ evidence and a real proxy-outage check: Android automatically recovered; iOS
 retained its draft through a failed fresh connection and successful manual
 retry. See [creation recovery evidence](session-creation.md#creation-during-a-real-connection-outage).
 In-flight mutation and hub-switch races remain unqualified.
+An iOS empty-prompt creation with its successful reply deliberately dropped now
+retains the draft/warning across reopening without automatic duplicate creation;
+the session is independently confirmed idle. Android and nonempty-input native
+parity remain open. See [lost-reply evidence](session-creation.md#ios-creation-with-a-lost-successful-reply).
 
 Acceptance: deliberate per-hub navigation and connection lifetimes; overlapping
 session/item IDs; auth rotation, failed credentials, reconnect, removal and
