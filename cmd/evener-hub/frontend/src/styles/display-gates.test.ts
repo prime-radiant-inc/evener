@@ -132,7 +132,10 @@ test("--font-size-control is the ui step on desktop and the body (16px) step on 
   expect(CSS).toMatch(/\n\s*--font-size-control: var\(--font-size-ui\);/);
   const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   expect(media).not.toBeNull();
-  expect(media![1]).toMatch(/--font-size-control: var\(--font-size-body\);/);
+  // max(16px, …), not the body size alone: the S font-size preference scales
+  // the phone body to 14.4px, and iOS zooms into a 14.4px field just the same
+  // (roborev on PR #947).
+  expect(media![1]).toMatch(/--font-size-control: max\(16px, var\(--font-size-body\)\);/);
   expect(media![1]).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
 });
 
