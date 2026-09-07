@@ -635,3 +635,24 @@ iPad/physical devices, performance and release gates. The output UI produced two
 automation snapshot-settling timeouts; subsequent snapshots verified success,
 but no performance conclusion follows. iOS-only v1 remains active; Android
 qualification and interactive voice remain deferred.
+
+
+## Shared activity traversal and native ANSI checkpoint
+
+`e0cd5690f` moves the existing activity parser, merge and native reader into the
+shared SDK and adds bounded, privacy-safe traversal. It also renders ANSI native
+output and fixes a simulator-discovered Anser dependency mismatch by aligning
+native/runtime tests with the explicitly declared parser version.
+
+[Direct evidence](../../design/mobile/activity.md#sdk-traversal-and-native-ansi-output--7-september)
+records complete three/four-page persisted activity reads by an independently
+installed SDK, exact job ordering/counts, one-page partial and wrong-thread
+outcomes, byte-exact ANSI output, and rebuilt iPhone dark/light rendering.
+601 native tests and TypeScript, 141 SDK contracts, isolated package
+qualification, canonical web gate and all five browser guards pass. Six drafts
+and Jesse's Apple migration patch are preserved.
+
+The catalog has eighteen recipes covering 50 of 91 method names. This is
+presence/read evidence, not all outcomes or release qualification. Next: complete
+delegate metadata and timing, then the remaining fault, reader, multi-hub,
+accessibility and iOS release matrix. Android qualification remains deferred.

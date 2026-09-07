@@ -551,7 +551,7 @@ and CommonJS, and ran the read-only inspection recipe against an authenticated
 isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
-The current generated catalog has 91 methods; sixteen recipes cover 48 method
+The current generated catalog has 91 methods; eighteen recipes cover 50 method
 names and three notification names. These are recipe-presence counts, not full
 outcome coverage. The opt-in project-layer
 recipe verified mutation, notification, effective-value readback and restoration
@@ -576,6 +576,14 @@ now covers real daemon task updates observed by the open native sheet and SDK,
 saved rows after shutdown/relaunch, and native task notice disclosures. Larger
 lists, faults and cross-hub cases remain open; a recipe's presence is not complete
 workflow qualification.
+
+The shared `ActivityList` now ships in the SDK with a bounded traversal recipe.
+[Direct traversal and ANSI evidence](activity.md#sdk-traversal-and-native-ansi-output--7-september)
+records an outside-checkout consumer completing both large persisted activity
+fixtures, preserving ordered identities, reporting an honest one-page partial,
+rejecting the wrong thread ID, and reading the ANSI output bytes exactly. The
+packaged CLI prints only outcome and counts. All 141 SDK contracts pass; this
+does not establish live concurrent traversal or the remaining method outcomes.
 
 Acceptance: an independent client consumer can implement every supported flow
 from the guide and wire reference; the library and examples run outside this

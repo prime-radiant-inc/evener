@@ -29,8 +29,9 @@ Output is fetched against its owning session. Load earlier uses the server's
 byte offset, not the rendered character count. A non-advancing page ends
 paging without duplicating content. Failed reads retain output with an error;
 Refresh replaces the loaded window with the latest tail. Output lines are
-virtualized, selectable terminal text; ANSI parsing currently preserves text
-but does not render its colors or emphasis.
+virtualized, selectable terminal text. Parsed ANSI runs render themed colors,
+emphasis, reverse colors and concealed spacing; blank lines retain their height.
+Concealed runs are omitted from the line's accessibility label.
 
 ## Verification, 6 September 2026
 
@@ -61,7 +62,7 @@ but does not render its colors or emphasis.
 This is an implemented increment, not complete activity parity or release
 acceptance. Still required: real delegated-session navigation and nested
 branch paging, native reconnect/fault testing, cross-hub action ownership,
-complete delegate metadata and timing presentation, styled ANSI output,
+complete delegate metadata and timing presentation, ANSI contrast qualification,
 output copy/selection and reading-position behavior, large-text and screen
 reader coverage, long-log memory/performance, and representative devices.
 
@@ -210,3 +211,57 @@ execution on this build, complete metadata, styled ANSI, copy/selection,
 reading-position behavior, accessibility, large text and device/performance
 coverage remain open. SDK activity-tree traversal still lacks a packaged
 workflow. This checkpoint qualifies these iOS reads, not v1 as a whole.
+
+
+## SDK traversal and native ANSI output — 7 September
+
+Source `e0cd5690fb13dc4b14aa5c0d020a280d4312b23f` shares the existing activity
+parser, merge logic and native reader through the portable protocol package.
+The reader fences ref/thread identity, unsafe integer revisions and stale
+responses; malformed members preserve valid neighbors and mark their branch
+incomplete. A bounded recipe consumes only advertised opaque continuations,
+retains partial trees on failures, and distinguishes budget exhaustion, repeated
+cursors, incomplete summaries, unavailable actions and ended threads. See the
+[packaged recipe guide](../../../cmd/evener-hub/frontend/src/protocol/README.md#reading-activity-and-its-continuation-branches).
+
+An independently installed tarball against the owned direct v4 hub completed
+both persisted fixtures from the preceding acceptance section: three pages for
+2,505 root plus 2,505 child jobs, and four pages for the fixture with the additional
+sibling job. Exact ordered job IDs, ownership, accumulated counts and exhausted
+branches were checked. Both one-page reads returned an incomplete 2,000-job
+prefix. Wrong-thread reads returned failure without a tree. The installed CLI
+returned only outcome and page/remaining-branch counts. The tarball SHA-256 is
+`2bed1fc54314ace0f8661702ab917db588f5b09f60f29401a2f0e4fac7123346`.
+
+The iPhone Release build renders nested native ANSI text. The first simulator
+pass found missing decorations and visible concealed text despite green unit
+tests. Metro resolved an undeclared transitive Anser 1.4.10; tests resolved the
+web installation's 2.3.5. Aligning Vitest with native resolution reproduced three
+failures. Declaring Anser 2.3.5 explicitly repaired the bundled behavior. This
+was a dependency-resolution defect, not an ANSI parser or simulator timing issue.
+
+A new 340-byte persisted output fixture checks named and RGB colors, bold, dim,
+italic, underline, strike, reverse colors, conceal and a blank line. The rebuilt
+app displayed all styles in dark and light mode; conceal retained its glyph
+spacing while the runtime accessibility label contained only the visible text.
+Blank-line geometry was correct without adding placeholder text. Refresh kept
+the output intact, and Back returned to the expanded job and inactive fold.
+The independent SDK read matched the entire saved output byte-for-byte. The
+native bundle SHA-256 is
+`8cf0711382da7eb20f6e8df3bf356e6782a3ce53b0cfabc1ab1af17828ddee45`.
+
+![Dark native ANSI output](assets/ansi-output-v4-dark.jpg)
+![Light native ANSI output](assets/ansi-output-v4-light.jpg)
+
+The [receipt](assets/activity-sdk-ansi-v4-receipt.json) records source, build logs,
+package/bundle/fixture hashes, exact read outcomes and draft preservation.
+601 native tests and TypeScript, 141 SDK contracts across fourteen files,
+outside-checkout package qualification, the canonical frontend gate and all
+five browser guards passed. Six drafts and the unrelated Apple migration patch
+remain unchanged. No production session was used.
+
+These are read/projection fixtures, not new shell or delegate execution proof.
+Actual VoiceOver, selection/copy, large text, long-output memory/performance,
+ANSI contrast, multi-hub faults, delegate metadata and final release acceptance
+remain open. Android sources remain preserved; Android release qualification is
+deferred for iOS-only v1.

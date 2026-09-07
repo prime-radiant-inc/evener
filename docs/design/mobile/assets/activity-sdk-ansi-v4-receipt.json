@@ -1,0 +1,263 @@
+{
+  "source": "e0cd5690fb13dc4b14aa5c0d020a280d4312b23f",
+  "nativeBundleSHA256": "8cf0711382da7eb20f6e8df3bf356e6782a3ce53b0cfabc1ab1af17828ddee45",
+  "build": {
+    "summary": {
+      "status": "SUCCEEDED",
+      "durationMs": 15772,
+      "target": "simulator"
+    },
+    "artifacts": {
+      "appPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+      "bundleId": "com.primeradiant.evener.native",
+      "processId": 25345,
+      "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+      "buildLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/build_run_sim_2026-09-07T18-22-21-346Z_pid64510_67d92b93.log",
+      "runtimeLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_2026-09-07T18-22-36-270Z_helperpid25315_ownerpid64510_c269049a.log",
+      "osLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_oslog_2026-09-07T18-22-37-056Z_helperpid25608_ownerpid64510_54487a68.log"
+    }
+  },
+  "fixturePath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-ansi-v4-nwb1g9vs",
+  "consumerPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-activity-7xn8gr5r",
+  "hubBinary": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-goal-replay-2fikyxnv/evener",
+  "hubBinarySHA256": "e5fd01f5dcc7dfa9f5757feb5c4e2066cc485ee0064e87c078b9745774cc46a2",
+  "hubSource": "0f95ef200",
+  "native": {
+    "darkCapture": {
+      "type": "runtime-snapshot",
+      "rs": "1",
+      "screenHash": "13p6bub",
+      "seq": 769,
+      "count": 128,
+      "targets": [
+        "e53|tap|button|Model: fake-test-model. Change model||",
+        "e47|typeText|text-field|Message Message||",
+        "e14|tap|button|Sessions||BackButton",
+        "e16|tap|button|Session actions||",
+        "e52|tap|button|Attach images||",
+        "e75|tap|button|Back||",
+        "e78|tap|button|Done||",
+        "e86|tap|button|Refresh output||"
+      ],
+      "scroll": [
+        "e24|swipe|scroll-view|||",
+        "e43|swipe|scroll-view|||",
+        "e82|swipe|scroll-view|||"
+      ],
+      "text": [
+        "e76|text|text|Job output||",
+        "e77|text|text|Job output||",
+        "e79|text|text|v4 acceptance||",
+        "e80|text|text|v4 acceptance||",
+        "e28|text|text|v4 acceptance \u00b7 Connected||",
+        "e29|text|text|v4 acceptance \u00b7 Connected||",
+        "e30|text|text|No messages yet.||",
+        "e31|text|text|No messages yet.||",
+        "e87|text|text|340 bytes total||",
+        "e88|text|text|340 bytes total||",
+        "e89|text|text|ANSI READER START||",
+        "e90|text|text|ANSI READER START||",
+        "e91|text|text|Red and plain||",
+        "e92|text|text|Red and plain||",
+        "e93|text|text|Green and plain||",
+        "e94|text|text|Green and plain||",
+        "e95|text|text|Bold normal||",
+        "e96|text|text|Bold normal||",
+        "e97|text|text|Dim normal||",
+        "e98|text|text|Dim normal||",
+        "e99|text|text|Italic normal||",
+        "e100|text|text|Italic normal||",
+        "e101|text|text|Underline and strike||",
+        "e102|text|text|Underline and strike||",
+        "e103|text|text|Truecolor purple||",
+        "e104|text|text|Truecolor purple||",
+        "e105|text|text|Reverse named colors||",
+        "e106|text|text|Reverse named colors||",
+        "e107|text|text|Reverse defaults||",
+        "e108|text|text|Reverse defaults||",
+        "e109|text|text|Visible again||",
+        "e110|text|text|Visible again||",
+        "e111|text|text|Before blank||",
+        "e112|text|text|Before blank||",
+        "e115|text|text|After blank||",
+        "e116|text|text|After blank||",
+        "e117|text|text|ANSI READER END||",
+        "e118|text|text|ANSI READER END||"
+      ],
+      "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0"
+    },
+    "screenshots": {
+      "before": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_be792ed9-34ca-420a-9c18-4b832c9141ac.jpg",
+      "dark": {
+        "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_16354321-722f-4069-9f93-11084c78d968.jpg",
+        "artifact": "docs/design/mobile/assets/ansi-output-v4-dark.jpg",
+        "sha256": "ad274affeb810e68377b0d45851695ebe22f5ad43ebb108a4179281ea3bf8380"
+      },
+      "light": {
+        "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_640d576d-381f-4aff-9749-fce317b388f9.jpg",
+        "artifact": "docs/design/mobile/assets/ansi-output-v4-light.jpg",
+        "sha256": "4418c0c5749ede0945027ea8d11bad0398a51da030ba4285f2c643b74bed3c60"
+      }
+    },
+    "observed": [
+      "Named/RGB colors and bold/dim/italic/underline/strike/reverse render in both themes",
+      "Concealed glyph spacing remains; concealed text omitted from runtime accessibility label",
+      "Blank output line retains height",
+      "Refresh preserves the complete 340-byte output",
+      "Back returns to expanded activity job and inactive fold",
+      "Original dark appearance restored"
+    ]
+  },
+  "limits": [
+    "Persisted read fixtures, not new shell/delegate execution",
+    "Actual VoiceOver, clipboard/selection, large text, long-output memory/performance and contrast qualification remain open",
+    "Android release qualification deferred for iOS-only v1"
+  ],
+  "sdk": {
+    "source": "e0cd5690fb13dc4b14aa5c0d020a280d4312b23f",
+    "hubSource": "0f95ef200",
+    "hubURL": "ws://127.0.0.1:54211/rpc",
+    "tarballSHA256": "2bed1fc54314ace0f8661702ab917db588f5b09f60f29401a2f0e4fac7123346",
+    "fixtures": [
+      {
+        "binding": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-activity-v4-x7d0_1or/binding.json",
+        "ref": "local:034KnqU2t7hwdFL8oh7GJR",
+        "summary": {
+          "outcome": "read",
+          "pagesRead": 3,
+          "remainingBranches": 0
+        },
+        "counts": {
+          "active": 1,
+          "failed": 0,
+          "completed": 5010,
+          "complete": true
+        },
+        "nodes": [
+          {
+            "owner": "034KnqU2t7hwdFL8oh7GJR",
+            "jobCount": 2505,
+            "orderedIDsSHA256": "6fbf92a8f5ec53aa26b9689f1f887647ccabb4d49d64297c6530384497817098"
+          },
+          {
+            "owner": "034KnqU2t7lsYjQHkmBSlW",
+            "jobCount": 2505,
+            "orderedIDsSHA256": "9d52ba55d1db0bbfeca3e91594208aa185f75573707efc55e98c83e1619eba05"
+          }
+        ],
+        "budgetSummary": {
+          "outcome": "incomplete",
+          "pagesRead": 1,
+          "remainingBranches": 1
+        },
+        "wrongThreadRejected": true
+      },
+      {
+        "binding": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-activity-v4-x7d0_1or/multi/binding.json",
+        "ref": "local:034Ko9Dogw1VWmLbdd5yQI",
+        "summary": {
+          "outcome": "read",
+          "pagesRead": 4,
+          "remainingBranches": 0
+        },
+        "counts": {
+          "active": 2,
+          "failed": 0,
+          "completed": 5011,
+          "complete": true
+        },
+        "nodes": [
+          {
+            "owner": "034Ko9Dogw1VWmLbdd5yQI",
+            "jobCount": 2505,
+            "orderedIDsSHA256": "6fbf92a8f5ec53aa26b9689f1f887647ccabb4d49d64297c6530384497817098"
+          },
+          {
+            "owner": "034Ko9Dogw5MxGLJyYEj5i",
+            "jobCount": 2505,
+            "orderedIDsSHA256": "9d52ba55d1db0bbfeca3e91594208aa185f75573707efc55e98c83e1619eba05"
+          },
+          {
+            "owner": "034Ko9Dogw8FGxs8XTjnq6",
+            "jobCount": 1,
+            "orderedIDsSHA256": "278872e63739a9c4d77668ca7dc2b0c4612e1ba85fad63df3437d159a3b14d95"
+          }
+        ],
+        "budgetSummary": {
+          "outcome": "incomplete",
+          "pagesRead": 1,
+          "remainingBranches": 1
+        },
+        "wrongThreadRejected": true
+      }
+    ],
+    "ansi": {
+      "ref": "local:034KotxF28aK33TNV5rYRB",
+      "jobId": "job_ansi_reader",
+      "bytes": 340,
+      "outputSHA256": "7c6bc77ec3679cd99492e477d7d6d0ee78197b3b64b60c53d74bfdea1a6d8b62",
+      "window": {
+        "totalBytes": 340,
+        "retainedStart": 0,
+        "truncated": false,
+        "hasEarlier": false
+      }
+    },
+    "cli": {
+      "outcome": "read",
+      "pagesRead": 4,
+      "remainingBranches": 0
+    }
+  },
+  "binding": {
+    "cwd": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-ansi-v4-nwb1g9vs/workspace",
+    "jobId": "job_ansi_reader",
+    "kind": "persisted read fixture",
+    "outputBytes": 340,
+    "project": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-v4-80twi7qt/state/evener/projects/ansi-output-33TNV5rYRB",
+    "rootID": "034KotxF28aK33TNV5rYRB",
+    "rootRef": "local:034KotxF28aK33TNV5rYRB"
+  },
+  "drafts": [
+    {
+      "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+      "bytes": 513,
+      "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc9793pXlhHyCRXdeAk",
+      "bytes": 513,
+      "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+      "bytes": 37,
+      "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kd12aed4Ah92lJZGUML",
+      "bytes": 27,
+      "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+      "bytes": 36,
+      "sha256": "fee839187da7bdc93d20bc97bc82a21ad841ffbda357c158298d4cd1ef8cb1b5",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KkPKKHzphJXVqsfzMXu",
+      "bytes": 36,
+      "sha256": "20038684cd4baf845d42d42214e148dd0e7b89de511a2c3d0bced3d56a557457",
+      "unconfirmed": false
+    }
+  ],
+  "localSourceSHA256": {
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-ansi-v4-nwb1g9vs/seed.go": "eb77c4a02c6bef2253adf6f3ad9590dbf59d29ff6ee137ceaa658f2a69441888",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-activity-7xn8gr5r/activity-observe.mjs": "8ccca41290a04ea70495102ba58a3d9656df14883477a1e87917d352e9a7dbc5"
+  }
+}
