@@ -234,6 +234,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
+				if msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+					if past, ok := pastEntryForRead(cfg, params); ok && past.ID != "" {
+						return "local:" + past.ID, true
+					}
+				}
 				return "", false
 			}
 			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe && !relayOnThreadRead(source) {
@@ -243,6 +248,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			// must not rewrite the relay's notification delivery identity.
 			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
 				ref, err := daemon.ResolveSubscriptionAdmission(params)
+				if err != nil && msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+					if past, pastOK := pastEntryForRead(cfg, params); pastOK && past.ID != "" {
+						return "local:" + past.ID, true
+					}
+				}
 				return ref.String(), err == nil
 			}
 			key, _, err := threadRelayTarget(source, params)
