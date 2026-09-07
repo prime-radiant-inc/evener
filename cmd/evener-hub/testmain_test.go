@@ -196,14 +196,47 @@ func defaultRootsOutsideTestEnv() []string {
 		{"plugins.DefaultRoot", plugins.DefaultRoot()},
 		{"defaultMCPConfigPath", defaultMCPConfigPath()},
 	}
-	inside := testEnvRoot + string(os.PathSeparator)
 	var escaped []string
 	for _, root := range roots {
-		if !strings.HasPrefix(root.path, inside) {
+		if !containedIn(testEnvRoot, root.path) {
 			escaped = append(escaped, fmt.Sprintf("%s = %q", root.name, root.path))
 		}
 	}
 	return escaped
+}
+
+// canonicalizeExisting resolves symlinks through the deepest ancestor of path
+// that exists and rejoins the rest, so a default nothing has created yet still
+// compares against the real location of the tree it would land in.
+func canonicalizeExisting(path string) string {
+	path = filepath.Clean(path)
+	var rest []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(append([]string{path}, rest...)...)
+		}
+		rest = append([]string{filepath.Base(path)}, rest...)
+		path = parent
+	}
+}
+
+// containedIn reports whether path lies strictly inside root once both are
+// resolved through canonicalizeExisting: a temp root reached through a symlink
+// (macOS /var is /private/var) compares equal to itself, and a link planted
+// under the root cannot point a default outside it.
+func containedIn(root, path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	rel, err := filepath.Rel(canonicalizeExisting(root), canonicalizeExisting(path))
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
@@ -222,6 +255,50 @@ func defaultRootsOutsideTestEnv() []string {
 func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
 		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnvRoot, strings.Join(escaped, "\n  "))
+	}
+}
+
+// TestContainedInResolvesSymlinksAndTraversal pins the containment test the
+// guards above rely on: it must see through a symlinked root (a macOS temp
+// root lives under /var, which is /private/var), refuse a link planted under
+// the root that points outside it, refuse dot-dot traversal, and still accept
+// a default nothing has created yet.
+func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{realRoot, outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(realRoot, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(os.PathSeparator)
+	cases := []struct {
+		name, root, path string
+		want             bool
+	}{
+		{"descendant nothing has created yet", realRoot, filepath.Join(realRoot, "config", "evener", "AGENTS.md"), true},
+		{"root reached through a symlink", link, filepath.Join(realRoot, "home"), true},
+		{"path reached through a symlink", realRoot, filepath.Join(link, "home"), true},
+		{"symlink planted under the root", realRoot, filepath.Join(escape, "AGENTS.md"), false},
+		{"dot-dot traversal", realRoot, realRoot + sep + ".." + sep + "outside" + sep + "x", false},
+		{"the root itself", realRoot, realRoot, false},
+		{"sibling sharing the root as a prefix", realRoot, realRoot + "-sibling", false},
+		{"relative path", realRoot, "config" + sep + "evener", false},
+		{"empty path", realRoot, "", false},
+	}
+	for _, tc := range cases {
+		if got := containedIn(tc.root, tc.path); got != tc.want {
+			t.Errorf("%s: containedIn(%q, %q) = %v, want %v", tc.name, tc.root, tc.path, got, tc.want)
+		}
 	}
 }
 
