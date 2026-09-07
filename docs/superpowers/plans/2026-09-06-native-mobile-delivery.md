@@ -301,3 +301,27 @@ Next is native keybinding configuration. Additional SDK recipes, reader Dynamic
 Type drift, overlapping lifecycle failures, full VoiceOver/iPad/device coverage,
 signing/update qualification and the final canonical merge gate remain open.
 Android sources are preserved and qualification remains deferred for iOS-only v1.
+
+## Native shortcut settings checkpoint
+
+`9ca6eeb71`, `cadf744a8`, and `d65d234f5` add hub web-shortcut configuration to
+native settings, durable proposals/unknown-write recovery, explicit revision
+review, saved form restoration, and iOS UnicodeSets compilation with authored
+previews. Final Release bundle:
+`b0d1e4067fda6e6e5b63ffa3290861f64d0b18658c6134addc42dd4d292cdb64`.
+
+Owned iOS observations cover persisted proposals, stale comparison rejection,
+maximum-text review controls, explicit save, Unbind, Restore default, unknown
+rule retention, pattern validation and unsaved form restoration without send.
+The initial conflict/max-text and final pattern/editor artifacts are separately
+identified in [shortcut evidence](../../design/mobile/keybinding-evidence.md).
+The final native gate passes 581 tests plus TypeScript. Compilation adds about
+1 MB of bundled code; runtime performance and the documented V8 case-folding
+discrepancy remain qualification limits. The owned hub ends at default shortcuts,
+with an empty journal and all four retained draft hashes unchanged.
+
+Next are additional SDK recovery recipes and the outstanding reader Dynamic
+Type drift. Full VoiceOver/iPad/physical-device coverage, multi-hub lifecycle and
+performance qualification, signing/install/update, protocol limitations already
+recorded above, and the final canonical merge gate remain open. Android sources
+remain preserved and deferred for iOS-only v1; voice/barge-in remains outside v1.
