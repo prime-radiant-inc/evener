@@ -30,8 +30,6 @@ Rule: small frequent commits; every claim backed by measurement.
 9. `Page.SerializedBytes` pays indented serialize for a length — `agent/internal/modelavailability/modelavailability.go:369-378`. Risk low.
 - Non-findings: regexes already package-level; reconnect backoff capped; transcript builders already use strings.Builder.
 
-### Frontend / daemon / test-infra / docs (PENDING)
-
 ### Daemon/session/state overhead (dlg_034KXssYf5SNQu2pLvUjHI, DONE 2026-09-06)
 
 9 ranked opportunities (all unmeasured; highest confidence × lowest risk: #1, #2-double-load, #5-coalesce):
@@ -46,15 +44,23 @@ Rule: small frequent commits; every claim backed by measurement.
 8. Transcript resume + doctor both pay full strict re-decode — `agent/transcript/transcript.go:590-642,136-171`, `agent/doctor/transcript.go:29-74`. Risk med (strictness load-bearing).
 9. AppendDurable seeks every call; transcript default fsyncs every Append — `agent/transcript/transcript.go:230-236,436-442,453-466,497-513`. Risk low-med; `cmd/evener-hub/app_threadread_test.go:1089` pins no-fsync-per-Append for 200-turn case.
 
-## Scout assignments (all muse-spark-1.3-contributor, xhigh reasoning)
+### Frontend bundle + runtime (dlg_034KXrwkPlP1rRW5sW3BbY, DONE 2026-09-06)
 
-1. Backend hot paths (Go hot loops, allocs, cloning, polling, retries).
-2. Frontend bundle + runtime (import cost, re-render, bundle size).
-3. Daemon/session/state overhead (goroutines, timers, file IO, stores).
-4. Test/build infra (slow tests, redundant coverage, build caching).
-5. Docs/audit (verify claims, kill dead weight that costs CI time).
+10 ranked opportunities (all unmeasured; no build/test run per scout constraints):
 
-Each scout: read-only, report ranked opportunities with file:line evidence + expected saving + risk. No code changes.
+1. Remove unused `react-router` dep (zero imports; only a comment references it) — `cmd/evener-hub/frontend/package.json:35`, `src/shell/AppShell.tsx:125`. Risk negligible.
+2. Lazy-load `qrcode.react` behind Mobile settings section — `src/panes/settings/sections/mobile.tsx:1,56`, `src/panes/settings/index.tsx:32`. Risk low.
+3. Deduplicate `marked` instances (shared lexer) — `src/widgets/markdown/index.tsx:94`, `src/panes/session/transcript/messages/reasoningFormat.ts:9`. Risk low.
+4. Throttle markdown re-parse during streaming (full parse+sanitize per token = O(n²)) — `src/widgets/markdown/index.tsx:167`. Risk med (settled path untouched → final render byte-identical).
+5. `anser` per-render instantiation in codeblock ANSI path — `src/widgets/codeblock/ansi.ts:1,424`. Risk low if stateless.
+6. Unify 1s `setInterval` clocks to 3s liveness tick — `ActivityTree.tsx:284`, `Spawn.tsx:476`, `liveness.ts:13,58-66`. Risk medium-low.
+7. Scope `setNow` to leaf labels so ticks don't re-render whole panes — same sites. Risk low.
+8. Eager full-size image `src` + base64 data-URIs in store — `ImageGallery.tsx:67+`, `reducer.ts:318`, `AttachmentTile.tsx:68`, `stores/threads.ts:52,72`. Risk med.
+9. Barrel `src/widgets/index.ts` (120 lines, ~20 importers) defeats code-splitting — `Spawn.tsx:34` et al. Risk low-medium.
+10. Split 1000+ line panes at lazy sub-boundaries (Rail 1604, Composer 1475, Spawn 1213, CommandPalette 1003). Risk med.
+- Explicitly NOT recommended (already fine): dockview chunking, DEV-only routes, tooltip/popover policies, font loading, zustand selectors, mutationOutbox 2s scan.
+
+### Test/build infra + docs audit (PENDING — 2 scouts still running)
 
 ## Implemented wins
 
