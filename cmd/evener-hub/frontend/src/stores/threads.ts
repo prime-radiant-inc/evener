@@ -1412,11 +1412,13 @@ async function publishAndReconcileThreadHydration(
     const reconciliation: Promise<void> = previous
       .catch(() => undefined)
       .then(async () => {
+        // A published incompatibility remains a blocking obligation across
+        // later saved snapshots and reconnects. Process it in order; only a
+        // compatible snapshot afterward can prove that dispatch may resume.
         const current = () =>
-          pendingMutationReconciliations.get(ref) === reconciliation &&
           isCurrentMutationRuntime(runtime) &&
-          pending.epoch === readyEpoch &&
-          pending.client === wiredClient;
+          (published.status.type === "restartRequired" ||
+            (pending.epoch === readyEpoch && pending.client === wiredClient));
         if (!current()) return;
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         await runtime.dispatcher.reconcileIdentities(authoritativeIds);
