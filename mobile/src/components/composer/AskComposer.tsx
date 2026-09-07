@@ -3,20 +3,20 @@
 // items where kind === "question", each showing header, question text,
 // selectable options (single or multi), free-text, decide, fallback, and
 // skip actions, plus an optional note field. A single "Send answers" action
-// composes the [answers] text (byte-exact, matching the daemon's reply
-// parser) and submits via conversationStore.send.
+// composes the shared [answers] format and submits via conversationStore.send.
 //
 // Ask mode unmounts normal inputs so hidden controls cannot focus or submit.
 // No retry on conflict: the composed answers text is restored as the draft
 // and the error is surfaced. Settlement from another client (askPending
 // becomes false) stops rendering the cards.
 //
-// The [answers] composition is ported verbatim from the Hub's
-// askCompose.ts (renderer.js:6980-7031) — every character is load-bearing
-// because the text round-trips through the daemon's reply parser.
-
 import { type JSX, useCallback, useMemo, useState } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
+import type {
+  AskAnswerItem,
+  AskResolution,
+} from "../../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+import { composeAskAnswers } from "../../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
 import type { InputItem } from "../../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   AskBatch,
@@ -26,8 +26,6 @@ import type {
 import type { ConversationService } from "../../services/conversation";
 import type { AttachmentState } from "../../state/attachments";
 import type { ConversationState } from "../../state/conversation";
-import type { AskAnswerItem, AskResolution } from "./composeAskAnswers";
-import { composeAskAnswers } from "./composeAskAnswers";
 import "./Composer.css";
 
 export interface AskComposerProps {
@@ -35,11 +33,6 @@ export interface AskComposerProps {
   readonly conversationService: ConversationService;
   readonly attachmentStore: UseBoundStore<StoreApi<AttachmentState>>;
 }
-
-// --- [answers] composition is shared via ./composeAskAnswers ---------------
-// The byte-exact [answers] composition (ported from Hub askCompose.ts) now
-// lives in composeAskAnswers.ts so the canonical AskComposer and the Plan 2
-// live intent dispatcher share one implementation.
 
 // --- per-question UI state -------------------------------------------------
 

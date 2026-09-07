@@ -1,7 +1,7 @@
 import {
   type AskAnswerItem,
   composeAskAnswers,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/askDock/askCompose";
+} from "../../cmd/evener-hub/frontend/src/protocol/askAnswers";
 import type {
   MobileAskQuestion,
   MobileConversation,

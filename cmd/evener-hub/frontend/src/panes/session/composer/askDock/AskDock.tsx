@@ -70,11 +70,11 @@
 // row is hidden/inert until the last batch resolves - Composer.tsx).
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
+import type { AskResolution } from "../../../../protocol/askAnswers";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
-import type { AskResolution } from "./askCompose";
 import { type AskAnswerState, askDockStore, nextUnansweredKey, useAskDockStore } from "./askDockStore";
 import styles from "./askdock.module.css";
 import type { AskBatch } from "./reconcileBatches";

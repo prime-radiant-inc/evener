@@ -39,10 +39,14 @@ run(
 
 writeFileSync(
   join(fixtureDir, "esm.mts"),
-  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION, WireError } from "@evener/appwire-client";
+  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION, WireError, composeAskAnswers, type AskAnswerItem, type AskResolution } from "@evener/appwire-client";
 const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
 const version: string = APPWIRE_PROTOCOL_VERSION;
 const error: WireError | undefined = undefined;
+const resolution: AskResolution = { kind: "skip" };
+const answers: readonly AskAnswerItem[] = [{ resolution, note: "" }];
+const reply: string = composeAskAnswers(answers);
+void reply;
 void client; void version; void error;
 `,
 );
@@ -51,6 +55,9 @@ writeFileSync(
   `import client = require("@evener/appwire-client");
 const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
 const version: string = client.APPWIRE_PROTOCOL_VERSION;
+const answers: readonly client.AskAnswerItem[] = [{ resolution: { kind: "skip" }, note: "" }];
+const reply: string = client.composeAskAnswers(answers);
+void reply;
 void app; void version;
 `,
 );
@@ -74,14 +81,16 @@ run(
 
 writeFileSync(
   join(fixtureDir, "esm-runtime.mjs"),
-  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
+  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION, composeAskAnswers } from "@evener/appwire-client";
 if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "string") process.exit(1);
+if (composeAskAnswers([]) !== "[answers]") process.exit(1);
 `,
 );
 writeFileSync(
   join(fixtureDir, "commonjs-runtime.cjs"),
-  `const { AppwireClient, APPWIRE_PROTOCOL_VERSION } = require("@evener/appwire-client");
+  `const { AppwireClient, APPWIRE_PROTOCOL_VERSION, composeAskAnswers } = require("@evener/appwire-client");
 if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "string") process.exit(1);
+if (composeAskAnswers([]) !== "[answers]") process.exit(1);
 `,
 );
 run(process.execPath, [join(fixtureDir, "esm-runtime.mjs")], fixtureDir);

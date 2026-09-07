@@ -1,3 +1,5 @@
+export type { AskAnswerItem, AskResolution } from "./askAnswers";
+export { composeAskAnswers } from "./askAnswers";
 export type { AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";

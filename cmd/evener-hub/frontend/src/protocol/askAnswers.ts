@@ -1,14 +1,7 @@
-// The [answers] reply composition (parity contracts-composer-queue-pending.md
-// §"Ask User"/test-ask-compose.js): byte-exact for the ordinary format and
-// golden-string tested against cmd/evener-hub/assets/renderer.js's
-// composeAskAnswers/askResolutionText/quoteGoString. Headers containing line
-// framing characters use JSON encoding so the composed text remains parseable.
-
-// AskResolution mirrors legacy's exactly-one-of-5-kinds rule (spec §4.3,
-// renderer.js:5874-5882): option (single or multi_select), free text,
-// decide (with an optional leaning), fallback (only offered when the
-// question carries if_unanswered), and skip. `null` (no resolution chosen
-// yet) composes identically to an explicit skip - see askResolutionText.
+// The structured reply format shared by Evener clients. Replies are sent as
+// user messages; transcript renderers also read their headers and resolutions.
+// Callers validate selected labels and fallback availability before composing.
+// An unresolved selection (null) composes as an explicit skip.
 export type AskResolution =
   | { kind: "option"; labels: string[] }
   | { kind: "free"; text: string }
@@ -36,14 +29,7 @@ function askAnswerHeader(header: string | undefined, index: number): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-// quoteGoString mirrors Go's %q escaping (renderer.js:6975-6994) exactly:
-// backslash, double-quote, \n, \t, \r get their own escape; every other C0
-// control character (code < 0x20) becomes \xHH; everything else passes
-// through unchanged. Iterates by UTF-16 code unit (not code point,
-// `for...of`) to match the legacy implementation verbatim - astral
-// characters (surrogate pairs) fall through the same "else" branch either
-// way since neither half is < 0x20, so this only matters for exact-parity
-// paranoia, not observable behavior.
+// Preserve the reply format's string escaping, including hexadecimal C0 escapes.
 export function quoteGoString(s: string | undefined): string {
   const value = s ?? "";
   let out = '"';
@@ -61,10 +47,7 @@ export function quoteGoString(s: string | undefined): string {
   return `${out}"`;
 }
 
-// askResolutionText renders one question's resolution per spec §4.3's exact
-// vocabulary (renderer.js:6996-7014). An item with no resolution composes
-// identically to an explicit skip ("skipped (no answer)") - the reply
-// format defines exactly 5 resolution kinds, not a 6th "unanswered" kind.
+// An unanswered item and an explicit skip use the same representation.
 function askResolutionText(item: AskAnswerItem): string {
   const r = item.resolution;
   if (r === null) return "skipped (no answer)";
@@ -85,11 +68,9 @@ function askResolutionText(item: AskAnswerItem): string {
   return "skipped (no answer)";
 }
 
-// composeAskAnswers renders the [answers] reply (spec §4.3, byte-exact):
-// global numbering in posting order across every ask_user call in the
-// pending set, one resolution per line, every line carrying its header and
-// an optional trailing note (the annotation is universal, not chip-only).
-export function composeAskAnswers(items: AskAnswerItem[]): string {
+// Number every question in posting order across the pending ask_user calls.
+// Every resolution can carry an optional note; composition does not submit it.
+export function composeAskAnswers(items: readonly AskAnswerItem[]): string {
   const lines = ["[answers]"];
   items.forEach((item, idx) => {
     let line = `${idx + 1}. [${askAnswerHeader(item.header, idx)}] → ${askResolutionText(item)}`;
