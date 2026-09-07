@@ -16,6 +16,12 @@ and linked evidence are historical detail; entries below describe open work.
 
 ## Next work
 
+Follow the [delivery plan](../../superpowers/plans/2026-09-06-native-mobile-delivery.md)
+for dependency order and parallel Luna-medium work packages. Issue order below
+does not replace that sequence. Integration/current evidence and lifecycle
+reliability precede complete conversation journeys and the remaining capability
+packages; protocol recipes accompany each package.
+
 ### MOB-017 · P1 · Resolve Android input-dispatch ANR · Open
 
 The installed Release app timed out while entering the launch-settings search
