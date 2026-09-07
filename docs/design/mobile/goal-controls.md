@@ -112,4 +112,33 @@ vet. Luna medium reviewed the change; the coordinator ran the checks.
 
 This applies to newly recorded continuations. Existing entries with no typed
 goal metadata remain unchanged; no prompt-text guessing or transcript rewrite
-was added. Direct hub/iOS acceptance of the new recording path remains pending.
+was added. Direct hub/iOS acceptance of the new recording path follows below.
+
+## Direct saved-goal replay — 7 September
+
+Owned hub/daemon source `0f95ef200` recorded a fresh goal session, with a scripted
+provider driving real task tools, automatic continuation, a 36-byte file write
+and terminal goal completion. An independent client observed completion before
+the daemon was shut down. The [receipt](assets/goal-task-v4-receipt.json) records
+binary, package and iOS bundle hashes, fixture Git identity, cleanup and limits.
+
+The two continuation notices kept identical text hashes, reserved turn IDs,
+transcript keys and positions in live reads, saved reads after shutdown, and
+reads after iOS stop/launch. The durable transcript independently retains the
+full model inputs and distinct compact notices. The final `6277c3f30` Release
+app displays both notices after rebuild and relaunch. Its task-control reminders
+are separately expandable rather than flooding the conversation.
+
+![Saved goal notices and collapsed task instructions](assets/goal-replay-v4.jpg)
+
+The owned provider exited successfully and its registry entry was removed;
+the full registry matches baseline. The fixture session remains saved with its
+completed goal and two completed tasks. All six previous drafts retain their
+exact hashes and no unconfirmed delivery; the unrelated Apple edits remain
+byte-identical and unstaged. The owned hub remains available for later checks.
+
+This verifies the new continuation recording/replay path, not complete transcript
+parity: live-only round timings and a completion marker differ from saved items.
+Older untyped goal recordings remain unchanged. Task state observations, iOS
+disclosures and SDK task reads are documented in [task-list.md](task-list.md).
+The broader fault, accessibility, physical-device and release matrix stays open.

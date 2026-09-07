@@ -475,8 +475,10 @@ matrix remain open.
 
 Saved goal replay now preserves the compact notice and logical turn identity
 without discarding model input. Full/bounded/item projection and incremental
-index regressions pass. Earlier recordings lack this metadata; updated direct
-hub/iOS replay acceptance remains open. See [saved continuation evidence](goal-controls.md#saved-continuation-identity--7-september).
+index regressions pass. [Direct hub/iOS replay](goal-controls.md#direct-saved-goal-replay--7-september)
+now verifies stable notice hashes, turn IDs and transcript keys after daemon
+shutdown and app relaunch. Earlier recordings lack this metadata and remain
+unchanged; whole-transcript parity and broader fault cases remain open.
 
 [Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
 now covers four real restricted-session cases: native and packaged-SDK Allow
@@ -560,8 +562,11 @@ from available empty lists, rejects malformed rows/duplicate identities, capture
 the selected ref before connecting and never retries automatically. The CLI
 prints only availability and status counts. Eight focused behavioral contracts,
 all 124 SDK contracts, independent package qualification and the canonical web
-gate pass. Real daemon task updates and cross-client observation still need
-acceptance; a recipe's presence is not complete workflow qualification.
+gate pass. [Direct task acceptance](task-list.md#direct-v4-task-reads-and-disclosures--7-september)
+now covers real daemon task updates observed by the open native sheet and SDK,
+saved rows after shutdown/relaunch, and native task notice disclosures. Larger
+lists, faults and cross-hub cases remain open; a recipe's presence is not complete
+workflow qualification.
 
 Acceptance: an independent client consumer can implement every supported flow
 from the guide and wire reference; the library and examples run outside this

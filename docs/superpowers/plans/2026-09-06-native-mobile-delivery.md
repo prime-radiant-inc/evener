@@ -573,3 +573,33 @@ Next: real v4 activity/tasks/jobs and packaged SDK coverage, then remaining faul
 multi-hub, transcript, accessibility, physical-device and release qualification.
 The installed iOS source remains goal-qualified `d48fe9471`; rebuild before its
 next changed-code acceptance. The two unrelated Apple edits remain preserved.
+
+## Saved goal and task workflow checkpoint — 7 September
+
+`a35ad596f` preserves typed goal continuation notices and stable turn IDs in the
+semantic transcript and all saved grouping paths. `0f95ef200` adds the validated
+packaged task-list recipe. `6277c3f30` puts native task-control reminders behind
+the existing disclosure control while keeping critical notices visible.
+
+The owned direct v4 hub/daemon now runs `0f95ef200`; the latest installed iOS
+Release app is `6277c3f30`, bundle SHA
+`08b72d59e4429755ff1c7f27ddf194d83b94ceb53f7e27a57426ce9f0df552ef`.
+The [combined receipt](../../design/mobile/assets/goal-task-v4-receipt.json)
+records an independent SDK consumer, real task mutations and native updates,
+goal continuation/file/completion, stable goal notice identities after shutdown
+and relaunch, retained task details, and native disclosure open/close behavior.
+Full model input remains durable. The owned provider is removed/stopped and all
+six earlier drafts are unchanged. No old transcript was rewritten.
+
+Validation passes: 592 native tests and TypeScript, 124 SDK contracts across
+twelve files, independent tarball qualification, canonical web gate, full agent/
+schema/transcript/apptranscript/appprojector suites, focused hub checks, vet and
+the lint gate. Luna medium proposed implementations and reviewed semantics and
+test boundaries; the coordinator integrated and executed the checks.
+
+This is a bounded goal/task workflow checkpoint. Goal notice parity is not whole
+transcript parity; live-only diagnostics differ. The SDK catalog has sixteen
+recipes covering 48 of 91 method names, with outcome coverage still incomplete.
+Next: real activity continuation paging and SDK jobs/output workflows, followed
+by remaining fault, reader, multi-hub, accessibility, iPad, physical-device and
+release qualification. iOS-only v1 scope continues; Android source is preserved.
