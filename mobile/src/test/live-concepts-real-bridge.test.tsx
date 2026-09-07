@@ -557,7 +557,7 @@ function decodeTextFrame(payload: JsonObject): ServerFrame | null {
 }
 
 const INITIALIZE_RESPONSE: InitializeResponse = {
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: "evener-appwire-v4",
   serverInfo: { name: "scripted-hub", version: "1.0.0" },
   sourceId: "scripted-source",
   features: {
@@ -1220,7 +1220,7 @@ async function completeRawHandshake(
     id: initializeId,
     method: "initialize",
     params: {
-      protocolVersion: "evener-appwire-v3",
+      protocolVersion: "evener-appwire-v4",
       clientInfo: { name: "guard-test", version: "1" },
       capabilities: { experimentalApi: false },
     },
@@ -1337,7 +1337,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
         id: 41,
         method: "initialize",
         params: {
-          protocolVersion: "evener-appwire-v3",
+          protocolVersion: "evener-appwire-v4",
           clientInfo: { name: "guard-test", version: "1" },
           capabilities: { experimentalApi: false },
         },
@@ -1634,7 +1634,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
 
       const initialize = await bridge.waitForServerRequest("initialize", 1);
       expect(initialize.params).toEqual({
-        protocolVersion: "evener-appwire-v3",
+        protocolVersion: "evener-appwire-v4",
         clientInfo: { name: "evener-mobile", version: "0.1.0" },
         capabilities: { experimentalApi: false },
       });
@@ -1670,7 +1670,8 @@ describe("production App live concepts over the real native AppWire bridge", () 
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
-        turnLimit: 50,
+        itemsView: "fragment",
+        itemLimit: 40,
       });
       const initialReadThread = makeThread({
         id: ATTENTION_THREAD_ID,
@@ -2119,7 +2120,8 @@ describe("production App live concepts over the real native AppWire bridge", () 
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
-        turnLimit: 50,
+        itemsView: "fragment",
+        itemLimit: 40,
       });
       await act(async () => {
         await bridge.respond(authoritativeRead, {

@@ -710,7 +710,7 @@ async fn handle_client_frame(
                     "id": frame["id"],
                     "result": {
                         "serverInfo": { "name": "rust-harness", "version": "1.0.0" },
-                        "protocolVersion": "evener-appwire-v3",
+                        "protocolVersion": "evener-appwire-v4",
                         "sourceId": "rust-harness-source",
                         "features": {
                             "threadList": true,

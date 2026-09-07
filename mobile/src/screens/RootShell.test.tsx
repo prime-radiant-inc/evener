@@ -589,7 +589,12 @@ async function preparePendingOlderTransition() {
   }
   expect(clientA.requests).toContainEqual({
     method: "thread/turns/list",
-    params: { ref: "ref-a", cursor: "older-a", limit: 50 },
+    params: {
+      ref: "ref-a",
+      cursor: "older-a",
+      itemsView: "fragment",
+      itemLimit: 40,
+    },
   });
   fireEvent.click(screen.getByRole("button", { name: "Work" }));
   const observation = screen.getByTestId("lifecycle-observation");
@@ -722,7 +727,8 @@ describe("RootShell — live connection evidence", () => {
       includeTurns: true,
       subscribe: true,
       replaceSubscription: true,
-      turnLimit: 50,
+      itemsView: "fragment",
+      itemLimit: 40,
     });
     act(() => {
       client?.emit({
@@ -1673,7 +1679,8 @@ describe("RootShell — profile-scope ownership", () => {
             includeTurns: true,
             replaceSubscription: true,
             subscribe: true,
-            turnLimit: 50,
+            itemsView: "fragment",
+            itemLimit: 40,
           },
         },
       ]);
@@ -1924,7 +1931,8 @@ describe("RootShell — profile-scope ownership", () => {
         includeTurns: true,
         replaceSubscription: true,
         subscribe: true,
-        turnLimit: 50,
+        itemsView: "fragment",
+        itemLimit: 40,
       },
     });
 
