@@ -38,6 +38,13 @@
    * property from (kata T9). */
   gap: var(--speaker-gap);
   padding: var(--rhythm-line) 0;
+}
+
+/* The exchange step belongs to the message that OPENS an exchange (the
+ * default). Mid-turn user steering renders through this same view with
+ * opensExchange={false} (SteeringItem.tsx): it joins work already under
+ * way, so it takes no boundary spacing. */
+.message[data-opens-exchange="true"] {
   margin-top: var(--rhythm-exchange);
 }
 

@@ -7,12 +7,12 @@
    * passes it as TranscriptBody's trailingRow): it sizes to its content so
    * the list's measureElement can measure it, and it scrolls away with the
    * transcript instead of owning a footer slot with its own internal
-   * scroll. Centered on the same 76rem reading measure as .turn
-   * (turnblock.module.css's --session-measure, a sibling stream's file -
-   * keep the two literals in sync until both consolidate onto a shared
-   * tokens.css property). */
+   * scroll. Centered on the same reading measure as .turn: --session-measure
+   * is declared on <body> in tokens.css (44rem, or 64rem under the
+   * Transcript width preference), and this row sits outside the .turn
+   * column, so it reads the token itself. */
   width: 100%;
-  max-width: 76rem;
+  max-width: var(--session-measure);
   margin-inline: auto;
   min-width: 0;
 }

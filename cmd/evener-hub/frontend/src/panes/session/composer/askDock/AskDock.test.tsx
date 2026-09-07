@@ -196,14 +196,14 @@ test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
 // list's measureElement can measure it - a max-height or overflow of its own
 // would clip the batch behind an internal scrollbar and lie to the
 // measurement, and any flex-basis sizing belongs to a footer slot it no
-// longer occupies. It centers on the transcript's 76rem reading measure
+// longer occupies. It centers on the transcript's --session-measure reading measure
 // (turnblock.module.css's --session-measure).
 test("the dock sizes to its content as a transcript row, with no internal scroll boundary", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
   const rule = css.match(/\.dock\s*\{([^}]*)\}/);
   expect(rule, "askdock.module.css must declare a .dock rule").not.toBeNull();
   const body = rule![1]!;
-  expect(body).toContain("max-width: 76rem");
+  expect(body).toContain("max-width: var(--session-measure)");
   expect(body).toContain("margin-inline: auto");
   expect(body).not.toContain("max-height");
   expect(body).not.toContain("overflow");

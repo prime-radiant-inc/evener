@@ -28,7 +28,11 @@ test("pane titles are sentence-case headings, not micro-labels", () => {
 
 test("exchange boundaries, runs and pane bodies use the rhythm and space tokens", () => {
   const user = read("panes/session/transcript/messages/usermessageitem.module.css");
-  expect(rule(user, ".message")).toMatch(/margin-top: var\(--rhythm-exchange\)/);
+  // Only a message that OPENS an exchange takes the exchange step: mid-turn
+  // user steering renders through the same view with opensExchange={false}
+  // and must not claim the boundary (roborev, PR #947).
+  expect(rule(user, ".message")).not.toMatch(/margin-top/);
+  expect(rule(user, '.message[data-opens-exchange="true"]')).toMatch(/margin-top: var\(--rhythm-exchange\)/);
   const tool = read("panes/session/transcript/toolcallitem.module.css");
   expect(rule(tool, ".call")).toMatch(/padding: var\(--rhythm-item\) 0/);
   const scaffold = read("widgets/panescaffold/panescaffold.module.css");

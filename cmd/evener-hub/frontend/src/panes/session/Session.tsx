@@ -18,7 +18,7 @@
 // text - is exactly what that slot cannot promise. The footer's layout can.
 // PendingChips travels with the composer (it's contextually
 // "chips beside the composer", per its own doc comment) and shares its
-// 76rem measure so the input aligns with the transcript's own content
+// --session-measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
