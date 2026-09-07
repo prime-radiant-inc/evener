@@ -55,6 +55,7 @@ const recipes = {
     "evener/marketplace/refresh",
   ],
   "approvals.mjs": ["initialize", "thread/read", "evener/sandbox/escalation/resolve"],
+  "questions.mjs": ["initialize", "thread/read", "thread/turns/list", "turn/start"],
   "repository-trust.mjs": ["initialize", "evener/launch/resolve", "evener/launch/trustRepo"],
   "project-layer.mjs": [
     "initialize",

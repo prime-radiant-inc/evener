@@ -131,3 +131,23 @@ diagnostic attempt, were shut down. See [decision evidence](approval-evidence.md
 for artifact identities, clean receipts, screenshots and remaining failure
 scenarios. This closes the ordinary blocked-file execution gap above, not
 concurrent decisions, lost acknowledgments or the broader iOS release matrix.
+
+## Structured question recipe and real completion
+
+The SDK now exposes the shared answer formatter and a guarded question recipe.
+Readonly review pages through the latest user boundary and retains the complete
+pending call set. Answer mode validates explicit selections, the reviewed batch
+and session instance, submits one `turn/start`, checks the receipt and performs
+authoritative readback without replay. Fourteen contract cases cover paging,
+malformed questions, stale decisions, selection validation and uncertain results.
+The total is 95 passing contract tests; external tarball and frontend gates pass.
+
+The external tarball with SHA256
+`c8a99dbf37e8c45cc1982294f2f11f48a527d2a4495da2eb11cf05810773c292`
+completed a real two-question scripted-provider workflow on the owned direct
+v4 hub. The helper reported acknowledged/execution-unverified; independent
+provider, turn-completion and transcript checks proved one structured answer
+with multiple selections and a note. See [current question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification)
+for native restart/keyboard evidence, the corrected diagnostic assertion and
+cleanup. The catalog names 13 recipes and still 42/91 methods, with three
+notification names: this is recipe presence, not complete support or acceptance.

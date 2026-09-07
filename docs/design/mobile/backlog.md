@@ -459,6 +459,14 @@ Acceptance for iOS-only v1: real harness E2E, fault recovery without blind repla
 reachable decisions with the keyboard open, and accessible large-content views.
 Do not infer real execution/resumption from an injected notification alone.
 
+[Direct v4 question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification)
+now covers native and packed-SDK completion of two questions with multiple
+selections and a note. Native selections survive stop/launch without auto-send.
+An observed page-sheet keyboard overlap was corrected and the Next question
+action verified above the open keyboard. Concurrent answers, native uncertainty,
+ordinary composer-draft interaction on v4 and the wider accessibility/device
+matrix remain open.
+
 ### MOB-009 · P1 · Complete rich transcript and attachment interaction · Open
 
 Finish authenticated image/gallery handling, multiple images, copy/link/code
