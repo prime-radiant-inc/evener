@@ -247,7 +247,10 @@ func ClientWithAdapterTimeout(client *http.Client, at *AdapterTimeout) *http.Cli
 			configured.DisableCompression = true
 		}
 		base = configured
-		if configured.ResponseHeaderTimeout > 0 {
+		// A preserved (including equal) caller bound remains caller-owned.
+		ownsHeaderTimeout := configured.ResponseHeaderTimeout > 0 &&
+			(transport.ResponseHeaderTimeout <= 0 || configured.ResponseHeaderTimeout < transport.ResponseHeaderTimeout)
+		if ownsHeaderTimeout {
 			base = &responseHeaderTimeoutTransport{base: configured}
 		}
 	}
