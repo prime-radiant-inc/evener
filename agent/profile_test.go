@@ -1780,16 +1780,19 @@ func TestNamedInstanceKeepsItsIdentity(t *testing.T) {
 		t.Fatalf("after WithModel = %s/%s/%s", rebuilt.ID(), rebuilt.ProviderID(), rebuilt.Model())
 	}
 	// The base's curated cheap_model rides along with the name.
-	if got := work.CheapModel(); got != "kimi-k2.5" {
-		t.Fatalf("CheapModel() = %q, want moonshotai's kimi-k2.5", got)
-	}
-	gemini := namedInstanceProfile("work-google", "google", "gemini-2.5-pro")
-	if got := gemini.CheapModel(); got != "gemini-2.5-flash-lite" {
-		t.Fatalf("CheapModel() = %q, want gemini-2.5-flash-lite", got)
-	}
-	anthropic := namedInstanceProfile("work-anthropic", "anthropic", "claude-opus-4-6")
-	if got := anthropic.CheapModel(); got != "claude-haiku-4-5" {
-		t.Fatalf("CheapModel() = %q, want claude-haiku-4-5", got)
+	for _, tc := range []struct{ name, base, model string }{
+		{"work-kimi", "moonshotai", "kimi-k2.5"},
+		{"work-google", "google", "gemini-2.5-pro"},
+		{"work-anthropic", "anthropic", "claude-opus-4-6"},
+	} {
+		want := baseProviderProfile(tc.base, tc.model).CheapModel()
+		if want == "" || want == tc.model {
+			t.Fatalf("%s curates no cheap model distinct from %q; the fixture proves nothing",
+				tc.base, tc.model)
+		}
+		if got := namedInstanceProfile(tc.name, tc.base, tc.model).CheapModel(); got != want {
+			t.Fatalf("%s CheapModel() = %q, want %s's curated %q", tc.name, got, tc.base, want)
+		}
 	}
 }
 
