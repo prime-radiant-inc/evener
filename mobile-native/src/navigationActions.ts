@@ -42,8 +42,10 @@ export class NavigationActions {
 		private current: () => boolean,
 		private reconcileCurrent: (
 			checkpoint?: NavigationActionCheckpoint,
+			acceptCurrent?: boolean,
 		) => Promise<void>,
 		private storage?: NavigationActionStorage,
+		private confirmCurrent: () => void = () => {},
 	) {
 		this.restore();
 	}
@@ -156,15 +158,32 @@ export class NavigationActions {
 			return false;
 		}
 	}
-	async reconcile() {
+	keepOrganizationState(expected: NavigationActionCheckpoint) {
+		return this.reconcileRecovery(expected);
+	}
+	reconcile() {
+		return this.reconcileRecovery();
+	}
+	private async reconcileRecovery(accepted?: NavigationActionCheckpoint) {
 		if (this.disposed || !this.current() || this.state.pending) return;
 		if (!this.restore()) return;
 		const checkpoint = this.state.recovery;
+		if (
+			accepted &&
+			(!this.storage ||
+				!["archive", "favorite"].includes(accepted.operation.kind) ||
+				JSON.stringify(checkpoint) !== JSON.stringify(accepted))
+		)
+			return;
 		this.publish({ ...this.state, pending: true });
 		try {
-			await this.reconcileCurrent(checkpoint ?? undefined);
+			await this.reconcileCurrent(
+				checkpoint ?? undefined,
+				accepted !== undefined,
+			);
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");
+			this.confirmCurrent();
 			if (checkpoint && this.storage && !this.storage.finish(checkpoint))
 				throw Error("recovery changed");
 			if (!checkpoint && this.storage?.load())
@@ -251,6 +270,7 @@ export class NavigationActions {
 			await this.refresh(response.navigation, checkpoint ?? undefined);
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");
+			this.confirmCurrent();
 			if (checkpoint && this.storage) {
 				savingRecovery = true;
 				if (!this.storage.finish(checkpoint)) throw Error("recovery changed");
