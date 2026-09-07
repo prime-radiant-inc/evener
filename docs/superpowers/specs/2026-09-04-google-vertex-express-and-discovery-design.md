@@ -372,16 +372,17 @@ Without bracketing, the document arrives as ordinary keys, and the outcome
 turns on which byte the terminal sends for a line break: LF maps to
 `KeyCtrlJ`, CR to `KeyEnter`. The field keeps both LF and space (it dropped
 them before), so an LF paste still accumulates whole. A CR paste submits at
-each line and cannot work; the prompt therefore also accepts the path to the
-file holding the document, read on the machine the user typed it on, not the
-hub's, with the field's path completion.
+each line and cannot work, which is one of two reasons for the second way in:
+`f` on the instance asks for the path to the file holding the document, read
+on the machine the user typed it on, not the hub's, with path completion.
 
-The field shows what looks like a path — a value beginning `/`, `~`, or `.`
-that the terminal did not report as a paste — and renders everything else as
-a character count. That way no credential material is echoed: a document is
-a JSON object, a paste is marked as one where the terminal supports it, and
-where it does not, a value that is not path-shaped is treated as material to
-keep off the screen. A path stays visible however long it is.
+The other reason is that the two inputs cannot be told apart. Reading them
+through one prompt meant guessing whether a value was a path or the
+credential — by shape, or by whether the terminal marked it as a paste — and
+a terminal that marks no pastes leaves no signal to guess from. So the paste
+prompt echoes nothing at all: it renders a character count, whatever it is
+given. The file prompt shows its path, which is not secret, on any platform's
+path syntax.
 Control bytes are stripped from what is rendered, since clipboard content
 reaches the view. A value that is neither a document nor a readable path is
 reported by its reason alone: the error line is rendered and outlives the
@@ -389,11 +390,12 @@ panel, so it repeats none of what was submitted. For the same reason
 `CheckCredentialJSON` bounds the two values its refusals quote back (an
 unsupported `type`, a foreign `token_uri`) to a short prefix.
 
-The path is read on the update loop, where a read that never returns stops
-the interface responding and one that never ends exhausts the process. So it
-is opened without blocking, judged by what the open descriptor actually is —
-a regular file, nothing else — and read through a bound. Checking the path
-and then opening it by name again would leave a window for it to become
+The file is read inside the command rather than while the key is handled, so
+a slow filesystem cannot hold up the interface. It is still opened without
+blocking, so a path naming a pipe cannot leave that command waiting forever
+either; what the open descriptor actually is decides whether it is read — a
+regular file, nothing else — and the read is bounded. Checking the path and
+then opening it by name again would leave a window for it to become
 something else in between.
 
 ## 5. End-to-end flows the hub must support after this change

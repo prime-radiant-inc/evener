@@ -50,28 +50,29 @@ func TestCredentialJsonAction_OpensAPasteModal(t *testing.T) {
 	}
 }
 
-// TestCredentialJsonResult_SendsThePasteAndReadsAPath: the value is either the
-// JSON itself (a bracketed paste) or a path to a file holding it, which the
-// TUI reads on the machine the user typed it on.
+// TestCredentialJsonResult_SendsThePasteAndReadsAPath: the two prompts are
+// separate — one takes the document, the other a path to the file holding it,
+// which the TUI reads on the machine the user typed it on — so neither has to
+// guess which it was given.
 func TestCredentialJsonResult_SendsThePasteAndReadsAPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "application_default_credentials.json")
 	if err := os.WriteFile(path, []byte(testCredentialJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name  string
-		value string
+		name, tag, value string
 	}{
-		{name: "pasted json", value: testCredentialJSON},
-		{name: "path to the file", value: path},
-		{name: "path with surrounding space", value: "  " + path + "  "},
+		{name: "pasted document", tag: "credential-json-set:google-vertex", value: testCredentialJSON},
+		{name: "document with surrounding space", tag: "credential-json-set:google-vertex", value: "  " + testCredentialJSON + "  "},
+		{name: "path to the file", tag: "credential-json-file:google-vertex", value: path},
+		{name: "path with surrounding space", tag: "credential-json-file:google-vertex", value: "  " + path + "  "},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client, got, cleanup := credentialJSONHub(t)
 			defer cleanup()
 			m := newHubModel(client, "http://hub.test")
 			m.followupModal = &tuipick.TextInputModal{}
-			updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: tt.value})
+			updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: tt.tag, Value: tt.value})
 			if updated.(hubModel).followupModal != nil {
 				t.Fatal("the modal should be dismissed")
 			}
@@ -89,37 +90,68 @@ func TestCredentialJsonResult_SendsThePasteAndReadsAPath(t *testing.T) {
 	}
 }
 
-// TestCredentialJsonResult_UnreadablePathIsReportedAndNotSent: a path that
+// TestCredentialJsonFile_ReadsOffTheUpdateLoop: the file is read inside the
+// command, not while handling the key, so a slow filesystem cannot hold up
+// the interface. The file is created only after the handler returns, so a
+// read that happened there would have failed and the command would carry
+// that failure instead of the document.
+func TestCredentialJsonFile_ReadsOffTheUpdateLoop(t *testing.T) {
+	client, got, cleanup := credentialJSONHub(t)
+	defer cleanup()
+	path := filepath.Join(t.TempDir(), "adc.json")
+	m := newHubModel(client, "http://hub.test")
+	m.followupModal = &tuipick.TextInputModal{}
+	_, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Value: path})
+	if cmd == nil {
+		t.Fatal("want a cmd")
+	}
+	if got.Value != "" {
+		t.Fatalf("nothing should have been stored yet; the hub received %q", got.Value)
+	}
+	if err := os.WriteFile(path, []byte(testCredentialJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res, ok := cmd().(launchconfig.AuthApiKeySetResultMsg); !ok || res.Err != nil {
+		t.Fatalf("the read belongs in the cmd, which runs after this file exists: %#v", cmd())
+	}
+	if got.Value != testCredentialJSON {
+		t.Fatalf("hub received %q, want the file's contents", got.Value)
+	}
+}
+
+// TestCredentialJsonFile_UnreadablePathIsReportedAndNotSent: a path that
 // cannot be read is the user's mistake to see — by its reason, since the
 // value itself is never repeated — and nothing is stored.
-func TestCredentialJsonResult_UnreadablePathIsReportedAndNotSent(t *testing.T) {
+func TestCredentialJsonFile_UnreadablePathIsReportedAndNotSent(t *testing.T) {
 	client, got, cleanup := credentialJSONHub(t)
 	defer cleanup()
 	missing := filepath.Join(t.TempDir(), "no-such-credentials.json")
 	m := newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: missing})
-	if cmd != nil {
-		t.Fatalf("nothing should be sent for an unreadable path; got %+v", cmd())
+	updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Value: missing})
+	if updated.(hubModel).followupModal != nil {
+		t.Fatal("the modal should be dismissed")
 	}
-	err := updated.(hubModel).err
-	if err == nil || !strings.Contains(err.Error(), "no such file or directory") {
-		t.Fatalf("err = %v, want one giving the reason the read failed", err)
+	if cmd == nil {
+		t.Fatal("want a cmd carrying the failure")
 	}
-	if strings.Contains(err.Error(), missing) {
-		t.Fatalf("err = %q, must not repeat what was submitted", err)
+	res, ok := cmd().(launchconfig.AuthApiKeySetResultMsg)
+	if !ok || res.Err == nil || !strings.Contains(res.Err.Error(), "no such file or directory") {
+		t.Fatalf("result = %#v, want one giving the reason the read failed", cmd())
+	}
+	if strings.Contains(res.Err.Error(), missing) {
+		t.Fatalf("err = %q, must not repeat what was submitted", res.Err)
 	}
 	if got.Value != "" {
 		t.Fatalf("the hub must not be called; it received %q", got.Value)
 	}
 }
 
-// TestCredentialJsonResult_NeverEchoesWhatWasSubmitted: the error line is
-// rendered and persists after the panel closes, so a value that is neither a
-// document nor a readable path — the wrong secret pasted into this prompt —
-// must not put any of itself there. The reason it failed is what the user
-// needs.
-func TestCredentialJsonResult_NeverEchoesWhatWasSubmitted(t *testing.T) {
+// TestCredentialJsonFile_NeverEchoesWhatWasSubmitted: the error line is
+// rendered and persists after the panel closes, so a value that cannot be
+// read as a path — a secret typed into the file prompt by mistake — must not
+// put any of itself there. The reason it failed is what the user needs.
+func TestCredentialJsonFile_NeverEchoesWhatWasSubmitted(t *testing.T) {
 	const wrongSecret = `sk-ant-api03-SECRET-MATERIAL-that-is-not-a-path-or-a-document`
 	for _, tt := range []struct {
 		name  string
@@ -134,14 +166,15 @@ func TestCredentialJsonResult_NeverEchoesWhatWasSubmitted(t *testing.T) {
 			defer cleanup()
 			m := newHubModel(client, "http://hub.test")
 			m.followupModal = &tuipick.TextInputModal{}
-			updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: tt.value})
-			if cmd != nil {
-				t.Fatalf("nothing should be sent; got %+v", cmd())
+			_, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Value: tt.value})
+			if cmd == nil {
+				t.Fatal("want a cmd carrying the failure")
 			}
-			err := updated.(hubModel).err
-			if err == nil {
-				t.Fatal("the failure must be reported")
+			res, ok := cmd().(launchconfig.AuthApiKeySetResultMsg)
+			if !ok || res.Err == nil {
+				t.Fatalf("the failure must be reported: %#v", cmd())
 			}
+			err := res.Err
 			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), tt.value) {
 				t.Fatalf("err = %q, must not repeat what was submitted", err)
 			}
@@ -165,23 +198,25 @@ func assertCredentialPathRefused(t *testing.T, value, want string) {
 	defer cleanup()
 	m := newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	done := make(chan tea.Model, 1)
+	done := make(chan tea.Msg, 1)
 	go func() {
-		updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: value})
-		if cmd != nil {
-			t.Errorf("nothing should be sent; got %+v", cmd())
+		_, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Value: value})
+		if cmd == nil {
+			t.Error("want a cmd carrying the failure")
+			done <- nil
+			return
 		}
-		done <- updated
+		done <- cmd()
 	}()
-	var updated tea.Model
+	var msg tea.Msg
 	select {
-	case updated = <-done:
+	case msg = <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handling blocked: the path was opened instead of being refused")
+		t.Fatal("reading blocked: the path was opened instead of being refused")
 	}
-	err := updated.(hubModel).err
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("err = %v, want one saying %q", err, want)
+	res, ok := msg.(launchconfig.AuthApiKeySetResultMsg)
+	if !ok || res.Err == nil || !strings.Contains(res.Err.Error(), want) {
+		t.Fatalf("result = %#v, want an error saying %q", msg, want)
 	}
 	if got.Value != "" {
 		t.Fatalf("the hub must not be called; it received %q", got.Value)
@@ -210,8 +245,10 @@ func TestCredentialJsonResult_CancelledOrEmptyStoresNothing(t *testing.T) {
 		name string
 		msg  tuipick.TextInputResultMsg
 	}{
-		{name: "cancelled", msg: tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Cancelled: true}},
-		{name: "empty", msg: tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: "   "}},
+		{name: "cancelled paste", msg: tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Cancelled: true}},
+		{name: "empty paste", msg: tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: "   "}},
+		{name: "cancelled file", msg: tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Cancelled: true}},
+		{name: "empty file", msg: tuipick.TextInputResultMsg{Tag: "credential-json-file:google-vertex", Value: "   "}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			client, got, cleanup := credentialJSONHub(t)

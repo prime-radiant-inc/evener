@@ -244,6 +244,15 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return p, nil
 			}
 			return p, func() tea.Msg { return CredentialsActionMsg{Action: "oauth", Instance: cur.Name} }
+		case "f":
+			// Reading the document from a file is its own action, so neither
+			// prompt has to guess whether what it was handed is a path or the
+			// credential itself.
+			cur := p.selectedInstance()
+			if cur == nil || !strings.Contains(strings.Join(cur.AuthModes, ","), "credentialJson") {
+				return p, nil
+			}
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "loadCredentialJson", Instance: cur.Name} }
 		case "*":
 			cur := p.selectedInstance()
 			if cur == nil {
@@ -505,6 +514,7 @@ func (p CredentialsPanel) View() string {
 	} else {
 		footer = tuiprim.ActionBarForWidth(width,
 			tuiprim.KbdHint("enter", "set credential"),
+			tuiprim.KbdHint("f", "credential from file"),
 			tuiprim.KbdHint("t", "test credentials"),
 			tuiprim.KbdHint("o", "OAuth"),
 			tuiprim.KbdHint("c", "clear"),

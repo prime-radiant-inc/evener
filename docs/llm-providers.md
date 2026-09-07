@@ -518,8 +518,7 @@ else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-defaul
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
 pasted in the hub's instance sheet, pasted into the TUI's credentials panel
-with Enter on the instance — which also takes the path to the file, for a
-terminal whose unbracketed pastes would submit at each line — or written
+with Enter on the instance or read from a file with `f` there, or written
 into `credentials.toml`; other credential types, such as `external_account`,
 are refused), which outranks the ADC file. Requests authenticated with user credentials — an
 `authorized_user` ADC file or a stored `authorized_user` JSON — carry
