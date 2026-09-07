@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-07",
+  "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+  "branch": "live-concepts-plan2-integrate",
+  "scope": "Direct owned AppWire v4 goal continuation replay, task reads and native task notice disclosures; iOS-only v1 remains incomplete.",
+  "hub": {
+    "url": "ws://127.0.0.1:54211/rpc",
+    "pid": 67518,
+    "source": "0f95ef200a84be51b40b211f398f4397bea52f7d",
+    "binary": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-goal-replay-2fikyxnv/evener",
+    "sha256": "e5fd01f5dcc7dfa9f5757feb5c4e2066cc485ee0064e87c078b9745774cc46a2",
+    "embeddedWebQualified": false
+  },
+  "iosLiveTasks": {
+    "source": "2e4bad2dea4111069ff6075785332dd4ea0918b7",
+    "bundleSHA256": "87eb2c0f11cd4b8f226cdceb0b9c74207caf6eb1fe19c13b67f2dbb1e3722b27"
+  },
+  "iosFinal": {
+    "source": "6277c3f304f5dba535b6c7693ea4fc3823c0852a",
+    "bundleSHA256": "08b72d59e4429755ff1c7f27ddf194d83b94ceb53f7e27a57426ce9f0df552ef",
+    "appPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+    "bundleId": "com.primeradiant.evener.native",
+    "processId": 77451,
+    "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "buildLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/build_run_sim_2026-09-07T17-11-35-027Z_pid64510_72834eae.log",
+    "runtimeLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_2026-09-07T17-11-50-366Z_helperpid77432_ownerpid64510_d9e979e9.log",
+    "osLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_oslog_2026-09-07T17-11-51-029Z_helperpid77704_ownerpid64510_485b5942.log"
+  },
+  "sdk": {
+    "source": "0f95ef200a84be51b40b211f398f4397bea52f7d",
+    "consumer": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-tasks-nglip44n",
+    "tarballSHA256": "5a95e8b53d426909e6f7c17e20b0820a081e4183b8ae1d400ca6f60f87c71073",
+    "recipes": 16,
+    "coveredMethods": 48,
+    "catalogMethods": 91,
+    "coverageIsRecipePresenceOnly": true
+  },
+  "fixture": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-goal-replay-2fikyxnv",
+    "git": "a2e519e008e6710ac331259c1d659ab29293e648",
+    "provider": "native-goal-replay-20260907",
+    "providerPID": 67677,
+    "driverSHA256": "f491e9b5254f6d59d72cff37b3855271eae5c80ce99512df4412780d42444964",
+    "boundary": "Scripted LLM; real hub, daemon, goal/task stores, file tool and transcript projection",
+    "observedReleaseSequence": [
+      "tasksAdd",
+      "tasksUpdate",
+      "tasksFinish",
+      "finish",
+      "nativeFile",
+      "complete",
+      "finish"
+    ],
+    "requestCount": 7
+  },
+  "binding": {
+    "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+    "instanceId": "034Kn0g8NrfSHmWWcrqpSX",
+    "threadId": "034Kn0g8NrfSHmWWcrqpSX"
+  },
+  "completion": {
+    "completionEvents": 1,
+    "goalComplete": true,
+    "iterations": 1,
+    "file": {
+      "bytes": 36,
+      "sha256": "203f92bf818c3980c7a8604d777f2e4fdbe442d36b02ff6accf78a7865924b9d"
+    }
+  },
+  "goals": {
+    "continuing": {
+      "phase": "continuing",
+      "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+      "instanceId": "034Kn0g8NrfSHmWWcrqpSX",
+      "goal": {
+        "status": "active",
+        "iterations": 1
+      },
+      "turns": [
+        {
+          "id": "turn_m1",
+          "status": "completed",
+          "itemCount": 11
+        },
+        {
+          "id": "turn_m2",
+          "status": "inProgress",
+          "itemCount": 3
+        }
+      ],
+      "notices": [
+        {
+          "turnId": "turn_m1",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m1:1:0",
+          "position": {
+            "entry": 1,
+            "item": 0
+          }
+        },
+        {
+          "turnId": "turn_m2",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m2:2:0",
+          "position": {
+            "entry": 2,
+            "item": 0
+          }
+        }
+      ]
+    },
+    "live": {
+      "phase": "live",
+      "pages": 1,
+      "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+      "instanceId": "034Kn0g8NrfSHmWWcrqpSX",
+      "goal": {
+        "status": "complete",
+        "iterations": 1
+      },
+      "turns": [
+        {
+          "id": "turn_m1",
+          "status": "completed",
+          "itemCount": 11
+        },
+        {
+          "id": "turn_m2",
+          "status": "completed",
+          "itemCount": 8
+        }
+      ],
+      "notices": [
+        {
+          "turnId": "turn_m1",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m1:1:0",
+          "position": {
+            "entry": 1,
+            "item": 0
+          }
+        },
+        {
+          "turnId": "turn_m2",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m2:2:0",
+          "position": {
+            "entry": 2,
+            "item": 0
+          }
+        }
+      ]
+    },
+    "saved": {
+      "phase": "saved",
+      "pages": 0,
+      "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+      "goal": {
+        "status": "complete",
+        "iterations": 1
+      },
+      "turns": [
+        {
+          "id": "turn_m1",
+          "status": "completed",
+          "itemCount": 7
+        },
+        {
+          "id": "turn_m2",
+          "status": "completed",
+          "itemCount": 4
+        }
+      ],
+      "notices": [
+        {
+          "turnId": "turn_m1",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m1:1:0",
+          "position": {
+            "entry": 1,
+            "item": 0
+          }
+        },
+        {
+          "turnId": "turn_m2",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m2:2:0",
+          "position": {
+            "entry": 2,
+            "item": 0
+          }
+        }
+      ]
+    },
+    "restarted": {
+      "phase": "restarted",
+      "pages": 0,
+      "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+      "goal": {
+        "status": "complete",
+        "iterations": 1
+      },
+      "turns": [
+        {
+          "id": "turn_m1",
+          "status": "completed",
+          "itemCount": 7
+        },
+        {
+          "id": "turn_m2",
+          "status": "completed",
+          "itemCount": 4
+        }
+      ],
+      "notices": [
+        {
+          "turnId": "turn_m1",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m1:1:0",
+          "position": {
+            "entry": 1,
+            "item": 0
+          }
+        },
+        {
+          "turnId": "turn_m2",
+          "kind": "systemMessage",
+          "textHash": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+          "key": "apptranscript-item-v1:turn_m2:2:0",
+          "position": {
+            "entry": 2,
+            "item": 0
+          }
+        }
+      ]
+    }
+  },
+  "durableGoals": [
+    {
+      "turnId": "turn_m1",
+      "modelInputSHA256": "a59c51e3879d43ca047d145702afbc409f088c7581e132d7b3e25214b3a3c87b",
+      "noticeSHA256": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+      "distinctModelInputRetained": true
+    },
+    {
+      "turnId": "turn_m2",
+      "modelInputSHA256": "a59c51e3879d43ca047d145702afbc409f088c7581e132d7b3e25214b3a3c87b",
+      "noticeSHA256": "aecd8562f12a3fb09c10e74a02052e25b43ace91da37d7cf4da5fe3fbc5d9dec",
+      "distinctModelInputRetained": true
+    }
+  ],
+  "tasks": {
+    "empty": {
+      "outcome": "read",
+      "available": true,
+      "taskCount": 0,
+      "statusCounts": {}
+    },
+    "open": {
+      "stage": "open",
+      "outcome": "read",
+      "available": true,
+      "taskCount": 2,
+      "statusCounts": {
+        "open": 2
+      },
+      "promptsPreserved": true,
+      "dependencyPreserved": true,
+      "notesPreserved": false,
+      "hasCreatedTimestamps": true
+    },
+    "updated": {
+      "stage": "updated",
+      "outcome": "read",
+      "available": true,
+      "taskCount": 2,
+      "statusCounts": {
+        "done": 1,
+        "in_progress": 1
+      },
+      "promptsPreserved": true,
+      "dependencyPreserved": true,
+      "notesPreserved": true,
+      "hasCreatedTimestamps": true
+    },
+    "done": {
+      "stage": "done",
+      "outcome": "read",
+      "available": true,
+      "taskCount": 2,
+      "statusCounts": {
+        "done": 2
+      },
+      "promptsPreserved": true,
+      "dependencyPreserved": true,
+      "notesPreserved": true,
+      "hasCreatedTimestamps": true
+    },
+    "saved": {
+      "stage": "saved",
+      "outcome": "read",
+      "available": true,
+      "taskCount": 2,
+      "statusCounts": {
+        "done": 2
+      },
+      "promptsPreserved": true,
+      "dependencyPreserved": true,
+      "notesPreserved": true,
+      "hasCreatedTimestamps": true
+    }
+  },
+  "ui": {
+    "taskOpen": [
+      "e119|tap|button|Open: Review replay state||",
+      "e121|tap|button|Open: Verify saved goal notice||"
+    ],
+    "taskUpdated": [
+      "e104|tap|button|In progress: Verify saved goal notice||",
+      "e105|tap|button|Done \u00b7 settled \u00b7 1||"
+    ],
+    "taskSaved": [
+      "e114|tap|button|Done: Review replay state|expanded|",
+      "e130|tap|button|Done: Verify saved goal notice||",
+      "e112|tap|button|Done \u00b7 settled \u00b7 2|expanded|",
+      "e123|tap|button|Prompt for task #1||"
+    ],
+    "noticesCollapsed": [
+      "e37|tap|button|Current task, show notice||",
+      "e40|tap|button|Tasks complete, show notice||"
+    ],
+    "noticeExpanded": [
+      "e40|tap|button|Tasks complete, hide notice|expanded|"
+    ],
+    "noticeClosed": [
+      "e37|tap|button|Current task, show notice||",
+      "e40|tap|button|Tasks complete, show notice||"
+    ],
+    "expandedBodyVisible": true,
+    "closedBodyHidden": true
+  },
+  "cleanup": {
+    "ref": "local:034Kn0g8NrfSHmWWcrqpSX",
+    "goalComplete": true,
+    "queueEmpty": true,
+    "shutdownAcknowledged": true,
+    "providerRemoved": true,
+    "registryRestored": true,
+    "providerExited": true,
+    "providerExitCode": 0,
+    "retainedDrafts": [
+      {
+        "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+        "bytes": 513,
+        "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+        "unconfirmed": false
+      },
+      {
+        "ref": "local:034Kc9793pXlhHyCRXdeAk",
+        "bytes": 513,
+        "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+        "unconfirmed": false
+      },
+      {
+        "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+        "bytes": 37,
+        "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+        "unconfirmed": false
+      },
+      {
+        "ref": "local:034Kd12aed4Ah92lJZGUML",
+        "bytes": 27,
+        "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+        "unconfirmed": false
+      },
+      {
+        "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+        "bytes": 36,
+        "sha256": "fee839187da7bdc93d20bc97bc82a21ad841ffbda357c158298d4cd1ef8cb1b5",
+        "unconfirmed": false
+      },
+      {
+        "ref": "local:034KkPKKHzphJXVqsfzMXu",
+        "bytes": 36,
+        "sha256": "20038684cd4baf845d42d42214e148dd0e7b89de511a2c3d0bced3d56a557457",
+        "unconfirmed": false
+      }
+    ],
+    "unrelatedAppleDiffPreserved": true
+  },
+  "verification": {
+    "nativeTests": 592,
+    "nativeFiles": 69,
+    "nativeTypecheck": true,
+    "sdkContracts": 124,
+    "sdkContractFiles": 12,
+    "isolatedPackageQualification": true,
+    "canonicalWebGate": true,
+    "agentSchemaTranscriptSuites": true,
+    "apptranscriptAppprojectorSuites": true,
+    "focusedHubTests": true,
+    "goVet": true,
+    "lintAtHubSource": true
+  },
+  "limits": [
+    "Goal notice keys and text hashes are compared; this is not whole-transcript live/saved parity. Ephemeral round timings and completion markers differ.",
+    "Historic goal steering without typed metadata is unchanged.",
+    "Task statuses are observations, not evidence that a model performed the task descriptions.",
+    "No network proxy, socket-fault, concurrent-writer, large-task-list, iPad, physical-device, VoiceOver or release-signing qualification in this run.",
+    "Action summaries remain unavailable for scripted calls without descriptions.",
+    "Android sources are preserved; Android release qualification is deferred for v1."
+  ]
+}

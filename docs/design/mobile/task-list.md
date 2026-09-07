@@ -30,4 +30,35 @@ disclosure state and activity preferences remain authoritative.
 
 Six routing regressions failed before implementation. All 592 native tests and
 TypeScript pass. Luna medium proposed the change and independently reviewed the
-critical-notice guard. Updated Release-device disclosure acceptance is pending.
+critical-notice guard. Updated Release-device disclosure acceptance follows below.
+
+## Direct v4 task reads and disclosures — 7 September
+
+The [combined receipt](assets/goal-task-v4-receipt.json) records an owned real
+hub/daemon at `0f95ef200`, a freshly installed SDK tarball, initial iOS task-state
+checks at `2e4bad2de`, and final saved-state/disclosure checks at `6277c3f30`.
+Only the LLM boundary is scripted; no forwarding or fault-injection proxy is used.
+
+The SDK first observed an available empty list. Real `task_list` calls added two
+tasks with distinct types, prompts and a dependency, updated them to done/in
+progress with a note, then marked both done. The open native sheet updated through
+each state without being reopened. SDK reads preserved exact prompt/note data,
+IDs, dependency and timestamps. After daemon shutdown and app rebuild/relaunch,
+the saved list still exposes both completed tasks and the original update note.
+These are state and UI observations; they do not prove execution of the task
+descriptions. A separate real file write verifies the goal continuation tool path.
+
+![Task state updated while the sheet stayed open](assets/tasks-v4-updated.jpg)
+
+![Saved task details after native rebuild](assets/tasks-v4-saved.jpg)
+
+In the rebuilt app, Current task and Tasks complete notices start collapsed.
+Opening Tasks complete mounts its full text, changes the accessible action name
+to hide, and exposes expanded state. Closing restores the compact row. Both
+compact goal notices remain visible. The existing six drafts are unchanged.
+
+The fixture session is shut down; its provider process exited with code zero
+and the complete registry is restored. Large lists, long content, read failures,
+concurrent writers, cross-hub navigation, VoiceOver, iPad and physical devices
+remain outside this direct-v4 run. Jobs and activity continuation paging remain
+separate required work.
