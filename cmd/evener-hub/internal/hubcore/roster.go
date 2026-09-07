@@ -136,10 +136,11 @@ type Roster struct {
 	mu     sync.RWMutex
 	bySess map[string]LiveEntry // session_id -> entry
 	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
-	// refreshGen rejects a completed probe pass that started before a newer
-	// refresh attempt, while allowing probes to run without holding mu.
-	refreshGen  uint64
-	refreshDone chan struct{}
+	// A completed pass may publish unless a newer pass already published.
+	refreshGen              uint64
+	publishedGen            uint64
+	ownershipRefreshRunning bool
+	queuedOwnershipRefresh  *rosterRefreshBatch
 
 	// procAlive reports whether a daemon PID is still running. A failed AppWire
 	// probe to a live process means the daemon is busy, not gone, so its session
@@ -298,26 +299,25 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 // probe miss (busy daemon, overloaded host) must not blank the session from the
 // UI. It is dropped only when its process is gone (a stale rendezvous file).
 func (r *Roster) Refresh() {
+	_ = r.refresh()
+}
+
+func (r *Roster) refresh() error {
 	r.mu.Lock()
 	r.refreshGen++
 	generation := r.refreshGen
-	done := make(chan struct{})
-	r.refreshDone = done
 	r.mu.Unlock()
-	defer close(done)
 
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
-		return
+		return err
 	}
 
-	// Snapshot the previous PID map for the keep-alive fallback, and the
-	// previous per-session map for the status-transition diff below. Reading
-	// them under a brief lock (rather than holding the lock across the
+	// Snapshot the previous PID map for the keep-alive fallback. Reading
+	// it under a brief lock (rather than holding the lock across the
 	// probes) keeps List() responsive while a slow probe pass runs.
 	r.mu.RLock()
 	prevByPID := r.byPID
-	prevBySess := r.bySess
 	r.mu.RUnlock()
 
 	type probeResult struct {
@@ -420,10 +420,12 @@ func (r *Roster) Refresh() {
 
 	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
-	if generation != r.refreshGen {
+	if generation < r.publishedGen {
 		r.mu.Unlock()
-		return
+		return nil
 	}
+	r.publishedGen = generation
+	prevBySess := r.bySess
 	r.bySess = bySess
 	r.byPID = byPID
 	changed := fp != r.fingerprint
@@ -447,23 +449,54 @@ func (r *Roster) Refresh() {
 	if changed && onChange != nil {
 		onChange()
 	}
+	return nil
 }
 
-// RefreshAndWait waits for any superseding refresh before callers inspect
-// ownership. A discarded older probe pass is not a published snapshot.
-func (r *Roster) RefreshAndWait() {
-	r.Refresh()
+type rosterRefreshBatch struct {
+	done chan struct{}
+	err  error
+}
+
+// RefreshAndWait waits for a scan that starts after this request. Requests
+// arriving during a scan share the next scan, so ongoing traffic cannot move
+// an existing caller's completion target. Cancellation releases the caller;
+// the shared scan continues for the other callers.
+func (r *Roster) RefreshAndWait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	batch := r.queuedOwnershipRefresh
+	if batch == nil {
+		batch = &rosterRefreshBatch{done: make(chan struct{})}
+		r.queuedOwnershipRefresh = batch
+	}
+	if !r.ownershipRefreshRunning {
+		r.ownershipRefreshRunning = true
+		go r.refreshOwnership()
+	}
+	r.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-batch.done:
+		return batch.err
+	}
+}
+
+func (r *Roster) refreshOwnership() {
 	for {
-		r.mu.RLock()
-		generation, done := r.refreshGen, r.refreshDone
-		r.mu.RUnlock()
-		<-done
-		r.mu.RLock()
-		current := generation == r.refreshGen
-		r.mu.RUnlock()
-		if current {
+		r.mu.Lock()
+		batch := r.queuedOwnershipRefresh
+		r.queuedOwnershipRefresh = nil
+		if batch == nil {
+			r.ownershipRefreshRunning = false
+			r.mu.Unlock()
 			return
 		}
+		r.mu.Unlock()
+		batch.err = r.refresh()
+		close(batch.done)
 	}
 }
 

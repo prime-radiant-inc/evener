@@ -313,7 +313,9 @@ func registerThreadHandlers(
 		}
 		if cfg.Roster != nil {
 			if _, required, ownershipErr := restartRequiredDaemon(cfg, params.Ref, params.ThreadID); required || ownershipErr != nil {
-				hubRosterRefresh(cfg.Roster)
+				if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+					return appwire.ThreadReadResponse{}, appwire.Unavailable(err.Error())
+				}
 			}
 		}
 		source, err := sourceForThreadWithDeletionFence(cfg, sources, params.Ref, params.ThreadID)
@@ -334,7 +336,9 @@ func registerThreadHandlers(
 		if err != nil {
 			if allowsPastFallbackAfterLiveReadFailure(source, params, err) {
 				if _, local := localPastThreadID(params); local && cfg.Roster != nil && isSessionUnavailableError(err) {
-					hubRosterRefresh(cfg.Roster)
+					if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+						return appwire.ThreadReadResponse{}, appwire.Unavailable(err.Error())
+					}
 				}
 				saved, ok, pastErr := pastThreadReadResponse(ctx, cfg, params)
 				if pastErr != nil {
@@ -572,7 +576,7 @@ func registerThreadHandlers(
 		}
 		resolved := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
-			source, err := withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
+			source, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
 				return resolveTurnStartSource(sources, params.Ref, params.ThreadID)
 			})
 			if err != nil {
@@ -617,7 +621,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
@@ -629,7 +633,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnInterruptResponse{}, err
@@ -638,8 +642,8 @@ func registerThreadHandlers(
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
-			if err := refreshDaemonRestartRequiredError(cfg, params.Ref, params.ThreadID, ""); err != nil {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
 				return appwire.EmptyResponse{}, err
 			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
@@ -656,7 +660,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnQueueResponse{}, err
@@ -671,7 +675,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
@@ -689,7 +693,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
@@ -707,7 +711,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnCancelQueuedResponse{}, err
@@ -737,8 +741,8 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
-			if err := refreshDaemonRestartRequiredError(cfg, params.Ref, "", ""); err != nil {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
 				return appwire.EmptyResponse{}, err
 			}
 			source, err := sourceForThread(sources, params.Ref, "")

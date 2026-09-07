@@ -79,7 +79,9 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 		decisionErrors = append(decisionErrors, "past index rebuild error: "+err.Error())
 	}
 	if s.cfg.Roster != nil {
-		hubRosterRefresh(s.cfg.Roster)
+		if err := hubRosterRefresh(ctx, s.cfg.Roster); err != nil {
+			decisionErrors = append(decisionErrors, "roster refresh error: "+err.Error())
+		}
 	}
 	if s.cfg.Inputs != nil {
 		s.cfg.Inputs.Bump()

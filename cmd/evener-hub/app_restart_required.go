@@ -79,7 +79,7 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 // Refresh ownership before a local metadata write or before treating a missing
 // daemon as proof that a mutation was not accepted. Successful delivery uses
 // the live source directly and does not wait for an unrelated roster probe.
-func refreshDaemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
+func refreshDaemonRestartRequiredError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
 	if ref != "" {
 		parsed, err := appwire.ParseRef(ref)
 		if err != nil {
@@ -90,7 +90,13 @@ func refreshDaemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mut
 		}
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			wire := appwire.Unavailable(err.Error())
+			if mutationID != "" {
+				return restartRequiredMutationError(wire, mutationID)
+			}
+			return wire
+		}
 	}
 	return daemonRestartRequiredError(cfg, ref, threadID, mutationID)
 }

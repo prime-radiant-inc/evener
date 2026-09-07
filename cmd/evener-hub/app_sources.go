@@ -24,12 +24,13 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 }
 
 func sourceForThreadWithDeletionFence(cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
-	return withDeletionTargetOwnership(cfg, ref, threadID, "", func() (appsource.Source, error) {
+	return withDeletionTargetOwnership(context.Background(), cfg, ref, threadID, "", func() (appsource.Source, error) {
 		return sourceForThread(sources, ref, threadID)
 	})
 }
 
 func withDeletionTargetOwnership[R any](
+	ctx context.Context,
 	cfg hubcore.WebConfig,
 	ref, threadID, clientMutationID string,
 	action func() (R, error),
@@ -48,7 +49,7 @@ func withDeletionTargetOwnership[R any](
 	}
 	result, err := action()
 	if clientMutationID != "" && isSessionUnavailableError(err) {
-		if restartErr := refreshDaemonRestartRequiredError(cfg, ref, threadID, clientMutationID); restartErr != nil {
+		if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, ref, threadID, clientMutationID); restartErr != nil {
 			var zero R
 			return zero, restartErr
 		}

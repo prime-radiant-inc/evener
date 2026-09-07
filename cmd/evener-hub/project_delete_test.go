@@ -702,9 +702,9 @@ func TestProjectDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 
 	var events []string
 	prevRefresh := hubRosterRefresh
-	hubRosterRefresh = func(r *hubcore.Roster) {
+	hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
 		events = append(events, "roster-refresh")
-		prevRefresh(r)
+		return prevRefresh(ctx, r)
 	}
 	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
 

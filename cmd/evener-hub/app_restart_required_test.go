@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -563,4 +564,51 @@ func TestMalformedMutationRefsAreNotReportedAsUncertain(t *testing.T) {
 			}
 		})
 	}
+}
+
+type canceledOwnershipProber struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *canceledOwnershipProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
+	close(p.started)
+	<-p.release
+	return hubcore.ProbeResult{SessionID: entry.ThreadID, Status: appwire.ThreadStatusIdle, OK: true}
+}
+
+func TestHubMutationOwnershipCancellationPreservesUnknownReceipt(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, ThreadID: webTestSessionID})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &canceledOwnershipProber{started: make(chan struct{}), release: make(chan struct{})}
+		cfg := hubcore.WebConfig{Roster: hubcore.NewRoster(runDir, prober)}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := withDeletionTargetOwnership(ctx, cfg, localAppRef(webTestSessionID), "", "pending-send", func() (struct{}, error) {
+				return struct{}{}, appwire.SessionUnavailable("daemon unavailable")
+			})
+			done <- err
+		}()
+		<-prober.started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok {
+				t.Errorf("expected wire error, got %v", err)
+			} else {
+				data, ok := wire.Data.(appwire.ErrorData)
+				if !ok || data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked || data.ClientMutationID != "pending-send" {
+					t.Errorf("canceled ownership refresh must preserve the blocked unknown receipt: %+v", wire.Data)
+				}
+			}
+		default:
+			t.Error("mutation still waits for probe after cancellation")
+		}
+		close(prober.release)
+		synctest.Wait()
+	})
 }

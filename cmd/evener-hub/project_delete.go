@@ -94,7 +94,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 				releaseOwnership()
 			}
 		}()
-		result := s.cleanupProjectDeletion(record, nil)
+		result := s.cleanupProjectDeletion(ctx, record, nil)
 		if len(result.DecisionErrors) > 0 {
 			return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
 		}
@@ -185,7 +185,7 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if err != nil {
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError("commit deletion fence: " + err.Error())
 	}
-	result := s.cleanupProjectDeletion(record, stateDirs)
+	result := s.cleanupProjectDeletion(ctx, record, stateDirs)
 	result.Skipped = append(skipped, result.Skipped...)
 	if len(result.DecisionErrors) > 0 {
 		return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
@@ -263,7 +263,7 @@ func (s *WebServer) resumeProjectDeletions() error {
 			}
 			continue
 		}
-		result := s.cleanupProjectDeletion(record, nil)
+		result := s.cleanupProjectDeletion(context.Background(), record, nil)
 		release()
 		if len(result.Skipped) > 0 || len(result.DecisionErrors) > 0 {
 			if firstErr == nil {
@@ -370,6 +370,7 @@ func (s *WebServer) sessionDecisionAuthority() hubcore.FavoriteAuthority {
 }
 
 func (s *WebServer) cleanupProjectDeletion(
+	ctx context.Context,
 	record hubcore.DeletionRecord,
 	stateDirs map[string]string,
 ) projectDeletionCleanupResult {
@@ -410,7 +411,9 @@ func (s *WebServer) cleanupProjectDeletion(
 		// already dropped the deleted sessions (their rendezvous files were
 		// just unlinked) instead of showing ghost rows until the 5s tick.
 		if s.cfg.Roster != nil {
-			hubRosterRefresh(s.cfg.Roster)
+			if err := hubRosterRefresh(ctx, s.cfg.Roster); err != nil {
+				result.DecisionErrors = append(result.DecisionErrors, "roster refresh error: "+err.Error())
+			}
 		}
 		// Bust the tree memo unconditionally: a no-delta past rebuild plus a
 		// nil PokeAttention would otherwise leave InputsVersion unmoved and

@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -964,14 +965,19 @@ func fuzzScenarioNewRosterWithEntries(t *testing.T) {
 	}
 }
 
-func TestRosterOwnershipWaitsForSupersedingRefresh(t *testing.T) {
+func TestRosterOwnershipRefreshPublishesDespiteLaterProbe(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001})
 	synctest.Test(t, func(t *testing.T) {
 		prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{}), releaseSecond: make(chan struct{})}
 		r := NewRoster(dir, prober)
 		ownerDone := make(chan struct{})
-		go func() { r.RefreshAndWait(); close(ownerDone) }()
+		go func() {
+			if err := r.RefreshAndWait(context.Background()); err != nil {
+				t.Error(err)
+			}
+			close(ownerDone)
+		}()
 		<-prober.firstStarted
 		backgroundDone := make(chan struct{})
 		go func() { r.Refresh(); close(backgroundDone) }()
@@ -980,8 +986,8 @@ func TestRosterOwnershipWaitsForSupersedingRefresh(t *testing.T) {
 		synctest.Wait()
 		select {
 		case <-ownerDone:
-			t.Error("ownership check returned before the superseding refresh published")
 		default:
+			t.Error("ownership check waited for a later probe instead of publishing its own scan")
 		}
 		close(prober.releaseSecond)
 		<-ownerDone
@@ -991,4 +997,94 @@ func TestRosterOwnershipWaitsForSupersedingRefresh(t *testing.T) {
 			t.Fatalf("ownership snapshot=%+v, found=%v", entry, ok)
 		}
 	})
+}
+
+type ownershipBatchProber struct {
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *ownershipBatchProber) Probe(entry rendezvous.Entry) ProbeResult {
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+	}
+	<-p.release
+	return ProbeResult{SessionID: entry.ThreadID, Status: appwire.ThreadStatusIdle, OK: true}
+}
+
+func TestRosterOwnershipRefreshesCoalesceWithoutLosingFreshness(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "old"})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &ownershipBatchProber{started: make(chan struct{}), release: make(chan struct{})}
+		roster := NewRoster(dir, prober)
+		done := make(chan struct{}, 17)
+		go func() {
+			if err := roster.RefreshAndWait(context.Background()); err != nil {
+				t.Error(err)
+			}
+			done <- struct{}{}
+		}()
+		<-prober.started
+		writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "new"})
+		for range 16 {
+			go func() {
+				if err := roster.RefreshAndWait(context.Background()); err != nil {
+					t.Error(err)
+				}
+				done <- struct{}{}
+			}()
+		}
+		synctest.Wait()
+		if got := prober.calls.Load(); got != 1 {
+			t.Errorf("started %d probes while the first was still running, want one", got)
+		}
+		close(prober.release)
+		for range 17 {
+			<-done
+		}
+		if got := prober.calls.Load(); got != 2 {
+			t.Errorf("probe passes=%d, want the active pass and one fresh coalesced pass", got)
+		}
+		if _, ok := roster.Find("new"); !ok {
+			t.Error("waiting callers did not receive a fresh rendezvous snapshot")
+		}
+	})
+}
+
+func TestRosterOwnershipRefreshCancellation(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "owner"})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &ownershipBatchProber{started: make(chan struct{}), release: make(chan struct{})}
+		roster := NewRoster(dir, prober)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- roster.RefreshAndWait(ctx) }()
+		<-prober.started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("refresh error=%v, want cancellation", err)
+			}
+		default:
+			t.Error("canceled caller is still waiting for the probe")
+		}
+		close(prober.release)
+		synctest.Wait()
+	})
+}
+
+func TestRosterOwnershipRefreshReportsReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	roster := NewRoster(path, nil)
+	if err := roster.RefreshAndWait(context.Background()); err == nil {
+		t.Fatal("ownership refresh succeeded without reading the rendezvous directory")
+	}
 }

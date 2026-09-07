@@ -73,7 +73,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		_, _ = hubThreadStart(ctx, localCfg, appsource.NewRegistry(), appwire.ThreadStartParams{})
 		roster := hubcore.NewRosterWithEntries()
 		localCfg.Roster = roster
-		hubRosterRefresh = func(*hubcore.Roster) {}
+		hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
 		hubRosterList = func(*hubcore.Roster) []hubcore.LiveEntry {
 			return []hubcore.LiveEntry{{Entry: rendezvous.Entry{PID: 44, SessionID: "r"}, SessionID: "r"}}
 		}

@@ -32,7 +32,7 @@ var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
 	hubResolveLaunch   = launchconfig.Resolve
 	hubParseModelRef   = cmdutil.ParseModelRef
-	hubRosterRefresh   = func(r *hubcore.Roster) { r.RefreshAndWait() }
+	hubRosterRefresh   = func(ctx context.Context, r *hubcore.Roster) error { return r.RefreshAndWait(ctx) }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
@@ -163,7 +163,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
 				if live.PID == entry.PID {
@@ -304,7 +306,9 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		return appwire.ThreadResumeResponse{}, err
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
 	}
 	if err := daemonRestartRequiredError(cfg, params.Ref, sessionID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
@@ -337,10 +341,12 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
-		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(cfg, sessionID, err).Error())
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
 	}
 	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
 }
@@ -364,11 +370,13 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 // The roster is re-read rather than reused from the pre-spawn check: the spawn
 // attempt takes seconds, and naming a pid that has since exited would send the
 // operator after a process that is not there.
-func resumeFailureError(cfg hubcore.WebConfig, sessionID string, err error) error {
+func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID string, err error) error {
 	if cfg.Roster == nil {
 		return err
 	}
-	hubRosterRefresh(cfg.Roster)
+	if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
+		return errors.Join(err, refreshErr)
+	}
 	blocker, ok := cfg.Roster.Find(sessionID)
 	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
 		return err
@@ -441,7 +449,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if params.Aside {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local evener threads")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.ThreadForkResponse{}, err
