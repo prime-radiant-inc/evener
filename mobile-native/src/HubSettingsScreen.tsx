@@ -192,41 +192,6 @@ function HubSettings({
                 ))
               )}
             </Section>
-            <Section title="Codex launches">
-              <Copy muted>
-                Read-only launch entries configured on this hub.
-              </Copy>
-              {data.codexLaunches === undefined ? (
-                <Copy muted>Launch entries unavailable.</Copy>
-              ) : data.codexLaunches.length === 0 ? (
-                <Copy muted>No Codex launches configured.</Copy>
-              ) : (
-                data.codexLaunches.map((entry) => (
-                  <View key={entry.id} style={{ gap: 3 }}>
-                    <Copy>{entry.id}</Copy>
-                    <Detail label="Binary" value={entry.binary || "codex"} />
-                    <Detail
-                      label="Working directory"
-                      value={entry.workingDir || "Inherited"}
-                    />
-                    <Detail
-                      label="Listen"
-                      value={entry.listen || "ws://127.0.0.1:0"}
-                    />
-                    <Detail
-                      label="Timeout"
-                      value={`${(entry.timeoutMillis || 30000) / 1000}s`}
-                    />
-                    {!!entry.envKeys?.length && (
-                      <Detail
-                        label="Environment keys"
-                        value={entry.envKeys.join(", ")}
-                      />
-                    )}
-                  </View>
-                ))
-              )}
-            </Section>
             <Section title="Discovered MCP servers">
               {data.mcpDiscovered === undefined ? (
                 <Copy muted>MCP discovery unavailable.</Copy>

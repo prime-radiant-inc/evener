@@ -37,7 +37,6 @@ export class HubOverview {
         const normalized = {
           ...data,
           agents: data.agents ?? [],
-          codexLaunches: data.codexLaunches ?? [],
         };
         if (data.mcpDiscovered)
           normalized.mcpDiscovered = {

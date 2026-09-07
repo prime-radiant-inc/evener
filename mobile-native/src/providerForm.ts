@@ -24,7 +24,7 @@ export function createProviderParams(
     throw new Error(
       "Credential header must reference a $VARIABLE, never a literal secret.",
     );
-  const entries = (provider.varsEnv ?? [])
+  const entries = Object.keys(provider.vars ?? {})
     .map((key) => [key, draft.vars[key]?.trim() ?? ""] as const)
     .filter(([, value]) => value);
   return {

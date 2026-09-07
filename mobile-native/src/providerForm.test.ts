@@ -7,7 +7,8 @@ const providers = [
     protocol: "openai-chat",
     auth: "apiKey",
     implicit: false,
-    varsEnv: ["REGION", "TENANT"],
+    varsEnv: ["REGION_ENV", "TENANT_ENV"],
+    vars: { REGION: "REGION_ENV", TENANT: "TENANT_ENV" },
   },
 ];
 const draft = {
@@ -68,4 +69,12 @@ it("distinguishes unchanged endpoint, replacement and explicit reset", () => {
     clearBaseUrl: true,
   });
   expect(editProviderParams({ name: "work" }, " ")).toEqual({ name: "work" });
+});
+
+it("does not treat environment variable names as template keys", () => {
+  expect(createProviderParams(
+    { ...draft, vars: { REGION: "us", REGION_ENV: "wrong", TENANT_ENV: "wrong" } },
+    providers,
+  ).vars).toEqual({ REGION: "us" });
+  expect(createProviderParams(draft, providers.map((provider) => ({ ...provider, vars: undefined }))).vars).toBeUndefined();
 });

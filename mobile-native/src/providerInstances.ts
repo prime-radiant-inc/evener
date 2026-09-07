@@ -127,6 +127,11 @@ export class ProviderInstances {
       () => this.client.request("evener/auth/apiKey/set", { provider, value }),
       false,
     );
+  setCredentialJson = (provider: string, value: string) =>
+    this.mutate(
+      () => this.client.request("evener/auth/credentialJson/set", { provider, value }),
+      false,
+    );
   clearStoredKey = (provider: string) =>
     this.mutate(
       () => this.client.request("evener/auth/apiKey/clear", { provider }),

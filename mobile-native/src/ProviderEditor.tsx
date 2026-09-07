@@ -153,14 +153,15 @@ export function ProviderEditor({
       )}
       {!instance && (
         <>
-          {(
-            providers.find((provider) => provider.id === draft.base)?.varsEnv ??
-            []
-          ).map((name) =>
-            field(name, draft.vars[name] ?? "", (value) =>
-              setDraft({ ...draft, vars: { ...draft.vars, [name]: value } }),
-            ),
-          )}
+          {Object.entries(
+            providers.find((provider) => provider.id === draft.base)?.vars ?? {},
+          )
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([template, environment]) =>
+              field(environment, draft.vars[template] ?? "", (value) =>
+                setDraft({ ...draft, vars: { ...draft.vars, [template]: value } }),
+              ),
+            )}
           {field(
             "API key environment variable (optional)",
             draft.apiKeyEnv,
