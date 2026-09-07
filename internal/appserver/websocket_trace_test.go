@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"primeradiant.com/evener/appwire"
 )
 
 type decodedWebSocketTraceRecord struct {
@@ -273,6 +274,104 @@ func groupWebSocketTraceRecordsByConnection(records []decodedWebSocketTraceRecor
 }
 
 func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
+	testServerShutdownDrainsOpenTracedWebSocket(t, false)
+}
+
+func TestServerShutdownBeforeTracedWebSocketReceive(t *testing.T) {
+	testServerShutdownDrainsOpenTracedWebSocket(t, true)
+}
+
+func TestWebSocketReceiveCloseModes(t *testing.T) {
+	exerciseReceiveLoops(t)
+}
+
+type shutdownQueueTransport struct {
+	webSocketTransport
+	overflowReceived chan struct{}
+}
+
+func (w *shutdownQueueTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	msg, err := w.webSocketTransport.Recv(ctx)
+	if msg.Request != nil && msg.Request.Method == "test/overflow" {
+		close(w.overflowReceived)
+	}
+	return msg, err
+}
+
+func TestServerShutdownWithFullWebSocketRequestQueue(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", SourceID: "local"})
+	server.requestQueueCapacity = 1
+	entered, release := make(chan struct{}), make(chan struct{})
+	server.Router().Handle("test/block", func(context.Context, json.RawMessage) (any, error) {
+		close(entered)
+		<-release
+		return nil, nil
+	})
+	overflowReceived := make(chan struct{})
+	server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+		return &shutdownQueueTransport{webSocketTransport: inner, overflowReceived: overflowReceived}
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
+	defer conn.CloseNow()
+	defer close(release)
+	write := func(frame string) {
+		t.Helper()
+		if err := conn.Write(ctx, websocket.MessageText, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"id":1,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`)
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+	write(`{"id":2,"method":"test/block"}`)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("worker did not enter blocking request")
+	}
+	write(`{"id":3,"method":"test/queued"}`)
+	write(`{"id":4,"method":"test/overflow"}`)
+	select {
+	case <-overflowReceived:
+	case <-ctx.Done():
+		t.Fatal("receive loop did not reach full queue")
+	}
+	// The serial worker remains blocked and the preceding request fills its
+	// only queue slot. Cancellation must end enqueueRequest without another Recv.
+	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, _, err := conn.Read(shutdownCtx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("peer read after shutdown = %v, want closed socket", err)
+	}
+}
+
+// A canceled receive may return before entering the socket read (for example,
+// while acquiring coder/websocket's read lock), leaving the socket open. Keep
+// the real initialization exchange, then deterministically select that boundary.
+type shutdownBeforeReceiveTransport struct {
+	webSocketTransport
+	initialized bool
+}
+
+func (w *shutdownBeforeReceiveTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	if !w.initialized {
+		w.initialized = true
+		return w.webSocketTransport.Recv(ctx)
+	}
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+
+func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive bool) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
 	trace, err := NewWebSocketTrace(path)
 	if err != nil {
@@ -284,10 +383,17 @@ func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
 		SourceID:       "local",
 		WebSocketTrace: trace,
 	})
+	if beforeReceive {
+		server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+			return &shutdownBeforeReceiveTransport{webSocketTransport: inner}
+		}
+	}
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
 
 	ctx := context.Background()
 	conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
+	defer conn.CloseNow()
 	request := []byte(`{"id":51,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`)
 	if err := conn.Write(ctx, websocket.MessageText, request); err != nil {
 		t.Fatalf("write initialize: %v", err)
@@ -300,6 +406,9 @@ func TestServerShutdownDrainsOpenTracedWebSocket(t *testing.T) {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
+	}
+	if _, _, err := conn.Read(shutdownCtx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("peer read after shutdown = %v, want closed socket", err)
 	}
 	conn.CloseNow()
 	httpServer.Close()

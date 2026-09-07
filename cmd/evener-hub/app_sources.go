@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -10,8 +11,20 @@ import (
 )
 
 func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	ref = strings.TrimSpace(ref)
+	threadID = strings.TrimSpace(threadID)
+	if sources == nil {
+		return nil, errors.New("source registry unavailable")
+	}
 	if ref != "" {
-		return sources.SourceForRef(ref)
+		source, err := sources.SourceForRef(ref)
+		if err != nil {
+			if _, parseErr := appwire.ParseRef(ref); parseErr != nil {
+				return nil, appwire.InvalidParams(parseErr.Error())
+			}
+			return nil, err
+		}
+		return source, nil
 	}
 	source, ok := sources.Source("local")
 	if !ok {

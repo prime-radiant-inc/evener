@@ -39,6 +39,7 @@ type webSocketTransport interface {
 
 type webSocketCloser interface {
 	Close(websocket.StatusCode, string) error
+	CloseNow() error
 }
 
 // wsPinger is the subset of *websocket.Conn the keepalive loop needs. Ping
@@ -185,12 +186,19 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 // ping-inline-vs-enqueue decision), and stop when the transport or the
 // connection dies.
 func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) {
+	defer func() {
+		// Both Recv and a full inbound queue can observe cancellation without
+		// closing the socket. Local teardown must not wait for a peer handshake.
+		if ctx.Err() != nil {
+			_ = ws.CloseNow()
+		}
+	}()
 	for {
 		gate.readerAvailable()
 		msg, err := transport.Recv(ctx)
 		gate.readerUnavailable()
 		if err != nil {
-			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			if ctx.Err() == nil && websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 				_ = ws.Close(websocket.StatusInternalError, err.Error())
 			}
 			return

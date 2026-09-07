@@ -35,6 +35,29 @@ type ServerConfig struct {
 	// of the socket, including handler failures and connection lifecycle events.
 	// Nil means silent.
 	Logf func(format string, args ...any)
+	// SubscriptionAdmissionResolver returns the canonical pending-admission key
+	// for a subscribing thread/read or a thread/unsubscribe request. It must be
+	// pure and synchronous; ordered dispatch uses it before starting the read or
+	// invoking the unsubscribe handler. It does not determine delivery routing.
+	SubscriptionAdmissionResolver func(appwire.Message) (string, bool)
+	// SubscriptionAdmissionResolverV2 distinguishes invalid target requests from
+	// unresolved subscribing reads, so native handlers retain validation errors.
+	SubscriptionAdmissionResolverV2 func(appwire.Message) SubscriptionAdmissionResolution
+}
+
+type SubscriptionAdmissionIntent uint8
+
+const (
+	SubscriptionAdmissionNotSubscribe SubscriptionAdmissionIntent = iota
+	SubscriptionAdmissionResolved
+	SubscriptionAdmissionUnresolved
+	SubscriptionAdmissionInvalid
+)
+
+type SubscriptionAdmissionResolution struct {
+	Key          string
+	SecondaryKey string
+	Intent       SubscriptionAdmissionIntent
 }
 
 // requestQueueCap bounds each connection's inbound request queue. It must
@@ -109,6 +132,9 @@ type Server struct {
 	conns                          map[string]*Connection
 	afterUnregisterDelete          func()
 	beforeSubscriptionRegistration func()
+	// beforeSubscriptionBeginBuffered pins the short claim-to-registration
+	// admission section in package tests; production leaves it nil.
+	beforeSubscriptionBeginBuffered func()
 	// beforeHydrationCommit runs after a response removes its hydration
 	// finalizer and before that finalizer commits. Production leaves it nil;
 	// package tests use it to pin the response-visible activation boundary.
@@ -217,14 +243,60 @@ func (s *Server) NewConnection(id string) *Connection {
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
 	return &Connection{
-		id:               id,
-		server:           s,
-		send:             make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:         make(chan appwire.Message, s.requestQueueCapacity),
-		slowReadSlots:    make(chan struct{}, slowReadDispatchCap),
-		slowReadInflight: map[string]int{},
-		workerExited:     make(chan struct{}),
+		id:                id,
+		server:            s,
+		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
+		requests:          make(chan appwire.Message, s.requestQueueCapacity),
+		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
+		slowReadInflight:  map[string]int{},
+		workerExited:      make(chan struct{}),
+		pendingAdmissions: map[*subscriptionAdmission]struct{}{},
 	}
+}
+
+type subscriptionAdmission struct {
+	requestID string
+	threadID  string
+	canceled  bool
+}
+
+func (c *Connection) beginSubscriptionAdmission(requestID, threadID string) *subscriptionAdmission {
+	admission := &subscriptionAdmission{requestID: requestID, threadID: threadID}
+	c.admissionMu.Lock()
+	if c.pendingAdmissions == nil {
+		c.pendingAdmissions = map[*subscriptionAdmission]struct{}{}
+	}
+	c.pendingAdmissions[admission] = struct{}{}
+	c.admissionMu.Unlock()
+	return admission
+}
+
+func (c *Connection) finishSubscriptionAdmission(admission *subscriptionAdmission) {
+	if admission == nil {
+		return
+	}
+	c.admissionMu.Lock()
+	delete(c.pendingAdmissions, admission)
+	c.admissionMu.Unlock()
+}
+
+func (c *Connection) cancelSubscriptionAdmissions(threadID string) {
+	c.admissionMu.Lock()
+	for admission := range c.pendingAdmissions {
+		if admission.threadID == threadID {
+			admission.canceled = true
+		}
+	}
+	c.admissionMu.Unlock()
+}
+
+func (c *Connection) claimSubscriptionAdmission(requestID string) (*subscriptionAdmission, bool) {
+	for admission := range c.pendingAdmissions {
+		if admission.requestID == requestID {
+			return admission, !admission.canceled
+		}
+	}
+	return nil, true
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -459,12 +531,17 @@ type Connection struct {
 	// workerExited closes when the serial worker returns; tests assert
 	// worker teardown against it instead of sleeping.
 	workerExited chan struct{}
-	mu           sync.RWMutex
-	initialized  bool
-	cancel       context.CancelFunc
-	responseMu   sync.Mutex
-	hydrationMu  sync.Mutex
-	hydrations   map[string]*hydrationResponseFinalizer
+	// pendingAdmissions covers the wire-admitted-to-capture interval. Entries
+	// are removed on claim or read completion, so cancellation leaves no
+	// unbounded tombstones.
+	admissionMu       sync.Mutex
+	pendingAdmissions map[*subscriptionAdmission]struct{}
+	mu                sync.RWMutex
+	initialized       bool
+	cancel            context.CancelFunc
+	responseMu        sync.Mutex
+	hydrationMu       sync.Mutex
+	hydrations        map[string]*hydrationResponseFinalizer
 }
 
 func (c *Connection) ID() string {
@@ -647,6 +724,12 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
+	if _, ok := ctx.Value(subscriptionAdmissionResolverPanicContextKey{}).(bool); ok {
+		return appwire.ErrorMessage(req.ID, appwire.InternalError("internal error handling request"))
+	}
+	if reason, ok := ctx.Value(subscriptionAdmissionFailureContextKey{}).(string); ok {
+		return appwire.ErrorMessage(req.ID, appwire.SessionUnavailable(reason))
+	}
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
 	// frames from JS). It bypasses the router and is answered here, before
 	// the initialize gate; the receive loop answers it inline, bypassing the
@@ -688,6 +771,8 @@ func (c *Connection) handleNotification(notification appwire.Notification) appwi
 
 type connectionContextKey struct{}
 type requestIDContextKey struct{}
+type subscriptionAdmissionFailureContextKey struct{}
+type subscriptionAdmissionResolverPanicContextKey struct{}
 
 // CaptureSubscriptionHandoff is the one-shot continuation paired with a
 // buffering subscription capture. Commit runs only after the matching response
@@ -767,12 +852,107 @@ func Unsubscribe(ctx context.Context, threadID string) {
 		return
 	}
 	server := conn.server
+	conn.cancelSubscriptionAdmissions(threadID)
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.conns[conn.id] != conn {
 		return
 	}
 	server.subs.Unsubscribe(conn.id, threadID)
+}
+
+type subscriptionLifecycleContextKey struct{}
+type subscriptionLifecycleContextKeysKey struct{}
+
+// UnsubscribeLifecycle uses the identity resolved at ordered request ingress.
+// Without a resolved identity, preserve the caller's raw delivery-key fallback.
+func UnsubscribeLifecycle(ctx context.Context, threadID string) {
+	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+	if conn == nil || threadID == "" {
+		return
+	}
+	key, _ := ctx.Value(subscriptionLifecycleContextKey{}).(string)
+	if keys, ok := ctx.Value(subscriptionLifecycleContextKeysKey{}).([]string); ok && len(keys) > 0 {
+		if len(keys) >= 2 && keys[0] != "" && keys[1] != "" {
+			conn.cancelSubscriptionAdmissions(keys[0])
+			conn.cancelSubscriptionAdmissions(keys[1])
+			conn.server.mu.Lock()
+			if conn.server.conns[conn.id] == conn {
+				conn.server.subs.UnsubscribeLifecycleAlias(conn.id, keys[0], keys[1])
+			}
+			conn.server.mu.Unlock()
+			return
+		}
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			conn.cancelSubscriptionAdmissions(key)
+			conn.server.mu.Lock()
+			if conn.server.conns[conn.id] == conn {
+				conn.server.subs.UnsubscribeLifecycle(conn.id, key)
+			}
+			conn.server.mu.Unlock()
+		}
+		return
+	}
+	if key == "" {
+		Unsubscribe(ctx, threadID)
+		return
+	}
+	threadID = key
+	conn.cancelSubscriptionAdmissions(threadID)
+	conn.server.mu.Lock()
+	defer conn.server.mu.Unlock()
+	if conn.server.conns[conn.id] == conn {
+		conn.server.subs.UnsubscribeLifecycle(conn.id, threadID)
+	}
+}
+
+// SubscribeWithAdmission installs an immediate subscription and consumes the
+// request's admission at one boundary. Registration gates precede admissionMu,
+// matching capture; unsubscribe cannot pass eligibility before installation.
+// An optional expectedLifecycle is the identity already resolved by the handler.
+// A mismatch rejects without consuming admission or changing subscriptions.
+func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, expectedLifecycle ...string) error {
+	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
+	if conn == nil {
+		return nil
+	}
+	if threadID == "" {
+		return context.Canceled
+	}
+	server := conn.server
+	if server.beforeSubscriptionRegistration != nil {
+		server.beforeSubscriptionRegistration()
+	}
+	conn.hydrationMu.Lock()
+	defer conn.hydrationMu.Unlock()
+	server.projectionMu.Lock()
+	defer server.projectionMu.Unlock()
+	server.deliveryMu.Lock()
+	defer server.deliveryMu.Unlock()
+	conn.admissionMu.Lock()
+	defer conn.admissionMu.Unlock()
+	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
+	admission, allowed := conn.claimSubscriptionAdmission(responseID)
+	if !allowed || (admission != nil && len(expectedLifecycle) != 0 && admission.threadID != expectedLifecycle[0]) {
+		return appwire.SessionUnavailable("thread subscription is unavailable")
+	}
+	server.mu.RLock()
+	defer server.mu.RUnlock()
+	if server.conns[conn.id] != conn {
+		return context.Canceled
+	}
+	owner := threadID
+	if admission != nil {
+		owner = admission.threadID
+	}
+	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
+	if admission != nil {
+		delete(conn.pendingAdmissions, admission)
+	}
+	return nil
 }
 
 func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
@@ -797,16 +977,28 @@ func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
 	return true
 }
 
+// SubscriptionTarget is one resolved delivery/lifecycle pair. Capture resolves
+// it under the projection and delivery gates, before taking admissionMu.
+// LifecycleKey is compared with ingress admission ownership, never substituted
+// for the delivery key or used to retarget a pending admission.
+type SubscriptionTarget struct {
+	ThreadID     string
+	LifecycleKey string
+}
+
 // CaptureSubscription registers a buffering hydration generation, captures the
 // authoritative snapshot under the projection gate, and arranges to release
 // only post-cut records after the matching response enters the connection's
 // send queue. A false snapshot result restores the previous ownership.
+// When supplied, resolveTarget replaces threadID and atomically resolves D+A1
+// under the registration gates, before admission validation or hydration changes.
 func CaptureSubscription(
 	ctx context.Context,
 	replace bool,
 	threadID func() string,
 	currentSequence func() uint64,
 	snapshot func() bool,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	return captureSubscription(
 		ctx,
@@ -816,6 +1008,7 @@ func CaptureSubscription(
 		snapshot,
 		CaptureSubscriptionHandoff{},
 		true,
+		resolveTarget...,
 	)
 }
 
@@ -830,6 +1023,7 @@ func CaptureSubscriptionWithHandoff(
 	currentSequence func() uint64,
 	snapshot func() bool,
 	handoff CaptureSubscriptionHandoff,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	return captureSubscription(
 		ctx,
@@ -839,6 +1033,7 @@ func CaptureSubscriptionWithHandoff(
 		snapshot,
 		handoff,
 		false,
+		resolveTarget...,
 	)
 }
 
@@ -850,10 +1045,14 @@ func captureSubscription(
 	snapshot func() bool,
 	handoff CaptureSubscriptionHandoff,
 	releaseOnErrorResponse bool,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
 		if handoff.Commit == nil && handoff.Abort == nil {
+			if len(resolveTarget) != 0 && resolveTarget[0]().ThreadID == "" {
+				return false
+			}
 			return snapshot()
 		}
 		if handoff.Abort != nil {
@@ -888,11 +1087,26 @@ func captureSubscription(
 	if !registered {
 		return abortAfterUnlock()
 	}
-	targetThreadID := threadID()
+	var target SubscriptionTarget
+	if len(resolveTarget) != 0 {
+		target = resolveTarget[0]()
+	} else {
+		target.ThreadID = threadID()
+	}
+	targetThreadID := target.ThreadID
 	if targetThreadID == "" {
 		return abortAfterUnlock()
 	}
 	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
+	conn.admissionMu.Lock()
+	admission, allowed := conn.claimSubscriptionAdmission(responseID)
+	if admission != nil && (!allowed || (len(resolveTarget) != 0 && admission.threadID != target.LifecycleKey)) {
+		conn.admissionMu.Unlock()
+		return abortAfterUnlock()
+	}
+	if conn.server.beforeSubscriptionBeginBuffered != nil {
+		conn.server.beforeSubscriptionBeginBuffered()
+	}
 	superseded = conn.takeSupersededHydrations(responseID, targetThreadID, replace)
 	for _, finalizer := range superseded {
 		server.subs.withdrawBuffered(
@@ -904,7 +1118,15 @@ func captureSubscription(
 	}
 	server.nextHydrationGeneration++
 	generation := server.nextHydrationGeneration
-	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation)
+	owner := targetThreadID
+	if admission != nil {
+		owner = admission.threadID
+	}
+	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
+	if admission != nil {
+		delete(conn.pendingAdmissions, admission)
+	}
+	conn.admissionMu.Unlock()
 	if !snapshot() {
 		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
 		return abortAfterUnlock()
@@ -1193,21 +1415,91 @@ func formatTally(tally map[string]int) string {
 // canceling the shared context is enough — the worker exits at its next
 // dequeue and the receive loop's next Recv fails into normal close handling.
 func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
+	var resolverPanic bool
+	var resolvedKey string
+	var secondaryKey string
+	var resolved bool
+	intent := SubscriptionAdmissionNotSubscribe
+	if resolve := c.server.cfg.SubscriptionAdmissionResolverV2; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+		var result SubscriptionAdmissionResolution
+		result, resolverPanic = safeResolveAdmissionV2(c.server, resolve, msg)
+		resolvedKey, secondaryKey, resolved, intent = result.Key, result.SecondaryKey, result.Intent == SubscriptionAdmissionResolved, result.Intent
+	} else if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
+		if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) {
+			intent = SubscriptionAdmissionResolved
+			if !resolved || resolvedKey == "" {
+				intent = SubscriptionAdmissionUnresolved
+			}
+		}
+	}
+	if resolverPanic {
+		ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
+	} else if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) && intent == SubscriptionAdmissionUnresolved {
+		ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
+	}
+	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
+		if (resolved || intent == SubscriptionAdmissionUnresolved) && resolvedKey != "" {
+			c.cancelSubscriptionAdmissions(resolvedKey)
+			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
+			if secondaryKey != "" && secondaryKey != resolvedKey {
+				c.cancelSubscriptionAdmissions(secondaryKey)
+				ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
+			}
+		}
+	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
 		method := msg.Request.Method
+		var admission *subscriptionAdmission
+		if method == appwire.MethodThreadRead {
+			if resolved && resolvedKey != "" {
+				admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), resolvedKey)
+			}
+		}
 		if !c.acquireSlowReadSlot(ctx, method) {
+			c.finishSubscriptionAdmission(admission)
 			// Canceled while dequeued-awaiting-dispatch-capacity; the worker
 			// loop observes the same cancellation at its next select and
 			// exits without executing anything further.
 			return
 		}
 		go func() {
+			defer c.finishSubscriptionAdmission(admission)
 			defer c.releaseSlowReadSlot(method)
 			c.handleAndEnqueue(ctx, msg)
 		}()
 		return
 	}
 	c.handleAndEnqueue(ctx, msg)
+}
+
+func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string, bool), msg appwire.Message) (key string, ok, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
+			key, ok, panicked = "", false, true
+		}
+	}()
+	key, ok = resolve(msg)
+	return key, ok, false
+}
+
+func safeResolveAdmissionV2(server *Server, resolve func(appwire.Message) SubscriptionAdmissionResolution, msg appwire.Message) (result SubscriptionAdmissionResolution, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
+			result, panicked = SubscriptionAdmissionResolution{}, true
+		}
+	}()
+	return resolve(msg), false
+}
+
+func threadReadAdmissionEligible(raw json.RawMessage) bool {
+	var params appwire.ThreadReadParams
+	if json.Unmarshal(raw, &params) != nil || !params.Subscribe {
+		return false
+	}
+	return appwire.ValidateThreadReadParams(params) == nil
 }
 
 // acquireSlowReadSlot takes one slowReadDispatchCap slot on behalf of the

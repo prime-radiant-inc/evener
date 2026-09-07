@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -217,6 +218,65 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
 		Logf:                 hubLogf,
+		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
+			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
+			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+				return notSubscribe
+			}
+			var params appwire.ThreadReadParams
+			if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+				var unsubscribe appwire.ThreadUnsubscribeParams
+				if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+				}
+				params.Ref, params.ThreadID = unsubscribe.Ref, unsubscribe.ThreadID
+			} else if json.Unmarshal(msg.Request.Params, &params) != nil {
+				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+				}
+				if msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+					if past, ok := pastEntryForRead(cfg, params); ok && past.ID != "" {
+						return appserver.SubscriptionAdmissionResolution{Key: "local:" + past.ID, Intent: appserver.SubscriptionAdmissionResolved}
+					}
+				}
+				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
+			}
+			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe && !relayOnThreadRead(source) {
+				return notSubscribe
+			}
+			// Stable refs and current IDs name one pending admission, but
+			// must not rewrite the relay's notification delivery identity.
+			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
+				ref, err := daemon.ResolveSubscriptionAdmission(params)
+				if err != nil && msg.Request.Method == appwire.MethodThreadRead && params.Subscribe {
+					if past, pastOK := pastEntryForRead(cfg, params); pastOK && past.ID != "" {
+						return appserver.SubscriptionAdmissionResolution{Key: "local:" + past.ID, Intent: appserver.SubscriptionAdmissionResolved}
+					}
+				}
+				if err != nil {
+					if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+						delivery, _, deliveryErr := threadRelayTarget(source, params)
+						if deliveryErr == nil {
+							return appserver.SubscriptionAdmissionResolution{Key: delivery, SecondaryKey: normalizedAdmissionRef(params), Intent: appserver.SubscriptionAdmissionUnresolved}
+						}
+					}
+					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
+				}
+				if delivery, _, deliveryErr := threadRelayTarget(source, params); deliveryErr == nil {
+					return appserver.SubscriptionAdmissionResolution{Key: ref.String(), SecondaryKey: delivery, Intent: appserver.SubscriptionAdmissionResolved}
+				}
+				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
+			}
+			key, _, err := threadRelayTarget(source, params)
+			if err != nil {
+				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
+			}
+			return appserver.SubscriptionAdmissionResolution{Key: key, Intent: appserver.SubscriptionAdmissionResolved}
+		},
 		Features: appwire.FeatureSet{
 			ThreadList:                true,
 			ThreadTurnsList:           true,
@@ -278,6 +338,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	return server
+}
+
+func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
+	if ref := strings.TrimSpace(params.Ref); ref != "" {
+		return ref
+	}
+	if threadID := strings.TrimSpace(params.ThreadID); threadID != "" {
+		return "local:" + threadID
+	}
+	return ""
 }
 
 // registerThreadHandlers registers the thread- and turn-lifecycle RPC handlers
@@ -425,17 +495,17 @@ func registerThreadHandlers(
 				return appwire.EmptyResponse{}, err
 			}
 			if parsed, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); parseErr == nil && parsed.SourceID != "" {
-				appserver.Unsubscribe(ctx, parsed.SourceID+":"+parsed.ThreadID)
+				appserver.UnsubscribeLifecycle(ctx, parsed.SourceID+":"+parsed.ThreadID)
 				return appwire.EmptyResponse{}, nil
 			}
-			appserver.Unsubscribe(ctx, "local:"+strings.TrimSpace(params.ThreadID))
+			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
 		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
-		appserver.Unsubscribe(ctx, relayKey)
+		appserver.UnsubscribeLifecycle(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

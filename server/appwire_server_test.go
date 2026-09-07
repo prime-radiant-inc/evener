@@ -34,6 +34,40 @@ func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
 	return turns
 }
 
+func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
+	t.Helper()
+	httpServer := httptest.NewServer(srv)
+	t.Cleanup(httpServer.Close)
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):]+"/rpc", httpServer.Client())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	return client
+}
+
+func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	installProjectedMutationCallbacksForTest(srv)
+	client := dialServerAppWire(t, srv)
+	ctx := context.Background()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
+		t.Fatalf("ref-only subscribe read: %v", err)
+	}
+	if _, err := client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{ThreadID: "th_1"}); err != nil {
+		t.Fatalf("mixed-alias unsubscribe: %v", err)
+	}
+	if got := srv.AppSubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count after mixed aliases = %d, want 0", got)
+	}
+}
+
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

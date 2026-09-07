@@ -1076,20 +1076,25 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}
-	threadID := s.appThreadIDForRead(params)
-	if threadID == "" {
-		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread is unavailable")
-	}
+	var threadID string
 	var response appwire.ThreadReadResponse
 	var readErr error
 	captured := appserver.CaptureSubscription(
 		ctx,
 		params.ReplaceSubscription,
-		func() string { return s.appNotificationTarget(threadID) },
+		nil,
 		s.appNotifier.CurrentSequence,
 		func() bool {
-			response, readErr = s.appThreadReadSnapshotChecked(params)
+			response, readErr = s.appThreadReadSnapshotForTarget(params, threadID)
 			return true
+		},
+		func() appserver.SubscriptionTarget {
+			var key string
+			threadID, key = s.appReadTarget(params)
+			if threadID == "" {
+				return appserver.SubscriptionTarget{}
+			}
+			return appserver.SubscriptionTarget{ThreadID: key, LifecycleKey: key}
 		},
 	)
 	if !captured {
@@ -1125,7 +1130,12 @@ func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.
 }
 
 func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	threadID := s.appThreadIDForRead(params)
+	return s.appThreadReadSnapshotForTarget(params, s.appThreadIDForRead(params))
+}
+
+// appThreadReadSnapshotForTarget materializes the exact target selected under
+// the subscription projection gate, without resolving mutable request aliases.
+func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams, threadID string) (appwire.ThreadReadResponse, error) {
 	thread, ok := s.appThreadForID(threadID)
 	if !ok {
 		return appwire.ThreadReadResponse{}, nil
@@ -1156,7 +1166,7 @@ func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (
 // form and the bare thread ID, and Unsubscribe is idempotent, so trying both
 // costs nothing and leaks nothing.
 func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
-	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	threadID, target := s.appReadTarget(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if threadID == "" {
 		// Teardown finding nothing is a success; still try the raw identities
 		// so a pre-swap key does not linger until connection close.
@@ -1169,11 +1179,27 @@ func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.
 		}
 		return appwire.EmptyResponse{}, nil
 	}
-	appserver.Unsubscribe(ctx, s.appNotificationTarget(threadID))
+	appserver.Unsubscribe(ctx, target)
 	return appwire.EmptyResponse{}, nil
 }
 
 func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
+	threadID, _ := s.appReadTarget(params)
+	return threadID
+}
+
+// appReadTarget takes one identity snapshot for both the requested thread and
+// its admission/delivery key. Ingress must not recompute the key after releasing
+// this lock: a same-workspace identity replacement could turn the saved root ID
+// into a stale bare key between those two reads.
+func (s *Server) appReadTarget(params appwire.ThreadReadParams) (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appReadTargetLocked(params)
+}
+
+// appReadTargetLocked requires s.mu and calls no lock-taking helpers.
+func (s *Server) appReadTargetLocked(params appwire.ThreadReadParams) (string, string) {
 	threadID := strings.TrimSpace(params.ThreadID)
 	rawRef := strings.TrimSpace(params.Ref)
 	if threadID == "" && rawRef != "" {
@@ -1184,25 +1210,29 @@ func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
 		// else entirely (ledger #110/#111).
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil || ref.SourceID != "local" {
-			return ""
+			return "", ""
 		}
-		s.mu.RLock()
-		stableRef := s.appRef
-		currentThreadID := s.appThreadID
-		s.mu.RUnlock()
-		if rawRef == stableRef {
-			threadID = currentThreadID
+		if rawRef == s.appRef {
+			threadID = s.appThreadID
 		} else {
 			threadID = ref.ThreadID
 		}
 	}
+	rootID := s.appThreadID
+	if rootID == "" {
+		rootID = s.status.SessionID
+	}
 	if threadID == "" {
-		threadID = s.appProjectionThreadID()
+		threadID = rootID
 	}
-	if _, ok := s.appThreadForID(threadID); !ok {
-		return ""
+	if threadID == "" || (threadID != rootID && s.appDescendants[threadID] == nil) {
+		return "", ""
 	}
-	return threadID
+	target := threadID
+	if threadID == s.appThreadID && s.appRef != "" {
+		target = s.appRef
+	}
+	return threadID, target
 }
 
 func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {

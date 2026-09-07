@@ -30,7 +30,7 @@ func ValidateThreadReadParams(params ThreadReadParams) error {
 // ValidateThreadTurnsListParams validates the item-only transcript list cursor
 // and limit.
 func ValidateThreadTurnsListParams(params ThreadTurnsListParams) error {
-	if params.Cursor == "" {
+	if strings.TrimSpace(params.Cursor) == "" {
 		return InvalidParams("cursor is required for thread/turns/list")
 	}
 	if isLegacyNumericCursor(params.Cursor) {
