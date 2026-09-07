@@ -17,10 +17,10 @@
 // recovery surfaces own later network outcomes.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { type AskResolution, composeAskAnswers } from "../../../../protocol/askAnswers";
 import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
 import { threadsStore } from "../../../../stores/threads";
-import { type AskResolution, composeAskAnswers } from "./askCompose";
 import { liveAskQuestions } from "./deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
@@ -118,7 +118,7 @@ function mintBatchId(): string {
 
 // answerFor reads a key's current answer state with the same "missing
 // means untouched" default sendBatch's own composition needs (an
-// unresolved question composes as an explicit skip - askCompose.ts).
+// unresolved question composes as an explicit skip - protocol/askAnswers.ts).
 function answerFor(refState: AskDockRefState, key: string): AskAnswerState {
   return refState.answers[key] ?? { resolution: null, note: "" };
 }

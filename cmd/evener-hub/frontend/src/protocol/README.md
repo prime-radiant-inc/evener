@@ -55,6 +55,31 @@ specific mutation-ID contract; the client does not invent those IDs for callers.
 Use one client and separate caches per hub. `close()` ends that connection and
 rejects pending requests; create a new client for a different hub or credential.
 
+## Structured question replies
+
+`composeAskAnswers(items)` and the `AskAnswerItem`/`AskResolution` types expose
+the answer format used by the web and native apps. Pass questions in posting
+order across the complete pending batch. Headers containing brackets or line
+breaks are encoded; labels, free text, leaning and notes retain the reply
+format's escaping. Notes are available for every resolution.
+
+```ts
+import { composeAskAnswers, type AskAnswerItem } from "@evener/appwire-client";
+
+const answers: readonly AskAnswerItem[] = [
+  { header: "Delivery", resolution: { kind: "option", labels: ["Keep as draft"] }, note: "" },
+];
+const text = composeAskAnswers(answers);
+```
+
+This pure formatter does not validate selections, preselect recommendations,
+send a message or confirm delivery. Validate labels, single/multiple selection
+and fallback availability against the reviewed questions first. A `null`
+resolution formats as a skip; do not use it to silently answer an unresolved
+batch. Submit the resulting text through the current `turn/start` contract
+with the expected session instance and a stable caller-authored mutation ID.
+There is no separate question-answer RPC or atomic question-generation guard.
+
 ## Runnable examples
 
 Install the tarball and `ws` in a separate project, then run the packaged examples

@@ -9,9 +9,9 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { StoreApi } from "zustand";
 import type { UseBoundStore } from "zustand/react";
+import type { AskAnswerItem } from "../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+import { composeAskAnswers } from "../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
 import type { InputItem } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import type { AskAnswerItem } from "../components/composer/composeAskAnswers";
-import { composeAskAnswers } from "../components/composer/composeAskAnswers";
 import type { MobileConversation } from "../conversation/model";
 import type { LiveConversationService } from "../services/conversation";
 import type { RosterService } from "../services/roster";

@@ -39,12 +39,12 @@
 
 import type { StoreApi } from "zustand";
 import type { UseBoundStore } from "zustand/react";
-import type { InputItem } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   AskAnswerItem,
   AskResolution,
-} from "../components/composer/composeAskAnswers";
-import { composeAskAnswers } from "../components/composer/composeAskAnswers";
+} from "../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+import { composeAskAnswers } from "../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+import type { InputItem } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   MobileAskQuestion,
   MobileConversation,

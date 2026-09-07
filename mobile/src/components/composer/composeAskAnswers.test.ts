@@ -1,12 +1,16 @@
-// Pure-module tests for composeAskAnswers — every exact-output vector from
-// AskComposer.test.tsx copied verbatim, plus focused quoting/control-character
-// cases. AskComposer.tsx itself only asserts the same composed [answers]
-// payloads through the component; this module owns the byte-exact composition
-// ported from the Hub's askCompose.ts.
-
+// The mobile composer consumes the shared answer format.
 import { describe, expect, it } from "vitest";
-import type { AskAnswerItem } from "./composeAskAnswers";
-import { composeAskAnswers } from "./composeAskAnswers";
+import type { AskAnswerItem } from "../../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+import { composeAskAnswers } from "../../../../cmd/evener-hub/frontend/src/protocol/askAnswers";
+
+it("keeps a question header containing brackets and newlines inside one answer line", () => {
+  const header = "A]B\nC";
+  const lines = composeAskAnswers([
+    { header, resolution: { kind: "skip" }, note: "" },
+  ]).split("\n");
+  expect(lines).toHaveLength(2);
+  expect(lines[1]).toBe(`1. [${JSON.stringify(header)}] → skipped (no answer)`);
+});
 
 describe("composeAskAnswers — single select", () => {
   it("composes a single selected option", () => {

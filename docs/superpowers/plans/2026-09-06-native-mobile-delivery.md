@@ -402,3 +402,19 @@ success does not close repeated grants, concurrent/replaced decisions,
 disconnect/acknowledgment loss, background/death or the broader reader,
 VoiceOver/iPad/physical-device, multi-hub, performance, signing/install/update
 and canonical merge gates. iOS-only v1 remains the release scope.
+
+## Shared question formatter checkpoint
+
+The web, native and mobile consumers now use one pure answer formatter in the
+protocol package, exposed through its public ESM/CommonJS entry point. The
+mobile duplicate's unescaped question headers reproduced an extra answer line
+and now pass the shared framing regression. Existing formatter behavior is
+preserved; formatting does not validate or submit selections.
+
+The package's external tarball consumer compiles readonly answer arrays and
+executes the export from ESM and CommonJS. `make test-api-package` and
+`make test-web` pass, as do all 583 native tests and native TypeScript, 91 focused
+mobile tests, and mobile typecheck/boundary checks. Luna reviewed the source
+delta and evidence. A current native rebuild and real multi-question execution
+remain next, together with the guarded SDK question recipe. This checkpoint
+does not establish new simulator or release acceptance.
