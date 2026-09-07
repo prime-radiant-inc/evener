@@ -71,6 +71,34 @@ describe("reader positions", () => {
 		const item = row("a", { entry: 1, item: 1 });
 		expect(captureReaderAnchor("hub", "session", item, 12, [], 1)).toBeNull();
 	});
+	it("restores position-matched rows using current geometry after their key changes", () => {
+		const position = { entry: 2, item: 1 };
+		const prior = row("live", position);
+		const current = row("persisted", position);
+		const oldMeasurement = { key: readerKey(prior), y: 300, height: 180 };
+		const anchor = captureReaderAnchor(
+			"hub",
+			"session",
+			prior,
+			420,
+			[oldMeasurement],
+			1,
+		);
+		if (!anchor) throw new Error("expected measured anchor");
+		const rows = [row("earlier", { entry: 1, item: 0 }), current];
+		const measurement = { key: readerKey(current), y: 600, height: 80 };
+		expect(restoreReaderCommand(anchor, rows, [oldMeasurement], 96)).toEqual({
+			kind: "approximate",
+			offset: 216,
+		});
+		for (const measurements of [[measurement], [oldMeasurement, measurement]]) {
+			expect(restoreReaderCommand(anchor, rows, measurements, 96)).toEqual({
+				kind: "exact",
+				index: 1,
+				viewOffset: -80,
+			});
+		}
+	});
 	it("advances virtualization before exact restoration and preserves anchor on reflow", () => {
 		const rows = Array.from({ length: 30 }, (_, i) =>
 			row(String(i), { entry: i, item: 1 }),

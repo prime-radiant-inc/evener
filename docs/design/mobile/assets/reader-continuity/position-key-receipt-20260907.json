@@ -1,0 +1,28 @@
+{
+  "baseCommit": "5329dbe47e3719a3419fdebc35dcd7803c6a18bd",
+  "sourceHashes": {
+    "mobile-native/src/readerPosition.ts": "7e959052be4b3f7f44a5c4cff73cbc4c189abed08ddbd979404d7e58dc328425",
+    "mobile-native/src/screens.tsx": "518455dd7e82d9102d47da3221e1bd7b3360dc49422687b25ffa51c09ad674a8",
+    "mobile-native/src/readerPosition.test.ts": "e4adf135a5d93cac4a4438c0fe4dadc35d438133ff35dc97dd34f2ac101ac977",
+    "mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app/main.jsbundle": "3641870a5afc45389001c02227a8b3307ebc0e08e9026feb954fc27891ffa904"
+  },
+  "readerTests": 16,
+  "nativeTests": 621,
+  "nativeTypeScript": "passed",
+  "releaseBuild": "passed",
+  "simulator": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+  "hub": "ws://127.0.0.1:54211/rpc",
+  "fixtureRef": "local:034KVwAjXBf0IyAcKKEYU3",
+  "anchor": {
+    "itemKey": "apptranscript-item-v1:turn_m9:9:1",
+    "itemPosition": {
+      "entry": 9,
+      "item": 1
+    },
+    "withinItemOffset": 37,
+    "touchedAt": 1788784845527
+  },
+  "retainedDraftsVerified": 7,
+  "unrelatedApplePatchUnchanged": true,
+  "scope": "Measured key-fallback regression plus existing older-page navigation and process restart. No live-to-persisted transition acceptance."
+}

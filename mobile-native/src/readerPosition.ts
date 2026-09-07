@@ -204,15 +204,15 @@ export function restoreReaderCommand(
 	if (!allowRestore) return null;
 	const index = resolveReaderAnchor(anchor, rows);
 	if (index === null) return null;
-	if (measurements.some((measurement) => measurement.key === anchor.itemKey))
+	const currentKey = readerKey(rows[index]);
+	const measurement = measurements.find(
+		(candidate) => candidate.key === currentKey,
+	);
+	if (measurement)
 		return {
 			kind: "exact",
 			index,
-			viewOffset: -Math.min(
-				anchor.withinItemOffset,
-				measurements.find((measurement) => measurement.key === anchor.itemKey)
-					?.height ?? anchor.withinItemOffset,
-			),
+			viewOffset: -Math.min(anchor.withinItemOffset, measurement.height),
 		};
 	return {
 		kind: "approximate",

@@ -813,3 +813,25 @@ then actual native uncertain-delivery/reconnect and multi-hub pending workflows.
 SDK creation, credentials, upgrades and full notification/outcome coverage remain
 open. iOS-only v1, physical/accessibility/performance and release gates remain
 unfinished; the full goal stays active.
+
+
+## Reader geometry checkpoint — source 5329dbe47
+
+Reproduced and repaired obsolete-key geometry after exact-position anchor
+resolution. The native helper and screen now use the resolved row's current
+measurement; sixteen reader tests, all 621 native tests, TypeScript and iPhone
+Release pass. Settled older-page navigation/restart preserves the retained
+marker-09 boundary, seven drafts and the unrelated Apple patch. Luna medium
+reviewed the supplied algorithm; root integrated and verified source because
+agent workspace access was inconsistent. See reader-continuity-evidence.md.
+
+The separate lifecycle investigation found a concrete live/persisted mismatch:
+the saved question anchor is turn_m1:1:0, whereas persisted ENVIRONMENT occupies
+(1,0) and shifts that user to turn_m1:2:0. Turn IDs remain, coordinates do not.
+agent.maybeAppendEnvironmentContext persists a standalone environment turn but
+has no corresponding live projector event. Next reproduce the event-to-file
+projection divergence with a real Session and scripted provider, then repair
+that source contract. Do not add fuzzy reader matches or classify unrelated
+position matches as successful recovery. SDK bounded anchor traversal needs no
+new seek protocol. Completed-question recaps also remain unfinished. Goal stays
+active with iOS-only v1 and deferred Android release qualification.
