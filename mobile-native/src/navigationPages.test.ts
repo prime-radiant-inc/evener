@@ -9,6 +9,41 @@ import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/test
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 
+it("uses only the current resource's mutation revision", async () => {
+	const { pages, requests } = boundary();
+	const read = pages.refreshAfter({
+		generation_id: "hub-generation",
+		targets: [
+			{ kind: "manifest", revision: 90 },
+			{ kind: "catalog", catalog: "projects", revision: 2 },
+			{ kind: "pin_catalog", revision: 40 },
+		],
+	});
+	requests[0].resolve(response(["current"], 0, 2));
+	await expect(read).resolves.toBeUndefined();
+	expect(pages.getSnapshot().stale).toBe(false);
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["current"]);
+});
+it("does not accept a stale tombstone as mutation readback", async () => {
+	const { pages, requests } = boundary();
+	const first = pages.refresh();
+	requests[0].resolve(response(["current"], 0, 1));
+	await first;
+	const read = pages.refreshAfter({
+		generation_id: "hub-generation",
+		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+	});
+	requests[1].resolve({
+		status: "gone",
+		generationId: "hub-generation",
+		revision: 2,
+		etag: "stale-gone",
+	});
+	await expect(read).rejects.toThrow();
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["current"]);
+	expect(pages.getSnapshot().stale).toBe(true);
+});
+
 function boundary(resource: "catalog" | "section" = "catalog") {
 	const requests: {
 		params: NavigationReadParams;
@@ -472,4 +507,120 @@ it("retains a mutation revision floor after a failed readback and manual retry",
 	await retry;
 	expect(pages.getSnapshot().stale).toBe(true);
 	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["old"]);
+});
+
+it("does not satisfy a newer mutation receipt with a cached not-modified response", async () => {
+	const { pages, requests } = boundary();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	const mutation = pages.refreshAfter({
+		generation_id: "hub-generation",
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve({
+		status: "not_modified",
+		generationId: "hub-generation",
+		revision: 1,
+		etag: "etag-0-1",
+	});
+	await expect(mutation).rejects.toThrow();
+	expect(pages.getSnapshot().stale).toBe(true);
+});
+
+it("does not let a conditional response clear a newer notification", async () => {
+	const { pages, requests, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	const next = pages.refresh();
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve({
+		status: "not_modified",
+		generationId: "hub-generation",
+		revision: 1,
+		etag: "etag-0-1",
+	});
+	await next;
+	expect(pages.getSnapshot().stale).toBe(true);
+});
+
+it("resets paging offset when a conditional refresh retains the first page", async () => {
+	const { pages, requests } = boundary();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 2, 1));
+	await first;
+	const more = pages.more();
+	requests[1].resolve(response(["b"], 1, 1, 1));
+	await more;
+	const refresh = pages.refresh();
+	requests[2].resolve({
+		status: "not_modified",
+		generationId: "hub-generation",
+		revision: 1,
+		etag: "etag-0-1",
+	});
+	await refresh;
+	const again = pages.more();
+	expect(requests[3].params.offset).toBe(1);
+	requests[3].resolve(response(["b"], 1, 1, 1));
+	await again;
+});
+
+it("pages the pin catalog and invalidates it when a section changes", async () => {
+	const requests: NavigationReadParams[] = [];
+	let notify: (event: AnyNotification) => void = () => {};
+	const client: ConversationClientLike = {
+		onNotification: (listener) => {
+			notify = listener;
+			return () => {};
+		},
+		request: async (_method, params) => {
+			const p = params as NavigationReadParams;
+			requests.push(p);
+			const offset = p.offset ?? 0;
+			return wireV2(
+				p,
+				{
+					pin_sections: [
+						{
+							id: offset ? "two" : "one",
+							name: offset ? "Later" : "First",
+							count: 1,
+						},
+					],
+					remaining: offset ? 0 : 1,
+				},
+				`pin-${offset}`,
+				1,
+				"hub-generation",
+			) as never;
+		},
+	};
+	const pages = new NavigationPages<{
+		id: string;
+		name: string;
+		count: number;
+	}>(client, { resource: "pin_catalog" }, "pin_sections", (r) => r.id, 1);
+	pages.watch();
+	await pages.refresh();
+	await pages.more();
+	expect(pages.getSnapshot().rows.map((r) => r.id)).toEqual(["one", "two"]);
+	expect(requests.map((p) => p.offset)).toEqual([0, 1]);
+	notify({
+		method: "evener/navigation/invalidated",
+		params: {
+			generationId: "hub-generation",
+			sequence: 1,
+			targets: [{ kind: "pin_catalog", revision: 2 }],
+		},
+	});
+	expect(pages.getSnapshot().stale).toBe(true);
+	await pages.more();
+	expect(requests).toHaveLength(2);
 });
