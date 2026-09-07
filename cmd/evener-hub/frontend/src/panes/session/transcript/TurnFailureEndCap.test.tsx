@@ -584,6 +584,48 @@ test("retry pairs markers by attachment name when the prose order diverges from 
   );
 });
 
+test("prose that is only a translated marker counts as image-only for unavailable bytes", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 1: shot.png)",
+          images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+});
+
+test("a subset of unnamed markers refuses the images instead of misassigning", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 2) describe it";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
 test("foreign prose beside an unnamed image refuses the images instead of misassigning", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 5: ghost.png) and (attached image 1)";

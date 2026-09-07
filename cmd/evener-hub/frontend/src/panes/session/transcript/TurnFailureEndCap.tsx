@@ -124,6 +124,20 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
   return occurrences;
 }
 
+// occurrencesCoverText reports whether every non-whitespace character of
+// text sits inside a parsed marker occurrence: the text is marker prose
+// alone, with no user words of its own.
+function occurrencesCoverText(text: string, occurrences: { start: number; end: number }[]): boolean {
+  if (occurrences.length === 0) return text === "";
+  let cursor = 0;
+  const sorted = [...occurrences].sort((left, right) => left.start - right.start);
+  for (const occurrence of sorted) {
+    if (text.slice(cursor, occurrence.start).trim() !== "") return false;
+    cursor = occurrence.end;
+  }
+  return text.slice(cursor).trim() === "";
+}
+
 // planRetryImages recovers the originating input's image bytes from the
 // model's display-ready ItemImage shape (reducer.ts's imagesToItemImages
 // resolves the wire's inline mediaType+data bytes to a data: URI src, which is
@@ -169,7 +183,7 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 function planRetryImages(
   images: ItemImage[] | undefined,
   text: string,
-): { attachments: InputAttachment[]; anchorText: string; ambiguous: boolean } {
+): { attachments: InputAttachment[]; anchorText: string; ambiguous: boolean; markerOnly: boolean } {
   const items = images ?? [];
   const occurrences = parseOccurrences(
     text,
@@ -261,6 +275,14 @@ function planRetryImages(
       positionalAmbiguous = true;
     }
   });
+  // Positional pairing is one-to-one or nothing: every leftover image needs
+  // its own unnamed mention. A SUBSET (fewer mentions than images, e.g. an
+  // earlier marker removed) cannot be aligned — the nth mention is not
+  // necessarily the nth image — so refuse rather than assign marker 2's bytes
+  // to image A. (More mentions than images simply leave the extras verbatim.)
+  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length < unpairedImages.length) {
+    positionalAmbiguous = true;
+  }
   if (positionalAmbiguous) {
     ambiguous = true;
   } else {
@@ -328,7 +350,7 @@ function planRetryImages(
       ambiguous = true;
     }
   }
-  return { attachments, anchorText, ambiguous };
+  return { attachments, anchorText, ambiguous, markerOnly: occurrencesCoverText(text, occurrences) };
 }
 
 function retryItem(turn: TurnModel): ItemModel | undefined {
@@ -340,16 +362,24 @@ function originFromItem(item: ItemModel): OriginatingInput | undefined {
   const text = storedText.trim();
   const sourceImageCount = item.images?.length ?? 0;
   const plan = planRetryImages(item.images, text);
+  // Text that is nothing but translated attachment markers is not user prose:
+  // a reloaded image-only submission keeps its "(attached image N[: name])"
+  // spans verbatim, so the stored text is nonempty while carrying no words of
+  // the user's own. Classify it as image-only: with bytes it retries (the
+  // spans rebuild anchors), without bytes it degrades to the re-attach state
+  // rather than offering a text-only retry that drops the image silently.
+  const markerOnly = sourceImageCount > 0 && plan.markerOnly;
+  const effectiveText = markerOnly ? "" : text;
   // An image-only input is retryable: buildInput and the server both accept
   // empty text with attachments (parity-m5-composer §B). Text is required
   // only when there is nothing else to send. An ambiguous pairing (duplicate
   // names the wire cannot disambiguate) refuses the images instead of
   // guessing: text still retries with the dropped-image warning below, while
   // an image-only input degrades to the explicit re-attach state.
-  if (text || plan.attachments.length > 0) {
+  if (effectiveText || plan.attachments.length > 0) {
     if (plan.ambiguous) {
-      if (!text) return { kind: "images-unavailable", sourceImageCount };
-      return { kind: "retry", input: { text, sourceImageCount } };
+      if (!effectiveText) return { kind: "images-unavailable", sourceImageCount };
+      return { kind: "retry", input: { text: effectiveText, sourceImageCount } };
     }
     return {
       kind: "retry",
