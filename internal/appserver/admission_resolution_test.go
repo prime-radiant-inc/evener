@@ -2,11 +2,48 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
+
+func TestSubscriptionAdmissionResolverPanicIsContained(t *testing.T) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
+		panic("resolver boom")
+	}})
+	c := s.NewConnection("panic")
+	c.setInitialized()
+	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("resolver panic escaped ordered dispatch: %v", recovered)
+		}
+	}()
+	c.executeOrdered(context.Background(), msg)
+}
+
+func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
+		return "", false
+	}})
+	c := s.NewConnection("unresolved")
+	c.setInitialized()
+	HandleTyped(s.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		Subscribe(ctx, "thread")
+		return appwire.ThreadReadResponse{}, nil
+	})
+	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
+	c.executeOrdered(context.Background(), msg)
+	response := <-c.send
+	if response.Error == nil || response.Error.Error.Code != appwire.CodeUnavailable {
+		t.Fatalf("unresolved subscribe response = %+v, want unavailable", response)
+	}
+	if s.subs.IsSubscribed(c.id, "thread") {
+		t.Fatal("unresolved subscribe installed a subscription")
+	}
+}
 
 func TestResolvedAdmissionMismatchPreservesOwnership(t *testing.T) {
 	for _, immediate := range []bool{false, true} {
