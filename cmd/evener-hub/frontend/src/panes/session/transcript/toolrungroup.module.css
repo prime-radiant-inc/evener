@@ -35,6 +35,16 @@
   outline-offset: 2px;
 }
 
+/* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
+ * the summary is the one control that opens a folded run, so it takes the
+ * same --tap-min widgets/disclosure's summary does. min-height, not height,
+ * so the desktop row keeps its own rhythm. */
+@media (max-width: 899px) {
+  .summary {
+    min-height: var(--tap-min);
+  }
+}
+
 /* The chevron turns to point down when the run opens - the same rotation
  * toolcallitem.module.css gives a tool row's own chevron, so one disclosure
  * gesture reads the same everywhere in the transcript. */

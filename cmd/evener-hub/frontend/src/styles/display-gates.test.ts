@@ -155,3 +155,14 @@ test("every rule that sizes an editable control uses --font-size-control or --fo
     }
   }
 });
+
+// The folded tool-run row is an interactive control (a <summary> the reader
+// taps to open the calls), so it takes the same phone tap floor
+// widgets/disclosure's own summary does (roborev on PR #947).
+test("the folded-run summary meets the phone tap floor", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "panes/session/transcript/toolrungroup.module.css"), "utf8");
+  const phone = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  expect(phone, "toolrungroup.module.css must have a max-width:899px block").not.toBeNull();
+  expect(phone![1]).toMatch(/\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+});
