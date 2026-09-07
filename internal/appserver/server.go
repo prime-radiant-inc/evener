@@ -55,8 +55,9 @@ const (
 )
 
 type SubscriptionAdmissionResolution struct {
-	Key    string
-	Intent SubscriptionAdmissionIntent
+	Key          string
+	SecondaryKey string
+	Intent       SubscriptionAdmissionIntent
 }
 
 // requestQueueCap bounds each connection's inbound request queue. It must
@@ -861,6 +862,7 @@ func Unsubscribe(ctx context.Context, threadID string) {
 }
 
 type subscriptionLifecycleContextKey struct{}
+type subscriptionLifecycleContextKeysKey struct{}
 
 // UnsubscribeLifecycle uses the identity resolved at ordered request ingress.
 // Without a resolved identity, preserve the caller's raw delivery-key fallback.
@@ -870,6 +872,20 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 		return
 	}
 	key, _ := ctx.Value(subscriptionLifecycleContextKey{}).(string)
+	if keys, ok := ctx.Value(subscriptionLifecycleContextKeysKey{}).([]string); ok && len(keys) > 0 {
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			conn.cancelSubscriptionAdmissions(key)
+			conn.server.mu.Lock()
+			if conn.server.conns[conn.id] == conn {
+				conn.server.subs.UnsubscribeLifecycle(conn.id, key)
+			}
+			conn.server.mu.Unlock()
+		}
+		return
+	}
 	if key == "" {
 		Unsubscribe(ctx, threadID)
 		return
@@ -1391,12 +1407,13 @@ func formatTally(tally map[string]int) string {
 func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	var resolverPanic bool
 	var resolvedKey string
+	var secondaryKey string
 	var resolved bool
 	intent := SubscriptionAdmissionNotSubscribe
 	if resolve := c.server.cfg.SubscriptionAdmissionResolverV2; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
 		var result SubscriptionAdmissionResolution
 		result, resolverPanic = safeResolveAdmissionV2(c.server, resolve, msg)
-		resolvedKey, resolved, intent = result.Key, result.Intent == SubscriptionAdmissionResolved, result.Intent
+		resolvedKey, secondaryKey, resolved, intent = result.Key, result.SecondaryKey, result.Intent == SubscriptionAdmissionResolved, result.Intent
 	} else if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
 		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
 		if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) {
@@ -1412,9 +1429,13 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
-		if resolved && resolvedKey != "" {
+		if (resolved || intent == SubscriptionAdmissionUnresolved) && resolvedKey != "" {
 			c.cancelSubscriptionAdmissions(resolvedKey)
 			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
+			if secondaryKey != "" && secondaryKey != resolvedKey {
+				c.cancelSubscriptionAdmissions(secondaryKey)
+				ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{resolvedKey, secondaryKey})
+			}
 		}
 	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {

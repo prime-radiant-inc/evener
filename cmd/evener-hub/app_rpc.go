@@ -258,6 +258,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 					}
 				}
 				if err != nil {
+					if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+						delivery, _, deliveryErr := threadRelayTarget(source, params)
+						if deliveryErr == nil {
+							return appserver.SubscriptionAdmissionResolution{Key: delivery, SecondaryKey: normalizedAdmissionRef(params), Intent: appserver.SubscriptionAdmissionUnresolved}
+						}
+					}
 					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 				}
 				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
@@ -329,6 +335,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	return server
+}
+
+func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
+	if ref := strings.TrimSpace(params.Ref); ref != "" {
+		return ref
+	}
+	if threadID := strings.TrimSpace(params.ThreadID); threadID != "" {
+		return "local:" + threadID
+	}
+	return ""
 }
 
 // registerThreadHandlers registers the thread- and turn-lifecycle RPC handlers

@@ -81,6 +81,25 @@ func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
 	}
 }
 
+func TestUnresolvedUnsubscribeCancelsCanonicalAndDeliveryAdmissions(t *testing.T) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolverV2: func(appwire.Message) SubscriptionAdmissionResolution {
+		return SubscriptionAdmissionResolution{Key: "local:delivery", SecondaryKey: "local:lifecycle", Intent: SubscriptionAdmissionUnresolved}
+	}})
+	c := s.NewConnection("dual")
+	c.setInitialized()
+	canonical := c.beginSubscriptionAdmission("read", "local:lifecycle")
+	delivery := c.beginSubscriptionAdmission("other", "local:delivery")
+	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadUnsubscribe, json.RawMessage(`{"ref":"local:delivery"}`))
+	c.executeOrdered(context.Background(), msg)
+	c.admissionMu.Lock()
+	canonicalCanceled := canonical.canceled
+	deliveryCanceled := delivery.canceled
+	c.admissionMu.Unlock()
+	if !canonicalCanceled || !deliveryCanceled {
+		t.Fatal("unresolved unsubscribe did not cancel admissions under either identity")
+	}
+}
+
 func TestResolvedAdmissionMismatchPreservesOwnership(t *testing.T) {
 	for _, immediate := range []bool{false, true} {
 		s := NewServer(ServerConfig{})
