@@ -119,6 +119,8 @@ describe("approval decisions", () => {
     );
     const request = controls.resolve(approval, true);
     await controls.resolve(approval, false);
+    await controls.refresh();
+    expect(refreshed).toBe(0);
     expect(sent).toEqual([
       {
         method: "evener/sandbox/escalation/resolve",
@@ -179,6 +181,161 @@ describe("approval decisions", () => {
     await controls.resolve(approval, false);
     expect(calls).toBe(1);
     expect(controls.getSnapshot().error).not.toBeNull();
+    await controls.resolve(approval, true);
+    expect(calls).toBe(1);
+  });
+  it.each(
+    [undefined, null, [], "ok", 0, false].map((receipt) => ({ receipt })),
+  )(
+    "treats malformed resolution receipt $receipt as uncertain",
+    async ({ receipt }) => {
+      const approval = projectApproval(pending);
+      let calls = 0;
+      const client = {
+        request: async () => {
+          calls++;
+          return receipt;
+        },
+      } as unknown as ConversationClientLike;
+      let refreshed = 0;
+      const controls = new ApprovalControls(
+        client,
+        "local:s",
+        () => [approval],
+        () => true,
+        async () => {
+          refreshed++;
+        },
+      );
+      await controls.resolve(approval, true);
+      expect(refreshed).toBe(0);
+      expect(controls.getSnapshot().error).not.toBeNull();
+      await controls.resolve(approval, false);
+      expect(calls).toBe(1);
+      expect(controls.getSnapshot().pending).toBeNull();
+    },
+  );
+  it("requires a successful current refresh before allowing another decision", async () => {
+    const approval = projectApproval(pending);
+    let refreshFails = true;
+    let calls = 0;
+    const controls = new ApprovalControls(
+      {
+        request: async () => {
+          calls++;
+          return {};
+        },
+      } as unknown as ConversationClientLike,
+      "local:s",
+      () => [approval],
+      () => true,
+      async () => {
+        if (refreshFails) throw new Error("offline");
+      },
+    );
+    await controls.resolve(approval, true);
+    expect(controls.getSnapshot().error).not.toBeNull();
+    await controls.resolve(approval, false);
+    expect(calls).toBe(1);
+    await controls.refresh();
+    expect(controls.getSnapshot().error).not.toBeNull();
+    await controls.resolve(approval, false);
+    expect(calls).toBe(1);
+    refreshFails = false;
+    await controls.refresh();
+    expect(controls.getSnapshot().error).toBeNull();
+    expect(calls).toBe(1);
+    await controls.resolve(approval, false);
+    expect(calls).toBe(2);
+  });
+  it("does not dispatch a card removed by the recovery read", async () => {
+    const approval = projectApproval(pending);
+    let values = [approval];
+    let calls = 0;
+    const controls = new ApprovalControls(
+      {
+        request: async () => {
+          calls++;
+          throw new Error("lost reply");
+        },
+      } as unknown as ConversationClientLike,
+      "local:s",
+      () => values,
+      () => true,
+      async () => {
+        values = [];
+      },
+    );
+    await controls.resolve(approval, true);
+    await controls.refresh();
+    expect(controls.getSnapshot().error).toBeNull();
+    await controls.resolve(approval, false);
+    expect(calls).toBe(1);
+  });
+  it("serializes recovery reads and retains uncertainty when the binding changes", async () => {
+    const approval = projectApproval(pending);
+    let current = true;
+    let calls = 0;
+    let reads = 0;
+    let release!: () => void;
+    const controls = new ApprovalControls(
+      {
+        request: async () => {
+          calls++;
+          return {};
+        },
+      } as unknown as ConversationClientLike,
+      "local:s",
+      () => [approval],
+      () => current,
+      () => {
+        reads++;
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+    );
+    const reading = controls.refresh();
+    expect(controls.getSnapshot().refreshing).toBe(true);
+    await controls.refresh();
+    await controls.resolve(approval, true);
+    expect(reads).toBe(1);
+    expect(calls).toBe(0);
+    current = false;
+    release();
+    await reading;
+    expect(controls.getSnapshot().refreshing).toBe(false);
+    expect(controls.getSnapshot().error).not.toBeNull();
+    current = true;
+    await controls.resolve(approval, false);
+    expect(calls).toBe(0);
+  });
+  it("ignores late acknowledgments and reads after disposal", async () => {
+    const approval = projectApproval(pending);
+    let release!: () => void;
+    let reads = 0;
+    const controls = new ApprovalControls(
+      {
+        request: () =>
+          new Promise((resolve) => {
+            release = () => resolve({});
+          }),
+      } as unknown as ConversationClientLike,
+      "local:s",
+      () => [approval],
+      () => true,
+      async () => {
+        reads++;
+      },
+    );
+    const request = controls.resolve(approval, true);
+    const before = controls.getSnapshot();
+    controls.dispose();
+    release();
+    await request;
+    await controls.refresh();
+    expect(reads).toBe(0);
+    expect(controls.getSnapshot()).toBe(before);
   });
 });
 

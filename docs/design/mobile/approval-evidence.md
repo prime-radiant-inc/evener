@@ -103,3 +103,28 @@ declared; iOS-only v1 remains in progress and Android qualification is deferred.
 ![Clean native Allow completes the blocked read](assets/approval-real-allow.jpg)
 ![Clean native Deny completes with a failed read](assets/approval-real-deny.jpg)
 ![Diagnostic real approval card, excluded from completion proof](assets/approval-real-card.jpg)
+
+## Uncertain decision recovery — 7 September
+
+The controller previously showed a refresh-before-retry error after losing a
+resolution reply but immediately accepted another Allow or Deny. A deterministic
+client-boundary regression reproduced two resolve requests from those two taps.
+The controller now blocks decisions while a request or recovery read is pending,
+and after an uncertain outcome until a successful read of the current session.
+The sheet's Refresh session action uses that same recovery state. A removed or
+changed card still cannot be resolved from an old displayed snapshot. Invalid
+non-object resolution receipts also leave the outcome uncertain.
+
+The original controller failed eleven tests in the expanded regression
+suite. The final seventeen approval tests pass, including lost acknowledgments,
+malformed receipts, failed and successful readback, removed cards, overlapping
+refreshes, binding changes during a read, and disposal before a late reply.
+All 620 native tests and TypeScript pass. An iPhone 17 Pro iOS 26.5 Release build
+installed, launched and displayed the retained completed conversation. Its
+JavaScript bundle SHA256 is
+`f126b96894e877b0042b83e94ac87875e016c7b2487c6c33f20def1c96d13e31`.
+
+This establishes controller behavior and build integration. It does not qualify
+an actual native lost-acknowledgment journey, uncertainty across controller
+recreation/process death, or the broader concurrent and multi-hub matrix. Six
+retained drafts and the unrelated Apple project/plist patch remain unchanged.

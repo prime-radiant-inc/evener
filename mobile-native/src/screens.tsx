@@ -1631,7 +1631,6 @@ export function ConversationScreen({
 					controls={approvalControls}
 					hubName={activeProfile?.name ?? "Hub"}
 					close={() => setApprovalsOpen(false)}
-					refresh={refresh}
 				/>
 			) : null}
 			{composerSetting && conversation && controls ? (
