@@ -93,6 +93,17 @@ const renderer: RendererObject = {
 // consumer of the `marked` package that might get added to this app later.
 const md = new Marked({ gfm: true, renderer });
 
+// The app's shared default-options lexer: the same GFM tokenizer the widget
+// parses with, minus the widget's custom renderer (lexer output never renders
+// - renderer choice cannot change the token stream). Lexer-only consumers
+// import this instead of constructing their own `new Marked({ gfm: true })`,
+// so the tokenizer is initialized once. Kept in this module rather than a
+// new one so the single constructible-`marked` comment above stays true in
+// exactly one place; this instance carries no renderer, so it cannot leak
+// widget markup anywhere. Pure `marked` (no DOMPurify, no CSS, no React), so
+// node-environment suites can import it freely.
+export const markdownLexer = new Marked({ gfm: true });
+
 // Sanitizes the OUTPUT html, not the markdown source - this is DOMPurify's
 // documented pairing with marked (marked itself performs no sanitization).
 // The allowlist is every tag/attribute marked's defaults or the overrides

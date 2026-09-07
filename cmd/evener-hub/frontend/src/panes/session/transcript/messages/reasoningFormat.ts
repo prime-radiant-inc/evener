@@ -1,12 +1,13 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
 
-import { Marked, type Token, type Tokens } from "marked";
+import { type Token, type Tokens } from "marked";
+import { markdownLexer } from "../../../../widgets/markdown";
 import { pendingTextJoined } from "../../../../protocol/reducer";
 
-// Reuse the app's existing Markdown tokenizer so nested links, block prefixes,
-// and emphasis are handled as syntax rather than accumulated regex cases.
-const markdownLexer = new Marked({ gfm: true });
+// Lexer-only use of the app's shared Markdown tokenizer (see
+// widgets/markdown/index.tsx) so nested links, block prefixes, and emphasis
+// are handled as syntax rather than accumulated regex cases.
 
 const ISO_TIMESTAMP = /^(\d{4}|[+-]\d{6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
 
