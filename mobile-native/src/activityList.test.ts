@@ -1,7 +1,8 @@
 import { expect, it } from "vitest";
+import { parseActivityTree } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
+import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
 import type { AnyNotification } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ActivityList } from "./activityList";
 
 function tree(revision = 1, ids = ["a"], continuation?: string) {
   return {
@@ -61,6 +62,35 @@ function boundary() {
   };
   return { list, io, requests, handlers, notify };
 }
+
+it("refuses a retained tree owned by another session before publishing it", () => {
+  const { io } = boundary();
+  const client = {
+    request: io.read,
+    onNotification: () => () => {},
+  } as ConversationClientLike;
+  const retained = parseActivityTree(tree());
+  expect(retained).not.toBeNull();
+  expect(
+    () => new ActivityList(client, "other-ref", "thread", retained),
+  ).toThrow();
+  expect(
+    () => new ActivityList(client, "local:test", "other-thread", retained),
+  ).toThrow();
+  const list = new ActivityList(client, "local:test", "thread", retained);
+  expect(list.getSnapshot().tree).toBe(retained);
+  list.dispose();
+});
+
+it("refuses an empty activity owner without sending a request", () => {
+  const { io } = boundary();
+  const client = {
+    request: io.read,
+    onNotification: () => () => {},
+  } as ConversationClientLike;
+  expect(() => new ActivityList(client, "", "thread")).toThrow();
+  expect(() => new ActivityList(client, "local:test", " ")).toThrow();
+});
 
 it("retains activity through failed refresh and rejects a regressing root revision", async () => {
   const { list, io, requests } = boundary();

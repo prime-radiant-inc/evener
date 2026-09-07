@@ -7,7 +7,7 @@ import {
   defaultExpandedIDs,
   parseActivityTree,
   reconcileActivityState,
-} from "./activityData";
+} from "../../../protocol/activityData";
 
 function branch(overrides: Partial<ActivityBranchState> = {}): ActivityBranchState {
   return { ...overrides };

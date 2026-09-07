@@ -1,3 +1,8 @@
+export type * from "./activityData";
+export { activityNodeID, parseActivityTree } from "./activityData";
+export type { ActivityBranch, ActivityClient, ActivityState } from "./activityList";
+export { ActivityList } from "./activityList";
+export { fenceRootSession, graftContinuationTree } from "./activityMerge";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AppwireClientOptions, ConnectionState, TerminalReason } from "./client";

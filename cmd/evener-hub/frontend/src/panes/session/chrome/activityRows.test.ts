@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { ActivityTree } from "./activityData";
+import type { ActivityTree } from "../../../protocol/activityData";
 import { buildActivityRows, foldRowID } from "./activityRows";
 
 function shell(jobId: string, terminal: boolean, status = terminal ? "completed" : "running") {

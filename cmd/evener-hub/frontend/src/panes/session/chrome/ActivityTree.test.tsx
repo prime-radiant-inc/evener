@@ -5,9 +5,9 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
-import type { ActivityTree as ActivityTreeData } from "./activityData";
 
 // vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
 // (this file's own subject) without ever mocking this module, so under a

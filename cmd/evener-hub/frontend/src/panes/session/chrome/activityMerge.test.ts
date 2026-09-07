@@ -6,8 +6,8 @@ import {
   type ActivityShellEntry,
   type ActivityTree,
   activityNodeID,
-} from "./activityData";
-import { graftContinuationTree } from "./activityMerge";
+} from "../../../protocol/activityData";
+import { graftContinuationTree } from "../../../protocol/activityMerge";
 
 const shell = (jobId: string, outputBytes = 0): ActivityShellEntry => ({
   kind: "shell",

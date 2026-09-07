@@ -15,7 +15,7 @@ import {
   activityNodeID,
   parseActivityTree,
   reconcileActivityState,
-} from "./activityData";
+} from "../../../protocol/activityData";
 
 function jobFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -44,7 +44,7 @@ function delegateFixture(overrides: Record<string, unknown> = {}): Record<string
   };
 }
 
-function treeFixture(entries: unknown[]): unknown {
+function treeFixture(entries: unknown[]) {
   return {
     revision: 1,
     root: {
@@ -58,6 +58,33 @@ function treeFixture(entries: unknown[]): unknown {
     },
   };
 }
+
+describe("safe activity integers", () => {
+  it.each([Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY, 1.5])(
+    "rejects an unrepresentable revision or count: %s",
+    (invalid) => {
+      const fixture = treeFixture([]);
+      expect(parseActivityTree({ ...fixture, revision: invalid })).toBeNull();
+      fixture.root.counts.active = invalid;
+      expect(parseActivityTree(fixture)).toBeNull();
+    },
+  );
+
+  it.each([
+    { kind: "shell", job: jobFixture({ outputBytes: Number.MAX_SAFE_INTEGER + 1 }) },
+    { kind: "shell", job: jobFixture({ exitCode: Number.MAX_SAFE_INTEGER + 1 }) },
+    { kind: "delegate", delegate: delegateFixture({ projectionRevision: Number.MAX_SAFE_INTEGER + 1 }) },
+    { kind: "delegate", delegate: delegateFixture({ runningForMs: Number.MAX_SAFE_INTEGER + 1 }) },
+    {
+      kind: "delegate",
+      delegate: delegateFixture({ usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 1 } }),
+    },
+  ])("retains valid neighbors and marks unsafe member data incomplete", (invalid) => {
+    const parsed = parseActivityTree(treeFixture([{ kind: "shell", job: jobFixture() }, invalid]));
+    expect(parsed?.root.entries).toHaveLength(1);
+    expect(parsed?.root.branch.error).toBe("incomplete");
+  });
+});
 
 describe("parseStringArray edge cases", () => {
   it("rejects a string array with non-string elements", () => {

@@ -1,8 +1,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { ActivityCounts } from "../panes/session/chrome/activityData";
-import { parseActivityTree } from "../panes/session/chrome/activityData";
-import { isActionUnavailable, isThreadNotFound } from "../panes/session/chrome/sessionErrors";
+import type { ActivityCounts } from "../protocol/activityData";
+import { parseActivityTree } from "../protocol/activityData";
 import {
   errorKind,
   errorText,
@@ -10,6 +9,7 @@ import {
   sessionActionError,
   sessionActionHeadline,
 } from "../protocol/errors";
+import { isActionUnavailable, isThreadNotFound } from "../protocol/sessionErrors";
 import { type ActivityFetchResult, activityPanelStore } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 

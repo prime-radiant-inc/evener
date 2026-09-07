@@ -11,19 +11,19 @@ import {
   Modal,
   Platform,
   Pressable,
-  Text,
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import type { ActivityTree } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityData";
 import {
   type ActivityRow,
   buildActivityRows,
 } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityRows";
+import type { ActivityTree } from "../../cmd/evener-hub/frontend/src/protocol/activityData";
+import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activityList";
 import { stableDelegateDisplayStatus } from "../../cmd/evener-hub/frontend/src/protocol/stableDelegate";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ActivityList } from "./activityList";
+import { AnsiOutputLine } from "./AnsiOutputLine";
 import { JobOutput } from "./jobOutput";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -39,7 +39,6 @@ function Output({
   jobId: string;
   connected: boolean;
 }) {
-  const colors = useColors();
   const retained = useRef<ReturnType<JobOutput["getSnapshot"]> | undefined>(
     undefined,
   );
@@ -63,21 +62,7 @@ function Output({
     <FlatList
       data={lines}
       contentContainerStyle={{ padding: 20, gap: 2 }}
-      renderItem={({ item }) => (
-        <Text
-          selectable
-          style={{
-            color: colors.text,
-            fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-            fontSize: 13,
-          }}
-        >
-          {item
-            .filter((run) => !run.hidden)
-            .map((run) => run.text)
-            .join("")}
-        </Text>
-      )}
+      renderItem={({ item }) => <AnsiOutputLine line={item} />}
       ListHeaderComponent={
         <View style={{ gap: 8, paddingBottom: 16 }}>
           <Action

@@ -1,4 +1,4 @@
-import { isThreadNotFound } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/sessionErrors";
+import { isThreadNotFound } from "../../cmd/evener-hub/frontend/src/protocol/sessionErrors";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { navigationReadback } from "./navigationReadback";

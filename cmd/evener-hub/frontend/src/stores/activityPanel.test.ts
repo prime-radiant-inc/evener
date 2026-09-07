@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../panes/session/chrome/activityData";
+import type { ActivityTree } from "../protocol/activityData";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
