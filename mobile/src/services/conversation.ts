@@ -15,6 +15,7 @@
 // the store owns profile/connection/conversation generations and view publication.
 
 import type { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/client";
+import { isStaleCursorError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
@@ -27,6 +28,7 @@ import type {
   ThreadCapabilities,
   ThreadClearResponse,
   ThreadForkResponse,
+  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
@@ -43,7 +45,7 @@ import { createActivityService } from "./activity";
 
 // The bounded read page limit and retained item cap, centralized so every
 // caller uses the same constant.
-export const READ_TURN_LIMIT = 50;
+export const READ_ITEM_LIMIT = 40;
 export const RETAINED_ITEM_CAP = 500;
 
 // The narrow client surface the service depends on. Structurally compatible
@@ -70,6 +72,8 @@ export interface ConversationReadProjection {
   conversation: MobileConversation;
   activity: ActivityView;
   olderCursor: string | null;
+  hasEarlierItems?: boolean;
+  hasLaterItems?: boolean;
 }
 
 // The canonical service interface — preserved for screen test mocks that only
@@ -79,6 +83,8 @@ export interface ConversationService {
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
     nextCursor?: string;
+    hasEarlierItems?: boolean;
+    hasLaterItems?: boolean;
   }>;
   subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
   send(input: InputItem[]): Promise<MutationReceipt>;
@@ -399,6 +405,7 @@ export function createConversationService(
   } | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
+  let recoveredOlderCursor: string | null = null;
 
   // Monotonic service/open epoch. Every open/readProjection/close increments
   // it; an in-flight read captures its epoch and only installs ref+caps if
@@ -441,6 +448,7 @@ export function createConversationService(
     instanceId = null;
     threadId = null;
     capabilities = null;
+    recoveredOlderCursor = null;
     return epoch;
   }
 
@@ -559,7 +567,8 @@ export function createConversationService(
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
-        turnLimit: READ_TURN_LIMIT,
+        itemsView: "fragment",
+        itemLimit: READ_ITEM_LIMIT,
       });
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw in projectThread or activity projection (or a malformed
@@ -577,6 +586,7 @@ export function createConversationService(
       );
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
+        recoveredOlderCursor = olderCursor;
         modelScope = readModelScope;
         instanceId = readInstanceId;
         threadId = response.thread.id;
@@ -588,21 +598,49 @@ export function createConversationService(
         conversation,
         activity,
         olderCursor,
+        hasEarlierItems:
+          thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
+        hasLaterItems:
+          thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
       };
     },
 
     async loadOlder(cursor) {
       const threadRef = requireRef();
-      const response: ThreadTurnsListResponse = await client.request(
-        "thread/turns/list",
-        { ref: threadRef, cursor, limit: READ_TURN_LIMIT },
-      );
+      const requestedCursor = recoveredOlderCursor ?? cursor;
+      let response: ThreadTurnsListResponse;
+      try {
+        response = await client.request("thread/turns/list", {
+          ref: threadRef,
+          cursor: requestedCursor,
+          itemsView: "fragment",
+          itemLimit: READ_ITEM_LIMIT,
+        });
+      } catch (error) {
+        if (!isStaleCursorError(error)) throw error;
+        // The store owns the single authoritative refresh so the refreshed
+        // cursor and visible projection are published together.
+        throw error;
+      }
+      // A successful page without a continuation has exhausted this
+      // transcript boundary. Clear the cached cursor for both omitted and
+      // explicit null wire values so direct callers cannot repeat the page.
+      recoveredOlderCursor = response.nextCursor ?? null;
       // Project the older turns into mobile items by projecting a minimal
       // Thread containing just these turns. projectThread handles empty/missing
       // turns gracefully; we only need the item projection, not the full
       // conversation metadata.
       const items = projectOlderTurns(response.data);
-      return { items, nextCursor: response.nextCursor };
+      return {
+        items,
+        nextCursor: response.nextCursor,
+        hasEarlierItems: response.data.some(
+          (turn) => turn.hasEarlierItems === true,
+        ),
+        hasLaterItems: response.data.some(
+          (turn) => turn.hasLaterItems === true,
+        ),
+      };
     },
 
     refreshCapabilities,
@@ -942,6 +980,7 @@ export function createConversationService(
       instanceId = null;
       threadId = null;
       capabilities = null;
+      recoveredOlderCursor = null;
     },
   };
 }
@@ -953,6 +992,7 @@ function projectOlderTurns(
   turns: ThreadTurnsListResponse["data"],
 ): MobileTimelineItem[] {
   if (turns.length === 0) return [];
+  const mergedTurns = mergeFragmentTurns(turns);
   const thread: Thread = {
     id: "older",
     sessionId: "older",
@@ -965,7 +1005,7 @@ function projectOlderTurns(
     cwd: "",
     cliVersion: "",
     source: "",
-    turns,
+    turns: mergedTurns,
     evener: {
       ref: "older",
       capabilities: {
@@ -991,4 +1031,51 @@ function projectOlderTurns(
   // projected page items/order/dedupe/cursor are preserved — only question
   // rows are omitted.
   return projectThread(thread).items.filter((item) => item.kind !== "question");
+}
+
+// A v4 page can overlap at turn boundaries and can carry fragments whose wire
+// ids differ while transcriptKey identifies the same item. Merge by that
+// stable identity before projecting, preserving the newer item's payload and
+// the transcript position used for deterministic ordering.
+function mergeFragmentTurns(
+  turns: ThreadTurnsListResponse["data"],
+): ThreadTurnsListResponse["data"] {
+  const byTurn = new Map<string, (typeof turns)[number]>();
+  for (const turn of turns) {
+    const existing = byTurn.get(turn.id);
+    if (!existing) {
+      byTurn.set(turn.id, {
+        ...turn,
+        items: turn.items ? [...turn.items] : [],
+      });
+      continue;
+    }
+    const items = [...(existing.items ?? []), ...(turn.items ?? [])];
+    byTurn.set(turn.id, {
+      ...existing,
+      ...turn,
+      items: mergeFragmentItems(items),
+    });
+  }
+  return [...byTurn.values()].map((turn) => ({
+    ...turn,
+    items: mergeFragmentItems(turn.items ?? []),
+  }));
+}
+
+function mergeFragmentItems(items: ThreadItem[]): ThreadItem[] {
+  const byIdentity = new Map<string, ThreadItem>();
+  for (const item of items) {
+    const identity = item.transcriptKey ?? item.id;
+    const prior = byIdentity.get(identity);
+    byIdentity.set(identity, prior ? { ...prior, ...item } : item);
+  }
+  return [...byIdentity.values()].sort((left, right) => {
+    const a = left.position;
+    const b = right.position;
+    if (a && b) return a.entry - b.entry || a.item - b.item;
+    if (a) return -1;
+    if (b) return 1;
+    return 0;
+  });
 }

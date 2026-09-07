@@ -1063,6 +1063,50 @@ describe("ConversationStore", () => {
         expect(item.markdown).toBe("new text");
       }
     });
+
+    it("replaces same transcriptKey across wire IDs and removes obsolete images", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "user",
+            id: "wire-old",
+            transcriptKey: "stable-message",
+            text: "old",
+          },
+          {
+            kind: "attachments",
+            id: "wire-old:attachments",
+            sourceTranscriptKey: "stable-message",
+            items: [{ id: "image", src: "https://hub.test/image" }],
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "wire-new",
+            transcriptKey: "stable-message",
+            text: "new",
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.filter((item) => item.transcriptKey === "stable-message"),
+      ).toHaveLength(1);
+      expect(
+        items.find((item) => item.transcriptKey === "stable-message")?.id,
+      ).toBe("wire-new");
+      expect(items.some((item) => item.kind === "attachments")).toBe(false);
+    });
   });
 
   describe("item/completed settles item", () => {
@@ -8816,6 +8860,88 @@ describe("ConversationStore", () => {
       }
       // "page-A" appears exactly once.
       expect(ids.filter((id) => id === "page-A").length).toBe(1);
+    });
+
+    it("dedupes overlapping fragments by transcriptKey when wire IDs differ", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                {
+                  type: "userMessage",
+                  id: "wire-current",
+                  transcriptKey: "stable-item",
+                  position: { entry: 3, item: 0 },
+                  text: "current",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "opaque-cursor" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "user",
+            id: "wire-overlap",
+            transcriptKey: "stable-item",
+            position: { entry: 2, item: 0 },
+            text: "stale overlap",
+          },
+          { kind: "user", id: "older", text: "older" },
+        ],
+        nextCursor: "next",
+      };
+
+      await store.getState().loadOlder(service);
+
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.filter((item) => item.transcriptKey === "stable-item"),
+      ).toHaveLength(1);
+      expect(
+        items.find((item) => item.transcriptKey === "stable-item")?.id,
+      ).toBe("wire-current");
+      expect(items.map((item) => item.id)).toEqual(["older", "wire-current"]);
+    });
+
+    it("rehydrates visible state after a stale v4 cursor", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("old", "old")] }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "stale" });
+      service.olderItems = Promise.reject(
+        new WireError("stale transcript cursor", -32020, {
+          evenerErrorInfo: "transcriptItemCursorStale",
+        }),
+      ) as never;
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t1", items: [userMessageItem("fresh", "fresh")] }),
+          ],
+        }),
+      );
+
+      await store.getState().loadOlder(service);
+
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["fresh"]);
+      expect(service.readProjectionCalls.length).toBe(2);
     });
   });
 

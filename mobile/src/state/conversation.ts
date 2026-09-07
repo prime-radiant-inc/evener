@@ -18,7 +18,10 @@
 // (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
+import {
+  isStaleCursorError,
+  WireError,
+} from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
@@ -53,19 +56,40 @@ function attachmentSourceId(item: MobileTimelineItem): string | null {
     : null;
 }
 
+function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments"
+    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
+    : null;
+}
+
+function timelineIdentity(item: MobileTimelineItem): string {
+  return item.transcriptKey ?? item.id;
+}
+
+function decorateLifecycleItem(
+  item: MobileTimelineItem,
+  source: ThreadItem,
+): MobileTimelineItem {
+  return {
+    ...item,
+    ...(source.transcriptKey ? { transcriptKey: source.transcriptKey } : {}),
+    ...(source.position ? { position: source.position } : {}),
+  };
+}
+
 // Snapshot/live-tail merging can introduce a companion after later messages.
 // Keep attachments beside their source whenever both rows are retained.
 function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  const ids = new Set(items.map((item) => item.id));
+  const ids = new Set(items.map(timelineIdentity));
   const companions = new Map<string, MobileTimelineItem>();
   for (const item of items) {
-    const sourceId = attachmentSourceId(item);
+    const sourceId = attachmentSourceIdentity(item);
     if (sourceId !== null && ids.has(sourceId)) companions.set(sourceId, item);
   }
   return items.flatMap((item) => {
-    const sourceId = attachmentSourceId(item);
+    const sourceId = attachmentSourceIdentity(item);
     if (sourceId !== null && companions.has(sourceId)) return [];
-    const companion = companions.get(item.id);
+    const companion = companions.get(timelineIdentity(item));
     return companion ? [item, companion] : [item];
   });
 }
@@ -379,6 +403,8 @@ export interface ConversationState {
 
   readonly conversation: MobileConversation | null;
   readonly olderCursor: string | null;
+  readonly hasEarlierItems: boolean;
+  readonly hasLaterItems: boolean;
   readonly loadingOlder: boolean;
   readonly status: ConversationStatus;
   readonly error: string | null;
@@ -990,7 +1016,7 @@ export function createConversationStore() {
     priorFrozenIds: Set<string> = new Set(),
     supersededFrozenIds: Set<string> = new Set(),
   ): void {
-    const retainedIds = new Set(items.map((i) => i.id));
+    const retainedIds = new Set(items.map(timelineIdentity));
     truncatedItemIds.clear();
     for (const item of items) {
       let needsTruncation = false;
@@ -1010,10 +1036,12 @@ export function createConversationStore() {
       // is a superseded live version still frozen (supersededFrozenIds).
       if (
         needsTruncation ||
-        (priorFrozenIds.has(item.id) && retainedIds.has(item.id)) ||
-        (supersededFrozenIds.has(item.id) && retainedIds.has(item.id))
+        (priorFrozenIds.has(timelineIdentity(item)) &&
+          retainedIds.has(timelineIdentity(item))) ||
+        (supersededFrozenIds.has(timelineIdentity(item)) &&
+          retainedIds.has(timelineIdentity(item)))
       ) {
-        truncatedItemIds.add(item.id);
+        truncatedItemIds.add(timelineIdentity(item));
       }
     }
   }
@@ -1041,7 +1069,7 @@ export function createConversationStore() {
           exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
     }
     if (needsTruncation) {
-      truncatedItemIds.add(item.id);
+      truncatedItemIds.add(timelineIdentity(item));
     }
     return truncateItem(item);
   }
@@ -1053,7 +1081,7 @@ export function createConversationStore() {
   // re-introduction (page load or lifecycle) independently judges the new
   // content instead of inheriting a stale freeze.
   function pruneEvictedIds(items: MobileTimelineItem[]): void {
-    const retainedIds = new Set(items.map((i) => i.id));
+    const retainedIds = new Set(items.map(timelineIdentity));
     for (const id of [...truncatedItemIds]) {
       if (!retainedIds.has(id)) truncatedItemIds.delete(id);
     }
@@ -1085,6 +1113,8 @@ export function createConversationStore() {
 
       conversation: null,
       olderCursor: null,
+      hasEarlierItems: false,
+      hasLaterItems: false,
       loadingOlder: false,
       status: "idle",
       error: null,
@@ -1117,6 +1147,8 @@ export function createConversationStore() {
           error: null,
           conversation: null,
           olderCursor: null,
+          hasEarlierItems: false,
+          hasLaterItems: false,
           loadingOlder: false,
           draft: "",
           pendingSend: null,
@@ -1216,8 +1248,13 @@ export function createConversationStore() {
                 needsSnapshot = true;
             }
           });
-          const { conversation, activity, olderCursor } =
-            replacement ?? (await service.readProjection(ref));
+          const {
+            conversation,
+            activity,
+            olderCursor,
+            hasEarlierItems,
+            hasLaterItems,
+          } = replacement ?? (await service.readProjection(ref));
           if (gen !== conversationGen) return;
           const identity: ActivityIdentity = {
             threadId: conversation.id,
@@ -1243,6 +1280,8 @@ export function createConversationStore() {
             },
             status: "open",
             olderCursor,
+            hasEarlierItems: hasEarlierItems ?? false,
+            hasLaterItems: hasLaterItems ?? false,
           });
           liveHandler = (n) => {
             if (gen !== conversationGen) return;
@@ -1367,8 +1406,13 @@ export function createConversationStore() {
         boundService = service;
         boundSink = sink;
         try {
-          const { conversation, activity, olderCursor } =
-            await service.readProjection(ref);
+          const {
+            conversation,
+            activity,
+            olderCursor,
+            hasEarlierItems,
+            hasLaterItems,
+          } = await service.readProjection(ref);
           // I1: Suppress stale work — if the binding epoch changed, the store
           // switched to a different service/sink/ref. Do not commit.
           if (entryEpoch !== bindingEpoch) return;
@@ -1610,6 +1654,8 @@ export function createConversationStore() {
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
+            hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
+            hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
             draft: currentState.draft,
           };
           if (
@@ -1692,26 +1738,29 @@ export function createConversationStore() {
             // Task 2A-Items: also dedupe within the incoming page by updating
             // the seen set during traversal, preserving order and first
             // occurrence semantics.
-            const existingIds = new Set(currentConv.items.map((i) => i.id));
+            const existingIds = new Set(
+              currentConv.items.map(timelineIdentity),
+            );
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
-              if (existingIds.has(item.id)) continue;
-              const sourceId = attachmentSourceId(item);
+              const identity = timelineIdentity(item);
+              if (existingIds.has(identity)) continue;
+              const sourceId = attachmentSourceIdentity(item);
               if (sourceId !== null && currentIds.has(sourceId)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
               // boundary too, not only in the service's projectOlderTurns. A
               // pending ask cannot legitimately be older than newer continuation
               // turns; page-local projection otherwise resurrects settled calls.
               if (item.kind === "question") continue;
-              existingIds.add(item.id);
+              existingIds.add(identity);
               deduped.push(item);
             }
             // I3: Record page-owned item IDs — these are items loaded from
             // older pages. They are tracked so the rehydrate page-race merge
             // can distinguish page-owned history from live notifications.
             for (const item of deduped) {
-              pageOwnedIds.add(item.id);
+              pageOwnedIds.add(timelineIdentity(item));
             }
             // Prepend older (deduped) items, then trim from the oldest (front)
             // so the newest live tail is retained (finding 8).
@@ -1743,18 +1792,29 @@ export function createConversationStore() {
             set({
               conversation: { ...currentConv, items: merged },
               olderCursor: nextCursor,
+              hasEarlierItems: result.hasEarlierItems ?? get().hasEarlierItems,
+              hasLaterItems: result.hasLaterItems ?? get().hasLaterItems,
               loadingOlder: false,
             });
-            const retainedIds = new Set(merged.map((item) => item.id));
+            const retainedIds = new Set(merged.map(timelineIdentity));
             return {
               status: "loaded",
               itemKeys: deduped
-                .map((item) => item.id)
+                .map(timelineIdentity)
                 .filter((id) => retainedIds.has(id)),
             };
           }
           return { status: "ignored" };
         } catch (err) {
+          // A stale v4 item cursor invalidates the visible transcript
+          // incarnation. Rehydrate before surfacing the failure so the next
+          // user retry starts from the refreshed bounded state and cursor.
+          if (isStaleCursorError(err) && boundSink !== null) {
+            await get().rehydrate(
+              service as LiveConversationService,
+              boundSink,
+            );
+          }
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no loadingOlder/error.
@@ -2332,7 +2392,14 @@ export function createConversationStore() {
           case "item/started":
           case "item/completed": {
             const params = n.params as { item: ThreadItem };
-            const projected = projectSingleItem(params.item, conv.askPending);
+            const projectedRaw = projectSingleItem(
+              params.item,
+              conv.askPending,
+            );
+            const projected =
+              projectedRaw === null
+                ? null
+                : decorateLifecycleItem(projectedRaw, params.item);
             if (projected !== null) {
               // Lifecycle events replace the whole source item, including any
               // companion attachment row. An empty image list removes it.
@@ -2348,13 +2415,23 @@ export function createConversationStore() {
                   kind: "attachments",
                   id: attachmentId,
                   items: attachments,
+                  ...(params.item.transcriptKey
+                    ? { sourceTranscriptKey: params.item.transcriptKey }
+                    : {}),
                 });
                 markLiveOwned(attachmentId);
               }
               const items: MobileTimelineItem[] = [];
               let replaced = false;
+              const eventIdentity = params.item.transcriptKey ?? params.item.id;
               for (const item of conv.items) {
-                if (item.id === params.item.id || item.id === attachmentId) {
+                const itemIdentity = timelineIdentity(item);
+                const attachmentIdentity = attachmentSourceIdentity(item);
+                if (
+                  itemIdentity === eventIdentity ||
+                  attachmentIdentity === eventIdentity ||
+                  item.id === attachmentId
+                ) {
                   if (!replaced) items.push(...replacement);
                   replaced = true;
                 } else {

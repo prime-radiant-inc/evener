@@ -90,7 +90,7 @@ export interface AskBatch {
 
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
-export type MobileTimelineItem =
+export type MobileTimelineItem = (
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; markdown: string; streaming: boolean }
   | {
@@ -117,7 +117,12 @@ export type MobileTimelineItem =
     }
   | { kind: "question"; id: string; batch: AskBatch }
   | { kind: "failure"; id: string; title: string; detail: string }
-  | { kind: "attachments"; id: string; items: AttachmentRef[] };
+  | { kind: "attachments"; id: string; items: AttachmentRef[] }
+) & {
+  transcriptKey?: string;
+  sourceTranscriptKey?: string;
+  position?: { entry: number; item: number };
+};
 
 // Capability projection: ThreadCapabilities booleans mapped 1:1 to mobile
 // action availability. A false capability removes the action and leaves an
