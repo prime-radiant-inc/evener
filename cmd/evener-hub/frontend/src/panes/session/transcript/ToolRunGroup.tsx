@@ -8,7 +8,7 @@
 // exists to spare the reader (and the render) the rows it stands for, and a
 // closed run that still mounted every tool body would spare neither. That is
 // also why the folded entries carry no view anchors of their own - TurnBlock
-// gives the whole run ONE anchor, so a run is one position in the scroll
+// gives the whole run ONE anchor that lists its members, so a run is one position in the scroll
 // coordinator's list whether it is open or closed rather than a set of
 // anchors that appear and vanish with a click.
 import type { ThreadModel, TurnModel } from "../../../protocol/model";
@@ -72,7 +72,7 @@ export function ToolRunGroup({ run, turn, sessionRef, renderContext, thread }: T
         <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
           <Chevron />
         </span>
-        <span className={CLASS.label}>{runLabel(run, toolRendererFor)}</span>
+        <span className={CLASS.label}>{runLabel(run, toolRendererFor, { cwd: thread?.cwd })}</span>
       </summary>
       {open && (
         <div className={CLASS.body}>

@@ -50,6 +50,8 @@ export interface TranscriptAnchorEntry {
   readonly sourceIndex: number;
   readonly index: number;
   readonly isMessage: boolean;
+  /** For a folded tool run: the entry ids it stands in for (toolRuns.ts). */
+  members?: readonly string[];
 }
 
 interface FlatEntry {
@@ -227,7 +229,17 @@ export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[
     return foldTurnEntries(row.turn).flatMap((entry) => {
       if (entry.kind === "run") {
         const first = entry.entries[0];
-        return first ? [{ id: entry.id, sourceIndex: first.sourceIndex, index, isMessage: false }] : [];
+        return first
+          ? [
+              {
+                id: entry.id,
+                sourceIndex: first.sourceIndex,
+                index,
+                isMessage: false,
+                members: entry.entries.map((member) => member.id),
+              },
+            ]
+          : [];
       }
       return [
         {

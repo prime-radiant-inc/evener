@@ -32,7 +32,9 @@ function turnRow(items: ItemModel[], status: string): TranscriptTurnRow {
 test("a settled run of quiet tool calls registers one anchor under the run id", () => {
   const items = [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "glob")];
   const anchors = transcriptAnchorEntriesForRows([turnRow(items, "completed")]);
-  expect(anchors).toEqual([{ id: "run:a", sourceIndex: 0, index: 0, isMessage: false }]);
+  // members: the ids the run stands in for, so a focus or scroll position
+  // captured on the second or third call still resolves to the run.
+  expect(anchors).toEqual([{ id: "run:a", sourceIndex: 0, index: 0, isMessage: false, members: ["a", "b", "c"] }]);
 });
 
 test("a live turn registers every entry, matching the rows TurnBlock renders while the agent works", () => {

@@ -95,6 +95,9 @@ export interface ViewAnchorPosition {
   height?: number;
   /** User/agent content survives every focused representation. */
   isMessage: boolean;
+  /** For a folded tool run (toolRuns.ts): the entry ids it stands in for. A
+   * capture on any of them resolves to this anchor. */
+  members?: readonly string[];
 }
 
 export interface ViewAnchor {
@@ -125,6 +128,10 @@ export function restoreTopAnchor(
 ): RestoredViewAnchor | undefined {
   const exact = positions.find((position) => position.id === anchor.id);
   if (exact) return { id: exact.id, index: exact.index, offset: anchor.offset };
+  // The entry has folded into a tool run since it was captured: the run's
+  // anchor is the row that now stands where the entry stood.
+  const owner = positions.find((position) => position.members?.includes(anchor.id));
+  if (owner) return { id: owner.id, index: owner.index, offset: anchor.offset };
 
   const nearest = positions
     .filter((position) => position.isMessage)
@@ -142,6 +149,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
     const rect = row.getBoundingClientRect();
     const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
+    const members = row.dataset.viewAnchorMembers;
     return {
       id: row.dataset.viewAnchorId ?? "",
       sourceIndex,
@@ -149,6 +157,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
       offset: rect.top - viewportTop,
       height: rect.height,
       isMessage: row.dataset.viewAnchorMessage === "true",
+      ...(members ? { members: members.split(",") } : {}),
     };
   });
 }
@@ -269,14 +278,26 @@ function anchorFromCapture(
   return captureTopAnchor({ ...source, offset: captured.anchorOffset });
 }
 
+// A folded run's anchor answers for every entry it folded (its members): a
+// focus captured on the third call of a run that has since folded restores to
+// the run - its summary when closed, the row itself when open.
+function membersMatch(members: readonly string[] | undefined, metadata: CapturedFocusMetadata): boolean {
+  return (
+    members?.some((member) => member === metadata.anchorId || sourceIdentity(member) === metadata.sourceIdentity) ??
+    false
+  );
+}
+
 function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
   if (candidate.id === metadata.anchorId) return true;
+  if (membersMatch(candidate.members, metadata)) return true;
   if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
   return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
 }
 
 function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
   if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
+  if (membersMatch(candidate.dataset.viewAnchorMembers?.split(","), metadata)) return true;
   if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
   const sourceIndex = sourceIndexFromDataset(candidate);
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;

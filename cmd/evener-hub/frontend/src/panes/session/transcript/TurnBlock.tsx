@@ -101,7 +101,12 @@ export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: num
 function runAnchorFor(run: ToolRun, viewAnchorIndex: number | undefined) {
   const first = run.entries[0];
   if (!first) return undefined;
-  return projectedEntryAnchor({ ...first, id: run.id }, viewAnchorIndex);
+  const anchor = projectedEntryAnchor({ ...first, id: run.id }, viewAnchorIndex);
+  if (!anchor) return undefined;
+  // The ids this anchor stands in for, so a scroll position or focus
+  // captured on the second or third call (useTranscriptScroll) still finds
+  // its way back to the run once the calls have folded.
+  return { ...anchor, "data-view-anchor-members": run.entries.map((entry) => entry.id).join(",") };
 }
 
 export interface ProjectedIntentGroupProps {

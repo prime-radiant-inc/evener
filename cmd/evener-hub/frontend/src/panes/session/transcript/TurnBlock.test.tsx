@@ -718,6 +718,26 @@ test("the folded row counts the steps and names the consequential one", () => {
   expect(screen.getByTestId("tool-run").textContent).toContain("3 steps · Wrote foo.py");
 });
 
+test("a folded run's anchor lists the entries it stands in for", () => {
+  // roborev on PR #947: scroll/focus restoration for the second or third call
+  // needs a way from that call's id to the one anchor the run renders.
+  render(
+    withConfig(
+      TOOLS_CONFIG,
+      <TurnBlock
+        turn={turn(
+          [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")],
+          { status: "completed" },
+          TOOLS_CONFIG,
+        )}
+        viewAnchorIndex={0}
+      />,
+    ),
+  );
+  const anchor = document.querySelector('[data-view-anchor-id="run:a"]');
+  expect(anchor?.getAttribute("data-view-anchor-members")).toBe("a,b,c");
+});
+
 test("two calls are not a run: they keep their own rows", () => {
   renderTools([toolItem("a", "read_file"), toolItem("b", "read_file")]);
   expect(screen.queryByTestId("tool-run")).toBeNull();
