@@ -473,6 +473,11 @@ a stale reviewed goal before dispatch. Native wire receipts were not intercepted
 native fault injection, storage failures, concurrent writers and the wider device
 matrix remain open.
 
+Saved goal replay now preserves the compact notice and logical turn identity
+without discarding model input. Full/bounded/item projection and incremental
+index regressions pass. Earlier recordings lack this metadata; updated direct
+hub/iOS replay acceptance remains open. See [saved continuation evidence](goal-controls.md#saved-continuation-identity--7-september).
+
 [Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
 now covers four real restricted-session cases: native and packaged-SDK Allow
 and Deny for an owned file outside the workspace. Pending cards come from the
@@ -535,7 +540,7 @@ and CommonJS, and ran the read-only inspection recipe against an authenticated
 isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
-The current generated catalog has 91 methods; fifteen recipes cover 47 method
+The current generated catalog has 91 methods; sixteen recipes cover 48 method
 names and three notification names. These are recipe-presence counts, not full
 outcome coverage. The opt-in project-layer
 recipe verified mutation, notification, effective-value readback and restoration
@@ -545,10 +550,18 @@ for stale-hash rejection and fresh revision confirmation. This
 is not completion: the installed session-lifecycle recipe now proves idle
 creation, subscription, send/interrupt receipts, start/completion pushes and
 authoritative input readback against a held-open scripted provider. Add
-remaining creation cases, tasks/jobs, continuous reconnect recovery,
+remaining creation cases, jobs, continuous reconnect recovery,
 credentials and upgrades, with method-specific errors, presence semantics and
 recovery. Existing goal, approval, question, queue, navigation, plugin/instance/
 marketplace and trust recipes still need their remaining acceptance variants.
+
+The task-list recipe preserves complete raw rows, distinguishes unavailable
+from available empty lists, rejects malformed rows/duplicate identities, captures
+the selected ref before connecting and never retries automatically. The CLI
+prints only availability and status counts. Eight focused behavioral contracts,
+all 124 SDK contracts, independent package qualification and the canonical web
+gate pass. Real daemon task updates and cross-client observation still need
+acceptance; a recipe's presence is not complete workflow qualification.
 
 Acceptance: an independent client consumer can implement every supported flow
 from the guide and wire reference; the library and examples run outside this

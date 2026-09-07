@@ -96,13 +96,35 @@ The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
-management and recovery paths. Additional creation cases, tasks/jobs,
+management and recovery paths. Additional creation cases, jobs,
 continuous reconnect recovery, credentials and hub upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
+
+### Reading the task list
+
+`tasks.mjs` reads `evener/tasks/list` once for `EVENER_REF`, or for the exact
+`{ "ref": "local:..." }` object in `EVENER_TASKS_PARAMS_FILE`. It performs no
+mutation or automatic retry. For example, with the connection variables above:
+
+```sh
+EVENER_REF=local:... node node_modules/@evener/appwire-client/examples/tasks.mjs
+```
+
+The CLI prints availability, task count and counts by status. An unavailable
+list (`data: null`) has `available: false` and `taskCount: null`; an available
+empty list has `available: true` and `taskCount: 0`. Programmatic consumers can
+import `runTasks` from `examples/tasks-logic.mjs` to receive complete task rows
+in `readback`, including descriptions, prompts, dependencies, notes, optional
+timestamps and future fields. Rows retain server order. The recipe validates
+required types and statuses, safe positive task IDs, unique IDs, and optional
+field types; it preserves timestamp strings without interpreting dates. Invalid
+or incomplete responses fail as a whole. The CLI never prints raw task rows or
+transport error details. Task execution, mutation and job output require their
+own workflows; reading a task with status `done` is only a state observation.
 
 ### Reviewing and changing a goal
 
