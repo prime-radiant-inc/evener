@@ -344,10 +344,10 @@ type SimulatorReadyManifest struct {
 	Status                 string `json:"status"`
 	Provider               string `json:"provider"`
 	Origin                 string `json:"origin,omitempty"`
-	AuthURL                string `json:"authUrl,omitempty"`
-	Pathological39Items    int    `json:"pathological39Items"`
-	Pathological500Items   int    `json:"pathological500Items"`
-	SystemPreludeUTF8Bytes int    `json:"systemPreludeUtf8Bytes"`
+	AuthURL                string `json:"auth_url,omitempty"`
+	Pathological39Items    int    `json:"pathological39_items"`
+	Pathological500Items   int    `json:"pathological500_items"`
+	SystemPreludeUTF8Bytes int    `json:"system_prelude_utf8_bytes"`
 }
 
 func (h *SimulatorFixtureHub) WriteReadyManifest(path string, manifest SimulatorReadyManifest) error {
