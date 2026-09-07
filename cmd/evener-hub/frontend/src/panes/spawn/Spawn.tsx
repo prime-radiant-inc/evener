@@ -129,9 +129,9 @@ const CLASS = {
   effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
   srOnly: requireClass(styles.srOnly, "spawn.module.css", "srOnly"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
-  mobilePromptIntro: requireClass(styles.mobilePromptIntro, "spawn.module.css", "mobilePromptIntro"),
-  mobilePromptHeading: requireClass(styles.mobilePromptHeading, "spawn.module.css", "mobilePromptHeading"),
-  mobilePromptSubtitle: requireClass(styles.mobilePromptSubtitle, "spawn.module.css", "mobilePromptSubtitle"),
+  promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
+  promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
+  promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
@@ -913,9 +913,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           />
         )}
 
-        <div className={CLASS.mobilePromptIntro} data-testid="spawn-mobile-prompt-intro">
-          <h3 className={CLASS.mobilePromptHeading}>What should the agent do?</h3>
-          <p className={CLASS.mobilePromptSubtitle}>Leave blank to start a dormant session.</p>
+        <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
+          <h2 className={CLASS.promptHeading}>What should the agent do?</h2>
+          <p className={CLASS.promptSubtitle}>Leave blank to start a dormant session.</p>
         </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}

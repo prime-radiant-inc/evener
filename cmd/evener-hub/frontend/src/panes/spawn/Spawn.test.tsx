@@ -533,7 +533,11 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
     "",
   );
 
-  expect(spawnCss).toContain(".mobilePromptIntro");
+  // The prompt heading shows at every width now (critique R7); only the
+  // settings-style rows stay phone-only.
+  expect(spawnCss).toContain(".promptIntro");
+  expect(spawnCss).not.toContain(".mobilePromptIntro");
+  expect(spawnCss).toContain(".mobileConfig");
   expect(spawnCss).toContain("@media (max-width: 899px)");
   expect(rowsCss).toContain("min-height: 48px");
   expect(rowsCss).toContain("font-size: var(--font-size-body)");

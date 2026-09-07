@@ -1,9 +1,14 @@
-/* Session creation: project directory, prompt, then secondary settings. */
+/* Session creation: heading, project directory, prompt, then secondary
+ * settings - one centred column on the same measure the transcript reads
+ * at, so the form sits in the pane instead of pinned to its left edge
+ * (typography-spacing-critique-2026-09-06 R7). */
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  max-width: 720px;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
   /* The query container for the Start button's word collapse below: a docked
    * pane squeezed narrow inside a desktop viewport must compact exactly like
    * the phone does. inline-size containment is safe here - this box's width
@@ -207,19 +212,22 @@
   display: none;
 }
 
-.mobilePromptIntro {
-  display: none;
+/* The page's heading, at every width: the phone always had it, desktop hid
+ * it behind a 12px uppercase pane title (critique finding 8). */
+.promptIntro {
+  display: block;
 }
 
-.mobilePromptHeading {
+.promptHeading {
   margin: 0;
   color: var(--ink-hi);
-  font-size: var(--font-size-pane-title);
+  font-size: var(--font-size-page-title);
   font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
 }
 
-.mobilePromptSubtitle {
+.promptSubtitle {
   margin: var(--space-1) 0 0;
   color: var(--ink-mid);
   font-size: var(--font-size-body);
@@ -338,10 +346,6 @@
   }
 
   .mobileConfig {
-    display: block;
-  }
-
-  .mobilePromptIntro {
     display: block;
   }
 }

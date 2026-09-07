@@ -22,6 +22,9 @@ export default function EmptyStateGallerySection() {
               action={<Button size="sm">New session</Button>}
             />
           </div>
+          <div className={styles.sample}>
+            <EmptyState title="No session open" hint="size=display: the welcome hero" size="display" />
+          </div>
         </div>
       </ThemeFlip>
     </section>

@@ -33,8 +33,13 @@ export function MobilePanel({ rail, open, onClose }: MobilePanelProps) {
       title="Sessions"
       size="wide"
       panelClassName={styles.singleScrollPanel}
+      bodyClassName={styles.flushBody}
     >
-      {nothingFocused && <WelcomeContent showResume={false} showHints={false} />}
+      {nothingFocused && (
+        <div className={styles.drawerWelcome}>
+          <WelcomeContent showResume={false} showHints={false} />
+        </div>
+      )}
       {rail}
     </Sheet>
   );
