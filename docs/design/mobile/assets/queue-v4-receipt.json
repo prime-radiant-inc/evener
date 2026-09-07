@@ -1,0 +1,317 @@
+{
+  "date": "2026-09-07",
+  "scope": "iOS-only v1, active-turn queue enqueue/cancel/promote/drain",
+  "sourceCommit": "8fb3e343cb0eeb766146ee9cf31396da0af8a54f",
+  "simulator": {
+    "id": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "name": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "configuration": "Release",
+    "bundleId": "com.primeradiant.evener.native",
+    "jsBundleSHA256": "29430c6ded188b165c9cf1e1ba149eac604e8957d129a8b72db0ef0dd032bbfd"
+  },
+  "sdk": {
+    "tarballSHA256": "d23cfbaaad31c403a7fbe6ea1e2ef2eb35f18e5918a6bb484d194382a8ddd73d",
+    "consumer": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-queue-89nhj8v0",
+    "actions": {
+      "ref": "local:034Kju5wl4tNB8RY8hztnD",
+      "instanceId": "034Kju5wl4tNB8RY8hztnD",
+      "receipts": [
+        {
+          "action": "queue",
+          "receipt": {
+            "clientMutationId": "fbf65943-1270-474d-bcfc-2f5e7a8aac64",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "queueEntryIds": [
+              "queue_1"
+            ],
+            "projectionState": "pending"
+          }
+        },
+        {
+          "action": "queue",
+          "receipt": {
+            "clientMutationId": "ba141ec8-ab1e-4d86-881a-06d7e18af76c",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "queueEntryIds": [
+              "queue_2"
+            ],
+            "projectionState": "pending"
+          }
+        },
+        {
+          "action": "queue",
+          "receipt": {
+            "clientMutationId": "f9b44083-9fa0-46cb-8a9c-4d0bdb1ea1b3",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "queueEntryIds": [
+              "queue_3"
+            ],
+            "projectionState": "pending"
+          }
+        },
+        {
+          "action": "queue",
+          "receipt": {
+            "clientMutationId": "092b0f3b-1101-4ed9-9b0e-4644c1fea863",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "queueEntryIds": [
+              "queue_4"
+            ],
+            "projectionState": "pending"
+          }
+        },
+        {
+          "action": "promote",
+          "receipt": {
+            "clientMutationId": "151a14c1-0a93-4a0b-8e21-8b576e2e651b",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "turnId": "turn_m2",
+            "queueEntryIds": [
+              "queue_2"
+            ],
+            "projectionState": "pending"
+          }
+        },
+        {
+          "action": "drain",
+          "receipt": {
+            "clientMutationId": "0d8c2aa8-1f7d-48ee-a399-6e0ac7ddf2ee",
+            "disposition": "applied",
+            "threadId": "034Kju5wl4tNB8RY8hztnD",
+            "instanceId": "034Kju5wl4tNB8RY8hztnD",
+            "turnId": "turn_m3",
+            "queueEntryIds": [
+              "queue_3",
+              "queue_4"
+            ],
+            "projectionState": "pending"
+          }
+        }
+      ],
+      "mutations": [
+        {
+          "method": "turn/queue",
+          "clientMutationId": "fbf65943-1270-474d-bcfc-2f5e7a8aac64"
+        },
+        {
+          "method": "turn/queue",
+          "clientMutationId": "ba141ec8-ab1e-4d86-881a-06d7e18af76c"
+        },
+        {
+          "method": "turn/queue",
+          "clientMutationId": "f9b44083-9fa0-46cb-8a9c-4d0bdb1ea1b3"
+        },
+        {
+          "method": "turn/queue",
+          "clientMutationId": "092b0f3b-1101-4ed9-9b0e-4644c1fea863"
+        },
+        {
+          "method": "turn/cancelQueued",
+          "clientMutationId": "d06cb490-98df-4367-a02c-5d56997a7576"
+        },
+        {
+          "method": "turn/promoteQueuedAsSteer",
+          "clientMutationId": "151a14c1-0a93-4a0b-8e21-8b576e2e651b"
+        },
+        {
+          "method": "turn/drainAsSteer",
+          "clientMutationId": "0d8c2aa8-1f7d-48ee-a399-6e0ac7ddf2ee"
+        }
+      ],
+      "cancelOutcome": "uncertain",
+      "recipeExecution": "unverified",
+      "staleRecipeDispatches": 0,
+      "serverRejected": [
+        {
+          "method": "turn/promoteQueuedAsSteer",
+          "code": -32013
+        },
+        {
+          "method": "turn/drainAsSteer",
+          "code": -32013
+        }
+      ],
+      "depth": 0
+    },
+    "completion": {
+      "binding": {
+        "ref": "local:034Kju5wl4tNB8RY8hztnD",
+        "instanceId": "034Kju5wl4tNB8RY8hztnD",
+        "threadId": "034Kju5wl4tNB8RY8hztnD"
+      },
+      "completed": true,
+      "status": "awaiting",
+      "depth": 0,
+      "markerItems": {
+        "cancel": 0,
+        "promote": 1,
+        "drain1": 1,
+        "drain2": 1,
+        "draft": 0
+      },
+      "turns": [
+        {
+          "id": "turn_system",
+          "status": "completed"
+        },
+        {
+          "id": "turn_m1",
+          "status": "completed"
+        }
+      ],
+      "completedEvents": 1
+    },
+    "ackLoss": "Successful cancellation response discarded by the counted client wrapper; not a socket interruption."
+  },
+  "native": {
+    "completion": {
+      "binding": {
+        "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+        "instanceId": "034Kjo1wmWpBXjjTfGlJ5z",
+        "threadId": "034Kjo1wmWpBXjjTfGlJ5z"
+      },
+      "completed": true,
+      "status": "awaiting",
+      "depth": 0,
+      "markerItems": {
+        "cancel": 0,
+        "promote": 1,
+        "drain1": 1,
+        "drain2": 1,
+        "draft": 0
+      },
+      "turns": [
+        {
+          "id": "turn_system",
+          "status": "completed"
+        },
+        {
+          "id": "turn_m1",
+          "status": "completed"
+        }
+      ],
+      "completedEvents": 0
+    },
+    "uiActions": {
+      "queue": 1,
+      "cancel": 1,
+      "promote": 1,
+      "drain": 1
+    },
+    "ordinaryDraftSurvivedRestart": true,
+    "wireRequestCount": "not instrumented"
+  },
+  "hub": {
+    "rpcURL": "ws://127.0.0.1:54211/rpc",
+    "binarySHA256": "606c8b19bbeb6139a1e1ecc1f2b70d70acd24634f286f940f5a365cd989cfbb7"
+  },
+  "driver": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-queue-jv6vnntm",
+    "sourceCommit": "ced473315144a8c7ca84e47aa6db5bf5b96a75db",
+    "sourceSHA256": "b08b340cf89659b83d00256e37666d32c048b77ac465b7fcc7d844014048bfc5",
+    "binarySHA256": "6e9f0a9322d2e7841b5fb554645bc6ed11e6a7281761cd536db1fcbffcf3042e",
+    "observations": [
+      {
+        "request": 1,
+        "callId": "call_fakellm_1",
+        "previous": "",
+        "seen": {
+          "cancel": false,
+          "draft": false,
+          "promote": false,
+          "drain1": false,
+          "drain2": false
+        }
+      },
+      {
+        "request": 2,
+        "callId": "call_fakellm_2",
+        "previous": "call_fakellm_1",
+        "seen": {
+          "cancel": false,
+          "draft": false,
+          "promote": true,
+          "drain1": true,
+          "drain2": true
+        }
+      },
+      {
+        "request": 3,
+        "callId": "call_fakellm_3",
+        "previous": "",
+        "seen": {
+          "cancel": false,
+          "draft": false,
+          "promote": false,
+          "drain1": false,
+          "drain2": false
+        }
+      },
+      {
+        "request": 4,
+        "callId": "call_fakellm_4",
+        "previous": "call_fakellm_3",
+        "seen": {
+          "cancel": false,
+          "draft": false,
+          "promote": true,
+          "drain1": true,
+          "drain2": true
+        }
+      }
+    ]
+  },
+  "preservedDrafts": [
+    {
+      "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+      "length": 36,
+      "sha256": "fee839187da7bdc93d20bc97bc82a21ad841ffbda357c158298d4cd1ef8cb1b5",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+      "length": 513,
+      "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc9793pXlhHyCRXdeAk",
+      "length": 513,
+      "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+      "length": 37,
+      "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kd12aed4Ah92lJZGUML",
+      "length": 27,
+      "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+      "unconfirmed": false
+    }
+  ],
+  "cleanup": {
+    "stopped": [
+      "local:034Kjo1wmWpBXjjTfGlJ5z",
+      "local:034Kju5wl4tNB8RY8hztnD"
+    ],
+    "providerRemoved": true,
+    "providerRegistryRestored": true,
+    "providerProcessExited": true
+  },
+  "observerCorrection": "Initial completion observer counted userMessage only; read-only recheck includes the actual steering item type. Native completed state was re-read after completion; SDK completion listener observed one event."
+}

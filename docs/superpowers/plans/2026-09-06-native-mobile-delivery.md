@@ -476,3 +476,19 @@ uncertain native delivery, concurrent queue changes, goals/tasks/jobs and
 release qualification remain open. The installed iOS app has not yet been
 rebuilt with this queue service change. The two unrelated Apple project/plist
 edits remain untouched and unstaged.
+
+## Direct v4 queue checkpoint
+
+Rebuilt iOS and the independently packed SDK now prove active-turn queue enqueue,
+cancel, promote and drain through the real owned v4 hub. Provider request
+sentinels and completed steering transcript entries confirm delivery; cancellation
+and an ordinary native draft remain absent from provider input. Native restart
+preserves the draft. The SDK returns uncertain after its successful cancellation
+ACK is deliberately discarded, performs no replay, rejects stale recipe actions
+before dispatch, and the server independently rejects stale entry/revision RPCs.
+See [queue evidence](../../design/mobile/queue-evidence.md#direct-v4-ios-and-packaged-sdk-qualification--7-september)
+and its exact-source receipt. Cleanup restores the provider registry, stops the
+two fixture sessions/provider, and verifies the four pre-existing draft hashes.
+Current iOS source is 8fb3e343c. Native uncertainty/socket loss/concurrency,
+held queues, accessibility and release-wide work remain open. Goal SDK proposals
+and native acknowledgment-validation findings are ready for the next slice.
