@@ -705,8 +705,8 @@ func TestSession_ProjectDocsLoadedOnceAtInit(t *testing.T) {
 	defer sess.Close()
 
 	// Session should have cached project docs.
-	if sess.projectDocs == nil {
-		t.Fatal("expected projectDocs to be cached after NewSession")
+	if len(sess.projectDocs) != 1 {
+		t.Fatalf("projectDocs = %d, want the one doc written into the working directory: %+v", len(sess.projectDocs), sess.projectDocs)
 	}
 }
 
@@ -754,6 +754,60 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 	sys := reqs[0].Messages[0].Text()
 	if !strings.Contains(sys, "cached-doc-content") {
 		t.Fatalf("system prompt should contain cached project doc content, got: %s", sys[:min(200, len(sys))])
+	}
+}
+
+func TestSession_PersonalDocUsedInSystemPrompt(t *testing.T) {
+	// t.Setenv rules out t.Parallel, and the config root has to be a temp dir so
+	// the run never picks up the developer's own personal doc.
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configRoot := filepath.Join(configHome, "evener")
+	if err := os.MkdirAll(configRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, UserDocFile), []byte("personal-doc-content"), 0o644); err != nil {
+		t.Fatalf("write personal %s: %v", UserDocFile, err)
+	}
+
+	// The working directory holds no instruction file at all: the personal doc
+	// reaches the prompt only through the session's config-root wiring.
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	adapter := &snapshotFakeAdapter{name: "openai"}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxToolRoundsPerInput: 200,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := adapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("expected at least 1 LLM request")
+	}
+	// System prompt is the first message (role=system).
+	if len(reqs[0].Messages) == 0 {
+		t.Fatal("expected at least 1 message in request")
+	}
+	sys := reqs[0].Messages[0].Text()
+	if !strings.Contains(sys, "personal-doc-content") {
+		t.Fatalf("system prompt should contain the personal doc content, got: %s", sys[:min(200, len(sys))])
 	}
 }
 

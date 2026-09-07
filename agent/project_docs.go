@@ -11,6 +11,7 @@ import (
 // ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.
 type ProjectDoc struct {
 	// Path is a stable, human-friendly identifier for the instruction file (relative to git root when available).
+	// The personal doc is the exception: a display path outside the repo, with the home directory collapsed to "~".
 	Path string
 	// Content is the raw file content (may be truncated when total budget is exceeded).
 	Content string
