@@ -22,7 +22,7 @@ import (
 var threadListSourceTimeout = 3 * time.Second
 
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-	var threads []appwire.Thread
+	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
 	allSources := sources.All()
 	type sourceResult struct {
