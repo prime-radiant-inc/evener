@@ -1710,9 +1710,10 @@ func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, ba
 // globBaseFS opens the filesystem the off-sandbox glob walks, rooted at the
 // resolved base directory; a variable so tests can drive the exported entry
 // point over a filesystem they control. budget is threaded through so a
-// bounded implementation can charge what it reads while listing.
-var globBaseFS = func(dir string, budget *globBudget) fs.FS {
-	return boundedDirFS{FS: os.DirFS(dir), budget: budget}
+// bounded implementation can charge what it reads while listing, and ctx down
+// to boundedDirFS so its chunk loop can observe cancellation.
+var globBaseFS = func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+	return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
 }
 
 // GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
@@ -1741,7 +1742,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
 	budget := newGlobBudget("glob")
-	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base, budget)}
+	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(ctx, base, budget)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
@@ -1942,13 +1943,13 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget}}
+	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget}}
+		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
 	}
 	ignores, err := loadIgnoreSet(ignoreFS, nil, budget)
 	if err != nil {
@@ -1968,7 +1969,9 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			// set (dot-prefixed directories only) is a strict subset of this
 			// walk's (which also skips gitignored ones) — so it normally
 			// raises this refusal first. This guard is for the case where a
-			// directory grows past the bound between the two passes.
+			// directory grows past the bound between the two passes, which
+			// TestGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// forces.
 			if _, refused := errors.AsType[*globBudgetError](err); refused {
 				return err
 			}

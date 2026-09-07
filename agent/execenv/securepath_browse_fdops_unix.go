@@ -38,6 +38,9 @@ type secureDirFS struct {
 	// budget bounds the entries a single ReadDir call may materialize, shared
 	// with the rest of the glob or grep call's directory-listing budget.
 	budget *globBudget
+	// ctx is threaded down to readDirChunked the same way boundedDirFS.ctx is
+	// on the off-sandbox path; see that field for why.
+	ctx context.Context
 }
 
 func (f *secureDirFS) Open(name string) (fs.File, error) {
@@ -60,7 +63,7 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	defer func() { _ = df.Close() }()
 	// df is listed through readDirChunked the same as boundedDirFS on the
 	// plain path, so a huge directory here cannot OOM the walk either.
-	return readDirChunked(df, name, f.budget)
+	return readDirChunked(f.ctx, df, name, f.budget)
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
@@ -108,7 +111,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	defer func() { _ = unix.Close(baseFd) }()
 
 	budget := newGlobBudget("glob")
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget}}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting
@@ -182,7 +185,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 		return "", err
 	}
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget}}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
@@ -205,7 +208,9 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			// is a strict subset of this walk's (which also skips gitignored
 			// ones) — so it normally raises this refusal first. This guard is
 			// for the case where a directory grows past the bound between the
-			// two passes.
+			// two passes, which
+			// TestSandboxedGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// forces.
 			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
 				return walkErr
 			}

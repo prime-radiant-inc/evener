@@ -65,9 +65,12 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 // even where the cycle check works, an unbounded `**` over a huge tree (`/`)
 // still costs unbounded work.
 //
-// The value itself is a WORK bound, not a memory bound — the match cap and the
-// O(depth) ancestor chain already hold memory to a small constant, so this
-// only has to be large enough that a legitimate call doesn't pay for it. One
+// The value itself is a WORK bound rather than the memory bound. Memory is
+// held down by three other things: the match cap, the O(depth) ancestor chain,
+// and the per-directory entry cap. What those leave is maxGlobDirEntries times
+// the walk's depth, which is bounded but not small (see that constant), and
+// raising this number does not make it larger. So this one only has to be big
+// enough that a legitimate call never pays for it. One
 // call's listings are the sum of ignore discovery's walk plus every
 // brace-expanded pattern's walk (up to globpattern.MaxExpansions), so this one
 // number has to be large enough to cover all of them together. A
@@ -206,6 +209,19 @@ func (e *globBudgetError) advice() string {
 	return "narrow the pattern or its base directory"
 }
 
+// entryAdvice names the lever that gets a caller past one oversized directory,
+// which differs by operation the same way advice does. A glob can spell a
+// pattern that matches inside the directory without listing all of it; a grep
+// cannot, because its pattern is a regex matched against file contents after
+// the walk has already listed everything, so its only lever is a base that
+// does not contain the directory at all.
+func (e *globBudgetError) entryAdvice() string {
+	if e.op == "grep" {
+		return "that directory is too large to list, so point the base at a smaller directory that does not contain it"
+	}
+	return "that directory is too large to list, so match inside it more specifically or point the base elsewhere"
+}
+
 // where names the oversized directory the way a caller can act on it. The
 // walk's own root comes through as ".", which tells a model nothing, so it is
 // reported as the base it passed in instead of echoed back as a bare dot.
@@ -218,7 +234,7 @@ func (e *globBudgetError) where() string {
 
 func (e *globBudgetError) Error() string {
 	if e.kind == budgetEntries {
-		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: that directory is too large to list, so match inside it more specifically or point the base elsewhere", e.op, e.count, e.where(), e.budget)
+		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: %s", e.op, e.count, e.where(), e.budget, e.entryAdvice())
 	}
 	if !e.cycleSafe {
 		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.count, e.budget, e.advice())
@@ -265,6 +281,12 @@ func (b *globBudget) truncatedAt() int {
 // charged no matter what observes it from above.
 type boundedDirFS struct {
 	fs.FS
+	// ctx reaches readDirChunked, which checks it between chunks. A chunk
+	// loop reading from an already-open directory handle is invisible to
+	// cancelFS's Open/ReadDir/Stat checks: those see a listing starting, not
+	// the chunks inside one, so without this a cancelled call keeps reading a
+	// directory nobody is waiting for.
+	ctx    context.Context
 	budget *globBudget
 }
 
@@ -304,7 +326,7 @@ func (b boundedDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		}
 		return entries, nil
 	}
-	return readDirChunked(rdf, name, b.budget)
+	return readDirChunked(b.ctx, rdf, name, b.budget)
 }
 
 // readDirChunked lists dir by pulling entries from rdf in globDirChunk-sized
@@ -322,9 +344,24 @@ func (b boundedDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 // boundary that fell in a different place change which entries end up in
 // that prefix, and the raw fd-backed listing secureDirFS builds this on top
 // of has no ordering guarantee of its own to begin with.
-func readDirChunked(rdf fs.ReadDirFile, dir string, budget *globBudget) ([]fs.DirEntry, error) {
+//
+// ctx is checked between chunks because cancelFS cannot help here: it guards
+// Open, ReadDir and Stat at the filesystem level, so it tests the context
+// once as a listing begins and never again while this loop holds the
+// directory handle. See boundedDirFS.ctx and secureDirFS.ctx for how it is
+// threaded this far down.
+func readDirChunked(ctx context.Context, rdf fs.ReadDirFile, dir string, budget *globBudget) ([]fs.DirEntry, error) {
 	var entries []fs.DirEntry
 	for {
+		// cancelFS guards Open, ReadDir and Stat, so it checks ctx once as a
+		// listing starts and never again; this loop then holds the directory
+		// handle for as many chunks as the entry cap allows. Checking here is
+		// what keeps a cancelled call from reading the rest of a huge
+		// directory nobody is waiting for any more, and it answers with the
+		// same cancellation the rest of the walk returns.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		chunk, err := rdf.ReadDir(globDirChunk)
 		entries = append(entries, chunk...)
 		if berr := budget.tooManyEntries(dir, len(entries)); berr != nil {
@@ -343,6 +380,12 @@ func readDirChunked(rdf fs.ReadDirFile, dir string, budget *globBudget) ([]fs.Di
 			// forever.
 			break
 		}
+	}
+	// A cancellation that landed on the final chunk must not come back as a
+	// complete listing, so the answer is the cancellation however the loop
+	// happened to leave it.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
 	}
 	slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
 	return entries, nil

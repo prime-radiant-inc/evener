@@ -48,7 +48,7 @@ func TestLoadIgnoreSetSkipsMaskedSubtree(t *testing.T) {
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs, budget: newGlobBudget("glob")}
+	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs, budget: newGlobBudget("glob"), ctx: t.Context()}
 	set, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return sfs.underMasked(filepath.Join(canonical, relPath))
 	}, newGlobBudget("glob"))

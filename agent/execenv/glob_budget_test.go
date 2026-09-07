@@ -65,10 +65,18 @@ func stubGlobDirChunk(t *testing.T, n int) {
 // that asks for everything at once (n <= 0 — what an unbounded listing does)
 // still gets the whole directory back in a single call, which is what makes
 // this double also show that today's listing pulls everything at once.
+//
+// When cancel is set, a file also cancels on its cancelOn'th ReadDir(n) call —
+// the same shape countingFS uses for a whole directory listing, scoped down to
+// the chunk calls inside one — so a test can watch how much of a listing a
+// chunk loop keeps pulling after the context that should have stopped it is
+// cancelled.
 type pacedDirEntriesFS struct {
 	fs.FS
-	read *int
-	pace int
+	read     *int
+	pace     int
+	cancelOn int
+	cancel   context.CancelFunc
 }
 
 func (p pacedDirEntriesFS) Open(name string) (fs.File, error) {
@@ -80,13 +88,16 @@ func (p pacedDirEntriesFS) Open(name string) (fs.File, error) {
 	if !ok {
 		return f, nil
 	}
-	return &pacedDirEntriesFile{ReadDirFile: rdf, read: p.read, pace: p.pace}, nil
+	return &pacedDirEntriesFile{ReadDirFile: rdf, read: p.read, pace: p.pace, cancelOn: p.cancelOn, cancel: p.cancel}, nil
 }
 
 type pacedDirEntriesFile struct {
 	fs.ReadDirFile
-	read *int
-	pace int
+	read     *int
+	pace     int
+	cancelOn int
+	cancel   context.CancelFunc
+	calls    int
 }
 
 func (p *pacedDirEntriesFile) ReadDir(n int) ([]fs.DirEntry, error) {
@@ -95,6 +106,10 @@ func (p *pacedDirEntriesFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	}
 	entries, err := p.ReadDirFile.ReadDir(n)
 	*p.read += len(entries)
+	p.calls++
+	if p.cancel != nil && p.calls == p.cancelOn {
+		p.cancel()
+	}
 	return entries, err
 }
 
@@ -144,8 +159,8 @@ func TestGlobStopsAtTheDirectoryListingBudgetWithFileIdentity(t *testing.T) {
 	stubMaxGlobDirListings(t, budget)
 
 	var counter *countingFS
-	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
-		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return counter
 	})
 
@@ -178,8 +193,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	root := globBudgetFixture(t, fileCount)
 
 	var full *countingFS
-	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
-		full = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		full = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return full
 	})
 	fullMatches, _, fullTruncatedAt, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.txt", root, true)
@@ -193,8 +208,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	stubMaxGlobMatches(t, 5)
 
 	var capped *countingFS
-	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
-		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return capped
 	})
 	matches, _, truncatedAt, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.txt", root, true)
@@ -259,9 +274,9 @@ func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 
 	var read int
 	var seenBudget *globBudget
-	stubGlobBaseFS(t, func(dir string, callBudget *globBudget) fs.FS {
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, callBudget *globBudget) fs.FS {
 		seenBudget = callBudget
-		return boundedDirFS{FS: pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: 5}, budget: callBudget}
+		return boundedDirFS{FS: pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: 5}, budget: callBudget, ctx: ctx}
 	})
 
 	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "*.txt", root, true)
@@ -283,6 +298,43 @@ func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	}
 	if seenBudget.peakDirEntries < budget || seenBudget.peakDirEntries >= fileCount {
 		t.Fatalf("globBudget.peakDirEntries = %d, want at least the entry budget of %d but strictly less than the directory's %d entries (a listing that materializes everything before refusing must not pass this)", seenBudget.peakDirEntries, budget, fileCount)
+	}
+}
+
+// TestGlobStopsReadingAChunkedListingOnCancellation proves the other half of
+// reading a directory in chunks: readDirChunked's loop never looks at ctx
+// between one chunk and the next, so a cancellation landing mid-listing is
+// not noticed until the whole directory has been pulled through — up to
+// maxGlobDirEntries/globDirChunk pointless chunks of work after the caller
+// asked to stop. cancelFS only checks ctx once, when a listing starts, and
+// the walk callback that finally sees ctx.Err() only runs after ReadDir
+// returns — so the call comes back reporting context.Canceled either way,
+// and a test that checked only that would pass today without pinning
+// anything. What has to be pinned is the chunk loop itself stopping
+// promptly, which is why this also counts how many entries actually came out
+// of the directory file, the same way pacedDirEntriesFS's read counter does
+// for TestGlobStopsOnADirectoryWithTooManyEntries above.
+func TestGlobStopsReadingAChunkedListingOnCancellation(t *testing.T) {
+	const fileCount = 40
+	const chunkSize = 5
+	root := flatEntriesFixture(t, fileCount)
+	stubGlobDirChunk(t, chunkSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var read int
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		fsys := pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: chunkSize, cancelOn: 2, cancel: cancel}
+		return boundedDirFS{FS: fsys, budget: budget, ctx: ctx}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(ctx, "*.txt", root, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Glob over a listing cancelled mid-chunk = (%v, %v), want context.Canceled", matches, err)
+	}
+	if want := chunkSize * 3; read > want {
+		t.Fatalf("listing kept reading after cancellation: read %d of %d entries in the directory, want at most %d (about one chunk past the one that observed the cancellation)", read, fileCount, want)
 	}
 }
 
@@ -449,8 +501,8 @@ func TestGlobIgnoreDiscoveryIsChargedToTheBudget(t *testing.T) {
 	stubMaxGlobDirListings(t, budget)
 
 	var counter *countingFS
-	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
-		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return counter
 	})
 
@@ -715,10 +767,12 @@ func TestGlobIgnoreDiscoveryStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 // ever starts, so the refusal always comes from ignore discovery's callback
 // swallowing-guard. It cannot also pin the equivalent guard in grepNative's
 // own walk callback: that guard only matters if a directory grows past the
-// entries bound between ignore discovery's pass and the walk's own, which a
-// deterministic test cannot construct — ignore discovery's skip set is
-// always a subset of the walk's, so ignore discovery always reaches (and
-// refuses) any oversized directory first.
+// entries bound between ignore discovery's pass and the walk's own, and no
+// static tree can produce that — ignore discovery's skip set is always a
+// subset of the walk's, so ignore discovery always reaches (and refuses) any
+// oversized directory first. Only concurrent growth reaches it, which
+// TestGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+// forces by growing the directory inside a stubbed walk.
 func TestGrepWalkStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	const fileCount = 30
 	const budget = 10

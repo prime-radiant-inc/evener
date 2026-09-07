@@ -63,7 +63,7 @@ func TestSandboxedGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	defer func() { _ = unix.Close(baseFd) }()
 
 	callBudget := newGlobBudget("glob")
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs, budget: callBudget}
+	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs, budget: callBudget, ctx: t.Context()}
 
 	entries, err := fsys.ReadDir(".")
 	var budgetErr *globBudgetError

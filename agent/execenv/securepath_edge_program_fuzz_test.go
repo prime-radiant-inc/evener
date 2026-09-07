@@ -302,7 +302,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 
 	// secureDirFS rejects invalid virtual paths and invalid root fds with ordinary
 	// fs.PathError values rather than allowing a browse escape.
-	dirFS := &secureDirFS{baseFd: -1, basePath: worktree, fs: s, budget: newGlobBudget("glob")}
+	dirFS := &secureDirFS{baseFd: -1, basePath: worktree, fs: s, budget: newGlobBudget("glob"), ctx: t.Context()}
 	if _, err := dirFS.Open("../escape"); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("secureDirFS invalid Open = %v", err)
 	}
