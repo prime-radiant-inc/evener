@@ -1,4 +1,4 @@
-import { Component, type ReactNode, Suspense, lazy, useState } from "react";
+import { Component, lazy, type ReactNode, Suspense, useState } from "react";
 import { WireError } from "../../../protocol/errors";
 import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
 import { useClient } from "../../../shell/clientContext";
