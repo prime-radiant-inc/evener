@@ -1,6 +1,314 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type {
+	NavigationActionCheckpoint,
+	NavigationActionStorage,
+	NavigationOperation,
+} from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
+
+it("does not call an empty-journal reconciliation complete after another model starts a write", async () => {
+	const journal = journalFixture();
+	let release!: () => void;
+	const actions = new NavigationActions(
+		{} as ConversationClientLike,
+		async () => {},
+		() => true,
+		async () => {
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		},
+		journal,
+	);
+	const read = actions.reconcile();
+	const other = journal.begin({
+		kind: "unpin",
+		params: { sessionRef: "local:new" },
+	});
+	release();
+	await read;
+	expect(journal.load()).toBe(other);
+	expect(actions.getSnapshot().uncertain).toBe(true);
+});
+it.each(["acknowledge", "finish"] as const)(
+	"keeps recovery when %s fails after acknowledgement",
+	async (method) => {
+		const journal = journalFixture();
+		const original = journal[method];
+		journal[method] = () => {
+			throw Error("disk unavailable");
+		};
+		let requests = 0;
+		const client = {
+			request: async () => {
+				requests++;
+				return { ok: true, navigation: { generation_id: "g", targets: [] } };
+			},
+		} as unknown as ConversationClientLike;
+		const actions = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {},
+			journal,
+		);
+		await actions.unpin({ sessionRef: "local:s" });
+		expect(journal.load()).not.toBeNull();
+		expect(actions.getSnapshot()).toMatchObject({
+			uncertain: true,
+			storageUnavailable: true,
+		});
+		await actions.unpin({ sessionRef: "local:s" });
+		expect(requests).toBe(1);
+		Object.assign(journal, { [method]: original });
+		await actions.reconcile();
+		expect(journal.load()).toBeNull();
+		expect(requests).toBe(1);
+	},
+);
+
+function journalFixture() {
+	let checkpoint: NavigationActionCheckpoint | null = null;
+	let nextId = 0;
+	const storage: NavigationActionStorage = {
+		load: () => checkpoint,
+		begin(operation: NavigationOperation) {
+			if (checkpoint) throw new Error("unresolved");
+			checkpoint = { id: String(++nextId), operation, receipt: null };
+			return checkpoint;
+		},
+		acknowledge(value, receipt) {
+			if (checkpoint !== value) throw new Error("replaced");
+			checkpoint = { ...value, receipt };
+			return checkpoint;
+		},
+		finish(value) {
+			if (checkpoint !== value) return false;
+			checkpoint = null;
+			return true;
+		},
+	};
+	return storage;
+}
+
+describe("durable navigation actions", () => {
+	const receipt = { generation_id: "g", targets: [] };
+	it("checkpoints the target before dispatch and restores it without replay after disposal", async () => {
+		const journal = journalFixture();
+		let complete!: (value: unknown) => void;
+		let requests = 0;
+		const client = {
+			request: () => {
+				requests++;
+				expect(journal.load()?.operation).toEqual({
+					kind: "assignPin",
+					params: { sessionRef: "local:s", sectionName: "Focus" },
+				});
+				return new Promise((resolve) => {
+					complete = resolve;
+				});
+			},
+		} as unknown as ConversationClientLike;
+		const first = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {},
+			journal,
+		);
+		const pending = first.assignPin({
+			sessionRef: "local:s",
+			sectionName: "Focus",
+		});
+		first.dispose();
+		let readTarget: unknown;
+		const next = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async (checkpoint) => {
+				readTarget = checkpoint?.operation;
+			},
+			journal,
+		);
+		expect(next.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+		});
+		await next.unpin({ sessionRef: "local:s" });
+		expect(requests).toBe(1);
+		complete({ ok: true, navigation: receipt });
+		await pending;
+		expect(journal.load()).not.toBeNull();
+		await next.reconcile();
+		expect(readTarget).toEqual({
+			kind: "assignPin",
+			params: { sessionRef: "local:s", sectionName: "Focus" },
+		});
+		expect(journal.load()).toBeNull();
+		expect(next.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: false,
+		});
+		expect(requests).toBe(1);
+	});
+	it("persists an acknowledged receipt until target readback succeeds", async () => {
+		const journal = journalFixture();
+		const client = {
+			request: async () => ({ ok: true, navigation: receipt }),
+		} as unknown as ConversationClientLike;
+		const first = new NavigationActions(
+			client,
+			async () => {
+				throw Error("offline");
+			},
+			() => true,
+			async () => {},
+			journal,
+		);
+		await first.renamePinSection({ sectionId: "focus", name: "Work" });
+		expect(journal.load()?.receipt).toEqual(receipt);
+		first.dispose();
+		let readCheckpoint: unknown;
+		const next = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async (checkpoint) => {
+				readCheckpoint = checkpoint;
+				throw Error("read failed");
+			},
+			journal,
+		);
+		await next.reconcile();
+		expect(readCheckpoint).toMatchObject({
+			receipt,
+			operation: {
+				kind: "renamePinSection",
+				params: { sectionId: "focus", name: "Work" },
+			},
+		});
+		expect(next.getSnapshot().uncertain).toBe(true);
+		expect(journal.load()).not.toBeNull();
+	});
+	it("does not dispatch when local recovery cannot be saved", async () => {
+		const journal = journalFixture();
+		journal.begin = () => {
+			throw Error("disk full /private/secret");
+		};
+		let requests = 0;
+		const client = {
+			request: async () => {
+				requests++;
+			},
+		} as unknown as ConversationClientLike;
+		const actions = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {},
+			journal,
+		);
+		await actions.unpin({ sessionRef: "local:s" });
+		expect(requests).toBe(0);
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			storageUnavailable: true,
+		});
+		expect(actions.getSnapshot().error).not.toContain("/private/secret");
+	});
+	it("blocks writes on corrupt storage and recovers only after a successful explicit reread", async () => {
+		const journal = journalFixture();
+		const originalLoad = journal.load;
+		journal.load = () => {
+			throw Error("corrupt");
+		};
+		let requests = 0;
+		const client = {
+			request: async () => {
+				requests++;
+				return { ok: true, navigation: receipt };
+			},
+		} as unknown as ConversationClientLike;
+		const actions = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {},
+			journal,
+		);
+		await actions.unpin({ sessionRef: "local:s" });
+		expect(actions.getSnapshot().storageUnavailable).toBe(true);
+		expect(requests).toBe(0);
+		journal.load = originalLoad;
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			storageUnavailable: false,
+			uncertain: false,
+		});
+		await actions.unpin({ sessionRef: "local:s" });
+		expect(requests).toBe(1);
+		expect(journal.load()).toBeNull();
+	});
+	it("does not clear another model's pending target after a delayed reconciliation", async () => {
+		const journal = journalFixture();
+		const old = journal.begin({
+			kind: "unpin",
+			params: { sessionRef: "local:old" },
+		});
+		let release!: () => void;
+		const client = {} as ConversationClientLike;
+		const actions = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			},
+			journal,
+		);
+		const read = actions.reconcile();
+		journal.finish(old);
+		const newer = journal.begin({
+			kind: "unpin",
+			params: { sessionRef: "local:new" },
+		});
+		release();
+		await read;
+		expect(journal.load()).toBe(newer);
+		expect(actions.getSnapshot().uncertain).toBe(true);
+	});
+	it("checks the shared hub journal before dispatch from an older screen model", async () => {
+		const journal = journalFixture();
+		let requests = 0;
+		const client = {
+			request: async () => {
+				requests++;
+				return { ok: true, navigation: receipt };
+			},
+		} as unknown as ConversationClientLike;
+		const actions = new NavigationActions(
+			client,
+			async () => {},
+			() => true,
+			async () => {},
+			journal,
+		);
+		const newer = journal.begin({
+			kind: "unpin",
+			params: { sessionRef: "local:new" },
+		});
+		await actions.favorite("project", true);
+		expect(requests).toBe(0);
+		expect(actions.getSnapshot()).toMatchObject({
+			uncertain: true,
+			recovery: newer,
+		});
+	});
+});
 
 describe("navigation organization actions", () => {
 	it("sends canonical project identity once and awaits projection before success", async () => {

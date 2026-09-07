@@ -7,21 +7,41 @@ import type {
 	SessionPinUnpinParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type {
+	NavigationActionCheckpoint,
+	NavigationActionStorage,
+	NavigationOperation,
+} from "./navigationActionRepository";
+
+const unresolved =
+	"A previous organization change needs to be checked. Refresh before making another change.";
+const storageError =
+	"Could not read or save organization recovery on this device. Refresh to retry; no change will be sent until recovery is available.";
 
 export class NavigationActions {
 	private state = {
 		pending: false,
 		uncertain: false,
+		storageUnavailable: false,
+		recovery: null as NavigationActionCheckpoint | null,
 		error: null as string | null,
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
 	constructor(
 		private client: ConversationClientLike,
-		private refresh: (receipt: NavigationMutation) => Promise<void>,
+		private refresh: (
+			receipt: NavigationMutation,
+			checkpoint?: NavigationActionCheckpoint,
+		) => Promise<void>,
 		private current: () => boolean,
-		private reconcileCurrent: () => Promise<void>,
-	) {}
+		private reconcileCurrent: (
+			checkpoint?: NavigationActionCheckpoint,
+		) => Promise<void>,
+		private storage?: NavigationActionStorage,
+	) {
+		this.restore();
+	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -37,103 +57,173 @@ export class NavigationActions {
 		this.state = state;
 		for (const listener of this.listeners) listener();
 	}
+	private restore() {
+		if (!this.storage) return true;
+		try {
+			const recovery = this.storage.load();
+			this.publish({
+				...this.state,
+				recovery,
+				storageUnavailable: false,
+				uncertain: recovery !== null,
+				error: recovery ? unresolved : null,
+			});
+			return true;
+		} catch {
+			this.publish({
+				...this.state,
+				storageUnavailable: true,
+				uncertain: true,
+				error: storageError,
+			});
+			return false;
+		}
+	}
 	archive(target: Omit<ArchiveParams, "archived">, archived: boolean) {
-		return this.run(() =>
-			this.client.request("evener/archive/set", { ...target, archived }),
+		const params = { ...target, archived };
+		return this.run({ kind: "archive", params }, () =>
+			this.client.request("evener/archive/set", params),
 		);
 	}
 	favorite(id: string, favorited: boolean) {
-		return this.run(() =>
-			this.client.request("evener/favorite/set", {
-				kind: "project",
-				id,
-				favorited,
-			}),
+		const params = { kind: "project", id, favorited };
+		return this.run({ kind: "favorite", params }, () =>
+			this.client.request("evener/favorite/set", params),
 		);
 	}
 	assignPin(target: SessionPinAssignParams) {
-		return this.run(() =>
-			this.client.request("evener/session-pin/assign", target),
+		const params = { ...target };
+		return this.run({ kind: "assignPin", params }, () =>
+			this.client.request("evener/session-pin/assign", params),
 		);
 	}
 	unpin(target: SessionPinUnpinParams) {
-		return this.run(() =>
-			this.client.request("evener/session-pin/unpin", target),
+		const params = { ...target };
+		return this.run({ kind: "unpin", params }, () =>
+			this.client.request("evener/session-pin/unpin", params),
 		);
 	}
 	renamePinSection(target: PinSectionRenameParams) {
-		return this.run(() =>
-			this.client.request("evener/pin-section/rename", target),
+		const params = { ...target };
+		return this.run({ kind: "renamePinSection", params }, () =>
+			this.client.request("evener/pin-section/rename", params),
 		);
 	}
 	deletePinSection(target: PinSectionDeleteParams) {
-		return this.run(() =>
-			this.client.request("evener/pin-section/delete", target),
+		const params = { ...target };
+		return this.run({ kind: "deletePinSection", params }, () =>
+			this.client.request("evener/pin-section/delete", params),
 		);
 	}
 	async reconcile() {
 		if (this.disposed || !this.current() || this.state.pending) return;
+		if (!this.restore()) return;
+		const checkpoint = this.state.recovery;
 		this.publish({ ...this.state, pending: true });
 		try {
-			await this.reconcileCurrent();
+			await this.reconcileCurrent(checkpoint ?? undefined);
 			if (this.disposed) return;
-			const stillCurrent = this.current();
+			if (!this.current()) throw Error("scope changed");
+			if (checkpoint && this.storage && !this.storage.finish(checkpoint))
+				throw Error("recovery changed");
+			if (!checkpoint && this.storage?.load())
+				throw Error("another organization change started");
 			this.publish({
 				...this.state,
 				pending: false,
-				uncertain: !stillCurrent,
-				error: stillCurrent
-					? null
-					: "The hub changed while confirming this change. Refresh before trying again.",
+				uncertain: false,
+				storageUnavailable: false,
+				recovery: null,
+				error: null,
 			});
 		} catch {
-			if (!this.disposed)
-				this.publish({
-					...this.state,
-					pending: false,
-					error:
-						"Could not refresh the current navigation; the previous change remains unresolved.",
-				});
+			if (this.disposed) return;
+			this.publish({
+				...this.state,
+				pending: false,
+				uncertain: true,
+				error:
+					"Could not confirm current navigation for the previous change. Refresh before trying again.",
+			});
 		}
 	}
 	private async run(
+		operation: NavigationOperation,
 		request: () => Promise<{ ok: boolean; navigation: NavigationMutation }>,
 	) {
 		if (
 			this.disposed ||
 			!this.current() ||
 			this.state.pending ||
-			this.state.uncertain
+			this.state.uncertain ||
+			this.state.storageUnavailable
 		)
 			return;
-		this.publish({ pending: true, uncertain: false, error: null });
+		// Other screens share the same hub journal; a model created earlier must not
+		// overwrite a newer screen's unresolved operation.
+		if (!this.restore() || this.state.uncertain) return;
+		let checkpoint: NavigationActionCheckpoint | null = null;
+		try {
+			checkpoint = this.storage?.begin(operation) ?? null;
+		} catch {
+			this.restore();
+			this.publish({
+				...this.state,
+				pending: false,
+				storageUnavailable: true,
+				error: storageError,
+			});
+			return;
+		}
+		this.publish({
+			...this.state,
+			pending: true,
+			uncertain: false,
+			recovery: checkpoint,
+			error: null,
+		});
 		let accepted = false;
+		let savingRecovery = false;
 		try {
 			const response = await request();
 			if (this.disposed) return;
-			if (!this.current()) throw new Error("Connection changed.");
-			if (!response.ok) throw new Error("The hub did not accept this change.");
+			if (!this.current()) throw Error("scope changed");
+			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
-			await this.refresh(response.navigation);
-			if (this.disposed) return;
-			if (!this.current()) {
-				this.publish({
-					pending: false,
-					uncertain: true,
-					error:
-						"The hub changed while confirming this change. Refresh before trying again.",
-				});
-				return;
+			if (checkpoint && this.storage) {
+				savingRecovery = true;
+				checkpoint = this.storage.acknowledge(checkpoint, response.navigation);
+				savingRecovery = false;
+				this.publish({ ...this.state, recovery: checkpoint });
 			}
-			this.publish({ pending: false, uncertain: false, error: null });
+			await this.refresh(response.navigation, checkpoint ?? undefined);
+			if (this.disposed) return;
+			if (!this.current()) throw Error("scope changed");
+			if (checkpoint && this.storage) {
+				savingRecovery = true;
+				if (!this.storage.finish(checkpoint)) throw Error("recovery changed");
+				savingRecovery = false;
+			}
+			this.publish({
+				...this.state,
+				pending: false,
+				uncertain: false,
+				storageUnavailable: false,
+				recovery: null,
+				error: null,
+			});
 		} catch {
 			if (this.disposed) return;
 			this.publish({
+				...this.state,
 				pending: false,
 				uncertain: true,
-				error: accepted
-					? "The change may have been applied, but the refreshed navigation could not be confirmed. Refresh before trying again."
-					: "Could not confirm the change. Refresh the list before trying again; it may have been applied.",
+				storageUnavailable: savingRecovery,
+				error: savingRecovery
+					? "The change was accepted, but its recovery record could not be updated. Refresh to confirm the current state before trying again."
+					: accepted
+						? "The change was accepted, but refreshed navigation could not be confirmed. Refresh before trying again."
+						: "Could not confirm the change. Refresh before trying again; it may have been applied.",
 			});
 		}
 	}
