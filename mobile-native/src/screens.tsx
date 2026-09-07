@@ -364,9 +364,13 @@ export function SessionsScreen({
 	}, [roster]);
 	useFocusEffect(
 		useCallback(() => {
+			const unwatch =
+				client && state === "ready"
+					? roster.watch(client)
+					: () => roster.cancel();
 			void refresh();
-			return () => roster.cancel();
-		}, [refresh, roster]),
+			return unwatch;
+		}, [refresh, roster, client, state]),
 	);
 	function search(value: string) {
 		if (state !== "ready") return;
