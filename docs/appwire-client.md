@@ -279,7 +279,96 @@ on non-advancing pages and retain already loaded content when a read fails.
 The packaged [job-output recipe](../cmd/evener-hub/frontend/src/protocol/README.md#reading-a-job-output-window)
 performs one bounded read and exposes the shared decoder. Its command-line
 summary excludes log content. Activity-tree traversal and automatic page
-assembly require separate client workflows.
+assembly use the bounded activity workflow below.
+
+## Reading activity trees
+
+Activity is a retained projection of jobs and delegated sessions. Read it with
+`evener/jobs/list`. The request contains the session `ref`; a continuation read
+also contains the opaque `continuation` returned for one branch:
+
+```json
+{"id":8,"method":"evener/jobs/list","params":{"ref":"local:session-1"}}
+{"id":9,"method":"evener/jobs/list","params":{"ref":"local:session-1","continuation":"opaque-token-from-that-branch"}}
+```
+
+The response has a `data` object with `revision` and `root`. The root is a
+session node: `{ kind: "session", sessionId, ref, label, aggregate, counts,
+entries, branch }`. `entries` contain shell jobs (`{ kind: "shell", job: {...}
+}`) or delegates (`{ kind: "delegate", delegate: {...} }`). A delegate can
+contain a recursive `child` session. A branch has optional `error`, `truncated`
+and `continuation`; an absent field is different from a present false or empty
+value. Do not invent transcript-item cursors or `limit` fields for this method.
+
+Construct the exported `ActivityList` once for each hub, `ref` and thread ID.
+The hub/client must already be connected before reads. `refresh()` reads the
+root, `branches()` exposes only currently advertised incomplete branches, and
+`loadMore(nodeID, exactContinuation)` accepts a continuation only while that
+same pair is advertised. The controller owns its retained tree and notification
+subscription; call `dispose()` when the hub or session context is replaced.
+`start()` installs handlers for matching job-started, job-finished, tree-updated
+and thread-resync notifications, then initiates the first read. `refresh()` by
+itself only reads; it does not subscribe. The controller does not connect,
+reconnect, or close the hub.
+
+Seed a controller only with a retained tree from the same hub, ref and thread;
+the caller checks hub identity, while the constructor checks ref and thread.
+Root refreshes replace the retained root (subject to revision fencing), so a
+root refresh can drop an old page collection. Continuation reads graft into the
+existing tree and preserve loaded siblings and prefixes.
+
+The client fences root refreshes by revision and rejects a response for another
+session or an older revision while retaining the displayed tree. A
+client-controlled page budget should stop on a repeated `(nodeID,
+continuation)` pair and report an incomplete result rather than retrying
+blindly. If a response has a valid prefix but an invalid member, the parser
+keeps valid rows and marks the affected branch incomplete. A
+`counts.complete: false` summary is also incomplete even when no continuation
+field is present; it is not proof that the tree is complete.
+
+Presence carries meaning in delegate metadata. An omitted field means the
+server did not provide that fact. Preserve an explicit `false`, `0`, or `null`
+where the wire type permits it; do not turn any of those into absence. Fields
+such as these describe different observations:
+
+| Fields | Meaning and presence rule |
+| --- | --- |
+| `requestedModel`, `resolvedModel`, `resolvedProfileId`, `reasoningEffort` | Requested versus actually resolved execution settings; absence is unknown. |
+| `terminal`, `resumable`, `parentWatchGranted` | Optional booleans from the server. Missing does not mean `true`, and must not authorize an action. |
+| `status`, `phase`, `lifecycle`, `outcome` | Current lifecycle/status versus the retained terminal result. |
+| `projectionRevision`, `latestActivityAt`, `packetKind` | Projection ordering, latest event time, and latest packet kind. |
+| `usage` | Cumulative usage for that delegate's own execution; do not sum child usage into the parent unless the server supplies an aggregate. |
+| `worktree` | Optional `{ path, branch, headSha, ahead, dirty }` snapshot; missing means no worktree snapshot was supplied. |
+| `structuredResult`, `structuredResultValid`, `structuredResultReason` | A result may be absent, primitive, or structured; validity is separately reported and does not follow from presence alone. |
+
+For elapsed time, a resumed run uses `now - runStartedAt` while it is live; do
+not continue a prior run's `runEndedAt`. A terminal duration uses a valid
+`runEndedAt - runStartedAt` interval or the server's frozen duration. An absent
+or explicit null duration is unknown, not zero. The same rule applies to jobs'
+`startedAt`, `endedAt`, and duration data.
+
+Jobs and delegates may carry a `transcriptRef` for navigation. A job output
+request must use the job's `ownerRef` and `jobId`, preserving the owner from the
+same activity entry. A delegate's child session is opened with its `childRef`.
+These refs are ownership boundaries; do not substitute the root ref merely
+because the tree was fetched with it. Continuation strings are byte-opaque:
+store and resend the exact returned string without parsing, trimming or
+normalizing it.
+
+The package includes a bounded runnable workflow:
+
+```sh
+EVENER_REF=local:session-1 EVENER_THREAD_ID=thread-1 \
+  node node_modules/@evener/appwire-client/examples/activity.mjs
+```
+
+It validates and captures `{ ref, threadId, maxPages? }` before connecting,
+defaults the local budget to ten pages (one through one hundred is accepted),
+and prints only outcome and counts. The companion `runActivity` helper returns
+the parsed tree for a caller that needs it; it is responsible for disposing the
+controller, while the caller owns closing the hub connection. This recipe and
+the wire contract document read semantics; they do not establish that a native
+UI has rendered or executed a particular activity scenario.
 
 ## Runnable coverage and maintenance
 

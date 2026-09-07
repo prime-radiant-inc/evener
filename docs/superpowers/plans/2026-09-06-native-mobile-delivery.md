@@ -656,3 +656,40 @@ The catalog has eighteen recipes covering 50 of 91 method names. This is
 presence/read evidence, not all outcomes or release qualification. Next: complete
 delegate metadata and timing, then the remaining fault, reader, multi-hub,
 accessibility and iOS release matrix. Android qualification remains deferred.
+
+
+## Delegate detail implementation package — source 86226672a
+
+The shared ActivityDelegate parser already preserves model/profile selection,
+run timestamps and snapshot durations, usage, lifecycle/resumability, worktree,
+warning/diagnostic and result/validity/limit data. Native ActivitySheet currently
+renders only mandate/task, status/reason and the transcript action. Preserve
+row identity/folds, server transcript refs and the existing hub/session lifetime.
+
+1. Add small pure native presentation helpers with tests for timestamp-driven
+   live versus terminal duration, future/invalid dates, frozen duration fallback,
+   actual/requested model precedence, and presence-safe string/JSON packets.
+   Do not infer absent timestamps/counts/booleans or equate an old outcome with
+   a current run's status. Reuse existing elapsed/mandate formatting where valid.
+2. Add a native delegate detail component: instruction preview with full
+   disclosure; model/reasoning and timing; separate expandable usage/worktree,
+   warnings/diagnostics, latest report and structured result with validity;
+   lifecycle/resume/budget/monitoring facts in a secondary details section.
+   Zero, false and explicit JSON null remain visible when supplied. Exact paths
+   and structured data are selectable. No invented stop/send/resume RPC buttons.
+3. Only mounted live details tick, while connected and foregrounded. Stop the
+   timer on unmount/background/disconnect; resume from current wall time, never
+   advance a server-only snapshot duration. Keep model formatting pure with an
+   explicit now value for deterministic tests. Native geometry/interaction
+   verifies UI rather than string snapshots or mocked native renderer stacks.
+4. Expand the independent client guide with activity ownership, continuation,
+   metadata presence and stale/latest-report semantics from actual types and
+   shared implementation. The existing packaged traversal remains the SDK lane.
+5. Root integrates, independently reviews and runs native/package/web checks as
+   affected, then builds iPhone Release. A new direct-hub delegate fixture checks
+   detail disclosures, falsy/null data, live/terminal clocks and return to parent.
+   State clearly whether evidence is projection-only or real execution.
+
+Luna medium workers own presentation helpers/tests and the client-guide section
+independently; Bot owns native composition/integration and serialized simulator
+and hub operations. Preserve all six drafts and the unrelated Apple patch.

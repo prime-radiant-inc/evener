@@ -23,9 +23,9 @@ import { ActivityList } from "../../cmd/evener-hub/frontend/src/protocol/activit
 import { stableDelegateDisplayStatus } from "../../cmd/evener-hub/frontend/src/protocol/stableDelegate";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ActivityDelegateDetails } from "./ActivityDelegateDetails";
 import { AnsiOutputLine } from "./AnsiOutputLine";
 import { JobOutput } from "./jobOutput";
-import { MarkdownResponse } from "./MarkdownResponse";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 function Output({
@@ -125,14 +125,15 @@ export function ActivitySheet({
   useEffect(() => {
     retained.current = state.tree;
   }, [state.tree]);
+  useEffect(() => () => list.dispose(), [list]);
+  const started = useRef<ActivityList | undefined>(undefined);
   useEffect(() => {
-    list.start();
-    return () => list.dispose();
-  }, [list]);
-  const wasConnected = useRef(connected);
-  useEffect(() => {
-    if (connected && !wasConnected.current) void list.refresh();
-    wasConnected.current = connected;
+    if (!connected) return;
+    if (started.current === list) void list.refresh();
+    else {
+      started.current = list;
+      list.start();
+    }
   }, [connected, list]);
   const [folds, setFolds] = useState(new Set<string>());
   const [details, setDetails] = useState<Record<string, boolean>>({});
@@ -173,9 +174,7 @@ export function ActivitySheet({
           row.delegate.child?.aggregate ??
           "unknown");
     const detail =
-      row.kind === "job"
-        ? (row.job.command ?? row.job.task)
-        : (row.delegate.mandate ?? row.delegate.task);
+      row.kind === "job" ? (row.job.command ?? row.job.task) : undefined;
     const target = row.transcriptRef?.trim();
     return (
       <View
@@ -202,13 +201,7 @@ export function ActivitySheet({
         </Pressable>
         {open ? (
           <View style={{ gap: 8, paddingVertical: 8 }}>
-            {detail ? (
-              row.kind === "delegate" ? (
-                <MarkdownResponse markdown={detail} />
-              ) : (
-                <Copy>{detail}</Copy>
-              )
-            ) : null}
+            {detail ? <Copy>{detail}</Copy> : null}
             {row.kind === "job" ? (
               <Copy
                 muted
@@ -216,9 +209,6 @@ export function ActivitySheet({
             ) : null}
             {row.kind === "job" && row.job.reason ? (
               <Copy>{row.job.reason}</Copy>
-            ) : null}
-            {row.kind === "delegate" && row.delegate.reason ? (
-              <Copy>{row.delegate.reason}</Copy>
             ) : null}
             {target ? (
               <Action
@@ -234,6 +224,12 @@ export function ActivitySheet({
               >
                 {target.startsWith("job:") ? "Open output" : "Open session"}
               </Action>
+            ) : null}
+            {row.kind === "delegate" ? (
+              <ActivityDelegateDetails
+                delegate={row.delegate}
+                connected={connected}
+              />
             ) : null}
           </View>
         ) : null}
