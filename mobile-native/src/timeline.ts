@@ -2,6 +2,27 @@ import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
+// Task-control instructions stay available without crowding the conversation.
+export function steeringNoticeLabel(item: Notice): string | undefined {
+	if (item.origin !== "steering" || isCriticalNotice(item)) return undefined;
+	switch (item.steeringKind) {
+		case "interrupted":
+			return "Interrupted";
+		case "tasks-done":
+			return "Tasks complete";
+		case "task-nudge":
+			return "Task reminder";
+		case "task-inactive":
+			return "Task list idle";
+		case "current-task":
+			return "Current task";
+		case "task-list":
+			return "Task list";
+		default:
+			return undefined;
+	}
+}
+
 export function isCriticalNotice(item: Notice): boolean {
 	return (
 		item.tone === "warning" ||
@@ -39,7 +60,7 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	if (needsAttention(before) || needsAttention(after)) return 24;
 	const routine = (item: TimelineRow) =>
 		item.kind === "details" ||
-		(item.kind === "notice" && isInterruptedNotice(item));
+		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }
 

@@ -9,7 +9,7 @@ import { MarkdownResponse } from "./MarkdownResponse";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
-	isInterruptedNotice,
+	steeringNoticeLabel,
 	type TimelineRow,
 } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
@@ -40,6 +40,8 @@ export function TimelineItem({
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	const colors = useColors();
+	const noticeLabel =
+		item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
@@ -95,14 +97,14 @@ export function TimelineItem({
 			);
 			break;
 		case "notice":
-			content = isInterruptedNotice(item) ? (
+			content = noticeLabel ? (
 				<>
 					<Action
 						tone="quiet"
-						label="Interrupted, show notice"
+						label={`${noticeLabel}, ${expanded ? "hide" : "show"} notice`}
 						expanded={expanded}
 						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} Interrupted`}</Action>
+					>{`${expanded ? "▾" : "▸"} ${noticeLabel}`}</Action>
 					{expanded ? <Copy>{item.text}</Copy> : null}
 				</>
 			) : (

@@ -1,6 +1,11 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
-import { groupTimeline, isInterruptedNotice, timelineGap } from "./timeline";
+import {
+	groupTimeline,
+	isInterruptedNotice,
+	steeringNoticeLabel,
+	timelineGap,
+} from "./timeline";
 
 const setup: MobileTimelineItem = {
 	kind: "notice",
@@ -104,6 +109,52 @@ it("retains a disclosure identity as adjacent details arrive", () => {
 		groupTimeline([setup, diagnostic])[0]?.id,
 	);
 	expect(groupTimeline([])).toEqual([]);
+});
+
+it.each([
+	"interrupted",
+	"tasks-done",
+	"task-nudge",
+	"task-inactive",
+	"current-task",
+	"task-list",
+])(
+	"offers a compact disclosure only for noncritical typed %s steering",
+	(steeringKind) => {
+		const notice = {
+			...setup,
+			family: "informational" as const,
+			origin: "steering" as const,
+			steeringKind,
+		};
+		expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
+		expect(timelineGap(message, notice)).toBeLessThan(
+			timelineGap(message, message),
+		);
+		expect(
+			steeringNoticeLabel({ ...notice, origin: "system" }),
+		).toBeUndefined();
+		expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
+	},
+);
+
+it("keeps unknown steering, untyped notices, and critical diagnostics visible", () => {
+	const task = {
+		...setup,
+		origin: "steering" as const,
+		steeringKind: "tasks-done",
+	};
+	for (const override of [
+		{ steeringKind: undefined },
+		{ steeringKind: "unknown" },
+		{ steeringKind: "notification" },
+		{ family: "warning" as const },
+		{ eventKind: "error" },
+		{ eventKind: "tool_repair" },
+		{ eventKind: "hook_completed", exitCode: 3 },
+	])
+		expect(steeringNoticeLabel({ ...task, ...override })).toBeUndefined();
+	expect(steeringNoticeLabel({ ...setup, text: "tasks-done" })).toBeUndefined();
 });
 
 it.each([

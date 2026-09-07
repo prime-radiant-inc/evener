@@ -17,3 +17,17 @@ Manual iOS 26.5 iPhone 17 Pro and Android API 35 Pixel 7 evidence uses actual ta
 A controlled AppWire proxy restart followed by an injected task-list rejection exposed sheet state loss during reconnect. The corrected Release builds on both platforms kept their loaded rows under the explicit failure/stale notice. Removing the injected failure and tapping Try again cleared the warning and loaded the authoritative list. The proxy's failure flag was removed; production hub 9180 was untouched. Both final Release builds passed.
 
 Remaining acceptance includes large lists and long prompts/notes, VoiceOver/TalkBack, large text, cross-hub navigation stress and physical devices. Native unsupported-source presentation has boundary tests but has not been manually exercised against such a source. Jobs, subagent navigation and broader work management remain required work.
+
+## Task instruction disclosures — 7 September
+
+A direct v4 iOS run exposed task-control reminder text and completion JSON inline
+in the conversation. Typed task notices now reuse the existing collapsed notice
+control. Expanding preserves the complete original text; collapsing leaves a
+short task label. The control exposes its expanded state and names the current
+show/hide action. Warning and critical notices remain visible, as do goal system
+notices, user input and unknown steering kinds. Existing hub/session/item-scoped
+disclosure state and activity preferences remain authoritative.
+
+Six routing regressions failed before implementation. All 592 native tests and
+TypeScript pass. Luna medium proposed the change and independently reviewed the
+critical-notice guard. Updated Release-device disclosure acceptance is pending.
