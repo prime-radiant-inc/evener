@@ -23,10 +23,12 @@ type TextInputModal struct {
 	prompt string
 	input  string
 	mask   bool
-	// summarize renders a value that is plainly pasted material — multi-line
-	// or long — as a character count instead of the value itself, so a
-	// credential is never echoed while a typed path stays visible.
+	// summarize renders pasted material as a character count instead of the
+	// value itself, so a credential is never echoed while a typed path stays
+	// visible. sawPaste records that the terminal reported a paste, which is
+	// what distinguishes the two.
 	summarize bool
+	sawPaste  bool
 	paths     bool
 	done      bool
 	width     int
@@ -82,27 +84,52 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.paths {
 				m.input = CompleteLastPathSegment(m.input, nil)
 			}
+		case tea.KeySpace:
+			// A space is its own key type, not a rune; a field that drops it
+			// cannot hold a path — or any value — with a space in it.
+			m.input += " "
+		case tea.KeyCtrlJ:
+			// A terminal that does not bracket its pastes sends the document
+			// as ordinary keys, and bubbletea maps LF to this (only CR is
+			// KeyEnter). Keeping it is what lets such a paste accumulate
+			// whole in the field built to receive one.
+			if m.summarize {
+				m.input += "\n"
+			}
 		case tea.KeyRunes:
+			// The terminal marks its pastes, and that is the one signal that
+			// tells material the user brought in from elsewhere — a
+			// credential of any shape — from a path they typed here.
+			m.sawPaste = m.sawPaste || v.Paste
 			m.input += string(v.Runes)
 		}
 	}
 	return m, nil
 }
 
-// pastedMaterial reports whether the value is plainly a pasted document
-// rather than something typed into the field: a line break can only arrive by
-// paste, and no path a user types reaches this length.
+// pastedMaterial reports whether the value is credential material rather than
+// a path the user typed. Every credential document evener accepts is a JSON
+// object (registry.CheckCredentialJSON unmarshals into a struct, so the text
+// must start with "{"), and a line break can only arrive by paste — so those
+// two tests cover the material that must never be echoed, whatever its
+// length. A path stays visible however long it is.
 func (m TextInputModal) pastedMaterial() bool {
-	return strings.ContainsAny(m.input, "\n\r") || len([]rune(m.input)) > pastedValueRunes
+	return m.sawPaste || strings.HasPrefix(strings.TrimSpace(m.input), "{") || strings.ContainsAny(m.input, "\n\r")
 }
 
-// pastedValueRunes is the length past which a value is treated as pasted
-// material. The longest realistic credential path (a home-relative gcloud
-// application-default file) is about 55 runes.
-const pastedValueRunes = 80
+// printable drops the control bytes a paste can carry, so clipboard content
+// cannot drive the terminal from a rendered field.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || (r >= 0x20 && r != 0x7f) {
+			return r
+		}
+		return -1
+	}, s)
+}
 
 func (m TextInputModal) inputView() string {
-	display := m.input
+	display := printable(m.input)
 	if m.summarize && m.pastedMaterial() {
 		return fmt.Sprintf("> [%d characters pasted]", len([]rune(m.input)))
 	}

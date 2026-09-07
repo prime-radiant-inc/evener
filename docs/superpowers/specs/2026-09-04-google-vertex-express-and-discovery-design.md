@@ -365,12 +365,27 @@ now opens a paste prompt and stores the document through the same
 
 A terminal delivers a bracketed paste as one key message carrying every
 rune, newlines included, so a pretty-printed JSON document arrives whole and
-its newlines never reach the submit branch. The prompt also accepts the path
-to the file holding the document, which is how a terminal that does not
-bracket its pastes gets one in; the path is read on the machine the user
-typed it on, not the hub's, and the field keeps path completion for it. The
-field never echoes pasted material — it renders as a character count — while
-a typed path stays visible.
+its newlines never reach the submit branch. Measured against bubbletea's own
+reader, that holds at every size tried, up to 100k runes.
+
+Without bracketing, the document arrives as ordinary keys, and the outcome
+turns on which byte the terminal sends for a line break: LF maps to
+`KeyCtrlJ`, CR to `KeyEnter`. The field keeps both LF and space (it dropped
+them before), so an LF paste still accumulates whole. A CR paste submits at
+each line and cannot work; the prompt therefore also accepts the path to the
+file holding the document, read on the machine the user typed it on, not the
+hub's, with the field's path completion.
+
+The field never echoes credential material — anything the terminal reports as
+a paste, anything starting with `{`, and anything containing a line break,
+renders as a character count — while a typed path stays visible however long
+it is. Every document the hub accepts is a JSON object, so those tests cover
+them all without a length threshold, and the paste mark covers a secret of
+any shape pasted here by mistake.
+Control bytes are stripped from what is rendered, since clipboard content
+reaches the view. A value that is neither a document nor a readable path is
+reported by its reason alone: the error line is rendered and outlives the
+panel, so it repeats none of what was submitted.
 
 ## 5. End-to-end flows the hub must support after this change
 
