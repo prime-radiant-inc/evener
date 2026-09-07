@@ -377,7 +377,7 @@ func (h *SimulatorFixtureHub) WriteReadyManifest(path string, manifest Simulator
 }
 
 func (h *SimulatorFixtureHub) Start() (SimulatorReadyManifest, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return SimulatorReadyManifest{}, err
 	}
@@ -438,8 +438,9 @@ func main() {
 	<-ctx.Done()
 	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := hub.Shutdown(shutdownCtx); err != nil {
+	err = hub.Shutdown(shutdownCtx)
+	cancel()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

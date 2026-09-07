@@ -130,7 +130,7 @@ func TestNativeAuthHarness(t *testing.T) {
 	select {
 	case <-stop:
 	case err := <-done:
-		if err != http.ErrServerClosed {
+		if !errors.Is(err, http.ErrServerClosed) {
 			t.Fatal(err)
 		}
 	}
