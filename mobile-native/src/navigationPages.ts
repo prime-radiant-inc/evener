@@ -1,5 +1,6 @@
 import type {
 	NavigationInvalidatedPayload,
+	NavigationInvalidationTarget,
 	NavigationMutation,
 	NavigationReadParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -99,7 +100,7 @@ export class NavigationPages<T> {
 	constructor(
 		private client: ConversationClientLike,
 		private params: NativeNavigationParams,
-		private field: "projects" | "sessions",
+		private field: "projects" | "sessions" | "pin_sections",
 		private key: (row: T) => string,
 		private limit = 50,
 	) {}
@@ -134,26 +135,39 @@ export class NavigationPages<T> {
 		const gap = p.sequence > this.sequence + 1;
 		this.sequence = p.sequence;
 		this.notificationEpoch++;
-		const targets = p.targets.filter(
-			(t) =>
-				(this.params.resource === "section" &&
-					t.kind === "section" &&
-					t.section === this.params.section) ||
-				(this.params.resource === "pin_section" &&
-					t.kind === "pin_section" &&
-					t.sectionId === this.params.sectionId) ||
-				(this.params.resource === "catalog" &&
-					t.kind === "catalog" &&
-					t.catalog === this.params.catalog) ||
-				(this.params.resource === "project_page" &&
-					(t.kind === "all_loaded_projects" ||
-						(t.kind === "project" && t.projectKey === this.params.projectKey))),
-		);
+		const targets = p.targets.filter((target) => this.matchesTarget(target));
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
 		for (const t of targets)
 			this.requiredRevision = Math.max(this.requiredRevision, t.revision ?? 0);
 		if (targets.length > 0 || gap) this.markStale();
 	}
+	private matchesTarget(t: NavigationInvalidationTarget) {
+		const p = this.params;
+		return (
+			(p.resource === "section" &&
+				t.kind === "section" &&
+				t.section === p.section) ||
+			(p.resource === "pin_catalog" && t.kind === "pin_catalog") ||
+			(p.resource === "pin_section" &&
+				t.kind === "pin_section" &&
+				t.sectionId === p.sectionId) ||
+			(p.resource === "catalog" &&
+				t.kind === "catalog" &&
+				t.catalog === p.catalog) ||
+			(p.resource === "project_page" &&
+				(t.kind === "all_loaded_projects" ||
+					(t.kind === "project" && t.projectKey === p.projectKey)))
+		);
+	}
+	private receiptRevision(receipt: NavigationMutation) {
+		return Math.max(
+			0,
+			...receipt.targets
+				.filter((target) => this.matchesTarget(target))
+				.map((target) => target.revision ?? 0),
+		);
+	}
+
 	cancel() {
 		this.request++;
 		this.publish({ loading: false });
@@ -167,7 +181,7 @@ export class NavigationPages<T> {
 	async refreshAfter(receipt: NavigationMutation) {
 		this.mutationFloor = Math.max(
 			this.mutationFloor,
-			...receipt.targets.map((t) => t.revision ?? 0),
+			this.receiptRevision(receipt),
 		);
 		const epoch = this.notificationEpoch;
 		let ok = await this.load(true, receipt);
@@ -224,6 +238,30 @@ export class NavigationPages<T> {
 					"Could not read this navigation page. Refresh to try again.",
 				);
 			}
+			const receiptRevision = receipt ? this.receiptRevision(receipt) : 0;
+			if (
+				reset &&
+				epoch === this.notificationEpoch &&
+				decoded.version.generationId !== this.notifiedGeneration
+			) {
+				this.notifiedGeneration = decoded.version.generationId;
+				this.requiredRevision = 0;
+				this.sequence = 0;
+			}
+			if (
+				(receipt &&
+					(decoded.version.generationId !== receipt.generation_id ||
+						decoded.version.revision < receiptRevision)) ||
+				(this.notifiedGeneration !== "" &&
+					decoded.version.generationId !== this.notifiedGeneration) ||
+				decoded.version.revision <
+					Math.max(this.requiredRevision, this.mutationFloor) ||
+				uncertain !== this.uncertain
+			) {
+				this.publish({ loading: false });
+				this.markStale();
+				return false;
+			}
 			if (decoded.status === "gone") {
 				this.normalized = null;
 				this.offset = 0;
@@ -241,6 +279,13 @@ export class NavigationPages<T> {
 				return true;
 			}
 			if (decoded.status === "not_modified") {
+				if (reset) this.offset = this.firstPageRowCount;
+				this.version = JSON.stringify([
+					decoded.version.generationId,
+					decoded.version.revision,
+				]);
+				if (decoded.version.revision >= this.mutationFloor)
+					this.mutationFloor = 0;
 				this.publish({
 					loaded: true,
 					rows: reset
@@ -283,32 +328,6 @@ export class NavigationPages<T> {
 				throw new Error(
 					"The hub returned an invalid navigation page. Refresh to try again.",
 				);
-			const receiptRevision = receipt
-				? Math.max(0, ...receipt.targets.map((t) => t.revision ?? 0))
-				: 0;
-			if (
-				reset &&
-				epoch === this.notificationEpoch &&
-				decoded.version.generationId !== this.notifiedGeneration
-			) {
-				this.notifiedGeneration = decoded.version.generationId;
-				this.requiredRevision = 0;
-				this.sequence = 0;
-			}
-			if (
-				(receipt &&
-					(decoded.version.generationId !== receipt.generation_id ||
-						decoded.version.revision < receiptRevision)) ||
-				(this.notifiedGeneration !== "" &&
-					decoded.version.generationId !== this.notifiedGeneration) ||
-				decoded.version.revision <
-					Math.max(this.requiredRevision, this.mutationFloor) ||
-				uncertain !== this.uncertain
-			) {
-				this.publish({ loading: false });
-				this.markStale();
-				return false;
-			}
 			const stringVersion = JSON.stringify([
 				decoded.version.generationId,
 				decoded.version.revision,
