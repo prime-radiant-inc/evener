@@ -12,6 +12,12 @@ import {
 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
+	type KeybindingDraftCheckpoint,
+	KeybindingDraftRepository,
+	type KeybindingDraftStorage,
+	keybindingRules,
+} from "./keybindingDraftRepository";
+import {
 	type TranscriptDraftCheckpoint,
 	TranscriptDraftRepository,
 	type TranscriptDraftStorage,
@@ -85,7 +91,7 @@ function decodeKeybindings(value: unknown): KeybindingsOverrides {
 	return {
 		version: 1,
 		revision: value.revision,
-		rules: value.rules,
+		rules: keybindingRules(value.rules),
 		...(value.loadError === undefined ? {} : { loadError: value.loadError }),
 	};
 }
@@ -135,15 +141,21 @@ export class NativePreferences {
 	private readonly client: ConversationClientLike;
 	private readonly unsubscribe: () => void;
 	private generation = 0;
+	private keybindingWriteEpoch = 0;
 	private disposed = false;
 	private readonly transcriptDrafts?: TranscriptDraftRepository;
+	private readonly keybindingDrafts?: KeybindingDraftRepository;
 
 	constructor(
 		client: ConversationClientLike,
 		features: NativeFeatures,
 		transcriptStorage?: TranscriptDraftStorage,
+		keybindingStorage?: KeybindingDraftStorage,
 	) {
 		this.client = client;
+		this.keybindingDrafts = keybindingStorage
+			? new KeybindingDraftRepository(keybindingStorage)
+			: undefined;
 		this.transcriptDrafts = transcriptStorage
 			? new TranscriptDraftRepository(transcriptStorage)
 			: undefined;
@@ -165,6 +177,7 @@ export class NativePreferences {
 			this.onNotification(notification),
 		);
 		if (this.transcriptDrafts) this.restoreTranscriptDraft();
+		if (this.keybindingDrafts) this.restoreKeybindingDraft();
 	}
 
 	getSnapshot = (): NativePreferencesSnapshot => this.state;
@@ -190,16 +203,17 @@ export class NativePreferences {
 				const value = decodeKeybindings(notification.params);
 				const current = this.state.keybindings.confirmed;
 				if (current && value.revision < current.revision) return;
-				const pending =
-					this.state.keybindings.saving ||
-					this.state.keybindings.writeUncertain;
+				const draft = this.state.keybindings.draft;
 				this.publish({
 					keybindings: {
 						...this.state.keybindings,
 						confirmed: value,
-						draft: pending ? this.state.keybindings.draft : null,
-						error: pending ? this.state.keybindings.error : null,
-						conflict: pending,
+						draft,
+						error:
+							draft || this.state.keybindings.storageUnavailable
+								? this.state.keybindings.error
+								: null,
+						conflict: draft ? value.revision !== draft.revision : false,
 						writeUncertain: this.state.keybindings.writeUncertain,
 					},
 				});
@@ -255,7 +269,12 @@ export class NativePreferences {
 		if (this.state.transcriptMobile.storageUnavailable)
 			this.restoreTranscriptDraft();
 		const reads: Promise<void>[] = [];
-		if (this.state.keybindings.support === "supported")
+		if (this.state.keybindings.storageUnavailable)
+			this.restoreKeybindingDraft();
+		if (
+			this.state.keybindings.support === "supported" &&
+			!this.state.keybindings.storageUnavailable
+		)
 			reads.push(this.refreshKeybindings(generation));
 		if (
 			this.state.transcriptMobile.support === "supported" &&
@@ -266,6 +285,7 @@ export class NativePreferences {
 	}
 
 	private async refreshKeybindings(generation: number): Promise<void> {
+		const writeEpoch = this.keybindingWriteEpoch;
 		this.publish({
 			keybindings: { ...this.state.keybindings, loading: true, error: null },
 		});
@@ -274,24 +294,37 @@ export class NativePreferences {
 				await this.client.request("evener/settings/keybindings/get", {}),
 			);
 			if (generation !== this.generation || this.disposed) return;
-			if (
-				this.state.keybindings.saving ||
-				(this.state.keybindings.confirmed?.revision ?? -1) > value.revision
-			) {
-				this.publish({
-					keybindings: { ...this.state.keybindings, loading: false },
-				});
+			const domain = this.state.keybindings;
+			if (writeEpoch !== this.keybindingWriteEpoch) {
+				this.publish({ keybindings: { ...domain, loading: false } });
 				return;
 			}
+			if (
+				domain.saving ||
+				(!value.loadError &&
+					(domain.confirmed?.revision ?? -1) > value.revision)
+			) {
+				this.publish({ keybindings: { ...domain, loading: false } });
+				return;
+			}
+			const draft = domain.draft;
+			if (draft && domain.writeUncertain && !value.loadError)
+				this.persistKeybindingDraft({
+					baseRevision: draft.revision,
+					rules: draft.rules,
+					writeUncertain: false,
+				});
 			this.publish({
 				keybindings: {
 					...this.state.keybindings,
 					loading: false,
 					confirmed: value,
-					draft: null,
-					error: null,
-					conflict: false,
-					writeUncertain: false,
+					draft,
+					conflict: draft ? value.revision !== draft.revision : false,
+					writeUncertain: value.loadError ? domain.writeUncertain : false,
+					error: value.loadError
+						? "The hub could not load its saved shortcuts. Repair the hub settings file before editing."
+						: null,
 				},
 			});
 		} catch (error) {
@@ -359,61 +392,77 @@ export class NativePreferences {
 		}
 	}
 
-	async saveKeybindings(
-		rules: readonly KeybindingsRule[],
-	): Promise<KeybindingsOverrides> {
-		const current = this.state.keybindings.confirmed;
+	private assertKeybindingsEditable(): KeybindingsOverrides {
+		const domain = this.state.keybindings;
 		if (
 			this.disposed ||
-			this.state.keybindings.saving ||
-			this.state.keybindings.writeUncertain ||
-			current?.loadError ||
-			this.state.keybindings.support !== "supported" ||
-			current === null
+			domain.saving ||
+			domain.storageUnavailable ||
+			domain.writeUncertain ||
+			domain.support !== "supported" ||
+			!domain.confirmed ||
+			domain.confirmed.loadError
 		)
 			throw new Error("Hub keybinding settings are unavailable.");
-		const draft = { version: 1, revision: current.revision, rules: [...rules] };
+		return domain.confirmed;
+	}
+
+	async editKeybindings(rules: readonly KeybindingsRule[]): Promise<void> {
+		const current = this.assertKeybindingsEditable();
+		const checked = keybindingRules(rules);
+		const revision = this.state.keybindings.draft?.revision ?? current.revision;
+		this.persistKeybindingDraft({
+			baseRevision: revision,
+			rules: checked,
+			writeUncertain: false,
+		});
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: { version: 1, revision, rules: checked },
+				conflict: revision !== current.revision,
+				error: null,
+			},
+		});
+	}
+
+	async saveKeybindings(
+		rules?: readonly KeybindingsRule[],
+	): Promise<KeybindingsOverrides> {
+		const current = this.assertKeybindingsEditable();
+		const existing = this.state.keybindings.draft;
+		if (this.state.keybindings.conflict)
+			throw new Error(
+				"Review the current shortcuts before saving your changes.",
+			);
+		const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
+		const revision = existing?.revision ?? current.revision;
+		// This durable intent must exist before the request can leave the device.
+		const checkpoint = this.persistKeybindingDraft({
+			baseRevision: revision,
+			rules: checked,
+			writeUncertain: true,
+		});
+		this.keybindingWriteEpoch += 1;
 		this.publish({
 			keybindings: {
 				...this.state.keybindings,
 				saving: true,
-				draft,
+				draft: { version: 1, revision, rules: checked },
 				error: null,
-				conflict: false,
 			},
 		});
+		let value: KeybindingsOverrides;
 		try {
-			const value = decodeKeybindings(
+			if (this.disposed) throw new Error("Shortcut save was cancelled.");
+			value = decodeKeybindings(
 				await this.client.request("evener/settings/keybindings/patch", {
-					expectedRevision: current.revision,
-					config: { version: 1, rules: [...rules] },
+					expectedRevision: revision,
+					config: { version: 1, rules: checked },
 				}),
 			);
-			if (this.disposed) return value;
-			const latest = this.state.keybindings.confirmed;
-			if (latest && value.revision < latest.revision) {
-				this.publish({
-					keybindings: {
-						...this.state.keybindings,
-						saving: false,
-						conflict: true,
-						writeUncertain: true,
-					},
-				});
-				return value;
-			}
-			this.publish({
-				keybindings: {
-					...this.state.keybindings,
-					saving: false,
-					confirmed: value,
-					draft: null,
-					error: null,
-					conflict: false,
-					writeUncertain: false,
-				},
-			});
-			return value;
+			if (value.loadError || value.revision < revision)
+				throw new Error("Hub returned invalid keybinding settings.");
 		} catch (error) {
 			this.publish({
 				keybindings: {
@@ -425,6 +474,129 @@ export class NativePreferences {
 				},
 			});
 			throw error;
+		}
+		const latest = this.state.keybindings.confirmed;
+		const conflict =
+			!this.disposed && !!latest && latest.revision > value.revision;
+		let storageError: string | null = null;
+		try {
+			if (conflict)
+				this.persistKeybindingDraft({ ...checkpoint, writeUncertain: false });
+			else this.keybindingDrafts?.removeIf(checkpoint);
+		} catch {
+			storageError =
+				"The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
+		}
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				saving: false,
+				confirmed: conflict ? latest : value,
+				draft: conflict || storageError ? this.state.keybindings.draft : null,
+				conflict,
+				writeUncertain: false,
+				storageUnavailable: storageError !== null,
+				error: storageError,
+			},
+		});
+		return value;
+	}
+
+	async discardKeybindingsDraft(): Promise<void> {
+		this.assertKeybindingsEditable();
+		try {
+			const checkpoint = this.keybindingDrafts?.load();
+			if (checkpoint) this.keybindingDrafts?.removeIf(checkpoint);
+		} catch {
+			this.publish({
+				keybindings: { ...this.state.keybindings, storageUnavailable: true },
+			});
+			throw new Error("Could not discard the shortcut draft locally.");
+		}
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: null,
+				conflict: false,
+				error: null,
+			},
+		});
+	}
+
+	async rebaseKeybindingsDraft(reviewedRevision: number): Promise<void> {
+		const current = this.assertKeybindingsEditable();
+		const draft = this.state.keybindings.draft;
+		if (
+			!draft ||
+			this.state.keybindings.loading ||
+			current.revision !== reviewedRevision
+		)
+			throw new Error("Shortcuts changed again. Review the current values.");
+		this.persistKeybindingDraft({
+			baseRevision: current.revision,
+			rules: draft.rules,
+			writeUncertain: false,
+		});
+		this.publish({
+			keybindings: {
+				...this.state.keybindings,
+				draft: { ...draft, revision: current.revision },
+				conflict: false,
+				error: null,
+			},
+		});
+	}
+
+	private persistKeybindingDraft(
+		input: Omit<KeybindingDraftCheckpoint, "id">,
+	): KeybindingDraftCheckpoint {
+		try {
+			const checkpoint = {
+				...input,
+				id: this.keybindingDrafts?.createId() ?? "memory",
+			};
+			this.keybindingDrafts?.save(checkpoint);
+			return checkpoint;
+		} catch {
+			this.publish({
+				keybindings: { ...this.state.keybindings, storageUnavailable: true },
+			});
+			throw new Error("Could not save the shortcut draft locally.");
+		}
+	}
+
+	private restoreKeybindingDraft(): void {
+		try {
+			const checkpoint = this.keybindingDrafts?.load();
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					draft: checkpoint
+						? {
+								version: 1,
+								revision: checkpoint.baseRevision,
+								rules: checkpoint.rules,
+							}
+						: null,
+					writeUncertain: checkpoint?.writeUncertain ?? false,
+					storageUnavailable: false,
+					error: null,
+					conflict:
+						!!checkpoint &&
+						!!this.state.keybindings.confirmed &&
+						checkpoint.baseRevision !==
+							this.state.keybindings.confirmed.revision,
+				},
+			});
+		} catch {
+			this.publish({
+				keybindings: {
+					...this.state.keybindings,
+					storageUnavailable: true,
+					error:
+						"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
+				},
+			});
 		}
 	}
 

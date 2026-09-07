@@ -49,6 +49,11 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 					hubId: activeProfile.id,
 				})
 			}
+			openKeybindings={() =>
+				navigation.navigate("KeybindingPreferences", {
+					hubId: activeProfile.id,
+				})
+			}
 			openProviders={() =>
 				navigation.navigate("Providers", { hubId: activeProfile.id })
 			}
@@ -95,6 +100,7 @@ function HubSettings({
 	hubId,
 	hubName,
 	openTranscript,
+	openKeybindings,
 	openProviders,
 	openPlugins,
 	openLaunchSettings,
@@ -103,6 +109,7 @@ function HubSettings({
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
+	openKeybindings(): void;
 	openProviders(): void;
 	openPlugins(): void;
 	openLaunchSettings(): void;
@@ -151,6 +158,7 @@ function HubSettings({
 				</View>
 				<Action onPress={openLaunchSettings}>Launch defaults</Action>
 				<Action onPress={openTranscript}>Transcript display</Action>
+				<Action onPress={openKeybindings}>Keyboard shortcuts</Action>
 				<Section title="Hub update">
 					<HubUpgradeSection
 						state={upgradeState}

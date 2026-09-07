@@ -33,11 +33,14 @@ function byCanonicalOrder(a: string, b: string): number {
 /** Parses a tinykeys keybinding string ("$mod+K", "Shift+A b") into the canonical AST. */
 export function parseChord(input: string): KeySequence {
   if (input.trim() === "") throw new Error("cannot parse an empty keybinding");
-  return parseKeybinding(input).map(([required, optional, key]) => ({
-    modifiers: [...required].sort(byCanonicalOrder),
-    optionalModifiers: [...optional].sort(byCanonicalOrder),
-    key,
-  }));
+  return parseKeybinding(input).map(([required, optional, key]) => {
+    if (key === "") throw new Error("cannot parse a keybinding with an empty key");
+    return {
+      modifiers: [...required].sort(byCanonicalOrder),
+      optionalModifiers: [...optional].sort(byCanonicalOrder),
+      key,
+    };
+  });
 }
 
 /** Returns a copy of the sequence with `modifier` added as an OPTIONAL
