@@ -243,3 +243,43 @@ Offline behavior checks run from the package:
 ```sh
 node --test examples/preferences.contract.mjs
 ```
+
+### Organization catalog and pin management
+
+`organization.mjs` reads the v2 manifest and every pin catalog page, with at
+most 40 sections per request. Assign and unpin also read the selected session's
+current location. The default command only reads.
+
+Write mode performs one explicitly selected assign, unpin, rename, or delete
+operation. It requires an owned endpoint matching the connected URL, plus a
+JSON target. For example, assign a fixture session to a named section:
+
+```sh
+EVENER_ORGANIZATION_MUTATION=1 \
+EVENER_ORGANIZATION_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_ORGANIZATION_ACTION=assign \
+EVENER_ORGANIZATION_TARGET='{"sessionRef":"opaque-owned-ref","sectionName":"Focus"}' \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/path/on/test-hub \
+node node_modules/@evener/appwire-client/examples/organization.mjs
+```
+
+Assign requires exactly one of `sectionId` or `sectionName`. Unpin takes
+`sessionRef`; rename takes `sectionId` and `name`; delete takes `sectionId`.
+Deleting a pinned section preserves its sessions.
+
+The recipe keeps one generation across its reads and one catalog revision
+across catalog pages. Revisions and ETags belong to individual resources:
+manifest, catalog, and location versions can differ. Readback checks receipt
+revision floors for the manifest and catalog it loaded. It does not treat a
+pin-section or project revision as a location revision.
+
+Exit 0 reports a successful read or an acknowledged operation with readback.
+Exit 2 reports rejection, an unknown mutation outcome, or acknowledged but
+failed readback. Exit 1 reports input, connection, or initial-read failure.
+An unknown outcome is retained even if a later read succeeds; the recipe never
+replays the mutation or claims that readback proves which client made a change.
+
+Run `node --test examples/organization.contract.mjs` for deterministic boundary
+tests. Package qualification also runs these checks outside the checkout.
