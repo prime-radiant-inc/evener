@@ -56,6 +56,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		return entry, true, nil
 	}
 	var jobTreeRootID string
+	var subagentAncestry, reachedRoot bool
 	seen := make(map[string]bool)
 	for !seen[threadID] {
 		seen[threadID] = true
@@ -74,10 +75,12 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		if !ok {
 			break
 		}
+		subagentAncestry = subagentAncestry || child.Meta.IsSubagent
 		if jobTreeRootID == "" {
 			jobTreeRootID = child.Meta.JobTreeRootSessionID
 		}
 		if child.Meta.ParentSessionID == "" {
+			reachedRoot = !child.Meta.IsSubagent
 			break
 		}
 		parentID := child.Meta.ParentSessionID
@@ -90,6 +93,10 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		// reports unreadable ownership instead of permitting a delegate write.
 		edges = append(edges, ownershipEdge{stateDir: stateDir, ownerID: parentID, childID: threadID, isSubagent: child.Meta.IsSubagent})
 		threadID = parentID
+	}
+
+	if subagentAncestry && !reachedRoot {
+		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify incomplete subagent ancestry at session %s", threadID)
 	}
 
 	// An incomplete ancestry chain cannot establish that an incompatible

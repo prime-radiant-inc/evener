@@ -262,8 +262,10 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
+	var unconfirmedOwnership bool
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
+		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
 	}
 	var metas []schema.SessionMeta
 	var pastEntries []hubcore.PastEntry
@@ -276,15 +278,12 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	}
 	var ownershipErr error
 	// Healthy navigation snapshots need no persisted ownership scan.
-	if slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
+	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
 		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
 	}) {
 		// Persisted delegates have no rendezvous of their own. Preserve the
 		// authenticated owner's restart restriction in every navigation projection.
 		for _, past := range pastEntries {
-			if past.Meta.ParentSessionID == "" {
-				continue
-			}
 			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
 			if err != nil {
 				if ownershipErr == nil {
