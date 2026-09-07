@@ -861,7 +861,9 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 // SubscribeWithAdmission installs an immediate subscription and consumes the
 // request's admission at one boundary. Registration gates precede admissionMu,
 // matching capture; unsubscribe cannot pass eligibility before installation.
-func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool) error {
+// An optional expectedLifecycle is the identity already resolved by the handler.
+// A mismatch rejects without consuming admission or changing subscriptions.
+func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, expectedLifecycle ...string) error {
 	conn, _ := ctx.Value(connectionContextKey{}).(*Connection)
 	if conn == nil {
 		return nil
@@ -883,7 +885,7 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool) 
 	defer conn.admissionMu.Unlock()
 	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
 	admission, allowed := conn.claimSubscriptionAdmission(responseID)
-	if !allowed {
+	if !allowed || (admission != nil && len(expectedLifecycle) != 0 && admission.threadID != expectedLifecycle[0]) {
 		return appwire.SessionUnavailable("thread subscription is unavailable")
 	}
 	server.mu.RLock()
@@ -924,16 +926,28 @@ func ReplaceSubscriptions(ctx context.Context, threadID string) bool {
 	return true
 }
 
+// SubscriptionTarget is one resolved delivery/lifecycle pair. Capture resolves
+// it under the projection and delivery gates, before taking admissionMu.
+// LifecycleKey is compared with ingress admission ownership, never substituted
+// for the delivery key or used to retarget a pending admission.
+type SubscriptionTarget struct {
+	ThreadID     string
+	LifecycleKey string
+}
+
 // CaptureSubscription registers a buffering hydration generation, captures the
 // authoritative snapshot under the projection gate, and arranges to release
 // only post-cut records after the matching response enters the connection's
 // send queue. A false snapshot result restores the previous ownership.
+// When supplied, resolveTarget replaces threadID and atomically resolves D+A1
+// under the registration gates, before admission validation or hydration changes.
 func CaptureSubscription(
 	ctx context.Context,
 	replace bool,
 	threadID func() string,
 	currentSequence func() uint64,
 	snapshot func() bool,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	return captureSubscription(
 		ctx,
@@ -943,6 +957,7 @@ func CaptureSubscription(
 		snapshot,
 		CaptureSubscriptionHandoff{},
 		true,
+		resolveTarget...,
 	)
 }
 
@@ -957,6 +972,7 @@ func CaptureSubscriptionWithHandoff(
 	currentSequence func() uint64,
 	snapshot func() bool,
 	handoff CaptureSubscriptionHandoff,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	return captureSubscription(
 		ctx,
@@ -966,6 +982,7 @@ func CaptureSubscriptionWithHandoff(
 		snapshot,
 		handoff,
 		false,
+		resolveTarget...,
 	)
 }
 
@@ -977,10 +994,14 @@ func captureSubscription(
 	snapshot func() bool,
 	handoff CaptureSubscriptionHandoff,
 	releaseOnErrorResponse bool,
+	resolveTarget ...func() SubscriptionTarget,
 ) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
 		if handoff.Commit == nil && handoff.Abort == nil {
+			if len(resolveTarget) != 0 && resolveTarget[0]().ThreadID == "" {
+				return false
+			}
 			return snapshot()
 		}
 		if handoff.Abort != nil {
@@ -1015,14 +1036,20 @@ func captureSubscription(
 	if !registered {
 		return abortAfterUnlock()
 	}
-	targetThreadID := threadID()
+	var target SubscriptionTarget
+	if len(resolveTarget) != 0 {
+		target = resolveTarget[0]()
+	} else {
+		target.ThreadID = threadID()
+	}
+	targetThreadID := target.ThreadID
 	if targetThreadID == "" {
 		return abortAfterUnlock()
 	}
 	responseID, _ := ctx.Value(requestIDContextKey{}).(string)
 	conn.admissionMu.Lock()
 	admission, allowed := conn.claimSubscriptionAdmission(responseID)
-	if admission != nil && !allowed {
+	if admission != nil && (!allowed || (len(resolveTarget) != 0 && admission.threadID != target.LifecycleKey)) {
 		conn.admissionMu.Unlock()
 		return abortAfterUnlock()
 	}

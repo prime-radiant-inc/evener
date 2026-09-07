@@ -56,6 +56,7 @@ type relayKeyState struct {
 type hubThreadReadResult struct {
 	// relayKey is the acquired delivery owner, not the response's session ID.
 	relayKey          string
+	lifecycleKey      string
 	response          appwire.ThreadReadResponse
 	itemCandidates    appsource.ItemCandidateResult
 	hasItemCandidates bool
@@ -303,14 +304,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
 	}
-	registerSubscription := func(ctx context.Context, relayKey string, replace bool) error {
+	registerSubscription := func(ctx context.Context, relayKey string, replace bool, expectedLifecycle ...string) error {
 		if cfg.RelayHooks.RegisterSubscription != nil {
 			if !cfg.RelayHooks.RegisterSubscription(ctx, relayKey, replace) {
 				return context.Canceled
 			}
 			return nil
 		}
-		return appserver.SubscribeWithAdmission(ctx, relayKey, replace)
+		return appserver.SubscribeWithAdmission(ctx, relayKey, replace, expectedLifecycle...)
 	}
 	relayTarget := threadRelayTarget
 	var relayMu sync.Mutex
@@ -770,12 +771,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		source appsource.RelaySessionSource,
 		base appsource.Source,
 		params appwire.ThreadReadParams,
+		canonicalRef appwire.Ref,
 	) (*hubRelayHandle, *relayKeyState, func(context.Context, appwire.Thread) error, func(), error) {
 		relayKey, _, err := relayTarget(base, params)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-		canonicalRef, err := source.ResolveRelaySession(params)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
@@ -1141,9 +1139,25 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if err := deletionFenceError(cfg, params.Ref, params.ThreadID, ""); err != nil {
 			return nil, err
 		}
-		handle, state, publish, release, err := acquireRelaySession(ctx, relaySource, source, params)
+		var canonicalRef appwire.Ref
+		var lifecycleKey string
+		var err error
+		if paired, ok := relaySource.(interface {
+			ResolveRelaySessionWithAdmission(appwire.ThreadReadParams) (appwire.Ref, string, error)
+		}); ok {
+			canonicalRef, lifecycleKey, err = paired.ResolveRelaySessionWithAdmission(params)
+		} else {
+			canonicalRef, err = relaySource.ResolveRelaySession(params)
+		}
 		if err != nil {
 			return nil, err
+		}
+		handle, state, publish, release, err := acquireRelaySession(ctx, relaySource, source, params, canonicalRef)
+		if err != nil {
+			return nil, err
+		}
+		if lifecycleKey == "" {
+			lifecycleKey = state.relayKey
 		}
 		var releaseOnce sync.Once
 		releaseCommand := func() { releaseOnce.Do(release) }
@@ -1163,10 +1177,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		result, err := handle.lease.ReadWithRoutePublication(ctx, readParams, publish)
 		if result.Handoff != nil {
 			read = &hubThreadReadResult{
-				relayKey: state.relayKey,
-				response: result.Response,
-				handoff:  result.Handoff,
-				release:  releaseCommand,
+				relayKey:     state.relayKey,
+				lifecycleKey: lifecycleKey,
+				response:     result.Response,
+				handoff:      result.Handoff,
+				release:      releaseCommand,
 			}
 		}
 		if err != nil {
@@ -1226,6 +1241,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						Commit: func() { read.finish(true) },
 						Abort:  func() { read.finish(false) },
 					},
+					func() appserver.SubscriptionTarget {
+						return appserver.SubscriptionTarget{ThreadID: relayKey, LifecycleKey: read.lifecycleKey}
+					},
 				), nil
 			},
 		)
@@ -1263,7 +1281,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if !read.handoff.Prepare() {
 					return false, appwire.SessionUnavailable("relay handoff could not be prepared")
 				}
-				if err := registerSubscription(ctx, relayKey, params.ReplaceSubscription); err != nil {
+				if err := registerSubscription(ctx, relayKey, params.ReplaceSubscription, read.lifecycleKey); err != nil {
 					return false, err
 				}
 				if !read.finish(true) {
