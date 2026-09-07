@@ -4,6 +4,11 @@ import {
   markerText,
   stripMarker,
 } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
+import { harnessSupportsPluginSelection } from "../../cmd/evener-hub/frontend/src/panes/spawn/harnessModels";
+import {
+  pluginSelectionIssues,
+  withPluginSelection,
+} from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
 import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
@@ -67,6 +72,7 @@ export function createNewSessionStore(hubId: string) {
   let catalog = 0;
   let refreshingModels = false;
   let loadedContext: string | null = null;
+  let creationRequested = false;
   return createStore<Form>((set, get) => ({
     cwd: "",
     prompt: "",
@@ -114,6 +120,8 @@ export function createNewSessionStore(hubId: string) {
     modelError: null,
     bind(next) {
       if (service === next) return;
+      const uncertainCreation = get().submitting && creationRequested;
+      creationRequested = false;
       service = next;
       connection++;
       refreshingModels = false;
@@ -127,7 +135,7 @@ export function createNewSessionStore(hubId: string) {
         reasoning: "",
         loadingModels: false,
         submitting: false,
-        ...(get().submitting
+        ...(uncertainCreation
           ? {
               error:
                 "Creation could not be confirmed. Check the session list before trying again; the session may exist.",
@@ -154,7 +162,16 @@ export function createNewSessionStore(hubId: string) {
       if (refresh) await get().loadModels();
     },
     async setHarness(harness) {
-      set({ harness });
+      if (get().submitting) return;
+      set({
+        harness,
+        launchOverrides: harnessSupportsPluginSelection(
+          harness,
+          get().harnesses,
+        )
+          ? get().launchOverrides
+          : withPluginSelection(get().launchOverrides, { mode: "default" }),
+      });
       await get().loadModels();
     },
     setPrompt(prompt) {
@@ -273,7 +290,12 @@ export function createNewSessionStore(hubId: string) {
       const { cwd, prompt, harness, model, reasoning, submitting } = get();
       if (!current || submitting || refreshingModels || !cwd.trim())
         return { status: "blocked" };
-      const launchOverrides = get().launchOverrides;
+      const launchOverrides = harnessSupportsPluginSelection(
+        harness,
+        get().harnesses,
+      )
+        ? get().launchOverrides
+        : withPluginSelection(get().launchOverrides, { mode: "default" });
       const settingsModel = creationModel(get().models, model, launchOverrides);
       const input = buildComposerInput(
         prompt,
@@ -292,7 +314,30 @@ export function createNewSessionStore(hubId: string) {
         launchOverrides,
       );
       set({ submitting: true, error: null });
+      let startDispatched = false;
+      creationRequested = false;
       try {
+        if (launchOverrides.enabledPlugins !== undefined) {
+          const preview = await current.previewPlugins({
+            cwd: cwd.trim(),
+            launchOverrides,
+          });
+          if (generation !== connection) return { status: "obsolete" };
+          const issues = pluginSelectionIssues(
+            { mode: "explicit", names: launchOverrides.enabledPlugins },
+            preview,
+          );
+          if (issues.length) {
+            set({
+              error: issues
+                .map((issue) => `${issue.name}: ${issue.reason}`)
+                .join("\n"),
+            });
+            return { status: "blocked" };
+          }
+        }
+        startDispatched = true;
+        creationRequested = true;
         const result = await current.start({
           cwd: cwd.trim(),
           ...(input.length ? { input } : {}),
@@ -311,9 +356,10 @@ export function createNewSessionStore(hubId: string) {
       } catch (error) {
         if (generation !== connection) return { status: "obsolete" };
         set({
-          error:
-            (error instanceof WireError ? `${error.message}\n\n` : "") +
-            "Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist.",
+          error: startDispatched
+            ? (error instanceof WireError ? `${error.message}\n\n` : "") +
+              "Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist."
+            : "Could not validate selected plugins. No session was requested. Reconnect or retry; your selection is kept.",
         });
         return { status: "failed" };
       } finally {

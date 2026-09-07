@@ -17,6 +17,8 @@ import type {
   MethodTypes,
   ModelListParams,
   ModelListResponse,
+  PluginPreviewParams,
+  PluginPreviewResponse,
   ProjectsRecentResponse,
   Thread,
   ThreadStartResponse,
@@ -39,6 +41,7 @@ export interface NewSessionService {
   recentProjects(): Promise<string[]>;
   harnesses(): Promise<HarnessDescriptor[]>;
   models(params?: ModelListParams): Promise<ModelListResponse>;
+  previewPlugins(params: PluginPreviewParams): Promise<PluginPreviewResponse>;
 }
 
 export function createNewSessionService(
@@ -92,6 +95,9 @@ export function createNewSessionService(
 
     async models(params = {}) {
       return client.request("model/list", params);
+    },
+    async previewPlugins(params) {
+      return client.request("evener/plugin/preview", params);
     },
   };
 }

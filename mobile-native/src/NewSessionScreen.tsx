@@ -19,9 +19,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useStore } from "zustand";
+import { harnessSupportsPluginSelection } from "../../cmd/evener-hub/frontend/src/panes/spawn/harnessModels";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
 import { CreationComposerSettings } from "./CreationComposerSettings";
+import { CreationPlugins } from "./CreationPlugins";
 import { creationImageDraft } from "./creationImageDraft";
 import { HubPathField } from "./HubPathField";
 import { ImageAttachments } from "./ImageAttachments";
@@ -248,6 +250,18 @@ export function NewSessionScreen({
               Retry options
             </Action>
           ) : null}
+          {ready &&
+            client &&
+            harnessSupportsPluginSelection(form.harness, form.harnesses) && (
+              <CreationPlugins
+                key={JSON.stringify([hubId, form.cwd.trim(), form.harness])}
+                client={client}
+                cwd={form.cwd.trim()}
+                value={form.launchOverrides}
+                onChange={form.setLaunchOverrides}
+                disabled={disabled}
+              />
+            )}
           <LaunchOverrides
             key={JSON.stringify([hubId, form.cwd.trim()])}
             client={ready ? client : null}
