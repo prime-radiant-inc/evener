@@ -1072,3 +1072,11 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 		}
 	}
 }
+
+func TestRestartRequiredOwnershipSkipsUnspecifiedTarget(t *testing.T) {
+	cfg := hubcore.WebConfig{StateDir: t.TempDir(), Roster: hubcore.NewRoster(t.TempDir(), nil)}
+	_, required, err := restartRequiredDaemon(t.Context(), cfg, "", "")
+	if err != nil || required {
+		t.Fatalf("unspecified ownership: required=%v error=%v", required, err)
+	}
+}

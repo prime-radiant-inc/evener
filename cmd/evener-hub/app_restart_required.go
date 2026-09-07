@@ -26,7 +26,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		}
 		threadID = parsed.ThreadID
 	}
-	if cfg.Roster == nil {
+	if cfg.Roster == nil || threadID == "" {
 		return hubcore.LiveEntry{}, false, nil
 	}
 	type ownershipEdge struct {
