@@ -395,6 +395,41 @@ func TestRun_SkipsExcludedPaths(t *testing.T) {
 	}
 }
 
+// The scanner's domain is Evener TOML data. Nested dependency/build trees and
+// Cargo manifests have their own naming conventions and must not turn a gate
+// red; a real Evener TOML file in the same tree must still be checked.
+func TestRunSelectsEvenerTOMLDomain(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"config/evener.toml": "bad-key = 1\n",
+		"config/good.toml":   "good_key = 1\n",
+		"mobile-native/node_modules/react-native/gradle/libs.versions.toml": "badKey = 1\n",
+		"mobile/src-tauri/target/debug/build/generated.toml":                "badKey = 1\n",
+		"mobile/src-tauri/Cargo.toml":                                       "rust-version = \"1.80\"\n[build-dependencies]\ntauri-build = \"2\"\n",
+		"vendor/library/config.toml":                                        "badKey = 1\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	violations, err := scanTOML(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("want only the Evener config violation, got %v", violations)
+	}
+	if violations[0].File != "config/evener.toml" {
+		t.Fatalf("violation file = %q, want config/evener.toml", violations[0].File)
+	}
+}
+
 // Run in verbose mode over a tree containing a TOML violation exercises the
 // verbose logging path.
 func TestRunVerbose(t *testing.T) {
