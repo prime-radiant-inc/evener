@@ -19,6 +19,14 @@ const recipes = {
     "thread/unsubscribe",
   ],
   "streaming-rejoin.mjs": ["initialize", "thread/read", "thread/turns/list", "thread/unsubscribe"],
+  "organization.mjs": [
+    "initialize",
+    "evener/navigation/read",
+    "evener/session-pin/assign",
+    "evener/session-pin/unpin",
+    "evener/pin-section/rename",
+    "evener/pin-section/delete",
+  ],
   "plugins.mjs": ["initialize", "evener/plugin/preview"],
   "repository-trust.mjs": ["initialize", "evener/launch/resolve", "evener/launch/trustRepo"],
   "project-layer.mjs": [
