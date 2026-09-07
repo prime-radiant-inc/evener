@@ -1712,14 +1712,11 @@ func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, ba
 // point over a filesystem they control.
 var globBaseFS = os.DirFS
 
-// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
-// reports how many candidate matches the default dotfile/gitignore exclusion
-// dropped, so a fully-filtered result can be told apart from a genuinely
-// empty one (see the "silent-empty is the enemy" global constraint). The
-// count never includes matches dropped by sandbox masking — that's a
-// separate security boundary, not something to describe to the caller as
-// "gitignored".
-func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+// GlobWithBudget implements GlobBudgeter: same matching as Glob, but the
+// caller supplies budget and reads what the call had to cut off it once the
+// call returns (see GlobBudget.TruncatedAt), rather than being refused a
+// truncated listing outright the way GlobWithExclusions is.
+func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern string, basePath string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -1735,7 +1732,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		defer sfs.release()
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
+		return sfs.glob(ctx, "glob", base, pattern, includeIgnored, budget)
 	}
 	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
 	var ignores *ignoreSet
@@ -1747,7 +1744,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 	var abs []string
 	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -1774,6 +1771,31 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		return nil, 0, err
 	}
 	return abs, excluded, nil
+}
+
+// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
+// reports how many candidate matches the default dotfile/gitignore exclusion
+// dropped, so a fully-filtered result can be told apart from a genuinely
+// empty one (see the "silent-empty is the enemy" global constraint). The
+// count never includes matches dropped by sandbox masking — that's a
+// separate security boundary, not something to describe to the caller as
+// "gitignored".
+//
+// The budget backing this call belongs to GlobWithExclusions alone, so a
+// caller here has no way to learn a listing was cut short: a truncation
+// comes back as an error rather than a plausible-looking short list. A
+// caller that wants the partial list uses GlobBudgeter.GlobWithBudget with
+// its own budget instead.
+func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+	budget := NewGlobBudget()
+	matches, excluded, err := e.GlobWithBudget(ctx, pattern, basePath, includeIgnored, budget)
+	if err != nil {
+		return nil, 0, err
+	}
+	if truncatedAt := budget.TruncatedAt(); truncatedAt > 0 {
+		return nil, 0, fmt.Errorf("glob matched more than %d candidates, the cap for one call, so the result would have been incomplete: narrow the pattern or its base directory, or call GlobWithBudget with a budget to get the partial list", truncatedAt)
+	}
+	return matches, excluded, nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep

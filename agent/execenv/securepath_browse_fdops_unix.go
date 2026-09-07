@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -48,6 +49,12 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+// ReadDir lists name and sorts the result by name: os.DirFS's own ReadDir
+// already returns entries sorted, and the match cap downstream truncates to a
+// deterministic, lexically-first prefix of what a listing returns, so this
+// arm has to produce the same order or a capped walk here could stop on a
+// different prefix than the same walk over the plain filesystem. The raw
+// fd-backed listing this builds on has no ordering guarantee of its own.
 func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -55,7 +62,12 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	df := os.NewFile(uintptr(fd), name)
 	defer func() { _ = df.Close() }()
-	return df.ReadDir(-1)
+	entries, err := df.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
+	return entries, nil
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
@@ -87,11 +99,12 @@ func toFsErr(err error) error {
 // off path (newest mtime first, ties by path). The returned int is the number of
 // candidate matches dropped by the dotfile/gitignore exclusion (see
 // GlobExcluder) — it never includes matches dropped by masking, which is a
-// separate security boundary.
+// separate security boundary. budget is shared across every brace-expanded
+// pattern the call walks, exactly like the off path's GlobWithBudget.
 //
 // Dotfiles/dirs and gitignored paths are excluded by default (matching the
 // off path's Glob), unless includeIgnored is set.
-func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -116,7 +129,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	var abs []string
 	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
 			return nil, 0, err
 		}
