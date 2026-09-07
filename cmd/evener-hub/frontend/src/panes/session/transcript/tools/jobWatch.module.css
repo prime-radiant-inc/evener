@@ -64,12 +64,41 @@
   padding: 9px var(--space-4);
   border-top: 1px solid var(--edge);
   font-size: var(--font-size-ui);
-  min-height: var(--tap-min);
   width: 100%;
   text-align: left;
 }
 
+/* The 44px tap floor lives under the coarse-pointer media query in
+   tokens.css, so it is only consumed under the same query here (the
+   RailRow treatment) — on desktop the token is undefined and the rows keep
+   their content height. */
+@media (pointer: coarse) {
+  .row {
+    min-height: var(--tap-min);
+  }
+}
+
 .row:first-child {
+  border-top: none;
+}
+
+/* §C: a row that cannot expand is not a control — same layout as a row, no
+   button affordance (no hover wash, no pointer cursor, no tap height, no
+   left-aligned button reset). Rendering a <div> instead of a <button> keeps
+   it out of the tab order entirely (combined RoboRev review: no focusable
+   no-op controls). Note: no PR-number references in this file — the
+   token-contract gate reads "#NNN" as a hex color literal. */
+.rowStatic {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px var(--space-4);
+  border-top: 1px solid var(--edge);
+  font-size: var(--font-size-ui);
+  width: 100%;
+}
+
+.rowStatic:first-child {
   border-top: none;
 }
 
@@ -90,10 +119,15 @@
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   cursor: pointer;
-  min-height: var(--tap-min);
   display: flex;
   align-items: center;
   list-style: none;
+}
+
+@media (pointer: coarse) {
+  .disclosureSummary {
+    min-height: var(--tap-min);
+  }
 }
 
 .disclosureSummary::-webkit-details-marker {

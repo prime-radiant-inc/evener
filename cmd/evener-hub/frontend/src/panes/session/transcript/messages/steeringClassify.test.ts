@@ -1,7 +1,12 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { type ParsedNotification, parseSteeringNotifications, type SteeringFragment } from "./steeringClassify";
+import {
+  decodeNotificationEntities,
+  type ParsedNotification,
+  parseSteeringNotifications,
+  type SteeringFragment,
+} from "./steeringClassify";
 
 // notificationsOf flattens the ordered fragment list down to just its parsed
 // notifications, in order - most existing tests here only care about the
@@ -254,7 +259,9 @@ Timer fired (every 300s).
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Timer fired");
-  expect(n.secondary).toBe("repeat");
+  // RoboRev PR #954 review 3 (finding G): a bare timer reason humanizes from
+  // the prose lead's seconds.
+  expect(n.secondary).toBe("every 5m");
 });
 
 test("watch titles derive from the trigger: event fires name the event, timers the timer (RoboRev PR #954)", () => {
@@ -495,4 +502,194 @@ the section that keeps regressing
   expect(n.prose).toContain("excerpt:");
   expect(n.prose).toContain("the section that keeps regressing");
   expect(n.excerpt).toBe("");
+});
+
+// --- RoboRev PR #954 review 3: teardown/budget titles (finding A) ------------
+// watchEndedUnfiredMessage / watchLostAtRestartMessage start with
+// "watch ended:"; watchBudgetClearedMessage starts with "watch cleared:".
+// Those reasons must title as an ending, never as a firing.
+
+test("a watch-ended notice titles Watch ended, not a firing", () => {
+  const block = `<job-notification job_id="job_x" event="watch" job_type="watch" status="watch" reason="watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched" output_bytes="0">
+watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch ended");
+});
+
+test("a budget auto-clear notice titles Watch auto-cleared, not a trigger", () => {
+  // Backend truth: autoClearWatchOverBudgetNotification passes "" as the
+  // job id (agent/job_watch.go) — the cleared target rides the reason, never
+  // a job_id attr. (An earlier revision of this fixture used job_id="self";
+  // no producer emits that — the NotificationCard "self" guard test pins the
+  // defensive rendering instead.)
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="watch cleared: job_a1b2 matched 50 times; re-arm with a tighter condition (higher every or narrower output_match)" output_bytes="0">
+watch cleared: job_a1b2 matched 50 times; re-arm with a tighter condition (higher every or narrower output_match)
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch auto-cleared");
+});
+
+// --- RoboRev PR #954 review 3: entity-decoded reasons (finding B) ------------
+// The producer entity-escapes attribute values (escapeNotificationText), and
+// parseQuotedAttrs does NOT decode, so a reason carrying & < > arrives
+// escaped and must be decoded before title/secondary use.
+
+test("an entity-escaped reason decodes in the watch secondary", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: a &amp; b" output_bytes="0">
+Matched output_match: a &amp; b on job_a1b2.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("output_match: a & b");
+});
+
+test("an entity-escaped reason decodes in the watch title", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="event: a &amp; b" output_bytes="0">
+Watch event triggered: event: a &amp; b.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.title).toBe("Event on job_a1b2: a & b");
+});
+
+// --- RoboRev PR #954 review 3: humanized timer secondaries (finding G) -------
+// Timer reasons are bare ("after"/"repeat"); the prose lead carries the
+// seconds ("Timer fired after 300s." / "Timer fired (every 300s)."), so the
+// secondary humanizes from the prose and falls back to the raw reason.
+
+test("an after-timer secondary humanizes the prose duration", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="after" output_bytes="0" watch_id="w9">
+Timer fired after 300s.
+Note: check the build
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("after 5m");
+});
+
+test("a repeat-timer secondary humanizes the prose cadence", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 300s).
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("every 5m");
+});
+
+test("a repeat-timer with a since-last-turn tail still humanizes", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 300s), 3 times since your last turn.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("every 5m");
+});
+
+test("a timer secondary falls back to the raw reason when the prose does not match", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="after" output_bytes="0" watch_id="w9">
+Something else entirely.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("after");
+});
+
+// --- RoboRev PR #954 combined review (ba9a9d0): job-targeted watch bodies ---
+// The producer's non-empty-job_id watch path (agent/job_notify.go
+// formatJobNotificationBlock) emits the generic body "Job <id> watch." with
+// the real trigger only in the escaped reason attr. The card must synthesize
+// its prose from the reason instead of showing the generic sentence.
+
+test("a job-targeted output_match fire synthesizes prose from the reason (finding M3)", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Output matched on job_a1b2");
+  expect(n.prose).toContain("ready");
+  expect(n.prose).not.toContain("Job job_a1b2 watch.");
+});
+
+test("a job-targeted event fire synthesizes prose from the reason (finding M3)", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="event: job.notification" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Event on job_a1b2: job.notification");
+  expect(n.prose).toContain("job.notification");
+  expect(n.prose).not.toContain("Job job_a1b2 watch.");
+});
+
+test("a teardown notice keeps its own prose (finding M3)", () => {
+  const block = `<job-notification job_id="job_x" event="watch" job_type="watch" status="watch" reason="watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched" output_bytes="0">
+watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("condition never matched");
+});
+
+// --- RoboRev PR #954 combined review (ba9a9d0): timer hours (finding L1) ----
+// Valid timers run to 86,400s. The dedicated renderer already formats those
+// as hours — the notification humanizers must too, not "after 1440m".
+
+test("an hour-long after-timer humanizes to hours, not minutes", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="after" output_bytes="0" watch_id="w9">
+Timer fired after 3600s.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("after 1h");
+});
+
+test("a day-long repeat-timer humanizes to hours, not minutes", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 86400s).
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.secondary).toBe("every 24h");
+});
+
+// --- RoboRev combined review (43fe73f): teardown generic bodies (M1) --------
+// A job-targeted teardown notice's body is ALSO the generic "Job <id> watch."
+// sentence (formatJobNotificationBlock's non-empty-JobID fallthrough covers
+// teardown reasons too, not just condition fires). The card must surface the
+// reason, not the generic sentence.
+
+test("a job-targeted teardown notice surfaces the reason, not the generic body (M1)", () => {
+  const block = `<job-notification job_id="job_x" event="watch" job_type="watch" status="watch" reason="watch ended: job_x is terminal (status=completed reason=done output_bytes=10); condition never matched" output_bytes="0">
+Job job_x watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch ended");
+  expect(n.prose).toContain("condition never matched");
+  expect(n.prose).not.toContain("Job job_x watch.");
+});
+
+// --- RoboRev combined review (43fe73f): single entity decode (L1) -----------
+// The producer escapes once; the card decodes once. A matched pattern that
+// literally contains "&lt;" arrives double-escaped ("&amp;lt;") and must
+// decode to the literal "&lt;" text — never all the way to "<".
+
+test("a literal entity sequence in a job-targeted reason decodes exactly once (L1)", () => {
+  // Prose is stored ESCAPED-form (passthrough bodies arrive escaped, so
+  // synthesized prose is re-escaped to match) and NotificationCard decodes
+  // once at render. A matched pattern literally containing "&lt;" arrives
+  // double-escaped ("&amp;lt;"): stored prose keeps one level, the card
+  // renders the literal text — never "<".
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: a &amp;lt; b" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("a &amp;lt; b");
+  expect(decodeNotificationEntities(n.prose ?? "")).toContain("a &lt; b");
+});
+
+test("a status-only watch frame earns no tone chip (combined review M2)", () => {
+  // The parser types event OR status "watch"; the tone short-circuit must
+  // mirror it. A frame with only status="watch" is still a watch delivery.
+  const block = `<job-notification job_id="job_a1b2" status="watch" job_type="watch" reason="output_match: ready" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.tone).toBe("neutral");
 });

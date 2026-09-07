@@ -182,7 +182,11 @@ test("list rows are buttons that expand the row's detail sentence (RoboRev PR #9
   render(<Body item={watchItem({ operation: "list" }, LIST_RAW)} live={false} />);
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
-  for (const row of rows) expect(row.tagName).toBe("BUTTON");
+  // Only rows that CAN expand are buttons; the ended row is plain text
+  // (RoboRev PR #954 combined review: no focusable no-op controls).
+  expect(rows[0]!.tagName).toBe("BUTTON");
+  expect(rows[1]!.tagName).toBe("BUTTON");
+  expect(rows[2]!.tagName).not.toBe("BUTTON");
   // Detail hidden until tapped.
   expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
   await user.click(rows[1]!);
@@ -205,7 +209,7 @@ const INSPECT_RAW = {
 test("inspect summary names the id, watching state, and deliveries used", () => {
   const d = toolRendererFor("job_watch");
   expect(d.summary(watchItem({ operation: "inspect", watch_id: "watch_09QmWzRtNvxK" }, INSPECT_RAW))).toBe(
-    "Inspected watch_09QmWzRtNvxK · watching · 3 of 50 used",
+    "Inspected watch_09QmWzRtNvxK · watching · 3 deliveries",
   );
 });
 
@@ -216,7 +220,7 @@ test("inspect body is one sentence with the source, pattern, and budget use", ()
   const body = screen.getByTestId("job-watch-body").textContent ?? "";
   expect(body).toContain("job_a1b2");
   expect(body).toContain("ready|done");
-  expect(body).toContain("3 of 50");
+  expect(body).toContain("3 deliveries");
 });
 
 test("inspect body humanizes the embedded heartbeat instead of raw milliseconds (RoboRev PR #954)", () => {
@@ -362,6 +366,9 @@ test("every list row form expands a detail sentence; no expandable row is a no-o
   );
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
+  // Every expandable row opens its detail; static rows (none here — all
+  // three watch with parseable conditions) are never buttons.
+  for (const row of rows) expect(row.tagName).toBe("BUTTON");
   for (const [index, row] of rows.entries()) {
     await user.click(row);
     const details = screen.getAllByTestId("job-watch-row-detail");
@@ -459,4 +466,594 @@ test("leftover seconds are kept, never rounded into the minute (RoboRev PR #954)
   expect(d.summary(ninety)).toContain("in 1m30s");
   const repeating = watchItem({ operation: "create" }, { ...TIMER_RAW, after_seconds: undefined, repeat_seconds: 90 });
   expect(d.summary(repeating)).toContain("every 1m30s");
+});
+
+// --- RoboRev PR #954 review 3 -----------------------------------------------
+
+test("an output pattern containing a semicolon survives Condition parsing (finding C)", () => {
+  // output_match is caller-supplied and unbounded, so it may itself contain
+  // "; " — only semicolons introducing a recognized field may split.
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "inspect", watch_id: "watch_semi" },
+        {
+          watch_id: "watch_semi",
+          source: "job_a1b2",
+          watching: true,
+          condition: "output_match: a;b; progress_interval_ms: 120000",
+          deliveries: 0,
+          created_at: "2026-09-06T09:41:00-07:00",
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("a;b");
+  expect(body).toContain("every 2m");
+});
+
+test("list rows keep a semicolon-bearing pattern whole (finding C)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "list" },
+        {
+          watches: [
+            {
+              watch_id: "watch_semi",
+              source: "job_a1b2",
+              watching: true,
+              condition: "output_match: a;b; progress_interval_ms: 120000",
+            },
+          ],
+          count: 1,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("a;b");
+  expect(body).toContain("every 2m");
+});
+
+test("a filter condition's every throttle renders in the list row (finding D)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "list" },
+        {
+          watches: [
+            {
+              watch_id: "watch_f",
+              source: "dlg_7Hk2",
+              watching: true,
+              condition: "events: [assistant.tool] every 3 where tool_name=read_file, status=error",
+            },
+          ],
+          count: 1,
+        },
+      )}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("(every 3)");
+});
+
+test("a filter condition's every throttle renders in the create sentence (finding D)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "dlg_7Hk2", events: ["assistant.tool"], every: 3 },
+        {
+          watch_id: "watch_f",
+          source: "dlg_7Hk2",
+          watching: true,
+          events: ["assistant.tool"],
+          event_filter: { tool_name: "read_file", status: "error" },
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("(every 3)");
+});
+
+test("a filter condition's every throttle renders in inspect (finding D)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "inspect", watch_id: "watch_f" },
+        {
+          watch_id: "watch_f",
+          source: "dlg_7Hk2",
+          watching: true,
+          condition: "events: [assistant.tool] every 3 where tool_name=read_file, status=error",
+        },
+      )}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("(every 3)");
+});
+
+test("list rows name the tool for both filter outcomes (finding E)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "list" },
+        {
+          watches: [
+            {
+              watch_id: "watch_ok",
+              source: "dlg_7Hk2",
+              watching: true,
+              condition: "events: [assistant.tool] where tool_name=read_file, status=ok",
+            },
+            {
+              watch_id: "watch_err",
+              source: "dlg_7Hk2",
+              watching: true,
+              condition: "events: [assistant.tool] where tool_name=read_file, status=error",
+            },
+          ],
+          count: 2,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("successful tool calls on read_file");
+  expect(body).toContain("failed tool calls on read_file");
+});
+
+test("a progress-only create summarizes the heartbeat (finding F)", () => {
+  const d = toolRendererFor("job_watch");
+  const raw = {
+    watch_id: "watch_hb",
+    source: "job_a1b2",
+    watching: true,
+    progress_interval_ms: 120000,
+    replaced_existing: false,
+    fired: false,
+  };
+  expect(d.summary(watchItem({ operation: "create" }, raw))).toBe("Watch job_a1b2 · every 2m");
+});
+
+// --- RoboRev PR #954 combined review (ba9a9d0): watch-state honesty ---------
+// The producer's inspect grammar (agent/session_tools_jobs.go
+// formatJobWatchInspect) is three-way: watching; end_reason set (ended);
+// source set without end_reason (pending — a detached watch still holding
+// frames); neither (not found). "ended" for all three misreports pending
+// watches and invents an ending for missing ones.
+
+test("inspect summary distinguishes pending from ended (finding M1)", () => {
+  const d = toolRendererFor("job_watch");
+  // Detached pending: source present, no end_reason — the terminal-flush rail
+  // still holds its frames, so it is not ended.
+  expect(
+    d.summary(
+      watchItem(
+        { operation: "inspect", watch_id: "watch_p" },
+        { watch_id: "watch_p", source: "job_a1b2", watching: false },
+      ),
+    ),
+  ).toBe("Inspected watch_p · pending");
+  // Truly ended: end_reason present.
+  expect(
+    d.summary(
+      watchItem(
+        { operation: "inspect", watch_id: "watch_e" },
+        { watch_id: "watch_e", source: "job_a1b2", watching: false, end_reason: "budget_exhausted" },
+      ),
+    ),
+  ).toBe("Inspected watch_e · ended");
+  // Missing: neither source nor end_reason — not an ending at all.
+  expect(
+    d.summary(watchItem({ operation: "inspect", watch_id: "watch_m" }, { watch_id: "watch_m", watching: false })),
+  ).toBe("Inspected watch_m · not found");
+});
+
+test("inspect body of a missing watch names no source (finding M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem({ operation: "inspect", watch_id: "watch_m" }, { watch_id: "watch_m", watching: false })}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("not found");
+  expect(body).not.toContain("this session");
+});
+
+test("inspect body of a pending watch reads pending, never ended (finding M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "inspect", watch_id: "watch_p" },
+        { watch_id: "watch_p", source: "job_a1b2", watching: false },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("pending");
+  expect(body).not.toContain("ended");
+});
+
+test("a pending list row chips pending and the summary counts it (finding M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const raw = {
+    watches: [{ watch_id: "watch_p", source: "job_a1b2", watching: false }],
+    count: 1,
+  };
+  expect(d.summary(watchItem({ operation: "list" }, raw))).toBe("Listed watches (0 active · 1 pending)");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "list" }, raw)} live={false} />);
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("pending");
+});
+
+// --- RoboRev PR #954 combined review (ba9a9d0): non-interactive rows --------
+// A row that cannot expand must not be a focusable <button> with a no-op
+// onClick: ended rows have no detail sentence, and neither do watching rows
+// whose condition parses to nothing.
+
+test("ended rows are not focusable buttons (finding M2)", async () => {
+  const user = userEvent.setup();
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "list" }, LIST_RAW)} live={false} />);
+  const rows = screen.getAllByTestId("job-watch-row");
+  expect(rows).toHaveLength(3);
+  // The two watching rows stay buttons; the ended row is plain text.
+  expect(rows[0]!.tagName).toBe("BUTTON");
+  expect(rows[1]!.tagName).toBe("BUTTON");
+  expect(rows[2]!.tagName).not.toBe("BUTTON");
+  expect(rows[2]!.textContent ?? "").toContain("ended");
+  // Clicking the ended row opens nothing.
+  await user.click(rows[2]!);
+  expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
+});
+
+test("watching rows with unparsable conditions are not buttons (finding M2)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "list" },
+        {
+          watches: [{ watch_id: "watch_x", source: "self", watching: true, condition: "note: just a note" }],
+          count: 1,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const row = screen.getByTestId("job-watch-row");
+  expect(row.tagName).not.toBe("BUTTON");
+});
+
+// --- RoboRev PR #954 combined review (ba9a9d0): lows ------------------------
+// An unrecognized object raw ({} or a legacy/future shape) must fall back to
+// the raw footer text — never an empty card with a "Watch this session"
+// summary that invents state.
+
+test("an unrecognized object raw falls back to the raw footer (finding L2)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const footer = "[watching self · something the future invented]";
+  render(<Body item={watchItem({ operation: "create" }, {}, footer)} live={false} />);
+  expect(screen.getByText(footer)).toBeTruthy();
+  expect(screen.queryByTestId("job-watch-body")).toBeNull();
+  expect(d.summary(watchItem({ operation: "create" }, {}))).toBe("job_watch: create");
+});
+
+test("a tool-only filter sentence reads matching with the tool named (finding L3)", () => {
+  // The dead ternary's two "matching" branches are collapsed to one path:
+  // a tool-only filter reads "makes a tool call matching on <tool>". (A bare
+  // filter with neither tool nor status cannot reach this sentence — with no
+  // status/tool the events branch wins first, or the row has no detail at
+  // all — so there is no second case to distinguish.)
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "dlg_7Hk2" },
+        {
+          watch_id: "watch_toolonly",
+          source: "dlg_7Hk2",
+          watching: true,
+          events: ["assistant.tool"],
+          event_filter: { tool_name: "read_file" },
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("matching");
+  expect(body).toContain("read_file");
+});
+
+test("an inspect with no id falls back to the operation verb (finding L4)", () => {
+  const d = toolRendererFor("job_watch");
+  expect(d.summary(watchItem({ operation: "inspect" }, { source: "job_a1b2", watching: true }))).toBe(
+    "job_watch: inspect",
+  );
+});
+
+// --- RoboRev combined review (43fe73f): combined triggers (M3) --------------
+// output_match + progress_interval_ms combine freely on a concrete job
+// (only timer fields are mutually exclusive with conditions). The summary
+// and inspect body must name BOTH the pattern and the heartbeat.
+
+test("a combined pattern + heartbeat watch names both (M3)", () => {
+  const d = toolRendererFor("job_watch");
+  const raw = {
+    watch_id: "watch_combo",
+    source: "job_a1b2",
+    watching: true,
+    output_match: "ready|done",
+    progress_interval_ms: 120000,
+    replaced_existing: false,
+    fired: false,
+  };
+  const summary = d.summary(watchItem({ operation: "create" }, raw));
+  expect(summary).toContain("ready|done");
+  expect(summary).toContain("every 2m");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "create" }, raw)} live={false} />);
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("ready|done");
+  expect(body).toContain("every 2m");
+});
+
+test("a combined pattern + heartbeat inspect names both (M3)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "inspect", watch_id: "watch_combo" },
+        {
+          watch_id: "watch_combo",
+          source: "job_a1b2",
+          watching: true,
+          condition: "output_match: ready|done; progress_interval_ms: 120000",
+          deliveries: 1,
+          created_at: "2026-09-06T09:41:00-07:00",
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("ready|done");
+  expect(body).toContain("every 2m");
+});
+
+// --- RoboRev combined review (43fe73f): empty create card (L2) --------------
+// A recognized create with only a source (no timer, no condition) has no
+// sentence to render — the summary ("Watch this session") IS the rendering,
+// so the body must be null, not an empty bordered card.
+
+test("a sourceless-condition create renders no body card (L2)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const { container } = render(
+    <Body
+      item={watchItem({ operation: "create" }, { watch_id: "watch_bare", source: "self", watching: true })}
+      live={false}
+    />,
+  );
+  expect(container.textContent?.trim() ?? "").toBe("");
+});
+
+// --- RoboRev combined review (43fe73f): live ended rows count ended (L3) ----
+// A live row carrying an end_reason is ended, not pending — the summary must
+// agree with the row chip.
+
+test("a live row with an end_reason counts as ended (L3)", () => {
+  const d = toolRendererFor("job_watch");
+  const raw = {
+    watches: [{ watch_id: "watch_e", source: "job_a1b2", watching: false, end_reason: "cleared" }],
+    count: 1,
+  };
+  expect(d.summary(watchItem({ operation: "list" }, raw))).toBe("Listed watches (0 active · 1 ended)");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "list" }, raw)} live={false} />);
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("ended");
+});
+
+// --- RoboRev combined review (818e809): sentence punctuation (M1) ------------
+// Clause nodes must carry no separators of their own — joining inserts them.
+// Pattern + heartbeat rendered "outputs ready, , heartbeat every 2m".
+
+test("a combined pattern + heartbeat sentence has no doubled comma (M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "job_a1b2" },
+        {
+          watch_id: "watch_combo",
+          source: "job_a1b2",
+          watching: true,
+          output_match: "ready",
+          progress_interval_ms: 120000,
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).not.toContain(", ,");
+  expect(body).toContain("heartbeat every 2m");
+});
+
+test("a filter sentence joins its clauses with spaces, not commas (M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "dlg_7Hk2", events: ["assistant.tool"], every: 3 },
+        {
+          watch_id: "watch_f",
+          source: "dlg_7Hk2",
+          watching: true,
+          events: ["assistant.tool"],
+          event_filter: { tool_name: "read_file", status: "error" },
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("makes a tool call on read_file ending in error (assistant.tool) (every 3)");
+});
+
+// --- RoboRev combined review (818e809): heartbeat-only lifecycle (M2) -------
+// Periodic progress ticks never consume the condition-fire budget, so a
+// heartbeat-only watch can live indefinitely — claiming it "auto-clears
+// after 50 matches" is a false lifecycle guarantee.
+
+test("a heartbeat-only sentence claims no auto-clear (M2)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "job_a1b2" },
+        {
+          watch_id: "watch_hb",
+          source: "job_a1b2",
+          watching: true,
+          progress_interval_ms: 120000,
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("heartbeat every 2m");
+  expect(body).not.toContain("auto-clears");
+});
+
+test("a budgeted trigger keeps the auto-clear clause (M2)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "create", source: "job_a1b2" },
+        {
+          watch_id: "watch_combo",
+          source: "job_a1b2",
+          watching: true,
+          output_match: "ready",
+          progress_interval_ms: 120000,
+          replaced_existing: false,
+          fired: false,
+        },
+      )}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("auto-clears after 50 matches");
+});
+
+// --- RoboRev combined review (33d5b9a): composite detail views (M1) ---------
+// A watch combining output_match with events/filter/every must name every
+// armed clause in the inspect body and the expanded row detail — not just
+// the pattern and heartbeat.
+
+test("a composite inspect body names events and filter beside the pattern (M1)", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "inspect", watch_id: "watch_combo" },
+        {
+          watch_id: "watch_combo",
+          source: "job_a1b2",
+          watching: true,
+          condition: "output_match: ready; events: [assistant.tool] every 3 where tool_name=read_file, status=error",
+          deliveries: 1,
+          created_at: "2026-09-06T09:41:00-07:00",
+        },
+      )}
+      live={false}
+    />,
+  );
+  const body = screen.getByTestId("job-watch-body").textContent ?? "";
+  expect(body).toContain("ready");
+  expect(body).toContain("assistant.tool");
+  expect(body).toContain("read_file");
+  expect(body).toContain("(every 3)");
+});
+
+test("a composite row detail names events and filter beside the pattern (M1)", async () => {
+  const user = userEvent.setup();
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(
+    <Body
+      item={watchItem(
+        { operation: "list" },
+        {
+          watches: [
+            {
+              watch_id: "watch_combo",
+              source: "job_a1b2",
+              watching: true,
+              condition:
+                "output_match: ready; events: [assistant.tool] every 3 where tool_name=read_file, status=error",
+            },
+          ],
+          count: 1,
+        },
+      )}
+      live={false}
+    />,
+  );
+  await user.click(screen.getByTestId("job-watch-row"));
+  const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
+  expect(detail).toContain("ready");
+  expect(detail).toContain("assistant.tool");
+  expect(detail).toContain("read_file");
+  expect(detail).toContain("(every 3)");
 });
