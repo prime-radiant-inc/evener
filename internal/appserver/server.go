@@ -873,6 +873,16 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 	}
 	key, _ := ctx.Value(subscriptionLifecycleContextKey{}).(string)
 	if keys, ok := ctx.Value(subscriptionLifecycleContextKeysKey{}).([]string); ok && len(keys) > 0 {
+		if len(keys) >= 2 && keys[0] != "" && keys[1] != "" {
+			conn.cancelSubscriptionAdmissions(keys[0])
+			conn.cancelSubscriptionAdmissions(keys[1])
+			conn.server.mu.Lock()
+			if conn.server.conns[conn.id] == conn {
+				conn.server.subs.UnsubscribeLifecycleAlias(conn.id, keys[0], keys[1])
+			}
+			conn.server.mu.Unlock()
+			return
+		}
 		for _, key := range keys {
 			if key == "" {
 				continue
@@ -1434,7 +1444,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
 			if secondaryKey != "" && secondaryKey != resolvedKey {
 				c.cancelSubscriptionAdmissions(secondaryKey)
-				ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{resolvedKey, secondaryKey})
+				ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
 			}
 		}
 	}

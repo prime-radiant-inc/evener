@@ -23,6 +23,16 @@ func TestSubscriptionLifecycleUnsubscribeRawFallback(t *testing.T) {
 	}
 }
 
+func TestSubscriptionLifecycleUnsubscribeDeliveryAliasMatchesLifecycle(t *testing.T) {
+	s := NewSubscriptions()
+	s.subscribeOwned("conn", "current", "stable", false)
+	s.subscribeOwned("conn", "other", "other", false)
+	s.UnsubscribeLifecycleAlias("conn", "current", "stable")
+	if s.IsSubscribed("conn", "current") || !s.IsSubscribed("conn", "other") {
+		t.Fatal("delivery/lifecycle unsubscribe did not isolate the requested owner")
+	}
+}
+
 // Unsubscribe during the snapshot (before a finalizer exists) must reach
 // subscriptions displaced by a replace capture, not just the live registry.
 func TestSubscriptionDisplacedUnsubscribeBeforeFinalizer(t *testing.T) {

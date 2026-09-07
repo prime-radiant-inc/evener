@@ -266,6 +266,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 					}
 					return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
 				}
+				if delivery, _, deliveryErr := threadRelayTarget(source, params); deliveryErr == nil {
+					return appserver.SubscriptionAdmissionResolution{Key: ref.String(), SecondaryKey: delivery, Intent: appserver.SubscriptionAdmissionResolved}
+				}
 				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
 			}
 			key, _, err := threadRelayTarget(source, params)
