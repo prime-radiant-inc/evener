@@ -851,6 +851,9 @@ func Unsubscribe(ctx context.Context, threadID string) {
 	if !ok || conn == nil || threadID == "" {
 		return
 	}
+	if resolved, ok := ctx.Value(subscriptionLifecycleContextKey{}).(string); ok && resolved != "" {
+		threadID = resolved
+	}
 	server := conn.server
 	conn.cancelSubscriptionAdmissions(threadID)
 	server.mu.Lock()
@@ -1444,7 +1447,9 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
 			if secondaryKey != "" && secondaryKey != resolvedKey {
 				c.cancelSubscriptionAdmissions(secondaryKey)
-				ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
+				if intent == SubscriptionAdmissionUnresolved {
+					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
+				}
 			}
 		}
 	}
