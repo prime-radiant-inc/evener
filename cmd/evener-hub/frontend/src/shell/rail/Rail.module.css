@@ -65,15 +65,6 @@
   gap: var(--space-2);
 }
 
-/* The header icon buttons' GLYPHS: they're text glyphs (⌕ ☰ ⚙), so
- * they size to the button's font-size - the IconButton's icon span is 1em x
- * 1em of it - never to the box. md made the boxes 32px but left the glyphs
- * at --font-size-ui (13px); --font-size-pane-title (16px) reads at the md
- * box's scale. */
-.brand button {
-  font-size: var(--font-size-pane-title);
-}
-
 /* Stretches the primary Button to the rail's full width without touching the
  * widget's own computed className (Button owns its class list). */
 .newSession {

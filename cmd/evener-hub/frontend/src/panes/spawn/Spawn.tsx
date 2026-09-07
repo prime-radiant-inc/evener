@@ -857,7 +857,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
   return (
-    <PaneScaffold title="Start an agent" mobileTitle="new">
+    <PaneScaffold title="New session" mobileTitle="New session">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <div className={CLASS.notice} role="status">
@@ -930,11 +930,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                 onChange={(e) => updatePrompt(e.target.value)}
                 onKeyDown={handlePromptKeyDown}
                 onPaste={handlePaste}
-                // The dormant-start rule rides in the placeholder rather than a
-                // separate instruction line above the form: it is a fact about
-                // THIS field, and a sentence of chrome explaining a field is
-                // worse than the field explaining itself.
-                placeholder="What should the agent work on? Leave blank to start it dormant."
+                // Short, because the intro above the card already asks the
+                // question and states the dormant-start rule; a placeholder
+                // that repeats them spends the field's one line on nothing.
+                placeholder="Describe the task…"
                 aria-label="Prompt"
                 autoGrow
                 // The PromptCard around it draws the one border this field
