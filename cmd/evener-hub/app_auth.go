@@ -344,10 +344,11 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	if err := c.credentialWrite(func() error {
 		codex = c.instanceIsCodex(name)
 		if !codex {
+			_, hadFile := c.creds.Get(name)
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return clrErr
 			}
-			removed = true
+			removed = hadFile
 			return nil
 		}
 		// The Codex transport: clear the effective layer only. An OAuth record
@@ -582,6 +583,9 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Unlock()
 	if !ok {
 		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	}
+	if flow.Provider != provider {
+		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
 	}
 	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
 		c.mu.Lock()
