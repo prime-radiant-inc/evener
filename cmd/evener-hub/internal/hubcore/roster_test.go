@@ -1295,3 +1295,46 @@ func TestRosterConcurrentConfirmationPreservesEveryRoute(t *testing.T) {
 		})
 	}
 }
+
+// A crash marker must not replace a surviving daemon's ownership or status.
+func TestRosterLiveOwnerWinsOverCrashMarker(t *testing.T) {
+	for _, livePID := range []int{1001, 1002} {
+		t.Run(strconv.Itoa(livePID), func(t *testing.T) {
+			dir := t.TempDir()
+			for _, pid := range []int{1001, 1002} {
+				protocol := appwire.ProtocolVersion
+				if pid == livePID {
+					protocol = "evener-appwire-v3"
+				}
+				writeRendezvous(t, dir, rendezvous.Entry{PID: pid, SessionID: "owner", ThreadID: "owner", Protocol: protocol, Endpoint: "ws://unused", StartedAt: time.Now().UTC()})
+			}
+			prober := &survivingOwnerProber{livePID: livePID}
+			r := NewRoster(dir, prober)
+			r.procAlive = func(pid int) bool { return pid == livePID }
+			for _, failProbe := range []bool{false, true} {
+				prober.fail = failProbe
+				r.Refresh()
+				got, ok := r.Find("owner")
+				if !ok || got.Crashed || got.PID != livePID || got.Status != "restartRequired" {
+					t.Errorf("Find after probe failure=%v: %+v, present=%v", failProbe, got, ok)
+				}
+				listed := r.List()
+				if len(listed) != 1 || listed[0].Crashed || listed[0].PID != livePID {
+					t.Errorf("List after probe failure=%v: %+v", failProbe, listed)
+				}
+			}
+		})
+	}
+}
+
+type survivingOwnerProber struct {
+	livePID int
+	fail    bool
+}
+
+func (p *survivingOwnerProber) Probe(e rendezvous.Entry) ProbeResult {
+	if e.PID != p.livePID || p.fail {
+		return ProbeResult{}
+	}
+	return ProbeResult{SessionID: e.SessionID, Status: "restartRequired", OK: true}
+}

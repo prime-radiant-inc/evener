@@ -361,7 +361,9 @@ func (r *Roster) refresh() error {
 			if prev, had := prevByPID[e.PID]; had && r.procAlive(e.PID) {
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
-					bySess[prev.SessionID] = prev
+					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
+						bySess[prev.SessionID] = prev
+					}
 				}
 				continue
 			}
@@ -408,7 +410,9 @@ func (r *Roster) refresh() error {
 			crashed.Status = "errored"
 			crashed.Crashed = true
 			byPID[e.PID] = crashed
-			bySess[sessionID] = crashed
+			if current, ok := bySess[sessionID]; !ok || preferLiveEntry(crashed, current) {
+				bySess[sessionID] = crashed
+			}
 			continue
 		}
 		live := liveEntryFromProbe(e, res.ProbeResult)
@@ -585,6 +589,9 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {
+	if candidate.Crashed != current.Crashed {
+		return !candidate.Crashed
+	}
 	candidateAppWire := candidate.Protocol == appwire.ProtocolVersion && candidate.Endpoint != "" && candidate.ThreadID != ""
 	currentAppWire := current.Protocol == appwire.ProtocolVersion && current.Endpoint != "" && current.ThreadID != ""
 	if candidateAppWire != currentAppWire {
