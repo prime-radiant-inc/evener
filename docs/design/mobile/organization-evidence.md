@@ -191,3 +191,78 @@ archive/favorite recovery, selected-turn fork and ended-session deletion remain
 open. Lost-reply UI journeys, hub-switch races, storage-failure UI, full VoiceOver,
 iPad and physical-device acceptance still need completion. The separate reader
 continuity defect remains open.
+
+## iOS pinned section management checkpoint (2026-09-07)
+
+Commit `f08473f48` adds the pinned-section catalog from Sessions, section member
+browsing, and a native section editor. Rename proposals are synchronously stored
+per hub/section, including raw unfinished names. Restart restores the catalog,
+member and editor route stack. Assignment and management now share their
+navigation/recovery binding; editing requires an observation from the current
+focus and connection scope. Section deletion requires a native confirmation and
+retains sessions. A fresh missing-section read suppresses cached member rows.
+
+### Final Release evidence
+
+The final iPhone 17 Pro / iOS 26.5 Release bundle SHA-256 is
+`0dada2f69bedc5522b37b941222cc75f2b042901e03855aa3e5762323a8c378e`.
+The owned hub remains on port 54211 with the empty-navigation fix recorded above.
+Only the existing owned reader fixture and sections created for this journey
+were mutated. Independent SDK reads checked the server after each operation.
+
+| Workflow | Observed result |
+| --- | --- |
+| Open catalog and section | Catalog shows the owned section with 1 session; opening it shows the reader fixture |
+| Save a local name proposal | SQLite contains raw `focuslater` and the exact editor route; the hub still reports `focus` |
+| Terminate and relaunch the final Release | Editor and `focuslater` return; hub name and revision remain unchanged |
+| Save name from iOS | Hub reports `focuslater`; iOS confirms it and clears the draft and operation journal |
+| Change section from another client while delete alert is open | SDK rename to `review` invalidates the catalog; pressing the stale alert's Delete does not delete it or create a journal entry |
+| Refresh after the rejected stale confirmation | Editor shows current `review` and 1 session |
+| Maximum Dynamic Type | Editor controls remain reachable; native confirmation text scrolls fully, with Delete and Cancel available |
+| Cancel then confirm deletion at maximum text size | Cancel keeps the section; confirmation returns to an empty catalog and unpins the reader |
+| Open the retained reader | Existing transcript markers 09–11 are still visible |
+| Assignment regression on the final Release | Native Create and pin creates a second owned `focus` section and confirms membership |
+| External deletion while the member screen is open | SDK deletes that second section; native Refresh replaces cached members with the missing-section result |
+
+The simulator is restored to `large` text size. Final independent readback has
+an empty catalog (revision 15), an unpinned reader location (revision 9), and
+generation `cf71465c9a773014f113db95b9ab6846`. The selected hub's rename draft and
+operation journal are absent; saved location is the catalog. Both owned sections
+were removed. The first deletion was native; the second deliberately exercised
+external deletion through the SDK.
+
+The simulator text-entry tool appended to the existing field despite requesting
+replacement. The observed and persisted proposal was therefore `focuslater`;
+acceptance asserts that actual value rather than claiming a different edit.
+
+![Pinned sections catalog](assets/pin-sections/catalog.jpg)
+![Section members](assets/pin-sections/members.jpg)
+![Restored name draft](assets/pin-sections/restored-name.jpg)
+![Reachable management controls at maximum text size](assets/pin-sections/maximum-text-controls.jpg)
+![Scrollable native delete confirmation](assets/pin-sections/maximum-text-confirmation.jpg)
+![External deletion removes cached members](assets/pin-sections/external-deletion.jpg)
+
+### Readback correction and validation
+
+The initial native rename succeeded on the hub but entered uncertain readback.
+A notification sequence gap during the first catalog read reproduces that failure
+with the real navigation model: the gap invalidates the in-flight observation.
+Immediate ACK confirmation now uses the existing receipt-aware refresh, which
+allows one further read when the notification epoch changes. Continued gaps still
+reject; no mutation is retried. Restart reconciliation continues to read the
+current generation without requiring the previous generation's receipt.
+
+Both notification regressions failed before the correction. The final native
+suite passes 492 tests in 60 files plus TypeScript; touched native sources pass
+Biome. Tests also cover section lookup beyond the first page, missing sections,
+abandoned reads, route restoration and malformed saved routes, draft scope and
+conditional clearing, and real Expo storage cleanup. The final Release build,
+installation, launch, and the tabled native journeys passed. Local gate details
+are in `/tmp/evener-pin-section-native-gate.log`.
+
+This checkpoint qualifies catalog/section browsing and the tested rename/delete
+workflows. Durable archive/favorite recovery, ordinary selected-turn fork,
+ended-session deletion, keybinding editing, remaining SDK recipes and the reader
+continuity failure remain open. Lost-reply UI, hub switching, storage-failure UI,
+full VoiceOver, iPad and physical-device acceptance still need completion. No
+final whole-repository merge gate or release certification is claimed here.
