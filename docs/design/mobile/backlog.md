@@ -370,7 +370,11 @@ searchable model sheet and collapsed harness choices. Both native model-picker
 round trips preserve the draft. An intermittent Android footer-overlap observation
 is retained in the creation evidence; keyboard and accessibility acceptance
 remain incomplete. 321 native tests pass.
-Plugin selection, creation images, per-launch collection/precedence failure
+Opening image selection/removal and creation now have native evidence on both
+platforms, independent SDK PNG readback and viewer checks; 324 native tests pass.
+Creation drafts still need durable storage, and live image-tile delivery remains
+a MOB-008 qualification gap.
+Plugin selection, per-launch collection/precedence failure
 coverage and complete project-layer/trust accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
 independently under MOB-018.
 
@@ -379,6 +383,11 @@ trust decisions, creation failure/uncertainty, keyboard and accessibility
 coverage. Keep advertised options server-derived.
 
 ### MOB-008 · P1 · Finish running-work and decision acceptance · Open
+
+Opening-image checks found user text without its attachment tile while running
+on both native platforms; the tile appeared after Stop. Independent thread/read
+already contained the PNG during the Android run. Trace snapshots, item events
+and native projection; see the opening-images section in session-creation.md.
 
 Goals, tasks, activity, queue operations, approvals and questions have partial
 implementation/evidence. Complete remaining paging, concurrent updates,

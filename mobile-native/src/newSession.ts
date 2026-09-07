@@ -1,4 +1,9 @@
 import { createStore } from "zustand/vanilla";
+import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import {
+  markerText,
+  stripMarker,
+} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
 import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
 import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
@@ -7,7 +12,9 @@ import type {
   ModelDescriptor,
   Thread,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
+import { type DraftImageData, imageInput } from "./draftImages";
 
 type Outcome =
   | { status: "created"; hubId: string; thread: Thread }
@@ -15,6 +22,9 @@ type Outcome =
 interface Form {
   cwd: string;
   prompt: string;
+  images: DraftImageData[];
+  addImage(image: DraftImageData): void;
+  removeImage(id: string): void;
   harness: string;
   model: ModelDescriptor | null;
   reasoning: string;
@@ -60,6 +70,32 @@ export function createNewSessionStore(hubId: string) {
   return createStore<Form>((set, get) => ({
     cwd: "",
     prompt: "",
+    images: [],
+    addImage(image) {
+      const state = get();
+      if (state.submitting) return;
+      if (
+        state.images.length >= MAX_ATTACHMENTS ||
+        state.images.some(
+          (item) => item.id === image.id || item.marker === image.marker,
+        )
+      )
+        throw new Error("This image cannot be added to the draft.");
+      set({
+        images: [...state.images, { ...image }],
+        prompt: state.prompt + markerText(image.marker),
+      });
+    },
+    removeImage(id) {
+      const state = get();
+      if (state.submitting) return;
+      const image = state.images.find((item) => item.id === id);
+      if (!image) return;
+      set({
+        images: state.images.filter((item) => item.id !== id),
+        prompt: stripMarker(state.prompt, undefined, image.marker).value,
+      });
+    },
     harness: "",
     model: null,
     reasoning: "",
@@ -239,6 +275,10 @@ export function createNewSessionStore(hubId: string) {
         return { status: "blocked" };
       const launchOverrides = get().launchOverrides;
       const settingsModel = creationModel(get().models, model, launchOverrides);
+      const input = buildComposerInput(
+        prompt,
+        get().images.map((image) => imageInput(image, image.data)),
+      );
       const scalars = resolveScalars(
         {
           model: model?.model,
@@ -255,7 +295,7 @@ export function createNewSessionStore(hubId: string) {
       try {
         const result = await current.start({
           cwd: cwd.trim(),
-          ...(prompt.trim() ? { input: [{ type: "text", text: prompt }] } : {}),
+          ...(input.length ? { input } : {}),
           ...(harness ? { harness } : {}),
           ...(scalars.model ? { model: scalars.model } : {}),
           ...(scalars.modelProvider
