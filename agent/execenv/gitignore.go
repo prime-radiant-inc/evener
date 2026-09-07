@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"path"
 	"strings"
@@ -51,10 +52,21 @@ type ignoreDir struct {
 // this walk otherwise has no other way to honor, since fsys itself (a
 // symlink-refusing, root-confined secureDirFS) enforces confinement but not
 // masking. The off-path caller (no masking concept) passes a no-op skip.
-func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
+func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) (*ignoreSet, error) {
 	set := &ignoreSet{}
+	var budgetErr error
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A budget refusal is not an unreadable entry to skip past. This
+			// walk reads the same filesystem the pattern walk does, under the
+			// same bounds, so one can trip here — and an ignoreSet that gave
+			// up partway reports itself complete, silently under-excluding
+			// every rule it never reached. That is a wrong answer rather than
+			// a missing one, so it has to reach the caller.
+			if _, refused := errors.AsType[*globBudgetError](err); refused {
+				budgetErr = err
+				return err
+			}
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
 		}
 		if p != "." && skip != nil && skip(p) {
@@ -85,7 +97,7 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool) *ignoreSet {
 		set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 		return nil
 	})
-	return set
+	return set, budgetErr
 }
 
 // matches reports whether relPath (slash-separated, relative to the search
