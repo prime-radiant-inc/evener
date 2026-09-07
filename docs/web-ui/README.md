@@ -43,6 +43,11 @@ There is no static example gallery to keep in sync. Run the dev server and open
 rendered from the real tokens. `src/dev/WidgetGallery.test.tsx` fails the build
 the day a widget has no section, so it cannot silently go stale.
 
+**`/dev/type`** does the same for the type system itself: the size ramp, the
+three line-heights, the eyebrow recipe, the four rhythm steps and a paragraph
+at each measure, in both themes, so a ramp change is reviewed as a picture
+rather than a diff.
+
 The gallery is dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.
 
