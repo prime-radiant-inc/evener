@@ -1379,7 +1379,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
 		if resolverPanic {
 			ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
-		} else if msg.Request.Method == appwire.MethodThreadRead && threadReadSubscribes(msg.Request.Params) && (!resolved || resolvedKey == "") {
+		} else if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) && (!resolved || resolvedKey == "") {
 			ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
 		}
 	}
@@ -1425,11 +1425,12 @@ func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string,
 	return key, ok, false
 }
 
-func threadReadSubscribes(raw json.RawMessage) bool {
-	var params struct {
-		Subscribe bool `json:"subscribe"`
+func threadReadAdmissionEligible(raw json.RawMessage) bool {
+	var params appwire.ThreadReadParams
+	if json.Unmarshal(raw, &params) != nil || !params.Subscribe {
+		return false
 	}
-	return json.Unmarshal(raw, &params) == nil && params.Subscribe
+	return appwire.ValidateThreadReadParams(params) == nil
 }
 
 // acquireSlowReadSlot takes one slowReadDispatchCap slot on behalf of the
