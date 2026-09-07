@@ -31,6 +31,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 	}
 	type ownershipEdge struct {
 		stateDir, ownerID, childID string
+		isSubagent                 bool
 	}
 	var edges []ownershipEdge
 	verifyOwner := func(entry hubcore.LiveEntry) (hubcore.LiveEntry, bool, error) {
@@ -43,6 +44,9 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 				return hubcore.LiveEntry{}, false, fmt.Errorf("read daemon ownership for %s: %w", edge.childID, err)
 			}
 			if !owned {
+				if edge.isSubagent {
+					return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify delegate %s ownership: descriptor for parent %s is missing", edge.childID, edge.ownerID)
+				}
 				return hubcore.LiveEntry{}, false, nil
 			}
 		}
@@ -78,7 +82,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		// Missing indexed metadata cannot hide a known live parent. The next
 		// iteration checks the roster first; verifying its descriptor then
 		// reports unreadable ownership instead of permitting a delegate write.
-		edges = append(edges, ownershipEdge{stateDir: stateDir, ownerID: parentID, childID: threadID})
+		edges = append(edges, ownershipEdge{stateDir: stateDir, ownerID: parentID, childID: threadID, isSubagent: child.Meta.IsSubagent})
 		threadID = parentID
 	}
 

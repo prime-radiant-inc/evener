@@ -652,32 +652,75 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					t.Error("navigation suppressed unreadable parent ownership")
 				}
 			})
-			t.Run("ownership read failure blocks mutations", func(t *testing.T) {
-				journal := filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl")
-				if err := os.Remove(journal); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(journal, 0700); err != nil {
-					t.Fatal(err)
-				}
-				for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue} {
-					var response any
-					err := client.Request(t.Context(), method, map[string]any{"ref": ref, "name": "unsafe", "clientMutationId": "unreadable-owner", "expectedInstanceId": childID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
-					wire, ok := errors.AsType[appwire.WireError](err)
-					if !ok {
-						t.Fatalf("%s error=%v", method, err)
+			for _, fault := range []string{"missing", "unreadable"} {
+				t.Run("ownership journal "+fault, func(t *testing.T) {
+					journal := filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl")
+					original, err := os.ReadFile(journal)
+					if err != nil {
+						t.Fatal(err)
 					}
-					if method == appwire.MethodTurnQueue {
-						data, _ := wire.Data.(map[string]any)
-						if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
-							t.Errorf("receipt=%+v", data)
+					t.Cleanup(func() {
+						if err := os.RemoveAll(journal); err != nil {
+							t.Error(err)
+						}
+						if err := os.WriteFile(journal, original, 0600); err != nil {
+							t.Error(err)
+						}
+					})
+					if err := os.Remove(journal); err != nil {
+						t.Fatal(err)
+					}
+					if fault == "unreadable" {
+						if err := os.Mkdir(journal, 0700); err != nil {
+							t.Fatal(err)
 						}
 					}
-				}
-				if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
-					t.Error("navigation suppressed ownership read failure")
-				}
-			})
+					before, err := schema.LoadSessionMeta(stateDir, childID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					beforeMetas, err := schema.ListSessionMetas(stateDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue, appwire.MethodThreadFork} {
+						params := map[string]any{"ref": ref, "name": "unsafe", "clientMutationId": "unreadable-owner", "expectedInstanceId": childID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}
+						if method == appwire.MethodThreadFork {
+							params = map[string]any{"ref": ref, "aside": true}
+						}
+						var response any
+						err := client.Request(t.Context(), method, params, &response)
+						wire, ok := errors.AsType[appwire.WireError](err)
+						if !ok {
+							t.Errorf("%s error=%v", method, err)
+							continue
+						}
+						if method == appwire.MethodTurnQueue {
+							data, _ := wire.Data.(map[string]any)
+							if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+								t.Errorf("receipt=%+v", data)
+							}
+						}
+					}
+					after, err := schema.LoadSessionMeta(stateDir, childID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if after.Name != before.Name {
+						t.Errorf("renamed delegate without ownership journal: %q", after.Name)
+					}
+					afterMetas, err := schema.ListSessionMetas(stateDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(afterMetas) != len(beforeMetas) {
+						t.Error("fork created metadata without ownership journal")
+					}
+					if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
+						t.Error("navigation suppressed ownership read failure")
+					}
+				})
+			}
 
 		})
 	}
