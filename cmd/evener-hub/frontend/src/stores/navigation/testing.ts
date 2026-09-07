@@ -249,7 +249,10 @@ export const wireV2 = (
       revision,
       ref: params.ref,
       top_level_ref: (body.top_level_ref as string) ?? (params.ref as string),
-      top_level: true,
+      top_level: body.top_level ?? true,
+      ...(body.project_key === undefined ? {} : { project_key: body.project_key }),
+      ...(body.tier === undefined ? {} : { tier: body.tier }),
+      ...(body.pin_section_id === undefined ? {} : { pin_section_id: body.pin_section_id }),
     };
   }
   if (rootSlot) {

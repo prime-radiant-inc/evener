@@ -16,6 +16,7 @@ import { locationForRoute, restoredStack } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
+import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
 import { PluginsScreen } from "./src/PluginsScreen";
 import {
 	ProjectScreen,
@@ -103,6 +104,11 @@ function Navigation() {
 					/>
 					<Stack.Screen name="Sessions" component={SessionsScreen} />
 					<Stack.Screen name="Projects" component={ProjectsScreen} />
+					<Stack.Screen
+						name="PinAssignment"
+						component={PinAssignmentScreen}
+						options={{ title: "Pin session" }}
+					/>
 					<Stack.Screen
 						name="LaunchSettings"
 						component={LaunchSettingsScreen}
