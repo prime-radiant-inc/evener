@@ -530,14 +530,35 @@ export function projectThread(thread: Thread): MobileConversation {
       if (result.kind === "final") {
         ordered.push({
           type: "final",
-          item: result.item,
+          item: {
+            ...result.item,
+            ...(item.transcriptKey
+              ? { transcriptKey: item.transcriptKey }
+              : {}),
+            ...(item.position ? { position: item.position } : {}),
+          },
           attachments: result.attachments,
         });
       } else {
         ordered.push({
           type: "activity",
-          item: result.pre.item,
-          pre: result.pre,
+          item: {
+            ...result.pre.item,
+            ...(item.transcriptKey
+              ? { transcriptKey: item.transcriptKey }
+              : {}),
+            ...(item.position ? { position: item.position } : {}),
+          },
+          pre: {
+            ...result.pre,
+            item: {
+              ...result.pre.item,
+              ...(item.transcriptKey
+                ? { transcriptKey: item.transcriptKey }
+                : {}),
+              ...(item.position ? { position: item.position } : {}),
+            },
+          },
           attachments: result.attachments,
         });
       }
@@ -579,6 +600,9 @@ export function projectThread(thread: Thread): MobileConversation {
         kind: "attachments",
         id: `${entry.item.id}:attachments`,
         items: entry.attachments,
+        ...(entry.item.transcriptKey
+          ? { sourceTranscriptKey: entry.item.transcriptKey }
+          : {}),
       });
     }
   }

@@ -25,6 +25,7 @@ import type {
   MutationReceipt,
   Thread,
   ThreadCapabilities,
+  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   Turn,
@@ -300,6 +301,124 @@ describe("ConversationService", () => {
         ref: "ref-1",
       });
       expect(result.nextCursor).toBe("next-cursor");
+    });
+
+    it("merges overlapping fragment items by transcriptKey and orders by position", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const items = [
+        {
+          id: "wire-new",
+          transcriptKey: "stable-item",
+          position: { entry: 2, item: 0 },
+          type: "userMessage",
+          text: "new payload",
+        },
+        {
+          id: "wire-old",
+          transcriptKey: "stable-item",
+          position: { entry: 1, item: 0 },
+          type: "userMessage",
+          text: "old payload",
+        },
+      ] as ThreadItem[];
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [
+              {
+                id: "turn-older",
+                itemsView: "fragment",
+                status: "completed",
+                items,
+              },
+            ],
+          }) as ThreadTurnsListResponse,
+      );
+
+      const result = await service.loadOlder("opaque-cursor");
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({
+        kind: "user",
+        id: "wire-old",
+        text: "old payload",
+      });
+    });
+
+    it("preserves fragment completeness metadata for the page boundary", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [
+              {
+                id: "turn-old",
+                itemsView: "fragment",
+                status: "completed",
+                hasEarlierItems: true,
+                hasLaterItems: true,
+                items: [],
+              },
+            ],
+            nextCursor: "next",
+          }) as ThreadTurnsListResponse,
+      );
+
+      await expect(service.loadOlder("opaque-cursor")).resolves.toMatchObject({
+        hasEarlierItems: true,
+        hasLaterItems: true,
+      });
+    });
+
+    it("clears the cached cursor when the page has no continuation", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      let calls = 0;
+      client.on("thread/turns/list", (params) => {
+        calls += 1;
+        expect(params).toMatchObject({
+          cursor: calls === 1 ? "first" : "second",
+        });
+        return { data: [], nextCursor: undefined } as ThreadTurnsListResponse;
+      });
+
+      await service.loadOlder("first");
+      await service.loadOlder("second");
+
+      expect(calls).toBe(2);
+    });
+
+    it("refreshes the projection after a stale cursor and retries with its new boundary", async () => {
+      const { client, service } = setup({ olderCursor: "fresh-cursor" });
+      await service.open("ref-1");
+      let listCalls = 0;
+      client.on("thread/turns/list", (params) => {
+        listCalls += 1;
+        if (listCalls === 1) {
+          throw new WireError("stale transcript cursor", -32020, {
+            evenerErrorInfo: "transcriptItemCursorStale",
+          });
+        }
+        expect(params).toMatchObject({
+          cursor: "caller-cursor-is-ignored",
+          itemLimit: 40,
+        });
+        return { data: [], nextCursor: undefined } as ThreadTurnsListResponse;
+      });
+
+      await expect(service.loadOlder("stale-cursor")).rejects.toThrow(
+        "stale transcript cursor",
+      );
+      const result = await service.loadOlder("caller-cursor-is-ignored");
+      expect(result.items).toEqual([]);
+      expect(listCalls).toBe(2);
+      const reads = client.calls.filter(
+        (call) => call.method === "thread/read",
+      );
+      expect(reads).toHaveLength(1);
     });
   });
 
@@ -920,7 +1039,7 @@ describe("ConversationService", () => {
   });
 
   describe("readProjection", () => {
-    it("sends thread/read with turnLimit 50, includeTurns, subscribe, replaceSubscription", async () => {
+    it("sends itemLimit 40 for the bounded item-mode read", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
       // Clear previous calls so we see only readProjection's request.
@@ -934,7 +1053,8 @@ describe("ConversationService", () => {
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
-        turnLimit: 50,
+        itemsView: "fragment",
+        itemLimit: 40,
       });
     });
 
@@ -1287,7 +1407,7 @@ describe("ConversationService", () => {
   });
 
   describe("loadOlder with explicit limit", () => {
-    it("passes limit 50 to thread/turns/list", async () => {
+    it("passes opaque cursor and itemLimit to thread/turns/list", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
       client.calls.length = 0;
@@ -1296,7 +1416,8 @@ describe("ConversationService", () => {
       expect(call?.params).toMatchObject({
         ref: "ref-1",
         cursor: "cursor-xyz",
-        limit: 50,
+        itemsView: "fragment",
+        itemLimit: 40,
       });
     });
   });
