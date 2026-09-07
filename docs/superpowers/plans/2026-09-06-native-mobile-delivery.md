@@ -693,3 +693,15 @@ row identity/folds, server transcript refs and the existing hub/session lifetime
 Luna medium workers own presentation helpers/tests and the client-guide section
 independently; Bot owns native composition/integration and serialized simulator
 and hub operations. Preserve all six drafts and the unrelated Apple patch.
+
+### Direct-wire usage correction — source 71750ee63
+
+The iPhone fixture exposed a parser mismatch: EvenerUsage omits zero-valued
+numeric fields, while parseUsage required both inputTokens and outputTokens.
+Confirm raw versus parsed delegate rows, reproduce output-only and other omitted
+zero combinations in parser tests, and normalize the present usage object's
+omitted pair members to zero while rejecting malformed supplied counts. Keep an
+absent usage object absent. This matches the current Go wire contract and the
+existing token-accounting interpretation; it does not add a compatibility path.
+Luna owns the parser/tests; Bot owns integration, guide clarification, fresh
+package and iPhone builds, and repeating the direct fixture acceptance.
