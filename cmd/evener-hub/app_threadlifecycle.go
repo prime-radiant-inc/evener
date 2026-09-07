@@ -162,9 +162,15 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
-			return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			if !canUseSpawnEntry {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			}
+			// Spawning already established this daemon's identity. An unrelated
+			// discovery failure must not hide its identity or discard initial input.
+			fmt.Fprintf(os.Stderr, "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
 		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
@@ -182,7 +188,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	ref := localSpawnWorkspaceRef(entry)
 	var source appsource.Source
-	if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" {
+	if canUseSpawnEntry {
 		// SpawnDaemon already returned this exact, freshly published rendezvous
 		// entry. Route the initial read and turn through it directly instead of
 		// depending on a concurrent roster status probe to admit the new daemon.
