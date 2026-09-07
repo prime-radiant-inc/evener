@@ -1,9 +1,13 @@
 # Native mobile coverage
 
-Jesse's objective is an intuitive, reliable iOS and Android app with shared code,
+Jesse's v1 objective is an intuitive, reliable iOS app for iPhone and iPad with shared code,
 multiple Evener hubs, and mobile access to Evener functionality. A working shell
 is an iteration milestone. It is not feature completeness. Voice with barge-in
 and control of other sessions is outside v1.
+
+Android delivery is deferred by Jesse’s explicit takeover-continuation decision.
+Preserve its existing source and historical evidence; Android-specific acceptance
+is not a v1 release gate. Shared correctness and complete SDK coverage remain in scope.
 
 ## Historical inventory and current acceptance
 
