@@ -253,6 +253,18 @@ export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[
   });
 }
 
+// The disclosure ids ToolRunGroup mints (run:<first entry>) for the runs
+// TurnBlock will fold. The projector's eligibleDisclosureIds inventory only
+// knows source item ids, so without these the Full-view baseline could not
+// clear a run the reader closed before leaving Full and coming back
+// (roborev on PR #947): a stale explicit close would keep the run shut in a
+// view whose contract is "everything open".
+export function transcriptRunDisclosureIdsForRows(rows: readonly TranscriptBodyRow[]): readonly string[] {
+  return rows.flatMap((row) =>
+    row.kind === "turn" ? foldTurnEntries(row.turn).flatMap((entry) => (entry.kind === "run" ? [entry.id] : [])) : [],
+  );
+}
+
 export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
   const indexes = new Map<string, number>();
   for (const [index, row] of rows.entries()) {
@@ -316,12 +328,18 @@ export function TranscriptBody({
   const focusFallbackRef = useRef<HTMLElement>(null);
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
+  // Source item ids from the projector plus the folded-run ids the rows will
+  // render, so the Full baseline reaches every disclosure on screen.
+  const eligibleDisclosureIds = useMemo(
+    () => [...projection.eligibleDisclosureIds, ...transcriptRunDisclosureIdsForRows(rows)],
+    [projection, rows],
+  );
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
   const itemRenderFingerprint = [
     configFingerprint(config),
     JSON.stringify(projection.metadata),
-    projection.eligibleDisclosureIds.join("\0"),
+    eligibleDisclosureIds.join("\0"),
     surface,
     sessionRef,
     disclosureScope,
@@ -332,6 +350,7 @@ export function TranscriptBody({
       createTranscriptRenderContext({
         config,
         projection,
+        eligibleDisclosureIds,
         surface,
         sessionRef,
         disclosureScope,
@@ -483,6 +502,7 @@ export function TranscriptBody({
     <TranscriptRenderProvider
       config={config}
       projection={projection}
+      eligibleDisclosureIds={eligibleDisclosureIds}
       surface={surface}
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}
