@@ -379,82 +379,90 @@ export function SessionsScreen({
       edges={["bottom", "left", "right"]}
       style={[styles.fill, { backgroundColor: colors.background }]}
     >
-      <ConnectionStatus />
-      <View style={[styles.row, { flexWrap: "wrap" }]}>
-        <Action
-          disabled={!activeProfile || state !== "ready"}
-          onPress={() => {
-            if (activeProfile)
-              navigation.navigate("HubSettings", { hubId: activeProfile.id });
-          }}
-        >
-          Hub settings
-        </Action>
-        <Action
-          disabled={!activeProfile || state !== "ready"}
-          onPress={() => {
-            if (activeProfile)
-              navigation.navigate("Projects", { hubId: activeProfile.id });
-          }}
-        >
-          Browse projects
-        </Action>
-      </View>
-      <View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
-        <View style={[styles.row, { flexWrap: "wrap" }]}>
-          <TextInput
-            accessibilityLabel="Search sessions"
-            placeholder="Search sessions"
-            placeholderTextColor={colors.secondary}
-            value={searchText}
-            onChangeText={setSearchText}
-            onSubmitEditing={() => search(searchText)}
-            returnKeyType="search"
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={[
-              styles.input,
-              styles.fill,
-              {
-                minWidth: "100%",
-                color: colors.text,
-                borderColor: colors.border,
-                backgroundColor: colors.surface,
-              },
-            ]}
-          />
-          <Action
-            disabled={state !== "ready"}
-            onPress={() => search(searchText)}
-          >
-            Search
-          </Action>
-          {searchText || query ? (
-            <Action
-              disabled={state !== "ready"}
-              onPress={() => {
-                setSearchText("");
-                search("");
-              }}
-            >
-              Clear
-            </Action>
-          ) : null}
-        </View>
-        {query ? <Copy muted>{`Results for “${query}”`}</Copy> : null}
-      </View>
-      <ErrorMessage message={error} />
-      {error ? (
-        <Action
-          disabled={state !== "ready" || refreshing}
-          onPress={() => {
-            void refresh();
-          }}
-        >
-          Retry sessions
-        </Action>
-      ) : null}
       <FlatList
+        ListHeaderComponent={
+          <View style={{ marginBottom: 4 }}>
+            <ConnectionStatus />
+            <View style={[styles.row, { flexWrap: "wrap" }]}>
+              <Action
+                disabled={!activeProfile || state !== "ready"}
+                onPress={() => {
+                  if (activeProfile)
+                    navigation.navigate("HubSettings", {
+                      hubId: activeProfile.id,
+                    });
+                }}
+              >
+                Hub settings
+              </Action>
+              <Action
+                disabled={!activeProfile || state !== "ready"}
+                onPress={() => {
+                  if (activeProfile)
+                    navigation.navigate("Projects", {
+                      hubId: activeProfile.id,
+                    });
+                }}
+              >
+                Browse projects
+              </Action>
+            </View>
+            <View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
+              <View style={[styles.row, { flexWrap: "wrap" }]}>
+                <TextInput
+                  accessibilityLabel="Search sessions"
+                  placeholder="Search sessions"
+                  placeholderTextColor={colors.secondary}
+                  value={searchText}
+                  onChangeText={setSearchText}
+                  onSubmitEditing={() => search(searchText)}
+                  returnKeyType="search"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={[
+                    styles.input,
+                    styles.fill,
+                    {
+                      minWidth: fontScale > 1.4 ? "100%" : "50%",
+                      color: colors.text,
+                      borderColor: colors.border,
+                      backgroundColor: colors.surface,
+                    },
+                  ]}
+                />
+                <Action
+                  disabled={state !== "ready"}
+                  onPress={() => search(searchText)}
+                >
+                  Search
+                </Action>
+                {searchText || query ? (
+                  <Action
+                    disabled={state !== "ready"}
+                    onPress={() => {
+                      setSearchText("");
+                      search("");
+                    }}
+                  >
+                    Clear
+                  </Action>
+                ) : null}
+              </View>
+              {query ? <Copy muted>{`Results for “${query}”`}</Copy> : null}
+            </View>
+            <ErrorMessage message={error} />
+            {error ? (
+              <Action
+                disabled={state !== "ready" || refreshing}
+                onPress={() => {
+                  void refresh();
+                }}
+              >
+                Retry sessions
+              </Action>
+            ) : null}
+          </View>
+        }
         keyboardShouldPersistTaps="handled"
         data={rows}
         keyExtractor={(item) => item.ref}
@@ -462,26 +470,30 @@ export function SessionsScreen({
         onRefresh={() => {
           void refresh();
         }}
-        contentContainerStyle={styles.padded}
+        contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
         ListEmptyComponent={
-          <Copy muted>
-            {refreshing
-              ? "Loading sessions…"
-              : state !== "ready"
-                ? "Connect to the hub to load sessions."
-                : error
-                  ? "Pull down to retry loading sessions."
-                  : query
-                    ? "No sessions match your search."
-                    : "No sessions on this hub yet."}
-          </Copy>
+          <View style={{ paddingHorizontal: 16 }}>
+            <Copy muted>
+              {refreshing
+                ? "Loading sessions…"
+                : state !== "ready"
+                  ? "Connect to the hub to load sessions."
+                  : error
+                    ? "Pull down to retry loading sessions."
+                    : query
+                      ? "No sessions match your search."
+                      : "No sessions on this hub yet."}
+            </Copy>
+          </View>
         }
         ListFooterComponent={
           hasMore ? (
-            <Copy muted>
-              Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
-              search to find others.
-            </Copy>
+            <View style={{ paddingHorizontal: 16 }}>
+              <Copy muted>
+                Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
+                search to find others.
+              </Copy>
+            </View>
           ) : null
         }
         renderItem={({ item }) => (
@@ -499,6 +511,7 @@ export function SessionsScreen({
             }}
             style={[
               {
+                marginHorizontal: 16,
                 paddingVertical: 13,
                 minHeight: Platform.OS === "android" ? 72 : 68,
                 borderBottomWidth: 0.5,
