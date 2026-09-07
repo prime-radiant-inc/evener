@@ -116,3 +116,18 @@ release coverage. Actual sandbox approval/denial with tool execution still needs
 an owned scripted-provider acceptance fixture; injected notifications are not
 proof of resumption. Questions, credentials, continuous reconnect handling,
 remaining SDK recipes and the full iOS release matrix remain open.
+
+## Real sandbox decision qualification
+
+The same final installed artifact subsequently completed two actual restricted
+`read_file` decisions on the direct owned hub: approve true and approve false.
+Each helper call dispatched one resolve request and returned acknowledged with
+execution still unverified. Independent provider observations, completed-turn
+events and full transcript reads proved the approved sentinel reached the model
+and the denied sentinel did not. Native Allow/Deny completed the same two paths
+in separate sessions. The temporary provider was removed and its complete
+original registry restored after all five fixture sessions, including one
+diagnostic attempt, were shut down. See [decision evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
+for artifact identities, clean receipts, screenshots and remaining failure
+scenarios. This closes the ordinary blocked-file execution gap above, not
+concurrent decisions, lost acknowledgments or the broader iOS release matrix.

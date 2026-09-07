@@ -1,0 +1,72 @@
+{
+  "driverCommit": "2f54edd3663dae74960944b69cad7e56bdd309d3",
+  "driverSourceSHA256": "f6b5abfc4739608a9388fb2865020b2a8eab1f9935e357bf66e821ce389f066b",
+  "driverBinarySHA256": "35cac089f4982d8f2da339ca9ed8fb548881a20287a6dbb0f82b6ca987a3cb26",
+  "results": [
+    {
+      "case": "native-allow-proof",
+      "ref": "local:034Khfv53GGNQtwSD1USdp",
+      "turnStatus": "completed",
+      "status": "awaiting",
+      "pendingCount": 0,
+      "callId": "call_fakellm_1",
+      "toolStatus": "completed",
+      "errorPresent": false,
+      "sentinelInTranscript": true,
+      "finalTextPresent": true
+    },
+    {
+      "case": "native-deny-proof",
+      "ref": "local:034Khfvp9td8b69koFIdy1",
+      "turnStatus": "completed",
+      "status": "awaiting",
+      "pendingCount": 0,
+      "callId": "call_fakellm_3",
+      "toolStatus": "failed",
+      "errorPresent": true,
+      "sentinelInTranscript": false,
+      "finalTextPresent": true
+    },
+    {
+      "case": "sdk-allow-proof",
+      "ref": "local:034KhoCGMKvMhy6dutNu5W",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "resolveRequests": 1,
+      "turnStatus": "completed",
+      "status": "awaiting",
+      "pendingCount": 0,
+      "callId": "call_fakellm_5",
+      "toolStatus": "completed",
+      "errorPresent": false,
+      "sentinelInTranscript": true,
+      "finalTextPresent": true
+    },
+    {
+      "case": "sdk-deny-proof",
+      "ref": "local:034KhoDBsNt9bVISkNMX7q",
+      "outcome": "acknowledged",
+      "execution": "unverified",
+      "resolveRequests": 1,
+      "turnStatus": "completed",
+      "status": "awaiting",
+      "pendingCount": 0,
+      "callId": "call_fakellm_7",
+      "toolStatus": "failed",
+      "errorPresent": true,
+      "sentinelInTranscript": false,
+      "finalTextPresent": true
+    }
+  ],
+  "cleanup": {
+    "shutDown": [
+      "local:034KhakDzcHeEq8XJW1trX",
+      "local:034Khfv53GGNQtwSD1USdp",
+      "local:034Khfvp9td8b69koFIdy1",
+      "local:034KhoCGMKvMhy6dutNu5W",
+      "local:034KhoDBsNt9bVISkNMX7q"
+    ],
+    "providerRemoved": true,
+    "originalRegistryRestored": true
+  }
+}
