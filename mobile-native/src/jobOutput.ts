@@ -1,4 +1,4 @@
-import { parseJobLogTail } from "../../cmd/evener-hub/frontend/src/panes/transcript/jobLogData";
+import { parseJobLogTail } from "../../cmd/evener-hub/frontend/src/protocol/jobOutput";
 import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 

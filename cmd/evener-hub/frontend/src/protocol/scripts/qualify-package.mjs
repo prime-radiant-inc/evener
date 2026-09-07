@@ -111,6 +111,7 @@ run(
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/queue.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/goals.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/tasks.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/job-output.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/management-recovery.contract.mjs"),
   ],
   fixtureDir,

@@ -96,7 +96,7 @@ The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
-management and recovery paths. Additional creation cases, jobs,
+management and recovery paths. Additional creation cases, activity-tree traversal,
 continuous reconnect recovery, credentials and hub upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
@@ -125,6 +125,36 @@ field types; it preserves timestamp strings without interpreting dates. Invalid
 or incomplete responses fail as a whole. The CLI never prints raw task rows or
 transport error details. Task execution, mutation and job output require their
 own workflows; reading a task with status `done` is only a state observation.
+
+### Reading a job output window
+
+`job-output.mjs` reads one `evener/jobs/output` page for `EVENER_REF` and
+`EVENER_JOB_ID`. Alternatively, provide an `EVENER_JOB_OUTPUT_PARAMS_FILE`
+containing exactly `ref`, `jobId`, and optional `maxBytes` and `beforeBytes`.
+The reference must identify the session that owns the job.
+
+```sh
+EVENER_REF=local:... EVENER_JOB_ID=job_... node node_modules/@evener/appwire-client/examples/job-output.mjs
+```
+
+The server defaults to a 4096-byte tail. The recipe accepts `maxBytes` from
+1 through 65536; `beforeBytes: 0` also reads the tail. A positive
+`beforeBytes` is an exclusive lifetime byte offset. To read the preceding
+window, use the returned `retainedStart` unchanged while `hasEarlier` is true.
+Do not derive cursors from JavaScript string length, and stop if a page does
+not advance. Output retention can remove older bytes during paging.
+
+Programmatic consumers can import `runJobOutput` from
+`examples/job-output-logic.mjs` to obtain `{ outcome: "read", readback }`.
+The readback preserves log text and future fields. The exported
+`parseJobLogTail` helper validates the same byte-window shape used by web and
+native clients: nonnegative safe integer offsets, start no greater than total,
+required boolean `truncated`, and optional boolean `hasEarlier` (absent means
+false). Neither the helper nor recipe calculates byte spans from decoded text.
+The recipe makes one read without retrying or merging pages. Its CLI prints
+only byte bookkeeping and paging flags, never log text or transport errors.
+An empty output is valid; missing jobs and failed reads remain errors.
+
 
 ### Reviewing and changing a goal
 

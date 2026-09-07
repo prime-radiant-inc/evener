@@ -58,6 +58,7 @@ const recipes = {
   "questions.mjs": ["initialize", "thread/read", "thread/turns/list", "turn/start"],
   "goals.mjs": ["initialize", "thread/read", "goal/set"],
   "tasks.mjs": ["initialize", "evener/tasks/list"],
+  "job-output.mjs": ["initialize", "evener/jobs/output"],
   "queue.mjs": [
     "initialize",
     "thread/read",

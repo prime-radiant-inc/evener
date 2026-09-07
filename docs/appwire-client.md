@@ -260,6 +260,27 @@ a user-controlled retry. Do not replay it automatically. Display a hub-provided
 error message separately from the uncertainty explanation so configuration
 failures remain actionable.
 
+## Job output byte windows
+
+Read `evener/jobs/output` with the job's owning session `ref` and `jobId`.
+The response `data` contains `tail`, `totalBytes`, `retainedStart`, `truncated`,
+and optional `hasEarlier`. Missing `hasEarlier` means false; an empty log is a
+valid result. Unknown jobs and failed reads are errors, not empty output.
+
+An omitted or zero `beforeBytes` selects the latest tail. For preceding pages,
+pass the returned `retainedStart` unchanged as the exclusive byte offset while
+`hasEarlier` is true. The server defaults `maxBytes` to 4096 and caps it at
+65536. Offsets describe lifetime output bytes, not characters or rendered text.
+Validate safe integer offsets and paging flags before storing another cursor.
+Keep pages scoped to the same hub, owner and job; a numeric offset itself
+contains no ownership information. Retention can evict earlier output, so stop
+on non-advancing pages and retain already loaded content when a read fails.
+
+The packaged [job-output recipe](../cmd/evener-hub/frontend/src/protocol/README.md#reading-a-job-output-window)
+performs one bounded read and exposes the shared decoder. Its command-line
+summary excludes log content. Activity-tree traversal and automatic page
+assembly require separate client workflows.
+
 ## Runnable coverage and maintenance
 
 The packaged `inspect.mjs` recipe uses only the public library and `ws`. It has

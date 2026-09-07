@@ -3,6 +3,8 @@ export { composeAskAnswers } from "./askAnswers";
 export type { AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+export type { JobLogTail } from "./jobOutput";
+export { parseJobLogTail } from "./jobOutput";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
