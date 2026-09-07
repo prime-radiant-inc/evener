@@ -243,8 +243,9 @@ var observeHubRelayWait func()
 // thread/read's relay, its recovery paths, and thread/unsubscribe use it.
 func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
 	threadID := strings.TrimSpace(params.ThreadID)
-	if threadID == "" && params.Ref != "" {
-		ref, err := appwire.ParseRef(params.Ref)
+	refInput := strings.TrimSpace(params.Ref)
+	if threadID == "" && refInput != "" {
+		ref, err := appwire.ParseRef(refInput)
 		if err != nil {
 			return "", "", err
 		}

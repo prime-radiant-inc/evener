@@ -1453,7 +1453,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 			if secondaryKey != "" && secondaryKey != resolvedKey {
 				c.cancelSubscriptionAdmissions(secondaryKey)
 				if intent == SubscriptionAdmissionUnresolved {
-					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
+					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{resolvedKey, secondaryKey})
 					ctx = context.WithValue(ctx, subscriptionUnresolvedContextKey{}, true)
 				}
 			}
