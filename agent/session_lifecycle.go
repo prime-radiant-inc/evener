@@ -521,7 +521,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 			// does not cover: worktreeRestoreEnv holds only the launch
 			// environment, so a switch leaves the clone it came from reachable
 			// from nothing.
-			s.retainAbandonedEnvironmentScratch()
+			s.settleAbandonedEnvironmentScratch(retainChildScratch)
 		}
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -606,28 +606,33 @@ func (s *Session) recordAbandonedEnvironmentLocked(prior, next *execenv.LocalExe
 	s.abandonedEnvs = append(s.abandonedEnvs, prior)
 }
 
-// retainAbandonedEnvironmentScratch releases the leases of every scratch the
-// environments this session swapped away from still own, keeping the
-// directories for the handoff, and retires their file-tool layers through the
-// drain — RetainSessionScratch does both.
+// settleAbandonedEnvironmentScratch settles the scratch every environment this
+// session swapped away from still owns, under the same disposition as the
+// environment the session holds now: a handoff releases the leases and keeps
+// the directories, a discard drops both. Neither settlement runs Cleanup, so
+// no process table is touched.
 //
-// close calls it after the current environment's Cleanup, for the same reason
-// the parked environment's retain runs there: an abandoned environment shares
-// the current clone's process table, so its processes are already reaped and
-// running Cleanup on it would reap that table a second time. What is left on
-// it is what a shared child minted after the session moved on, which nothing
-// else will ever release. teardownChildSession also calls it, unconditionally
-// and without a Cleanup of its own: a session whose environment is its live
-// parent's own never runs cleanupEnv at all, so this is the only place that
-// ever drains a worktree clone such a child built for itself and then swapped
-// away from.
-func (s *Session) retainAbandonedEnvironmentScratch() {
+// close calls it (always a handoff) after the current environment's Cleanup,
+// for the same reason the parked environment's retain runs there: an abandoned
+// environment shares the current clone's process table, so its processes are
+// already reaped and running Cleanup on it would reap that table a second
+// time. What is left on it is what a shared child minted after the session
+// moved on, which nothing else will ever release. teardownChildSession also
+// calls it: a session whose environment is its live parent's own never runs
+// cleanupEnv at all, so this is the only place that ever drains a worktree
+// clone such a child built for itself and then swapped away from. It passes
+// its own disposition for symmetry with the current environment — the scratch
+// of a child being dropped is dropped wherever it sits. No production caller
+// reaches the discard side with a swapped child today: only a manage_worktree
+// op records an abandoned environment, which takes a turn, and every teardown
+// that discards fires before the child's run loop starts.
+func (s *Session) settleAbandonedEnvironmentScratch(scratch childScratchDisposition) {
 	s.mu.Lock()
 	abandoned := s.abandonedEnvs
 	s.abandonedEnvs = nil
 	s.mu.Unlock()
 	for _, env := range abandoned {
-		env.RetainSessionScratch()
+		releaseOwnedChildEnvironment(env, scratch)
 	}
 }
 

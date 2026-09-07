@@ -820,3 +820,72 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 		t.Errorf("the child's teardown released the box's scratch %s lease while the parent is still working in it", boxTmp)
 	}
 }
+
+// A child's teardown settles the environments it swapped away from under the
+// same disposition as the environment it still holds: a handoff keeps the
+// directories with their leases released, a discard drops both. The scratch of
+// a child being dropped is dropped wherever it sits.
+//
+// No production caller reaches the discard side with a swapped child — an
+// abandoned environment is recorded only by a manage_worktree op, which takes a
+// turn, and every teardown that discards fires before the child's run loop
+// starts — so this drives teardownChildSession directly rather than faking a
+// production path into it.
+func TestChildTeardownSettlesAbandonedEnvironmentsByDisposition(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
+	}
+
+	// A child holding one environment it swapped away from, with the scratch a
+	// command minted there while it was still the child's own.
+	childWithAbandonedScratch := func(t *testing.T) (*Session, string) {
+		t.Helper()
+		child, err := NewSession(client, parent.currentProfile(), parentLocal.WithWorkingDirectory(t.TempDir()), SessionConfig{
+			MaxSubagentDepth: 1,
+			testOnly:         testConfig{skipGitSnapshot: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession on the child's clone: %v", err)
+		}
+		child.ownsEnv = true
+		abandoned := parentLocal.WithWorkingDirectory(t.TempDir())
+		if _, err := abandoned.ExecCommand(context.Background(), "true", 5000, "", nil); err != nil {
+			t.Fatalf("ExecCommand on the abandoned environment: %v", err)
+		}
+		scratch := abandoned.SessionScratchDir()
+		if scratch == "" {
+			t.Fatal("the abandoned environment minted no session scratch, so there is nothing to settle")
+		}
+		if !scratchLeaseHeld(t, scratch) {
+			t.Fatal("the abandoned environment's scratch lease is not held before the teardown")
+		}
+		child.mu.Lock()
+		child.abandonedEnvs = append(child.abandonedEnvs, abandoned)
+		child.mu.Unlock()
+		return child, scratch
+	}
+
+	discarded, discardedScratch := childWithAbandonedScratch(t)
+	t.Cleanup(func() { _ = os.RemoveAll(discardedScratch) })
+
+	teardownChildSession(context.Background(), discarded, disposeChildScratch)
+
+	if _, err := os.Stat(discardedScratch); !os.IsNotExist(err) {
+		t.Errorf("a discarded child's abandoned scratch %s survived its teardown (stat: %v), want it dropped with its lease", discardedScratch, err)
+	}
+
+	handed, handedScratch := childWithAbandonedScratch(t)
+	t.Cleanup(func() { _ = os.RemoveAll(handedScratch) })
+
+	teardownChildSession(context.Background(), handed, retainChildScratch)
+
+	if _, err := os.Stat(handedScratch); err != nil {
+		t.Errorf("a handed-off child's abandoned scratch %s was removed, want it kept for the handoff: %v", handedScratch, err)
+	} else if scratchLeaseHeld(t, handedScratch) {
+		t.Errorf("the handed-off child's abandoned scratch %s lease is still held after its teardown", handedScratch)
+	}
+}
