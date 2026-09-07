@@ -1,18 +1,32 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const packageDir = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
+let completed = false;
+process.on("exit", (code) => {
+  if (code === 0 && completed) rmSync(fixtureDir, { force: true, recursive: true });
+  else console.error(`qualification fixture retained at ${fixtureDir}`);
+});
 
 function run(command, args, cwd) {
-  return execFileSync(command, args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  try {
+    return execFileSync(command, args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const stdout = error.stdout?.toString();
+    const stderr = error.stderr?.toString();
+    if (stdout) process.stderr.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    throw error;
+  }
 }
 
 const packed = JSON.parse(
@@ -78,3 +92,4 @@ for (const forbidden of ["package/client.ts", "package/src/", "package/node_modu
 }
 
 console.log(`qualified ${packed.name}@${packed.version} outside ${packageDir}`);
+completed = true;
