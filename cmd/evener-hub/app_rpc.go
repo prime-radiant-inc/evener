@@ -392,6 +392,11 @@ func registerThreadHandlers(
 			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		}
+		// Local forks copy persisted history in the hub. A live daemon's
+		// own unsupported fork flag does not describe this hub-owned action.
+		if hubOwnsThreadFork(resp.Thread) {
+			resp.Thread.Evener.Capabilities.ForkFromTurn = true
+		}
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
