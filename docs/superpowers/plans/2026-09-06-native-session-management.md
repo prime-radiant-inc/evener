@@ -38,10 +38,10 @@ recovery across model disposal.
 
 ## Remaining implementation
 
-- [ ] Add native pin catalog/section destinations and accessible menus for
+- [x] Add native pin catalog/section destinations and accessible menus for
   assigning an existing section, naming a new section, unpinning, renaming and
   deleting a section. Consume the shared controller; preserve paging/reveal.
-- [ ] Add selected-turn ordinary fork with editable input and truthful uncertain
+- [x] Add selected-turn ordinary fork with editable input and truthful uncertain
   outcomes. Reuse conversation services for returned child identity.
 - [ ] Add ended-session deletion with confirmation and server skipped results.
   Refresh from its navigation receipt without assuming an `ok` field.
@@ -152,3 +152,23 @@ qualification remain part of the unfinished overall checklist.
    failures, late acknowledgement, scope replacement and no replay. Exercise
    the real iOS fork, child draft/restart and preserved parent history against
    the owned scripted hub before recording acceptance.
+
+### Ordinary fork checkpoint (2026-09-07)
+
+`ff3da051b` implements the selected-message fork, source preview, durable child
+handoff and route restoration. The owned iOS journey exposed two integration
+defects: live daemon capabilities hid the hub-owned operation, and returning
+from the child left the parent's subscription replaced. `0b2d95109` corrects
+the narrow hub capability overlay; `be164c5ad` rereads the parent on focus.
+
+The final Release created a child with exactly the preceding source history,
+restored its edited 513-character unsent draft after termination, and received
+external parent updates after Back. Native validation passes 510 tests plus
+TypeScript; shared mobile tests/checks, full hub tests and scoped hub lint pass.
+See [fork evidence](../../design/mobile/fork-evidence.md) for source/artifact
+identities, screenshots, deterministic fault coverage and limits.
+
+Ended-session deletion is next. Durable archive/favorite recovery and the full
+lifecycle/accessibility matrix remain open. The existing fork protocol cannot
+atomically reject a concurrent source replacement after the native preflight
+read; this limitation remains recorded rather than treated as resolved.
