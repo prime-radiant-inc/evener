@@ -803,6 +803,25 @@ test("an image-only input whose filename holds a paren retries on a rebuilt anch
   expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
 });
 
+test("glued user text after an unnamed marker is preserved, not swallowed", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1)foo) describe it";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1]foo) describe it", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
 test("foreign prose occupying the pairing slot still refuses the images", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: ghost.png) then (attached image 1) then (attached image 2)";

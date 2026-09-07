@@ -105,9 +105,12 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
     const cursor = match.index + match[0].length;
     const rest = text.slice(cursor);
     if (rest.startsWith(")")) {
-      const spanEnd = extendSpanEnd(text, cursor);
-      occurrences.push({ marker, start: match.index, end: spanEnd });
-      prefix.lastIndex = spanEnd;
+      // Unnamed markers never extend: the wire emits no filename tail for
+      // them, so anything glued after the ")" ("(attached image 1)foo)") is
+      // user text that must survive verbatim. Tail consumption below applies
+      // only to named mentions, where a lost filename can leave one behind.
+      occurrences.push({ marker, start: match.index, end: cursor + 1 });
+      prefix.lastIndex = cursor + 1;
     } else if (rest.startsWith(":")) {
       const afterColon = rest.slice(1).startsWith(" ") ? rest.slice(2) : rest.slice(1);
       const base = cursor + (rest.length - afterColon.length);
