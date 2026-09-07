@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+
+const packageDir = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const fixtureDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
+
+function run(command, args, cwd) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+const packed = JSON.parse(
+  run("npm", ["pack", "--json", "--pack-destination", fixtureDir], packageDir),
+)[0];
+const tarball = join(fixtureDir, packed.filename);
+run(
+  "npm",
+  ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
+  fixtureDir,
+);
+
+writeFileSync(
+  join(fixtureDir, "esm.mts"),
+  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION, WireError } from "@evener/appwire-client";
+const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const version: string = APPWIRE_PROTOCOL_VERSION;
+const error: WireError | undefined = undefined;
+void client; void version; void error;
+`,
+);
+writeFileSync(
+  join(fixtureDir, "commonjs.cts"),
+  `import client = require("@evener/appwire-client");
+const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const version: string = client.APPWIRE_PROTOCOL_VERSION;
+void app; void version;
+`,
+);
+const tsc = resolve(packageDir, "node_modules/.bin/tsc");
+run(
+  tsc,
+  ["--strict", "--noEmit", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", "esm.mts", "commonjs.cts"],
+  fixtureDir,
+);
+
+writeFileSync(
+  join(fixtureDir, "esm-runtime.mjs"),
+  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
+if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "string") process.exit(1);
+`,
+);
+writeFileSync(
+  join(fixtureDir, "commonjs-runtime.cjs"),
+  `const { AppwireClient, APPWIRE_PROTOCOL_VERSION } = require("@evener/appwire-client");
+if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "string") process.exit(1);
+`,
+);
+run(process.execPath, [join(fixtureDir, "esm-runtime.mjs")], fixtureDir);
+run(process.execPath, [join(fixtureDir, "commonjs-runtime.cjs")], fixtureDir);
+
+const listing = run("tar", ["-tzf", tarball], fixtureDir);
+for (const expected of [
+  "package/dist/index.js",
+  "package/dist/index.d.ts",
+  "package/README.md",
+  "package/examples/connection.mjs",
+]) {
+  assert(listing.includes(`${expected}\n`), `packed package is missing ${expected}`);
+}
+for (const forbidden of ["package/client.ts", "package/src/", "package/node_modules/"]) {
+  assert(!listing.includes(forbidden), `packed package contains ${forbidden}`);
+}
+
+console.log(`qualified ${packed.name}@${packed.version} outside ${packageDir}`);
