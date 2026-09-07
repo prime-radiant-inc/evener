@@ -43,7 +43,7 @@ recovery across model disposal.
   deleting a section. Consume the shared controller; preserve paging/reveal.
 - [x] Add selected-turn ordinary fork with editable input and truthful uncertain
   outcomes. Reuse conversation services for returned child identity.
-- [ ] Add ended-session deletion with confirmation and server skipped results.
+- [x] Add ended-session deletion with confirmation and server skipped results.
   Refresh from its navigation receipt without assuming an `ok` field.
 - [ ] Preserve unfinished edits and uncertain mutation targets across screen/hub
   replacement and process death; current controller lifetime fencing alone
@@ -198,3 +198,24 @@ read; this limitation remains recorded rather than treated as resolved.
 5. Run deterministic controller/repository/readback/route checks, then exercise
    cancellation, stale confirmation, process restoration and actual deletion on
    a newly owned iOS fixture. Preserve the earlier fork acceptance fixtures.
+
+### Ended-session deletion checkpoint (2026-09-07)
+
+`29ac49032` implements the review, exact target confirmation, durable outcome
+recovery and navigation. The iOS journey verified cancellation, stale-title
+rejection, restored review without dispatch, reachable controls at maximum text
+size, and actual deletion with the local draft retained. The journey also exposed
+a stale external rename in Sessions; `d2188a67d` adds focused, coalesced navigation
+invalidation refreshes while preserving the active search and visible rows.
+
+The final Release separately passed live filtered rename, review/draft restart,
+deletion and return-to-Sessions restart. Independent reads verified both deleted
+fixtures are absent, original reader/fork histories remain complete, and all
+owned drafts remain intact. Final native validation passes 540 tests plus
+TypeScript and touched Biome. See
+[deletion evidence](../../design/mobile/session-deletion-evidence.md) for exact
+artifacts, screenshots and limits.
+
+Next is durable archive/favorite recovery in Projects. The remaining lifecycle,
+multi-hub and accessibility matrix is still open, including conservative recovery
+when concurrent project deletion has fenced the target but not finished cleanup.
