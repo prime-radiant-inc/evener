@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {readFile,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {clientFromEnvironment} from './node_modules/@evener/appwire-client/examples/connection.mjs';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const checkpoint=process.argv[2];assert.match(checkpoint,/^[a-z-]+$/);
+const expected={A:['fixture-A-communicate-1','fixture-A-communicate-2','fixture-A-communicate-3'],B:['fixture-A-communicate-1','fixture-B-communicate-1']};
+const receipt={checkpoint,hubs:{}};
+const labels=process.argv.length>3?process.argv.slice(3):['A','B'];
+assert.ok(labels.every(label=>label==='A'||label==='B'));
+for(const label of labels){
+ const runtime=JSON.parse(await readFile(root+'/'+label+'/runtime.json','utf8'));
+ const binding=JSON.parse(await readFile(root+'/'+label+'/binding.json','utf8'));
+ process.env.EVENER_RPC_URL=runtime.url;process.env.EVENER_TOKEN_FILE=runtime.tokenFile;process.env.EVENER_CWD=runtime.cwd;
+ const {hub}=clientFromEnvironment();
+ try{
+  await hub.connect();
+  const {thread}=await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemLimit:40,itemsView:'full',subscribe:false});
+  assert.equal(thread.evener.ref,binding.ref);assert.equal(thread.name,'Twin '+label);
+  const items=thread.turns.flatMap(t=>t.items);
+  const messages=items.filter(i=>i.type==='agentMessage').map(i=>i.text);
+  assert.deepEqual(messages,expected[label]);
+  const userMessages=items.filter(i=>i.type==='userMessage').map(i=>i.text);
+  assert.equal(userMessages.includes('owned native a held turn'),label==='A');
+  assert.ok(!userMessages.some(t=>t.startsWith('owned draft ')));
+  assert.ok(thread.turns.every(t=>t.status==='completed'));
+  receipt.hubs[label]={ref:binding.ref,name:thread.name,status:thread.status.type,turns:thread.turns.length,messages,userMessages};
+ }finally{hub.close()}
+}
+await writeFile(root+'/'+checkpoint+'-readback.json',JSON.stringify(receipt,null,2));
+console.log(JSON.stringify(receipt));

@@ -1,0 +1,227 @@
+{
+  "date": "2026-09-07",
+  "scope": "iOS-only v1, direct two-hub transcript/draft/lifecycle isolation",
+  "native": {
+    "source": "4bd05e280",
+    "device": "iPhone 17 Pro simulator",
+    "configuration": "Release",
+    "mainJsBundleSha256": "6a5c839fca5e79be53091c43773102cfa21ddca390dbeb5958499ed7ffd2c8df"
+  },
+  "hubBinary": {
+    "binarySource": "700873dc9",
+    "binarySha256": "0fedee80034aa29cf2efa0bdca2b0acbab0a2b7c5540a99de8201b0200d5072b"
+  },
+  "sdkTarballSha256": "6cef0b2cdcaca667be9aa096b6b7178f1fe7e86ef71b370606369c84dc0a5521",
+  "isolation": {
+    "directPorts": {
+      "A": 57159,
+      "B": 62781
+    },
+    "distinctTokensPrivatelyVerified": true,
+    "separateHomeAndXdgRoots": true,
+    "sharedOwnedCwd": true,
+    "onlyEndedSessionHistoryCopied": true,
+    "sameRefAndInstanceId": true,
+    "noWebSocketProxy": true,
+    "heldBoundary": "next scripted LLM request, not RPC acknowledgment"
+  },
+  "drafts": {
+    "A": {
+      "hubId": "395a1335-6f1c-47c0-8b89-ec7dbe6ddb5a",
+      "ref": "local:034KvbVREo6OwEqfUhu1rx",
+      "draftBytes": 34,
+      "draftSha256": "61b8c86b1a1e4a2e6ba4f7c29f8ecf741c63db9711e62ee88b36c5bed446d8cf",
+      "unconfirmed": false
+    },
+    "B": {
+      "hubId": "53e5f64f-de6c-4a84-bbee-91fcf866a786",
+      "ref": "local:034KvbVREo6OwEqfUhu1rx",
+      "draftBytes": 34,
+      "draftSha256": "7a008c4e02cdb002e2cbe012ff0643771c7a9357a858a989de9bbd105bc2c363",
+      "unconfirmed": false
+    }
+  },
+  "checkpoints": [
+    {
+      "checkpoint": "after-release",
+      "hubs": {
+        "A": {
+          "ref": "local:034KvbVREo6OwEqfUhu1rx",
+          "name": "Twin A",
+          "status": "awaiting",
+          "turns": 8,
+          "messages": [
+            "fixture-A-communicate-1",
+            "fixture-A-communicate-2",
+            "fixture-A-communicate-3"
+          ],
+          "userMessages": [
+            "Owned common session seed",
+            "Owned twin A marker",
+            "owned native a held turn"
+          ]
+        },
+        "B": {
+          "ref": "local:034KvbVREo6OwEqfUhu1rx",
+          "name": "Twin B",
+          "status": "awaiting",
+          "turns": 5,
+          "messages": [
+            "fixture-A-communicate-1",
+            "fixture-B-communicate-1"
+          ],
+          "userMessages": [
+            "Owned common session seed",
+            "Owned twin B marker"
+          ]
+        }
+      }
+    },
+    {
+      "checkpoint": "a-offline",
+      "hubs": {
+        "B": {
+          "ref": "local:034KvbVREo6OwEqfUhu1rx",
+          "name": "Twin B",
+          "status": "awaiting",
+          "turns": 5,
+          "messages": [
+            "fixture-A-communicate-1",
+            "fixture-B-communicate-1"
+          ],
+          "userMessages": [
+            "Owned common session seed",
+            "Owned twin B marker"
+          ]
+        }
+      }
+    },
+    {
+      "checkpoint": "after-restart",
+      "hubs": {
+        "A": {
+          "ref": "local:034KvbVREo6OwEqfUhu1rx",
+          "name": "Twin A",
+          "status": "awaiting",
+          "turns": 8,
+          "messages": [
+            "fixture-A-communicate-1",
+            "fixture-A-communicate-2",
+            "fixture-A-communicate-3"
+          ],
+          "userMessages": [
+            "Owned common session seed",
+            "Owned twin A marker",
+            "owned native a held turn"
+          ]
+        },
+        "B": {
+          "ref": "local:034KvbVREo6OwEqfUhu1rx",
+          "name": "Twin B",
+          "status": "awaiting",
+          "turns": 5,
+          "messages": [
+            "fixture-A-communicate-1",
+            "fixture-B-communicate-1"
+          ],
+          "userMessages": [
+            "Owned common session seed",
+            "Owned twin B marker"
+          ]
+        }
+      }
+    }
+  ],
+  "nativeObservations": [
+    "B composer initially empty after A draft saved",
+    "B transcript and draft unchanged after A held turn completed",
+    "B draft and selection restored after background/foreground",
+    "B conversation and draft restored after cold launch",
+    "B remained usable while A process stopped and RPC port closed",
+    "A transcript and draft restored after hub restart",
+    "Removing A profile removed only A drafts and preserved B draft"
+  ],
+  "cleanup": {
+    "nativeProfilesRemovedThroughUI": [
+      "twin a",
+      "twin b"
+    ],
+    "ownedDraftRowsAbsent": true,
+    "clipboardRestored": true,
+    "allFourOwnedProcessesStopped": true,
+    "originalSevenDraftsVerified": true,
+    "originalConversationRestored": true
+  },
+  "hubCleanup": {
+    "A": {
+      "sessionStopped": true,
+      "providerInstanceRemoved": true
+    },
+    "B": {
+      "sessionStopped": true,
+      "providerInstanceRemoved": true
+    }
+  },
+  "stoppedProcesses": [
+    {
+      "label": "A hub",
+      "pid": 54369,
+      "signal": "SIGTERM"
+    },
+    {
+      "label": "A provider",
+      "pid": 71408,
+      "signal": "SIGTERM"
+    },
+    {
+      "label": "B hub",
+      "pid": 13653,
+      "signal": "SIGTERM"
+    },
+    {
+      "label": "B provider",
+      "pid": 71658,
+      "signal": "SIGTERM"
+    }
+  ],
+  "allFourProcessExitCodes": 0,
+  "providerHarnessTests": {
+    "passed": true,
+    "boundary": "real local fakellm HTTP request, hold/release/rearm and cancelled-request continuation"
+  },
+  "setupCorrectionsExcludedFromProductFailures": [
+    "Copied session identity is preserved, not regenerated",
+    "Readback driver requires EVENER_CWD"
+  ],
+  "artifacts": {
+    "ios-twin-b-after-release-20260907.jpg": {
+      "sha256": "abf633077fc44634256774cc2ba091574857f81a29be563f552edeeadf8e9acb",
+      "bytes": 31383
+    },
+    "ios-twin-a-after-restart-20260907.jpg": {
+      "sha256": "ef91658a39a3555b64f503bd4489fee13fee3eca01212c06fac23a076e77ccf1",
+      "bytes": 37141
+    },
+    "ios-twins-driver-20260907.mjs.txt": {
+      "sha256": "535635c6ad56365a581c9011a4c88d6420b7034b74118f78f932180347e0416c",
+      "bytes": 2016
+    },
+    "ios-twins-provider-20260907.go.txt": {
+      "sha256": "0be5c0d54d307cbb67d64aac944d30dee3bcc39f71646e1e6390a10f2e8baeb8",
+      "bytes": 4601
+    },
+    "ios-twins-provider-test-20260907.go.txt": {
+      "sha256": "4d8c8d47b08c40eaffeb52a081d3088fa47b3b0b003b54de70f19284f7f39422",
+      "bytes": 3250
+    }
+  },
+  "remaining": [
+    "native overlapping pending RPCs",
+    "lost RPC reply after dispatch",
+    "credential rotation",
+    "full iPad and accessibility matrix",
+    "physical networks and devices",
+    "signing and update qualification"
+  ],
+  "android": "preserved; release qualification deferred"
+}

@@ -180,3 +180,61 @@ selection and removal wiring; it does not qualify distinct-hub routing, native
 delayed-storage timing, uncertain network writes or physical-device behavior.
 Luna medium implemented the initial selection owner and reviewed interleavings;
 Bot added the roster/failure regressions, integrated the fixes and ran native QA.
+
+## Two direct hubs with identical session identities — 7 September 2026
+
+The iPhone 17 Pro Release app was rebuilt from `4bd05e280`; its `main.jsbundle`
+SHA-256 is `6a5c839fca5e79be53091c43773102cfa21ddca390dbeb5958499ed7ffd2c8df`.
+Two owned hubs built from `700873dc9` ran directly at ports 57159 and 62781,
+with distinct tokens, HOME/XDG roots and scripted LLM providers. They shared
+only the owned workspace path and three copied, ended session-history files.
+Credentials, installation IDs and runtime state were not copied. No WebSocket
+proxy was used. Artifact hashes and exact observations are in the
+[receipt](assets/multiple-hubs/ios-twins-20260907.json).
+
+Both hubs preserved session ref `local:034KvbVREo6OwEqfUhu1rx` and instance ID
+`034KvbVREo6OwEqfUhu1rx`. A contained provider markers A1/A2; B contained the
+copied A1 seed and its independent B1 marker. Profiles `twin a` and `twin b`
+were saved through the native form using their own credentials. The simulator
+clipboard was restored after each paste.
+
+The native app sent an owned input on A while its next LLM request was held,
+then retained an ordinary A draft and switched to B. B opened with an empty
+composer and its own transcript. After entering a distinct B draft, releasing
+A's held request produced A3 without changing B's displayed transcript or draft.
+The [installed SDK driver](assets/multiple-hubs/ios-twins-driver-20260907.mjs.txt)
+independently asserted each hub's agent-message list, the routing of the native
+input, and that neither draft had been sent. Both 34-byte drafts had separate `(hubId, ref)`
+keys and distinct recorded hashes.
+
+B's conversation, selection and draft survived background/foreground and cold
+launch. A was then stopped with SIGTERM, exited zero, and its RPC port was
+confirmed closed. B remained usable in the app and through a fresh SDK read.
+A restarted at the same endpoint under a new process; returning to A displayed
+A3 and its retained draft. Exact SDK reads on both hubs passed again.
+
+Visually inspected captures show [B after A completed](assets/multiple-hubs/ios-twin-b-after-release-20260907.jpg)
+and [A after restart](assets/multiple-hubs/ios-twin-a-after-restart-20260907.jpg).
+Removing A through the native confirmation deleted A's draft while B's remained
+byte-identical. Removing B deleted its draft too. Both owned sessions were
+confirmed stopped and their provider instances removed; both hubs and both
+scripted providers exited zero. The original profile and conversation were
+restored, all seven prior drafts passed their verifiers, and the two unrelated
+Apple-file diffs remained byte-identical. The clipboard backup was absent.
+
+Luna medium implemented and tested the
+[scripted provider](assets/multiple-hubs/ios-twins-provider-20260907.go.txt) and
+reviewed the native binding paths; Bot independently ran its
+[real HTTP boundary tests](assets/multiple-hubs/ios-twins-provider-test-20260907.go.txt),
+operated the native journey and verified the receipts. The harness's release
+gate and cancelled-request continuation were corrected before this run. Setup
+also initially expected a copied session to receive a new instance ID, and the
+first readback invocation omitted required `EVENER_CWD`; those setup attempts
+are excluded from product-failure evidence.
+
+This qualifies the observed two-hub transcript/draft and lifecycle isolation.
+A held LLM request does not establish a lost RPC reply or an uncertain write.
+Credential rotation, overlapping native pending RPCs, loss after dispatch,
+actionable version mismatch, LAN/pairing, full iPad/accessibility and
+physical-device/signing/update qualification remain open. Android evidence is
+preserved and its release qualification remains deferred for iOS-only v1.
