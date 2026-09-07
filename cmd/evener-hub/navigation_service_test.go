@@ -2497,3 +2497,49 @@ func TestNavigationSnapshotBoundaryUsesNearest24HourOr14DayCutover(t *testing.T)
 		t.Fatalf("14d boundary = %v, want %v", got, want)
 	}
 }
+
+func TestNavigationReadV2DeltaForResourceThatLosesAllEntities(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = append([]hubcore.TreeNode(nil), source.inputs.Tree.Projects[0].Current...)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	manifestKey := navigationResourceKey{Kind: navigationResourceManifest}
+	liveKey := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	bases := map[navigationResourceKind]appwire.NavigationReadBase{}
+	for _, key := range []navigationResourceKey{manifestKey, liveKey} {
+		initial, err := service.readV2(t.Context(), key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bases[key.Kind] = appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	}
+
+	source.mu.Lock()
+	source.inputs.Tree.Live = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []navigationResourceKey{manifestKey, liveKey} {
+		base := bases[key.Kind]
+		changed, err := service.readV2(t.Context(), key, &base)
+		if err != nil {
+			t.Fatalf("%s delta read: %v", key.Kind, err)
+		}
+		if changed.Response.Status != "ok" || changed.Response.Representation != appwire.NavigationRepresentationDelta || changed.Response.Base == nil || *changed.Response.Base != base {
+			t.Fatalf("%s response = %+v, want ok delta against exact base", key.Kind, changed.Response)
+		}
+		var delta hubapi.NavigationDelta
+		if err := json.Unmarshal(changed.Response.Data, &delta); err != nil {
+			t.Fatal(err)
+		}
+		if key.Kind == navigationResourceLive && len(delta.RemovedEntityKeys) != 1 {
+			t.Fatalf("live delta = %+v, want the one removed session", delta)
+		}
+	}
+}

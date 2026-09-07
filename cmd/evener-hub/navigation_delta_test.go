@@ -105,3 +105,60 @@ func TestNavigationHistoryEvictsOldestGlobally(t *testing.T) {
 		t.Fatal("oldest version remained retained")
 	}
 }
+
+func TestNavigationDeltaReconstructsResourcesWithoutEntities(t *testing.T) {
+	sectionKey := navigationResourceKey{Kind: navigationResourceLive, Limit: 50}
+	cases := []struct {
+		name    string
+		key     navigationResourceKey
+		base    any
+		current any
+	}{
+		{
+			name:    "manifest",
+			key:     navigationResourceKey{Kind: navigationResourceManifest},
+			base:    hubapi.NavigationManifest{GenerationID: "g", Revision: 1},
+			current: hubapi.NavigationManifest{GenerationID: "g", Revision: 2, Sections: hubapi.NavigationSections{Live: hubapi.NavigationResourceDescriptor{Count: 1}}},
+		},
+		{
+			name: "section emptied",
+			key:  sectionKey,
+			base: hubapi.NavigationSectionResource{GenerationID: "g", Revision: 1, Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{
+				navigationSchemaSession("local:s1", "s1"),
+			}},
+			current: hubapi.NavigationSectionResource{GenerationID: "g", Revision: 2},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := normalizeNavigationResource(tc.key, tc.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := normalizeNavigationResource(tc.key, tc.current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Entities != nil {
+				t.Fatalf("test setup: current snapshot has entities %+v, want an entity-less resource", current.Entities)
+			}
+			baseVersion := appwire.NavigationReadBase{GenerationID: "g", Revision: 1, ETag: "tag-1"}
+			currentVersion := appwire.NavigationReadBase{GenerationID: "g", Revision: 2, ETag: "tag-2"}
+			history := newNavigationHistory(4, 1<<20)
+			if err := history.Remember(tc.key, baseVersion, &base); err != nil {
+				t.Fatal(err)
+			}
+			retained, ok := history.Lookup(tc.key, baseVersion)
+			if !ok {
+				t.Fatal("base snapshot was not retained")
+			}
+			delta, err := diffNavigationSnapshots(tc.key, baseVersion, currentVersion, retained, current)
+			if err != nil {
+				t.Fatalf("diff entity-less current snapshot: %v", err)
+			}
+			if len(delta.UpsertedEntities) != 0 || len(delta.RemovedEntityKeys) != len(base.Entities) {
+				t.Fatalf("delta = %+v, want removals only for %d base entities", delta, len(base.Entities))
+			}
+		})
+	}
+}
