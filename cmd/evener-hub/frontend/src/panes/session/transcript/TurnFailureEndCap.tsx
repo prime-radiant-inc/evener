@@ -16,7 +16,7 @@
 // one-line wiring lands, the diagnostic still renders in full - only the action
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ItemImage, ItemModel, TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
@@ -151,12 +151,15 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 //
 // ambiguous is true when the pairing cannot be uniquely determined, and the
 // caller must refuse the images rather than guess: a name claimed under
-// several DIFFERENT markers, or several attachments matching one name, means
-// the true marker-to-bytes identity was lost on the wire. Repeated copies of
-// one "(marker: name)" mention over a single attachment are the same claim
-// restated, not a conflict, and stay safe. It also covers the belt-and-braces
-// case below: anchor text that does not re-translate back to the stored prose
-// byte-for-byte, which proves the pairing corrupted something.
+// several DIFFERENT markers, several attachments matching one name, or two
+// attachments sharing one ASSIGNED marker means the true marker-to-bytes
+// identity was lost on the wire. Repeated copies of one "(marker: name)"
+// mention over a single attachment are the same claim restated, not a
+// conflict, and stay safe. It also covers the belt-and-braces cases below:
+// anchor text that does not re-translate back to the stored prose
+// byte-for-byte, which proves the pairing corrupted something, and duplicate
+// assigned markers, which the round-trip cannot see for unnamed images (every
+// "[image N]" re-translates to identical "(attached image N)" prose).
 function planRetryImages(
   images: ItemImage[] | undefined,
   text: string,
@@ -267,8 +270,18 @@ function planRetryImages(
     cursor = occurrence.end;
   });
   anchorText += text.slice(cursor);
-  if (!ambiguous && attachments.length > 0 && translateAttachmentMarkers(anchorText, attachments) !== text) {
-    ambiguous = true;
+  if (!ambiguous && attachments.length > 0) {
+    const assignedMarkers = new Set<number>();
+    let duplicateMarker = false;
+    items.forEach((_, index) => {
+      const marker = markerForImage[index];
+      if (marker === undefined || decoded[index] === undefined) return;
+      if (assignedMarkers.has(marker)) duplicateMarker = true;
+      assignedMarkers.add(marker);
+    });
+    if (duplicateMarker || translateAttachmentMarkers(anchorText, attachments) !== text) {
+      ambiguous = true;
+    }
   }
   return { attachments, anchorText, ambiguous };
 }
@@ -313,18 +326,28 @@ function originFromItem(item: ItemModel): OriginatingInput | undefined {
  * The input that opened the exchange `turnId` ended, searched backwards from
  * that turn.
  *
- * A LIVE failure keeps the input in its own turn, where retryInput finds it. A
- * RELOADED one does not: one persisted transcript entry becomes one turn
- * (apptranscript.go's ProjectTurn), so a failure entry is a turn holding only
- * the failure, and the input sits in an earlier one. Retry was therefore
- * offered while a reader watched a failure happen and withheld from the reader
- * who came back to it - the same failure, the same recovery, present or absent
- * on nothing but when you looked.
+ * A LIVE failure keeps the input in its own turn, where the search finds it
+ * immediately. A RELOADED one does not: one persisted transcript entry
+ * becomes one turn (apptranscript.go's ProjectTurn), so a failure entry is a
+ * turn holding only the failure, and the input sits in an earlier one. Retry
+ * was therefore offered while a reader watched a failure happen and withheld
+ * from the reader who came back to it - the same failure, the same recovery,
+ * present or absent on nothing but when you looked.
  *
- * The search stops AT the failed turn: a later prompt is a different exchange,
- * and re-issuing it would answer a question the reader did not ask.
+ * The search stops AT the failed turn: a later prompt is a different
+ * exchange, and re-issuing it would answer a question the reader did not ask.
+ *
+ * findOriginatingItem is the shared lookback: it returns the originating item
+ * itself (never building the payload), so the store selector below can hold
+ * the ITEM reference — stable across unrelated updates by the reducer's
+ * immutable folds — and compute the full payload from it in render.
  */
 export function originatingInput(turns: TurnModel[], turnId: string): OriginatingInput | undefined {
+  const item = findOriginatingItem(turns, turnId);
+  return item && originFromItem(item);
+}
+
+function findOriginatingItem(turns: TurnModel[], turnId: string): ItemModel | undefined {
   const found = turns.findIndex((t) => t.id === turnId);
   const from = found === -1 ? turns.length - 1 : found;
   for (let i = from; i >= 0; i--) {
@@ -335,9 +358,9 @@ export function originatingInput(turns: TurnModel[], turnId: string): Originatin
     // retryable input returns, and an image-only input with lost bytes stops
     // it (images-unavailable) rather than yielding to an older prompt. Only
     // a turn with no usable input at all (whitespace-only text, no images)
-    // keeps looking backwards.
-    const origin = originFromItem(item);
-    if (origin) return origin;
+    // keeps looking backwards. MUST match originFromItem's usable/empty
+    // verdict below — a hot-path copy that never builds the payload.
+    if (item.text.trim() || (item.images?.length ?? 0) > 0) return item;
   }
   return undefined;
 }
@@ -354,21 +377,28 @@ export function TurnFailureEndCap({
   const info = classifyTurnError(error);
   const toasts = useToasts();
   const [hintOpen, setHintOpen] = useState(false);
-  // Selected as a JSON string (compared by value, not identity) so this cap
-  // re-renders only when what it would re-issue actually changes, not on
-  // every delta the thread takes.
-  const priorInputJson = useThreadsStore((s) =>
-    sessionRef === undefined
-      ? undefined
-      : JSON.stringify(originatingInput(s.threads.get(sessionRef)?.turns ?? [], turn.id) ?? null),
+  // Selected by ITEM reference, never by payload value: computing the retry
+  // payload copies every image's base64 bytes, which would freeze the UI if it
+  // ran on each unrelated store update. The reducer's immutable folds hand
+  // back the same item reference for untouched turns (reducer.ts's mapItem),
+  // and zustand's default Object.is equality then skips the re-render, so the
+  // payload is recomputed only when the originating item itself changes.
+  const priorItem = useThreadsStore((s) =>
+    sessionRef === undefined ? undefined : findOriginatingItem(s.threads.get(sessionRef)?.turns ?? [], turn.id),
   );
-  const priorOrigin =
-    priorInputJson === undefined ? undefined : ((JSON.parse(priorInputJson) as OriginatingInput | null) ?? undefined);
+  const priorOrigin = useMemo(() => (priorItem === undefined ? undefined : originFromItem(priorItem)), [priorItem]);
   const ownItem = retryItem(turn);
-  const origin = (ownItem && originFromItem(ownItem)) ?? priorOrigin;
+  const origin = useMemo(
+    () => (ownItem === undefined ? priorOrigin : originFromItem(ownItem)),
+    // ownItem is derived from the turn prop, not the store: its identity
+    // already changes exactly when the failed turn re-renders with new items.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ownItem, priorOrigin],
+  );
   const input = origin?.kind === "retry" ? origin.input : undefined;
   const canRetry = sessionRef !== undefined && input !== undefined;
-  const showReattachNote = origin?.kind === "images-unavailable";
+  const unavailableCount = origin?.kind === "images-unavailable" ? origin.sourceImageCount : 0;
+  const showReattachNote = unavailableCount > 0;
 
   // Recovery re-issues the turn's originating input via the existing
   // threadsStore.send action (turn/start), images included: the originating
@@ -420,7 +450,11 @@ export function TurnFailureEndCap({
           </Button>
         )}
         {showReattachNote && (
-          <span className={CLASS.hint}>Attached image unavailable — re-attach the image to retry.</span>
+          <span className={CLASS.hint}>
+            {unavailableCount === 1
+              ? "Attached image unavailable — re-attach the image to retry."
+              : `Attached images unavailable — re-attach ${unavailableCount} images to retry.`}
+          </span>
         )}
       </div>
     </div>

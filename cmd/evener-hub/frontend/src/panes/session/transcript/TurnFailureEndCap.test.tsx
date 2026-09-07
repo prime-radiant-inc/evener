@@ -362,6 +362,48 @@ test("a fallback marker avoids raw anchors the user typed literally", async () =
   expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
 });
 
+test("duplicate markers across unnamed attachments refuse the images", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1) and (attached image 1)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
+test("the re-attach note pluralizes for several unavailable images", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "",
+          images: [{ src: "/s/sess_1/images/abc" }, { src: "/s/sess_1/images/def" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText("Attached images unavailable — re-attach 2 images to retry.")).toBeTruthy();
+});
+
 test("duplicate attachment names refuse the images instead of guessing", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: dup.png) and (attached image 2: dup.png)";
