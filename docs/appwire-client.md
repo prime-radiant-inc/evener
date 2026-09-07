@@ -328,5 +328,51 @@ fields win on the server, clients must hoist the advanced values into those
 fields too. An advanced qualified model (provider/model) replaces both the old
 model and its separate modelProvider selection. Use the perLaunch schema flag and
 driver support when advertising advanced fields. Plugin selection is a separate
-control in the web flow. Native scalar launch-only behavior has both-platform
+control in both flows. Native scalar launch-only behavior has both-platform
 manual evidence; a complete session-creation SDK recipe remains outstanding.
+
+
+## Selecting plugins for a new session
+
+For an Evener-kind harness, call `evener/plugin/preview` with the chosen hub
+`cwd` and the same `launchOverrides` intended for `thread/start`. It resolves
+plugin candidates from installed plugins and configured directories; it does
+not install plugins or change persistent enablement.
+
+`PluginPreviewResponse.plugins` contains `name`, `source`, optional version,
+description, marketplace/path, component counts and `selected`. Treat names as
+opaque identifiers. With no `enabledPlugins` field, use the server's selected
+flags. The first toggle creates an explicit allow-list from those defaults.
+`enabledPlugins: []` selects none; restoring defaults removes the field entirely.
+An explicit list is authoritative, including names currently unavailable.
+Never silently discard a missing name during refresh.
+
+```json
+{"id":20,"method":"evener/plugin/preview","params":{"cwd":"/work/project"}}
+{"id":21,"method":"evener/plugin/preview","params":{"cwd":"/work/project","launchOverrides":{"enabledPlugins":[]}}}
+{"id":22,"method":"evener/plugin/preview","params":{"cwd":"/work/project","launchOverrides":{"enabledPlugins":["plugin-name-from-preview"]}}}
+```
+
+Display `diagnostics` separately from `selectionErrors`. Each selection error
+identifies `name` and `reason`; require correction before launching that explicit
+selection. Keep unavailable selected names visible with a removal action. A
+failed preview must not silently reset the choice. Existing selected names can
+still be removed while additions wait for a valid preview. Preview again when
+cwd, overrides, plugin catalog or launch settings change; subscribe to
+`evener/plugin/updated` and `evener/launch/updated`. Discard results from an old
+hub or selection context.
+
+Before creating with an explicit list, the native client previews the exact
+selection again. Failure at this read stage has not requested a session. Once
+`thread/start` is dispatched, the ordinary uncertain-creation rules apply.
+Preview is not a reservation: plugins can change before Start, and server
+validation remains authoritative. Pass the list unchanged in
+`thread/start.launchOverrides.enabledPlugins`; do not save it with `setLayer`.
+Clear/omit this field for harnesses that do not support Evener plugin selection.
+
+After creation, `thread/read` exposes loaded plugin information in
+`thread.evener.diagnostics.plugins`. This is an independent runtime readback,
+not a promise that every plugin component was exercised. The packaged
+`plugins.mjs` example verifies preview/default/none/explicit/missing-name behavior
+without creating a session. Full plugin installation and execution recipes remain
+outstanding.

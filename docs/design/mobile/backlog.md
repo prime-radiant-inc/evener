@@ -374,8 +374,11 @@ Opening image selection/removal and creation now have native evidence on both
 platforms, independent SDK PNG readback and viewer checks; 324 native tests pass.
 Creation drafts still need durable storage. Live item-image projection is fixed;
 remaining running-work qualification is tracked under MOB-008.
-Plugin selection, per-launch collection/precedence failure
-coverage and complete project-layer/trust accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
+Per-session plugin selection now has iOS explicit-one and Android explicit-none
+creation/runtime readback evidence, shared web selection semantics, and a packed
+SDK preview recipe. 338 native tests pass. Failure-state native UI, long catalogs,
+per-launch collection/precedence failure coverage and complete project-layer/trust
+accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
 independently under MOB-018.
 
 Acceptance: real native creation with valid/invalid paths and configuration,
