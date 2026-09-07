@@ -29,9 +29,9 @@ it("retains known overview on failed refresh and distinguishes absent sections",
   await model.refresh();
   expect(model.getSnapshot().data?.hub?.version).toBe("fixture");
   expect(model.getSnapshot().error).toBeTruthy();
-  request = async () => ({ agents: [], codexLaunches: [] });
+  request = async () => ({ agents: [] });
   await model.refresh();
-  expect(model.getSnapshot().data).toEqual({ agents: [], codexLaunches: [] });
+  expect(model.getSnapshot().data).toEqual({ agents: [] });
   expect(model.getSnapshot().error).toBeNull();
   expect(calls).toEqual(Array(3).fill("evener/settings/overview"));
 });
@@ -81,7 +81,6 @@ it("decodes omitted empty collections and index zero values from the Go wire res
   await model.refresh();
   const data = model.getSnapshot().data;
   expect(data?.agents).toEqual([]);
-  expect(data?.codexLaunches).toEqual([]);
   expect(data?.mcpDiscovered?.servers).toEqual([]);
   expect(data?.hub?.pastIndex?.count).toBe(0);
   expect(data?.hub?.pastIndex?.perPage).toBe(0);

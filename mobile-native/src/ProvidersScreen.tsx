@@ -111,7 +111,7 @@ function Providers({
   const [configuration, setConfiguration] = useState<"create" | "edit" | null>(
     null,
   );
-  const [editingKey, setEditingKey] = useState(false);
+  const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   const instance = state.data?.instances.find((item) => item.name === selected);
@@ -123,18 +123,22 @@ function Providers({
     };
   }, [model]);
   useEffect(() => {
+    if (editingCredential && !instance?.authModes?.includes(editingCredential)) {
+      setEditingCredential(null);
+      setKey("");
+    }
     if (!instance) {
       setConfiguration((value) => (value === "edit" ? null : value));
       setSelected(null);
-      setEditingKey(false);
+      setEditingCredential(null);
       setKey("");
     }
-  }, [instance]);
+  }, [instance, editingCredential]);
   function close() {
     editorVersion.current += 1;
     setSelected(null);
     setConfiguration(null);
-    setEditingKey(false);
+    setEditingCredential(null);
     setKey("");
     setActionError(null);
   }
@@ -144,7 +148,7 @@ function Providers({
     try {
       await action();
       if (version !== editorVersion.current) return;
-      setEditingKey(false);
+      setEditingCredential(null);
       setKey("");
     } catch {
       if (version !== editorVersion.current) return;
@@ -152,7 +156,7 @@ function Providers({
       // editor's error independent of upstream response text.
       setActionError(
         secret
-          ? "Could not save the key. Check the connection and credential status before trying again."
+          ? "Could not confirm the credential save. Check the connection and credential status before trying again."
           : "The operation could not be confirmed. Refresh and check the current state before trying again.",
       );
     }
@@ -322,12 +326,16 @@ function Providers({
                     {state.busy && (
                       <ActivityIndicator accessibilityLabel="Updating provider" />
                     )}
-                    {editingKey ? (
+                    {editingCredential ? (
                       <>
-                        <Copy>API key</Copy>
+                        <Copy>{editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}</Copy>
+                        {editingCredential === "credentialJson" && (
+                          <Copy muted>Paste a service-account key or application_default_credentials.json. The hub validates and stores it.</Copy>
+                        )}
                         <TextInput
-                          accessibilityLabel="API key"
-                          secureTextEntry
+                          accessibilityLabel={editingCredential === "credentialJson" ? "Google credential JSON" : "API key"}
+                          multiline={editingCredential === "credentialJson"}
+                          secureTextEntry={editingCredential === "apiKey"}
                           autoCapitalize="none"
                           autoCorrect={false}
                           value={key}
@@ -345,17 +353,19 @@ function Providers({
                               const value = key.trim();
                               setKey("");
                               void act(
-                                () => model.setApiKey(instance.name, value),
+                                () => editingCredential === "credentialJson"
+                                  ? model.setCredentialJson(instance.name, value)
+                                  : model.setApiKey(instance.name, value),
                                 true,
                               );
                             }}
                           >
-                            Save key
+                            {editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"}
                           </Action>
                           <Action
                             disabled={state.busy}
                             onPress={() => {
-                              setEditingKey(false);
+                              setEditingCredential(null);
                               setKey("");
                             }}
                           >
@@ -407,9 +417,17 @@ function Providers({
                         {instance.authModes?.includes("apiKey") && (
                           <Action
                             disabled={state.busy}
-                            onPress={() => setEditingKey(true)}
+                            onPress={() => setEditingCredential("apiKey")}
                           >
                             {instance.hasStoredFile ? "Replace key" : "Set key"}
+                          </Action>
+                        )}
+                        {instance.authModes?.includes("credentialJson") && (
+                          <Action
+                            disabled={state.busy}
+                            onPress={() => setEditingCredential("credentialJson")}
+                          >
+                            {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                           </Action>
                         )}
                         {!instance.isDefault && (
@@ -427,12 +445,12 @@ function Providers({
                             <Action
                               disabled={state.busy}
                               onPress={() =>
-                                confirm("Clear stored key?", () =>
+                                confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
                                   model.clearStoredKey(instance.name),
                                 )
                               }
                             >
-                              Clear stored key
+                              {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
                           )}
                         {["store", "oauth"].includes(instance.activeSource) && (

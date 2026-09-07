@@ -197,3 +197,61 @@ it("does not echo credential test transport errors or retry the test", async () 
     1,
   );
 });
+
+it("stores credential JSON once, reconciles a lost reply and never publishes its contents", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  const credential = '{"type":"authorized_user","refresh_token":"fixture-sensitive"}';
+  io.request = async (method) => {
+    if (method === "evener/auth/credentialJson/set") throw new Error(credential);
+    return listing("reconciled");
+  };
+  await expect(model.setCredentialJson("vertex", credential)).rejects.toThrow();
+  expect(requests.filter((request) => request.method === "evener/auth/credentialJson/set")).toEqual([
+    { method: "evener/auth/credentialJson/set", params: { provider: "vertex", value: credential } },
+  ]);
+  expect(model.getSnapshot().data).toEqual(listing("reconciled"));
+  expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-sensitive");
+  expect(model.getSnapshot().busy).toBe(false);
+});
+
+it("reconciles a successful credential JSON write through the authoritative list", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  const credential = '{"type":"authorized_user","refresh_token":"fixture"}';
+  io.request = async (method) =>
+    method === "evener/auth/credentialJson/set"
+      ? { provider: "vertex", status: "success" }
+      : listing("credential-json-saved");
+
+  await model.setCredentialJson("vertex", credential);
+
+  expect(requests.map((request) => request.method)).toEqual([
+    "evener/instance/list",
+    "evener/auth/credentialJson/set",
+    "evener/instance/list",
+  ]);
+  expect(model.getSnapshot().data).toEqual(listing("credential-json-saved"));
+  expect(JSON.stringify(model.getSnapshot())).not.toContain(credential);
+});
+
+it("does not reconcile or publish after a credential write finishes after disposal", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  const pending = deferred<unknown>();
+  io.request = (method) =>
+    method === "evener/auth/credentialJson/set"
+      ? pending.promise
+      : Promise.resolve(listing("should-not-read"));
+
+  const write = model.setCredentialJson("vertex", '{"refresh_token":"fixture"}');
+  model.dispose();
+  pending.resolve({ provider: "vertex", status: "success" });
+  await write;
+
+  expect(requests.map((request) => request.method)).toEqual([
+    "evener/instance/list",
+    "evener/auth/credentialJson/set",
+  ]);
+  expect(model.getSnapshot().data).toEqual(listing("initial"));
+});
