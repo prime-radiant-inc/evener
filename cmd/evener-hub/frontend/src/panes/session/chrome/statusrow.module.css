@@ -200,6 +200,9 @@
   opacity: 0;
   cursor: pointer;
   font: inherit;
+  /* A real native select: it must not inherit the trigger's caption size,
+   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
+  font-size: var(--font-size-control);
 }
 
 /* Standard visually-hidden recipe: keeps a real, focus-order-preserving

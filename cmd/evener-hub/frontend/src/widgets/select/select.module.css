@@ -13,7 +13,7 @@
   box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
     border-color var(--motion-duration-hover) var(--motion-easing-standard),

@@ -349,6 +349,11 @@ body {
   --font-size-pane-title: calc(18px * var(--font-scale)); /* pane/sheet/dialog titles: sentence case, semibold */
   --font-size-page-title: calc(22px * var(--font-scale)); /* section headings, the spawn heading */
   --font-size-display: calc(28px * var(--font-scale)); /* welcome hero only */
+  /* Every editable control (input, select, textarea, and the raw ones a pane
+   * renders itself) sizes its text from this: the ui step on desktop, the
+   * 16px body step on phones, because iOS Safari zooms into any focused
+   * field under 16px and index.html no longer locks zoom to hide that. */
+  --font-size-control: var(--font-size-ui);
   /* The conversation column and everything aligned to it (composer, cold
    * start, the spawn form, settings content). 44rem = 704px: ~90 characters
    * at 15px, room for a 100-column code block. Declared on body so the
@@ -381,6 +386,7 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
      * IS the field size (widgets/textarea takes it), so the phone body is
      * 16px and index.html no longer locks the viewport's zoom. */
     --font-size-body: calc(16px * var(--font-scale));
+    --font-size-control: var(--font-size-body);
     /* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
      * decision 4): 44px per the platform HIG. Declared here, consumed by
      * button.module.css / iconbutton.module.css's own phone blocks as

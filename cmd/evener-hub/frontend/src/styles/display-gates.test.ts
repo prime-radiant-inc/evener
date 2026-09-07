@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
@@ -103,4 +103,49 @@ test("the 44px touch-target floor is declared inside the phone media query (2026
   const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
   expect(media![1]).toMatch(/--tap-min:\s*44px/);
+});
+
+// --- editable controls are 16px on phones -------------------------------
+//
+// index.html no longer locks zoom (viewport-pin.test.ts), so the guarantee
+// that iOS Safari has nothing to auto-zoom into moves here: every rule that
+// styles an editable control - an input/select/textarea element selector, or
+// one of the classes the widgets and panes put on their own controls - sizes
+// its text from --font-size-control (the ui step on desktop, the body step on
+// phones) or --font-size-body. roborev on PR #947 caught the inputs and
+// selects that still took --font-size-ui after the lock was removed.
+const CONTROL_SELECTOR_RE =
+  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect)(\b|[:.[])/;
+const CONTROL_SIZE_RE = /font-size:\s*var\(--font-size-(control|body)\)/;
+
+function walkCss(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...walkCss(full));
+    else if (entry.isFile() && entry.name.endsWith(".css")) found.push(full);
+  }
+  return found;
+}
+
+test("--font-size-control is the ui step on desktop and the body (16px) step on phones", () => {
+  expect(CSS).toMatch(/\n\s*--font-size-control: var\(--font-size-ui\);/);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media).not.toBeNull();
+  expect(media![1]).toMatch(/--font-size-control: var\(--font-size-body\);/);
+  expect(media![1]).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
+});
+
+test("every rule that sizes an editable control uses --font-size-control or --font-size-body", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const file of walkCss(srcRoot)) {
+    const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = block[1]!.trim().split("\n").pop() ?? "";
+      const body = block[2]!;
+      if (!CONTROL_SELECTOR_RE.test(selector)) continue;
+      if (!/font-size:/.test(body)) continue;
+      expect(body, `${file.slice(srcRoot.length + 1)}: ${selector}`).toMatch(CONTROL_SIZE_RE);
+    }
+  }
 });

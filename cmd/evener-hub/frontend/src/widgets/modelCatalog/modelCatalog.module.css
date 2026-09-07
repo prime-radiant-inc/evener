@@ -63,7 +63,7 @@
   background: var(--surface-1);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
 }
 
 .input:focus-visible {

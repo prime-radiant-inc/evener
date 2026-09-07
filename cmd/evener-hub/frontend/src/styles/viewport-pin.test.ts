@@ -3,9 +3,10 @@
 // The viewport meta used to pin zoom (maximum-scale=1, user-scalable=no) to
 // stop iOS Safari auto-zooming into the 13px composer field. That disabled
 // pinch-zoom for the whole app (WCAG 1.4.4 resize text). Every editable
-// field is now 16px on phones - tokens.css's phone block sets
-// --font-size-body to 16px and widgets/textarea takes the body size - so
-// the lock is gone and must not come back. Reads index.html straight off
+// control is now 16px on phones - tokens.css's phone block sets
+// --font-size-control (and --font-size-body) to 16px, and every input,
+// select and textarea rule takes one of those (display-gates.test.ts scans
+// for it) - so the lock is gone and must not come back. Reads index.html straight off
 // disk with node:fs, the same approach pwa-manifest-colors.test.ts uses.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

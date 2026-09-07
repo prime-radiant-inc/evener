@@ -2,9 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <!-- Zoom is never locked (WCAG 1.4.4): every editable field is 16px on
-         phones (tokens.css's phone block sets --font-size-body to 16px), so
-         iOS Safari has nothing to auto-zoom into; viewport-fit=cover makes
+    <!-- Zoom is never locked (WCAG 1.4.4): every editable control is 16px on
+         phones (tokens.css's phone block sets --font-size-control and
+         --font-size-body to 16px; display-gates.test.ts scans every control
+         rule), so iOS Safari has nothing to auto-zoom into; viewport-fit=cover makes
          the env(safe-area-inset-*) paddings in the mobile shell nonzero.
          interactive-widget=resizes-content
          makes Chromium/Android shrink the layout viewport when the on-screen

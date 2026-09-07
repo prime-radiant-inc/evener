@@ -185,6 +185,9 @@
    * disabled control and promise an interaction the select refuses. */
   cursor: inherit;
   font: inherit;
+  /* A real native select: it must not inherit the trigger's caption size,
+   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
+  font-size: var(--font-size-control);
 }
 
 .effortTrigger:not([data-disabled="true"]) .effortSelect {
