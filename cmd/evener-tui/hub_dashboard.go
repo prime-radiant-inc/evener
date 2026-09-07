@@ -490,10 +490,6 @@ func dashboardGroupKey(row hubRow) string {
 	return row.projectKey
 }
 
-func rowMatchesFilter(row hubRow, query string) bool {
-	return strings.Contains(rowFilterHaystack(row), query)
-}
-
 func rowFilterHaystack(row hubRow) string {
 	return strings.ToLower(strings.Join([]string{
 		row.title,
