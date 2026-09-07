@@ -229,7 +229,10 @@ export class NativePreferences {
 						...this.state.transcriptMobile,
 						confirmed: value,
 						draft,
-						error: draft ? this.state.transcriptMobile.error : null,
+						error:
+							draft || this.state.transcriptMobile.storageUnavailable
+								? this.state.transcriptMobile.error
+								: null,
 						conflict: draft ? value.revision > draft.revision : false,
 						writeUncertain: this.state.transcriptMobile.writeUncertain,
 					},

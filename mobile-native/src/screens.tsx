@@ -59,6 +59,7 @@ import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
+import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { readerPositions } from "./nativeReaderPosition";
@@ -73,6 +74,7 @@ import {
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
+	isReaderAnchorLoaded,
 	type ReaderAnchor,
 	type ReaderMeasurement,
 	readerKey,
@@ -86,7 +88,9 @@ import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
 import { TasksSheet } from "./TasksSheet";
 import { TimelineItem } from "./TimelineItem";
+import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
+import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
@@ -99,6 +103,7 @@ export type Routes = {
 	Providers: { hubId: string };
 	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
+	TranscriptPreferences: { hubId: string };
 	LaunchSettings: { hubId: string; projectCwd?: string };
 	Project: { hubId: string; projectKey: string; title: string };
 	Hubs: undefined;
@@ -955,9 +960,18 @@ export function ConversationScreen({
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
 	const conversation = snapshot.conversation;
+	const preferences = useNativePreferences();
+	const presentation = useMemo(
+		() =>
+			projectNativeTranscript(
+				conversation,
+				preferences.hubId === route.params.hubId ? preferences.config : null,
+			),
+		[conversation, preferences.hubId, preferences.config, route.params.hubId],
+	);
 	const timelineRows = useMemo(
-		() => groupTimeline(conversation?.items ?? []),
-		[conversation?.items],
+		() => groupTimeline(presentation.items),
+		[presentation.items],
 	);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
@@ -1000,6 +1014,7 @@ export function ConversationScreen({
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
+			if (isReaderAnchorLoaded(anchor, conversation?.items ?? [])) return;
 			const cursor = snapshot.olderCursor;
 			if (
 				service &&
@@ -1060,6 +1075,7 @@ export function ConversationScreen({
 		snapshot.status,
 		snapshot.olderCursor,
 		snapshot.loadingOlder,
+		conversation?.items,
 		timelineRows,
 		service,
 		store,
@@ -1623,6 +1639,11 @@ export function ConversationScreen({
 						<FlatList
 							ref={timeline}
 							data={timelineRows}
+							ListFooterComponent={
+								presentation.usage ? (
+									<TranscriptUsage usage={presentation.usage} />
+								) : null
+							}
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
 							renderItem={({ item, index }) => (
@@ -1635,6 +1656,11 @@ export function ConversationScreen({
 										item={item}
 										hubId={route.params.hubId}
 										sessionRef={route.params.ref}
+										activityPresentation={presentation.activityPresentation.get(
+											item.id,
+										)}
+										expandByDefault={presentation.expandByDefault}
+										showDuration={presentation.showDuration}
 									/>
 								</View>
 							)}

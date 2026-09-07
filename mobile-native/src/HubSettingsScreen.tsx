@@ -44,6 +44,11 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			client={client}
 			hubId={activeProfile.id}
 			hubName={activeProfile.name}
+			openTranscript={() =>
+				navigation.navigate("TranscriptPreferences", {
+					hubId: activeProfile.id,
+				})
+			}
 			openProviders={() =>
 				navigation.navigate("Providers", { hubId: activeProfile.id })
 			}
@@ -89,6 +94,7 @@ function HubSettings({
 	client,
 	hubId,
 	hubName,
+	openTranscript,
 	openProviders,
 	openPlugins,
 	openLaunchSettings,
@@ -96,6 +102,7 @@ function HubSettings({
 	client: ConversationClientLike;
 	hubId: string;
 	hubName: string;
+	openTranscript(): void;
 	openProviders(): void;
 	openPlugins(): void;
 	openLaunchSettings(): void;
@@ -143,6 +150,7 @@ function HubSettings({
 					<Action onPress={openPlugins}>Plugins</Action>
 				</View>
 				<Action onPress={openLaunchSettings}>Launch defaults</Action>
+				<Action onPress={openTranscript}>Transcript display</Action>
 				<Section title="Hub update">
 					<HubUpgradeSection
 						state={upgradeState}
