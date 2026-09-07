@@ -334,3 +334,240 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 		keybindings.rules,
 	);
 });
+
+import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
+
+function draftStorage() {
+	const values = new Map<string, unknown>();
+	let id = 0;
+	const backend = {
+		get: (key: string) => values.get(key),
+		set: (key: string, value: unknown) => {
+			values.set(key, structuredClone(value));
+		},
+		delete: (key: string) => {
+			values.delete(key);
+		},
+		createId: () => String(++id),
+		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
+			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
+				values.delete(key);
+		},
+	};
+	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
+}
+function persistedPreferences(storage = draftStorage().storage) {
+	const client = fakeClient();
+	client.handlers.set(
+		"evener/settings/transcriptDisplay/get",
+		() => transcript,
+	);
+	const model = new NativePreferences(
+		client,
+		{ keybindingsSettings: false, transcriptDisplaySettings: true },
+		storage,
+	);
+	return { client, model, storage };
+}
+const transcriptPatch = "evener/settings/transcriptDisplay/patch";
+const proposedConfig = {
+	...config,
+	content: { kind: "preset" as const, level: "full" as const },
+};
+
+it("restores a draft synchronously and preserves its base across read and conflict review", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	await f.model.editTranscript(proposedConfig);
+	f.model.dispose();
+	const next = persistedPreferences(f.storage);
+	expect(next.model.getSnapshot().transcriptMobile.draft?.config).toEqual(
+		proposedConfig,
+	);
+	next.client.handlers.set("evener/settings/transcriptDisplay/get", () => ({
+		...transcript,
+		mobile: { revision: 6, config: toWireConfig(config) },
+	}));
+	await next.model.refresh();
+	expect(next.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: true,
+		draft: { revision: 4 },
+	});
+	await expect(next.model.rebaseTranscriptDraft(5)).rejects.toThrow();
+	await next.model.rebaseTranscriptDraft(6);
+	expect(next.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: false,
+		draft: { revision: 6 },
+	});
+	expect(next.client.requests.some((r) => r.method === transcriptPatch)).toBe(
+		false,
+	);
+});
+
+it("checkpoints before dispatch and refuses edits, discard, or duplicate save during a write", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const ack = deferred<unknown>();
+	f.client.handlers.set(transcriptPatch, () => {
+		expect(f.storage.load()).toMatchObject({
+			writeUncertain: true,
+			config: proposedConfig,
+			baseRevision: 4,
+		});
+		return ack.promise;
+	});
+	const save = f.model.saveTranscript(proposedConfig);
+	await expect(f.model.editTranscript(config)).rejects.toThrow();
+	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
+	await expect(f.model.saveTranscript()).rejects.toThrow();
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	await save;
+	expect(f.storage.load()).toBeNull();
+});
+
+it("accepts its own notification before the acknowledgement", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const ack = deferred<unknown>();
+	f.client.handlers.set(transcriptPatch, () => ack.promise);
+	const save = f.model.saveTranscript(proposedConfig);
+	f.client.emit({
+		method: "evener/settings/transcriptDisplay/changed",
+		params: {
+			layout: "mobile",
+			revision: 5,
+			config: toWireConfig(proposedConfig),
+		},
+	});
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	await save;
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: false,
+		writeUncertain: false,
+		draft: null,
+		confirmed: { revision: 5 },
+	});
+	expect(f.storage.load()).toBeNull();
+});
+
+it("retains a proposal if a genuinely newer external revision beats its acknowledgement", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const ack = deferred<unknown>();
+	f.client.handlers.set(transcriptPatch, () => ack.promise);
+	const save = f.model.saveTranscript(proposedConfig);
+	f.client.emit({
+		method: "evener/settings/transcriptDisplay/changed",
+		params: { layout: "mobile", revision: 6, config: toWireConfig(config) },
+	});
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	await save;
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: true,
+		writeUncertain: false,
+		draft: { config: proposedConfig, revision: 4 },
+		confirmed: { revision: 6, config },
+	});
+});
+
+it("late acknowledgement cannot erase a new same-config pending checkpoint", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const oldAck = deferred<unknown>();
+	f.client.handlers.set(transcriptPatch, () => oldAck.promise);
+	const oldSave = f.model.saveTranscript(proposedConfig);
+	const oldCheckpoint = f.storage.load();
+	f.model.dispose();
+	const next = persistedPreferences(f.storage);
+	await next.model.refresh();
+	const nextAck = deferred<unknown>();
+	next.client.handlers.set(transcriptPatch, () => nextAck.promise);
+	const nextSave = next.model.saveTranscript();
+	expect(f.storage.load()).not.toEqual(oldCheckpoint);
+	oldAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	await oldSave;
+	expect(f.storage.load()).not.toBeNull();
+	nextAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	await nextSave;
+});
+
+it("storage failure prevents dispatch and exposes a fixed safe error", async () => {
+	const source = draftStorage().storage;
+	const f = persistedPreferences({
+		...source,
+		save: () => {
+			throw new Error("secret local path");
+		},
+	});
+	await f.model.refresh();
+	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow(
+		"Could not save",
+	);
+	expect(f.client.requests.some((r) => r.method === transcriptPatch)).toBe(
+		false,
+	);
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+});
+
+it("an uncertain write cannot be discarded or replayed until an authoritative read", async () => {
+	const f = persistedPreferences();
+	await f.model.refresh();
+	f.client.handlers.set(transcriptPatch, () => {
+		throw new Error("token secret");
+	});
+	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
+	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
+	await expect(f.model.editTranscript(config)).rejects.toThrow();
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+	await f.model.refresh();
+	expect(f.model.getSnapshot().transcriptMobile.writeUncertain).toBe(false);
+	expect(f.storage.load()?.writeUncertain).toBe(false);
+	await f.model.discardTranscriptDraft();
+	expect(f.storage.load()).toBeNull();
+});
+
+it("a corrupt local draft blocks writes until it can be restored", async () => {
+	const original = draftStorage().storage;
+	let healthy = false;
+	const f = persistedPreferences({
+		...original,
+		load: () => {
+			if (!healthy) throw new Error("private storage detail");
+			return original.load();
+		},
+	});
+	await f.model.refresh();
+	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(true);
+	await expect(f.model.editTranscript(config)).rejects.toThrow();
+	await expect(f.model.saveTranscript(config)).rejects.toThrow();
+	expect(f.client.requests).toHaveLength(0);
+	healthy = true;
+	await f.model.refresh();
+	await f.model.editTranscript(config);
+	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(false);
+});
+
+it("a cleanup failure does not turn a confirmed save into an unknown server outcome", async () => {
+	const source = draftStorage().storage;
+	const f = persistedPreferences({
+		...source,
+		removeIf: () => {
+			throw new Error("secret cleanup");
+		},
+	});
+	await f.model.refresh();
+	f.client.handlers.set(transcriptPatch, () => ({
+		revision: 5,
+		config: toWireConfig(proposedConfig),
+	}));
+	await f.model.saveTranscript(proposedConfig);
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		confirmed: { revision: 5 },
+		writeUncertain: false,
+		storageUnavailable: true,
+		saving: false,
+	});
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+	await expect(f.model.saveTranscript()).rejects.toThrow();
+});
