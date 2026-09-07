@@ -70,8 +70,8 @@ EVENER_CWD=/path/on/hub node node_modules/@evener/appwire-client/examples/inspec
 The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
-read-only recipe, **not full protocol coverage**. Fixtures for creation,
-streaming, approvals, queue control, reconnect recovery, management, providers,
+read-only recipe, **not full protocol coverage**. Additional creation cases, streaming, approvals, queue control, reconnect recovery,
+management, providers,
 plugin management and upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
@@ -139,3 +139,29 @@ node node_modules/@evener/appwire-client/examples/plugins.mjs
 
 Run against a stable catalog: concurrent installation/removal can legitimately
 change the candidates between preview requests and fail the assertions.
+
+### Session lifecycle with an interruptible scripted provider
+
+`session-lifecycle.mjs` creates an empty session, subscribes, sends a unique
+fixture, checks start/interrupt receipts and lifecycle pushes, verifies the
+submitted input in an authoritative read, then unsubscribes. It leaves the
+interrupted session for inspection. Use an isolated hub with an empty-task-capable
+harness and a scripted provider that waits for interruption:
+
+```sh
+EVENER_EXAMPLE_CREATE_SESSION=1 \
+EVENER_MODEL_PROVIDER=fake EVENER_MODEL=fake-test-model \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/session-lifecycle.mjs
+```
+
+The provider/model are validated against the hub catalog before creation. The
+script installs listeners before subscribing and handles lifecycle pushes that
+precede mutation responses. On failure it attempts to stop only its own session
+with its original instance identity, then unsubscribes. It never replays Start
+or deletes history. If a creation response is lost, inspect the hub manually;
+the script cannot identify the created session. No other writer should mutate
+this fixture session during the run. Natural completion, transcript deltas,
+approvals, queue control and reconnect recovery require separate recipes.
