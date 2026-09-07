@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Component, type ReactNode, Suspense, lazy, useState } from "react";
 import { WireError } from "../../../protocol/errors";
 import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
 import { useClient } from "../../../shell/clientContext";
@@ -12,6 +12,30 @@ import { useConnectedEffect } from "./useConnectedEffect";
 // is scoped to the QR slot so a slow chunk shows a placeholder in this
 // section only, never the whole pane.
 const QRCodeSVG = lazy(() => import("qrcode.react").then((m) => ({ default: m.QRCodeSVG })));
+
+// A failed chunk load rejects the lazy promise, which Suspense does not
+// catch: without a boundary React unmounts the whole tree. Scope the blast
+// radius to the QR slot and keep the pairing link (already loaded) usable via
+// the copy button below.
+class QRChunkBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render(): ReactNode {
+    if (this.state.failed) {
+      return (
+        <EmptyState
+          title="Couldn't load the QR renderer"
+          hint="The pairing link below still works — copy it instead, or reload this page to try again."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
 
 type PairingState =
   | { kind: "loading" }
@@ -59,9 +83,11 @@ export function MobileSection() {
       <h2 id="mobile-app-pairing-heading">Mobile app</h2>
       <p>Scan this code from the Evener mobile app to pair another device.</p>
       <div role="img" aria-label="Mobile app pairing QR code">
-        <Suspense fallback={<Skeleton lines={1} />}>
-          <QRCodeSVG value={state.authURL} includeMargin level="M" />
-        </Suspense>
+        <QRChunkBoundary>
+          <Suspense fallback={<Skeleton lines={1} />}>
+            <QRCodeSVG value={state.authURL} includeMargin level="M" />
+          </Suspense>
+        </QRChunkBoundary>
       </div>
       <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
         Copy pairing link
