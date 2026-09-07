@@ -64,3 +64,28 @@ performance. Verify bounded virtualization recovery when a target is far from
 mounted variable-height rows. Header space is not itself persisted as a
 semantic transcript item. The current screenshots do not qualify these cases.
 Android delivery remains deferred beyond v1 by Jesse's explicit decision.
+
+## Dynamic Type follow-up, 6 September 2026
+
+The later Release build with hub settings (bundle
+`b786cdbe7d203332ba31a74a3a30385ef568e06a055e90f99902a3b5fc1bc01a`)
+showed a real failure when returning from
+`accessibility-extra-extra-extra-large` to `large`: the visible transcript
+moved to reader marker 05. The saved semantic anchor still identified the
+interruption after marker 09. This case is **open**, not accepted.
+
+![Observed drift after reducing text size](assets/reader-continuity/size-change-drift.jpg)
+
+Subsequent builds with temporary diagnostic probes did not reproduce the drift
+in the same font-size round trips. One probe recorded the same anchor with
+within-item offset 26.667 points, its row at y=4874/height=52 at ordinary size
+and y=37178/height=92.332 at the largest size. The corresponding observed scroll
+offsets were 4900.667 and 37204.667, matching those particular restorations.
+These successful runs do not explain or invalidate the earlier failure.
+
+The probes were removed from source and a clean Release build was installed.
+Continue with a reproducible uninstrumented case and event-order evidence.
+Inspect automatic scroll offset changes, virtualized cell measurements and
+restoration suppression before choosing a fix. Do not treat an inferred race
+mechanism as a demonstrated root cause. The simulator's content size was
+restored to `large`.

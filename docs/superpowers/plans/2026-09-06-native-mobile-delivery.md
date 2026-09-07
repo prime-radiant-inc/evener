@@ -161,3 +161,39 @@ Run this lane alongside packages 1–5, not after them. The current report names
 5. After those results: Bot designs the complete conversation journey; Luna workers implement reader continuity, independent decision regressions and SDK streaming recipes in parallel where files do not overlap.
 
 This sequence supersedes the README's isolated-space-fix first priority. Existing backlog IDs and historical evidence stay intact; this plan supplies dependencies and release criteria, not a reduced scope.
+
+## Continuation checkpoint: 6 September 2026
+
+The next implementation work remains the native transcript preference
+presentation/editor and the session pin/fork/delete menus. Their supporting
+work is now committed:
+
+- `625c59d4e`: independently packaged, revision-aware preference recipe with
+  safe default reads, explicit owned-hub writes, conflict/lost-reply readback
+  and no mutation replay. Package qualification passed 15 combined recipe
+  tests outside the checkout. A direct read on the owned v4 hub returned both
+  preference domains at revision 0; no settings mutation was issued.
+- `e472f6c2e`: pin/section operations in the existing navigation controller,
+  explicit uncertain-state reconciliation, and current-list refresh wiring.
+  Ten tests cover deferred receipts/reads and scope changes. Native pin menus
+  and durable uncertain state across controller disposal remain unfinished.
+- `ee5707b18`: retained activity members, source tool intent and system event
+  metadata for a pure native display projection. Seventy-eight projection
+  tests and independent review passed; no preference editor/render wiring is
+  implied by this metadata slice.
+- Shared-mobile fixtures now supply v4 transcript boundaries and use current
+  fragment reads/handshakes. Full shared mobile tests passed 2253 tests in 90
+  files, plus Biome/typecheck. Native gate passed 402 tests plus typecheck.
+  These are scoped integration checks, not final whole-repository certification.
+
+Reader Dynamic Type acceptance is still open: a largest-to-normal text-size
+transition visibly drifted despite a saved semantic anchor. Later instrumented
+runs held position but did not establish the root cause. See the explicit
+failure record in [reader continuity evidence](../../design/mobile/reader-continuity-evidence.md).
+Temporary diagnostics were removed and the clean iOS Release bundle
+`967d12c51c12ce35682492969f1eaf87ff84dc8c3446f6feca4c518379b2cf11`
+was installed. The simulator is back at normal `large` text size.
+
+The original unrelated Apple project and Info.plist modifications still match
+the preserved initial patch. Android remains deferred by Jesse's iOS-only v1
+decision. No push, merge or release publication has been performed.
