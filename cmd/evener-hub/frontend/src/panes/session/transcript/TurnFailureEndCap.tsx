@@ -228,14 +228,20 @@ function planRetryImages(
   // only sound when the markers run in the same order as the images — an
   // out-of-order (or gapped) marker sequence means the true marker-to-bytes
   // identity was lost, and guessing would attach the wrong bytes to a tile.
+  // A repeated NAMED mention whose image is already claimed is the same claim
+  // restated, not a new pairing: it stays unpaired (verbatim prose) rather
+  // than consuming an unrelated leftover image under a duplicate marker.
   // Images left without an occurrence keep a fallback marker below, which is
   // always safe (fresh numbers outside the used set).
   let positionalAmbiguous = false;
-  const unnamedMarkers: number[] = [];
+  const pendingUnnamed: number[] = [];
   pendingOccurrences.forEach((occurrenceIndex) => {
     const occurrence = occurrences[occurrenceIndex];
-    if (occurrence !== undefined && occurrence.name === undefined) unnamedMarkers.push(occurrence.marker);
+    if (occurrence !== undefined && occurrence.name === undefined) pendingUnnamed.push(occurrenceIndex);
   });
+  const unnamedMarkers = pendingUnnamed.map(
+    (occurrenceIndex) => (occurrences[occurrenceIndex] as ImageOccurrence).marker,
+  );
   unnamedMarkers.forEach((marker, position) => {
     if (position > 0 && unnamedMarkers[position - 1] !== undefined && marker <= (unnamedMarkers[position - 1] ?? 0)) {
       positionalAmbiguous = true;
@@ -244,7 +250,7 @@ function planRetryImages(
   if (positionalAmbiguous) {
     ambiguous = true;
   } else {
-    pendingOccurrences.forEach((occurrenceIndex, position) => {
+    pendingUnnamed.forEach((occurrenceIndex, position) => {
       const imageIndex = unpairedImages[position];
       if (imageIndex === undefined) return;
       const occurrence = occurrences[occurrenceIndex];

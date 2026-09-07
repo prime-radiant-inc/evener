@@ -584,6 +584,34 @@ test("retry pairs markers by attachment name when the prose order diverges from 
   );
 });
 
+test("a repeated named mention plus an unmentioned image keeps both attachments", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: a.png) and again (attached image 1: a.png)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
+          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] and again (attached image 1: a.png)", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
 test("out-of-order unnamed markers refuse the images instead of misassigning bytes", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 2) then (attached image 1)";
