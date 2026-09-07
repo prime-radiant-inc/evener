@@ -140,10 +140,13 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 // but only when their markers run in the same order as the images: an
 // out-of-order (or repeated) unnamed marker sequence means the true
 // marker-to-bytes identity was lost, and the pairing refuses rather than
-// misassigning bytes. Images with no occurrence keep a 1-based positional
-// marker. A named occurrence that matches no image at all is foreign
-// (user-typed prose, not a translated marker) and is never consumed: pairing
-// it would steal a real image under a marker it was never staged with.
+// misassigning bytes. Foreign named prose beside unnamed images refuses too:
+// the foreign mention may be occupying the slot the real marker would have
+// taken, so positional alignment cannot be trusted. Images with no occurrence
+// keep a 1-based positional marker. A named occurrence that matches no image
+// at all is foreign (user-typed prose, not a translated marker) and is never
+// consumed: pairing it would steal a real image under a marker it was never
+// staged with.
 //
 // The returned text rewrites each resolvable occurrence back to its
 // "[image N]" composer anchor: send() re-translates anchors to prose on the
@@ -231,9 +234,20 @@ function planRetryImages(
   // A repeated NAMED mention whose image is already claimed is the same claim
   // restated, not a new pairing: it stays unpaired (verbatim prose) rather
   // than consuming an unrelated leftover image under a duplicate marker.
+  // A FOREIGN named mention (no attachment carries the name) is worse: with
+  // unnamed images around, positional pairing could be aligning the leftovers
+  // against a shifted marker sequence — the foreign prose may be occupying
+  // the slot the real marker would have taken. Refuse rather than guess.
   // Images left without an occurrence keep a fallback marker below, which is
   // always safe (fresh numbers outside the used set).
   let positionalAmbiguous = false;
+  const hasForeignMention = occurrences.some(
+    (occurrence) => occurrence.name !== undefined && !byName.has(occurrence.name),
+  );
+  const hasUnnamedImage = items.some((image) => image.name === undefined || image.name === "");
+  if (hasForeignMention && hasUnnamedImage) {
+    positionalAmbiguous = true;
+  }
   const pendingUnnamed: number[] = [];
   pendingOccurrences.forEach((occurrenceIndex) => {
     const occurrence = occurrences[occurrenceIndex];

@@ -584,6 +584,28 @@ test("retry pairs markers by attachment name when the prose order diverges from 
   );
 });
 
+test("foreign prose beside an unnamed image refuses the images instead of misassigning", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 5: ghost.png) and (attached image 1)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,cmVhbA==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
+});
+
 test("a repeated named mention plus an unmentioned image keeps both attachments", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: a.png) and again (attached image 1: a.png)";
