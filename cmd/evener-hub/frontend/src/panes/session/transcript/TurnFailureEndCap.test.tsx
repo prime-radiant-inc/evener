@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import { translateAttachmentMarkers } from "../../../stores/attachmentMarkers";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -119,10 +120,16 @@ test("retry pairs each image with its translated marker number", async () => {
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 7: seven.png) then (attached image 3)", [
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 7] then [image 3]", [
       { marker: 7, mediaType: "image/png", data: "c2V2ZW4=", name: "seven.png" },
       { marker: 3, mediaType: "image/jpeg", data: "dGhyZWU=" },
     ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(
+    "(attached image 7: seven.png) then (attached image 3)",
   );
 });
 
@@ -141,31 +148,6 @@ test("retry warns instead of silently resending text when image bytes are unavai
   await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "look at this", undefined));
   expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
   expect(getToasts().map((toast) => toast.kind)).toEqual(["warning"]);
-});
-
-test("retrying a reloaded image-bearing input re-sends its images", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 2: diagram.png)explain this",
-          images: [{ src: "data:image/png;base64,ZGlhZ3JhbQ==", name: "diagram.png" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 2: diagram.png)explain this", [
-      { marker: 2, mediaType: "image/png", data: "ZGlhZ3JhbQ==", name: "diagram.png" },
-    ]),
-  );
 });
 
 test("without a session ref the diagnostic still renders but the recovery action is withheld", () => {
@@ -227,8 +209,8 @@ test("the lookback stops at the failed turn, never re-issuing an input sent afte
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByText("a later, unrelated prompt")).toBe(null);
   expect(originatingInput(threadsStore.getState().threads.get("ref_a")?.turns ?? [], "turn_2")).toEqual({
-    text: "explain parser.go",
-    sourceImageCount: 0,
+    kind: "retry",
+    input: { text: "explain parser.go", sourceImageCount: 0 },
   });
 });
 
@@ -281,13 +263,108 @@ test("an image-only input is retryable even with empty text", async () => {
   );
 });
 
+test("an image-only input with unavailable bytes stops the lookback instead of retrying an older prompt", () => {
+  const turns: TurnModel[] = [
+    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "an older, unrelated prompt" })] },
+    {
+      id: "turn_2",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_2",
+          id: "item_img",
+          text: "",
+          images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ];
+  expect(originatingInput(turns, "turn_2")).toEqual({ kind: "images-unavailable", sourceImageCount: 1 });
+});
+
+test("an image-only input with unavailable bytes shows a re-attach note instead of Retry", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [item({ turnId: "turn_1", text: "", images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }] })],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText(/re-attach the image to retry/)).toBeTruthy();
+});
+
+test("retry sends composer-style anchors so a failed retry recovers its image tiles", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 2: diagram.png)explain this",
+          images: [{ src: "data:image/png;base64,ZGlhZ3JhbQ==", name: "diagram.png" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2]explain this", [
+      { marker: 2, mediaType: "image/png", data: "ZGlhZ3JhbQ==", name: "diagram.png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe("(attached image 2: diagram.png)explain this");
+});
+
+test("retry pairs markers by attachment name when the prose order diverges from send order", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const turn = failedTurn({
+    items: [
+      item({
+        text: "(attached image 2: b.png) then (attached image 1: a.png)",
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
+          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2] then [image 1]", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(
+    "(attached image 2: b.png) then (attached image 1: a.png)",
+  );
+});
+
 test("originatingInput skips a whitespace-only input rather than re-issuing nothing", () => {
   const turns: TurnModel[] = [
     { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },
     { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
     RELOADED_FAILURE,
   ];
-  expect(originatingInput(turns, "turn_2")).toEqual({ text: "real work", sourceImageCount: 0 });
+  expect(originatingInput(turns, "turn_2")).toEqual({
+    kind: "retry",
+    input: { text: "real work", sourceImageCount: 0 },
+  });
 });
 
 test("originatingInput takes the LAST input at or before the failed turn", () => {
@@ -296,7 +373,7 @@ test("originatingInput takes the LAST input at or before the failed turn", () =>
     { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_u2", text: "second" })] },
     RELOADED_FAILURE,
   ];
-  expect(originatingInput(turns, "turn_2")).toEqual({ text: "second", sourceImageCount: 0 });
+  expect(originatingInput(turns, "turn_2")).toEqual({ kind: "retry", input: { text: "second", sourceImageCount: 0 } });
 });
 
 // --- TurnBlock integration: the end-cap is driven by turn.error presence ----
