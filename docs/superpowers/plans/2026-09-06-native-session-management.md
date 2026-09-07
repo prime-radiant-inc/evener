@@ -54,3 +54,23 @@ recovery across model disposal.
 - [ ] Qualify lost replies, overlapping hub/session identities, large text,
   VoiceOver and iPad. Record actual outcomes rather than inferring acceptance
   from controller tests.
+
+## Organization foundation checkpoint (2026-09-07)
+
+Native navigation now supports pin catalog paging and invalidation, validates
+cached responses/tombstones before accepting them, and uses resource-specific
+receipt revisions. The shared organization controller can persist a pending
+operation and acknowledged receipt through an injected synchronous journal,
+then pass that exact target to a replacement model's reconciliation callback.
+A pure pin assignment editor is present but has no registered destination.
+
+The native gate passed 457 tests plus TypeScript. The independent organization
+SDK recipe passed nine contracts and outside-checkout package qualification.
+A direct owned-hub create/pin/no-op/rename/unpin/delete cycle passed and restored
+the fixture's original unpinned state. See
+[organization evidence](../../design/mobile/organization-evidence.md).
+
+These are foundation and API results. Production journal wiring, persistent pin
+proposals, target-specific readback, native routes/menus and their UI/lifecycle
+acceptance remain open; the remaining implementation checklist above is not
+complete.
