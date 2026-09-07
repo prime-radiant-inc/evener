@@ -97,6 +97,9 @@ function jobControlTarget(item: ItemModel): string {
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   icon: "job",
+  // Background work is state a reader tracks across a turn, so every job
+  // row stays on its own line rather than folding into a run.
+  fold: "never",
   summary(item: ItemModel) {
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
@@ -109,6 +112,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: "job_list",
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const status = args.status;
@@ -121,6 +125,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: "job_stop",
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
@@ -339,6 +344,7 @@ function DelegateSendBody(props: ToolRenderProps) {
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   icon: "send",
+  fold: "never",
   summary: delegateSendSummary,
   openTranscriptRef: delegateSendTranscriptRef,
   // The summary quotes the delegate target verbatim before the status meta
@@ -362,6 +368,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   icon: "job",
+  fold: "never",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const operation = str(args, "operation");

@@ -49,6 +49,17 @@ export interface ToolRendererDescriptor {
   // review call: fixed-width everywhere made every tool read like a
   // terminal); shell opts in because its summary IS a command.
   monoSummary?: boolean;
+  // How this tool behaves when a settled turn's tool calls are folded into a
+  // single run row (toolRuns.ts):
+  //   "never"         - a card the reader must always see on its own: a
+  //                     delegate, an ask, a task list, a skill, a job. It
+  //                     breaks the run around it rather than joining one;
+  //   "consequential" - a mutating step (an edit, a shell command, a
+  //                     worktree change). It folds, and it is what a folded
+  //                     run's summary names;
+  //   unset           - a quiet step (a read, a search, a web fetch). It
+  //                     folds and only ever contributes to the count.
+  fold?: "never" | "consequential";
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   // outputImageSize sizes the generic output-images gallery ToolCallItem
   // renders after the body: undefined keeps the default 96px thumbnails,

@@ -282,6 +282,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "task_list",
+  fold: "never", // the plan card stays visible
   icon: "tasks",
   summary: taskMutationSummary,
   body: TaskCardBody,

@@ -22,6 +22,7 @@ function UseSkillBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "use_skill",
+  fold: "never", // which skill is running is never a footnote
   icon: "skill",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);

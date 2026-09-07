@@ -109,6 +109,7 @@ function worktreeSummary(item: { argumentsJSON?: string; output?: string }): str
 registerToolRenderer({
   match: "manage_worktree",
   summary: worktreeSummary,
+  fold: "consequential", // creates/switches/removes a tree: a mutation
   // The output really is parseable JSON here (see this file's header), but
   // whether each operation deserves its own structured body is a bigger
   // question than the row this fix is about - a head-clipped dump is honest
