@@ -111,3 +111,83 @@ process death/lost reply/hub-switch scenarios, large text, VoiceOver, and iPad.
 Ordinary selected-turn fork, ended-session deletion, native keybinding editing,
 remaining SDK recipes, the open reader continuity issue, and complete release
 acceptance remain outstanding.
+
+## iOS pin assignment checkpoint (2026-09-07)
+
+Commit `c9466f954` connects the native session menu to pin assignment. The form
+can select a loaded section, name a new section, or unpin a top-level session.
+Proposals are stored synchronously per hub/session before publishing edits.
+The saved route restores the form over its conversation after process death.
+The per-hub operation journal is written before RPC and keeps the exact target
+and acknowledged receipt until fresh location/catalog reads confirm current
+state. Reconciliation does not replay mutations or silently discard proposals.
+
+Refresh uses transport readiness independently of edit readiness. Cached
+assignment labels say "Last seen" while stale or uncertain. The summary,
+session title and controls share one scroll area; action rows wrap. This fixes
+an observed maximum Dynamic Type failure where fixed headers consumed the
+viewport and made the form unreachable.
+
+### Observed Release workflow
+
+The final iPhone 17 Pro/iOS 26.5 Release bundle SHA-256 is
+`832d376f44314a8945927831eee0e43170d290ec61f2634e3620b8bc17601561`.
+Testing used the existing owned scripted hub on port 54211 and reader fixture
+`local:034KVwAjXBf0IyAcKKEYU3`, with separate SDK reads of the real server.
+
+| Workflow | Observed result |
+| --- | --- |
+| Enter a new-section proposal | Form shows `focus`; hub still has no sections or assignment |
+| Stop and relaunch the final app | Exact form route and `focus` text return; no mutation occurs |
+| Create and pin from iOS | Hub location points to the new section; catalog count is 1 |
+| Unpin from iOS | Hub location has no section; the existing section count is 0 |
+| Assign an existing section | Earlier same-controller Release journey repinned the selected section and confirmed it independently |
+| Maximum Dynamic Type | Final layout scrolls to Unpin and Close; Unpin was executed successfully at that size |
+| Another client deletes the empty section | iOS marks the catalog stale; explicit Refresh succeeds after the hub fix below |
+
+The last-section deletion was an SDK cleanup operation, not a native delete
+journey. The final fixture is unpinned and its catalog is empty. Device text
+size was restored to `large`. The app's SQLite records were inspected for the
+owned proposal and operation keys; successful changes cleared both records.
+
+![Pin proposal and keyboard](assets/pin-assignment/draft-keyboard.jpg)
+![Confirmed pin assignment](assets/pin-assignment/assigned.jpg)
+![Reachable controls at maximum text size](assets/pin-assignment/maximum-text-controls.jpg)
+
+### Hub empty-catalog correction
+
+The external deletion check exposed an actual hub error: cached catalog reads
+failed with `navigation delta does not reconstruct current snapshot`. Projection
+used a nil entity slice for an empty resource while history and delta application
+used an empty array. Commit `c9fb42abc` normalizes that internal representation,
+preserving reconstruction checks and the wire contract.
+
+Both new real normalization/diff/application regressions failed before the fix:
+removing the final pin section and updating only empty-catalog metadata. They
+pass after it. The rebuilt owned hub returned the expected removal delta and
+the iOS form refreshed successfully after a repeated external deletion.
+Owned hub binary SHA-256:
+`1a7e1e3385fa40f3b233ece51c3b8278c6e6c8035182b46c3b7b160d81ae04b0`.
+
+### Validation and limits
+
+- `make test-native`: 477 tests in 59 files and TypeScript passed.
+- Native persistence/readback tests cover scope isolation, conditional clears,
+  real Expo storage adapters, ACKed read failure, replacement-controller
+  reconciliation, and retry after an initial read failure without replay.
+- `make test-web`: typecheck, unit tests and lint passed; touched native sources
+  passed Biome.
+- Navigation/pin Go tests and the full `cmd/evener-hub` package passed; the full
+  package took 113 seconds. `make build` passed with a freshly built frontend.
+
+Local details: `/tmp/evener-pin-assignment-ui-evidence.json`,
+`/tmp/evener-pin-conditional-fixed.jsonl`,
+`/tmp/evener-pin-assignment-final-native-gate.log`, and
+`/tmp/evener-pin-empty-hub-tests.log`.
+
+This qualifies the bounded assignment workflow, not complete organization or
+release acceptance. Native catalog/section browsing, rename/delete, durable
+archive/favorite recovery, selected-turn fork and ended-session deletion remain
+open. Lost-reply UI journeys, hub-switch races, storage-failure UI, full VoiceOver,
+iPad and physical-device acceptance still need completion. The separate reader
+continuity defect remains open.
