@@ -372,8 +372,8 @@ is retained in the creation evidence; keyboard and accessibility acceptance
 remain incomplete. 321 native tests pass.
 Opening image selection/removal and creation now have native evidence on both
 platforms, independent SDK PNG readback and viewer checks; 324 native tests pass.
-Creation drafts still need durable storage, and live image-tile delivery remains
-a MOB-008 qualification gap.
+Creation drafts still need durable storage. Live item-image projection is fixed;
+remaining running-work qualification is tracked under MOB-008.
 Plugin selection, per-launch collection/precedence failure
 coverage and complete project-layer/trust accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
 independently under MOB-018.
@@ -384,10 +384,11 @@ coverage. Keep advertised options server-derived.
 
 ### MOB-008 · P1 · Finish running-work and decision acceptance · Open
 
-Opening-image checks found user text without its attachment tile while running
-on both native platforms; the tile appeared after Stop. Independent thread/read
-already contained the PNG during the Android run. Trace snapshots, item events
-and native projection; see the opening-images section in session-creation.md.
+Live image projection is fixed: snapshots and item events share image mapping,
+with replacement/removal and stale-read/page regression coverage. Both native
+apps displayed and opened a newly sent image before Stop; independent SDK reads
+confirmed active turns. See the live-image evidence in session-creation.md.
+New-session opening-window races and remaining image qualification stay open.
 
 Goals, tasks, activity, queue operations, approvals and questions have partial
 implementation/evidence. Complete remaining paging, concurrent updates,

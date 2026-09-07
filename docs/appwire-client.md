@@ -211,6 +211,23 @@ To verify stored user input independently, call `thread/read` with the returned
 successful start response alone does not prove that a live event consumer has
 rendered those attachments.
 
+Subscribed clients receive user input, including its `images`, in
+`item/completed` notifications; an item need not have a preceding
+`item/started` event. Upsert by item ID within the matching hub/thread.
+Process the complete item payload, including image arrays, rather than only its
+text. Tool items can carry `outputImages` references. Rendering an item as
+separate text/activity and attachment rows is a client choice; those rows still
+belong to one wire item and must be replaced or removed together.
+
+Reconcile snapshots with notifications received during the request. A newer
+whole-item event must survive an older snapshot, including image replacement or
+removal. Conversely, when accepting a newer snapshot's source item without
+images, remove its obsolete attachment presentation. An overlapping older page
+must not restore attachments from an older version of an already retained item.
+These presentation/reconciliation responsibilities currently belong to the
+application; the API transport library delivers typed payloads and does not
+maintain the conversation projection.
+
 For local Evener, explicit top-level `model`, `profile`, `reasoningEffort` and
 `nonInteractive` take precedence over the corresponding `launchOverrides` fields.
 `modelProvider` qualifies `model` when needed. Other harnesses are routed to their

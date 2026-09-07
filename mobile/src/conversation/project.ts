@@ -278,7 +278,7 @@ function projectItem(
 ): PreResult {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
-    const attachments = itemInputAttachments(item);
+    const attachments = projectItemAttachments(item);
     return {
       kind: "final",
       item: { kind: "user", id: item.id, text: item.text ?? "" },
@@ -346,7 +346,7 @@ function projectItem(
   // "Reasoning"; the discriminator is derived from the wire type, never the
   // label. callId is preserved exactly for diagnostics disclosure.
   if (isCommandExecution(item)) {
-    const attachments = itemOutputAttachments(item);
+    const attachments = projectItemAttachments(item);
     const failed = toolCallFailed(item);
     const family = failed ? `failed:${item.id}` : "tool";
     return {
@@ -436,14 +436,18 @@ function activityDetail(item: ThreadItem): ActivityDetail {
   };
 }
 
-function itemInputAttachments(item: ThreadItem): AttachmentRef[] | undefined {
-  if (!item.images || item.images.length === 0) return undefined;
-  return item.images.map((img, i) => inputAttachment(item.id, i, img));
-}
-
-function itemOutputAttachments(item: ThreadItem): AttachmentRef[] | undefined {
-  if (!item.outputImages || item.outputImages.length === 0) return undefined;
-  return item.outputImages.map((img, i) => outputAttachment(item.id, i, img));
+export function projectItemAttachments(
+  item: ThreadItem,
+): AttachmentRef[] | undefined {
+  if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
+    if (!item.images?.length) return undefined;
+    return item.images.map((img, i) => inputAttachment(item.id, i, img));
+  }
+  if (isCommandExecution(item)) {
+    if (!item.outputImages?.length) return undefined;
+    return item.outputImages.map((img, i) => outputAttachment(item.id, i, img));
+  }
+  return undefined;
 }
 
 // --- clustering pass ---------------------------------------------------------
