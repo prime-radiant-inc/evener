@@ -175,6 +175,9 @@ function FindSessionTranscriptsBody(props: ToolRenderProps) {
 
 registerToolRenderer({
   match: "find_session_transcripts",
+  // A read-only search: folds and only counts (toolFoldPolicy.test.ts pins
+  // every registered tool's policy).
+  fold: "quiet",
   summary: findSessionsSummary,
   body: FindSessionTranscriptsBody,
 });
