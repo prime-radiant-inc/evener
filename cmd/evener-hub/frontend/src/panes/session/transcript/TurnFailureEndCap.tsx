@@ -18,9 +18,9 @@
 
 import { useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
-import type { TurnModel } from "../../../protocol/model";
+import type { ItemModel, TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { classifyTurnError } from "./turnFailure";
@@ -36,12 +36,52 @@ const CLASS = {
 
 // The turn that failed opened with the user's own input as its first item
 // (EventUserInput opens a turn, then inserts the userMessage, before the
-// assistant works in that same turn - appwire_projection.go:131-168), so its
-// text is the honest thing to re-issue on retry. Absent (an empty or
-// item-less turn), there is nothing to retry.
-function retryText(turn: TurnModel): string | undefined {
-  const text = turn.items.find((it) => it.type === "userMessage")?.text.trim();
-  return text ? text : undefined;
+// assistant works in that same turn - appwire_projection.go:131-168), so it
+// is the honest thing to re-issue on retry. Absent (an empty or item-less
+// turn), there is nothing to retry.
+export interface RetryInput {
+  text: string;
+  attachments?: InputAttachment[];
+}
+
+// retryImages recovers the originating input's image bytes from the model's
+// display-ready ItemImage shape (reducer.ts's imagesToItemImages resolves the
+// wire's inline mediaType+data bytes to a data: URI src, which is exactly what
+// a live userMessage item carries). Each image becomes an InputAttachment the
+// send path already knows how to wire (threads.ts's buildInput), with markers
+// recovered from the translated "(attached image N)" prose the submit
+// boundary wrote (attachmentMarkers.ts) - falling back to 1-based position
+// for prose that carries no marker (a reloaded transcript's text). Images
+// whose bytes are unavailable (a sha-routed src with no inline data) are
+// dropped: resending a name with no bytes would fabricate an attachment.
+function retryImages(item: ItemModel | undefined, text: string): InputAttachment[] | undefined {
+  const images = item?.images;
+  if (!images || images.length === 0) return undefined;
+  const markers = Array.from(text.matchAll(/\(attached image (\d+)(?::[^)]*)?\)/g), (match) => Number(match[1]));
+  const attachments: InputAttachment[] = [];
+  images.forEach((image, index) => {
+    const dataUri = /^data:([^;,]+)?;base64,(.*)$/s.exec(image.src);
+    if (!dataUri) return;
+    attachments.push({
+      marker: markers[index] ?? index + 1,
+      mediaType: dataUri[1] || "image/png",
+      data: dataUri[2] ?? "",
+      ...(image.name ? { name: image.name } : {}),
+    });
+  });
+  return attachments.length > 0 ? attachments : undefined;
+}
+
+function retryItem(turn: TurnModel): ItemModel | undefined {
+  return turn.items.find((it) => it.type === "userMessage");
+}
+
+function retryInput(turn: TurnModel): RetryInput | undefined {
+  const item = retryItem(turn);
+  const text = item?.text.trim();
+  if (!text) return undefined;
+  const attachments = retryImages(item, text);
+  return attachments ? { text, attachments } : { text };
 }
 
 /**
@@ -59,13 +99,13 @@ function retryText(turn: TurnModel): string | undefined {
  * The search stops AT the failed turn: a later prompt is a different exchange,
  * and re-issuing it would answer a question the reader did not ask.
  */
-export function originatingInput(turns: TurnModel[], turnId: string): string | undefined {
+export function originatingInput(turns: TurnModel[], turnId: string): RetryInput | undefined {
   const found = turns.findIndex((t) => t.id === turnId);
   const from = found === -1 ? turns.length - 1 : found;
   for (let i = from; i >= 0; i--) {
     const turn = turns[i];
-    const text = turn && retryText(turn);
-    if (text) return text;
+    const input = turn && retryInput(turn);
+    if (input) return input;
   }
   return undefined;
 }
@@ -82,23 +122,43 @@ export function TurnFailureEndCap({
   const info = classifyTurnError(error);
   const toasts = useToasts();
   const [hintOpen, setHintOpen] = useState(false);
-  // Selected down to a plain string so this cap re-renders only when the text
-  // it would re-issue actually changes, not on every delta the thread takes.
-  const priorInput = useThreadsStore((s) =>
-    sessionRef === undefined ? undefined : originatingInput(s.threads.get(sessionRef)?.turns ?? [], turn.id),
+  // Selected as a JSON string (compared by value, not identity) so this cap
+  // re-renders only when what it would re-issue actually changes, not on
+  // every delta the thread takes.
+  const priorInputJson = useThreadsStore((s) =>
+    sessionRef === undefined
+      ? undefined
+      : JSON.stringify(originatingInput(s.threads.get(sessionRef)?.turns ?? [], turn.id) ?? null),
   );
-  const text = retryText(turn) ?? priorInput;
-  const canRetry = sessionRef !== undefined && text !== undefined;
+  const priorInput =
+    priorInputJson === undefined ? undefined : ((JSON.parse(priorInputJson) as RetryInput | null) ?? undefined);
+  const input = retryInput(turn) ?? priorInput;
+  const canRetry = sessionRef !== undefined && input !== undefined;
 
   // Recovery re-issues the turn's originating input via the existing
-  // threadsStore.send action (turn/start). For a connection-class failure the
-  // hub's auto-resume layer transparently relaunches a dead daemon, so a single
-  // call serves both the "Retry" and "Reconnect & retry" labels; a failed
-  // re-issue surfaces on the shared toast singleton, never a silent swallow.
+  // threadsStore.send action (turn/start), images included: the originating
+  // userMessage item still carries the bytes the first send projected
+  // (projectUserInputImages), so a retry that resent text alone would answer
+  // a different question than the one asked. Bytes that did not survive to
+  // the model (a sha-routed src with no inline data, e.g. a reloaded turn)
+  // cannot be re-issued; those are dropped and named in a warning toast so
+  // the silent text-only resend this fixes never recurs. For a
+  // connection-class failure the hub's auto-resume layer transparently
+  // relaunches a dead daemon, so a single call serves both the "Retry" and
+  // "Reconnect & retry" labels; a failed re-issue surfaces on the shared
+  // toast singleton, never a silent swallow.
   async function retry() {
-    if (sessionRef === undefined || text === undefined) return;
+    if (sessionRef === undefined || input === undefined) return;
     try {
-      await threadsStore.getState().send(sessionRef, text);
+      const item = retryItem(turn);
+      const dropped = (item?.images?.length ?? 0) - (input.attachments?.length ?? 0);
+      await threadsStore.getState().send(sessionRef, input.text, input.attachments);
+      if (dropped > 0) {
+        toasts.push(
+          "warning",
+          `Retried without ${dropped === 1 ? "an attached image" : `${dropped} attached images`} - re-attach ${dropped === 1 ? "it" : "them"} to ask about ${dropped === 1 ? "it" : "them"} again.`,
+        );
+      }
     } catch (e) {
       toasts.push("error", sessionActionError(`${info.recoveryLabel} failed`, e));
     }

@@ -2,10 +2,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { Toast } from "../../../widgets";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { TurnBlock } from "./TurnBlock";
 import { originatingInput, TurnFailureEndCap } from "./TurnFailureEndCap";
 
-beforeEach(() => resetThreadsStoreForTests());
+beforeEach(() => {
+  resetThreadsStoreForTests();
+  resetToastStoreForTests();
+});
 afterEach(cleanup);
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -81,7 +86,86 @@ test("clicking retry re-issues the turn's user input via threadsStore.send", asy
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={failedTurn()} sessionRef="ref_a" />);
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "do the thing"));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "do the thing", undefined));
+});
+
+test("clicking retry re-sends the originating input's image attachments", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const turn = failedTurn({
+    items: [item({ images: [{ src: "data:image/png;base64,aGVsbG8=", name: "pic.png" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "do the thing", [
+      { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
+    ]),
+  );
+});
+
+test("retry pairs each image with its translated marker number", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const turn = failedTurn({
+    items: [
+      item({
+        text: "(attached image 7: seven.png) then (attached image 3)",
+        images: [
+          { src: "data:image/png;base64,c2V2ZW4=", name: "seven.png" },
+          { src: "data:image/jpeg;base64,dGhyZWU=" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 7: seven.png) then (attached image 3)", [
+      { marker: 7, mediaType: "image/png", data: "c2V2ZW4=", name: "seven.png" },
+      { marker: 3, mediaType: "image/jpeg", data: "dGhyZWU=" },
+    ]),
+  );
+});
+
+test("retry warns instead of silently resending text when image bytes are unavailable", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const turn = failedTurn({
+    items: [item({ text: "look at this", images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }] })],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "look at this", undefined));
+  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
+  expect(getToasts().map((toast) => toast.kind)).toEqual(["warning"]);
+});
+
+test("retrying a reloaded image-bearing input re-sends its images", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 2: diagram.png)explain this",
+          images: [{ src: "data:image/png;base64,ZGlhZ3JhbQ==", name: "diagram.png" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 2: diagram.png)explain this", [
+      { marker: 2, mediaType: "image/png", data: "ZGlhZ3JhbQ==", name: "diagram.png" },
+    ]),
+  );
 });
 
 test("without a session ref the diagnostic still renders but the recovery action is withheld", () => {
@@ -131,7 +215,7 @@ test("retrying a reloaded failure re-issues that earlier input", async () => {
   seedThread("ref_a", reloadedThread());
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "explain parser.go"));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "explain parser.go", undefined));
 });
 
 test("the lookback stops at the failed turn, never re-issuing an input sent after it", () => {
@@ -142,9 +226,9 @@ test("the lookback stops at the failed turn, never re-issuing an input sent afte
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByText("a later, unrelated prompt")).toBe(null);
-  expect(originatingInput(threadsStore.getState().threads.get("ref_a")?.turns ?? [], "turn_2")).toBe(
-    "explain parser.go",
-  );
+  expect(originatingInput(threadsStore.getState().threads.get("ref_a")?.turns ?? [], "turn_2")).toEqual({
+    text: "explain parser.go",
+  });
 });
 
 test("a thread whose turns hold no user input at all still withholds the action", () => {
@@ -159,7 +243,7 @@ test("originatingInput skips a whitespace-only input rather than re-issuing noth
     { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
     RELOADED_FAILURE,
   ];
-  expect(originatingInput(turns, "turn_2")).toBe("real work");
+  expect(originatingInput(turns, "turn_2")).toEqual({ text: "real work" });
 });
 
 test("originatingInput takes the LAST input at or before the failed turn", () => {
@@ -168,7 +252,7 @@ test("originatingInput takes the LAST input at or before the failed turn", () =>
     { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_u2", text: "second" })] },
     RELOADED_FAILURE,
   ];
-  expect(originatingInput(turns, "turn_2")).toBe("second");
+  expect(originatingInput(turns, "turn_2")).toEqual({ text: "second" });
 });
 
 // --- TurnBlock integration: the end-cap is driven by turn.error presence ----
