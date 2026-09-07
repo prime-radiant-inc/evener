@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-07",
+  "scope": "Actual Evener ask_user execution with a scripted provider, an independent packaged SDK client, and iPhone Simulator",
+  "sourceHead": "490b761a7458668a4df8ab1b6018306c7fa77ba1",
+  "hub": {
+    "url": "ws://127.0.0.1:54211/rpc",
+    "source": "0f95ef200",
+    "binarySha256": "e5fd01f5dcc7dfa9f5757feb5c4e2066cc485ee0064e87c078b9745774cc46a2"
+  },
+  "sdk": {
+    "source": "ef12d750e434e25798782a40099dfb36f0c6a82d",
+    "tarballSha256": "be6651ac3f43f0270a009fc94f2c7641289d3010ba926b293ff57aec53124d9d",
+    "consumer": "/tmp/evener-sdk-delegate-Sv1dWF"
+  },
+  "native": {
+    "source": "ef12d750e434e25798782a40099dfb36f0c6a82d",
+    "bundleSha256": "8dd7fe2db1b514a6637b6542e14732c70c673a3f12ab1217f8375fc9b6cff1e8",
+    "configuration": "Release",
+    "device": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "simulator": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "questionCodeChangedDuringJourney": false
+  },
+  "fixture": {
+    "directory": "/tmp/evener-question-recovery-Ck1rah",
+    "providerBinarySha256": "df022aa179bdf65223a7dfcca906667ded2e32f1306499094facffeb680c5f6a",
+    "sourceAndDriver": {
+      "provider.go.txt": "5db419fa2ae8480d3380b53d2e902f2044823b21be16d3d2e09b8258787d9b75",
+      "driver.mjs.txt": "233d269fb80e47d77b2062e282dcccedb756b7816e6cac436897634058cea23e",
+      "fixture.json": "4bcefe472f3537baacddd8ebdc42d0ade88082e194ceab40203001ee3539d5e7",
+      "initial-review.json": "1e2c0794b28ee8e451def866ba8af7a95862afe478e55ab6fbf9bd4f9c0f2af1",
+      "replacement-review.json": "4120cc097b111061c49797ffb42022958131beab08d970884d6de43ac435e6f0",
+      "external-receipt.json": "fcbff6ab4420b22a52c5b5fb2844de918e1e9a00d507cb25c27a815f8d4395c3",
+      "native-receipt.json": "164c1cace2ece4f8088f35f2a5cdd881d405701536f1c7b38cb24469120b47cc",
+      "cleanup.json": "f2319e86ad65f0e104de35cc4044fd4740576826c9db6008fb29ad26d28dc14f"
+    },
+    "providerObservations": [
+      {
+        "asked": 1,
+        "callId": "call_fakellm_1"
+      },
+      {
+        "answerReceived": 1,
+        "callId": "call_fakellm_1",
+        "valid": true
+      },
+      {
+        "asked": 2,
+        "callId": "call_fakellm_2"
+      },
+      {
+        "answerReceived": 2,
+        "callId": "call_fakellm_2",
+        "valid": true
+      }
+    ]
+  },
+  "external": {
+    "ref": "local:034KqNioFUIlbvv1lzFJgM",
+    "instanceId": "034KqNioFUIlbvv1lzFJgM",
+    "threadId": "034KqNioFUIlbvv1lzFJgM",
+    "answerTurn": "turn_m2",
+    "mutationId": "f4c4c09e-6fc8-4394-b232-8579089061d2",
+    "answerWrites": 1,
+    "answerMessages": 1,
+    "staleRejectedBeforeDispatch": true,
+    "pendingQuestions": 1,
+    "priorCallId": "call_fakellm_1",
+    "currentCallId": "call_fakellm_2"
+  },
+  "nativeReadback": {
+    "ref": "local:034KqNioFUIlbvv1lzFJgM",
+    "instanceId": "034KqNioFUIlbvv1lzFJgM",
+    "threadId": "034KqNioFUIlbvv1lzFJgM",
+    "inputMessages": 3,
+    "nativeAnswerMessages": 1,
+    "pending": false,
+    "lastTurn": "turn_m3",
+    "lastTurnCompleted": true,
+    "inputsExactlyInitialAndTwoAnswers": true
+  },
+  "ui": {
+    "oldBatchLocalNoteEntered": true,
+    "replacementBatchHadEmptyNote": true,
+    "replacementSendReachable": true,
+    "nativeSecondAnswerTapCount": 1,
+    "completedMessageObserved": true,
+    "snapshots": [
+      813,
+      814,
+      816,
+      817,
+      818
+    ],
+    "images": {
+      "question-recovery-before.jpg": "5c7f597f68a8188b8dc9a3a1d4138bf8eae393ae49bbadc98083a5d8f75c9e25",
+      "question-recovery-replacement.jpg": "1f3c40b16d1b233e042f698507b783800fa87badfbd0801b716995630107a1d2",
+      "question-recovery-completed.jpg": "a17fe5df884680e1d093488b700d71dbcb6ff3c5ed1baefb5d209e99effe1c99"
+    }
+  },
+  "cleanup": {
+    "sessionShutdown": true,
+    "providerRegistryRestored": true,
+    "providerProcessExitedCleanly": true,
+    "existingDraftHashesVerified": 6,
+    "unrelatedApplePatchUnchanged": true
+  },
+  "limits": [
+    "Ordinary composer was empty; ordinary-draft and question-answer interaction is not qualified.",
+    "This is a sequenced second-client handoff, not simultaneous dispatch or an atomic question-generation guarantee.",
+    "Native acknowledgment loss, reconnect, process death and broad cross-client fault matrices remain unqualified.",
+    "The later approval-controller build is separate from this question acceptance bundle.",
+    "The archived driver contains one-run owned fixture paths and ports; it is evidence source, not a portable automated test."
+  ]
+}

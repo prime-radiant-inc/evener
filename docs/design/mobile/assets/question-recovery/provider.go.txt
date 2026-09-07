@@ -1,0 +1,139 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"primeradiant.com/evener/test/e2e/fakellm"
+)
+
+func messageText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	blocks, _ := value.([]any)
+	var text strings.Builder
+	for _, raw := range blocks {
+		block, _ := raw.(map[string]any)
+		if content, ok := block["text"].(string); ok {
+			text.WriteString(content)
+		}
+	}
+	return text.String()
+}
+
+func run() error {
+	if len(os.Args) != 2 {
+		return errors.New("provide fixture metadata")
+	}
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		return errors.New("fixture metadata unavailable")
+	}
+	var config struct{ Note, Address string }
+	if json.Unmarshal(data, &config) != nil || config.Note == "" || config.Address != "127.0.0.1:0" {
+		return errors.New("invalid fixture metadata")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	server, err := fakellm.NewOn(config.Address)
+	if err != nil {
+		return errors.New("fixture listener unavailable")
+	}
+	defer server.Close()
+	out := json.NewEncoder(os.Stdout)
+	if err := out.Encode(map[string]any{"baseURL": server.BaseURL()}); err != nil {
+		return err
+	}
+	issued := map[string]int{}
+	answered := map[string]bool{}
+	for {
+		call, err := server.Next(ctx.Done())
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New("fixture request wait failed")
+		}
+		previous := call.PreviousToolCallID()
+		if previous == "" {
+			issued[call.ToolCallID()] = 1
+			call.RespondToolCall("ask_user", map[string]any{"questions": []any{
+				map[string]any{"header": "Delivery", "question": "How should this change be delivered?", "options": []any{
+					map[string]any{"label": "Keep as draft", "detail": "Keep the change for review.", "recommended": true},
+					map[string]any{"label": "Apply now", "detail": "Apply the change immediately."},
+				}},
+				map[string]any{"header": "Review", "question": "Which review steps should be included?", "multi_select": true, "options": []any{
+					map[string]any{"label": "Review locally", "detail": "Inspect the change locally.", "recommended": true},
+					map[string]any{"label": "Share for review", "detail": "Prepare it for another reviewer."},
+				}},
+			}})
+			if err := out.Encode(map[string]any{"asked": 1, "callId": call.ToolCallID()}); err != nil {
+				return err
+			}
+			continue
+		}
+		stage, known := issued[previous]
+		if !known || answered[previous] {
+			return errors.New("unrecognized or repeated question ancestry")
+		}
+		messages, _ := call.Body["messages"].([]any)
+		latestUser, askAt, answer := -1, -1, ""
+		for i, raw := range messages {
+			message, _ := raw.(map[string]any)
+			if message["role"] == "user" {
+				latestUser = i
+				answer = messageText(message["content"])
+			}
+			if message["tool_call_id"] == previous {
+				askAt = i
+			}
+			calls, _ := message["tool_calls"].([]any)
+			for _, rawCall := range calls {
+				toolCall, _ := rawCall.(map[string]any)
+				if toolCall["id"] == previous {
+					askAt = i
+				}
+			}
+		}
+		if latestUser <= askAt || askAt < 0 || !strings.Contains(answer, "[answers]") {
+			return errors.New("invalid answer ancestry")
+		}
+		if stage == 1 && (!strings.Contains(answer, config.Note) || !strings.Contains(answer, "\"Apply now\"") || !strings.Contains(answer, "\"Share for review\"")) {
+			return errors.New("external answer data missing")
+		}
+		if stage == 2 && (!strings.Contains(answer, "\"Continue verification\"") || strings.Contains(answer, config.Note)) {
+			return errors.New("replacement answer data invalid")
+		}
+		answered[previous] = true
+		if err := out.Encode(map[string]any{"answerReceived": stage, "callId": previous, "valid": true}); err != nil {
+			return err
+		}
+		if stage == 1 {
+			issued[call.ToolCallID()] = 2
+			call.RespondToolCall("ask_user", map[string]any{"questions": []any{
+				map[string]any{"header": "Next step", "question": "The other client answered. What should happen next?", "options": []any{
+					map[string]any{"label": "Continue verification", "detail": "Continue the local acceptance check.", "recommended": true},
+					map[string]any{"label": "Pause verification", "detail": "Keep this question pending."},
+				}},
+			}})
+			if err := out.Encode(map[string]any{"asked": 2, "callId": call.ToolCallID()}); err != nil {
+				return err
+			}
+		} else {
+			call.RespondToolCall("communicate", map[string]any{"message": "Both question rounds completed.", "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}})
+		}
+	}
+}
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

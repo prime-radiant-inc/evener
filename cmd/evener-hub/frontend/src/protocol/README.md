@@ -96,8 +96,9 @@ The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
-management and recovery paths. Additional creation cases, activity-tree traversal,
-continuous reconnect recovery, credentials and hub upgrades remain to be added.
+management and recovery paths, including activity-tree traversal. Additional
+creation cases, continuous reconnect recovery, credentials and hub upgrades
+remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request

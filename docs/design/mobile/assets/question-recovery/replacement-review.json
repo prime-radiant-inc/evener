@@ -1,0 +1,51 @@
+{
+  "ref": "local:034KqNioFUIlbvv1lzFJgM",
+  "instanceId": "034KqNioFUIlbvv1lzFJgM",
+  "threadId": "034KqNioFUIlbvv1lzFJgM",
+  "calls": [
+    {
+      "id": "item_tool_27",
+      "callId": "call_fakellm_2",
+      "transcriptKey": "apptranscript-item-v1:turn_m2:2:1",
+      "position": {
+        "entry": 2,
+        "item": 1
+      },
+      "argumentsJson": "{\"questions\":[{\"header\":\"Next step\",\"options\":[{\"detail\":\"Continue the local acceptance check.\",\"label\":\"Continue verification\",\"recommended\":true},{\"detail\":\"Keep this question pending.\",\"label\":\"Pause verification\"}],\"question\":\"The other client answered. What should happen next?\"}]}",
+      "questions": [
+        {
+          "header": "Next step",
+          "options": [
+            {
+              "detail": "Continue the local acceptance check.",
+              "label": "Continue verification",
+              "recommended": true
+            },
+            {
+              "detail": "Keep this question pending.",
+              "label": "Pause verification"
+            }
+          ],
+          "question": "The other client answered. What should happen next?"
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "header": "Next step",
+      "options": [
+        {
+          "detail": "Continue the local acceptance check.",
+          "label": "Continue verification",
+          "recommended": true
+        },
+        {
+          "detail": "Keep this question pending.",
+          "label": "Pause verification"
+        }
+      ],
+      "question": "The other client answered. What should happen next?"
+    }
+  ]
+}

@@ -132,3 +132,42 @@ The completed fixture also shows the intentional missing-description fallback
 for a settled tool; a polished settled-question recap remains part of the
 broader conversation review. No release readiness or Android qualification is
 claimed.
+
+## Second-client question handoff — 7 September
+
+An actual owned hub session ran two consecutive `ask_user` calls through a
+scripted provider. The iPhone displayed the first two-question batch and retained
+a local answer note while its keyboard was open. An independently installed SDK
+client answered that batch once. The provider validated the answer's tool-call
+ancestry and emitted a second batch containing one question. The open native
+sheet updated to the new batch, with an empty note and reachable Send answers.
+The iPhone submitted that second answer once, and the provider completed the
+turn after validating its distinct tool-call ancestry.
+
+The SDK tried the previously reviewed first batch after observing the second;
+its stale-review guard rejected the operation before an additional `turn/start`
+dispatch. Independent `thread/read` confirmed exactly three user inputs: the
+initial prompt and the two answer messages. No question remained pending and
+`turn_m3` was completed. This proves a sequenced second-client handoff; it does
+not provide an atomic guard against two clients dispatching simultaneously.
+
+The [structured receipt](assets/question-recovery-receipt.json) preserves source,
+native bundle, SDK tarball, provider binary, archived source/driver and screenshot
+hashes. The source checkpoint was `490b761a7`; native code and the independent
+package were built from `ef12d750e`. The later approval-controller build is a
+separate artifact. The [archived driver](assets/question-recovery/driver.mjs.txt)
+contains the exact owned paths and ports used for this run and is evidence
+source, not a portable automated test. Its provider baseline stays private.
+
+Cleanup shut down the owned session, restored the complete provider registry,
+and stopped the scripted provider cleanly. Six pre-existing draft hashes and
+the unrelated Apple project/plist patch remained unchanged. The ordinary
+composer was empty: this does not qualify ordinary-draft/answer interaction.
+Lost acknowledgments, reconnect/death, simultaneous answers and the remaining
+question variants and accessibility/device matrix remain open. The settled
+question tools still show the missing-description fallback in the completed
+conversation; polished question recaps remain unfinished.
+
+![First batch with a local answer note and keyboard](assets/question-recovery-before.jpg)
+![Second batch replaces the answered questions and clears the old note](assets/question-recovery-replacement.jpg)
+![Both actual question rounds completed](assets/question-recovery-completed.jpg)

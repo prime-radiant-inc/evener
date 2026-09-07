@@ -1,0 +1,11 @@
+{
+  "ref": "local:034KqNioFUIlbvv1lzFJgM",
+  "instanceId": "034KqNioFUIlbvv1lzFJgM",
+  "threadId": "034KqNioFUIlbvv1lzFJgM",
+  "inputMessages": 3,
+  "nativeAnswerMessages": 1,
+  "pending": false,
+  "lastTurn": "turn_m3",
+  "lastTurnCompleted": true,
+  "inputsExactlyInitialAndTwoAnswers": true
+}
