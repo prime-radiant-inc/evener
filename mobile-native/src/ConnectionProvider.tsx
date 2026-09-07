@@ -23,11 +23,11 @@ import {
 	type HubUpdate,
 } from "./connection";
 import { connectionFailure } from "./connectionRecovery";
+import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
-import { removeSavedHub } from "./removeHub";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -39,7 +39,7 @@ interface Connection {
 	state: ConnectionState;
 	error: string | null;
 	loading: boolean;
-	saveHub(input: HubInput): Promise<void>;
+	saveHub(input: HubInput): Promise<boolean>;
 	updateHub(id: string, input: HubUpdate): Promise<void>;
 	selectHub(id: string): void;
 	removeHub(id: string): Promise<void>;
@@ -66,6 +66,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	const [foreground, setForeground] = useState(
 		AppState.currentState === "active",
 	);
+	const [selection] = useState(
+		() =>
+			new HubSelection(
+				repository,
+				{
+					onProfiles: setProfiles,
+					onSelect: setSelected,
+					onRetry: () => setAttempt((value) => value + 1),
+				},
+				Crypto.randomUUID,
+			),
+	);
 	const activeProfile =
 		profiles.find((profile) => profile.id === selected) ?? null;
 	const activeId = activeProfile?.id;
@@ -81,15 +93,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			: "idle";
 	useEffect(() => {
 		let cancelled = false;
-		repository
-			.list()
+		selection
+			.load()
 			.then((value) => {
 				if (!cancelled) {
-					setProfiles(value);
 					try {
 						const location = locations.read(value.map((profile) => profile.id));
 						setInitialLocation(location);
-						setSelected(location?.hubId ?? null);
+						selection.restore(location?.hubId ?? null);
 					} catch {
 						setRestorationError(
 							"Your last location could not be restored. Choose a saved hub.",
@@ -111,7 +122,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			cancelled = true;
 			subscription.remove();
 		};
-	}, []);
+	}, [selection]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
@@ -164,55 +175,30 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			connection?.close();
 		};
 	}, [activeId, activeOrigin, foreground, attempt]);
-	const selectHub = useCallback((id: string) => {
-		setSelected(id);
-		setAttempt((value) => value + 1);
-	}, []);
-	const disconnect = useCallback(() => {
-		setSelected(null);
-	}, []);
-	const retry = useCallback(() => setAttempt((value) => value + 1), []);
-	const saveHub = useCallback(async (input: HubInput) => {
-		const profile = await repository.save({
-			...input,
-			id: Crypto.randomUUID(),
-		});
-		setProfiles(await repository.list());
-		setSelected(profile.id);
-	}, []);
-	const updateHub = useCallback(
-		async (id: string, input: HubUpdate) => {
-			const profile = await repository.update(id, input);
-			setProfiles((current) =>
-				current.map((item) => (item.id === id ? profile : item)),
-			);
-			if (input.token !== undefined && selected === id)
-				setAttempt((value) => value + 1);
-		},
-		[selected],
+	const selectHub = useCallback(
+		(id: string) => selection.select(id),
+		[selection],
 	);
-	const removeHub = useCallback(async (id: string) => {
-		const result = await removeSavedHub(
-			repository,
-			{
+	const disconnect = useCallback(() => selection.disconnect(), [selection]);
+	const retry = useCallback(() => setAttempt((value) => value + 1), []);
+	const saveHub = useCallback(
+		(input: HubInput) => selection.save(input),
+		[selection],
+	);
+	const updateHub = useCallback(
+		(id: string, input: HubUpdate) => selection.update(id, input),
+		[selection],
+	);
+	const removeHub = useCallback(
+		(id: string) =>
+			selection.remove(id, {
 				removeHub(hubId: string) {
 					drafts.removeHub(hubId);
 					removeOrganizationData(hubId);
 				},
-			},
-			id,
-		);
-		setProfiles(
-			(current) =>
-				result.profiles ??
-				(result.removed
-					? current.filter((profile) => profile.id !== id)
-					: current),
-		);
-		if (result.removed)
-			setSelected((current) => (current === id ? null : current));
-		if (result.error) throw new Error(result.error);
-	}, []);
+			}),
+		[selection],
+	);
 	const value = useMemo(
 		() => ({
 			initialLocation,

@@ -188,11 +188,11 @@ export function HubsScreen({
 		setSaving(true);
 		setError(null);
 		try {
-			await saveHub({ name, origin, token });
+			const selected = await saveHub({ name, origin, token });
 			setName("");
 			setOrigin("");
 			setToken("");
-			navigation.navigate("Sessions");
+			if (selected) navigation.navigate("Sessions");
 		} catch {
 			setError(
 				"Could not save this hub. Check the name and http(s) origin, and try again.",
