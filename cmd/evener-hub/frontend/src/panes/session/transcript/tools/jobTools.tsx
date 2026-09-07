@@ -354,9 +354,10 @@ registerToolRenderer({
   body: DelegateSendBody,
 });
 
-// Generic fallback for any other job_*-family tool (e.g. job_watch) not
-// explicitly registered above - "match by predicate" per this project's
-// own locked ToolRendererDescriptor doc comment. Exact matches above
+// Generic fallback for any other job_*-family tool not explicitly
+// registered anywhere - "match by predicate" per this project's own locked
+// ToolRendererDescriptor doc comment. job_watch has its own exact-match
+// descriptor (jobWatch.tsx, mockups 23-job-watch §A-D); exact matches
 // always win (toolRenderers.ts's own precedence rule), so this only ever
 // resolves for a job_* name none of the specific descriptors claimed.
 registerToolRenderer({

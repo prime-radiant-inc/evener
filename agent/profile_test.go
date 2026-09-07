@@ -1780,8 +1780,8 @@ func TestNamedInstanceKeepsItsIdentity(t *testing.T) {
 		t.Fatalf("after WithModel = %s/%s/%s", rebuilt.ID(), rebuilt.ProviderID(), rebuilt.Model())
 	}
 	// The base's curated cheap_model rides along with the name.
-	if got := work.CheapModel(); got != "kimi-k2.5" {
-		t.Fatalf("CheapModel() = %q, want moonshotai's kimi-k2.5", got)
+	if got := work.CheapModel(); got != "kimi-k2.6" {
+		t.Fatalf("CheapModel() = %q, want moonshotai's kimi-k2.6", got)
 	}
 	gemini := namedInstanceProfile("work-google", "google", "gemini-2.5-pro")
 	if got := gemini.CheapModel(); got != "gemini-2.5-flash-lite" {

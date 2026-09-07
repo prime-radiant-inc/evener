@@ -377,13 +377,13 @@ test("concerns surface as a quiet note", async () => {
   expect(screen.getByTestId("notification-card-root").textContent).toContain("edge case A; edge case B");
 });
 
-test("a timer's prose renders decoded and its watch id shows as a field", () => {
+test("a timer's prose renders decoded with no echo metadata and no tone chip", () => {
   render(
     <NotificationCard
       notification={notif({
         type: "watch",
         title: "Watch triggered",
-        tone: "warning",
+        tone: "neutral",
         prose: "Timer fired (every 300s).\nNote: hello &lt;x&gt;",
         watchId: "w1",
       })}
@@ -391,5 +391,48 @@ test("a timer's prose renders decoded and its watch id shows as a field", () => 
   );
   // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-prose").textContent).toContain("Note: hello <x>");
-  expect(screen.getByTestId("notification-field-watch-id").textContent).toContain("w1");
+  // Mockups 23-job-watch §E: no echo fields on a watch card (the watch id
+  // retreats to the raw disclosure) and no tone chip — a fired watch is the
+  // expected outcome.
+  expect(screen.queryByTestId("notification-field-watch-id")).toBeNull();
+  expect(screen.queryByTestId("notification-field-status")).toBeNull();
+  expect(screen.queryByTestId("notification-field-job-type")).toBeNull();
+  expect(screen.queryByTestId("notification-field-output")).toBeNull();
+  expect(screen.queryByTestId("notification-field-reason")).toBeNull();
+  expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("neutral");
+  expect(screen.queryByText("warning")).toBeNull();
+  expect(screen.queryByText("error")).toBeNull();
+});
+
+test("a watch card keeps the watch id inspectable in the raw disclosure", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: "Watch triggered",
+        tone: "neutral",
+        prose: "Timer fired.",
+        watchId: "w1",
+        rawText:
+          '<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="after" output_bytes="0" watch_id="w1">Timer fired.</job-notification>',
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-raw").textContent).toContain("w1");
+});
+
+test("a job card still renders its echo metadata (watch suppression is scoped to watch type)", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "job",
+        title: "Job completed",
+        tone: "success",
+        jobId: "job_42",
+        status: "completed",
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-field-job-id").textContent).toContain("job_42");
+  expect(screen.getByTestId("notification-field-status").textContent).toContain("completed");
 });

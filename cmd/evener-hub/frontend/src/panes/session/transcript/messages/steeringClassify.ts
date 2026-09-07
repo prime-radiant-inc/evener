@@ -256,14 +256,16 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   ) {
     return "error";
   }
+  // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
+  // something needing a human — no watch notification earns a tone chip,
+  // ever (not the timer, not a match, not even the budget auto-clear: the
+  // words carry it). Watch events short-circuit before the concerns/
+  // cancelled/stopped warning arm below, which a watch must never reach.
+  if (outerEvent === "watch" || outerEvent === "watch_send" || outerStatus === "watch") {
+    return "neutral";
+  }
   const status = communicateStatus || outerStatus || outerEvent;
-  if (
-    concerns ||
-    status === "cancelled" ||
-    status === "stopped" ||
-    attrs.event === "watch_send" ||
-    attrs.event === "watch"
-  ) {
+  if (concerns || status === "cancelled" || status === "stopped") {
     return "warning";
   }
   if (status === "completed" || status === "done") return "success";
@@ -276,13 +278,15 @@ function jobNotificationTone(
   analysis: JobNotificationAnalysis,
 ): NotificationTone {
   if (analysis.disposition === "failure") return "error";
+  // Same §E rule as notificationTone above: watch and watch-send deliveries
+  // are expected outcomes. The budget auto-clear notice carries the same
+  // watch event as a fire (agent/job_watch.go's watchNotification), so this
+  // covers it too — its "matched 50 times" words carry the signal.
   const event = (attrs.event ?? "").trim().toLowerCase();
-  if (
-    (communicate?.concerns.length ?? 0) > 0 ||
-    analysis.disposition === "stopped" ||
-    event === "watch_send" ||
-    event === "watch"
-  ) {
+  if (event === "watch" || event === "watch_send") {
+    return "neutral";
+  }
+  if ((communicate?.concerns.length ?? 0) > 0 || analysis.disposition === "stopped") {
     return "warning";
   }
   if (analysis.disposition === "success") return "success";

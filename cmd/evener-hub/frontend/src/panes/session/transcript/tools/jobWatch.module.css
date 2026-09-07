@@ -1,0 +1,110 @@
+/* JobWatchBody: headerless watch card for the job_watch tool (mockups
+   23-job-watch §A-D). Deliberately headerless: no watch-id bar, no status
+   chip, no footer — the collapsed summary line already says what this is,
+   and the body only adds what the summary cannot hold (the full note, the
+   full pattern). The watch id lives where it disambiguates — list rows,
+   inspect summaries, raw disclosures. Follows the design system
+   (docs/web-ui/design-system.md): all colors, spacing, radii, and fonts use
+   var(--token) from tokens.css. Mono (--font-mono) is reserved for machine
+   text (watch ids, source ids, match patterns). Sentence case throughout;
+   color-is-attention: no tone chip on any watch surface (chips survive only
+   as neutral list-row status pills where watching vs ended varies per row).
+   Single-watch bodies carry no semantic hue at all, so this module reaches
+   for no --attention/--alive/--danger var and needs no token-contract
+   exception. */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  overflow: hidden;
+}
+
+.section {
+  padding: var(--space-3) var(--space-4);
+}
+
+/* §A: the timer note is human-authored prose, not machine text. */
+.note {
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Notes longer than ~20 lines clamp with an honest disclosure; everything
+   at or under shows in full with no disclosure at all. */
+.noteClamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 20;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* §B/D: one condition sentence in prose, patterns and ids in mono. */
+.trigger {
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+/* §C: list rows — the one place watch ids stay visible, beside the
+   per-row watching/ended chip. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px var(--space-4);
+  border-top: 1px solid var(--edge);
+  font-size: var(--font-size-ui);
+  min-height: var(--tap-min);
+  width: 100%;
+  text-align: left;
+}
+
+.row:first-child {
+  border-top: none;
+}
+
+.rowId {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  flex: none;
+}
+
+.rowCondition {
+  color: var(--ink-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disclosureSummary {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  cursor: pointer;
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+  list-style: none;
+}
+
+.disclosureSummary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosureSummary:hover {
+  color: var(--ink-hi);
+}
+
+.disclosureSummary:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}

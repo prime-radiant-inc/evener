@@ -131,6 +131,13 @@ function Field({ label, value, testId }: { label: string; value: string | number
 }
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
+  // Mockups 23-job-watch §E: a watch notification's title names what happened
+  // and its note is the payload — the producer's echo attrs (watch id,
+  // status, job type, output count, reason) are metadata soup that says
+  // nothing, so the card shows none of them. The watch id stays reachable
+  // in the raw disclosure. Job, delegate, watch-send, and observer-callback
+  // paths are untouched.
+  if (notification.type === "watch") return null;
   const fields = [
     notification.delegateId && (
       <Field

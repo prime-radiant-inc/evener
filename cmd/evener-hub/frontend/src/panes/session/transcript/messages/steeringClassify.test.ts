@@ -215,7 +215,19 @@ Watch event triggered: file changed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch triggered");
-  expect(n.tone).toBe("warning");
+  // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
+  // something needing a human — no watch notification earns a tone chip.
+  expect(n.tone).toBe("neutral");
+});
+
+test("a watch notification with concerns still reads neutral: words carry it, never a chip", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 300s).
+Note: keep an eye on the flaky edge case
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.tone).toBe("neutral");
 });
 
 test("an Observer callback parses as a notification", () => {

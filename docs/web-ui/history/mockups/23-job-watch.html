@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evener — job_watch renderer mockups</title>
+<style>
+/* Live tokens, inlined from cmd/evener-hub/frontend/src/styles/tokens.css (dark default + light).
+   Self-contained: no dependency on docs/web-ui/history/mockups/tokens.css (obsolete, archived). */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #17181A; --surface-canvas: #1C1D1F; --surface-1: #232427; --surface-2: #232427;
+  --surface-inset: #1F2022; --hover-1: #2A2B2E; --hover-2: #313236; --field: #2B2C2F;
+  --edge: #2E3033; --edge-strong: #3A3C40;
+  --ink-hi: #F2F3F4; --ink-mid: #A5A8AD; --ink-low: #6C6F75;
+  --attention: #F68F3C; --alive: #3DBB72; --danger: #EE5C61; --accent: #3D9AFF;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --alive-bg: color-mix(in oklab, var(--alive) 15%, var(--surface-1));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --attention-ink: #F68F3C; --alive-ink: #3DBB72; --danger-ink: #F17478; --accent-ink: #459EFF;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-chip: 6px; --radius-control: 8px; --radius-pane: 10px; --radius-pill: 999px;
+  --focus-ring: 2px solid var(--accent);
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #00000033, 0 2px 6px #00000033;
+  --motion-easing-standard: ease-out;
+}
+:root[data-theme="light"], [data-theme="light"] {
+  color-scheme: light;
+  --surface-0: #FAFAFB; --surface-canvas: #F1F2F3; --surface-1: #FFFFFF; --surface-2: #FFFFFF;
+  --surface-inset: #F7F8F9; --hover-1: #F4F5F6; --hover-2: #E7E9EB; --field: #F2F2F3;
+  --edge: #ECEDEF; --edge-strong: #E0E2E5;
+  --ink-hi: #1F2124; --ink-mid: #62656B; --ink-low: #86898F;
+  --attention: #F59E0B; --alive: #189A4D; --danger: #E3474C; --accent: #0285FF;
+  --attention-bg: color-mix(in oklab, var(--attention) 15%, var(--surface-1));
+  --attention-edge: color-mix(in oklab, var(--attention) 40%, var(--edge));
+  --danger-bg: color-mix(in oklab, var(--danger) 15%, var(--surface-1));
+  --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+  --attention-ink: #AD5209; --alive-ink: #137A3D; --danger-ink: #CE1F25; --accent-ink: #0069CA;
+  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px #1018280A, 0 2px 6px #10182808;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--surface-0);color:var(--ink-hi);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:auto}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.page{max-width:1060px;margin:0 auto;padding:var(--space-6) var(--space-5) 120px}
+.page-h h1{font-size:20px;font-weight:600;letter-spacing:-0.02em}
+.page-h .sub{margin-top:var(--space-2);color:var(--ink-mid);line-height:1.6;max-width:76ch}
+.themebar{display:flex;gap:var(--space-2);margin-top:var(--space-4);align-items:center}
+.themebar .lbl{font-size:12px;color:var(--ink-low)}
+.seg{display:flex;background:var(--surface-inset);border:1px solid var(--edge);border-radius:var(--radius-pill);padding:2px}
+.seg button{padding:4px 14px;border-radius:var(--radius-pill);font-size:13px;color:var(--ink-mid);min-height:32px}
+.seg button[aria-pressed="true"]{background:var(--hover-2);color:var(--ink-hi)}
+.case{margin-top:var(--space-6);border-top:1px solid var(--edge);padding-top:var(--space-5)}
+.case-h{display:flex;align-items:baseline;gap:var(--space-3);margin-bottom:var(--space-2);flex-wrap:wrap}
+.case-h .badge{font-size:12px;font-weight:600;background:var(--hover-2);border-radius:var(--radius-pill);padding:1px 10px}
+.case-h .ttl{font-size:16px;font-weight:600;letter-spacing:-0.02em}
+.case-h .verdict{font-size:12px;color:var(--ink-low)}
+.cap{font-size:13px;color:var(--ink-mid);line-height:1.6;max-width:80ch;margin-bottom:var(--space-4)}
+.cap b{color:var(--ink-hi);font-weight:600}
+.cap .bad{color:var(--danger-ink)} .cap .good{color:var(--alive-ink)}
+.stage{background:var(--surface-canvas);border:1px solid var(--edge);border-radius:var(--radius-pane);padding:var(--space-4) var(--space-5);max-width:760px;margin-bottom:var(--space-3)}
+.stage-lbl{font-size:11.5px;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-low);margin-bottom:var(--space-3)}
+/* ---- transcript tool-row grammar (simplified) ---- */
+.toolrow{border:1px solid var(--edge);border-radius:var(--radius-pane);background:var(--surface-1);box-shadow:var(--shadow-card);margin-bottom:var(--space-3);overflow:hidden}
+.toolrow:last-child{margin-bottom:0}
+.toolsum{display:flex;align-items:center;gap:var(--space-2);padding:10px var(--space-4);font-size:13px;width:100%;text-align:left;min-height:44px}
+.toolsum:hover{background:var(--hover-1)}
+.toolsum .glyph{color:var(--ink-low);font-size:12px;flex:none}
+.toolicon{flex:none;width:20px;height:20px;border-radius:6px;background:var(--surface-inset);border:1px solid var(--edge);display:inline-flex;align-items:center;justify-content:center;font-size:11px;color:var(--ink-mid)}
+.toolsum .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toolsum .txt .mono{font-family:var(--font-mono);font-size:12px}
+.toolsum .chev{margin-left:auto;color:var(--ink-low);flex:none;font-size:11px}
+.toolbody{border-top:1px solid var(--edge);padding:var(--space-4)}
+/* ---- current (bad) rendering ---- */
+.rawblock{font-family:var(--font-mono);font-size:12px;line-height:1.6;background:var(--surface-inset);border:1px solid var(--edge);border-radius:var(--radius-control);padding:var(--space-3);white-space:pre-wrap;word-break:break-word;color:var(--ink-mid)}
+/* ---- proposed watch card ----
+   Deliberately headerless: no watch-id bar, no status chip, no footer.
+   The summary line already says what this is; the body only adds what the
+   summary cannot hold (the full note, the full pattern). The watch id lives
+   where it disambiguates — list rows, inspect summaries, raw disclosures. */
+.wcard{border:1px solid var(--edge);border-radius:var(--radius-pane);background:var(--surface-1);box-shadow:var(--shadow-card);overflow:hidden}
+.wsec{padding:var(--space-3) var(--space-4)}
+.wtrig{font-size:14px;color:var(--ink-hi)}
+.wtrig .mono{font-family:var(--font-mono);font-size:12.5px}
+.wnote{font-size:14px;color:var(--ink-hi);line-height:1.6;overflow-wrap:anywhere}
+/* Notes longer than ~20 lines clamp with an honest disclosure; everything at
+   or under shows in full with no disclosure at all. */
+.wnote.clamped{display:-webkit-box;-webkit-line-clamp:20;-webkit-box-orient:vertical;overflow:hidden}
+details.disc{margin-top:var(--space-2)}
+details.disc summary{font-size:12.5px;color:var(--ink-mid);cursor:pointer;min-height:44px;display:flex;align-items:center;list-style:none}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::before{content:"▸ ";color:var(--ink-low);font-size:11px}
+details.disc[open] summary::before{content:"▾ "}
+details.disc summary:hover{color:var(--ink-hi)}
+details.disc summary:focus-visible{outline:var(--focus-ring);outline-offset:-2px}
+/* ---- triggered notification ---- */
+.ncard{border:1px solid var(--edge);border-radius:var(--radius-pane);background:var(--surface-1);box-shadow:var(--shadow-card);overflow:hidden}
+.nhead{display:flex;align-items:center;gap:var(--space-2);padding:10px var(--space-4);width:100%;text-align:left;min-height:44px}
+.nhead:hover{background:var(--hover-1)}
+.nhead .title{font-weight:600;font-size:14px;flex:none}
+.nhead .sec{color:var(--ink-low);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+@media (max-width:720px){.nhead{flex-wrap:wrap}.nhead .sec{flex-basis:100%;white-space:normal}}
+.nmeta{display:flex;flex-wrap:wrap;gap:4px var(--space-4);padding:0 var(--space-4) var(--space-2);font-size:12.5px;color:var(--ink-low)}
+.nmeta .f .fl{color:var(--ink-low)}
+.nmeta .f .fv{font-family:var(--font-mono);font-size:12px;color:var(--ink-mid)}
+.nprose{padding:0 var(--space-4) var(--space-3);font-size:14px;line-height:1.6;color:var(--ink-hi);overflow-wrap:anywhere}
+.nprose .lead{color:var(--ink-mid)}
+.nprose .notelbl{color:var(--ink-low)}
+/* ---- list rows: the one place watch ids stay visible ----
+   Chips stay too: watching vs ended varies per row, so the chip scans. */
+.wrow{display:flex;align-items:center;gap:var(--space-2);padding:9px var(--space-4);border-top:1px solid var(--edge);font-size:13px;min-height:44px;width:100%;text-align:left}
+.wrow:first-child{border-top:none}
+.wrow:hover{background:var(--hover-1)}
+.wrow .wid{font-family:var(--font-mono);font-size:12px;flex:none}
+.wrow .cond{color:var(--ink-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wrow .chev{margin-left:auto;color:var(--ink-low);flex:none;font-size:11px}
+.chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:var(--radius-chip);font-size:12px;font-weight:500;background:var(--hover-1);border:1px solid var(--edge);color:var(--ink-mid);white-space:nowrap;flex:none}
+.chip.attn{background:var(--attention-bg);border-color:var(--attention-edge);color:var(--attention-ink)}
+.chip.danger{background:var(--danger-bg);border-color:var(--danger-edge);color:var(--danger-ink)}
+/* ---- phone frame ---- */
+.phones{display:flex;gap:var(--space-5);flex-wrap:wrap}
+.phone{width:360px;flex:none;background:var(--surface-0);border:1px solid var(--edge-strong);border-radius:28px;overflow:hidden;display:flex;flex-direction:column}
+.phone .phead{height:52px;border-bottom:1px solid var(--edge);display:flex;align-items:center;padding:0 var(--space-4);font-weight:600;font-size:15px;flex:none;background:var(--surface-canvas)}
+.phone .pbody{padding:var(--space-3);display:flex;flex-direction:column;gap:var(--space-3);overflow:hidden}
+.rec{margin-top:var(--space-4);padding:var(--space-4);border-left:2px solid var(--alive);background:var(--surface-inset);border-radius:0 var(--radius-control) var(--radius-control) 0;font-size:13px;color:var(--ink-mid);line-height:1.6;max-width:80ch}
+.rec b{color:var(--ink-hi)}
+@media (max-width:720px){.stage{padding:var(--space-3)}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-h">
+    <h1>job_watch renderer — mockups</h1>
+    <p class="sub">Two surfaces, one vocabulary: the <b>job_watch tool row</b> (collapsed summary + expanded body for create / list / inspect / clear) and the <b>watch-triggered notification</b> (what the agent wakes up to). Real strings from a live session throughout. Toggle the theme — both must hold.</p>
+    <div class="themebar"><span class="lbl">Theme</span><div class="seg" role="group" aria-label="Theme"><button id="t-dark" aria-pressed="true">Dark</button><button id="t-light" aria-pressed="false">Light</button></div></div>
+  </div>
+
+  <!-- A : create timer — the hero case -->
+  <div class="case" id="a">
+    <div class="case-h"><span class="badge">A</span><span class="ttl">Create timer — the note is the body</span><span class="verdict">current vs proposed · desktop</span></div>
+    <p class="cap"><b>Today:</b> summary is the generic fallback <span class="mono">job_watch: create</span>; the body is a raw mono block of the whole footer, so the human-authored <b>note</b> renders as machine text with no truncation. <b>Proposed:</b> the summary says when + the note's head (<span class="mono">Remind me in 5m · Check CI34049074976 current published…</span>); the expanded body is <b>just the note</b>, in full, as sans prose. No header, no “reminds you” sentence, no watch-id bar, no footer — every one of those restated the summary. This note is 5 lines, so no disclosure; notes over ~20 lines clamp with “Show full note”.</p>
+    <div class="stage"><div class="stage-lbl">Current — collapsed + expanded</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">job_watch: create</span><span class="chev">▾</span></button>
+        <div class="toolbody"><div class="rawblock">[watching self · watch_id watch_034KEfjYFbfoUaPeHJcLXY · after 300s note: Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.]</div></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — collapsed + expanded</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Remind me in 5m · Check CI34049074976 current published…</span><span class="chev">▾</span></button>
+        <div class="toolbody">
+          <div class="wcard">
+            <div class="wsec"><div class="wnote">Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B : create event / condition watch -->
+  <div class="case" id="b">
+    <div class="case-h"><span class="badge">B</span><span class="ttl">Create condition watch — one sentence, humanized</span><span class="verdict">proposed · desktop</span></div>
+    <p class="cap">Same headerless card. The body is <b>one sentence</b> — source + condition + cadence in prose, patterns in mono. Raw field names never surface: <span class="mono">progress_interval_ms 120000</span> → “every 2m”, <span class="mono">output_match:</span> → quotes, <span class="mono">after 300s</span> → “in 5m”. Producer footer for reference: <span class="mono">[watching job_a1b2 · watch_id watch_09QmWzRtNvxK · output_match: ready|done events: job.notification progress_interval_ms 120000ms]</span>.</p>
+    <div class="stage"><div class="stage-lbl">Proposed — collapsed + expanded</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Watch <span class="mono">job_a1b2</span> for “ready|done” · every 2m</span><span class="chev">▾</span></button>
+        <div class="toolbody">
+          <div class="wcard">
+            <div class="wsec"><div class="wtrig">Wakes you when <span class="mono">job_a1b2</span> outputs <span class="mono">ready|done</span>, heartbeat every 2m, auto-clears after 50 matches.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — event-filter variant (assistant.tool errors on a delegate)</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Watch <span class="mono">dlg_7Hk2</span> for failed tool calls</span><span class="chev">▾</span></button>
+        <div class="toolbody">
+          <div class="wcard">
+            <div class="wsec"><div class="wtrig">Wakes you when <span class="mono">dlg_7Hk2</span> makes a tool call ending in <span class="mono">error</span>.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- C : list / inspect -->
+  <div class="case" id="c">
+    <div class="case-h"><span class="badge">C</span><span class="ttl">List + inspect — the standing inventory</span><span class="verdict">proposed · desktop</span></div>
+    <p class="cap">Today <span class="mono">list</span> renders aligned-plaintext rows (<span class="mono">watch_id&nbsp;&nbsp;watching&nbsp;&nbsp;source&nbsp;&nbsp;condition</span>). Proposed: one tappable row per watch — status chip, truncated id, humanized condition — opening the same sentence card as §B. Chips survive <b>only here</b>: watching vs ended varies per row, so they scan. Ended watches read as <b>ended: reason</b>, never as warnings.</p>
+    <div class="stage"><div class="stage-lbl">Proposed — job_watch: list, expanded</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Listed watches (2 active · 1 ended)</span><span class="chev">▾</span></button>
+        <div class="toolbody"><div class="wcard">
+          <button class="wrow"><span class="chip">watching</span><span class="wid">watch_034KEfjY…JcLXY</span><span class="cond">in 5m · this session</span><span class="chev">›</span></button>
+          <button class="wrow"><span class="chip">watching</span><span class="wid">watch_09QmWzRtNvxK</span><span class="cond">“ready|done” · job_a1b2 · every 2m</span><span class="chev">›</span></button>
+          <button class="wrow"><span class="chip">ended</span><span class="wid">watch_51BdeNpV2sSr</span><span class="cond">auto-cleared · matched 50 times</span><span class="chev">›</span></button>
+        </div></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — job_watch: inspect, one watch</div>
+      <div class="toolrow">
+        <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Inspected <span class="mono">watch_09QmWzRtNvxK</span> · watching · 3 of 50 used</span><span class="chev">▾</span></button>
+        <div class="toolbody">
+          <div class="wcard">
+            <div class="wsec"><div class="wtrig">Watching <span class="mono">job_a1b2</span> for <span class="mono">ready|done</span> — 3 of 50 deliveries used, created Sep 6, 09:41.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- D : clear + terminal catch-up -->
+  <div class="case" id="d">
+    <div class="case-h"><span class="badge">D</span><span class="ttl">Clear + terminal catch-up — quiet one-liners</span><span class="verdict">proposed · desktop</span></div>
+    <p class="cap">Both are lifecycle facts, not calls to action: no card, no chip — the summary line <b>is</b> the rendering, expanded body empty. Catch-up names the terminal outcome because that is the whole reason the condition can never match.</p>
+    <div class="stage"><div class="stage-lbl">Proposed</div>
+      <div class="toolrow"><button class="toolsum"><span class="toolicon">◷</span><span class="txt">Cleared <span class="mono">watch_034KEfjY…JcLXY</span></span><span class="chev">▾</span></button></div>
+      <div style="height:8px"></div>
+      <div class="toolrow"><button class="toolsum"><span class="toolicon">◷</span><span class="txt">Watch on <span class="mono">job_a1b2</span> ended — job completed before it could fire</span><span class="chev">▾</span></button></div>
+    </div>
+  </div>
+
+  <!-- E : watch-triggered notification -->
+  <div class="case" id="e">
+    <div class="case-h"><span class="badge">E</span><span class="ttl">“Watch triggered” notification — no chip, the note is the payload</span><span class="verdict">current vs proposed · desktop</span></div>
+    <p class="cap"><b>Why it warns today:</b> <span class="mono">steeringClassify.ts</span> hardcodes <span class="mono">event === "watch"</span> to the <b>warning</b> tone, and <span class="mono">NotificationCard</span> renders the producer's echo attrs 1:1 — <span class="mono">job_type watch</span>, <span class="mono">status watch</span>, <span class="mono">output 0</span>, <span class="mono">reason after</span> — metadata soup that says nothing. A fired watch is the <b>expected</b> outcome, never something needing a human: per the color-is-attention rule <b>no watch notification earns a tone chip, ever</b> — not the timer, not a match, not even the budget auto-clear. The title names what happened; the note (or the match) is the prose payload; the watch id retreats to the raw disclosure.</p>
+    <div class="stage"><div class="stage-lbl">Current (from screenshot) — do not ship</div>
+      <div class="ncard">
+        <button class="nhead"><span class="chip attn">warning</span><span class="title">Watch triggered</span><span class="sec">watch · after</span></button>
+        <div class="nmeta">
+          <span class="f"><span class="fl">Watch id </span><span class="fv">watch_034KEfjYFbfoUaPeHJcLXY</span></span>
+          <span class="f"><span class="fl">Status </span><span class="fv">watch</span></span>
+          <span class="f"><span class="fl">Job type </span><span class="fv">watch</span></span>
+          <span class="f"><span class="fl">Output </span><span class="fv">0</span></span>
+          <span class="f"><span class="fl">Reason </span><span class="fv">after</span></span>
+        </div>
+        <div class="nprose"><span class="lead">Timer fired after 300s.</span><br><span class="notelbl">Note: </span>Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.<br><details class="disc"><summary>Raw notification</summary></details></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — timer fired (no chip; full note, no clamp at this length)</div>
+      <div class="ncard">
+        <button class="nhead"><span class="toolicon">◷</span><span class="title">Timer fired</span><span class="sec">after 5m</span></button>
+        <div class="nprose">Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.<br><details class="disc"><summary>Raw notification · <span style="font-family:var(--font-mono);font-size:11.5px">watch_034KEfjY…JcLXY</span></summary></details></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — condition fired on a job (keeps the match, still no chip)</div>
+      <div class="ncard">
+        <button class="nhead"><span class="toolicon">◷</span><span class="title">Output matched on <span style="font-family:var(--font-mono);font-size:12.5px">job_a1b2</span></span><span class="sec">“ready|done”</span></button>
+        <div class="nprose"><span class="lead">Matched tail:</span> <span style="font-family:var(--font-mono);font-size:12.5px">server ready on :8080 … done in 41.2s</span><br><details class="disc"><summary>Raw notification · <span style="font-family:var(--font-mono);font-size:11.5px">watch_09QmWzRtNvxK</span></summary></details></div>
+      </div>
+    </div>
+    <div class="stage"><div class="stage-lbl">Proposed — budget auto-clear (words carry it, still no chip)</div>
+      <div class="ncard">
+        <button class="nhead"><span class="toolicon">◷</span><span class="title">Watch auto-cleared</span><span class="sec">matched 50 times — re-arm with a tighter condition</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- F : mobile -->
+  <div class="case" id="f">
+    <div class="case-h"><span class="badge">F</span><span class="ttl">Mobile — 360px frames</span><span class="verdict">hero cases only</span></div>
+    <p class="cap">Same headerless cards. The full note fits the first phone with room to spare — that is the point of the 20-line policy: this 5-line note never clamps, on either width. List rows keep status chips and truncated ids; conditions get whatever width is left.</p>
+    <div class="phones">
+      <div class="phone"><div class="phead">Session</div><div class="pbody">
+        <div class="stage-lbl">Create timer, expanded</div>
+        <div class="toolrow">
+          <button class="toolsum"><span class="toolicon">◷</span><span class="txt">Remind me in 5m · Check CI34049074976…</span><span class="chev">▾</span></button>
+          <div class="toolbody"><div class="wcard"><div class="wsec"><div class="wnote">Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.</div></div></div></div>
+        </div>
+      </div></div>
+      <div class="phone"><div class="phead">Session</div><div class="pbody">
+        <div class="stage-lbl">Timer fired, expanded</div>
+        <div class="ncard">
+          <div class="nhead"><span class="toolicon">◷</span><span class="title">Timer fired</span><span class="sec">after 5m</span></div>
+          <div class="nprose">Check CI34049074976 current published ec738c514a35b604338c5346f98b661d62910623 PR822 and fresh RoboRev. Lastcomment1f935 boundaryfindingfixedec738. USER says job-shell fuzz failure belongs separate PR; no agent edits; diagnosis retained. Task41 only CI/review monitoring remaining, no full local tests/races.<br><details class="disc"><summary>Raw notification</summary></details></div>
+        </div>
+      </div></div>
+      <div class="phone"><div class="phead">Session</div><div class="pbody">
+        <div class="stage-lbl">List, expanded</div>
+        <div class="wcard">
+          <button class="wrow"><span class="chip">watching</span><span class="wid">watch_034K…LXY</span><span class="cond">in 5m · this session</span><span class="chev">›</span></button>
+          <button class="wrow"><span class="chip">watching</span><span class="wid">watch_09Qm…vxK</span><span class="cond">“ready|done” · every 2m</span><span class="chev">›</span></button>
+          <button class="wrow"><span class="chip">ended</span><span class="wid">watch_51Bd…sSr</span><span class="cond">auto-cleared · 50 matches</span><span class="chev">›</span></button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="rec"><b>Recommendation.</b> Ship §A + §E together: the two ends of the same timer flow (arm → fire). Decisions locked in this pass: <b>humanize every duration</b> (<span style="font-family:var(--font-mono)">after 300s</span> → “in 5m”, <span style="font-family:var(--font-mono)">progress_interval_ms 120000</span> → “every 2m”; absolute clock only for <span style="font-family:var(--font-mono)">created_at</span>); <b>notes render in full to ~20 lines</b>, disclosure only beyond; <b>no watch id on single-watch surfaces</b> (it disambiguates nothing there — reachable via list rows, inspect summaries, raw disclosures); <b>no status chip where words already say it</b> (chips survive only in list rows, where status varies); <b>no tone chip on any watch notification</b> (a fired watch is the expected outcome — even the budget auto-clear reads fine in words). One <span style="font-family:var(--font-mono)">jobTools.tsx</span> descriptor reading <span style="font-family:var(--font-mono)">item.raw</span> (<span style="font-family:var(--font-mono)">jobWatchToolResult</span>, already on the wire) covers §A–D.</div>
+</div>
+<script>
+const root = document.documentElement;
+const bd = document.getElementById('t-dark'), bl = document.getElementById('t-light');
+function setTheme(t){ root.setAttribute('data-theme', t); bd.setAttribute('aria-pressed', t==='dark'); bl.setAttribute('aria-pressed', t==='light'); }
+bd.addEventListener('click', ()=>setTheme('dark')); bl.addEventListener('click', ()=>setTheme('light'));
+document.querySelectorAll('details.disc summary').forEach(s=>s.addEventListener('click',e=>{e.preventDefault();const d=s.parentElement;d.open=!d.open;}));
+document.querySelectorAll('.toolsum .chev').forEach(c=>{const b=c.closest('button');if(b)b.addEventListener('click',()=>{const tb=b.parentElement.querySelector('.toolbody');if(tb)tb.style.display=tb.style.display==='none'?'':'none';});});
+</script>
+</body>
+</html>
