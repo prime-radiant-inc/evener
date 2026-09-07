@@ -45,10 +45,13 @@ design language. The wave-2 hex table originally reproduced here is dropped rath
 than perpetuated as a third stale table; see §2 below for the palette as shipped,
 and `decisions.md` for both re-themes' provenance and rationale.
 
-**Type:** IBM Plex Sans (UI + prose; display = weight 600, tracking −1%) and IBM Plex Mono
-(code, tool output, paths, timings). Scale (px): 12 caption / 13 ui / 14 body / 16 pane-title /
-20 page-title, line-heights 1.5 body, 1.3 titles. Mono never used for chrome labels (retired
-pattern stays retired).
+**Type:** the plan's IBM Plex Sans / IBM Plex Mono pairing and its 12 caption / 13 ui /
+14 body / 16 pane-title / 20 page-title scale at 1.5/1.3 are both superseded: first by the
+2026-08-13 Beautiful UI adoption (Inter Variable + JetBrains Mono Variable), then by the
+2026-09-06 typography pass. The ramp as shipped is 12 caption / 13 ui / 15 body (16 on phones) /
+18 pane-title / 22 page-title / 28 display, line-heights 1.6 body, 1.4 ui, 1.25 titles; see §2
+and `decisions.md`'s 2026-09-06 entry. Mono never used for chrome labels (retired pattern stays
+retired) is the one rule in this paragraph that survived both re-themes intact.
 
 **Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs) / 999px pill (switch track);
 depth = `--edge` borders + surface steps; shadows only on floating layers (menu, popover, toast: `--shadow-overlay`; dialog/sheet: `--shadow-modal`; the tooltip stays border-only — too small to shadow).
@@ -90,7 +93,13 @@ during the re-theme, call sites that used `--surface-2` purely as a hover wash m
 `--hover-1`, so `--surface-2` now appears only on genuinely raised layers and as the neutral
 fill of small static elements (chip/badge neutral tone). Two border weights
 replace the old single `--edge`: `--edge` (hairline) and `--edge-strong` (control borders,
-overlay rings). `--ink-hi/mid/low` are unchanged in role. The four semantic families
+overlay rings). `--ink-hi`/`--ink-mid` are unchanged in role. `--ink-low` was raised on
+2026-09-06 until it clears 4.5:1 on `--surface-0` and `--surface-1` in both themes (4.7:1 and
+5.4:1 dark, 4.8:1 and 4.6:1 light, contract-tested), because 96 text rules were already setting
+it despite the token being documented for chrome. Its role did not change with the value: it is
+still placeholder, disabled and hairline-adjacent ink, and the quiet text a reader actually
+reads (speaker meta, thought summaries, the liveness line, rail section titles) moved up to
+`--ink-mid`. The four semantic families
 (`--attention`, `--alive`, `--danger`, `--accent`) keep their `-bg` (15% mix into the surface)
 and `-edge` (40% mix into the hairline border) companions, and each now also gets a `-ink`
 companion (`--attention-ink`, `--alive-ink`, `--danger-ink`, `--accent-ink`) for text usage.
@@ -114,15 +123,33 @@ blocks (§4, item 4).
 from the `@fontsource-variable/inter` / `@fontsource-variable/jetbrains-mono` npm packages,
 latin subset, `@font-face`-wired in `global.css` — no binaries committed);
 `--font-weight-regular/medium/semibold` (400/500/600); `--tracking-display` (−0.02em, display
-weight only — widened from −0.01em under IBM Plex); `--font-size-caption/ui/body/pane-title/
-page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3). NEW: `--tracking-micro`
-(0.08em) backs the **micro-label pattern** — card/pane section headers set at 11.5–12px
-uppercase, `--font-weight-medium`, `--tracking-micro`, `--ink-low`/`--ink-mid`, usually on a
-`--surface-inset` band. It's applied through widget chrome (PaneScaffold titles are its one
-adopter today; Dialog keeps its full-size title on an inset band, and Card has no header slot),
-never per-page. This is a distinct pattern from the
-caption-size "section eyebrow" documented in §6 (0.04em tracking, for group labels like the
-rail's "Projects") — eyebrows label a *group*, micro-labels title a *container*.
+weight only — widened from −0.01em under IBM Plex);
+`--font-size-caption/ui/body/pane-title/page-title/display`
+(12/13/15/18/22/28px), with `--font-size-body` rising to 16px below 900px so no editable field
+sits under iOS Safari's zoom threshold; `--line-height-body/ui/title` (1.6/1.4/1.25). The six
+size steps are declared on `<body>` rather than `:root` because each is a `calc()` over
+`--font-scale`, and a custom property resolves that reference against the element it is declared
+on: the Settings → Theme font-size choice sets `--font-scale` on `<body>`, so the whole ramp
+scales together. `src/styles/measure.test.ts` pins the six steps and the phone body off disk.
+
+**The eyebrow recipe.** `--tracking-eyebrow` (0.06em) replaced `--tracking-micro` and the four
+other tracking values that were in use, and it is now THE uppercase tracking in the app. The
+recipe it backs is one rule with no variants: `--font-size-caption`, `--font-weight-medium` (or
+semibold where a header band wants more), `--ink-mid` or darker, `text-transform: uppercase`,
+`letter-spacing: var(--tracking-eyebrow)`, at most two words. It titles a container INSIDE a
+page (InspectorCard's header band, RecommendationCard's kicker, Table headers, the rail's
+section titles, the settings cluster headers) and it is NEVER a pane title: a PaneScaffold title
+is the page's own heading, set sentence-case at `--font-size-pane-title`, semibold, `--ink-hi`
+(§6). Literal `font-size` values outside `tokens.css`, `letter-spacing` outside the
+`--tracking-*` tokens, and any uppercase rule that is not a complete eyebrow are all enforced by
+`src/styles/token-contract.test.ts`.
+
+**Faces and figures.** Mono is for machine text and nothing else: code, paths, shell command
+summaries, diffs, and the identifiers in the Details panel. The chrome a reader looks at
+constantly stays on the sans face with `font-variant-numeric: tabular-nums`, which buys column
+alignment without switching faces: the model chip (`chrome/modelswitch.module.css:.value`), the
+status row's percent/clock/queue figures, the rail's relative ages, and the turn footer.
+`src/styles/faces.test.ts` pins those four rules off disk.
 
 **Space & shape** — `--space-1` through `--space-9` (4/8/12/16/24/32/40/48/64px — IBM Carbon
 Design System's own spacing progression, adopted because it's the only well-known scale that
@@ -131,6 +158,23 @@ grid; unchanged by the re-theme). Radii softened: `--radius-chip` (6px, NEW — 
 small tags), `--radius-control` (4px → 8px — buttons, inputs), `--radius-pane` (8px → 10px —
 panes, cards, dialogs), `--radius-pill` (999px, unchanged — switch track). Everything already on
 the two pre-existing tokens inherited the softer values for free.
+
+**Vertical rhythm** is four named steps over that same grid, so the transcript has a vocabulary
+for how far apart two things sit: `--rhythm-line` (4px, inside one item, an intent line above
+its call), `--rhythm-item` (8px, between items in a run of tool calls), `--rhythm-group` (16px,
+between a run and the next speaker header, and above a turn footer) and `--rhythm-exchange`
+(24px, above a user message). `src/styles/rhythm.test.ts` pins each step to the site that names
+it.
+
+**`--session-measure` is the app's one reading measure**: 44rem (704px, about 90 characters at
+15px, with room for a 100-column code block), declared on `<body>` and raised to 64rem under
+`<body data-transcript-measure="wide">`. Settings → Theme → Transcript width is what writes that
+attribute, through `stores/prefs.ts`. The transcript column, the composer, the cold start, the
+spawn form and the settings content all read the same token, so they widen together and can
+never drift apart the way a hand-copied literal did. The layoutguard case `transcript-measure`
+fails when a plain agent paragraph runs past 100 characters per line at 1440 or 1920, or when
+the column is not centred in its pane. Pane bodies pad `--space-5` on desktop and `--space-4`
+below 900px (`panescaffold.module.css`).
 
 **Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
 `--motion-duration-hover` (150ms, NEW — color/background/border/shadow transitions on
@@ -195,7 +239,7 @@ during implementation (noted inline); this table is the one to trust.
 | **StatusDot** | `{state: CadenceState}` | Just the dot (imports `CadenceState` from Cadence, doesn't redeclare it) — for tighter contexts than Cadence's full trace; carries its own accessible name since nothing else labels it standalone. |
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
 | **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
-| **EmptyState** | `{title: string; hint?: string; action?: ReactNode}` | `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
+| **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"}` | `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); everything else keeps `--font-size-pane-title`. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
 | **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
 | **Loader** | `{label?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. Ported from Beautiful UI's Loading State. |
@@ -214,7 +258,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Combobox** | `{options: T[]; onQuery; onPick; renderOption?; "aria-label"?; "aria-labelledby"?}` (generic over `T extends {id; label}`) | ARIA 1.2 combobox-with-listbox-popup; real focus never leaves the input. `aria-label`/`aria-labelledby` forward to BOTH the input and the popup listbox (fix-wave: the listbox had no name of its own — see §4) — they're two roles describing one picker, sharing one label source. Debounces `onQuery` 150ms. Never traps focus. |
 | **Menu** | `{trigger: ReactNode; items: {id; label; onSelect; disabled?}[]}` | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). |
 | **Dialog** | `{open; onClose; title; children; footer?}` | Modal: centered, 120ms fade-scale, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. |
-| **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. |
+| **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. |
 | **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
@@ -224,6 +268,24 @@ during implementation (noted inline); this table is the one to trust.
 | **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
 | **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. |
 | **VirtualList** | `{count; estimateSize; renderRow; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone, no `measureElement`. |
+
+**ToolRunGroup is deliberately not a widget.** It lives at
+`src/panes/session/transcript/ToolRunGroup.tsx` with its own stylesheet, not under
+`src/widgets/`, because it is transcript grammar rather than a reusable primitive: no barrel
+entry, no gallery section. It is what finally renders principle 2 of the mockup brief
+(`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
+turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
+collapse into one `<details>` row labelled `N steps · <last consequential summary>`. Folding is
+opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
+counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
+names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`
+tools) and any descriptor with no policy, which is every unregistered or MCP tool, stay on their
+own row, because a tool the UI does not know may have had a side effect the reader must see.
+Scroll and focus anchors follow the same fold (`foldTurnEntries`): a folded run is one anchor. A live turn never
+folds at all, and a failure, a call still in flight, an auto-expanding card or any non-tool entry
+breaks the run rather than being spanned by it. Disclosure state goes through the shared
+disclosure store, so a reader's choice survives re-projection and the transcript's
+expand-all/collapse-all baselines reach it; the body mounts only while open.
 
 ---
 
@@ -326,6 +388,21 @@ six independent checks:
    `2px var(--accent-edge)` ring for active typing — softer than a full `--focus-ring` but still
    present — and `widgets/dropzone/dropzone.module.css` keeps its dashed accent drag-target
    outline, which is drop-here signage, not a focus ring.
+7. **Every `var(--name)` without a fallback resolves to a declaration** somewhere under
+   `src/` (tokens.css or a module's own local property). Exempt: dockview's `--dv-*` and the
+   runtime-set names JS or an inline style declares (`--keyboard-inset`, `--rail-width`,
+   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-font-size`, `--prose-ink`,
+   `--density-scale`, `--font-scale`). Four undefined tokens had shipped before this check
+   (`--radius-sm` twice, `--edge-hi`, `--font-size-title`), each silently falling back to the
+   property's initial value.
+8. **No literal `font-size` in px outside `tokens.css`.** Only `var(--font-size-*)`, `inherit`,
+   and relative units (`em`, `%`) are legal; inline code is sized relative to its line, which
+   is why `em` stays.
+9. **`letter-spacing` only through the two tracking tokens** (`--tracking-display`,
+   `--tracking-eyebrow`), `inherit`, or `normal`.
+10. **Uppercase means the eyebrow recipe.** Any rule block with `text-transform: uppercase`
+    must also declare `font-size: var(--font-size-caption)` and
+    `letter-spacing: var(--tracking-eyebrow)`, and must not set `color: var(--ink-low)`.
 
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.
@@ -376,14 +453,22 @@ once: three caption labels shipped on `--font-mono` in the foundation task and w
 fixed in wave-close review — see git history for `gallery-section.module.css` and
 `theme-flip.module.css`. If it happened once, watch for it.)
 
-**Clarification (polish pass, 2026-07-24): small-caps *section eyebrows* are a sanctioned
-pattern, distinct from ALL-CAPS copy.** A short structural group label set in
-`--font-size-caption` + `--font-weight-medium` + `--ink-low` + `text-transform: uppercase` +
-`letter-spacing: 0.04em` (the rail's "Projects", settings' nav group headers, the palette's
-result-group headers, card kickers like "Mandate") is typographic hierarchy, not shouting —
-authored copy stays sentence-case in the source and the transform is presentation-only. The
-pattern is legitimate ONLY for grouping eyebrows at caption size; never for buttons, titles,
-sentences, or anything longer than ~2 words.
+**The eyebrow recipe (2026-09-06, replacing the 2026-07-24 "section eyebrow" clarification
+and the separate micro-label pattern it was distinguished from).** Small-caps *eyebrows* are a
+sanctioned pattern, distinct from ALL-CAPS copy: the copy stays sentence-case in the source and
+the transform is presentation-only. There is now exactly one recipe, one tracking token and one
+size for it: `--font-size-caption`, `--font-weight-medium` (or semibold where a header band
+wants more), `--ink-mid` or darker, `text-transform: uppercase`,
+`letter-spacing: var(--tracking-eyebrow)` (0.06em, which replaced a spread of
+0.02/0.04/0.05/0.08em), and **at most two words**. An eyebrow titles a container INSIDE a page:
+InspectorCard's header band, RecommendationCard's kicker, Table headers, the rail's section
+titles, the settings cluster headers. Three-word labels were the tell that the rule was being
+broken, so "Agents & models" became **"Agent setup"**.
+
+Never an eyebrow: buttons, sentences, and above all **titles**. A pane title is the page's own
+heading, sentence-case at `--font-size-pane-title`, semibold, `--ink-hi` (§2); a session title is
+the user's own prompt and is never transformed at all. Before this, both rendered as a 12px
+uppercase micro-label, which turned a whole prompt into a shouted sentence.
 
 ---
 
@@ -433,11 +518,12 @@ gap, a renderer's idea of what the daemon says drifting from what it actually
 says, is the failure mode this rule exists to prevent.
 
 **Why `--ink-mid` and not `--ink-low`.** Every other quiet system row uses
-`--ink-low`. Measured against `--surface-1` it is 2.97:1 in dark and 3.64:1 in
-light — under the 4.5:1 AA floor, as `usermessageitem.module.css` and
-`toolcallitem.module.css` both already record. A reader scanning steering is
-auditing which kind fired, so the kind is the payload rather than furniture, and
-it sits one ink step up at 6.86:1 / 6.56:1. That step also separates a steer
+`--ink-low`. Measured against `--surface-1` that token is 4.72:1 in dark and
+4.76:1 in light since the 2026-09-06 raise (§2), so it clears the 4.5:1 AA
+floor it used to sit under, but its role is still placeholder and
+hairline-adjacent chrome rather than text a reader is meant to read. A reader
+scanning steering is auditing which kind fired, so the kind is the payload rather than furniture, and
+it sits one ink step up at 6.51:1 / 5.84:1. That step also separates a steer
 from the lifecycle line beneath it by weight as well as by glyph.
 
 **The glyph is a hollow diamond, drawn as SVG rather than set as a character.**
@@ -580,8 +666,13 @@ as one control; read-only facts do not show a misleading caret. Use existing
 surface, edge, ink, spacing, and tap-size tokens. Do not introduce mobile-only
 colors, type tokens, chip backgrounds, or monospace labels.
 
-Editable text remains at least 16px on mobile so focusing a field does not
-trigger browser zoom. An auto-growing textarea has a real content-driven
+Editable text is 16px on phones, and it gets there through the ramp rather
+than per-field: `tokens.css`'s below-900px block sets `--font-size-body` to
+16px and every field takes the body size, so iOS Safari has nothing to
+auto-zoom into. That is what let the viewport meta stop locking zoom (WCAG
+1.4.4 resize text): `index.html` no longer carries
+`maximum-scale=1, user-scalable=no`, and `src/styles/viewport-pin.test.ts`
+fails if either comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
@@ -606,3 +697,13 @@ authoritative frame, terminal/error/cancel state, session change, or pending
 failure; it must never appear for an untouched empty session. Reuse the static
 `Skeleton` widget, keep its accessible loading status and decorative bars, and
 do not add shimmer, pulse, or other motion that implies live data.
+
+Below 700px both speaker rows become a grid rather than a flex row: the avatar
+and the speaker header share the first row and the prose spans the full pane
+underneath them, instead of being indented into the avatar's column for its
+whole height. Measured before this, agent prose got 260px of a 375px screen,
+28 characters a line.
+
+The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
+`bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
+already frames it.

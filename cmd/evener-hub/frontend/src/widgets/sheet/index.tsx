@@ -36,6 +36,11 @@ export interface SheetProps {
   /** Optional extra class appended to the panel element after the side and
    * size classes. */
   panelClassName?: string;
+  /** Optional extra class appended to the body element (after the shared
+   * dialog body class). The mobile sessions drawer uses it to drop the body
+   * padding so the rail fills the sheet flush instead of sitting in an inset
+   * box (typography-spacing-critique-2026-09-06 finding 9). */
+  bodyClassName?: string;
 }
 
 const BASE_PANEL_CLASS = requireClass(dialogStyles.panel, "dialog.module.css", "panel");
@@ -92,6 +97,7 @@ export function Sheet({
   footer,
   expandable,
   panelClassName,
+  bodyClassName,
 }: SheetProps) {
   const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
   const dragStartYRef = useRef<number | null>(null);
@@ -164,7 +170,14 @@ export function Sheet({
 
   if (!expandable) {
     return (
-      <OverlayPanel open={open} onClose={onClose} title={title} footer={footer} panelClassName={composedPanelClassName}>
+      <OverlayPanel
+        open={open}
+        onClose={onClose}
+        title={title}
+        footer={footer}
+        panelClassName={composedPanelClassName}
+        bodyClassName={bodyClassName}
+      >
         {children}
       </OverlayPanel>
     );
@@ -181,7 +194,7 @@ export function Sheet({
       footer={footer}
       handle={<DragHandle onPointerDown={startDrag} />}
       headerClassName={EXPANDABLE_HEADER_CLASS}
-      bodyClassName={EXPANDABLE_BODY_CLASS}
+      bodyClassName={bodyClassName ? `${EXPANDABLE_BODY_CLASS} ${bodyClassName}` : EXPANDABLE_BODY_CLASS}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}
     >

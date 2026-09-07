@@ -8,6 +8,7 @@ import styles from "./welcome.module.css";
 const CLASS = {
   actions: requireClass(styles.actions, "welcome.module.css", "actions"),
   hints: requireClass(styles.hints, "welcome.module.css", "hints"),
+  hintList: requireClass(styles.hintList, "welcome.module.css", "hintList"),
   hintRow: requireClass(styles.hintRow, "welcome.module.css", "hintRow"),
   hintFooter: requireClass(styles.hintFooter, "welcome.module.css", "hintFooter"),
 };
@@ -84,12 +85,16 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
       </p>
       {showHints && (
         <div className={CLASS.hints}>
-          {CHORD_HINTS.map((hint) => (
-            <div className={CLASS.hintRow} key={hint.desc}>
-              <KeyHint keys={hint.keys} />
-              <span>{hint.desc}</span>
-            </div>
-          ))}
+          <dl className={CLASS.hintList}>
+            {CHORD_HINTS.map((hint) => (
+              <div className={CLASS.hintRow} key={hint.desc}>
+                <dt>
+                  <KeyHint keys={hint.keys} />
+                </dt>
+                <dd>{hint.desc}</dd>
+              </div>
+            ))}
+          </dl>
           <p className={CLASS.hintFooter}>
             <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
           </p>

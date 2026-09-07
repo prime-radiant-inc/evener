@@ -500,10 +500,23 @@ test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt 
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed mobile work");
 
-  expect(screen.getByTestId("pane-title-mobile").textContent).toBe("new");
+  expect(screen.getByTestId("pane-title-mobile").textContent).toBe("New session");
   expect(screen.getByRole("heading", { name: "What should the agent do?" })).toBeTruthy();
   expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed mobile work");
+});
+
+// The placeholder repeated the heading and subtitle standing right above it
+// almost word for word, so the field spent its one line saying what the page
+// had already said. The dormant-start rule it also carried stays on the page,
+// in that intro.
+test("the prompt placeholder does not repeat the heading", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  expect(prompt.placeholder).toBe("Describe the task…");
+  expect(screen.getByText("Leave blank to start a dormant session.")).toBeTruthy();
 });
 
 // The card's control-row compression and touch floors are pinned by the
@@ -520,7 +533,11 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
     "",
   );
 
-  expect(spawnCss).toContain(".mobilePromptIntro");
+  // The prompt heading shows at every width now (critique R7); only the
+  // settings-style rows stay phone-only.
+  expect(spawnCss).toContain(".promptIntro");
+  expect(spawnCss).not.toContain(".mobilePromptIntro");
+  expect(spawnCss).toContain(".mobileConfig");
   expect(spawnCss).toContain("@media (max-width: 899px)");
   expect(rowsCss).toContain("min-height: 48px");
   expect(rowsCss).toContain("font-size: var(--font-size-body)");
@@ -553,7 +570,7 @@ test("the primary verb is Start, in the card's own corner, and the page is title
 
   const start = screen.getByTestId("spawn-submit");
   expect(start.textContent).toBe("Start");
-  expect(screen.getByTestId("pane-title-desktop").textContent).toBe("Start an agent");
+  expect(screen.getByTestId("pane-title-desktop").textContent).toBe("New session");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
   expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
@@ -570,17 +587,6 @@ test("the Start button's word collapses to the glyph below the compact pane thre
   const css = readFileSync(join(here, "spawn.module.css"), "utf8");
   expect(css).toMatch(/\.form\s*\{[^}]*container-type:\s*inline-size/);
   expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
-});
-
-// The dormant-start rule rides in the placeholder rather than a separate
-// instruction line above the form: it is a fact about THIS field.
-test("the dormant hint lives in the placeholder, not a standalone instruction line", async () => {
-  renderSpawn(readyClient());
-  await settled();
-
-  const prompt = screen.getByRole("textbox", { name: "Prompt" });
-  expect(prompt.getAttribute("placeholder")).toBe("What should the agent work on? Leave blank to start it dormant.");
-  expect(screen.queryByText(/leave the prompt blank/i)).toBeNull();
 });
 
 // Writing the prompt is what starting an agent IS, so the caret starts there

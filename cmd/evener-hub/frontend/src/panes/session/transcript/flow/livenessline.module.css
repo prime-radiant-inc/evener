@@ -5,7 +5,7 @@
  * pane's edge padding and .measure's own gap spaces siblings apart. */
 .line {
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
 /* stalled reads with more weight/contrast than the merely-quiet line, but

@@ -17,6 +17,7 @@ import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
+import { foldTurnEntries } from "./toolRuns";
 import { asTurnError } from "./turnFailure";
 import "./messages";
 import "./tools";
@@ -49,6 +50,8 @@ export interface TranscriptAnchorEntry {
   readonly sourceIndex: number;
   readonly index: number;
   readonly isMessage: boolean;
+  /** For a folded tool run: the entry ids it stands in for (toolRuns.ts). */
+  members?: readonly string[];
 }
 
 interface FlatEntry {
@@ -208,16 +211,58 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
   return rows;
 }
 
+// Anchors are registered from the SAME fold TurnBlock renders (toolRuns.ts's
+// foldTurnEntries): a folded run is one anchor under the run's id, carrying
+// its first entry's source index, because while the run is closed no element
+// carries the individual entry ids and a restore that looked for one would
+// find nothing (roborev on PR #947).
 export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[]): readonly TranscriptAnchorEntry[] {
   return rows.flatMap((row, index) => {
-    const entries = row.kind === "intentGroup" ? row.entries : row.turn.entries;
-    return entries.map((entry) => ({
-      id: entry.id,
-      sourceIndex: entry.sourceIndex,
-      index,
-      isMessage: entry.kind === "item" && entry.isMessage,
-    }));
+    if (row.kind === "intentGroup") {
+      return row.entries.map((entry) => ({
+        id: entry.id,
+        sourceIndex: entry.sourceIndex,
+        index,
+        isMessage: false,
+      }));
+    }
+    return foldTurnEntries(row.turn).flatMap((entry) => {
+      if (entry.kind === "run") {
+        const first = entry.entries[0];
+        return first
+          ? [
+              {
+                id: entry.id,
+                sourceIndex: first.sourceIndex,
+                index,
+                isMessage: false,
+                members: entry.entries.map((member) => member.id),
+              },
+            ]
+          : [];
+      }
+      return [
+        {
+          id: entry.id,
+          sourceIndex: entry.sourceIndex,
+          index,
+          isMessage: entry.kind === "item" && entry.isMessage,
+        },
+      ];
+    });
   });
+}
+
+// The disclosure ids ToolRunGroup mints (run:<first entry>) for the runs
+// TurnBlock will fold. The projector's eligibleDisclosureIds inventory only
+// knows source item ids, so without these the Full-view baseline could not
+// clear a run the reader closed before leaving Full and coming back
+// (roborev on PR #947): a stale explicit close would keep the run shut in a
+// view whose contract is "everything open".
+export function transcriptRunDisclosureIdsForRows(rows: readonly TranscriptBodyRow[]): readonly string[] {
+  return rows.flatMap((row) =>
+    row.kind === "turn" ? foldTurnEntries(row.turn).flatMap((entry) => (entry.kind === "run" ? [entry.id] : [])) : [],
+  );
 }
 
 export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
@@ -283,12 +328,18 @@ export function TranscriptBody({
   const focusFallbackRef = useRef<HTMLElement>(null);
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
+  // Source item ids from the projector plus the folded-run ids the rows will
+  // render, so the Full baseline reaches every disclosure on screen.
+  const eligibleDisclosureIds = useMemo(
+    () => [...projection.eligibleDisclosureIds, ...transcriptRunDisclosureIdsForRows(rows)],
+    [projection, rows],
+  );
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
   const itemRenderFingerprint = [
     configFingerprint(config),
     JSON.stringify(projection.metadata),
-    projection.eligibleDisclosureIds.join("\0"),
+    eligibleDisclosureIds.join("\0"),
     surface,
     sessionRef,
     disclosureScope,
@@ -299,6 +350,7 @@ export function TranscriptBody({
       createTranscriptRenderContext({
         config,
         projection,
+        eligibleDisclosureIds,
         surface,
         sessionRef,
         disclosureScope,
@@ -450,6 +502,7 @@ export function TranscriptBody({
     <TranscriptRenderProvider
       config={config}
       projection={projection}
+      eligibleDisclosureIds={eligibleDisclosureIds}
       surface={surface}
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}

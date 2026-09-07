@@ -47,7 +47,7 @@
 
 .orientation {
   max-width: 36rem;
-  margin: var(--space-3) 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
@@ -65,21 +65,40 @@
   margin-top: var(--space-4);
 }
 
-.hintRow {
-  display: flex;
+/* The chords as a two-column list: keys right-aligned in one column, what
+ * they do in the next, so the three rows line up instead of centring each
+ * on its own width. `display: contents` on each row hands its dt/dd to the
+ * grid. */
+.hintList {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--space-3);
+  row-gap: var(--space-2);
   align-items: center;
-  gap: var(--space-2);
+  margin: 0;
+}
+
+.hintRow {
+  display: contents;
   color: var(--ink-mid);
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-size: var(--font-size-ui);
+}
+
+.hintRow > dt {
+  justify-self: end;
+}
+
+.hintRow > dd {
+  margin: 0;
 }
 
 .hintFooter {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  margin: var(--space-1) 0 0;
-  color: var(--ink-low);
+  margin: var(--space-2) 0 0;
+  color: var(--ink-mid);
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-size: var(--font-size-ui);
 }

@@ -222,6 +222,12 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
     expect(prefsStore.getState().fontSize).toBe("m");
   });
 
+  test("an unrecognized transcriptMeasure falls back to reading", () => {
+    localStorage.setItem(KEY("transcriptMeasure"), "huge");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().transcriptMeasure).toBe("reading");
+  });
+
   test("a non-'1'/'0' boolean pref falls back to its default rather than reading as true", () => {
     // Every boolean pref this store holds now defaults off, so the fallback
     // is only observable in this direction: a garbage value must not read as
@@ -243,6 +249,20 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
     localStorage.setItem(KEY("enterToSend"), "true");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false); // default, not true
+  });
+});
+
+describe("transcriptMeasure (Settings -> Theme -> Transcript width)", () => {
+  // Mirrors fontSize/phoneDensity: an enum pref persisted under its own flat
+  // evener.prefs.<name> key and mirrored onto <body data-transcript-measure>,
+  // which tokens.css keys --session-measure off (44rem reading / 64rem wide).
+  test("defaults to reading, persists under evener.prefs.transcriptMeasure, and mirrors onto body", () => {
+    expect(prefsStore.getState().transcriptMeasure).toBe("reading");
+    expect(document.body.dataset.transcriptMeasure).toBe("reading");
+    prefsStore.getState().setTranscriptMeasure("wide");
+    expect(localStorage.getItem("evener.prefs.transcriptMeasure")).toBe("wide");
+    expect(document.body.dataset.transcriptMeasure).toBe("wide");
+    expect(prefsStore.getState().transcriptMeasure).toBe("wide");
   });
 });
 

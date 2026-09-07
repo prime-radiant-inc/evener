@@ -252,6 +252,24 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  // The header's three icons are drawn, not typed: global.css subsets Inter to
+  // Latin, so the text glyphs these buttons carried (the gear, the magnifier,
+  // the burger) came from whatever system fallback happened to have those code
+  // points, at whatever weight it drew them - right beside the app's own SVG
+  // chevrons and open-box icon.
+  test("the header icon buttons draw SVG icons, not text glyphs outside the subsetted font", () => {
+    installState();
+
+    render(<Rail onHide={vi.fn()} />);
+
+    const brand = within(screen.getByTestId("rail-brand"));
+    for (const label of ["Settings", "Search", "Hide sidebar"]) {
+      const button = brand.getByRole("button", { name: label });
+      expect(button.querySelector("svg")).toBeTruthy();
+      expect(button.textContent?.trim()).toBe("");
+    }
+  });
+
   test("renders loaded global and project resources without a transport read", () => {
     installState([
       sectionResource("live", [summary({ title: "Live resource" })]),
@@ -280,6 +298,16 @@ describe("resource-backed Rail", () => {
 
     expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
     expect(screen.getByText(/no sessions yet/i)).toBeTruthy();
+  });
+  // The empty state sits directly under the rail's own "+ New session" button,
+  // so it cannot answer "how do I start one?" with the command line.
+  test("the rail's empty state does not send people to the command line", () => {
+    installState([], emptyManifest());
+
+    render(<Rail />);
+
+    expect(screen.queryByText(/command line/i)).toBeNull();
+    expect(screen.getByText("No sessions yet")).toBeTruthy();
   });
   test.each(["v2"] as const)("shows a visible skeleton for a pending %s manifest until it settles", (mode) => {
     const empty = emptyManifest();

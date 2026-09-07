@@ -74,6 +74,7 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "./railExpansion";
+import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -1405,7 +1406,7 @@ function NavigationRail({
           <IconButton
             data-testid="rail-settings"
             label="Settings"
-            icon={<span aria-hidden="true">⚙</span>}
+            icon={<GearIcon />}
             variant="quiet"
             size="md"
             onClick={() => navigate("/settings")}
@@ -1415,7 +1416,7 @@ function NavigationRail({
               data-testid="rail-search"
               data-search-trigger="true"
               label="Search"
-              icon={<span aria-hidden="true">⌕</span>}
+              icon={<SearchIcon />}
               variant="quiet"
               size="md"
             />
@@ -1424,7 +1425,7 @@ function NavigationRail({
             <IconButton
               data-rail-toggle=""
               label="Hide sidebar"
-              icon={<span aria-hidden="true">☰</span>}
+              icon={<SidebarIcon />}
               variant="quiet"
               size="md"
               onClick={onHide}
@@ -1451,7 +1452,7 @@ function NavigationRail({
           />
         )}
         {!loading && !displayed && !loadError && manifest && (
-          <EmptyState title="No sessions yet" hint="Start a session from the command line to see it here." />
+          <EmptyState title="No sessions yet" hint="Start one with the button above." />
         )}
         {displayed && (
           <>

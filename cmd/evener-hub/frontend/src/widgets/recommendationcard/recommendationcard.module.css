@@ -11,12 +11,12 @@
 
 .eyebrow {
   margin: 0;
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .title {

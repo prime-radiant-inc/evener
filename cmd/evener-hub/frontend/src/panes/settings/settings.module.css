@@ -24,7 +24,7 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .link {
@@ -72,6 +72,9 @@
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+  /* One reading measure, shared with the transcript: label/value hairlines
+   * that spanned 900px+ read as a spreadsheet (critique finding 8). */
+  max-width: var(--session-measure);
   overflow-y: auto;
 }
 

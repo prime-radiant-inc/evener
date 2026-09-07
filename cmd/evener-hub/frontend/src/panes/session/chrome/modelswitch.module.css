@@ -21,16 +21,19 @@
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-/* The model id, in this row's caption size. Mono because a model id is an
- * identifier - the same face the strip gives its figures and timings
- * (statusrow.module.css's .mono). */
+/* The model id, in this row's caption size. Sans, not mono: an id is an
+ * identifier, but this is the row's most-read label and chrome takes the UI
+ * face (principle 7, docs/web-ui/decisions.md); the qualified id keeps its
+ * mono treatment in the Details sheet. Tabular figures hold the version
+ * digits steady across switches. */
 .value {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink-mid);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
 }
 

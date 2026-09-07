@@ -14,7 +14,11 @@
   box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  /* Prose input reads at the body size on desktop (the control step is the
+   * 13px ui size there), and never under the phone's 16px control floor:
+   * --font-size-body alone is 14.4px under the S preference on a phone, which
+   * iOS Safari zooms into. */
+  font-size: max(var(--font-size-control), var(--font-size-body));
   line-height: var(--line-height-body);
   /* box-sizing is border-box app-wide (styles/global.css), so the floor has to
    * carry this variant's own vertical padding on top of the text lines. */

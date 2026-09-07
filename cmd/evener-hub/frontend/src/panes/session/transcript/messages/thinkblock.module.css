@@ -27,13 +27,14 @@
    * only a flex row centres the glyph against the label text. Body-sized like
    * the settled summary (the draft restyle, mockup #4): a caption-sized
    * eyebrow was quiet through SIZE, and the design law demotes through ink
-   * only - --ink-low already carries the whole recession. */
+   * only - --ink-mid carries the recession (--ink-low is sub-AA for a line a
+   * reader actually reads). */
   display: flex;
   align-items: center;
   margin-bottom: var(--space-1);
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
 /* The kind glyph leading the thought row - in the RAIL beside the line, at
@@ -118,7 +119,7 @@
   border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
 /* The label text as its own flex item so it - not the chevron after it - is

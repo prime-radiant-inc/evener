@@ -70,6 +70,7 @@ function readFileTarget(item: ItemModel): string {
 registerToolRenderer({
   match: "read_file",
   icon: "file",
+  fold: "quiet",
   // An image read displays the picture itself at up to 600px square, not a
   // 96px thumbnail - the picture IS this call's output.
   outputImageSize: "large",
@@ -109,6 +110,7 @@ function grepTarget(args: Record<string, unknown>): string {
 
 const grepDescriptor: ToolRendererDescriptor = {
   match: (name: string) => name === "grep" || name === "grep_files" || name === "grep_search",
+  fold: "quiet",
   icon: "search",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
@@ -120,6 +122,7 @@ registerToolRenderer(grepDescriptor);
 
 const lsDescriptor: ToolRendererDescriptor = {
   match: (name: string) => name === "list_dir" || name === "list_directory",
+  fold: "quiet",
   icon: "folder",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
@@ -134,6 +137,7 @@ registerToolRenderer(lsDescriptor);
 registerToolRenderer({
   match: "glob",
   icon: "search",
+  fold: "quiet",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const pattern = str(args, "pattern") ?? str(args, "glob") ?? "";

@@ -73,6 +73,7 @@
   min-width: 0;
   flex: 1;
   font-family: var(--font-mono);
+  font-size: var(--font-size-control);
 }
 .listHeading {
   display: flex;
@@ -197,9 +198,6 @@
   }
   .browse {
     padding: var(--space-3);
-  }
-  .input {
-    font-size: 16px;
   }
   .row {
     min-height: var(--tap-min);

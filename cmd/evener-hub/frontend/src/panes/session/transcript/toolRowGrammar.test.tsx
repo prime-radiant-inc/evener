@@ -955,7 +955,7 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
-  expect(call![1]).toContain("padding: var(--space-2) 0");
+  expect(call![1]).toContain("padding: var(--rhythm-item) 0");
 });
 
 // The intent is the agent's stated rationale for the call - commentary on
@@ -966,11 +966,10 @@ test("the stated intent renders in italics", () => {
 });
 
 // kata rdry: the demoted line is a tool-RESULT ("Wrote fizzbuzz.py"), not a
-// placeholder/disabled/timestamp - --ink-low's documented job (design-system.md)
-// - and measures 2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor for body
-// text. Same precedent as usermessageitem's .tag (moved off --ink-low for the
-// same reason). --ink-mid clears AA at 6.86/6.56 in both themes.
-test("the demoted summary line is readable text (--ink-mid), not the sub-AA --ink-low", () => {
+// placeholder/disabled/timestamp - --ink-low's documented job (design-system.md).
+// --ink-low clears AA since the 2026-09-06 raise (4.72:1 dark / 4.76:1 light
+// on --surface-1), but text a reader reads takes --ink-mid (6.51 / 5.84).
+test("the demoted summary line is readable text (--ink-mid), not the placeholder --ink-low", () => {
   const demoted = /\.demoted\s*\{([^}]*)\}/.exec(rowCss());
   expect(demoted).not.toBeNull();
   expect(demoted![1]).toMatch(/var\(--ink-mid\)/);

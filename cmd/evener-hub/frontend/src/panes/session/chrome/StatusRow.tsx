@@ -34,7 +34,7 @@ const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
   identity: requireClass(styles.identity, "statusrow.module.css", "identity"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
-  mono: requireClass(styles.mono, "statusrow.module.css", "mono"),
+  figure: requireClass(styles.figure, "statusrow.module.css", "figure"),
   context: requireClass(styles.context, "statusrow.module.css", "context"),
   contextMeter: requireClass(styles.contextMeter, "statusrow.module.css", "contextMeter"),
   contextPercent: requireClass(styles.contextPercent, "statusrow.module.css", "contextPercent"),
@@ -176,7 +176,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
                 tone={contextTone(model.contextPressure)}
               />
             </span>
-            <span className={`${CLASS.contextPercent} ${CLASS.mono}`} data-testid="status-row-context-percent">
+            <span className={`${CLASS.contextPercent} ${CLASS.figure}`} data-testid="status-row-context-percent">
               {`${contextPercent}%`}
             </span>
           </span>
@@ -187,7 +187,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           feeding it an absence fabricates a measurement. Same gate
           DetailsPanel's own work-time row uses. */}
       {running && workMs > 0 && (
-        <span className={`${CLASS.item} ${CLASS.mono} ${CLASS.workTime}`} data-testid="status-row-work-time">
+        <span className={`${CLASS.item} ${CLASS.figure} ${CLASS.workTime}`} data-testid="status-row-work-time">
           {formatWorkDuration(workMs)}
         </span>
       )}
@@ -197,7 +197,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           session. */}
       {queueDepth > 0 && (
         <span
-          className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`}
+          className={`${CLASS.item} ${CLASS.figure} ${CLASS.queue}`}
           data-testid="status-row-queue"
           role="status"
           aria-label={`${queueDepth} queued`}

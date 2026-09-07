@@ -124,7 +124,7 @@
   flex: none;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 /* The kind glyph carries the row's status hue (it replaced the status dot):
@@ -187,7 +187,7 @@
 .detailCommand {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--ink-hi);
   /* The expanded strip shows the WHOLE command, wrapped - the dense row's
    * ellipsis is the collapsed form, this is its unabridged counterpart. */
@@ -198,7 +198,7 @@
   display: block;
   margin-top: var(--space-1);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
 /* The output tail preview inside the detail strip. No max-height/scroll:
@@ -211,7 +211,7 @@
   border-radius: var(--radius-control);
   background: var(--surface-1);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--ink-mid);
   white-space: pre-wrap;
   overflow-wrap: anywhere;

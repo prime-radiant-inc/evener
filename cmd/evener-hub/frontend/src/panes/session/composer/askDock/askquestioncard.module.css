@@ -100,7 +100,7 @@
 
 .textInput {
   flex: 1;
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
   color: var(--ink-hi);
   background: var(--surface-0);
   border: 1px solid var(--edge);

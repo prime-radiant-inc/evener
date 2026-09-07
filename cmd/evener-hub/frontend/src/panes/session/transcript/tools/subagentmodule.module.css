@@ -132,8 +132,8 @@
 .sectionLabel {
   font-size: var(--font-size-caption);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-low);
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--ink-mid);
 }
 .mandate {
   font-family: var(--font-sans);

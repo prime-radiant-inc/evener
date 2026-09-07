@@ -671,3 +671,130 @@ test("the turn column can shrink below its content's natural width", () => {
   expect(turn).not.toBeNull();
   expect(turn![1]).toContain("min-width: 0");
 });
+
+// --- Folding a settled run of tool calls (critique R9) --------------------
+//
+// These render at the "tools" level - the shipped desktop default, whose
+// expandedDetails is off, so a fold actually folds. At "activity"/"full" the
+// reader has asked for everything expanded and a run opens with the rest.
+
+const TOOLS_CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+
+function toolItem(id: string, toolName: string, overrides: Partial<ItemModel> = {}): ItemModel {
+  return item({
+    id,
+    type: "commandExecution",
+    toolName,
+    status: "completed",
+    argumentsJSON: JSON.stringify({ file_path: `${id}.ts` }),
+    ...overrides,
+  });
+}
+
+function renderTools(items: ItemModel[], turnOverrides: Partial<TurnModel> = { status: "completed" }) {
+  render(withConfig(TOOLS_CONFIG, <TurnBlock turn={turn(items, turnOverrides, TOOLS_CONFIG)} />));
+}
+
+function openRun() {
+  const summary = screen.getByTestId("tool-run").querySelector("summary");
+  if (summary === null) throw new Error("the folded run rendered no summary to click");
+  fireEvent.click(summary);
+}
+
+test("a settled turn folds three quiet tool calls into one row that opens to them", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
+  expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  expect(screen.queryAllByTestId("tool-row")).toHaveLength(0);
+  openRun();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
+});
+
+test("the folded row counts the steps and names the consequential one", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "write_file", { argumentsJSON: JSON.stringify({ file_path: "foo.py" }) }),
+    toolItem("c", "read_file"),
+  ]);
+  expect(screen.getByTestId("tool-run").textContent).toContain("3 steps · Wrote foo.py");
+});
+
+test("a folded run's anchor lists the entries it stands in for", () => {
+  // roborev on PR #947: scroll/focus restoration for the second or third call
+  // needs a way from that call's id to the one anchor the run renders.
+  render(
+    withConfig(
+      TOOLS_CONFIG,
+      <TurnBlock
+        turn={turn(
+          [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")],
+          { status: "completed" },
+          TOOLS_CONFIG,
+        )}
+        viewAnchorIndex={0}
+      />,
+    ),
+  );
+  const anchor = document.querySelector('[data-view-anchor-id="run:a"]');
+  expect(anchor?.getAttribute("data-view-anchor-members")).toBe("a,b,c");
+});
+
+test("two calls are not a run: they keep their own rows", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file")]);
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(2);
+});
+
+test("a failed call breaks the run: every row stays visible", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "read_file", { status: "failed", error: "no such file" }),
+    toolItem("c", "read_file"),
+    toolItem("d", "read_file"),
+  ]);
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(4);
+});
+
+test("a live turn never folds: each call keeps its own row while the agent works", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")], {
+    status: "inProgress",
+  });
+  expect(screen.queryByTestId("tool-run")).toBeNull();
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(3);
+});
+
+test("a never-fold tool splits the run around itself", () => {
+  renderTools([
+    toolItem("a", "read_file"),
+    toolItem("b", "use_skill"),
+    toolItem("c", "read_file"),
+    toolItem("d", "read_file"),
+    toolItem("e", "read_file"),
+  ]);
+  expect(screen.getAllByTestId("tool-run")).toHaveLength(1);
+  expect(screen.getAllByTestId("tool-row")).toHaveLength(2);
+});
+
+test("a folded run takes the run-content indent, like the rows it stands in for", () => {
+  renderTools([toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")]);
+  expectInsideRunContent(screen.getByTestId("tool-run"));
+});
+
+test("a folded run keeps a view anchor so scroll coordination still has a position for it", () => {
+  render(
+    withConfig(
+      TOOLS_CONFIG,
+      <TurnBlock
+        turn={turn(
+          [toolItem("a", "read_file"), toolItem("b", "read_file"), toolItem("c", "read_file")],
+          { status: "completed" },
+          TOOLS_CONFIG,
+        )}
+        viewAnchorIndex={7}
+      />,
+    ),
+  );
+  const anchor = document.querySelector('[data-view-anchor-id="run:a"]');
+  expect(anchor).not.toBeNull();
+  expect(anchor?.getAttribute("data-view-anchor-index")).toBe("7");
+});

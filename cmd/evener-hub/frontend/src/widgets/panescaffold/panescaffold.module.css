@@ -14,14 +14,17 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-5);
   background: var(--surface-inset);
   border-bottom: 1px solid var(--edge);
 }
 
-/* Micro-label pattern (Beautiful UI chrome pass, §2): a pane title is chrome,
- * not prose, so it reads as a small uppercase label on the header band
- * rather than a heading-sized title. */
+/* A pane's title is its page heading (typography-spacing-critique-2026-09-06
+ * R4): sentence case, the pane-title step, semibold, full ink. The uppercase
+ * micro-label stays for containers INSIDE a page (InspectorCard,
+ * RecommendationCard, Table headers); as a page title it made the page's
+ * heading its smallest text, and a session's prompt rendered as an
+ * uppercase sentence. */
 .title {
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
@@ -31,12 +34,11 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--ink-mid);
+  color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
 }
 
@@ -79,7 +81,7 @@
    * 5), so anything still too wide clips instead of giving the whole page
    * a horizontal scrollbar. */
   overflow-x: clip;
-  padding: var(--space-4);
+  padding: var(--space-5);
   /* End-of-scroll content stays clear of a phone's home-indicator band now
    * that StackHost's blanket host padding is gone (see that rule's comment):
    * footer-less panes (welcome, settings, spawn, doc) dock nothing of their
@@ -87,13 +89,13 @@
    * where this resolves to plain --space-4. The inset yields when the on-screen
    * keyboard covers the home-indicator band (useKeyboardInset's
    * --keyboard-inset, 0px everywhere else): max(0, inset - keyboard) keeps
-   * full inset when the keyboard is closed and plain --space-4 when open. */
-  padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+   * full inset when the keyboard is closed and plain --space-5 when open. */
+  padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
 }
 
 .footer {
   flex: none;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-5);
   /* The composer docks here (Session.tsx): its safe-area accommodation
    * belongs on this bar, not on a container (the old StackHost host padding
    * lifted the whole pane off the screen's bottom edge, leaving a dead band
@@ -129,6 +131,18 @@
    * (decision 3), so the whole row goes away on mobile. */
   .header {
     display: none;
+  }
+
+  /* The phone keeps the tighter edge inset: 24px a side would spend 48px of
+   * a 375px screen on margins. */
+  .body {
+    padding: var(--space-4);
+    padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
+  }
+
+  .footer {
+    padding: var(--space-3) var(--space-4);
+    padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)));
   }
 }
 

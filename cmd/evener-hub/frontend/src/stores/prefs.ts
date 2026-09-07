@@ -47,7 +47,7 @@
 // instead of unconditionally clearing the attribute the way it used to.
 // The section's own help copy ("default follows your OS preference") is
 // what this makes true; before this, "system" always rendered dark
-// regardless of the OS. phoneDensity/fontSize
+// regardless of the OS. phoneDensity/fontSize/transcriptMeasure
 // get the same document-mirroring treatment the legacy's settings-
 // appearance.js gave them (onto document.body.dataset), and tokens.css now
 // keys off both: the type ramp scales off <body data-font-size> and the
@@ -86,6 +86,10 @@ import {
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
 export type FontSizePref = "s" | "m" | "l" | "xl";
+// Settings -> Theme -> Transcript width: the conversation column's measure.
+// tokens.css keys --session-measure off <body data-transcript-measure>
+// (44rem reading, 64rem wide).
+export type TranscriptMeasurePref = "reading" | "wide";
 export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
@@ -96,6 +100,7 @@ export interface PrefsStoreState {
   sidebarHidden: boolean;
   sidebarWidth: number;
   fontSize: FontSizePref;
+  transcriptMeasure: TranscriptMeasurePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
   // match the PINNED evener.prefs.enterToSend / evener.prefs.showCost keys.
@@ -123,6 +128,7 @@ export interface PrefsStoreState {
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
   setFontSize(value: FontSizePref): void;
+  setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
   setShowCost(value: boolean): void;
@@ -314,6 +320,7 @@ function readEnum<T extends string>(name: string, allowed: readonly T[], fallbac
 const THEME_VALUES: readonly ThemePref[] = ["system", "light", "dark"];
 const PHONE_DENSITY_VALUES: readonly PhoneDensityPref[] = ["compact", "comfortable"];
 const FONT_SIZE_VALUES: readonly FontSizePref[] = ["s", "m", "l", "xl"];
+const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", "wide"];
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
 
 // Per-field localStorage key names for the two grouped record fields -
@@ -455,6 +462,10 @@ function applyFontSize(value: FontSizePref): void {
   document.body.dataset.fontSize = value;
 }
 
+function applyTranscriptMeasure(value: TranscriptMeasurePref): void {
+  document.body.dataset.transcriptMeasure = value;
+}
+
 // loadInitialState re-derives every field from localStorage (plus the
 // document side effects above) - shared by the store's own creator function
 // and resetPrefsStoreForTests(), so a test that seeds localStorage and then
@@ -466,6 +477,7 @@ function loadInitialState(): Omit<
   | "setSidebarHidden"
   | "setSidebarWidth"
   | "setFontSize"
+  | "setTranscriptMeasure"
   | "setTranscriptStatus"
   | "setEnterToSend"
   | "setShowCost"
@@ -477,15 +489,18 @@ function loadInitialState(): Omit<
   const theme = readEnum("theme", THEME_VALUES, "system");
   const phoneDensity = readEnum("phoneDensity", PHONE_DENSITY_VALUES, "compact");
   const fontSize = readEnum("fontSize", FONT_SIZE_VALUES, "m");
+  const transcriptMeasure = readEnum("transcriptMeasure", TRANSCRIPT_MEASURE_VALUES, "reading");
   applyTheme(theme);
   applyPhoneDensity(phoneDensity);
   applyFontSize(fontSize);
+  applyTranscriptMeasure(transcriptMeasure);
   return {
     theme,
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
     fontSize,
+    transcriptMeasure,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
     showCost: readBool("showCost", false),
@@ -534,6 +549,12 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     writeRaw("fontSize", value);
     applyFontSize(value);
     set({ fontSize: value });
+  },
+
+  setTranscriptMeasure(value) {
+    writeRaw("transcriptMeasure", value);
+    applyTranscriptMeasure(value);
+    set({ transcriptMeasure: value });
   },
 
   setTranscriptStatus(key, value) {

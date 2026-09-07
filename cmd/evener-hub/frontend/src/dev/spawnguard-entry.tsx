@@ -308,8 +308,8 @@ function measureSpawn() {
     };
   });
 
-  const heading = document.querySelector<HTMLElement>("[data-testid='spawn-mobile-prompt-intro'] h3");
-  const subtitle = document.querySelector<HTMLElement>("[data-testid='spawn-mobile-prompt-intro'] p");
+  const heading = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] h2");
+  const subtitle = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] p");
   const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
   const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
@@ -325,7 +325,7 @@ function measureSpawn() {
     viewport: { width: window.innerWidth, height: window.innerHeight },
     mobileConfig: readVisibility(mobileConfigElement, "mobile config"),
     desktopConfig: readVisibility(desktopConfigElement, "desktop config"),
-    mobileIntro: visibility('[data-testid="spawn-mobile-prompt-intro"]'),
+    promptIntro: visibility('[data-testid="spawn-prompt-intro"]'),
     desktopTitle: visibility('[data-testid="pane-title-desktop"]'),
     mobileTitle: visibility('[data-testid="pane-title-mobile"]'),
     promptCard: measurePromptCard(),
@@ -334,10 +334,10 @@ function measureSpawn() {
     accessiblePrompt: {
       headingTag: heading?.tagName.toLowerCase() ?? "missing",
       headingText: heading?.textContent?.trim() ?? "",
-      headingVisible: heading ? isVisible(visibility("[data-testid='spawn-mobile-prompt-intro'] h3")) : false,
+      headingVisible: heading ? isVisible(visibility("[data-testid='spawn-prompt-intro'] h2")) : false,
       subtitleTag: subtitle?.tagName.toLowerCase() ?? "missing",
       subtitleText: subtitle?.textContent?.trim() ?? "",
-      subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-mobile-prompt-intro'] p")) : false,
+      subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-prompt-intro'] p")) : false,
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
       subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },

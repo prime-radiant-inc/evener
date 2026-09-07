@@ -47,9 +47,10 @@
 .label {
   flex: none;
   color: var(--ink-mid);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-caption);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .value {
@@ -69,7 +70,7 @@
   font: inherit;
   text-align: left;
   text-decoration: underline;
-  text-decoration-color: var(--edge-hi);
+  text-decoration-color: var(--edge-strong);
   text-underline-offset: 2px;
 }
 
@@ -78,7 +79,7 @@
 }
 
 .link:focus-visible {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-chip);
   outline: var(--focus-ring);
   outline-offset: 2px;
 }

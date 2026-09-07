@@ -16,6 +16,12 @@
   letter-spacing: var(--tracking-display);
 }
 
+/* size="display": the welcome pane's hero, the one place the display step
+ * is used (tokens.css). */
+.titleDisplay {
+  font-size: var(--font-size-display);
+}
+
 .hint {
   margin: 0;
   max-width: 40ch;

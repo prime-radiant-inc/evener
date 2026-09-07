@@ -850,6 +850,28 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
   }
 });
 
+// --ink-low is documented as placeholder/disabled/timestamp ink, but 96
+// text rules set it as `color` (docs/web-ui/typography-spacing-critique-
+// 2026-09-06.md finding 7). It therefore has to clear AA on the two grounds
+// text actually sits on in each theme, the same bar the -ink companions meet.
+test("--ink-low clears 4.5:1 on the page and pane surfaces in both themes", () => {
+  const themes = [
+    { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
+    { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
+  ];
+  for (const theme of themes) {
+    const inkLow = declaredToken(theme.block, "--ink-low");
+    expect(inkLow, `${theme.name} declares --ink-low`).toBeDefined();
+    for (const groundName of ["--surface-0", "--surface-1"]) {
+      const ground = declaredToken(theme.block, groundName);
+      expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
+      if (!inkLow || !ground) continue;
+      const ratio = contrastRatio(parseHexColor(inkLow), parseHexColor(ground));
+      expect(ratio, `${theme.name} --ink-low on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
 // --- (d) z-index values must use the token ladder ----------------------
 //
 // Every z-index in the app comes from the token ladder (--z-raised, --z-sticky-bar,
@@ -1041,4 +1063,303 @@ test("allows box-shadow with token shadow values", () => {
 test("does not flag outline or box-shadow mentioned only in comments", () => {
   expect(focusRingViolations("/* outline: 2px solid red; */ .a { position: relative; }")).toEqual([]);
   expect(focusRingViolations("/* box-shadow: inset 0 0 0 2px var(--accent); */ .a { color: red; }")).toEqual([]);
+});
+
+// --- (g) every bare var(--token) resolves to a declared property --------
+//
+// `var(--radius-sm)` shipped in two rules - composer.module.css:65 and
+// currentwork.module.css:81 (docs/web-ui/typography-spacing-critique-
+// 2026-09-06.md, "Bugs found on the way"): --radius-sm was never a token,
+// so the attachment tile rendered square and nothing said a word. CSS
+// resolves an undeclared var() to the property's initial value and moves
+// on - no error, no warning, and nothing in a screenshot that looks
+// obviously wrong.
+//
+// Only the FALLBACK-LESS form is a violation: `var(--x, 4px)` is a
+// deliberate, self-documenting default (streamingtext.module.css uses it
+// for the prose hooks), so the scan only matches a var() whose token name
+// is followed straight by `)`.
+//
+// The declared set is the union over EVERY stylesheet, not tokens.css
+// alone - modules legitimately declare their own local custom properties
+// (--textarea-min-lines in textarea, --sheet-inline-size in sheet) and set
+// them on a nested selector or inside a media query. For the same reason
+// this is the one mechanism here that also scans tokens.css, which both
+// declares and references (--focus-ring composes var(--accent)): a
+// dangling reference there breaks a rule exactly the same way.
+const CUSTOM_PROPERTY_DECLARATION_RE = /(--[a-zA-Z0-9-]+)\s*:/g;
+const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
+
+// Names no stylesheet is required to declare. Three groups, all listed
+// because the check cannot tell "nothing declares this" from "nothing
+// declares this yet":
+//   - JS writes it, as an inline style or a setProperty call, so no
+//     stylesheet ever declares it: --keyboard-inset (shell/
+//     useKeyboardInset.ts), --rail-width (shell/rail/RailResizeHandle.tsx),
+//     --fill (Meter and RecommendationCard paint their fill width).
+//   - A theming hook a container sets to retint the content it owns:
+//     --markdown-ink, --prose-ink, --prose-font-size.
+//   - Declared today only under a media query or an attribute selector
+//     (--tap-min, --density-scale, --font-scale). The declaration scan
+//     picks those up anyway; they are named here so this check never
+//     silently depends on where that one declaration happens to live.
+const UNDECLARED_BY_DESIGN = new Set([
+  "--keyboard-inset",
+  "--rail-width",
+  "--fill",
+  "--markdown-ink",
+  "--prose-ink",
+  "--prose-font-size",
+  "--tap-min",
+  "--density-scale",
+  "--font-scale",
+]);
+
+const DECLARED_CUSTOM_PROPERTIES = new Set<string>();
+for (const text of Object.values(STYLESHEETS)) {
+  for (const match of text.replace(COMMENT_RE, " ").matchAll(CUSTOM_PROPERTY_DECLARATION_RE)) {
+    DECLARED_CUSTOM_PROPERTIES.add(match[1]!);
+  }
+}
+
+function undefinedTokenViolations(
+  cssText: string,
+  declared: ReadonlySet<string> = DECLARED_CUSTOM_PROPERTIES,
+): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(BARE_VAR_RE)) {
+    const name = match[1]!;
+    // dockview declares its own --dv-* theme properties inside the library;
+    // shell/dockview-theme.css only ever overrides and composes them.
+    if (name.startsWith("--dv-")) continue;
+    if (UNDECLARED_BY_DESIGN.has(name)) continue;
+    if (!declared.has(name)) violations.push(name);
+  }
+  return violations;
+}
+
+for (const [path, text] of Object.entries(STYLESHEETS)) {
+  test(`${path} references only declared custom properties`, () => {
+    expect(undefinedTokenViolations(text)).toEqual([]);
+  });
+}
+
+test("the declared set spans module-local custom properties, not just tokens.css", () => {
+  expect(DECLARED_CUSTOM_PROPERTIES.has("--space-4")).toBe(true);
+  expect(DECLARED_CUSTOM_PROPERTIES.has("--textarea-min-lines")).toBe(true);
+  expect(DECLARED_CUSTOM_PROPERTIES.has("--sheet-inline-size")).toBe(true);
+  // The shipped bug's name: referenced twice, declared nowhere, ever.
+  expect(DECLARED_CUSTOM_PROPERTIES.has("--radius-sm")).toBe(false);
+});
+
+test("catches a fallback-less var() naming an undeclared token", () => {
+  const declared = new Set(["--radius-chip"]);
+  expect(undefinedTokenViolations(".tile { border-radius: var(--radius-sm); }", declared)).toEqual(["--radius-sm"]);
+  expect(undefinedTokenViolations(".a { color: var(--edge-hi); }", declared)).toEqual(["--edge-hi"]);
+});
+
+test("allows a var() that carries its own fallback", () => {
+  expect(undefinedTokenViolations(".tile { border-radius: var(--radius-sm, 4px); }", new Set())).toEqual([]);
+  // A token used as another var()'s fallback is itself fallback-less, so it
+  // still has to resolve - that nested reference is the one that renders
+  // when the outer name is unset.
+  const declared = new Set(["--font-size-body"]);
+  expect(undefinedTokenViolations(".a { font-size: var(--prose-size, var(--font-size-body)); }", declared)).toEqual([]);
+  expect(undefinedTokenViolations(".a { font-size: var(--prose-size, var(--font-size-gone)); }", declared)).toEqual([
+    "--font-size-gone",
+  ]);
+});
+
+test("allows dockview's own --dv-* properties and the runtime-set names", () => {
+  expect(undefinedTokenViolations(".dockview-theme-evener { --dv-tab-bg: var(--dv-foo); }", new Set())).toEqual([]);
+  expect(undefinedTokenViolations(".fill { width: var(--fill); }", new Set())).toEqual([]);
+  expect(undefinedTokenViolations(".shell { padding-bottom: var(--keyboard-inset); }", new Set())).toEqual([]);
+});
+
+test("does not flag a var() named only in a comment", () => {
+  const declared = new Set(["--radius-chip"]);
+  expect(
+    undefinedTokenViolations("/* was var(--radius-sm) */ .tile { border-radius: var(--radius-chip); }", declared),
+  ).toEqual([]);
+});
+
+// --- (h) type sizes come from the ramp, never from a px literal ---------
+//
+// The critique counted 18 literal px font-sizes outside tokens.css - 9px,
+// 10.5px, 11px x8, 11.5px x2, 12px x2, 13px x2, 16px x2 (docs/web-ui/
+// typography-spacing-critique-2026-09-06.md, "Literal (off-ramp) sizes").
+// An off-ramp size ignores --font-scale, so the Settings text-size control
+// silently does not move that text, and it puts a size on screen the ramp
+// never agreed to.
+//
+// Relative units are not literals in this sense and stay legal: `0.86em`
+// on inline code sizes it against whatever line it sits in and rides the
+// ramp with that line, as do `%` and `inherit`. Only a px number in the
+// value fails - including one hidden inside a calc(), which is how a
+// literal would otherwise slip past while still looking tokenized.
+const FONT_SIZE_RE = /font-size\s*:\s*([^;}]+)/gi;
+const PX_LITERAL_RE = /\b[\d.]+px\b/i;
+
+function literalFontSizeViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(FONT_SIZE_RE)) {
+    const value = match[1]!.trim();
+    if (PX_LITERAL_RE.test(value)) violations.push(value);
+  }
+  return violations;
+}
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} sizes type from the ramp, not a px literal`, () => {
+    expect(literalFontSizeViolations(text)).toEqual([]);
+  });
+}
+
+test("catches a literal px font-size", () => {
+  expect(literalFontSizeViolations(".a { font-size: 11px; }")).toEqual(["11px"]);
+  expect(literalFontSizeViolations(".a { font-size: 10.5px; }")).toEqual(["10.5px"]);
+});
+
+test("catches a px literal hidden inside a calc()", () => {
+  expect(literalFontSizeViolations(".a { font-size: calc(12px * var(--font-scale)); }")).toEqual([
+    "calc(12px * var(--font-scale))",
+  ]);
+});
+
+test("allows ramp tokens, inherit, and relative units", () => {
+  expect(literalFontSizeViolations(".a { font-size: var(--font-size-ui); }")).toEqual([]);
+  expect(literalFontSizeViolations(".a { font-size: var(--font-size-caption); }")).toEqual([]);
+  expect(literalFontSizeViolations(".a { font-size: 0.86em; }")).toEqual([]);
+  expect(literalFontSizeViolations(".a { font-size: 1em; }")).toEqual([]);
+  expect(literalFontSizeViolations(".a { font-size: 90%; }")).toEqual([]);
+  expect(literalFontSizeViolations(".a { font-size: inherit; }")).toEqual([]);
+});
+
+test("does not flag a px font-size mentioned only in a comment", () => {
+  expect(literalFontSizeViolations("/* was font-size: 11px */ .a { font-size: var(--font-size-caption); }")).toEqual(
+    [],
+  );
+});
+
+// --- (i) tracking comes from one of the two tracking tokens -------------
+//
+// The critique found five hand-written tracking values in use at once
+// (-0.02em, 0.02em x4, 0.04em x5, 0.05em x2, 0.08em x7) doing two jobs
+// between them. The ramp settles it at two tokens, one per job:
+// --tracking-display (-0.02em) tightens semibold titles, --tracking-eyebrow
+// (0.06em) opens THE uppercase eyebrow. `inherit` and `normal` are the two
+// ways to say "no tracking of my own", and stay legal.
+const LETTER_SPACING_RE = /letter-spacing\s*:\s*([^;}]+)/gi;
+const TRACKING_VALUE_RE = /^(var\(--tracking-(?:display|eyebrow)\)|inherit|normal)$/;
+
+function trackingViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(LETTER_SPACING_RE)) {
+    const value = match[1]!.trim();
+    if (!TRACKING_VALUE_RE.test(value)) violations.push(value);
+  }
+  return violations;
+}
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} tracks type with a tracking token`, () => {
+    expect(trackingViolations(text)).toEqual([]);
+  });
+}
+
+test("catches a hand-written tracking value", () => {
+  expect(trackingViolations(".a { letter-spacing: 0.04em; }")).toEqual(["0.04em"]);
+  expect(trackingViolations(".a { letter-spacing: 0.05em; }")).toEqual(["0.05em"]);
+  expect(trackingViolations(".a { letter-spacing: -0.02em; }")).toEqual(["-0.02em"]);
+});
+
+test("allows the two tracking tokens and the two opt-outs", () => {
+  expect(trackingViolations(".a { letter-spacing: var(--tracking-display); }")).toEqual([]);
+  expect(trackingViolations(".a { letter-spacing: var(--tracking-eyebrow); }")).toEqual([]);
+  expect(trackingViolations(".a { letter-spacing: inherit; }")).toEqual([]);
+  expect(trackingViolations(".a { letter-spacing: normal; }")).toEqual([]);
+});
+
+test("does not flag letter-spacing mentioned only in a comment", () => {
+  expect(trackingViolations("/* letter-spacing: 0.04em; */ .a { color: var(--ink-mid); }")).toEqual([]);
+});
+
+// --- (j) uppercase means the whole eyebrow recipe -----------------------
+//
+// Uppercase is the app's ONE eyebrow: caption size, --tracking-eyebrow, at
+// most two words, never a sentence. The critique found 21 uppercase rules
+// disagreeing about all three of size, tracking and ink (docs/web-ui/
+// typography-spacing-critique-2026-09-06.md finding 4). Uppercase at body
+// size with default tracking is just shouting; uppercase in --ink-low is
+// shouting quietly, which is the worst of both.
+//
+// This supersedes the interim copy of the check that lived in
+// rhythm.test.ts while the uppercase sites were being fixed.
+//
+// The block regex matches innermost brace pairs, so a rule nested inside a
+// media query is checked as itself and the wrapper is skipped - the recipe
+// is a property of the rule, not of what surrounds it.
+const RULE_BLOCK_RE = /\{([^{}]*)\}/g;
+const UPPERCASE_RE = /text-transform\s*:\s*uppercase/;
+const CAPTION_SIZE_RE = /font-size\s*:\s*var\(--font-size-caption\)/;
+const EYEBROW_TRACKING_RE = /letter-spacing\s*:\s*var\(--tracking-eyebrow\)/;
+const INK_LOW_TEXT_RE = /color\s*:\s*var\(--ink-low\)/;
+
+function eyebrowRecipeViolations(cssText: string): string[] {
+  const violations: string[] = [];
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const block of withoutComments.matchAll(RULE_BLOCK_RE)) {
+    const body = block[1]!;
+    if (!UPPERCASE_RE.test(body)) continue;
+    if (!CAPTION_SIZE_RE.test(body)) violations.push("uppercase without caption size");
+    if (!EYEBROW_TRACKING_RE.test(body)) violations.push("uppercase without eyebrow tracking");
+    if (INK_LOW_TEXT_RE.test(body)) violations.push("uppercase in --ink-low");
+  }
+  return violations;
+}
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  test(`${path} writes every uppercase rule as a complete eyebrow`, () => {
+    expect(eyebrowRecipeViolations(text)).toEqual([]);
+  });
+}
+
+test("catches an uppercase rule missing a piece of the recipe", () => {
+  expect(eyebrowRecipeViolations(".a { text-transform: uppercase; letter-spacing: var(--tracking-eyebrow); }")).toEqual(
+    ["uppercase without caption size"],
+  );
+  expect(eyebrowRecipeViolations(".a { font-size: var(--font-size-caption); text-transform: uppercase; }")).toEqual([
+    "uppercase without eyebrow tracking",
+  ]);
+});
+
+test("catches an uppercase rule set in --ink-low", () => {
+  expect(
+    eyebrowRecipeViolations(
+      ".a { font-size: var(--font-size-caption); text-transform: uppercase; letter-spacing: var(--tracking-eyebrow); color: var(--ink-low); }",
+    ),
+  ).toEqual(["uppercase in --ink-low"]);
+});
+
+test("allows a complete eyebrow", () => {
+  expect(
+    eyebrowRecipeViolations(
+      ".a { font-size: var(--font-size-caption); text-transform: uppercase; letter-spacing: var(--tracking-eyebrow); color: var(--ink-mid); }",
+    ),
+  ).toEqual([]);
+});
+
+test("ignores a rule that is not uppercase at all", () => {
+  expect(eyebrowRecipeViolations(".a { text-transform: none; }")).toEqual([]);
+  expect(eyebrowRecipeViolations(".a { text-transform: capitalize; font-size: var(--font-size-body); }")).toEqual([]);
+  expect(eyebrowRecipeViolations(".a { color: var(--ink-low); font-size: var(--font-size-body); }")).toEqual([]);
+});
+
+test("does not flag an uppercase rule quoted only in a comment", () => {
+  expect(eyebrowRecipeViolations("/* .old { text-transform: uppercase; } */ .a { color: var(--ink-mid); }")).toEqual(
+    [],
+  );
 });

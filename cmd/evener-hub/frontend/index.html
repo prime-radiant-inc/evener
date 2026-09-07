@@ -2,16 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <!-- Pinned like an installed app: maximum-scale=1/user-scalable=no stop
-         iOS Safari's auto-zoom when a sub-16px field (the composer textarea)
-         gains focus; viewport-fit=cover makes the env(safe-area-inset-*)
-         paddings in the mobile shell nonzero. interactive-widget=resizes-content
+    <!-- Zoom is never locked (WCAG 1.4.4): every editable control is 16px on
+         phones (tokens.css's phone block sets --font-size-control and
+         --font-size-body to 16px; display-gates.test.ts scans every control
+         rule), so iOS Safari has nothing to auto-zoom into; viewport-fit=cover makes
+         the env(safe-area-inset-*) paddings in the mobile shell nonzero.
+         interactive-widget=resizes-content
          makes Chromium/Android shrink the layout viewport when the on-screen
          keyboard opens, so the fixed mobile shell (and the composer docked in
          its footer) rides up instead of sliding under the keyboard; browsers
          that don't know the key (Safari) ignore it — Safari gets the same
          result from useKeyboardInset's visualViewport-driven --keyboard-inset. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <!-- Mirrors tokens.css's dark --surface-0 and the PWA manifest's
          background_color/theme_color; src/styles/pwa-manifest-colors.test.ts
          locks all three together. -->

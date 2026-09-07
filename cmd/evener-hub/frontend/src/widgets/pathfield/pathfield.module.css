@@ -70,7 +70,7 @@
   box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
     border-color var(--motion-duration-hover) var(--motion-easing-standard),
@@ -100,7 +100,9 @@
 
 /* Section eyebrow: "Recent projects", and the directory being listed (the
  * "you are here" affordance). Small, quiet, not an option. The directory can
- * be long, so it ellipsizes rather than widening the panel. */
+ * be long, so it ellipsizes rather than widening the panel. Tracking belongs
+ * to the two rows this shape carries, not to the shape: .groupLabel is an
+ * uppercase eyebrow and opens up, .groupPath is a path and does not. */
 .groupRow {
   padding: var(--space-2) var(--space-2) var(--space-1);
   overflow: hidden;
@@ -109,7 +111,6 @@
   font-weight: var(--font-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
-  letter-spacing: 0.04em;
 }
 
 /* The current directory reads as a path, not as a section title, so it keeps
@@ -120,7 +121,10 @@
 }
 
 .groupLabel {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
   text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 /* 94yg: a directory click both picks the value and descends into it (spec

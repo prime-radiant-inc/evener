@@ -70,7 +70,7 @@
 
 .coldStart {
   width: 100%;
-  max-width: 76rem;
+  max-width: var(--session-measure);
   margin-inline: auto;
   padding: var(--space-6) var(--space-4);
 }
@@ -89,9 +89,8 @@
 }
 
 .measure {
-  /* matches transcript measure — consolidate to a token after the UX settles */
   width: 100%;
-  max-width: 76rem;
+  max-width: var(--session-measure);
   margin-inline: auto;
   flex: 1 1 auto;
   min-height: 0;

@@ -1,0 +1,206 @@
+/*
+ * /dev/type — the type specimen (critique R10). Every rule here reads a
+ * token and nothing else: the page IS the ramp, so a literal size or a
+ * hand-tuned spacing anywhere in this file would make the specimen lie
+ * about what the app renders.
+ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-6);
+}
+
+.intro {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--font-size-pane-title);
+  line-height: var(--line-height-title);
+}
+
+.note {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
+  font-size: var(--font-size-caption);
+}
+
+/* Every specimen row shares one label column so the samples line up down
+ * the page regardless of which section they belong to. */
+.rowLabel {
+  width: 140px;
+  flex: none;
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+/* --- the ramp ---------------------------------------------------------
+ * One row per --font-size-* token, its sample set in the token it names. */
+
+.rampRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+
+.rampSample {
+  margin: 0;
+  color: var(--ink-hi);
+  line-height: var(--line-height-title);
+}
+
+.sizeCaption {
+  font-size: var(--font-size-caption);
+}
+
+.sizeUi {
+  font-size: var(--font-size-ui);
+}
+
+.sizeBody {
+  font-size: var(--font-size-body);
+}
+
+.sizePaneTitle {
+  font-size: var(--font-size-pane-title);
+}
+
+.sizePageTitle {
+  font-size: var(--font-size-page-title);
+}
+
+.sizeDisplay {
+  font-size: var(--font-size-display);
+  letter-spacing: var(--tracking-display);
+}
+
+/* --- line-heights -----------------------------------------------------
+ * Each sample is narrow enough that its paragraph wraps to three lines, so
+ * the leading is visible as the gap between them rather than as a number. */
+
+.leadingRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.leadingSample {
+  max-width: 22rem;
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-body);
+}
+
+.leadingUi {
+  line-height: var(--line-height-ui);
+}
+
+.leadingBody {
+  line-height: var(--line-height-body);
+}
+
+.leadingTitle {
+  line-height: var(--line-height-title);
+}
+
+/* --- the eyebrow recipe ----------------------------------------------- */
+
+.eyebrow {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
+/* --- the rhythm steps -------------------------------------------------
+ * A bar as tall as the step it names: the four gaps the transcript is
+ * allowed to put between things, at a glance and to scale. */
+
+.rhythmRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.rhythmBar {
+  width: 240px;
+  border-radius: var(--radius-chip);
+  background: var(--edge-strong);
+}
+
+.barLine {
+  height: var(--rhythm-line);
+}
+
+.barItem {
+  height: var(--rhythm-item);
+}
+
+.barGroup {
+  height: var(--rhythm-group);
+}
+
+.barExchange {
+  height: var(--rhythm-exchange);
+}
+
+/* --- the measure ------------------------------------------------------
+ * The same paragraph twice, at the reading measure and the wide one, so
+ * the choice is made by reading rather than by arguing about numbers. The
+ * two widths are literal here on purpose: this page is where they are
+ * being compared, not consumed. */
+
+.measures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.measureColumn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.measureLabel {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.measureValue {
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+}
+
+.prose {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.measureReading {
+  max-width: 44rem;
+}
+
+.measureWide {
+  max-width: 64rem;
+}

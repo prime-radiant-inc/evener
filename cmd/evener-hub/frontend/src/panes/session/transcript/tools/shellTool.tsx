@@ -140,6 +140,7 @@ registerToolRenderer({
   match: (name) => name === "shell" || name === "exec_command" || name === "run_shell_command",
   icon: "terminal",
   monoSummary: true,
+  fold: "consequential",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
   // row's failure glyph instead (A2 - "exit 1" as the headline made every
   // failure look like a footnote). The number itself stays reachable via

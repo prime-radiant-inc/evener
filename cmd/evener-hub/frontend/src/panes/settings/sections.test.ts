@@ -36,13 +36,13 @@ test("the 6 ungrouped sections are General/Theme/Transcript display/Display/Noti
   expect(SETTINGS_SECTIONS.slice(0, 6)).toEqual(ungrouped);
 });
 
-test('the "Agents & models" cluster has exactly these 4 sections, in order, right after the ungrouped ones', () => {
+test('the "Agent setup" cluster has exactly these 4 sections, in order, right after the ungrouped ones', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
   expect(cluster.map((s) => s.label)).toEqual(["Providers & credentials", "Agents", "Evener launch", "In-repo config"]);
   expect(SETTINGS_SECTIONS.slice(6, 10)).toEqual(cluster);
 });
 
-test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agents & models"', () => {
+test('the "Extensions" cluster has exactly these 4 sections, in order, right after "Agent setup"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
   expect(cluster.map((s) => s.label)).toEqual(["Marketplaces & Plugins", "Plugins", "Skills", "MCP servers"]);
   expect(SETTINGS_SECTIONS.slice(10, 14)).toEqual(cluster);
@@ -63,7 +63,7 @@ test("the credentials section's id is exactly credentials (the /credentials alia
 });
 
 test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order", () => {
-  expect(SETTINGS_CLUSTERS.map((c) => c.label)).toEqual(["Agents & models", "Extensions", "Daemon"]);
+  expect(SETTINGS_CLUSTERS.map((c) => c.label)).toEqual(["Agent setup", "Extensions", "Daemon"]);
 });
 
 test("every section's cluster field (when set) references a real cluster id", () => {

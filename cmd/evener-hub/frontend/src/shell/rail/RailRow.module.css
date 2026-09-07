@@ -299,7 +299,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
@@ -337,14 +337,15 @@
  * .actions menu borrows the same cell). The slot owns the right alignment
  * and the occupant/menu visibility swap; this class is only the text. */
 .time {
-  color: var(--ink-low);
-  font-family: var(--font-mono);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
 }
 
 /* Third occupant of the shared .rightSlot cell (RailRow.tsx renders exactly
  * one of the three): the words a session that has never run shows INSTEAD
- * of an age. Set in the UI sans face rather than .time's mono,
+ * of an age. Proportional figures rather than .time's tabular ones,
  * because this is a sentence, not a measurement - and in --ink-mid rather than
  * .time's --ink-low, because a glanceable age can sit below the AA text floor
  * and a phrase the reader has to actually read cannot. Deliberately NOT a

@@ -10,7 +10,7 @@
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-display);
+  letter-spacing: var(--tracking-eyebrow);
   text-transform: uppercase;
 }
 

@@ -26,7 +26,12 @@ export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams
   // welcome panel); passing it here too would render the note twice.
   return (
     <PaneScaffold title="Welcome">
-      <EmptyState title="No session open" hint={params.note} action={<WelcomeContent showNewSession showHints />} />
+      <EmptyState
+        title="No session open"
+        hint={params.note}
+        size="display"
+        action={<WelcomeContent showNewSession showHints />}
+      />
     </PaneScaffold>
   );
 }
