@@ -525,3 +525,18 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 		})
 	}
 }
+
+func TestThreadReadRejectsMalformedRefWithoutRoster(t *testing.T) {
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "malformed"})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error=%v", err)
+	}
+}
