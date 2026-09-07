@@ -762,3 +762,23 @@ simultaneous decisions, reader continuity, multi-hub operations and release gate
 remain open. The SDK has eighteen recipes covering 50 of 91 catalog method names
 and three notification names, with 141 behavioral contracts; these counts do not
 qualify every workflow outcome. iOS-only v1 and the global goal remain active.
+
+## SDK session settings and native question drafts — source ab1e39fff
+
+Keep the next SDK work aligned with actual client workflows: a read-only command
+catalog recipe and a reviewed session-settings recipe for model, reasoning and
+vision choices. Luna medium implementers own disjoint example/contract files;
+Bot owns catalog/qualification registration, documentation, source review and
+outside-checkout tests. Read actual server contracts, preserve raw presence and
+fallback semantics, validate receipts and readback, and never replay uncertain
+mutations. Mutation examples require their existing explicit owned-hub opt-in.
+
+In parallel, qualify ordinary composer draft interaction with native answers:
+create a fresh owned real ask_user session, retain a nonempty ordinary draft,
+select answers and a note, stop/launch before submission, verify no auto-send,
+then submit consecutive answers and confirm the ordinary draft survives both
+accepted answers and another launch. Observe actual provider ancestry and hub
+input rows, not only local persistence. Preserve the six pre-existing drafts,
+clean up the owned session/provider, and retain source/build provenance. Do not
+use forwarding/fault proxies or claim lost-acknowledgment acceptance from this
+process-restart journey.
