@@ -342,3 +342,24 @@ marker 09 at maximum size became marker 16 after returning to normal size,
 while the persisted anchor remained marker 09. Root-cause tracing and repair
 are next. Additional SDK recovery work, native qualification and the final
 canonical merge gate remain open. iOS-only v1 scope is unchanged.
+
+## Reader reflow recovery checkpoint
+
+Event-order evidence identified the reproduced reader failure: an approximate
+search marker survived a later exact restoration and prevented another search
+when Dynamic Type reflow unmounted the anchor. The fix resets that search state
+on a measured result, retaining the exact-layout guard and bounded retries.
+The regression failed against the old behavior; all 583 native tests and
+TypeScript now pass.
+
+Clean Release bundle
+`1a52905ae64b7ea081cc7850eae5d6848af7062cf32756dcd73caaed895c6d18`
+passed the original message-anchor size round trip, restart restoration and a
+second round trip anchored to the interruption notice. See [reader evidence](../../design/mobile/reader-continuity-evidence.md)
+for the captured failure, causal trace, final artifact and before/after images.
+Temporary probes were removed and all four retained draft hashes were verified.
+
+Next are the remaining SDK acceptance/recovery recipes and the full reader
+continuity matrix, followed by VoiceOver/iPad/physical-device, multi-hub,
+performance, signing/install/update and final merge qualification. This scoped
+repair does not complete iOS-only v1. Android and voice remain deferred as above.

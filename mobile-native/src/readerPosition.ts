@@ -154,6 +154,33 @@ export function captureReaderAnchor(
 export type ReaderRestoreCommand =
 	| { kind: "exact"; index: number; viewOffset: number }
 	| { kind: "approximate"; offset: number };
+
+export class ReaderRestoreAttempts {
+	private approximateOffset: number | null = null;
+	private failures = 0;
+
+	reset() {
+		this.approximateOffset = null;
+		this.failures = 0;
+	}
+	begin(command: ReaderRestoreCommand): boolean {
+		if (command.kind === "exact") {
+			// A measured row ends the search; reflow may require a fresh search later.
+			this.reset();
+			return true;
+		}
+		if (this.approximateOffset === command.offset) return false;
+		this.approximateOffset = command.offset;
+		return true;
+	}
+	retryUnmeasured(): boolean {
+		if (this.failures >= 3) return false;
+		this.failures += 1;
+		this.approximateOffset = null;
+		return true;
+	}
+}
+
 export function shouldApplyExactRestore(
 	previous: ReaderMeasurement | null,
 	measurement: ReaderMeasurement,

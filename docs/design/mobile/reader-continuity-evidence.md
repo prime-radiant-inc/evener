@@ -124,3 +124,66 @@ content-size clamping, stale virtualized measurements and a queued approximate
 restore running after a newer exact restore. Capture bounded in-memory event
 order and flush outside the layout/scroll callbacks so logging does not mask
 the failure. The simulator is back at `large`; the defect remains open.
+
+## Measured recovery repair, 7 September 2026
+
+A bounded, in-memory trace reproduced the same marker-09-to-marker-16 failure
+and established the suppression mechanism. The diagnostic bundle was
+`f8f2ee2a45af0a2754747555d14b694de0d42a6fb7f74f03e9ff80c4805d6645`.
+Its [83-event trace](assets/reader-continuity/reflow-trace-20260907.json) was
+flushed only when backgrounding the owned fixture, without transcript text or
+transport/configuration data. Relevant events:
+
+| Events | Observation |
+| --- | --- |
+| 14–35 | Initial approximate search uses offset 1868 and exhausts three failures, then measures the anchor at y=4827 and successfully scrolls to 5159. |
+| 44–49 | Maximum text size measures y=34963.332 and successfully scrolls to 35295.333. |
+| 53–60 | Shrinking text temporarily measures y=11392 while virtualized spacers update; an exact request and observed scroll both reach 11724. |
+| 64–65 | The anchor reports its final y=4827, then unmounts before the restoration effect can use that measurement. |
+| 66–76 | With the anchor unmeasured again, the effect repeatedly skips the approximate search because offset 1868 is still marked as attempted from the initial load. |
+
+The repair gives approximate attempts and their failure count a single lifecycle
+in `ReaderRestoreAttempts`. An exact measurement clears both before the existing
+duplicate-exact guard. If reflow later removes that row, a fresh approximate
+search can recover it. The retry cap remains three failures between measured
+results. The exact-layout duplicate guard, semantic anchor, paging and user-drag
+suppression behavior remain in place. No speculative content-size delay or
+additional scroll loop was added.
+
+The regression test failed with the extracted original behavior at the fresh
+search after a measured row, then passed after the lifecycle reset. Fifteen
+reader tests and the full `make test-native` gate pass: 583 tests across 69 files
+plus TypeScript. Touched Biome checks and `git diff --check` pass. Luna medium
+reviewed the supplied fix and regression sequence; root executed the checks and
+simulator journeys.
+
+The final clean Release bundle is
+`1a52905ae64b7ea081cc7850eae5d6848af7062cf32756dcd73caaed895c6d18`.
+Source hashes:
+
+- `screens.tsx`: `f0c9dd6804d6ca5e220f161b2dede9a94392953605b8a3ffe82392ac08bd032a`
+- `readerPosition.ts`: `6d0b9a8ca9f39670aebf932ebff13ff88817e7e4a105867c7e745bd5484cda63`
+
+On the same iPhone simulator this clean build passed:
+
+1. The failing message-anchor round trip, retaining marker 09 at offset 332
+   and returning to the same visible position with marker 10 below.
+2. Process termination/relaunch, restoring that message anchor from the older
+   page.
+3. A second round trip after a user drag selected the interruption after marker
+   09 (`turn_m9:9:1`, offset 37), retaining the same boundary above marker 10.
+
+SQLite retained each exact semantic anchor and touch time through its size
+round trip. Before/after screenshots show the same content and placement:
+
+![Message position before](assets/reader-continuity/reflow-fix-message-before.jpg)
+![Message position after](assets/reader-continuity/reflow-fix-message-after.jpg)
+![Interruption position before](assets/reader-continuity/reflow-fix-notice-before.jpg)
+![Interruption position after](assets/reader-continuity/reflow-fix-notice-after.jpg)
+
+Temporary probe source and its SQLite record were removed. All four retained
+fixture draft hashes remain unchanged with no unconfirmed sends. Text size ends
+at `large`. This closes the reproduced suppression defect; the broader image,
+streaming, far-virtualization, multi-hub, VoiceOver, iPad and physical-device
+continuity matrix above remains unqualified. The final canonical merge gate
+has not been rerun for this source.

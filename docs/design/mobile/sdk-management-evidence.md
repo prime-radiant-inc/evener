@@ -54,7 +54,8 @@ read current state and prepare a deliberate next action. Readback does not
 prove which writer made a change. These contracts have no mutation ID or
 revision precondition; preflight checks are not atomic with writes.
 
-No native source changed in this increment. The separately reproduced Dynamic
-Type reader failure remains open, as do the full iOS release matrix and final
-canonical merge gate. Android source is preserved and qualification is deferred
+No native source changed in this increment. Reader diagnosis and qualification
+are recorded separately in [reader evidence](reader-continuity-evidence.md).
+The full iOS release matrix and final canonical merge gate remain open.
+Android source is preserved and qualification is deferred
 for iOS-only v1. Neither recipe was published, and no branch was pushed or merged.
