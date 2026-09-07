@@ -78,6 +78,8 @@ if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "
 run(process.execPath, [join(fixtureDir, "esm-runtime.mjs")], fixtureDir);
 run(process.execPath, [join(fixtureDir, "commonjs-runtime.cjs")], fixtureDir);
 
+run(process.execPath, ["--test", join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.test.mjs")], fixtureDir);
+
 const listing = run("tar", ["-tzf", tarball], fixtureDir);
 for (const expected of [
   "package/dist/index.js",

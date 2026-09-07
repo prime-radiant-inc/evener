@@ -79,6 +79,42 @@ recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
 
+### Streaming, paging, and rejoin
+
+`streaming-rejoin.mjs` is a read-only recipe for an existing session. It reads a
+bounded fragment view, carries the server's older item cursor unchanged into
+`thread/turns/list`, checks transcript keys and `{entry,item}` fragment
+positions, unsubscribes, and replaces the subscription on rejoin. It verifies
+the same immutable session ref and instance identity throughout and prints only
+counts and notification names. It performs no mutation and never retries one.
+
+```sh
+EVENER_THREAD_REF=opaque-ref-from-owned-fixture \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/hub/auth-token \
+EVENER_CWD=/path/on/hub \
+node node_modules/@evener/appwire-client/examples/streaming-rejoin.mjs
+```
+
+The recipe requires an owned active session with an instance identity and reads at most 20 items per
+request, following one older page when available. Entry zero is valid for the
+system prelude. A stale cursor replaces the retained window with a subscribed
+snapshot. During a bounded observation window (five seconds by default;
+`EVENER_OBSERVE_SECONDS` accepts 0–60), matching item/turn/reset/resync events
+trigger one authoritative snapshot read after the window. It then unsubscribes
+and rejoins, verifying the same instance. Notifications for another ref are
+ignored. Counts distinguish actual paging and stale recovery from unexercised
+branches. This demonstrates bounded snapshot reconciliation, not an incremental
+stream renderer or continuous reconnect loop. Use a longer transcript to
+exercise paging and a concurrent owned writer to observe live events.
+It does not establish complete streaming, notification, failure or native
+release coverage.
+Its deterministic contract checks can run without a hub:
+
+```sh
+node --test examples/streaming-rejoin.test.mjs
+```
+
 The project-layer recipe exercises a reversible settings mutation, independent
 readback, effective configuration, and the launch-update notification. Use an
 isolated project directory on a test hub:
