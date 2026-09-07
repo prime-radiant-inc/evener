@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // TestRetainedMatchesAccumulatorParity proves the O(1) running-accumulator
@@ -34,7 +32,7 @@ func TestRetainedMatchesAccumulatorParity(t *testing.T) {
 		}
 		return s
 	}
-	for k := 0; k < 150; k++ {
+	for k := range 150 {
 		m := retainedSearchMatch{
 			LineStartByte: int64(k * 37),
 			Before:        []string{rnd(), rnd()},
@@ -69,16 +67,14 @@ func TestRetainedMatchesAccumulatorParity(t *testing.T) {
 // re-marshal cost (before) vs the O(1) accumulator (after) is visible.
 func BenchmarkSearchRetainedOutputManyMatches(b *testing.B) {
 	var sb strings.Builder
-	for i := 0; i < 120; i++ {
+	for i := range 120 {
 		fmt.Fprintf(&sb, "match line %04d with some padding text to resemble log output\n", i)
 	}
 	data := []byte(sb.String())
 	opts := retainedSearchOptions{
-		Regexp: regexp.MustCompile(`match line`),
-		SearchOptions: jobstore.SearchOptions{
-			MaxMatches:         100,
-			MaxSerializedBytes: 1 << 20,
-		},
+		Regexp:             regexp.MustCompile(`match line`),
+		MaxMatches:         100,
+		MaxSerializedBytes: 1 << 20,
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
