@@ -31,7 +31,7 @@ type NativeNavigationParams = Omit<
 	NavigationReadParams,
 	"representationVersion"
 >;
-function resourceKeyFor(p: NavigationReadParams): ResourceKey {
+export function resourceKeyFor(p: NavigationReadParams): ResourceKey {
 	const offset = p.offset ?? 0,
 		limit = p.limit ?? 50;
 	switch (p.resource) {

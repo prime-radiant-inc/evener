@@ -86,6 +86,7 @@ import { RosterSearch } from "./rosterSearch";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
+import { localSessionId } from "./sessionDeletionResult";
 import { TasksSheet } from "./TasksSheet";
 import { TimelineItem } from "./TimelineItem";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -98,6 +99,7 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+	SessionDeletion: { hubId: string; ref: string; title: string };
 	Fork: {
 		hubId: string;
 		ref: string;
@@ -904,12 +906,25 @@ export function ConversationScreen({
 	useEffect(() => () => approvalControls?.dispose(), [approvalControls]);
 
 	const hasConversation = snapshot.conversation !== null;
+	const deletionAvailable =
+		!!localSessionId(route.params.ref) &&
+		snapshot.conversation?.status === "notLoaded";
 	const openSessionDestination = useCallback(
 		(destination: SessionDestination) => {
 			setSessionMenuOpen(false);
 			Keyboard.dismiss();
 			const current = store.getState().conversation;
 			if (!current) return;
+			if (destination === "delete") {
+				if (!localSessionId(route.params.ref) || current.status !== "notLoaded")
+					return;
+				navigation.navigate("SessionDeletion", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+					title: current.name ?? route.params.title,
+				});
+				return;
+			}
 			if (destination === "pin") {
 				navigation.navigate("PinAssignment", {
 					hubId: route.params.hubId,
@@ -956,6 +971,15 @@ export function ConversationScreen({
 					disabled: !hasConversation,
 					menu: {
 						items: [
+							...(deletionAvailable
+								? [
+										{
+											type: "action" as const,
+											label: "Delete saved session",
+											onPress: () => openSessionDestination("delete"),
+										},
+									]
+								: []),
 							{
 								type: "action",
 								label: "Session details",
@@ -1012,6 +1036,7 @@ export function ConversationScreen({
 	}, [
 		navigation,
 		hasConversation,
+		deletionAvailable,
 		connected,
 		openSessionDestination,
 		colors.text,
@@ -1557,6 +1582,7 @@ export function ConversationScreen({
 					title={conversation?.name ?? route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
 					connected={connected}
+					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
 				/>

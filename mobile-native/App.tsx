@@ -30,6 +30,7 @@ import {
 	SessionLocationScreen,
 } from "./src/ProjectsScreen";
 import { ProvidersScreen } from "./src/ProvidersScreen";
+import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
 import {
 	ConversationScreen,
 	HubsScreen,
@@ -109,6 +110,11 @@ function Navigation() {
 						options={{ title: "Evener · Hubs" }}
 					/>
 					<Stack.Screen name="Sessions" component={SessionsScreen} />
+					<Stack.Screen
+						name="SessionDeletion"
+						component={SessionDeletionScreen}
+						options={{ title: "Delete saved session" }}
+					/>
 					<Stack.Screen
 						name="Fork"
 						component={ForkScreen}

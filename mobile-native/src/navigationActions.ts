@@ -3,6 +3,7 @@ import type {
 	NavigationMutation,
 	PinSectionDeleteParams,
 	PinSectionRenameParams,
+	SessionDeleteParams,
 	SessionPinAssignParams,
 	SessionPinUnpinParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -12,6 +13,10 @@ import type {
 	NavigationActionStorage,
 	NavigationOperation,
 } from "./navigationActionRepository";
+import {
+	type SessionDeletionResult,
+	sessionDeletionResult,
+} from "./sessionDeletionResult";
 
 const unresolved =
 	"A previous organization change needs to be checked. Refresh before making another change.";
@@ -115,6 +120,42 @@ export class NavigationActions {
 			this.client.request("evener/pin-section/delete", params),
 		);
 	}
+	deleteSession(target: SessionDeleteParams) {
+		const params = { ...target };
+		return this.run({ kind: "deleteSession", params }, async () => {
+			const response = await this.client.request(
+				"evener/session/delete",
+				params,
+			);
+			return {
+				ok: true,
+				navigation: response.navigation,
+				deletion: sessionDeletionResult(params.ref, response),
+			};
+		});
+	}
+	allowDeletionRetry(expected: NavigationActionCheckpoint) {
+		if (
+			this.disposed ||
+			!this.current() ||
+			this.state.pending ||
+			expected.operation.kind !== "deleteSession" ||
+			expected.receipt ||
+			!this.storage
+		)
+			return false;
+		try {
+			if (!this.storage.finish(expected)) return false;
+			return this.restore();
+		} catch {
+			this.publish({
+				...this.state,
+				storageUnavailable: true,
+				error: storageError,
+			});
+			return false;
+		}
+	}
 	async reconcile() {
 		if (this.disposed || !this.current() || this.state.pending) return;
 		if (!this.restore()) return;
@@ -149,7 +190,11 @@ export class NavigationActions {
 	}
 	private async run(
 		operation: NavigationOperation,
-		request: () => Promise<{ ok: boolean; navigation: NavigationMutation }>,
+		request: () => Promise<{
+			ok: boolean;
+			navigation: NavigationMutation;
+			deletion?: SessionDeletionResult;
+		}>,
 	) {
 		if (
 			this.disposed ||
@@ -186,16 +231,23 @@ export class NavigationActions {
 		let savingRecovery = false;
 		try {
 			const response = await request();
-			if (this.disposed) return;
-			if (!this.current()) throw Error("scope changed");
 			if (response.ok !== true) throw Error("not accepted");
 			accepted = true;
 			if (checkpoint && this.storage) {
 				savingRecovery = true;
-				checkpoint = this.storage.acknowledge(checkpoint, response.navigation);
+				// Preserve a known result even when its screen has gone away. Exact
+				// checkpoint matching prevents a late reply overwriting another action.
+				checkpoint = this.storage.acknowledge(
+					checkpoint,
+					response.navigation,
+					response.deletion,
+				);
 				savingRecovery = false;
-				this.publish({ ...this.state, recovery: checkpoint });
+				if (!this.disposed)
+					this.publish({ ...this.state, recovery: checkpoint });
 			}
+			if (this.disposed) return;
+			if (!this.current()) throw Error("scope changed");
 			await this.refresh(response.navigation, checkpoint ?? undefined);
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");

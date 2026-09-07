@@ -18,6 +18,44 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("restores deletion review without confirming or sending it", () => {
+		const disk = storage(),
+			repository = new LocationRepository(disk);
+		const params = {
+			hubId: "studio",
+			ref: "local:034Kc9793pXlhHyCRXdeAk",
+			title: "Saved session",
+		};
+		repository.save(
+			locationForRoute({ name: "SessionDeletion", params }, "studio"),
+		);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(saved).toMatchObject({
+			hubId: "studio",
+			deleteSession: true,
+			conversation: { ref: params.ref },
+		});
+		expect(restoredStack(saved).routes.at(-1)).toEqual({
+			name: "SessionDeletion",
+			params,
+		});
+		expect(
+			locationForRoute({ name: "SessionDeletion", params }, "other"),
+		).toBeNull();
+		for (const extra of [
+			{ pinned: {} },
+			{ pinAssignment: true },
+			{ fork: { instanceId: "i", entryIndex: 1, preview: "x" } },
+			{ conversation: undefined },
+			{ deleteSession: false },
+		]) {
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({ ...saved, ...extra }),
+			);
+			expect(repository.read(["studio"])).toBeNull();
+		}
+	});
 	it("restores a selected fork message over its exact parent after restart", () => {
 		const disk = storage();
 		const params = {
