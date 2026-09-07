@@ -14,6 +14,9 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 - **[ux-plan-2026-07.md](ux-plan-2026-07.md)** — the five-participant study of
   the SPA against the old server-rendered build, and the plan that came out of
   it. Cited from live source comments.
+- **[typography-spacing-critique-2026-09-06.md](typography-spacing-critique-2026-09-06.md)** —
+  measured critique of type scale, measure, rhythm and balance on desktop and
+  phone, with a proposed ramp and enforcement plan. Proposal, not shipped.
 - **[keybindings.md](keybindings.md)** — the keybindings dispatcher: registry,
   scope stack, precedence layers, per-binding policy flags, and how to
   register an action or a chord, the shipped default binding map (including
