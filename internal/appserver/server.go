@@ -1007,11 +1007,8 @@ func captureSubscription(
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
 		if handoff.Commit == nil && handoff.Abort == nil {
-			if len(resolveTarget) != 0 {
-				target := resolveTarget[0]()
-				if target.ThreadID == "" && target.LifecycleKey == "" {
-					return false
-				}
+			if len(resolveTarget) != 0 && resolveTarget[0]().ThreadID == "" {
+				return false
 			}
 			return snapshot()
 		}
