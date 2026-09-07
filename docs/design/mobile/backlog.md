@@ -372,6 +372,10 @@ is retained in the creation evidence; keyboard and accessibility acceptance
 remain incomplete. 321 native tests pass.
 Opening image selection/removal and creation now have native evidence on both
 platforms, independent SDK PNG readback and viewer checks; 324 native tests pass.
+Creation configuration now groups into two wrapping rows at default sizes.
+Largest iOS text and Android 2x checks exposed and fixed unbounded prompt/footer
+height; both retain input and actions above the keyboard. Native selection,
+attachment-heavy large-text and long-label qualification remain open.
 Creation drafts now persist per hub in SQLite, including images and an uncertain
 creation checkpoint. Both Release simulators restored project/prompt/model/image
 after process termination and created the restored input; 349 native tests pass.

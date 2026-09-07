@@ -380,3 +380,35 @@ Captures: [iOS default](assets/creation/density-ios.jpg),
 This is a spacing improvement. Long harness/plugin labels, large accessibility
 text, smaller screens, screen-reader traversal and expanded-option keyboard
 behavior still require qualification; it does not establish final visual quality.
+
+
+## Creation at accessibility text sizes
+
+The largest iOS Dynamic Type check exposed an unbounded opening prompt and a
+three-row footer: attachment, model and Create each occupied a separate row.
+The prompt could push its actions away from the editing viewport. Creation now
+uses the conversation composer's bounded-input approach: 96 units at font scale
+above 1.6, otherwise a 120–160-unit input. Text scrolls inside that viewport.
+Prompt content-size changes keep a focused composer in view without scrolling
+past configuration when it opens. Above scale 1.4, model/reasoning precede the
+attachment/submit row. The visible action is Create; its accessible name remains
+Create session. No text is truncated in the stored draft by these layout rules.
+
+Final Release checks on iOS accessibility-extra-extra-extra-large and Android
+font scale 2.0 showed a focused input, model control, attachment and Create above
+the software keyboard. On iOS, switching from normal text to the largest size
+while editing kept the composer in view automatically. Android recreated its
+activity on text-size changes; reopening creation restored the saved draft.
+Settings rows wrapped to full width instead of overflowing horizontally.
+Both simulator text settings were restored and read back (iOS large, Android 1.0).
+
+- [iOS failure before bounding](assets/creation/large-before-ios.jpg).
+- [iOS focused composer after live text-size change](assets/creation/large-ios.jpg).
+- [Android focused composer at 2x text](assets/creation/large-android.png).
+
+Both Release builds, TypeScript, touched Biome checks and 349 native tests pass.
+This pass submitted no session. The iOS automation's replace-existing operation
+inserted into the fixture instead of reliably replacing it; therefore these
+captures establish geometry and focus, not exact long-text entry fidelity.
+Native selection/autocorrection, screen readers, attachment-heavy creation,
+long reasoning/model labels and smaller screens remain to be qualified.

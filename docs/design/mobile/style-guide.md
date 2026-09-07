@@ -157,3 +157,8 @@ project settings with harness selection and plugins with session options in
 wrapping rows. Preserve native touch targets while removing redundant space
 between them. Expanded configuration uses the full content width. The opening
 prompt and composer controls remain a separate, full-width writing surface.
+
+At large text sizes, creation uses the same two-part footer as conversation:
+model/reasoning above, attachment and Create together below. Bound the opening
+prompt so it scrolls internally and cannot consume the whole keyboard-visible
+area. Keep the focused composer visible when text metrics change.
