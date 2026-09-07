@@ -1,11 +1,17 @@
-import { QRCodeSVG } from "qrcode.react";
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import { WireError } from "../../../protocol/errors";
 import type { AppwireClientLike } from "../../../protocol/testing/fakeClient";
 import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { copyText } from "./credentials/clipboard";
 import { useConnectedEffect } from "./useConnectedEffect";
+
+// qrcode.react rides its own split chunk: MobileSection itself stays in the
+// Settings chunk (Settings.tsx imports it statically), but the QR renderer
+// downloads only once this section actually renders. The Suspense fallback
+// is scoped to the QR slot so a slow chunk shows a placeholder in this
+// section only, never the whole pane.
+const QRCodeSVG = lazy(() => import("qrcode.react").then((m) => ({ default: m.QRCodeSVG })));
 
 type PairingState =
   | { kind: "loading" }
@@ -53,7 +59,9 @@ export function MobileSection() {
       <h2 id="mobile-app-pairing-heading">Mobile app</h2>
       <p>Scan this code from the Evener mobile app to pair another device.</p>
       <div role="img" aria-label="Mobile app pairing QR code">
-        <QRCodeSVG value={state.authURL} includeMargin level="M" />
+        <Suspense fallback={<Skeleton lines={1} />}>
+          <QRCodeSVG value={state.authURL} includeMargin level="M" />
+        </Suspense>
       </div>
       <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
         Copy pairing link
