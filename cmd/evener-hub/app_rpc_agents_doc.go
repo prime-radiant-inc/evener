@@ -85,7 +85,10 @@ func registerAgentsDocHandlers(server *appserver.Server, configRoot string) {
 				// rejected and leave every other client on the old content,
 				// so describe what was just put on disk instead - the write
 				// is byte for byte, so this is the file (same reasoning as
-				// the post-rename path in registerKeybindingsHandlers).
+				// the post-rename path in registerKeybindingsHandlers). The
+				// response says nothing went wrong, so the log is the only
+				// place the failure is visible at all.
+				server.Logf("AGENTS.md read back after write failed: %v", err)
 				resp = appwire.AgentsDocResponse{Path: path, Exists: true, Content: params.Content}
 			}
 			server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)

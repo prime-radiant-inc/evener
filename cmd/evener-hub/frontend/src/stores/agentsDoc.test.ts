@@ -27,6 +27,27 @@ describe("fetch", () => {
     expect(agentsDocStore.getState().error).toBeNull();
   });
 
+  // `loading` is what the section draws its Skeleton from, and it is only
+  // observable while a request is outstanding - a handler that never resolves
+  // is the only way to stand in that window.
+  test("loading is true while the request is in flight", async () => {
+    const fake = connectFakeClient();
+    let land: ((doc: AgentsDocResponse) => void) | undefined;
+    const pending = new Promise<AgentsDocResponse>((resolve) => {
+      land = resolve;
+    });
+    fake.on("evener/settings/agentsDoc/get", () => pending);
+
+    const inFlight = agentsDocStore.getState().fetch();
+    expect(agentsDocStore.getState().loading).toBe(true);
+    expect(agentsDocStore.getState().doc).toBeNull();
+
+    land?.(DOC);
+    await inFlight;
+    expect(agentsDocStore.getState().loading).toBe(false);
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
+
   test("records a failed fetch as error text and keeps doc null", async () => {
     const fake = connectFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => {

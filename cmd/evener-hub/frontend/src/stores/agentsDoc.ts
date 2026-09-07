@@ -6,6 +6,11 @@
 // broadcast (this client's own save included) replaces it, so a second tab
 // or a save from the TUI lands here without a refetch.
 //
+// An editor must key off `doc.content`, never `doc` itself: one save yields
+// two referentially-distinct `doc` objects carrying the same content - the
+// save's own result, then the hub's broadcast echo behind it - so an
+// identity-keyed effect would wipe anything typed during the round-trip.
+//
 // requireClient() throws outside any try/catch, matching stores/credentials.ts:
 // "no client connected" is a programmer error, not a state to degrade into.
 import { useStore } from "zustand";

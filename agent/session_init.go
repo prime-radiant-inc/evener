@@ -1439,7 +1439,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 
-	// Cache project docs once; reused every round for system prompt rebuilds.
+	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), userdirs.DefaultConfigRoot(), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a

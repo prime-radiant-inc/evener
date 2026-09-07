@@ -72,14 +72,17 @@ test("a missing file renders an empty editor, not an error", async () => {
   expect(screen.queryByText(/Failed to load/)).toBeNull();
 });
 
-test("a failed load shows the error", async () => {
+// The hub's own text is the whole point for a file editor - "permission
+// denied" and "is a directory" are what tell the user what to fix - and it
+// has to be announced, not just drawn.
+test("a failed load shows the hub's own reason and announces it", async () => {
   const fake = new FakeClient("ready");
   fake.on("evener/settings/agentsDoc/get", () => {
     throw new Error("disk on fire");
   });
   connectionStore.getState().connect(fake);
   renderSection();
-  await waitFor(() => expect(screen.getByText(/Failed to load/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Failed to load: disk on fire"));
 });
 
 test("Save and Revert are disabled until the draft differs from the loaded file", async () => {
@@ -228,4 +231,36 @@ test("a changed broadcast echoing this client's own save leaves later keystrokes
 
   expect(editor().value).toBe("# hi\nmore again");
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+// A dropped socket is replaced by a whole new client (ConnectionBanner's
+// retry), and the editor heard no `changed` broadcast while it was down. A
+// one-shot mount fetch would leave it holding pre-drop content, and the next
+// Save would push that over whatever the reconnected hub now has.
+test("a reconnect on a fresh client refetches the file", async () => {
+  connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+
+  act(() => {
+    connectFakeClient({ ...DOC, content: "# while we were away\n" });
+  });
+  await waitFor(() => expect(editor().value).toBe("# while we were away\n"));
+});
+
+test("a reconnect while the draft is dirty keeps the draft and offers Load current", async () => {
+  connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+
+  act(() => {
+    connectFakeClient({ ...DOC, content: "# while we were away\n" });
+  });
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  expect(editor().value).toBe("# hi\nmore");
+
+  await user.click(screen.getByRole("button", { name: "Load current" }));
+  expect(editor().value).toBe("# while we were away\n");
 });

@@ -81,7 +81,9 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
   created by Evener startup.
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/AGENTS.md` is your personal
   standing instructions file. Every session loads it ahead of the repo's own
-  AGENTS.md, and Settings → AGENTS.md in the web UI edits it in place.
+  instruction docs — AGENTS.md plus whichever sibling the model's surface reads
+  (CLAUDE.md, GEMINI.md) — and Settings → AGENTS.md in the web UI edits it in
+  place.
 
 Those extension roots are not active just because they exist. Add standalone
 skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
