@@ -96,3 +96,38 @@ test package and the runtime build passed. Evidence is appended to
 The next management slice is native catalog/section browsing and rename/delete.
 The broader checklist stays open until those destinations, ordinary fork, session
 deletion and lifecycle/accessibility acceptance are implemented and exercised.
+
+### Catalog and section management implementation
+
+1. Share the existing pin navigation/recovery binding between assignment, catalog
+   and section management screens. Require a read in the current focus/connection
+   scope before enabling edits; cached observations remain visibly last-known.
+2. Add a paged pinned-section catalog from Sessions and a section session list
+   using the existing navigation tree/list rendering. Each section exposes Manage.
+3. Add a section editor with a synchronously saved rename proposal scoped by
+   hub and section. Restore its route and raw name after restart. Confirm section
+   deletion with current name/member count and explain that sessions are retained.
+   Both mutations use the existing journal and fresh target/catalog readback.
+4. Verify catalog lookup beyond the first page, absent sections, stale confirmation,
+   restart recovery, rename/delete without replay, and the owned iOS workflow.
+   Keep full VoiceOver/iPad and the broader release audit separate until observed.
+
+### Catalog and management checkpoint
+
+`f08473f48` implements the four steps above. The final Release restored a name
+proposal and route after termination without writing to the hub, saved and
+confirmed the rename, rejected a stale delete confirmation, and canceled then
+confirmed deletion at maximum text size while retaining the session/history.
+The same final build passed native assignment and member browsing, then removed
+cached rows after external section deletion and Refresh. The owned fixture was
+restored to an empty catalog and unpinned state.
+
+A notification-gap readback regression found during the UI journey is corrected
+using the existing receipt-aware refresh. The two new regressions failed first;
+492 native tests, TypeScript and touched Biome checks now pass. See the
+[management evidence](../../design/mobile/organization-evidence.md#ios-pinned-section-management-checkpoint-2026-09-07)
+for the exact Release bundle and scope of the observed results.
+
+The next management work is ordinary selected-turn fork and ended-session
+deletion. Durable archive/favorite recovery and full lifecycle/accessibility
+qualification remain part of the unfinished overall checklist.

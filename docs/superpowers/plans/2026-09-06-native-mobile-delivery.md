@@ -226,3 +226,20 @@ menus, native keybinding editing, further independent SDK recipes, and the
 cross-cutting lifecycle/reader/release matrix. The Dynamic Type drift remains
 an open failure. These scoped checks do not replace the final canonical merge
 gate and requirement-by-requirement acceptance audit.
+
+## Pinned section management checkpoint
+
+`f08473f48` adds native catalog/member destinations and rename/delete with durable
+name proposals, exact route restoration and shared operation recovery. The owned
+iOS journey verified restart without replay, rename/readback, stale confirmation,
+cancel/delete at maximum text size, retained session history, assignment, and
+external deletion recovery. The final bundle is
+`0dada2f69bedc5522b37b941222cc75f2b042901e03855aa3e5762323a8c378e`;
+492 native tests, TypeScript and touched Biome checks pass.
+
+See [organization evidence](../../design/mobile/organization-evidence.md#ios-pinned-section-management-checkpoint-2026-09-07)
+for final artifacts and limits. Ordinary fork, ended-session deletion, durable
+archive/favorite recovery, keybindings, further SDK recipes, the reader continuity
+failure and the cross-cutting release matrix remain open. Android stays deferred
+for iOS-only v1. The preserved unrelated Apple project/plist edits still match
+their original patch.
