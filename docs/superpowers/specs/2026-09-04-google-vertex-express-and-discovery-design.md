@@ -385,7 +385,14 @@ any shape pasted here by mistake.
 Control bytes are stripped from what is rendered, since clipboard content
 reaches the view. A value that is neither a document nor a readable path is
 reported by its reason alone: the error line is rendered and outlives the
-panel, so it repeats none of what was submitted.
+panel, so it repeats none of what was submitted. For the same reason
+`CheckCredentialJSON` bounds the two values its refusals quote back (an
+unsupported `type`, a foreign `token_uri`) to a short prefix.
+
+The path is read on the update loop, so what it names is checked before it is
+opened: only a regular file under a bounded size is read. Reading a pipe
+would never return and the interface would stop responding; reading a
+character device would grow until the process died.
 
 ## 5. End-to-end flows the hub must support after this change
 

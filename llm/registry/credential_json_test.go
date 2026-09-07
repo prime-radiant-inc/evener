@@ -216,6 +216,45 @@ func TestCredentialJSONType(t *testing.T) {
 	}
 }
 
+// TestCheckCredentialJSONBoundsWhatItEchoes: two refusals name the value
+// they refused, and callers render those messages — the TUI keeps one on
+// screen after its prompt closes. A document pasted by mistake can carry
+// anything in those fields, so the message shows enough of the value to
+// identify it and no more.
+func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
+	long := strings.Repeat("S", 400)
+	for _, tt := range []struct {
+		name, raw, want string
+	}{
+		{
+			name: "unsupported type",
+			raw:  `{"type":"` + long + `"}`,
+			want: "is not supported",
+		},
+		{
+			name: "foreign token_uri",
+			raw:  `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/` + long + `"}`,
+			want: "is not Google's OAuth token endpoint",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckCredentialJSON([]byte(tt.raw))
+			if err == nil {
+				t.Fatal("want a refusal")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %q, want it to say %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), long) {
+				t.Fatalf("err repeats the whole value: %q", err)
+			}
+			if len(err.Error()) > 200 {
+				t.Fatalf("err is %d bytes, want a bounded message: %q", len(err.Error()), err)
+			}
+		})
+	}
+}
+
 // testServiceAccountJSON returns a service_account credential JSON whose
 // private_key is a freshly generated PKCS#8 RSA key, so no key material
 // lives in the repository. llm/registry and llm/providers/tokenauth share no

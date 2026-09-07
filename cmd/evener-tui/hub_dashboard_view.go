@@ -59,7 +59,7 @@ func (m hubModel) dashboardView() string {
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.credentialsPanel.View(),
-			Footer:  "[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close",
+			Footer:  "[Enter] set credential  [O] OAuth sign-in  [C] clear  [Esc] close",
 			Height:  m.height,
 		}.View()
 	}

@@ -56,6 +56,23 @@ func CredentialJSONType(raw []byte) string {
 // resolves; the tokenauth authenticator and the hub's
 // evener/auth/credentialJson/set run the identical check, so a value the
 // registry resolves is one the authenticator will accept.
+//
+// A refusal that quotes the value it refused bounds what it quotes
+// (clipEcho): the document may be anything a user pasted, and callers render
+// the message.
+//
+// clipEcho shows enough of a refused value to identify it and no more. The
+// TUI's credential prompt keeps such a message on screen after the prompt
+// closes, so an unbounded echo would put a mistakenly pasted secret there.
+func clipEcho(s string) string {
+	const limit = 40
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
+}
+
 func CheckCredentialJSON(raw []byte) error {
 	if !json.Valid(raw) {
 		return errors.New("not valid JSON")
@@ -65,7 +82,7 @@ func CheckCredentialJSON(raw []byte) error {
 		return errors.New(`credential JSON has no "type" field`)
 	}
 	if !AllowedCredentialJSONTypes[t] {
-		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", t)
+		return fmt.Errorf("credential type %q is not supported: paste a service-account key or an authorized_user file", clipEcho(t))
 	}
 	// Every field the gate reads is decoded through a tagged field, the way
 	// Google's library reads it: key names match case-insensitively and the
@@ -113,7 +130,7 @@ func CheckCredentialJSON(raw []byte) error {
 	if isJSONValue(cred.TokenURL) {
 		var s string
 		if json.Unmarshal(cred.TokenURL, &s) != nil || !googleTokenEndpoints[s] {
-			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", string(cred.TokenURL))
+			return fmt.Errorf("token_uri %s is not Google's OAuth token endpoint", clipEcho(string(cred.TokenURL)))
 		}
 	}
 	// Google's parser decodes its whole credential file, every type's fields
