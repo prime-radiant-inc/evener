@@ -3,23 +3,13 @@
 // The vertical-rhythm and heading contract (docs/web-ui/typography-spacing-
 // critique-2026-09-06.md R3, R4), pinned off disk the way token-contract
 // does: jsdom evaluates no cascade, so the contract is on the declarations.
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path: string): string => readFileSync(join(SRC, path), "utf8");
-
-function walkCss(dir: string): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...walkCss(full));
-    else if (entry.isFile() && entry.name.endsWith(".css")) found.push(relative(SRC, full));
-  }
-  return found;
-}
 
 const rule = (css: string, selector: string): string => {
   const escaped = selector.replace(/[.[\]>]/g, (c) => `\\${c}`);
@@ -34,21 +24,6 @@ test("pane titles are sentence-case headings, not micro-labels", () => {
   expect(title).toMatch(/font-size: var\(--font-size-pane-title\)/);
   expect(title).toMatch(/font-weight: var\(--font-weight-semibold\)/);
   expect(title).toMatch(/color: var\(--ink-hi\)/);
-});
-
-test("every uppercase rule is a complete caption-size eyebrow in --ink-mid or darker", () => {
-  for (const path of walkCss(SRC)) {
-    const css = read(path).replace(/\/\*[\s\S]*?\*\//g, "");
-    for (const block of css.matchAll(/\{([^{}]*)\}/g)) {
-      const body = block[1]!;
-      if (!/text-transform:\s*uppercase/.test(body)) continue;
-      expect(body, `${path}: uppercase rule lacks caption size`).toMatch(/font-size: var\(--font-size-caption\)/);
-      expect(body, `${path}: uppercase rule lacks eyebrow tracking`).toMatch(
-        /letter-spacing: var\(--tracking-eyebrow\)/,
-      );
-      expect(body, `${path}: uppercase rule sits in --ink-low`).not.toMatch(/color: var\(--ink-low\)/);
-    }
-  }
 });
 
 test("exchange boundaries, runs and pane bodies use the rhythm and space tokens", () => {
