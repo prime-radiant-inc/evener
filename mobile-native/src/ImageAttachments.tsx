@@ -17,10 +17,15 @@ export function ImageAttachments({
   document,
   selection,
   uncertain = false,
+  disabled = false,
 }: {
-  document: DraftDocument;
+  document: Pick<
+    DraftDocument,
+    "subscribe" | "getSnapshot" | "imagePreviews" | "removeImage"
+  >;
   selection: ImageSelection;
   uncertain?: boolean;
+  disabled?: boolean;
 }) {
   const colors = useColors();
   const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
@@ -95,6 +100,8 @@ export function ImageAttachments({
             {!uncertain ? (
               <Pressable
                 accessibilityRole="button"
+                accessibilityState={{ disabled }}
+                disabled={disabled}
                 accessibilityLabel={`Remove image ${image.marker}: ${image.name ?? "attachment"}`}
                 hitSlop={8}
                 onPress={() =>

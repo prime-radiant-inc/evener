@@ -191,6 +191,26 @@ Omit `input` to create an empty session. To supply an opening prompt, add an
 including `thread.evener.ref`, rather than constructing it from a display title.
 The server can normalize the directory, including its trailing slash.
 
+Opening images are ordinary `input` items: `type: "image"`, `mediaType` (for
+example `image/png`), `data` containing base64 bytes without a data-URL prefix,
+and an optional `name`. They do not require a separate upload request. Put an
+optional text item first, then images in attachment order. An image-only input
+is valid; omit an empty text item. A local device file URI is not image data
+and is not readable by a remote hub.
+
+The shipped composers limit selection to eight images and eight MiB per source
+file and re-encode native selections to PNG. Those are client staging rules,
+not a promise that every harness/model accepts every image or encoded request
+size. Retain the staged bytes and report server rejection. Local `[image N]`
+editing markers are translated to `(attached image N: filename)` text at send;
+neither the marker number nor local image ID is an `InputItem` field.
+
+To verify stored user input independently, call `thread/read` with the returned
+`ref` and `includeTurns: true`. User-message items expose their `text` and
+`images`; image entries include media type, base64 data and optional name. A
+successful start response alone does not prove that a live event consumer has
+rendered those attachments.
+
 For local Evener, explicit top-level `model`, `profile`, `reasoningEffort` and
 `nonInteractive` take precedence over the corresponding `launchOverrides` fields.
 `modelProvider` qualifies `model` when needed. Other harnesses are routed to their
