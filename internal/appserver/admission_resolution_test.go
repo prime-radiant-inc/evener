@@ -69,6 +69,27 @@ func TestInvalidSubscribingReadPreservesInvalidParams(t *testing.T) {
 	}
 }
 
+func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) { return "", false }})
+	c := s.NewConnection("metadata")
+	c.setInitialized()
+	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
+	c.executeOrdered(context.Background(), msg)
+	response := <-c.send
+	if response.Error == nil || response.Error.Error.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("unresolved metadata = %+v, want session unavailable", response)
+	}
+}
+
+func TestCaptureWithoutConnectionKeepsLifecycleOnlyTarget(t *testing.T) {
+	captured := CaptureSubscription(context.Background(), false, nil, func() uint64 { return 0 }, func() bool { return true }, func() SubscriptionTarget {
+		return SubscriptionTarget{LifecycleKey: "local:past"}
+	})
+	if !captured {
+		t.Fatal("no-connection capture rejected a valid lifecycle-only target")
+	}
+}
+
 func TestResolvedAdmissionMismatchPreservesOwnership(t *testing.T) {
 	for _, immediate := range []bool{false, true} {
 		s := NewServer(ServerConfig{})
