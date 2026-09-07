@@ -451,7 +451,12 @@ the shared service rejects malformed or mismatched replies and preserves the
 existing unconfirmed-action/refresh path. The SDK has a guarded queue recipe
 with explicit ownership, entry/revision checks, one dispatch and conservative
 readback. Deterministic coverage includes a real-WebSocket demo queue journey;
-direct-hub iOS queue acceptance and concurrent/fault cases remain open.
+[Direct v4 queue evidence](queue-evidence.md#direct-v4-ios-and-packaged-sdk-qualification--7-september)
+now covers rebuilt iOS and packed-SDK active-turn queue actions through the real
+hub, provider sentinel delivery, completed steering entries, native draft
+preservation across restart, simulated SDK acknowledgment loss without replay,
+and stale-entry/revision rejection. Native uncertainty, socket loss, held queues,
+concurrency and wider device/accessibility acceptance remain open.
 
 [Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
 now covers four real restricted-session cases: native and packaged-SDK Allow

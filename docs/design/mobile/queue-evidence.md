@@ -34,3 +34,71 @@ Final verification: shared 2,234 tests / 90 files, shared TypeScript/Biome, nati
 ![Idle queue on iOS](assets/queue/ios-idle-queue.png)
 
 The earlier real-daemon delivery and idle run-now limitations above are now resolved for this isolated scenario. Queue-specific withheld acknowledgements, reconnect, native stale-view conflicts, durable mutation recovery, accessibility traversal and physical-device checks remain outstanding. The existing production hub and older test-session drafts/queues were not modified.
+
+## Direct v4 iOS and packaged SDK qualification — 7 September
+
+This checkpoint uses iOS-only v1 scope. Historical Android and earlier protocol
+checks above remain separate. The Release app was rebuilt from
+`8fb3e343cb0eeb766146ee9cf31396da0af8a54f` on iPhone 17 Pro/iOS 26.5.
+Its JavaScript bundle SHA-256 is
+`29430c6ded188b165c9cf1e1ba149eac604e8957d129a8b72db0ef0dd032bbfd`.
+The independently installed SDK tarball SHA-256 is
+`d23cfbaaad31c403a7fbe6ea1e2ef2eb35f18e5918a6bb484d194382a8ddd73d`.
+
+Both clients connected directly to the owned authenticated v4 hub at
+`ws://127.0.0.1:54211/rpc`. Its binary SHA-256 is
+`606c8b19bbeb6139a1e1ecc1f2b70d70acd24634f286f940f5a365cd989cfbb7`.
+Only the model boundary was scripted. The provider waited for explicit release
+commands after each actual request; no proxy or timed response pacing was used.
+[The receipt](assets/queue-v4-receipt.json) records exact bindings, artifacts,
+provider observations, SDK mutation IDs, draft hashes and cleanup.
+
+Native session `local:034Kjo1wmWpBXjjTfGlJ5z` began with three SDK-seeded entries.
+The native /queue command added a fourth. With an ordinary unsent draft present,
+one UI press each cancelled the first, promoted the next, and drained the two
+remaining entries. Independent reads confirmed depth 3, then 2, then 0. The
+provider's following request contained the promoted and both drained UUID
+sentinels, and contained neither the cancelled sentinel nor the ordinary draft.
+The completed transcript contains one steering entry for promotion and one
+combined steering entry for drain. App stop/launch restored the ordinary draft,
+and it remained unchanged after completion. Native wire request count was not
+instrumented; this proves observed UI actions, authoritative state and provider
+delivery, not an exact native RPC count.
+
+![Native queue before actions](assets/queue-v4-sheet.jpg)
+
+![Empty queue after native actions](assets/queue-v4-empty.jpg)
+
+SDK session `local:034Kju5wl4tNB8RY8hztnD` exercised four enqueues, cancellation,
+promotion and drain through the installed recipe. The counted client discarded
+the successful cancellation response before returning it to the recipe. The
+recipe returned uncertain, read back the three remaining entries, and sent no
+second cancellation. This simulates acknowledgment loss at the client boundary;
+it is not a socket-disconnection test. Stale entry/revision attempts then sent
+zero recipe mutations. Separate raw server requests with those stale
+preconditions both returned conflict `-32013`. Fresh promotion/drain succeeded.
+Seven recipe mutations were dispatched total; the two deliberately rejected
+raw CAS requests are counted separately.
+
+The provider's subsequent SDK request contained exactly the intended sentinel
+set, and the completed transcript independently contained the same promoted/
+drained steering entries. The SDK completion listener observed completion; the
+native completed state was independently re-read. An initial read-only observer
+incorrectly counted only `userMessage` items; correcting it to include the
+actual `steering` type verified the already-completed native turn without
+replaying any action. ACKs and recipe results remain execution-unverified;
+the separate provider and transcript observations supply execution evidence.
+
+![Completed native conversation and retained draft](assets/queue-v4-completed.jpg)
+
+Cleanup shut down both created sessions, removed the temporary provider
+instance, verified the original registry exactly, and stopped the owned provider
+process. Four pre-existing draft hashes and the new native ordinary draft were
+verified unchanged, with no unconfirmed sends. The fixture driver and scripts/
+receipts are tracked at `/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-queue-jv6vnntm`
+(driver commit `ced4733`; proof commit `18fbba2`).
+
+Remaining: current-build held/idle queue recovery, native stale-view conflicts
+and uncertain acknowledgments, actual socket loss/reconnect during queue
+mutation, multi-device concurrency, durable queue mutation recovery,
+VoiceOver/large text/iPad/physical devices, and full release qualification.
