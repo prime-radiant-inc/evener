@@ -44,10 +44,12 @@
   flex: none;
 }
 
-/* Figures, identifiers and timings - the faces mono is for. Chrome labels never
- * take it. */
-.mono {
-  font-family: var(--font-mono);
+/* Figures and timings: the sans face with tabular digits, so a changing
+ * count never reflows its neighbours. Mono is reserved for machine text
+ * (code, paths, commands) - a percentage or a clock is a figure, not code. */
+.figure {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
 }
 
 .contextMeter {

@@ -3,6 +3,7 @@
 .row {
   padding: var(--space-1) 0;
   font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
