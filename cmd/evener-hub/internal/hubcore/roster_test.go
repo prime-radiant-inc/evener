@@ -2,12 +2,14 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -613,6 +615,7 @@ type overlappingRefreshProber struct {
 	firstStarted  chan struct{}
 	secondStarted chan struct{}
 	releaseFirst  chan struct{}
+	releaseSecond chan struct{}
 }
 
 func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
@@ -623,6 +626,9 @@ func (p *overlappingRefreshProber) Probe(rendezvous.Entry) ProbeResult {
 		return ProbeResult{SessionID: "parent", Status: "old", RunningSubagentIDs: []string{"old-child"}, OK: true}
 	case 2:
 		close(p.secondStarted)
+		if p.releaseSecond != nil {
+			<-p.releaseSecond
+		}
 		return ProbeResult{SessionID: "parent", Status: "new", RunningSubagentIDs: []string{"new-child"}, OK: true}
 	default:
 		return ProbeResult{SessionID: "parent", Status: "unexpected", OK: true}
@@ -646,9 +652,9 @@ func TestRoster_RefreshRejectsStaleConcurrentCommit(t *testing.T) {
 	newDone := make(chan struct{})
 	go func() { r.Refresh(); close(newDone) }()
 	<-prober.secondStarted
+	<-newDone
 	close(prober.releaseFirst)
 	<-oldDone
-	<-newDone
 
 	entry, ok := r.Find("parent")
 	if !ok || entry.Status != "new" || len(entry.RunningSubagentIDs) != 1 || entry.RunningSubagentIDs[0] != "new-child" {
@@ -957,4 +963,378 @@ func fuzzScenarioNewRosterWithEntries(t *testing.T) {
 	if e, ok := r.Find(""); ok {
 		t.Fatalf("Find(\"\") = {PID:%d}, want not found", e.PID)
 	}
+}
+
+func TestRosterOwnershipRefreshPublishesDespiteLaterProbe(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{}), releaseSecond: make(chan struct{})}
+		r := NewRoster(dir, prober)
+		ownerDone := make(chan struct{})
+		go func() {
+			if err := r.RefreshAndWait(context.Background()); err != nil {
+				t.Error(err)
+			}
+			close(ownerDone)
+		}()
+		<-prober.firstStarted
+		backgroundDone := make(chan struct{})
+		go func() { r.Refresh(); close(backgroundDone) }()
+		<-prober.secondStarted
+		close(prober.releaseFirst)
+		synctest.Wait()
+		select {
+		case <-ownerDone:
+		default:
+			t.Error("ownership check waited for a later probe instead of publishing its own scan")
+		}
+		close(prober.releaseSecond)
+		<-ownerDone
+		<-backgroundDone
+		entry, ok := r.Find("parent")
+		if !ok || entry.Status != "new" {
+			t.Fatalf("ownership snapshot=%+v, found=%v", entry, ok)
+		}
+	})
+}
+
+type ownershipBatchProber struct {
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *ownershipBatchProber) Probe(entry rendezvous.Entry) ProbeResult {
+	if p.calls.Add(1) == 1 {
+		close(p.started)
+	}
+	<-p.release
+	return ProbeResult{SessionID: entry.ThreadID, Status: appwire.ThreadStatusIdle, OK: true}
+}
+
+func TestRosterOwnershipRefreshesCoalesceWithoutLosingFreshness(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "old"})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &ownershipBatchProber{started: make(chan struct{}), release: make(chan struct{})}
+		roster := NewRoster(dir, prober)
+		done := make(chan struct{}, 17)
+		go func() {
+			if err := roster.RefreshAndWait(context.Background()); err != nil {
+				t.Error(err)
+			}
+			done <- struct{}{}
+		}()
+		<-prober.started
+		writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "new"})
+		for range 16 {
+			go func() {
+				if err := roster.RefreshAndWait(context.Background()); err != nil {
+					t.Error(err)
+				}
+				done <- struct{}{}
+			}()
+		}
+		synctest.Wait()
+		if got := prober.calls.Load(); got != 1 {
+			t.Errorf("started %d probes while the first was still running, want one", got)
+		}
+		close(prober.release)
+		for range 17 {
+			<-done
+		}
+		if got := prober.calls.Load(); got != 2 {
+			t.Errorf("probe passes=%d, want the active pass and one fresh coalesced pass", got)
+		}
+		if _, ok := roster.Find("new"); !ok {
+			t.Error("waiting callers did not receive a fresh rendezvous snapshot")
+		}
+	})
+}
+
+func TestRosterOwnershipRefreshCancellation(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, ThreadID: "owner"})
+	synctest.Test(t, func(t *testing.T) {
+		prober := &ownershipBatchProber{started: make(chan struct{}), release: make(chan struct{})}
+		roster := NewRoster(dir, prober)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- roster.RefreshAndWait(ctx) }()
+		<-prober.started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("refresh error=%v, want cancellation", err)
+			}
+		default:
+			t.Error("canceled caller is still waiting for the probe")
+		}
+		close(prober.release)
+		synctest.Wait()
+	})
+}
+
+func TestRosterOwnershipRefreshReportsReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	roster := NewRoster(path, nil)
+	if err := roster.RefreshAndWait(context.Background()); err == nil {
+		t.Fatal("ownership refresh succeeded without reading the rendezvous directory")
+	}
+}
+
+func TestRosterUnconfirmedOwnershipClearsOnProbeOrExit(t *testing.T) {
+	for _, resolvesByProbe := range []bool{false, true} {
+		t.Run(strconv.FormatBool(resolvesByProbe), func(t *testing.T) {
+			dir := t.TempDir()
+			writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, SessionID: "owner", Protocol: "evener-appwire-v3"})
+			roster := NewRoster(dir, fakeProber{shouldFail: true})
+			alive := true
+			roster.procAlive = func(int) bool { return alive }
+			roster.Refresh()
+			claims := roster.UnconfirmedEntries()
+			if len(claims) != 1 || claims[0].SessionID != "owner" {
+				t.Fatalf("claims=%+v", claims)
+			}
+			if len(roster.List()) != 0 {
+				t.Fatal("unconfirmed process published as live daemon")
+			}
+			claims[0].SessionID = "modified"
+			if roster.UnconfirmedEntries()[0].SessionID != "owner" {
+				t.Fatal("caller modified roster ownership")
+			}
+			if resolvesByProbe {
+				roster.prober = fakeProber{sessionID: "owner", status: appwire.ThreadStatusRestartRequired}
+			} else {
+				alive = false
+			}
+			roster.Refresh()
+			if len(roster.UnconfirmedEntries()) != 0 {
+				t.Fatal("resolved ownership remained unconfirmed")
+			}
+		})
+	}
+}
+
+func TestRosterUnconfirmedOwnershipInvalidatesNavigation(t *testing.T) {
+	dir := t.TempDir()
+	roster := NewRoster(dir, fakeProber{shouldFail: true})
+	roster.procAlive = func(int) bool { return true }
+	roster.Refresh()
+	changes := 0
+	roster.SetOnChange(func() { changes++ })
+	entry := rendezvous.Entry{PID: 1001, SessionID: "owner"}
+	writeRendezvous(t, dir, entry)
+	roster.Refresh()
+	if changes != 1 {
+		t.Fatalf("new claim callbacks=%d, want 1", changes)
+	}
+	roster.Refresh()
+	if changes != 1 {
+		t.Fatal("unchanged claim invalidated navigation")
+	}
+	entry.WorkspaceRef = "local:workspace"
+	writeRendezvous(t, dir, entry)
+	roster.Refresh()
+	if changes != 2 {
+		t.Fatalf("changed identity callbacks=%d, want 2", changes)
+	}
+	roster.Refresh()
+	if changes != 2 {
+		t.Fatal("unchanged identity invalidated navigation")
+	}
+	if err := rendezvous.Remove(dir, entry.PID); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	if changes != 3 {
+		t.Fatalf("removed claim callbacks=%d, want 3", changes)
+	}
+}
+
+func TestRosterRefreshEntryPreservesOtherOwnership(t *testing.T) {
+	otherEntry := rendezvous.Entry{PID: 1001}
+	roster := NewRosterWithEntries(LiveEntry{Entry: otherEntry, SessionID: "other", Status: "active"})
+	roster.runDir = t.TempDir()
+	roster.prober = fakeProber{sessionID: "resumed", status: "idle"}
+	roster.unconfirmed = []rendezvous.Entry{{PID: 1002, SessionID: "resumed"}, {PID: 1003, SessionID: "uncertain"}}
+	if err := os.WriteFile(filepath.Join(roster.runDir, "1.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := roster.RefreshAndWait(t.Context()); err == nil {
+		t.Fatal("fixture did not fail discovery")
+	}
+	entry := rendezvous.Entry{PID: 1002, SessionID: "resumed", ThreadID: "resumed", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	if err := roster.RefreshEntry(t.Context(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if live, ok := roster.Find("resumed"); !ok || live.PID != 1002 || live.Status != "idle" {
+		t.Fatalf("resumed=%+v, %v", live, ok)
+	}
+	if other, ok := roster.Find("other"); !ok || other.Status != "active" {
+		t.Fatal("other owner changed")
+	}
+	if claims := roster.UnconfirmedEntries(); len(claims) != 1 || claims[0].SessionID != "uncertain" {
+		t.Fatalf("claims=%+v", claims)
+	}
+	roster.prober = fakeProber{shouldFail: true}
+	if err := roster.RefreshEntry(t.Context(), entry); err == nil {
+		t.Fatal("unconfirmed entry accepted")
+	}
+	if len(roster.List()) != 2 {
+		t.Fatal("failed confirmation changed roster")
+	}
+}
+
+func TestRosterRefreshEntryDoesNotOverwriteNewerRefresh(t *testing.T) {
+	for _, fullScan := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fullScan), func(t *testing.T) {
+			dir := t.TempDir()
+			entry := rendezvous.Entry{PID: 1001, SessionID: "parent", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+			writeRendezvous(t, dir, entry)
+			prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
+			roster := NewRoster(dir, prober)
+			done := make(chan error, 1)
+			go func() { done <- roster.RefreshEntry(t.Context(), entry) }()
+			<-prober.firstStarted
+			if fullScan {
+				roster.Refresh()
+			} else if err := roster.RefreshEntry(t.Context(), entry); err != nil {
+				t.Fatal(err)
+			}
+			close(prober.releaseFirst)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if live, ok := roster.Find("parent"); !ok || live.Status != "new" {
+				t.Fatalf("stale confirmation replaced newer snapshot: %+v", live)
+			}
+
+		})
+	}
+}
+
+func TestRosterRefreshEntryCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		prober := &gateProber{sessionID: "parent", gate: make(chan struct{}), started: make(chan struct{}, 1)}
+		roster := NewRoster(t.TempDir(), prober)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- roster.RefreshEntry(ctx, rendezvous.Entry{PID: 1001, Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"})
+		}()
+		<-prober.started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v", err)
+			}
+		default:
+			t.Fatal("cancellation waited for probe")
+		}
+		close(prober.gate)
+		synctest.Wait()
+		if len(roster.List()) != 0 {
+			t.Fatal("cancelled confirmation published")
+		}
+	})
+}
+
+type entryConfirmationProber struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *entryConfirmationProber) Probe(entry rendezvous.Entry) ProbeResult {
+	if entry.PID == 1001 {
+		close(p.started)
+		<-p.release
+	}
+	return ProbeResult{OK: true, SessionID: entry.SessionID, Status: "idle"}
+}
+
+func TestRosterConcurrentConfirmationPreservesEveryRoute(t *testing.T) {
+	for _, fullScan := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fullScan), func(t *testing.T) {
+			dir := t.TempDir()
+			first := rendezvous.Entry{PID: 1001, SessionID: "first", Protocol: appwire.ProtocolVersion, Endpoint: "ws://first/rpc"}
+			second := rendezvous.Entry{PID: 1002, SessionID: "second", Protocol: appwire.ProtocolVersion, Endpoint: "ws://second/rpc"}
+			writeRendezvous(t, dir, first)
+			prober := &entryConfirmationProber{started: make(chan struct{}), release: make(chan struct{})}
+			roster := NewRoster(dir, prober)
+			done := make(chan error, 1)
+			go func() {
+				if fullScan {
+					done <- roster.RefreshAndWait(t.Context())
+				} else {
+					done <- roster.RefreshEntry(t.Context(), first)
+				}
+			}()
+			<-prober.started
+			writeRendezvous(t, dir, second)
+			if err := roster.RefreshEntry(t.Context(), second); err != nil {
+				t.Fatal(err)
+			}
+			close(prober.release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"first", "second"} {
+				if _, ok := roster.Find(id); !ok {
+					t.Errorf("confirmed session %s lost its route", id)
+				}
+			}
+		})
+	}
+}
+
+// A crash marker must not replace a surviving daemon's ownership or status.
+func TestRosterLiveOwnerWinsOverCrashMarker(t *testing.T) {
+	for _, livePID := range []int{1001, 1002} {
+		t.Run(strconv.Itoa(livePID), func(t *testing.T) {
+			dir := t.TempDir()
+			for _, pid := range []int{1001, 1002} {
+				protocol := appwire.ProtocolVersion
+				if pid == livePID {
+					protocol = "evener-appwire-v3"
+				}
+				writeRendezvous(t, dir, rendezvous.Entry{PID: pid, SessionID: "owner", ThreadID: "owner", Protocol: protocol, Endpoint: "ws://unused", StartedAt: time.Now().UTC()})
+			}
+			prober := &survivingOwnerProber{livePID: livePID}
+			r := NewRoster(dir, prober)
+			r.procAlive = func(pid int) bool { return pid == livePID }
+			for _, failProbe := range []bool{false, true} {
+				prober.fail = failProbe
+				r.Refresh()
+				got, ok := r.Find("owner")
+				if !ok || got.Crashed || got.PID != livePID || got.Status != "restartRequired" {
+					t.Errorf("Find after probe failure=%v: %+v, present=%v", failProbe, got, ok)
+				}
+				listed := r.List()
+				if len(listed) != 1 || listed[0].Crashed || listed[0].PID != livePID {
+					t.Errorf("List after probe failure=%v: %+v", failProbe, listed)
+				}
+			}
+		})
+	}
+}
+
+type survivingOwnerProber struct {
+	livePID int
+	fail    bool
+}
+
+func (p *survivingOwnerProber) Probe(e rendezvous.Entry) ProbeResult {
+	if e.PID != p.livePID || p.fail {
+		return ProbeResult{}
+	}
+	return ProbeResult{SessionID: e.SessionID, Status: "restartRequired", OK: true}
 }

@@ -121,6 +121,7 @@ export function cadenceStateFor(wireState: string): CadenceState {
       return "failed";
     case "awaiting":
     case "warning":
+    case "restartRequired":
       return "needs-you";
     case "active":
       return "working";
@@ -160,6 +161,8 @@ function humanizeState(wireState: string, askPending: boolean): string {
       return "working";
     case "awaiting":
       return askPending ? "question waiting" : "your move";
+    case "restartRequired":
+      return "restart required";
     case "warning":
       return "warning";
     case "errored":
@@ -249,9 +252,10 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
   const parts: string[] = [];
+  if (session.state === "restartRequired") parts.push(humanizeState(session.state, session.ask_pending === true));
   if (workingCount > 0) {
     parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
-  } else if (jobCount === 0 || session.state === "active") {
+  } else if (session.state !== "restartRequired" && (jobCount === 0 || session.state === "active")) {
     parts.push(humanizeState(session.state, session.ask_pending === true));
   }
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
@@ -489,7 +493,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       title={session.title}
       triggerLabel={`Actions for ${session.title}`}
       canRename={session.rename === true}
-      canShutdown={session.live}
+      canShutdown={session.live && session.state !== "restartRequired"}
       treeNode={session}
       panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
       actions={{
@@ -529,7 +533,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // failed session still wins over that rollup so an error cannot disappear
   // behind a green child.
   let effectiveState = presented;
-  if (effectiveState !== "errored" && hasActiveWork) effectiveState = "active";
+  if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
   // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/

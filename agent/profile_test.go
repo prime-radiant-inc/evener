@@ -1779,17 +1779,22 @@ func TestNamedInstanceKeepsItsIdentity(t *testing.T) {
 	if rebuilt.ID() != "work-kimi" || rebuilt.ProviderID() != "moonshotai" || rebuilt.Model() != "kimi-k3" {
 		t.Fatalf("after WithModel = %s/%s/%s", rebuilt.ID(), rebuilt.ProviderID(), rebuilt.Model())
 	}
-	// The base's curated cheap_model rides along with the name.
-	if got := work.CheapModel(); got != "kimi-k2.5" {
-		t.Fatalf("CheapModel() = %q, want moonshotai's kimi-k2.5", got)
-	}
-	gemini := namedInstanceProfile("work-google", "google", "gemini-2.5-pro")
-	if got := gemini.CheapModel(); got != "gemini-2.5-flash-lite" {
-		t.Fatalf("CheapModel() = %q, want gemini-2.5-flash-lite", got)
-	}
-	anthropic := namedInstanceProfile("work-anthropic", "anthropic", "claude-opus-4-6")
-	if got := anthropic.CheapModel(); got != "claude-haiku-4-5" {
-		t.Fatalf("CheapModel() = %q, want claude-haiku-4-5", got)
+	// A named instance inherits its base's auxiliary route as the catalog evolves.
+	for _, tc := range []struct {
+		name        string
+		named, base *provider.Profile
+	}{
+		{"moonshotai", work, newOpenAICompatProfile("kimi", "kimi-k2.5", 0)},
+		{"google", namedInstanceProfile("work-google", "google", "gemini-2.5-pro"), newGeminiProfile("gemini-2.5-pro")},
+		{"anthropic", namedInstanceProfile("work-anthropic", "anthropic", "claude-opus-4-6"), newAnthropicProfile("claude-opus-4-6")},
+	} {
+		want := tc.base.Resolved().CheapModel
+		if want == "" {
+			t.Fatalf("%s fixture has no curated cheap model", tc.name)
+		}
+		if got := tc.named.CheapModel(); got != want {
+			t.Errorf("%s named CheapModel() = %q, base = %q", tc.name, got, want)
+		}
 	}
 }
 

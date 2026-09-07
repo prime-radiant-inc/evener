@@ -1030,3 +1030,79 @@ func (f *snapshotCloseHookFile) Close() error {
 	}
 	return err
 }
+
+// The file size returns to its cap while pending/final metadata remain unchanged
+// across both observations. The hash in between belongs to the expanded inode.
+func TestReadOutputWindowSnapshotDetectsReplacementDuringHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	fs := &snapshotHashReplacementFS{snapshotAppendPruneFS: newSnapshotAppendPruneFS(path), finalPublication: make(chan struct{}), allowFinalPublication: make(chan struct{})}
+	store, err := createOutputFsWithSync(fs, path, 4, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendOutput(t, store, "AAAA")
+	fs.armInitialRetainedSize()
+	fs.fencePublication.Store(true)
+	type result struct {
+		snapshot OutputWindowSnapshot
+		err      error
+	}
+	snapshotDone := make(chan result, 1)
+	go func() {
+		snapshot, err := readOutputWindowSnapshotFs(fs, path, 4, 4)
+		snapshotDone <- result{snapshot, err}
+	}()
+	<-fs.initialRetainedSizeCaptured
+	appendDone := make(chan error, 1)
+	go func() { _, err := store.Append([]byte("BBBB")); appendDone <- err }()
+	defer func() {
+		fs.releaseInitialMetadataValidation()
+		fs.releaseOutputReplacement()
+		close(fs.allowFinalPublication)
+		if err := <-appendDone; err != nil {
+			t.Error(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	<-fs.pendingPublished
+	fs.captureHash.Store(true)
+	fs.releaseInitialMetadataValidation()
+	got := <-snapshotDone
+	if got.err != nil {
+		t.Fatalf("snapshot across replacement: %v", got.err)
+	}
+	if string(got.snapshot.Content) != "BBBB" || got.snapshot.Start != 4 || got.snapshot.TotalBytes != 8 {
+		t.Fatalf("snapshot=%+v", got.snapshot)
+	}
+}
+
+type snapshotHashReplacementFS struct {
+	*snapshotAppendPruneFS
+	captureHash           atomic.Bool
+	fencePublication      atomic.Bool
+	finalPublication      chan struct{}
+	allowFinalPublication chan struct{}
+	finalOnce             sync.Once
+}
+
+func (fs *snapshotHashReplacementFS) Open(name string) (afero.File, error) {
+	file, err := fs.snapshotAppendPruneFS.Open(name)
+	if err == nil && name == fs.path && fs.captureHash.Swap(false) {
+		return &snapshotCloseHookFile{File: file, afterClose: func() error {
+			fs.releaseOutputReplacement()
+			<-fs.finalPublication
+			return nil
+		}}, nil
+	}
+	return file, err
+}
+
+func (fs *snapshotHashReplacementFS) Rename(oldpath, newpath string) error {
+	if newpath == outputMetaPath(fs.path) && fs.fencePublication.Load() {
+		fs.finalOnce.Do(func() { close(fs.finalPublication) })
+		<-fs.allowFinalPublication
+	}
+	return fs.snapshotAppendPruneFS.Rename(oldpath, newpath)
+}

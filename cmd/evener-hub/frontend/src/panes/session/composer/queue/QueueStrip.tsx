@@ -393,7 +393,14 @@ export function QueueStrip({
                   <span>{recordPreview(record)}</span>
                 </span>
                 <div className={CLASS.rowActions}>
-                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleRetry(record)}>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    disabled={
+                      rowBusy || !model || model.status.type === "restartRequired" || model.status.type === "notLoaded"
+                    }
+                    onClick={() => void handleRetry(record)}
+                  >
                     Retry
                   </Button>
                 </div>

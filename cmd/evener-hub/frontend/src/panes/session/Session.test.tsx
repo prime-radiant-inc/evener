@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
@@ -15,6 +15,7 @@ import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
+import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
@@ -2028,4 +2029,176 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
   } finally {
     spy.mockRestore();
   }
+});
+
+test("explains that an incompatible daemon needs an explicit restart", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain("Session restart required");
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+test("refreshes a restarted session without closing its pane", async () => {
+  const fake = connectFakeClient();
+  let replaced = false;
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: replaced ? "idle" : "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  replaced = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
+});
+
+test("shows an explicit session refresh failure", async () => {
+  const fake = connectFakeClient();
+  let failRefresh = false;
+  fake.on("thread/read", () => {
+    if (failRefresh) throw new Error("refresh rejected");
+    return readResponse("ref_a", { status: { type: "restartRequired" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  failRefresh = true;
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  expect(await screen.findByText("refresh rejected")).toBeTruthy();
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("restartRequired");
+});
+
+test.each([false, true])("restart-required empty transcript suppresses first-send UI (pending=%s)", async (pending) => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  if (pending) await seedPendingSend();
+  expect(screen.queryByText(/send the first message/i)).toBeNull();
+  expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
+  expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
+});
+
+test("offers explicit resume after restart even without pending messages", async () => {
+  const fake = connectFakeClient();
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse("ref_a", { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  status = "notLoaded";
+  fireEvent.click(refresh);
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(resume);
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
+test("explicitly resumes a stopped session before reconciling its uncertain send", async () => {
+  const fake = connectFakeClient();
+  let status = "restartRequired";
+  let mutationId = "";
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: status },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, clientMutationIds: status === "idle" ? [mutationId] : [] },
+      },
+    }),
+  );
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse("ref_a", { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  await act(async () => {
+    mutationId = await seedPendingSend();
+    await mutationStorage.markUnknown(mutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const getAll = IDBObjectStore.prototype.getAll;
+  const reads = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args
+  ) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && threadsStore.getState().threads.get("ref_a")?.status.type === "notLoaded") {
+      const hold = holdIndexedDBEvent(request, "success");
+      holds.push(hold);
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const releaseReads = () => {
+    reads.mockRestore();
+    for (const hold of holds.splice(0)) hold.release();
+  };
+  try {
+    status = "notLoaded";
+    fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+    await readHeld;
+    const resume = await screen.findByRole("button", { name: "Resume session" });
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+    expect((resume as HTMLButtonElement).disabled).toBe(true);
+    releaseReads();
+    await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(resume);
+    await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  } finally {
+    releaseReads();
+  }
+});
+
+test("keeps storage recovery failure visible on a compatible session until reconciliation succeeds", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set(["ref_a"]) }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Message recovery is waiting for browser storage");
+  act(() => threadsStore.setState({ mutationReconciliationFailures: new Set() }));
+  expect(screen.queryByText(/Message recovery is waiting for browser storage/)).toBeNull();
 });

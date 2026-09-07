@@ -18,7 +18,7 @@ func AttentionRank(state string) int {
 		return 4
 	case "active":
 		return 3
-	case "warning":
+	case "warning", "restartRequired":
 		return 2
 	case "idle":
 		return 1
@@ -38,7 +38,7 @@ func RollupRank(state string) int {
 		return 5
 	case "awaiting":
 		return 4
-	case "warning":
+	case "warning", "restartRequired":
 		return 3
 	case "active":
 		return 2
@@ -66,6 +66,8 @@ func StateWord(state string, askPending bool) string {
 		return "Your move"
 	case "active":
 		return "Working"
+	case "restartRequired":
+		return "Restart required"
 	case "warning":
 		return "Warning"
 	case "idle":

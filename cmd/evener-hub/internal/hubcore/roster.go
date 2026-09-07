@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"maps"
@@ -133,12 +134,16 @@ type Roster struct {
 	// an in-memory or sandboxed filesystem via SetFs.
 	fs afero.Fs
 
-	mu     sync.RWMutex
-	bySess map[string]LiveEntry // session_id -> entry
-	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
-	// refreshGen rejects a completed probe pass that started before a newer
-	// refresh attempt, while allowing probes to run without holding mu.
-	refreshGen uint64
+	mu          sync.RWMutex
+	bySess      map[string]LiveEntry // session_id -> entry
+	byPID       map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	unconfirmed []rendezvous.Entry   // live PIDs whose daemon ownership has not been established
+	// A completed pass may publish unless a newer pass already published.
+	refreshGen              uint64
+	publishedGen            uint64
+	entryPublishedGen       map[int]uint64
+	ownershipRefreshRunning bool
+	queuedOwnershipRefresh  *rosterRefreshBatch
 
 	// procAlive reports whether a daemon PID is still running. A failed AppWire
 	// probe to a live process means the daemon is busy, not gone, so its session
@@ -153,7 +158,7 @@ type Roster struct {
 	newTicker    func(time.Duration) rosterTicker
 
 	// onChange, when set via SetOnChange, is fired by Refresh only when the
-	// live set's membership, per-session status, or running-child set changes.
+	// live set's membership, per-session status, running-child set, or unresolved ownership changes.
 	onChange func()
 	// fingerprint is the live-set hash from the most recent Refresh (see
 	// rosterFingerprint), used to gate onChange against no-op refreshes.
@@ -173,12 +178,13 @@ type Roster struct {
 // If prober is nil, liveness is assumed (used for tests).
 func NewRoster(runDir string, prober Prober) *Roster {
 	return &Roster{
-		runDir:    runDir,
-		prober:    prober,
-		fs:        afero.NewOsFs(),
-		bySess:    make(map[string]LiveEntry),
-		byPID:     make(map[int]LiveEntry),
-		procAlive: processAlive,
+		runDir:            runDir,
+		prober:            prober,
+		fs:                afero.NewOsFs(),
+		bySess:            make(map[string]LiveEntry),
+		byPID:             make(map[int]LiveEntry),
+		entryPublishedGen: make(map[int]uint64),
+		procAlive:         processAlive,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
 			return fsnotifyWatcher{w}, err
@@ -297,23 +303,31 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 // probe miss (busy daemon, overloaded host) must not blank the session from the
 // UI. It is dropped only when its process is gone (a stale rendezvous file).
 func (r *Roster) Refresh() {
+	_ = r.refresh()
+}
+
+func (r *Roster) refresh() error {
 	r.mu.Lock()
 	r.refreshGen++
 	generation := r.refreshGen
 	r.mu.Unlock()
 
-	entries, err := rendezvous.List(r.runDir)
-	if err != nil {
-		return
+	var entries []rendezvous.Entry
+	// An unconfigured roster has no discovery directory. A configured path
+	// disappearing is an incomplete read and must preserve existing ownership.
+	if r.runDir != "" {
+		var err error
+		entries, err = rendezvous.ListStrict(r.runDir)
+		if err != nil {
+			return err
+		}
 	}
 
-	// Snapshot the previous PID map for the keep-alive fallback, and the
-	// previous per-session map for the status-transition diff below. Reading
-	// them under a brief lock (rather than holding the lock across the
+	// Snapshot the previous PID map for the keep-alive fallback. Reading
+	// it under a brief lock (rather than holding the lock across the
 	// probes) keeps List() responsive while a slow probe pass runs.
 	r.mu.RLock()
 	prevByPID := r.byPID
-	prevBySess := r.bySess
 	r.mu.RUnlock()
 
 	type probeResult struct {
@@ -337,6 +351,7 @@ func (r *Roster) Refresh() {
 
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
+	var unconfirmed []rendezvous.Entry
 	for _, res := range results {
 		e := res.entry
 		if !res.OK {
@@ -346,12 +361,15 @@ func (r *Roster) Refresh() {
 			if prev, had := prevByPID[e.PID]; had && r.procAlive(e.PID) {
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
-					bySess[prev.SessionID] = prev
+					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
+						bySess[prev.SessionID] = prev
+					}
 				}
 				continue
 			}
 			if r.procAlive(e.PID) {
-				continue // never confirmed live before, and still can't reach it
+				unconfirmed = append(unconfirmed, e)
+				continue // ownership is unresolved; do not publish it as a live daemon
 			}
 			// The process is confirmed GONE, yet its rendezvous file is still
 			// on disk. The rendezvous package writes that file on startup and
@@ -392,20 +410,12 @@ func (r *Roster) Refresh() {
 			crashed.Status = "errored"
 			crashed.Crashed = true
 			byPID[e.PID] = crashed
-			bySess[sessionID] = crashed
+			if current, ok := bySess[sessionID]; !ok || preferLiveEntry(crashed, current) {
+				bySess[sessionID] = crashed
+			}
 			continue
 		}
-		live := LiveEntry{
-			Entry:                 e,
-			SessionID:             res.SessionID,
-			Status:                res.Status,
-			PendingAsk:            res.PendingAsk,
-			PendingEscalation:     res.PendingEscalation,
-			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
-			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
-			RunningJobs:           cloneRunningJobs(res.RunningJobs),
-			CompletedJobs:         cloneRunningJobs(res.CompletedJobs),
-		}
+		live := liveEntryFromProbe(e, res.ProbeResult)
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
 				bySess[res.SessionID] = live
@@ -416,13 +426,43 @@ func (r *Roster) Refresh() {
 
 	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
-	if generation != r.refreshGen {
+	if generation < r.publishedGen {
 		r.mu.Unlock()
-		return
+		return nil
 	}
+	// A newer single-daemon confirmation supersedes only that daemon's
+	// observation. Keep the complete scan's findings for every other PID.
+	merged := false
+	for pid, confirmed := range r.entryPublishedGen {
+		if confirmed <= generation {
+			delete(r.entryPublishedGen, pid)
+			continue
+		}
+		if live, ok := r.byPID[pid]; ok {
+			byPID[pid] = live
+			merged = true
+		}
+		unconfirmed = slices.DeleteFunc(unconfirmed, func(claim rendezvous.Entry) bool { return claim.PID == pid })
+	}
+	if merged {
+		bySess = make(map[string]LiveEntry, len(byPID))
+		for _, live := range byPID {
+			if live.SessionID == "" {
+				continue
+			}
+			if previous, ok := bySess[live.SessionID]; !ok || preferLiveEntry(live, previous) {
+				bySess[live.SessionID] = live
+			}
+		}
+		fp = rosterFingerprint(bySess)
+	}
+	r.publishedGen = generation
+	prevBySess := r.bySess
 	r.bySess = bySess
 	r.byPID = byPID
-	changed := fp != r.fingerprint
+	ownershipChanged := !slices.Equal(r.unconfirmed, unconfirmed)
+	r.unconfirmed = unconfirmed
+	changed := fp != r.fingerprint || ownershipChanged
 	r.fingerprint = fp
 	statusChanges := make([]string, 0)
 	for id, cur := range bySess {
@@ -442,6 +482,55 @@ func (r *Roster) Refresh() {
 	}
 	if changed && onChange != nil {
 		onChange()
+	}
+	return nil
+}
+
+type rosterRefreshBatch struct {
+	done chan struct{}
+	err  error
+}
+
+// RefreshAndWait waits for a scan that starts after this request. Requests
+// arriving during a scan share the next scan, so ongoing traffic cannot move
+// an existing caller's completion target. Cancellation releases the caller;
+// the shared scan continues for the other callers.
+func (r *Roster) RefreshAndWait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	batch := r.queuedOwnershipRefresh
+	if batch == nil {
+		batch = &rosterRefreshBatch{done: make(chan struct{})}
+		r.queuedOwnershipRefresh = batch
+	}
+	if !r.ownershipRefreshRunning {
+		r.ownershipRefreshRunning = true
+		go r.refreshOwnership()
+	}
+	r.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-batch.done:
+		return batch.err
+	}
+}
+
+func (r *Roster) refreshOwnership() {
+	for {
+		r.mu.Lock()
+		batch := r.queuedOwnershipRefresh
+		r.queuedOwnershipRefresh = nil
+		if batch == nil {
+			r.ownershipRefreshRunning = false
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+		batch.err = r.refresh()
+		close(batch.done)
 	}
 }
 
@@ -500,6 +589,9 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {
+	if candidate.Crashed != current.Crashed {
+		return !candidate.Crashed
+	}
 	candidateAppWire := candidate.Protocol == appwire.ProtocolVersion && candidate.Endpoint != "" && candidate.ThreadID != ""
 	currentAppWire := current.Protocol == appwire.ProtocolVersion && current.Endpoint != "" && current.ThreadID != ""
 	if candidateAppWire != currentAppWire {
@@ -567,4 +659,95 @@ func (r *Roster) Watch(ctx context.Context) error {
 			r.Refresh()
 		}
 	}
+}
+
+// UnconfirmedEntries returns rendezvous claims whose processes are alive but
+// whose daemon identity could not be established. They are not live sessions,
+// but callers must not treat their absence from List as proof of released ownership.
+func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.Clone(r.unconfirmed)
+}
+
+func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
+	return LiveEntry{
+		Entry:                 e,
+		SessionID:             result.SessionID,
+		Status:                result.Status,
+		PendingAsk:            result.PendingAsk,
+		PendingEscalation:     result.PendingEscalation,
+		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
+		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
+		RunningJobs:           cloneRunningJobs(result.RunningJobs),
+		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+	}
+}
+
+// RefreshEntry confirms one freshly spawned daemon without depending on other
+// rendezvous files. Publishing it makes the ordinary source and relay paths
+// available for the pending mutation after a successful resume.
+func (r *Roster) RefreshEntry(ctx context.Context, entry rendezvous.Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" {
+		return errors.New("spawned daemon has no current protocol endpoint")
+	}
+	r.mu.Lock()
+	r.refreshGen++
+	generation := r.refreshGen
+	r.mu.Unlock()
+	results := make(chan ProbeResult, 1)
+	go func() {
+		if r.prober == nil {
+			results <- ProbeResult{OK: true, SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID)}
+		} else {
+			results <- r.prober.Probe(entry)
+		}
+	}()
+	var result ProbeResult
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case result = <-results:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !result.OK || result.SessionID == "" {
+		return fmt.Errorf("cannot confirm spawned daemon %s", entry.SessionID)
+	}
+	live := liveEntryFromProbe(entry, result)
+	r.mu.Lock()
+	if generation < r.publishedGen || generation < r.entryPublishedGen[entry.PID] {
+		r.mu.Unlock()
+		return nil
+	}
+	previous, hadPrevious := r.bySess[live.SessionID]
+	bySess, byPID := maps.Clone(r.bySess), maps.Clone(r.byPID)
+	if old, ok := byPID[entry.PID]; ok && bySess[old.SessionID].PID == entry.PID {
+		delete(bySess, old.SessionID)
+	}
+	bySess[live.SessionID], byPID[entry.PID] = live, live
+	unconfirmed := make([]rendezvous.Entry, 0, len(r.unconfirmed))
+	for _, claim := range r.unconfirmed {
+		if claim.PID != entry.PID {
+			unconfirmed = append(unconfirmed, claim)
+		}
+	}
+	fp := rosterFingerprint(bySess)
+	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
+	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
+	r.entryPublishedGen[entry.PID] = generation
+	r.fingerprint = fp
+	onChange, onStatusChange := r.onChange, r.onStatusChange
+	r.mu.Unlock()
+	if hadPrevious && previous.Status != live.Status && onStatusChange != nil {
+		onStatusChange(live.SessionID)
+	}
+	if changed && onChange != nil {
+		onChange()
+	}
+	return nil
 }

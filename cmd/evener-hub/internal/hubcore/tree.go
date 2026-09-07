@@ -548,6 +548,8 @@ func NormalizeState(s string) string {
 		return "active"
 	case appwire.ThreadStatusSystemError:
 		return "errored" // first-class red error lane (spec v5) — no longer grouped with awaiting
+	case appwire.ThreadStatusRestartRequired:
+		return appwire.ThreadStatusRestartRequired
 	case appwire.ThreadStatusWarning:
 		return "warning"
 	case appwire.ThreadStatusIdle:
@@ -1229,7 +1231,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				rollup = taskState
 			}
 			switch taskState {
-			case "awaiting", "warning", "errored":
+			case "awaiting", "warning", "errored", appwire.ThreadStatusRestartRequired:
 				rollupAttn++
 			case "active":
 				rollupLive++

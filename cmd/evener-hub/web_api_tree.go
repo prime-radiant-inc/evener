@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ var (
 var _ = hubTreeAttentionRank
 
 type navigationSnapshot struct {
+	ownershipErr        error
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
 	projects            map[string]identifier.Project
@@ -197,7 +199,6 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		if entry.SessionID != "" {
 			for _, alias := range favoriteSessionAliases(entry.SessionID) {
 				liveBySession[alias] = true
-				renameable[alias] = isLocalRouteID(alias)
 			}
 		}
 	}
@@ -230,6 +231,19 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 			indexRenameable(rows)
 		}
 	}
+	// Live daemon constraints override every persisted navigation copy.
+	for _, entry := range live {
+		if entry.SessionID == "" {
+			continue
+		}
+		aliases := favoriteSessionAliases(entry.SessionID)
+		if entry.WorkspaceRef != "" {
+			aliases = append(aliases, favoriteSessionAliases(entry.WorkspaceRef)...)
+		}
+		for _, alias := range aliases {
+			renameable[alias] = isLocalRouteID(alias) && entry.Status != appwire.ThreadStatusRestartRequired
+		}
+	}
 	return navigationBuildInputs{
 		GenerationID:     generationID,
 		Revision:         revision,
@@ -248,8 +262,10 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 
 func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnapshot {
 	var live []hubcore.LiveEntry
+	var unconfirmedOwnership bool
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
+		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
 	}
 	var metas []schema.SessionMeta
 	var pastEntries []hubcore.PastEntry
@@ -259,6 +275,33 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		for _, entry := range pastEntries {
 			metas = append(metas, entry.Meta)
 		}
+	}
+	var ownershipErr error
+	// Healthy navigation snapshots need no persisted ownership scan.
+	if unconfirmedOwnership || slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
+		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
+	}) {
+		// Persisted delegates have no rendezvous of their own. Preserve the
+		// authenticated owner's restart restriction in every navigation projection.
+		for _, past := range pastEntries {
+			owner, incompatible, err := restartRequiredDaemon(ctx, s.cfg, "", past.Meta.ID)
+			if err != nil {
+				if ownershipErr == nil {
+					ownershipErr = err
+				}
+				continue
+			}
+			if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
+				continue
+			}
+			entry := owner.Entry
+			entry.ThreadID = past.Meta.ID
+			entry.WorkspaceRef = localAppRef(past.Meta.ID)
+			entry.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+			child := hubcore.LiveEntry{Entry: entry, SessionID: past.Meta.ID, Status: owner.Status}
+			live = append(live, child)
+		}
+
 	}
 	fetch := s.remoteThreadFetch(ctx)
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
@@ -324,6 +367,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		}
 	}
 	return navigationSnapshot{
+		ownershipErr:        ownershipErr,
 		metas:               metas,
 		live:                live,
 		projects:            projects,

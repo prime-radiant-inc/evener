@@ -22,6 +22,10 @@ import (
 // them, so an operator who rebuilds and restarts the hub has one.
 const ProtocolVersion = "evener-appwire-v4"
 
+// ThreadStatusRestartRequired identifies a live daemon that cannot serve this
+// hub's protocol. Its current activity is unavailable until explicitly restarted.
+const ThreadStatusRestartRequired = "restartRequired"
+
 const (
 	MethodInitialize                  = "initialize"
 	MethodInitialized                 = "initialized"

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -866,4 +868,42 @@ func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagn
 	if !found {
 		t.Fatalf("diagnostics = %v, want one identifying the oversized delegates.jsonl line (file + line info), visible rather than silently dropped", diagnostics)
 	}
+}
+
+func TestSessionOwnsDelegateCancellationDuringJournalFold(t *testing.T) {
+	stateDir := t.TempDir()
+	ownerID := "02wMz5Txv1C3Hut0M8GCeC"
+	childID := "02wMz5Txv1C3Hut0M8GCeD"
+	writePastStableDelegates(t, stateDir, ownerID, pastStableDescriptor(ownerID, childID, "inspect ownership"))
+	savePastActivityMeta(t, stateDir, ownerID, "Owner")
+	synctest.Test(t, func(t *testing.T) {
+		started, release := make(chan struct{}), make(chan struct{})
+		original := scanDelegateJournal
+		scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			close(started)
+			<-release
+			return original(ctx, path, fromOffset, limits)
+		}
+		defer func() { scanDelegateJournal = original }()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, err := SessionOwnsDelegate(ctx, stateDir, ownerID, childID); done <- err }()
+		<-started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("ownership error=%v, want cancellation", err)
+			}
+		default:
+			t.Error("ownership caller still waits for the journal fold after cancellation")
+		}
+		close(release)
+		synctest.Wait()
+		owned, err := SessionOwnsDelegate(context.Background(), stateDir, ownerID, childID)
+		if err != nil || !owned {
+			t.Errorf("shared fold lost healthy caller's result: owned=%v, err=%v", owned, err)
+		}
+	})
 }

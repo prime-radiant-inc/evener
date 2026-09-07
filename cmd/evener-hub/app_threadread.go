@@ -491,6 +491,12 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			// expose the in-process child's turn start time.
 		},
 	}
+	if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, ref, entry.Meta.ID); ownershipErr != nil {
+		return appwire.Thread{}, ownershipErr
+	} else if required {
+		thread.Status.Type = appwire.ThreadStatusRestartRequired
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
 	if err != nil {

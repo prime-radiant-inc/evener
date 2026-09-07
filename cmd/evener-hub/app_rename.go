@@ -38,7 +38,10 @@ func setThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return appwire.EmptyResponse{}, appwire.InvalidParams("name is required")
 	}
 
-	mutation, err := withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (threadNameMutation, error) {
+	mutation, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (threadNameMutation, error) {
+		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
+			return threadNameMutation{}, err
+		}
 		return mutateThreadName(ctx, cfg, sources, ref, params)
 	})
 	if err != nil {

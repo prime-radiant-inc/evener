@@ -276,6 +276,15 @@ describe("durable recovery rows", () => {
     expect(within(row).getByRole("button", { name: "Dismiss" })).toBeTruthy();
   });
 
+  test.each(["restartRequired", "notLoaded"] as const)("Retry stays blocked for %s sessions", async (type) => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type } });
+    await seedBlockedUnknown("uncertain");
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

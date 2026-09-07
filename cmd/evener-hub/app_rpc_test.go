@@ -683,6 +683,12 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubSteersSurvivingDaemon(t, cleared) })
+	}
+}
+
+func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	const (
 		daemonProtocol = appwire.ProtocolVersion
 		threadID       = "th_compatible"
@@ -704,6 +710,18 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	})
 	defer daemonHTTP.Close()
 
+	resumeID := threadID
+	if cleared {
+		resumeID = "workspace_before_clear"
+		entries, err := rendezvous.List(runDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("rendezvous entries=%+v error=%v", entries, err)
+		}
+		entry := entries[0]
+		entry.WorkspaceRef = "local:" + resumeID
+		writeRendezvous(t, runDir, entry)
+	}
+
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
 
@@ -724,11 +742,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+	if resumed.Thread.ID != threadID || resumed.Thread.Evener.Ref != "local:"+threadID || resumeCalls != 0 {
 		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
 	}
 
@@ -8353,78 +8371,95 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 }
 
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
-	const sessionID = "033snFBSHFr78ZbQQMAeBD"
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        sessionID,
-			SessionID: sessionID,
-			Source:    "local",
-			Evener: appwire.EvenerThread{
-				Ref:          params.Ref,
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		}}, nil
-	})
-	var gotPrompt string
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = inputTextForTest(params.Input)
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
-	})
-	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
-	dropper := &dropFirstConnectionListener{
-		Listener: daemonHTTP.Listener,
-		dropped:  make(chan struct{}),
-	}
-	daemonHTTP.Listener = dropper
-	daemonHTTP.Start()
-	defer daemonHTTP.Close()
+	for _, fault := range []string{"probe", "listing"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "033snFBSHFr78ZbQQMAeBD"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          params.Ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				}}, nil
+			})
+			var gotPrompt string
+			var turns int
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				gotPrompt = inputTextForTest(params.Input)
+				turns++
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+			})
+			daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+			dropper := &dropFirstConnectionListener{
+				Listener: daemonHTTP.Listener,
+				dropped:  make(chan struct{}),
+			}
+			daemonHTTP.Listener = dropper
+			daemonHTTP.Start()
+			defer daemonHTTP.Close()
 
-	runDir := t.TempDir()
-	entry := rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-	}
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
-	roster := hubcore.NewRoster(runDir, failedRPCProber{})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:  runDir,
-		Roster:  roster,
-		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{
+				PID:       os.Getpid(),
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			var spawns int
+			spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "listing" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			roster := hubcore.NewRoster(runDir, failedRPCProber{})
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:  runDir,
+				Roster:  roster,
+				Spawner: spawner,
+				Past:    hubcore.NewPastIndex(""),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Model: "openai/gpt-5",
-		CWD:   "/tmp",
-		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	select {
-	case <-dropper.dropped:
-	default:
-		t.Fatal("startup test did not drop the first daemon connection")
-	}
-	if gotPrompt != "review the open PRs" {
-		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
-	}
-	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
-		t.Fatalf("response=%+v", resp)
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+				Model: "openai/gpt-5",
+				CWD:   "/tmp",
+				Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+			})
+			if err != nil {
+				t.Fatalf("ThreadStart: %v", err)
+			}
+			select {
+			case <-dropper.dropped:
+			default:
+				t.Fatal("startup test did not drop the first daemon connection")
+			}
+			if gotPrompt != "review the open PRs" {
+				t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+			}
+			if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+				t.Fatalf("response=%+v", resp)
+			}
+
+			if spawns != 1 || turns != 1 {
+				t.Fatalf("spawns=%d turns=%d", spawns, turns)
+			}
+		})
 	}
 }
 
@@ -9817,100 +9852,111 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 }
 
 func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
-	root := t.TempDir()
-	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleAddress := ln.Addr().String()
-	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
-	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer daemonHTTP.Close()
-
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       -1,
-		Address:   staleAddress,
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  staleEndpoint,
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
-	})
-	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
-	roster := hubcore.NewRoster(runDir, prober)
-	roster.Refresh()
-	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
-		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
-	}
-	resumeCalled := false
-	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.WorkingDir != workingDir {
-				t.Fatalf("resume request=%+v", req)
+	for _, refreshFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint("refresh failure=", refreshFailure), func(t *testing.T) {
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
 			}
-			resumeCalled = true
-			entry := rendezvous.Entry{
-				PID:        110,
-				Address:    daemonHTTP.Listener.Addr().String(),
-				Protocol:   appwire.ProtocolVersion,
-				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:   "local",
-				ThreadID:   sessionID,
-				SessionID:  sessionID,
-				WorkingDir: workingDir,
-				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
-			writeRendezvous(t, runDir, entry)
+			staleAddress := ln.Addr().String()
+			staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				appserver.Subscribe(ctx, sessionID)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID:       -1,
+				Address:   staleAddress,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  staleEndpoint,
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+				StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
+			})
+			prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+			roster := hubcore.NewRoster(runDir, prober)
 			roster.Refresh()
-			return entry, nil
-		},
-	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:      runDir,
-		Roster:      roster,
-		Spawner:     spawner,
-		Past:        past,
-		ResumeLocks: hubcore.NewResumeLocks(),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+				t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
+			}
+			resumeCalled := false
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					if req.WorkingDir != workingDir {
+						t.Fatalf("resume request=%+v", req)
+					}
+					resumeCalled = true
+					entry := rendezvous.Entry{
+						PID:        110,
+						Address:    daemonHTTP.Listener.Addr().String(),
+						Protocol:   appwire.ProtocolVersion,
+						Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+						SourceID:   "local",
+						ThreadID:   sessionID,
+						SessionID:  sessionID,
+						WorkingDir: workingDir,
+						StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+					}
+					prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
+					writeRendezvous(t, runDir, entry)
+					if refreshFailure {
+						if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("resume was not called after local transport error")
-	}
-	if resp.Turn.ID != "turn_recovered" {
-		t.Fatalf("turn=%+v", resp.Turn)
+					roster.Refresh()
+					return entry, nil
+				},
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        past,
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+			if err != nil {
+				t.Fatalf("TurnStart: %v", err)
+			}
+			if !resumeCalled {
+				t.Fatal("resume was not called after local transport error")
+			}
+			if resp.Turn.ID != "turn_recovered" {
+				t.Fatalf("turn=%+v", resp.Turn)
+			}
+
+		})
 	}
 }
 

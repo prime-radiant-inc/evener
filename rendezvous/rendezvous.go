@@ -122,31 +122,51 @@ func List(dir string) ([]Entry, error) {
 	return listFS(afero.NewOsFs(), dir)
 }
 
+// ListStrict requires every PID-named rendezvous entry to be readable and
+// valid. Ownership checks must not interpret a skipped claim as a stopped daemon.
+func ListStrict(dir string) ([]Entry, error) {
+	return listFSMode(afero.NewOsFs(), dir, true)
+}
+
 // listFS is List against an injected afero.Fs (see writeFS).
 func listFS(fs afero.Fs, dir string) ([]Entry, error) {
+	return listFSMode(fs, dir, false)
+}
+
+func listFSMode(fs afero.Fs, dir string, strict bool) ([]Entry, error) {
 	entries, err := afero.ReadDir(fs, dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !strict {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read rendezvous dir: %w", err)
 	}
 	var out []Entry
 	for _, de := range entries {
-		if de.IsDir() || !strings.HasSuffix(de.Name(), ".json") {
+		if (!strict && de.IsDir()) || !strings.HasSuffix(de.Name(), ".json") {
 			continue
 		}
 		base := strings.TrimSuffix(de.Name(), ".json")
-		if _, err := strconv.Atoi(base); err != nil {
+		pid, err := strconv.Atoi(base)
+		if err != nil {
 			continue
 		}
 		data, err := afero.ReadFile(fs, filepath.Join(dir, de.Name()))
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("read rendezvous %s: %w", de.Name(), err)
+			}
 			continue
 		}
 		var e Entry
 		if err := json.Unmarshal(data, &e); err != nil {
+			if strict {
+				return nil, fmt.Errorf("decode rendezvous %s: %w", de.Name(), err)
+			}
 			continue
+		}
+		if strict && e.PID != pid {
+			return nil, fmt.Errorf("rendezvous %s has invalid process identity", de.Name())
 		}
 		out = append(out, e)
 	}
