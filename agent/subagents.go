@@ -219,10 +219,11 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
-	// reaches them. Retaining releases their leases without touching any process
-	// table — the parent's own object can never be in this list
-	// (recordAbandonedEnvironmentLocked excludes it by construction).
-	sess.retainAbandonedEnvironmentScratch()
+	// reaches them. They take the same disposition as the environment the child
+	// still holds, and neither settlement touches a process table. The parent's
+	// own object can never be in this list (recordAbandonedEnvironmentLocked
+	// excludes it by construction).
+	sess.settleAbandonedEnvironmentScratch(scratch)
 	releaseOwnedChildEnvironment(sess.environmentOwnedAtTeardown(), scratch)
 }
 
