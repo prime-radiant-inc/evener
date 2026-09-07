@@ -288,6 +288,8 @@ type PendingThreadHydration = {
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
+// Storage failure must not release an observed restart restriction.
+const restartBlockingObligations = new Map<string, symbol>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
 // --- Notification routing index ---------------------------------------------
@@ -625,7 +627,8 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
-  if (targetRef && pendingMutationReconciliations.has(targetRef)) return null;
+  if (targetRef && (pendingMutationReconciliations.has(targetRef) || restartBlockingObligations.has(targetRef)))
+    return null;
   if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
@@ -779,7 +782,8 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   if (record?.state !== "blockedUnknown") return false;
   const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
   if (!status || status === "restartRequired" || status === "notLoaded") return false;
-  if (pendingMutationReconciliations.has(record.targetRef)) return false;
+  if (pendingMutationReconciliations.has(record.targetRef) || restartBlockingObligations.has(record.targetRef))
+    return false;
   await runtime.storage.markUnknown(clientMutationId, "submitting");
   notifyMutationPersistence([record.targetRef]);
   handleDiscoveredMutations(runtime, [record.targetRef]);
@@ -1397,6 +1401,8 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
+  if (published.status.type === "restartRequired") restartBlockingObligations.set(ref, Symbol());
+  const blockingObligation = restartBlockingObligations.get(ref);
   // The authoritative read has succeeded, so the replay gate opens HERE — in
   // the same synchronous step publishThreadHydration deleted the ref's
   // pending-hydration entry — not after the storage hygiene below. Between
@@ -1433,7 +1439,10 @@ async function publishAndReconcileThreadHydration(
         // Saved snapshots contain no authoritative daemon receipt history, even
         // after an incompatible daemon has been stopped. Persist uncertainty so
         // reopening that saved snapshot cannot release an already accepted send.
-        if (published.status.type === "restartRequired") {
+        if (
+          published.status.type === "restartRequired" ||
+          (published.status.type === "notLoaded" && blockingObligation)
+        ) {
           for (const record of await runtime.storage.listOutbox(ref)) {
             if (!current()) return;
             if (record.state === "submitting")
@@ -1445,6 +1454,11 @@ async function publishAndReconcileThreadHydration(
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
+        // A newer incompatible snapshot owns a different obligation. An older
+        // successful reconciliation cannot clear that newer restriction.
+        if (current() && restartBlockingObligations.get(ref) === blockingObligation) {
+          restartBlockingObligations.delete(ref);
+        }
       });
     pendingMutationReconciliations.set(ref, reconciliation);
     try {
@@ -2784,6 +2798,8 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrateEpochs.clear();
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
+  pendingMutationReconciliations.clear();
+  restartBlockingObligations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchHydrateClients.clear();
