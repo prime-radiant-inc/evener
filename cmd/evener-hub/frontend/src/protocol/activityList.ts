@@ -4,26 +4,22 @@ import {
   type ActivityTree,
   activityNodeID,
   parseActivityTree,
-} from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityData";
-import {
-  fenceRootSession,
-  graftContinuationTree,
-} from "../../cmd/evener-hub/frontend/src/panes/session/chrome/activityMerge";
-import {
-  isActionUnavailable,
-  isThreadNotFound,
-} from "../../cmd/evener-hub/frontend/src/panes/session/chrome/sessionErrors";
-import { sessionActionError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+} from "./activityData";
+import { fenceRootSession, graftContinuationTree } from "./activityMerge";
+import type { AppwireClient } from "./client";
+import { sessionActionError } from "./errors";
+import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 
-interface ActivityState {
+export type ActivityClient = Pick<AppwireClient, "request" | "onNotification">;
+
+export interface ActivityState {
   tree: ActivityTree | null;
   error: string | null;
   loading: boolean;
   unsupported: boolean;
   ended: boolean;
 }
-interface Branch extends ActivityBranchState {
+export interface ActivityBranch extends ActivityBranchState {
   id: string;
   label: string;
 }
@@ -37,11 +33,14 @@ export class ActivityList {
   private dirty = false;
   private inFlight?: Promise<void>;
   constructor(
-    private client: ConversationClientLike,
+    private client: ActivityClient,
     private ref: string,
     private threadId: string,
     tree: ActivityTree | null = null,
   ) {
+    if (!ref.trim() || !threadId.trim()) throw new TypeError("Activity requires a session ref and thread ID");
+    if (tree && (tree.root.ref !== ref || tree.root.sessionId !== threadId))
+      throw new TypeError("Retained activity belongs to another session");
     this.state = {
       tree,
       error: null,
@@ -62,21 +61,16 @@ export class ActivityList {
     this.state = { ...this.state, ...change };
     for (const listener of this.listeners) listener();
   }
-  branches = (): Branch[] => {
-    const branches: Branch[] = [];
+  branches = (): ActivityBranch[] => {
+    const branches: ActivityBranch[] = [];
     const append = (id: string, label: string, branch: ActivityBranchState) => {
-      if (branch.error || branch.truncated || branch.continuation)
-        branches.push({ id, label, ...branch });
+      if (branch.error || branch.truncated || branch.continuation) branches.push({ id, label, ...branch });
     };
     const visit = (node: ActivitySessionNode) => {
       append(activityNodeID(node), node.label, node.branch);
       for (const entry of node.entries)
         if (entry.kind === "delegate") {
-          append(
-            activityNodeID(entry),
-            entry.delegate.description ?? entry.delegate.childRef,
-            entry.delegate.branch,
-          );
+          append(activityNodeID(entry), entry.delegate.description ?? entry.delegate.childRef, entry.delegate.branch);
           if (entry.delegate.child) visit(entry.delegate.child);
         }
     };
@@ -110,9 +104,7 @@ export class ActivityList {
     if (
       this.disposed ||
       this.inFlight ||
-      !this.branches().some(
-        (branch) => branch.id === id && branch.continuation === continuation,
-      )
+      !this.branches().some((branch) => branch.id === id && branch.continuation === continuation)
     )
       return Promise.resolve();
     return this.run({ id, continuation });
@@ -140,16 +132,11 @@ export class ActivityList {
         if (!this.dirty && !this.disposed) {
           const tree = parseActivityTree((result as { data: unknown }).data);
           if (!tree) throw new Error("Invalid activity response");
-          if (
-            tree.root.sessionId !== this.threadId ||
-            tree.root.ref !== this.ref
-          )
+          if (tree.root.sessionId !== this.threadId || tree.root.ref !== this.ref)
             throw new Error("Activity belongs to another session");
           const current = this.state.tree;
           if (current && tree.revision < current.revision)
-            throw new Error(
-              "Activity response is older than the displayed activity",
-            );
+            throw new Error("Activity response is older than the displayed activity");
           this.publish({
             tree: current
               ? branch
@@ -160,10 +147,8 @@ export class ActivityList {
         }
       } catch (error) {
         if (!this.dirty && !this.disposed) {
-          if (!branch && isActionUnavailable(error))
-            this.publish({ unsupported: true });
-          else if (!branch && isThreadNotFound(error))
-            this.publish({ ended: true });
+          if (!branch && isActionUnavailable(error)) this.publish({ unsupported: true });
+          else if (!branch && isThreadNotFound(error)) this.publish({ ended: true });
           else
             this.publish({
               error: sessionActionError("Could not load activity", error),

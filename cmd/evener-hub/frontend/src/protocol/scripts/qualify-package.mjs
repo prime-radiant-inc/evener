@@ -39,8 +39,11 @@ run(
 
 writeFileSync(
   join(fixtureDir, "esm.mts"),
-  `import { AppwireClient, APPWIRE_PROTOCOL_VERSION, WireError, composeAskAnswers, type AskAnswerItem, type AskResolution } from "@evener/appwire-client";
+  `import { ActivityList, AppwireClient, APPWIRE_PROTOCOL_VERSION, WireError, composeAskAnswers, type ActivityState, type AskAnswerItem, type AskResolution } from "@evener/appwire-client";
 const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const activity = new ActivityList(client, "local:fixture", "fixture");
+const activityState: ActivityState = activity.getSnapshot();
+activity.dispose(); void activityState;
 const version: string = APPWIRE_PROTOCOL_VERSION;
 const error: WireError | undefined = undefined;
 const resolution: AskResolution = { kind: "skip" };
@@ -54,6 +57,9 @@ writeFileSync(
   join(fixtureDir, "commonjs.cts"),
   `import client = require("@evener/appwire-client");
 const app: client.AppwireClient = new client.AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
+const activity = new client.ActivityList(app, "local:fixture", "fixture");
+const activityState: client.ActivityState = activity.getSnapshot();
+activity.dispose(); void activityState;
 const version: string = client.APPWIRE_PROTOCOL_VERSION;
 const answers: readonly client.AskAnswerItem[] = [{ resolution: { kind: "skip" }, note: "" }];
 const reply: string = client.composeAskAnswers(answers);
@@ -112,6 +118,7 @@ run(
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/goals.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/tasks.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/job-output.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/activity.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/management-recovery.contract.mjs"),
   ],
   fixtureDir,

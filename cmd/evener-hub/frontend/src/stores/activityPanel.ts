@@ -1,6 +1,6 @@
-import { fenceRootSession, graftContinuationTree } from "../panes/session/chrome/activityMerge";
+import { fenceRootSession, graftContinuationTree } from "../protocol/activityMerge";
 
-export { graftContinuationTree } from "../panes/session/chrome/activityMerge";
+export { graftContinuationTree } from "../protocol/activityMerge";
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -9,7 +9,7 @@ import {
   type ActivityTree,
   defaultExpandedIDs,
   reconcileActivityState,
-} from "../panes/session/chrome/activityData";
+} from "../protocol/activityData";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 import type { PanelLoadFailure } from "./tasksPanel";
 

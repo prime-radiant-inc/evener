@@ -156,6 +156,51 @@ only byte bookkeeping and paging flags, never log text or transport errors.
 An empty output is valid; missing jobs and failed reads remain errors.
 
 
+### Reading activity and its continuation branches
+
+`activity.mjs` reads `evener/jobs/list` using the shared `ActivityList` controller,
+including advertised continuations. Supply the exact session ref and thread ID:
+
+```sh
+EVENER_REF=local:... EVENER_THREAD_ID=... node node_modules/@evener/appwire-client/examples/activity.mjs
+```
+
+Alternatively, set `EVENER_ACTIVITY_PARAMS_FILE` to a JSON file containing
+`{ "ref": "local:...", "threadId": "...", "maxPages": 10 }`. The local page
+budget defaults to ten and accepts safe integers from one to one hundred.
+It is not sent to the hub. Parameters are validated and captured before connecting.
+Each request sends only `ref` and, when continuing, the exact advertised
+`continuation`. Tokens stay scoped to that ref and are never decoded or modified.
+
+Import `runActivity` from `examples/activity-logic.mjs` for the parsed `readback`,
+`remainingBranches`, `pagesRead` and `outcome`. `pagesRead` counts attempted page
+requests, including a failed request. A completed traversal reports `read`;
+`incomplete` preserves the tree when the budget is exhausted, a cursor repeats,
+or a truncated branch has no continuation. A branch or request error reports
+`failed` with any previously read tree. Root action unavailability and a missing
+thread report `unavailable` and `ended`. The CLI prints only the outcome and
+counts; callers of the helper receive potentially private tree and error data.
+The helper disposes its controller; the caller owns closing the connection.
+
+`ActivityList` is also exported for a live reader. Construct one per hub/session
+lifetime with an already connected client, the exact ref and thread ID. Use
+`start()` to subscribe to matching activity invalidations and perform the initial
+read, `subscribe()`/`getSnapshot()` to observe state, `branches()`/`loadMore()` to
+consume an advertised branch, and `refresh()` for a new root read. Refresh
+replaces the paged root; continuation reads graft into the retained tree and
+preserve other pending branches. Responses from another session or an older
+revision leave the displayed tree intact and publish an error. Dispose on
+navigation or client replacement; the controller does not connect or reconnect.
+Treat snapshots as read-only. An optional retained tree must belong to the same
+hub, ref and thread ID; the constructor checks the latter two, while the caller
+must enforce hub ownership. The bounded recipe uses explicit reads and does not
+subscribe to notifications or promise an atomic snapshot during concurrent updates.
+
+`parseActivityTree`, `activityNodeID`, the activity types, and the continuation
+merge helpers are shared with the web/native consumers. Invalid roots fail
+parsing; invalid members are omitted and their branch is marked incomplete.
+Numeric revisions and activity counters must be safely representable integers.
+
 ### Reviewing and changing a goal
 
 `goals.mjs` reads the current goal by default. Set `EVENER_GOAL_PARAMS_FILE` to a

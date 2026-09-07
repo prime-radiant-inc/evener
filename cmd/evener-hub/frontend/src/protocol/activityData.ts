@@ -181,7 +181,7 @@ function readBoolean(object: Record<string, unknown>, key: string): boolean | nu
 
 function readInteger(object: Record<string, unknown>, key: string): number | null {
   const value = object[key];
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
 function readNonNegativeInteger(object: Record<string, unknown>, key: string): number | null {
@@ -279,7 +279,7 @@ function copyOptionalInteger(
     target[key] = null;
     return true;
   }
-  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
   target[key] = value;
   return true;
 }
@@ -342,7 +342,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
   if (typeof raw.lastOutputAt !== "undefined" && typeof raw.lastOutputAt !== "string") return null;
-  if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
+  if (typeof exitCode !== "undefined" && !Number.isSafeInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (transcriptRef) job.transcriptRef = transcriptRef;
   if (parentDelegateId) job.parentDelegateId = parentDelegateId;
