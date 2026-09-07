@@ -72,7 +72,7 @@ launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. Fixtures for creation,
 streaming, approvals, queue control, reconnect recovery, management, providers,
-plugins, trust and upgrades remain to be added.
+plugin management and upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
@@ -121,3 +121,21 @@ may leave its temporary child directory behind. This local fixture setup is not
 an AppWire remote-file operation. Real clients must show the preview and obtain a
 user's trust decision for the exact reviewed hash; they must never automatically
 trust a newer revision because the earlier request was rejected.
+
+### Plugin selection without creating a session
+
+`plugins.mjs` exercises `evener/plugin/preview` with omitted selection, an explicit
+empty list, one available plugin, and an unavailable name. It asserts selected
+flags and structured selection errors. No plugins are installed or changed and
+no session starts. If the directory has no available plugin, it explicitly
+reports that the single-plugin case was not exercised.
+
+```sh
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/hub/auth-token \
+EVENER_CWD=/path/on/hub \
+node node_modules/@evener/appwire-client/examples/plugins.mjs
+```
+
+Run against a stable catalog: concurrent installation/removal can legitimately
+change the candidates between preview requests and fail the assertions.

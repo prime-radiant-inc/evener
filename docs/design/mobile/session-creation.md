@@ -261,3 +261,47 @@ This closes the observed live-item projection gap, not all of MOB-008 or image
 qualification. New-session opening-window races, image-only native submission,
 limit/failure cases, long catalogs, keyboard attachment round trips, large text
 and screen readers still need their own acceptance evidence.
+
+## Per-session plugins
+
+The creation form offers a searchable native plugin sheet for Evener-kind
+harnesses, using the web's preview hook and selection helpers. Defaults omit
+`enabledPlugins`; toggles create an explicit name list; None retains `[]`.
+The sheet presents server descriptions, source, version, component counts,
+diagnostics and unavailable selections. Selected missing names can be removed.
+Plugin/launch update notifications refresh the preview. Choices affect this
+session only; they do not change installed enablement or saved launch layers.
+
+Explicit selections receive a fresh preview immediately before Start. Missing
+names and structured selection errors block creation. Preview failure/disconnect
+keeps the draft and cannot dispatch Start; it is distinct from an uncertain
+response after Start. Unsupported harnesses omit/reset the plugin allow-list.
+Review corrected failed-preview rows to permit deselection while blocking new
+additions, matching the web flow.
+
+Manual simulator Release evidence on the isolated SecondHub:
+
+- iOS selected None, toggled native-tools on through its native checkbox, closed
+  the sheet, chose Fake Alternate, and created local:034KPPuZNEP4HYLw7Gf4af.
+  Independent installed-SDK thread/read returned native-tools 1.0.0 in runtime
+  plugin diagnostics.
+- Android toggled native-tools off through its native checkbox, closed the sheet,
+  chose Fake Test Model, and created local:034KPS05mdSuC9o1z0OsXv. Independent
+  runtime readback reported no loaded plugins. Both empty sessions remained idle.
+- [iOS explicit selection](assets/creation/plugins-ios.jpg) and
+  [Android explicit none](assets/creation/plugins-android.png).
+
+338 native tests, 11 shared new-session service tests, 17 shared web selection/
+preview tests, TypeScript, touched-file Biome and both Release builds pass.
+The canonical make test-web gate also passes (typecheck, unit tests, Biome).
+Seven added tests exercise explicit lists/none, unavailable names, preview
+failure, disconnect before dispatch, honest uncertainty, and unsupported harnesses.
+The final error-state checkbox refinement was rebuilt after the native creation
+checks. Independent review found no remaining actionable issue in this slice.
+
+The packed SDK's plugins.mjs recipe separately passed against the isolated hub:
+default selection, explicit none, one named plugin and unavailable-name errors.
+No session is created by that recipe. The fixture has no plugin components;
+these checks prove selection/loading, not skill, hook, agent or MCP execution.
+Failed-preview UI, long catalogs/search keyboard, accessibility, two-hub return
+and creation-draft process-death qualification remain open.
