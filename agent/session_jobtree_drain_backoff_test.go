@@ -39,11 +39,11 @@ func TestDrainIdleBackoffKickCadence(t *testing.T) {
 	// Drive exactly drainIdleBackoffDeepAfter+2*drainIdleBackoffDeepEvery quiet
 	// passes and count the kicks the schedule allowed.
 	const passes = drainIdleBackoffDeepAfter + 2*drainIdleBackoffDeepEvery
-	for i := 0; i < passes; i++ {
+	for range passes {
 		select {
 		case recheck <- time.Now():
 		case <-done:
-			t.Fatalf("drain returned after %d quiet passes; want it to keep waiting on live residue", i)
+			t.Fatal("drain returned early; want it to keep waiting on live residue")
 		}
 		// Let the released pass run its kick (or skip it) and park again.
 		// A skipped kick parks immediately; an executed one still returns at
@@ -54,6 +54,8 @@ func TestDrainIdleBackoffKickCadence(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
+	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal; cancel()
+	// above guarantees it. 30s only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("drain did not return after context cancel")
 	}
@@ -101,11 +103,11 @@ func TestDrainIdleBackoffWakeResetsToFullRate(t *testing.T) {
 	}()
 
 	// Push past the full-rate prefix into the throttled tier.
-	for i := 0; i < drainIdleBackoffFullRatePasses+2; i++ {
+	for range drainIdleBackoffFullRatePasses + 2 {
 		select {
 		case recheck <- time.Now():
 		case <-done:
-			t.Fatalf("drain returned during backoff entry (pass %d)", i)
+			t.Fatal("drain returned during backoff entry")
 		}
 	}
 	before := kicks.Load()
@@ -131,6 +133,8 @@ func TestDrainIdleBackoffWakeResetsToFullRate(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
+	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal; cancel()
+	// above guarantees it. 30s only fires on a genuine hang.
 	case <-time.After(30 * time.Second):
 		t.Fatal("drain did not return after context cancel")
 	}
