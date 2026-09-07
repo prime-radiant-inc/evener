@@ -857,7 +857,13 @@ worktree) folds and marks the mutations a label may name, since that is
 what a run amounted to; `fold: "never"` (delegate, ask_user, task_list,
 use_skill, the `job_*` tools) and any descriptor with no policy at all,
 which is every unregistered or MCP tool, never fold away, because a tool the
-UI does not know may have had a side effect the reader must see. A live turn never folds at
+UI does not know may have had a side effect the reader must see. One more
+row never folds, by projection rather than policy: a settled call with no
+stated intent (`description`) projects as a `critical` entry at the tool-call
+levels (`projector.ts`'s `decisionFor`, so the neutral summary reaches the
+renderer), and only `item` entries fold. Runs of intent-less calls therefore
+stay unfolded; extending the fold to `critical` entries is a small separate
+change if a model that omits intents makes it matter. A live turn never folds at
 all, because while the agent is working each call appearing IS the progress
 signal, and a failure, a call still in flight, an auto-expanding card or any
 non-tool entry breaks the run rather than being spanned by it, so a folded row
