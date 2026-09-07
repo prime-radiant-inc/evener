@@ -697,7 +697,7 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
-  const refs = [...new Set(targetRefs)];
+  const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
   for (const targetRef of refs) pinnedMutationRefs.add(targetRef);
   notifyMutationPersistence(refs);
   scheduleMutationDispatch(runtime, refs);

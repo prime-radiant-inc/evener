@@ -8195,3 +8195,56 @@ test("periodic discovery recovers failed compatible reconciliation after storage
     vi.useRealTimers();
   }
 });
+
+test("periodic discovery recovers reconciliation after the final durable record settles", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "last-record" });
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+      attachments: [],
+      optimisticDisplay: { text: "sentinel" },
+    });
+    let faultEnabled = false;
+    const listOutbox = storage.listOutbox.bind(storage);
+    vi.spyOn(storage, "listOutbox").mockImplementation(async (ref) => {
+      const records = await listOutbox(ref);
+      if (faultEnabled && ref && records.length === 0)
+        throw new DOMException("IndexedDB transaction aborted", "AbortError");
+      return records;
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let compatible = false;
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: compatible ? "idle" : "restartRequired" },
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 1, clientMutationIds: compatible ? ["last-record"] : [] },
+        },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await settleCallerContinuations();
+    compatible = true;
+    faultEnabled = true;
+    await threadsStore
+      .getState()
+      .refreshThread("ref_a")
+      .catch(() => undefined);
+    expect(await storage.listTargetRefs()).toEqual([]);
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(true);
+    faultEnabled = false;
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => !threadsStore.getState().mutationReconciliationFailures.has("ref_a"));
+    expect(threadsStore.getState().mutationReconciliationFailures.has("ref_a")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
