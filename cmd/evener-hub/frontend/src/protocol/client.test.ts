@@ -87,6 +87,45 @@ describe("decodeInitializeResponse", () => {
     expect(decodeInitializeResponse(response)).toEqual(response);
   });
 
+  test.each([true, false])("accepts the v4 keybindings capability %s", (keybindingsSettings) => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("rejects a malformed v4 keybindings capability", () => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings: "yes" },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
+  test.each([{ readVersions: [2] }, { readVersions: [1, 2] }, { readVersions: [] }])(
+    "preserves advertised navigation read versions $readVersions",
+    ({ readVersions }) => {
+      const response = {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions },
+      };
+      expect(decodeInitializeResponse(response).navigation?.readVersions).toEqual(readVersions);
+    },
+  );
+
+  test.each(
+    [null, "2", ["2"], [0], [-1], [1.5], [Number.MAX_SAFE_INTEGER + 1]].map((readVersions) => ({ readVersions })),
+  )("rejects malformed navigation read versions $readVersions", ({ readVersions }) => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
   test("accepts and preserves maximum safe navigation integers", () => {
     const response = {
       ...FAKE_INITIALIZE_RESULT,
