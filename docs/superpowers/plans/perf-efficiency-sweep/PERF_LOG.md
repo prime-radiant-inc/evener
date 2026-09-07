@@ -94,7 +94,8 @@ Rule: small frequent commits; every claim backed by measurement.
 
 ## Implemented wins
 
-(none yet — fill per commit: what / measured before→after / test proof / commit hash)
+- Frontend #1 (2026-09-06): drop unused `react-router` dep — `cmd/evener-hub/frontend/package.json` + lockfile (29 deletions). Proof: `npm ls react-router` empty, `tsc --noEmit` clean, 121 scoped vitest green, `vite build` green. Commits `82bb54aa7` + merge `74705b469`.
+- Frontend #5 anser singleton: SKIPPED with evidence — Anser instances carry mutable fg/bg/decorations state across calls (behavioral leakage proven), singleton would corrupt output.
 
 ## Gates before PR
 
