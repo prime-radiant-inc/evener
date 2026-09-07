@@ -346,9 +346,70 @@ present. The hub validates provider-specific constraints. No credentials are
 stored and no OAuth flow starts through this recipe. Output contains only the
 outcome, instance count and write-refusal flag.
 
+### Marketplace catalogs and sources
+
+`marketplaces.mjs` lists registered marketplaces by default. Select `browse` with
+`EVENER_MARKETPLACE_PARAMS_FILE` containing `{ "name": "owned-fixture" }` to read
+one catalog. The request uses the registry alias; the response's `name` is the
+manifest's catalog name and may differ. Keep using the selected registry alias
+for plugin installation and marketplace management. Write actions are
+`add`, `refresh`, and `remove`; refresh/remove take the same name-only file.
+
+```sh
+EVENER_MARKETPLACE_MUTATION=1 \
+EVENER_MARKETPLACE_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_MARKETPLACE_ACTION=refresh \
+EVENER_MARKETPLACE_PARAMS_FILE=/path/to/marketplace.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/marketplaces.mjs
+```
+
+Add takes `{ "name": "owned-fixture", "source": { "kind": "url",
+"url": "/isolated/git/repository/on/hub" } }`. Source kinds are `github`
+with `repo`, `url` with `url`, `directory` with `path`, and `git-subdir` with
+`url` and `path`. Optional `ref` and `sha` are preserved exactly, including
+empty strings; omitted fields stay omitted. Paths refer to the hub filesystem.
+The hub applies source-specific rules and may fetch Git content.
+
+An explicitly named add requires that name to be absent from a fresh list;
+refresh/remove require it to be present. Add also accepts an omitted name,
+which lets the hub derive it from the manifest. The hub upserts by name, so a
+derived name can replace an existing registration; the recipe cannot preflight
+that name before loading the source. Use an explicit unused name and an owned
+disposable source. Preflight does not prevent concurrent changes. Output contains
+only the outcome and marketplace or plugin count.
+
+### Sandbox approval decisions
+
+`approvals.mjs` defaults to a read-only, non-subscribing `thread/read`. Supply
+`EVENER_APPROVAL_PARAMS_FILE` with `{ "ref": "local:owned-session" }`. The
+`runApprovals` helper returns the full readback so the caller can review the
+pending escalation privately; the CLI prints only its count.
+
+To resolve a reviewed approval, select `EVENER_APPROVAL_ACTION=resolve`, set
+`EVENER_APPROVAL_MUTATION=1` and separately confirm the endpoint with
+`EVENER_APPROVAL_OWNED_HUB`. The parameters file must contain `ref`,
+`expectedInstanceId`, the complete reviewed `escalation` object, and an explicit
+boolean `approve`. Use the same connection environment as the marketplace
+example. Do not reconstruct the card from its ID alone. The helper connects,
+reads the current instance and pending cards, and refuses a changed or missing
+card before sending a decision. It captures the authored parameters before
+awaiting connection; `false` means deny and is never defaulted to approval.
+
+The resolver receives only `ref`, `escalationId`, and `approve`. Its contract
+has no expected-instance or mutation-ID field, so this client preflight cannot
+atomically prevent replacement between reading and deciding. Readback must
+still belong to the reviewed instance. The result always reports
+`execution: "unverified"`: an acknowledgment or disappearance of a pending card
+does not prove that a tool resumed. Unknown/already-resolved cards can conflict;
+the recipe never resubmits them. Question answers use a separate turn contract
+and are outside this example.
+
 ### Management mutation recovery
 
-Both management recipes require an explicit mutation opt-in and a separately
+These management and approval recipes require an explicit mutation opt-in and a separately
 supplied owned endpoint equal to `EVENER_RPC_URL`. Their logic helpers expect the
 client returned by `connection.mjs` for that endpoint. Ownership confirmation is
 an operator guard, not authentication or a check of an arbitrary client's URL.
@@ -356,7 +417,7 @@ Preflight reads are not atomic with writes; use fixtures without concurrent
 writers. These methods have no mutation-ID or revision precondition in their
 current contracts.
 
-After one mutation attempt the recipe performs one independent list read. A
+After one mutation attempt the recipe performs one fresh list or thread read. A
 valid acknowledgment followed by readback reports `acknowledged`. A rejected or
 lost reply reports `uncertain` even if readback shows the desired state. The
 recipes never replay mutations, restore configuration, or attribute a concurrent
@@ -378,6 +439,7 @@ cases. `make test-api-package` also runs them from the packed, installed artifac
 
 ```sh
 node --test examples/plugin-management.contract.mjs examples/instances.contract.mjs
+node --test examples/marketplaces.contract.mjs examples/approvals.contract.mjs
 ```
 
 These checks do not establish actual plugin download/installation, provider

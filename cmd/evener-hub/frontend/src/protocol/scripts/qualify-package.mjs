@@ -96,6 +96,8 @@ run(
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/organization.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/plugin-management.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/instances.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/marketplaces.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/approvals.contract.mjs"),
   ],
   fixtureDir,
 );

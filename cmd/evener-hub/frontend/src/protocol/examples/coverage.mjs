@@ -46,6 +46,15 @@ const recipes = {
     "evener/instance/remove",
     "evener/instance/setDefault",
   ],
+  "marketplaces.mjs": [
+    "initialize",
+    "evener/marketplace/list",
+    "evener/marketplace/browse",
+    "evener/marketplace/add",
+    "evener/marketplace/remove",
+    "evener/marketplace/refresh",
+  ],
+  "approvals.mjs": ["initialize", "thread/read", "evener/sandbox/escalation/resolve"],
   "repository-trust.mjs": ["initialize", "evener/launch/resolve", "evener/launch/trustRepo"],
   "project-layer.mjs": [
     "initialize",

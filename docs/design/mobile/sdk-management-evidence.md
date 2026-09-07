@@ -59,3 +59,60 @@ are recorded separately in [reader evidence](reader-continuity-evidence.md).
 The full iOS release matrix and final canonical merge gate remain open.
 Android source is preserved and qualification is deferred
 for iOS-only v1. Neither recipe was published, and no branch was pushed or merged.
+
+## Marketplace and sandbox approval recipes
+
+The continuation from `92bfcbf5d` adds marketplace list/browse/add/refresh/remove
+and sandbox approval read/resolve examples. Both use the existing one-mutation,
+one-readback recovery helper and separate owned-endpoint confirmation. Approval
+resolution captures the reviewed card before connecting, checks its full current
+contents and instance identity, preserves explicit denial, and rejects a replaced
+instance on readback. It always reports execution as unverified. The server
+resolve contract lacks an expected-instance or mutation-ID precondition; the
+client check cannot close the race between preflight and dispatch.
+
+The final tarball used below has SHA-256
+`707c7f1ff6798aff1ce3f1f1fcf901737499a620fef96d1c30f60fa51c92bca5`.
+It was packed from the authoritative worktree and installed outside the checkout
+with offline resolution and install scripts disabled. The final package gate
+also installed and ran the artifact independently. Luna medium agents supplied
+proposals and reviewed the algorithms; root corrected and integrated them and
+ran the checks because the agents could not access the current filesystem.
+
+- All seven example contract files pass: 81 tests, including 29 new cases.
+  These exercise every action, source kinds, omitted/empty/false values, full
+  approval-card equality, caller changes while connection awaits, stale bindings,
+  malformed replies, one dispatch without replay, and both-error preservation
+  including thrown `undefined` and `null`.
+- The initial checks failed while the implementation modules were absent.
+  Live alias browsing then exposed a wrong assumption in the first implementation:
+  Browse returns the manifest catalog name, which can differ from its registered
+  alias. The added alias regression failed before the correction and passed
+  afterward. The request still uses the exact registered alias; the response
+  preserves the manifest name. This matches `hubPluginsController.Browse`.
+- Final `make test-api-package` and `make test-web` passed. The latter reports
+  typecheck, tests and Biome passing; touched source formatting and diff checks
+  pass. No generated contract or native source changed.
+- The installed final CLI recipes read the direct owned v4 hub on port 54211:
+  marketplace count two after cleanup, and zero pending sandbox approvals on
+  the retained reader fixture. Output contained only counts/outcomes.
+- The final installed marketplace helper read the alias left by the first live
+  attempt, successfully browsed it, deliberately removed it, and added it again.
+  `sdk-marketplace-acceptance` returned catalog name `native-git-acceptance` and
+  one `native-tools` entry. Refresh fetched a changed local Git commit and its
+  v4 content sentinel. Both owned marketplace registrations were then removed;
+  the complete original two-entry marketplace list was restored exactly.
+
+The earlier plugin-management tarball also installed the owned Git plugin,
+upgraded it to a new revision, disabled/enabled it, toggled automatic upgrades
+on/off and removed it. Its direct native notification and Git-failure recovery
+acceptance is recorded in [plugin evidence](plugins-evidence.md#direct-v4-git-upgrade-and-recovery).
+The local Git fixtures contain manifests and sentinel text only. Seeded
+marketplaces were not browsed or refreshed and no production runtime was used.
+
+The recipe catalog now names 12 examples containing 42 of 91 request names and
+three notification names. These are presence counts, not executed-path or
+release coverage. Actual sandbox approval/denial with tool execution still needs
+an owned scripted-provider acceptance fixture; injected notifications are not
+proof of resumption. Questions, credentials, continuous reconnect handling,
+remaining SDK recipes and the full iOS release matrix remain open.
