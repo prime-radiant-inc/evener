@@ -6,37 +6,61 @@ import (
 	"fmt"
 	"maps"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // restartRequiredDaemon only uses an authenticated probe's mismatch verdict.
 // A rendezvous file or a live PID alone cannot establish daemon identity.
-func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore.LiveEntry, bool) {
+func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore.LiveEntry, bool, error) {
 	if ref != "" {
 		parsed, err := appwire.ParseRef(ref)
-		if err != nil || parsed.SourceID != "local" {
-			return hubcore.LiveEntry{}, false
+		if err != nil {
+			return hubcore.LiveEntry{}, false, err
+		}
+		if parsed.SourceID != "local" {
+			return hubcore.LiveEntry{}, false, nil
 		}
 		threadID = parsed.ThreadID
 	}
 	if cfg.Roster == nil {
-		return hubcore.LiveEntry{}, false
+		return hubcore.LiveEntry{}, false, nil
+	}
+	type ownershipEdge struct {
+		parent  hubcore.PastEntry
+		childID string
+	}
+	var edges []ownershipEdge
+	verifyOwner := func(entry hubcore.LiveEntry) (hubcore.LiveEntry, bool, error) {
+		if entry.Status != appwire.ThreadStatusRestartRequired {
+			return entry, false, nil
+		}
+		for _, edge := range edges {
+			owned, err := agent.SessionOwnsDelegate(context.Background(), edge.parent.StateDir, edge.parent.Meta.ID, edge.childID)
+			if err != nil {
+				return hubcore.LiveEntry{}, false, fmt.Errorf("read daemon ownership for %s: %w", edge.childID, err)
+			}
+			if !owned {
+				return hubcore.LiveEntry{}, false, nil
+			}
+		}
+		return entry, true, nil
 	}
 	seen := make(map[string]bool)
 	for !seen[threadID] {
 		seen[threadID] = true
 		if entry, ok := cfg.Roster.Find(threadID); ok && !entry.Crashed {
-			return entry, entry.Status == appwire.ThreadStatusRestartRequired
+			return verifyOwner(entry)
 		}
 		workspaceRef := localAppRef(threadID)
 		for _, entry := range cfg.Roster.List() {
 			if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
-				return entry, entry.Status == appwire.ThreadStatusRestartRequired
+				return verifyOwner(entry)
 			}
 		}
-		// A fork shares ancestry but not daemon ownership. Require the parent's
-		// persisted delegate descriptor before following that ownership edge.
+		// Ancestry locates a possible daemon. Every edge must have a persisted
+		// delegate descriptor before that daemon can be classified as the owner.
 		child, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: threadID})
 		if !ok || child.Meta.ParentSessionID == "" {
 			break
@@ -45,24 +69,11 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 		if !ok {
 			break
 		}
-		delegates, _, err := pastEntryDelegateStatus(context.Background(), parent)
-		if err != nil {
-			break
-		}
-		owner := ""
-		for _, delegate := range delegates {
-			if delegate.ChildSessionID == threadID && delegate.OwnerSessionID == parent.Meta.ID {
-				owner = delegate.OwnerSessionID
-				break
-			}
-		}
-		if owner == "" {
-			break
-		}
-		threadID = owner
+		edges = append(edges, ownershipEdge{parent: parent, childID: threadID})
+		threadID = parent.Meta.ID
 	}
 
-	return hubcore.LiveEntry{}, false
+	return hubcore.LiveEntry{}, false, nil
 }
 
 // Refresh ownership before a local metadata write or before treating a missing
@@ -85,7 +96,14 @@ func refreshDaemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mut
 }
 
 func daemonRestartRequiredError(cfg hubcore.WebConfig, ref, threadID, mutationID string) error {
-	entry, ok := restartRequiredDaemon(cfg, ref, threadID)
+	entry, ok, err := restartRequiredDaemon(cfg, ref, threadID)
+	if err != nil {
+		wire := appwire.Unavailable(err.Error())
+		if mutationID != "" {
+			return restartRequiredMutationError(wire, mutationID)
+		}
+		return wire
+	}
 	if !ok {
 		return nil
 	}

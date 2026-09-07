@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -233,6 +235,39 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	ds.TurnSlots = turnSlotOccupancyOf(s)
 
 	return ds
+}
+
+// SessionOwnsDelegate reads durable ownership without projecting transcript
+// attention. A sibling's transcript cannot determine whether a daemon owns a child.
+func SessionOwnsDelegate(ctx context.Context, stateDir, ownerSessionID, childSessionID string) (bool, error) {
+	if err := schema.ValidateSessionID(ownerSessionID); err != nil {
+		return false, err
+	}
+	if err := schema.ValidateSessionID(childSessionID); err != nil {
+		return false, err
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, ownerSessionID)
+	if err != nil {
+		return false, err
+	}
+	rootID := activityRootIDFromMeta(ownerSessionID, meta)
+	if err := schema.ValidateSessionID(rootID); err != nil {
+		return false, err
+	}
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
+	if err != nil {
+		return false, err
+	}
+	for _, aggregate := range result.Value.state {
+		if aggregate != nil && aggregate.Descriptor.OwnerSessionID == ownerSessionID && aggregate.Descriptor.ChildSessionID == childSessionID {
+			return true, nil
+		}
+	}
+	if result.Value.tornTail {
+		return false, fmt.Errorf("delegate ownership journal has an incomplete trailing batch: %s", path)
+	}
+	return false, nil
 }
 
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows

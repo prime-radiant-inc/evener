@@ -1306,6 +1306,9 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 		return navigationSourceSnapshot{}, errors.New("navigation web source is unavailable")
 	}
 	snapshot := s.web.navigationSnapshot(ctx)
+	if snapshot.ownershipErr != nil {
+		return navigationSourceSnapshot{}, snapshot.ownershipErr
+	}
 	decisions := s.web.archiveDecisions()
 	// Keep the legacy adapter on the exact same seam as the established endpoint;
 	// in particular, test and compatibility fixtures replace these functions.

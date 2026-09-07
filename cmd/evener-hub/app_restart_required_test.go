@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -389,8 +391,9 @@ func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
 }
 
 func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
-	for _, delegated := range []bool{false, true} {
-		t.Run(fmt.Sprint("delegated=", delegated), func(t *testing.T) {
+	for _, scenario := range []struct{ delegated, unreadableSibling bool }{{false, false}, {true, false}, {true, true}} {
+		delegated := scenario.delegated
+		t.Run(fmt.Sprint(scenario), func(t *testing.T) {
 			root := t.TempDir()
 			stateDir := filepath.Join(root, "projects", "upgrade-0000000000")
 			parentID := buildRPCParentSession(t, stateDir)
@@ -410,10 +413,23 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 					t.Fatal(err)
 				}
-				batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{"kind": "delegate_created", "seq": 1, "delegate_id": "dlg_upgrade", "created": map[string]any{"descriptor": map[string]any{"child_session_id": childID, "transcript_ref": "local:" + childID, "owner_session_id": parentID, "task": "sentinel", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}}}}})
+				descriptor := map[string]any{"child_session_id": childID, "transcript_ref": "local:" + childID, "owner_session_id": parentID, "task": "sentinel", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}
+				events := []map[string]any{{"kind": "delegate_created", "seq": 1, "delegate_id": "dlg_upgrade", "created": map[string]any{"descriptor": descriptor}}}
+				if scenario.unreadableSibling {
+					sibling := maps.Clone(descriptor)
+					siblingID := "02wMz5Txv1C3Hut0M8GCeD"
+					sibling["child_session_id"] = siblingID
+					sibling["transcript_ref"] = "local:" + siblingID
+					events = append(events, map[string]any{"kind": "delegate_created", "seq": 2, "delegate_id": "dlg_sibling", "created": map[string]any{"descriptor": sibling}})
+					if err := os.Mkdir(filepath.Join(stateDir, "sessions", siblingID+".transcript.jsonl"), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				batch, err := json.Marshal(map[string]any{"events": events})
 				if err != nil {
 					t.Fatal(err)
 				}
+
 				if err := os.WriteFile(path, append(append([]byte("{\"version\":1}\n"), batch...), '\n'), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -479,6 +495,33 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					}
 				}
 			}
+			t.Run("ownership read failure blocks mutations", func(t *testing.T) {
+				journal := filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl")
+				if err := os.Remove(journal); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(journal, 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue} {
+					var response any
+					err := client.Request(t.Context(), method, map[string]any{"ref": ref, "name": "unsafe", "clientMutationId": "unreadable-owner", "expectedInstanceId": childID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+					wire, ok := errors.AsType[appwire.WireError](err)
+					if !ok {
+						t.Fatalf("%s error=%v", method, err)
+					}
+					if method == appwire.MethodTurnQueue {
+						data, _ := wire.Data.(map[string]any)
+						if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
+							t.Errorf("receipt=%+v", data)
+						}
+					}
+				}
+				if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
+					t.Error("navigation suppressed ownership read failure")
+				}
+			})
+
 		})
 	}
 }

@@ -35,6 +35,7 @@ var (
 var _ = hubTreeAttentionRank
 
 type navigationSnapshot struct {
+	ownershipErr        error
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
 	projects            map[string]identifier.Project
@@ -273,6 +274,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			metas = append(metas, entry.Meta)
 		}
 	}
+	var ownershipErr error
 	// Healthy navigation snapshots need no persisted ownership scan.
 	if slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
 		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
@@ -283,14 +285,21 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			if past.Meta.ParentSessionID == "" {
 				continue
 			}
-			owner, incompatible := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
+			owner, incompatible, err := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
+			if err != nil {
+				if ownershipErr == nil {
+					ownershipErr = err
+				}
+				continue
+			}
 			if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
 				continue
 			}
-			child := hubcore.LiveEntry{Entry: owner.Entry, SessionID: past.Meta.ID, Status: owner.Status}
-			child.ThreadID = past.Meta.ID
-			child.WorkspaceRef = localAppRef(past.Meta.ID)
-			child.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+			entry := owner.Entry
+			entry.ThreadID = past.Meta.ID
+			entry.WorkspaceRef = localAppRef(past.Meta.ID)
+			entry.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+			child := hubcore.LiveEntry{Entry: entry, SessionID: past.Meta.ID, Status: owner.Status}
 			live = append(live, child)
 		}
 
@@ -359,6 +368,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		}
 	}
 	return navigationSnapshot{
+		ownershipErr:        ownershipErr,
 		metas:               metas,
 		live:                live,
 		projects:            projects,
