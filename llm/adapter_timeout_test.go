@@ -334,7 +334,10 @@ func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
 		t.Fatalf("client Timeout = %v, want %v", client.Timeout, original.Timeout)
 	}
 
-	transport := clientStandardTransport(t, client)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want unwrapped caller-owned standard transport", client.Transport)
+	}
 	if transport == originalTransport {
 		t.Fatal("expected a cloned transport")
 	}
