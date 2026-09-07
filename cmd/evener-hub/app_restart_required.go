@@ -46,22 +46,23 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		}
 		return entry, true, nil
 	}
+	var jobTreeRootID string
 	seen := make(map[string]bool)
 	for !seen[threadID] {
 		seen[threadID] = true
-		if entry, ok := cfg.Roster.Find(threadID); ok && !entry.Crashed {
+		if entry, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
 			return verifyOwner(entry)
-		}
-		workspaceRef := localAppRef(threadID)
-		for _, entry := range cfg.Roster.List() {
-			if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
-				return verifyOwner(entry)
-			}
 		}
 		// Ancestry locates a possible daemon. Every edge must have a persisted
 		// delegate descriptor before that daemon can be classified as the owner.
 		child, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: threadID})
-		if !ok || child.Meta.ParentSessionID == "" {
+		if !ok {
+			break
+		}
+		if jobTreeRootID == "" {
+			jobTreeRootID = child.Meta.JobTreeRootSessionID
+		}
+		if child.Meta.ParentSessionID == "" {
 			break
 		}
 		parentID := child.Meta.ParentSessionID
@@ -76,7 +77,29 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		threadID = parentID
 	}
 
+	// An incomplete ancestry chain cannot establish that an incompatible
+	// job-tree owner has released this descendant. Report uncertainty until
+	// its metadata and descriptor chain can be verified.
+	if owner, ok := liveDaemonForThread(cfg.Roster, jobTreeRootID); ok && owner.Status == appwire.ThreadStatusRestartRequired {
+		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify delegate ownership at session %s in incompatible job tree %s", threadID, jobTreeRootID)
+	}
 	return hubcore.LiveEntry{}, false, nil
+}
+
+func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveEntry, bool) {
+	if threadID == "" {
+		return hubcore.LiveEntry{}, false
+	}
+	if entry, ok := roster.Find(threadID); ok && !entry.Crashed {
+		return entry, true
+	}
+	workspaceRef := localAppRef(threadID)
+	for _, entry := range roster.List() {
+		if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
+			return entry, true
+		}
+	}
+	return hubcore.LiveEntry{}, false
 }
 
 // Refresh ownership before a local metadata write or before treating a missing

@@ -513,6 +513,91 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					}
 				}
 			}
+			if !scenario.unreadableSibling {
+				t.Run("unreadable intermediate metadata blocks nested delegates", func(t *testing.T) {
+					grandchildID := "02wMz5Txv1C3Hut0M8GCeD"
+					if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: grandchildID, ParentSessionID: childID, IsSubagent: true, JobTreeRootSessionID: parentID, ProfileID: "openai", Model: "gpt-5"}); err != nil {
+						t.Fatal(err)
+					}
+					writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", grandchildID+".transcript.jsonl"), transcript.Header{SessionID: grandchildID, ParentSessionID: childID, ProfileID: "openai", Model: "gpt-5"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					descriptor := map[string]any{"child_session_id": grandchildID, "transcript_ref": localAppRef(grandchildID), "owner_session_id": childID, "task": "nested sentinel", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}
+					batch, err := json.Marshal(map[string]any{"events": []map[string]any{{"kind": "delegate_created", "seq": 2, "delegate_id": "dlg_nested", "created": map[string]any{"descriptor": descriptor}}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					journal, err := os.OpenFile(filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl"), os.O_APPEND|os.O_WRONLY, 0600)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, writeErr := journal.Write(append(batch, '\n'))
+					if err := journal.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if writeErr != nil {
+						t.Fatal(writeErr)
+					}
+					if _, err := past.Rebuild(); err != nil {
+						t.Fatal(err)
+					}
+					grandRef := localAppRef(grandchildID)
+					if err := daemonRestartRequiredError(t.Context(), web.cfg, grandRef, "", ""); !isDaemonRestartRequiredError(err) {
+						t.Fatalf("nested fixture has no incompatible owner: %v", err)
+					}
+					childPath := filepath.Join(stateDir, "sessions", childID+".meta.json")
+					original, err := os.ReadFile(childPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := os.WriteFile(childPath, original, 0600); err != nil {
+							t.Error(err)
+						}
+						if _, err := past.Rebuild(); err != nil {
+							t.Error(err)
+						}
+					})
+					if err := os.WriteFile(childPath, []byte("{"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := past.Rebuild(); err != nil {
+						t.Fatal(err)
+					}
+					if _, ok := past.Find(childID); ok {
+						t.Fatal("unreadable intermediate remained indexed")
+					}
+					for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue} {
+						var response any
+						err := client.Request(t.Context(), method, map[string]any{"ref": grandRef, "name": "unsafe nested", "clientMutationId": "nested-owner", "expectedInstanceId": grandchildID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+						wire, ok := errors.AsType[appwire.WireError](err)
+						if !ok {
+							t.Errorf("%s bypassed unresolved nested ownership: %v", method, err)
+							continue
+						}
+						if method == appwire.MethodTurnQueue {
+							data, _ := wire.Data.(map[string]any)
+							if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+								t.Errorf("receipt=%+v", data)
+							}
+						}
+					}
+					meta, err := schema.LoadSessionMeta(stateDir, grandchildID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if meta.Name != "" {
+						t.Errorf("nested delegate renamed through unreadable ownership: %q", meta.Name)
+					}
+					if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
+						t.Error("navigation suppressed unresolved nested ownership")
+					}
+				})
+			}
 			t.Run("unreadable parent metadata blocks delegate mutations", func(t *testing.T) {
 				parentPath := filepath.Join(stateDir, "sessions", parentID+".meta.json")
 				original, err := os.ReadFile(parentPath)
