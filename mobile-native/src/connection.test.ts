@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
 import { connectionTarget, createHubClient, HubProfiles } from "./connection";
+import { connectionFailure } from "./connectionRecovery";
 
 describe("hub connections", () => {
 	it("normalizes origins and rejects credentials and URL tokens", () => {
@@ -135,6 +136,38 @@ describe("hub connections", () => {
 			client.close();
 		}
 		expect(client.state).toBe("closed");
+	});
+	it("classifies a shared-client protocol refusal for recovery guidance", async () => {
+		const socket: WebSocketLike = {
+			onopen: null,
+			onmessage: null,
+			onerror: null,
+			onclose: null,
+			send(data) {
+				const frame = JSON.parse(data);
+				if (frame.method === "initialize")
+					queueMicrotask(() =>
+						socket.onmessage?.({
+							data: JSON.stringify({
+								jsonrpc: "2.0",
+								id: frame.id,
+								error: { code: -32600, message: "invalid request" },
+							}),
+						}),
+					);
+			},
+			close() {
+				socket.onclose?.({ code: 1000 });
+			},
+		};
+		const client = createHubClient("https://hub.test", "", (_url, _options) => {
+			queueMicrotask(() => socket.onopen?.());
+			return socket;
+		});
+		await expect(client.connect()).rejects.toThrow();
+		expect(client.terminalReason).toBe("protocol");
+		expect(connectionFailure(client.terminalReason).kind).toBe("protocol");
+		expect(connectionFailure(null).kind).toBe("transport");
 	});
 });
 
