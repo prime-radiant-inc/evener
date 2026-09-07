@@ -79,8 +79,8 @@ func (s *sandboxFS) listDir(tool, abs string, depth int) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, error) {
-	return nil, 0, errSandboxUnsupported()
+func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool) ([]string, int, int, error) {
+	return nil, 0, 0, errSandboxUnsupported()
 }
 
 func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {

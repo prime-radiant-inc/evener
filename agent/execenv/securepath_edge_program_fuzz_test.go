@@ -302,7 +302,7 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 
 	// secureDirFS rejects invalid virtual paths and invalid root fds with ordinary
 	// fs.PathError values rather than allowing a browse escape.
-	dirFS := &secureDirFS{baseFd: -1, basePath: worktree, fs: s}
+	dirFS := &secureDirFS{baseFd: -1, basePath: worktree, fs: s, budget: newGlobBudget("glob"), ctx: t.Context()}
 	if _, err := dirFS.Open("../escape"); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("secureDirFS invalid Open = %v", err)
 	}
@@ -336,10 +336,10 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	// Browsing preserves the same denied-base/error contracts as direct reads.
 	// A masked file, hidden file, and binary file are all absent from native grep,
 	// while a visible text hit remains discoverable.
-	if _, _, err := s.glob(t.Context(), "glob", filepath.Join(worktree, "missing-glob-base"), "*", false); err == nil {
+	if _, _, _, err := s.glob(t.Context(), "glob", filepath.Join(worktree, "missing-glob-base"), "*", false); err == nil {
 		t.Fatal("sandbox glob missing base unexpectedly succeeded")
 	}
-	if _, _, err := s.glob(t.Context(), "glob", worktree, "[", false); err == nil {
+	if _, _, _, err := s.glob(t.Context(), "glob", worktree, "[", false); err == nil {
 		t.Fatal("sandbox glob malformed pattern unexpectedly succeeded")
 	}
 	if _, err := s.grepNative(context.Background(), "[", worktree, "", false, 10, ""); err == nil {

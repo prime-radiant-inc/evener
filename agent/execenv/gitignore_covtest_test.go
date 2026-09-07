@@ -40,7 +40,10 @@ func TestIgnoreSet_Matches_PathEqualsDir(t *testing.T) {
 		"sub":            {Mode: os.ModeDir | 0o755},
 		"sub/.gitignore": {Data: []byte(content)},
 	}
-	set := loadIgnoreSet(fsys, nil)
+	set, err := loadIgnoreSet(fsys, nil, newGlobBudget("glob"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// "sub" == id.rel, so rel becomes "." — "*.log" won't match "."
 	if set.matches("sub", false) {
 		t.Fatal("expected sub (file) NOT to be ignored")
@@ -112,9 +115,12 @@ func TestLoadIgnoreSet_SkipFile(t *testing.T) {
 		"skipme":          {Data: []byte("data\n")},
 		"skipme/file.txt": {Data: []byte("data\n")},
 	}
-	set := loadIgnoreSet(fsys, func(relPath string) bool {
+	set, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return relPath == "skipme"
-	})
+	}, newGlobBudget("glob"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The .gitignore at root should still be loaded.
 	if !set.matches("test.tmp", false) {
 		t.Fatal("expected test.tmp to be ignored by root .gitignore")
@@ -156,5 +162,9 @@ func loadIgnoreSetFromLines(t *testing.T, dir string, lines ...string) *ignoreSe
 	fsys := fstest.MapFS{
 		path: {Data: []byte(content)},
 	}
-	return loadIgnoreSet(fsys, nil)
+	set, err := loadIgnoreSet(fsys, nil, newGlobBudget("glob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
 }

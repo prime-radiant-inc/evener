@@ -238,22 +238,39 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			var matches []string
 			var excluded int
+			var truncatedAt int
 			var err error
 			if ge, ok := env.(execenv.GlobExcluder); ok {
-				matches, excluded, err = ge.GlobWithExclusions(ctx, pat, path, includeIgnored)
+				matches, excluded, truncatedAt, err = ge.GlobWithExclusions(ctx, pat, path, includeIgnored)
 			} else {
 				matches, err = env.Glob(ctx, pat, path, includeIgnored)
 			}
 			if err != nil {
 				return "", err
 			}
+			result := strings.Join(matches, "\n")
 			// Silent-empty is the enemy: a bare "" here is indistinguishable
 			// from "genuinely no matches" when it's actually "every match was
 			// filtered out by the default dotfile/gitignore exclusion" (D2).
 			if len(matches) == 0 && excluded > 0 {
-				return fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded), nil
+				result = fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded)
 			}
-			return strings.Join(matches, "\n"), nil
+			if truncatedAt > 0 {
+				// Silent truncation is the same enemy: the matches collected
+				// before the cap tripped look exactly like the whole answer,
+				// and a fully-excluded or fully-masked capped walk would
+				// otherwise report its emptiness as if the walk had finished.
+				// The cap counts candidate matches, before the dotfile/
+				// gitignore exclusion above drops any of them, so the number
+				// of paths actually shown can be smaller than the cap itself.
+				note := fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt)
+				if result == "" {
+					result = note
+				} else {
+					result += "\n\n" + note
+				}
+			}
+			return result, nil
 		},
 	}); err != nil {
 		return err
