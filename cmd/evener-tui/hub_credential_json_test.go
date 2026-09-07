@@ -2,10 +2,11 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
 	"testing"
 	"time"
 
@@ -136,8 +137,10 @@ func TestCredentialJsonFile_UnreadablePathIsReportedAndNotSent(t *testing.T) {
 		t.Fatal("want a cmd carrying the failure")
 	}
 	res, ok := cmd().(launchconfig.AuthApiKeySetResultMsg)
-	if !ok || res.Err == nil || !strings.Contains(res.Err.Error(), "no such file or directory") {
-		t.Fatalf("result = %#v, want one giving the reason the read failed", cmd())
+	// The reason travels as the wrapped sentinel rather than as words, so
+	// this holds wherever the test runs: every platform words it differently.
+	if !ok || !errors.Is(res.Err, fs.ErrNotExist) {
+		t.Fatalf("result = %#v, want one wrapping fs.ErrNotExist", cmd())
 	}
 	if strings.Contains(res.Err.Error(), missing) {
 		t.Fatalf("err = %q, must not repeat what was submitted", res.Err)
