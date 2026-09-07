@@ -507,3 +507,28 @@ field, select existing text or preserve colon punctuation. The unsaved fixture
 address was corrected through the native Paste menu and verified as
 http://127.0.0.1:9201 before saving. These input-tool failures are not evidence
 of a production text-entry defect.
+
+## Android creation uncertainty after process restart
+
+The installed Android Release app repeated the lost-successful-reply case with
+a separate ReplyLossAndroid profile at http://10.0.2.2:9201, the same fixture
+project, Fake Alternate and an empty prompt. One Create action produced
+local:034KRTSrOmwJ9MhpWRSu11. The temporary proxy discarded its successful reply
+and closed the socket. The native form retained the project/model and showed
+the creation-uncertainty warning.
+
+After removing the fault-injection marker, the app was deliberately force-stopped
+and relaunched. It reconnected to the fixture and showed the idle session in
+the roster. Reopening creation restored the project, Fake Alternate and the
+persisted earlier-creation warning. Independent packaged-client reads confirmed
+the session was idle and remained newest, immediately ahead of the iOS fixture;
+no second Create action was taken.
+
+This adds Android process-restart evidence after the uncertainty warning has
+already appeared. It does not cover process death between checkpoint and dispatch,
+nonempty prompt/image inputs, or uncertain turn mutations.
+The temporary ReplyLossAndroid profile and its local fixture draft were removed
+through Android's native confirmation dialog. The temporary proxy exited and
+port 9201 had no listener; the ordinary proxy on port 9200 remained listening.
+The idle hub session was retained for inspection. This pass changed no
+application code and did not rerun unchanged unit suites.
