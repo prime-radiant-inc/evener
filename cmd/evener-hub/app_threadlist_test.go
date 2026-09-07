@@ -54,3 +54,16 @@ func TestHubThreadListBoundsUnresponsiveSource(t *testing.T) {
 		t.Fatalf("thread list took %s despite source timeout", elapsed)
 	}
 }
+
+func TestHubThreadListEmptyDataIsArray(t *testing.T) {
+	response, err := hubThreadList(context.Background(), hubcore.WebConfig{}, appsource.NewRegistry(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Data == nil {
+		t.Fatal("empty thread list must encode as an array for typed clients")
+	}
+	if len(response.Data) != 0 {
+		t.Fatalf("empty registry returned %d threads", len(response.Data))
+	}
+}
