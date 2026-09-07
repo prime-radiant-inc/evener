@@ -171,22 +171,58 @@ const SANITIZE_CONFIG = {
 // it); past it, only the tail window is re-parsed per render while the
 // settled head is served from a prefix-keyed cache. Grown past the window
 // mid-stream, the head cache fills once per new head text and then hits.
+// Any stream whose tail carries block structure falls back to the full parse
+// (slower, exactly today's behavior - correctness first); only a
+// paragraphs-only tail takes the windowed path.
 const LIVE_WINDOWED_MIN_LENGTH = 2000;
 // The tail window re-parsed on every live render past the threshold above -
-// sized to cover the in-progress block (a long paragraph, a fenced code
-// block still being written) without re-parsing the whole document.
+// sized to cover the in-progress paragraph still being written without
+// re-parsing the whole document.
 const LIVE_TAIL_WINDOW = 1000;
 
-// Finds the split point for the windowed live path: the last blank-line
-// boundary at or before `source.length - LIVE_TAIL_WINDOW`, so the head ends
-// on a settled block edge and the tail starts a fresh block. Falls back to a
-// hard cut at the window edge when the tail window holds no blank line (one
-// very long paragraph still streaming) - the tail's inline-scope parse below
-// makes that safe.
-function findWindowBoundary(source: string): number {
+// Block constructs that can tokenize differently as a standalone document
+// than as the tail of a larger one, so the windowed live path below must not
+// engage while the tail window contains them: a list continues over blank
+// lines (one list vs two changes the HTML), a fenced block or table can span
+// the split point, and a link definition resolves references anywhere. Any
+// hit falls back to the full parse. Paragraph-only tails are the sound case:
+// no other CommonMark block spans a blank line, and raw HTML needs no gate -
+// the html() override escapes it to text identically in both paths.
+const TAIL_BLOCK_MARKER =
+  /^ {0,3}#{1,6}(?:[ \t]+|\r?$)|^ {0,3}(?:=+|-+)[ \t]*\r?$|^ {0,3}(?:[-+*](?:[ \t]+|\r?$)|\d{1,9}[.)](?:[ \t]+|\r?$))|^ {0,3}(`{3,}|~{3,})|^ {0,3}>|^ {0,3}(?:\*[ \t]*){3,}\r?$|^ {0,3}(?:-[ \t]*){3,}\r?$|^ {0,3}(?:_[ \t]*){3,}\r?$|^\s*\||^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$|^ {0,3}\[[^\]\n]+\]:/m;
+
+// Head-side hazards for the split: a link definition or table delimiter row
+// in the head can resolve structure in the tail (a `[label]` use, table
+// rows) that a standalone tail parse would leave literal, so any hit falls
+// back to the full parse.
+const HEAD_SPLIT_HAZARD = /^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
+
+// Splits a long live source into a settled head (ending on a blank line) and
+// the streaming tail after it, or null when there is no blank-line boundary
+// in range (one very long paragraph still streaming). Leading blank lines of
+// the tail are skipped - insignificant in both paths; a tail of nothing but
+// blanks likewise declines the windowed path.
+function splitLiveSource(source: string): { head: string; tail: string } | null {
   const edge = source.length - LIVE_TAIL_WINDOW;
-  const boundary = source.lastIndexOf("\n\n", edge);
-  return boundary === -1 ? edge : boundary + 2;
+  const blank = source.lastIndexOf("\n\n", edge);
+  if (blank === -1) return null;
+  let tailStart = blank + 2;
+  while (source.charAt(tailStart) === "\n") tailStart += 1;
+  if (tailStart >= source.length) return null;
+  return { head: source.slice(0, blank + 2), tail: source.slice(tailStart) };
+}
+
+// The tail's first non-blank line, when indented, could still belong to a
+// list item open in the head (indented continuation joins it across the
+// blank line), so it declines the windowed path. Non-indented content can
+// never rejoin a head block across a blank line.
+function tailStartsIndented(tail: string): boolean {
+  const lines = tail.split("\n");
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    return line.charAt(0) === " " || line.charAt(0) === "\t";
+  }
+  return false;
 }
 
 /**
@@ -204,35 +240,45 @@ export function Markdown({ source, live = false }: MarkdownProps) {
   // window above, the settled head is served from a cache keyed on its own
   // exact prefix text (a changed head is a cache miss and re-parses, never
   // stale output), while only the tail window is re-parsed per render with
-  // the live auto-close, so formatting still previews while streaming.
-  // Settled renders (live=false) always take the full-parse path below
-  // unchanged, so the final HTML is byte-identical with or without this
-  // throttle.
+  // the live auto-close, so formatting still previews while streaming. The
+  // windowed path engages ONLY when the split is sound (see the gates
+  // below); anything else takes the full-parse fallback, which is exactly
+  // the pre-throttle behavior for every input. Settled renders (live=false)
+  // always take the settled full-parse path unchanged, so the final HTML is
+  // byte-identical with or without this throttle.
   const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
   const html = useMemo(() => {
     if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
     }
-    const boundary = findWindowBoundary(source);
-    const headSource = source.slice(0, boundary);
-    const tailSource = source.slice(boundary);
+    // The head must be closed at the boundary (no fence, code span, or
+    // emphasis left open - closeOpenMarkdown is identity exactly then), the
+    // head must hold no forward-reference hazards, and the tail must be
+    // paragraphs-only starting on fresh (non-indented) content. The tail
+    // keeps the full block parse - never an inline-only one - so headings,
+    // lists, and fences inside it render their real structure; but the gates
+    // above mean a tail carrying any of those never reaches this path.
+    const split = splitLiveSource(source);
+    if (
+      split === null ||
+      closeOpenMarkdown(split.head) !== split.head ||
+      HEAD_SPLIT_HAZARD.test(split.head) ||
+      TAIL_BLOCK_MARKER.test(split.tail) ||
+      tailStartsIndented(split.tail)
+    ) {
+      const rawHtml = md.parse(closeOpenMarkdown(source), { async: false });
+      return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    }
     const cached = headCacheRef.current;
     const headHtml =
-      cached !== null && cached.headSource === headSource
+      cached !== null && cached.headSource === split.head
         ? cached.headHtml
-        : DOMPurify.sanitize(md.parse(headSource, { async: false }), SANITIZE_CONFIG);
-    if (cached === null || cached.headSource !== headSource) {
-      headCacheRef.current = { headSource, headHtml };
+        : DOMPurify.sanitize(md.parse(split.head, { async: false }), SANITIZE_CONFIG);
+    if (cached === null || cached.headSource !== split.head) {
+      headCacheRef.current = { headSource: split.head, headHtml };
     }
-    // The tail is a live preview, not a reopenable document: parsing it
-    // standalone can leave block structure open at its start (a list item, a
-    // fence), so it is kept to inline scope - the tail's own block boundary
-    // (see findWindowBoundary) plus closeOpenMarkdown already closed its
-    // emphasis/code spans, and any block wrapper marked emits here is
-    // dropped in favor of its inner content.
-    const tailClosed = closeOpenMarkdown(tailSource);
-    const tailHtml = DOMPurify.sanitize(md.parseInline(tailClosed, { async: false }) as string, SANITIZE_CONFIG);
+    const tailHtml = DOMPurify.sanitize(md.parse(closeOpenMarkdown(split.tail), { async: false }), SANITIZE_CONFIG);
     return headHtml + tailHtml;
   }, [source, live]);
 
