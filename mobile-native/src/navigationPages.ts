@@ -94,6 +94,7 @@ export class NavigationPages<T> {
 	private uncertain = 0;
 	private notificationEpoch = 0;
 	private mutationFloor = 0;
+	private mutationGeneration: string | null = null;
 	private normalized: NormalizedResource | null = null;
 	private firstPageRowCount = 0;
 	private firstPageRemaining = 0;
@@ -179,6 +180,9 @@ export class NavigationPages<T> {
 		return this.load(false);
 	}
 	async refreshAfter(receipt: NavigationMutation) {
+		if (this.mutationGeneration !== receipt.generation_id)
+			this.mutationFloor = 0;
+		this.mutationGeneration = receipt.generation_id;
 		this.mutationFloor = Math.max(
 			this.mutationFloor,
 			this.receiptRevision(receipt),
@@ -255,12 +259,21 @@ export class NavigationPages<T> {
 				(this.notifiedGeneration !== "" &&
 					decoded.version.generationId !== this.notifiedGeneration) ||
 				decoded.version.revision <
-					Math.max(this.requiredRevision, this.mutationFloor) ||
+					Math.max(
+						this.requiredRevision,
+						decoded.version.generationId === this.mutationGeneration
+							? this.mutationFloor
+							: 0,
+					) ||
 				uncertain !== this.uncertain
 			) {
 				this.publish({ loading: false });
 				this.markStale();
 				return false;
+			}
+			if (decoded.version.generationId !== this.mutationGeneration) {
+				this.mutationGeneration = null;
+				this.mutationFloor = 0;
 			}
 			if (decoded.status === "gone") {
 				this.normalized = null;
