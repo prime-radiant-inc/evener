@@ -453,3 +453,24 @@ unsubmitted. It establishes ordinary navigation isolation, not simultaneous
 connections, late-response rejection, network fault recovery or exact
 serialization of the displayed plugin/override summaries. Those remain separate
 acceptance checks. Both apps were left on their restored creation forms.
+
+## Creation during a real connection outage
+
+On the same installed Release builds, terminating the owned SecondHub proxy
+closed both native sockets while leaving the underlying isolated hub running.
+Both creation screens retained their exact project and prompt, displayed
+Reconnect, and disabled Create and hub-dependent configuration controls.
+
+Android recovered automatically after the proxy resumed listening on
+0.0.0.0:9200. On iOS, tapping Reconnect while the proxy was still offline
+exercised a failed fresh connection. The screen retained the draft and retry
+action; tapping Reconnect after the proxy returned restored the configuration
+controls and enabled Create. iOS retained its displayed plugin selection and
+override count. Neither draft was submitted.
+
+The shared client's 53 deterministic tests passed separately. This native check
+establishes draft retention and usable recovery for creation before submission.
+It does not establish recovery during thread/start, receipt reconciliation,
+stale replies after a hub switch, background execution or physical-device LAN
+behavior. The proxy was left listening on all interfaces and both apps were
+left on their recovered creation forms.

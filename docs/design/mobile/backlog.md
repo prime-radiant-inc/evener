@@ -149,6 +149,11 @@ separate hub/session state; no lost draft. See [disclosure evidence](interruptio
 
 Saved profiles and isolated-hub draft tests exist. One foreground connection
 does not establish the complete multiple-hub experience.
+Both Release simulators now have ordinary hub-switch/creation-draft isolation
+evidence and a real proxy-outage check: Android automatically recovered; iOS
+retained its draft through a failed fresh connection and successful manual
+retry. See [creation recovery evidence](session-creation.md#creation-during-a-real-connection-outage).
+In-flight mutation and hub-switch races remain unqualified.
 
 Acceptance: deliberate per-hub navigation and connection lifetimes; overlapping
 session/item IDs; auth rotation, failed credentials, reconnect, removal and
