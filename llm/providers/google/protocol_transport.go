@@ -85,7 +85,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		u += "?pageSize=1000"
 	}
 	var rows []registry.Model
-	err := protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, nil, llm.Request{Model: "*"}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+	err := protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, nil, llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
 		var payload struct {
 			Models []struct {
 				Name                       string   `json:"name"`

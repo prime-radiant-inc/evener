@@ -77,7 +77,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		if err != nil {
 			return nil, err
 		}
-		call := p.call("models.list", http.MethodGet, u, nil, llm.Request{Model: "*"}, res)
+		call := p.call("models.list", http.MethodGet, u, nil, llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, res)
 		call.EndpointFamily = "anthropic_models"
 		var page struct {
 			Data []struct {

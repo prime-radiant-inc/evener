@@ -141,7 +141,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 	if res.Transport.ModelsEndpoint == registry.EndpointUnsupported {
 		return nil, llm.ErrModelListingUnsupported
 	}
-	call := &protocolhttp.Call{Operation: "models.list", EndpointFamily: "openai_models", Method: http.MethodGet, URL: protocolhttp.URL(res, res.Transport.ModelsEndpoint), Req: llm.Request{Model: "*"}, Res: res, Client: p.Client}
+	call := &protocolhttp.Call{Operation: "models.list", EndpointFamily: "openai_models", Method: http.MethodGet, URL: protocolhttp.URL(res, res.Transport.ModelsEndpoint), Req: llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, Res: res, Client: p.Client}
 	var rows []registry.Model
 	err := protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		var payload struct {

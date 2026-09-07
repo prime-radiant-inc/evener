@@ -82,7 +82,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 	} else {
 		decodeErr = jsonErr
 	}
-	if readErr != nil && (ctx.Err() != nil || errors.Is(readErr, llm.ErrResponseIdleTimeout)) {
+	if readErr != nil && (c.Operation == "models.list" || ctx.Err() != nil || errors.Is(readErr, llm.ErrResponseIdleTimeout)) {
 		return llm.WrapContextError(c.Res.Instance, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
