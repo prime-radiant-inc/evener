@@ -84,7 +84,7 @@ export function ThemeSection() {
           options={PHONE_DENSITY_OPTIONS}
           onChange={(value) => prefsStore.getState().setPhoneDensity(value as "compact" | "comfortable")}
         />
-        <p className={CLASS.help}>Scales line spacing on phones (≤900px). Compact is the default.</p>
+        <p className={CLASS.help}>Scales line spacing on phones (≤899px). Compact is the default.</p>
       </div>
 
       <div className={CLASS.row}>
