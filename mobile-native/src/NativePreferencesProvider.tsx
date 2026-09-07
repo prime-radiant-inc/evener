@@ -11,7 +11,10 @@ import type { AppwireClient } from "../../cmd/evener-hub/frontend/src/protocol/c
 import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
-import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+import {
+	nativeKeybindingDrafts,
+	nativeTranscriptDrafts,
+} from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
 	NativePreferencesSnapshot,
@@ -83,6 +86,7 @@ export function NativePreferencesProvider({
 				unsubscribe = model.subscribe(update);
 				update();
 			},
+			nativeKeybindingDrafts(hubId, backend),
 		);
 		return () => {
 			unsubscribe();

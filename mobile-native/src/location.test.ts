@@ -18,6 +18,48 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("restores a shortcut editor's unfinished text in its original hub", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
+		repository.save(
+			locationForRoute(
+				{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
+				"studio",
+			),
+		);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
+		expect(restoredStack(saved).routes.slice(-2)).toEqual([
+			{ name: "HubSettings", params: { hubId: "studio" } },
+			{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
+		]);
+		expect(new LocationRepository(disk).read(["other"])).toBeNull();
+	});
+	it("rejects malformed and mixed shortcut destinations", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		for (const keybindings of [
+			{ editor: { actionId: "", chord: "" } },
+			{ editor: { actionId: "a", chord: null } },
+			true,
+		]) {
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({ hubId: "studio", keybindings }),
+			);
+			expect(repository.read(["studio"])).toBeNull();
+		}
+		disk.setItemSync(
+			"evener.last-location",
+			JSON.stringify({
+				hubId: "studio",
+				keybindings: {},
+				projects: { archived: false },
+			}),
+		);
+		expect(repository.read(["studio"])).toBeNull();
+	});
 	it("restores project filters and the exact project tier after restart", () => {
 		for (const archived of [false, true])
 			for (const tier of ["current", "recent", "archived"]) {

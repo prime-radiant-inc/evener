@@ -118,6 +118,10 @@ export type Routes = {
 	Plugins: { hubId: string };
 	HubSettings: { hubId: string };
 	TranscriptPreferences: { hubId: string };
+	KeybindingPreferences: {
+		hubId: string;
+		editor?: { actionId: string; chord: string };
+	};
 	LaunchSettings: { hubId: string; projectCwd?: string };
 	Project: {
 		hubId: string;

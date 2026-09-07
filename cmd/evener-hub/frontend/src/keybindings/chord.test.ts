@@ -11,6 +11,12 @@ function singleChord(input: string): Chord {
 // "$mod" alias to "Control" here regardless of the machine running the suite.
 // Tests that want the Meta spelling parse "Meta+..." explicitly.
 describe("parseChord", () => {
+  test("rejects an incomplete press without rejecting the plus key", () => {
+    expect(() => parseChord("Meta+")).toThrow();
+    expect(() => parseChord("Meta+K  P")).toThrow();
+    expect(parseChord("Meta++")[0]?.key).toBe("+");
+    expect(parseChord("+")[0]?.key).toBe("+");
+  });
   test("parses a single press with a modifier", () => {
     expect(parseChord("$mod+K")).toEqual([{ modifiers: ["Control"], optionalModifiers: [], key: "K" }]);
   });

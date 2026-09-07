@@ -12,6 +12,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
+import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
 import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
@@ -150,6 +151,11 @@ function Navigation() {
 									? "Launch defaults"
 									: "Project launch settings",
 						})}
+					/>
+					<Stack.Screen
+						name="KeybindingPreferences"
+						component={KeybindingPreferencesScreen}
+						options={{ title: "Keyboard shortcuts" }}
 					/>
 					<Stack.Screen
 						name="TranscriptPreferences"
