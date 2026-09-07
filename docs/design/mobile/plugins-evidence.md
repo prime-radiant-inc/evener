@@ -209,3 +209,83 @@ visual acceptance gaps remain as described above.
 
 ![iOS picker selection ready for submission](assets/plugins/ios-picker-submit.jpg)
 ![Android picker selection ready for submission](assets/plugins/android-picker-submit.png)
+
+## Direct v4 Git upgrade and recovery
+
+On 7 September 2026, qualified the clean iPhone 17 Pro / iOS 26.5 Release from
+`92bfcbf5d` directly against the owned v4 hub at port 54211. There was no
+proxy or production runtime. The installed JavaScript bundle was independently
+rehash-verified as
+`1a52905ae64b7ea081cc7850eae5d6848af7062cf32756dcd73caaed895c6d18`.
+The hub binary identity is
+`606c8b19bbeb6139a1e1ecc1f2b70d70acd24634f286f940f5a365cd989cfbb7`.
+No native source changed during this acceptance pass. The preceding clean Release
+and 583 native tests/TypeScript remain its build baseline.
+
+The owned fixture at `/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-git-plugin-l6pz98t6`
+contains two local Git repositories: a marketplace and a separately referenced
+plugin. Both contain only manifests and sentinel text, with no hooks, MCP servers
+or executable content. The explicit Git source is necessary: a directory plugin
+with no Git SHA can report an upgrade check without fetching a new revision.
+
+| Fixture revision | Git commit |
+| --- | --- |
+| Plugin v1 | `af70df3c6d0db5c62e0d03fa481eafdb14a5b89e` |
+| Invalid plugin manifest | `b4185bbdde50bd3579a17150f8f3b0db4b5e95de` |
+| Plugin v2 | `5436349bf8cdbc23c5db17122f29129a99b02813` |
+| Plugin v3 | `205b34ef3c2a65fa2fd006056fca7b7732ce5e43` |
+| Marketplace v1 | `4b5b43c12bff01b6e9b4155e227f21c694a3e268` |
+| Marketplace v2 | `37c40fa04c67caf6b3564311dd648709e9b5de96` |
+| Marketplace v3 | `c695f2b33bd21be9069fbc9b59f76324e22b27ab` |
+| Marketplace v4 | `cf0fe38070ae40df82b5172337065a83cf25a4d2` |
+
+The packed plugin-management SDK installed native-tools@native-git-acceptance
+at v1. A fresh independent client recorded the entire installed entry, its path,
+commit, sentinel, enabled state and automatic-upgrade state. Automatic upgrades
+started off. The iPhone opened this exact installed pair.
+
+After the upstream plugin manifest became invalid, one native Upgrade action
+reported that the change could not be confirmed. A separate SDK read found the
+entire installed entry exactly equal to the baseline and the original v1 sentinel
+intact. After publishing valid v2, one deliberate native Upgrade installed it.
+Independent readback verified the new version, Git SHA, distinct install path
+and v2 sentinel; the prior v1 path still contained its original sentinel.
+Enabled remained true, automatic upgrades false, and broken false. The fixture
+proves manifest/content preservation, not execution of plugin code.
+
+The packed SDK then upgraded the same installation to v3 and verified its new
+commit and files. The already-open native detail changed to 3.0.0. Four separate
+SDK operations disabled, enabled, enabled automatic upgrades and disabled
+automatic upgrades. After each acknowledged operation, its fresh list and the
+native switch matched the exact pair and state, without reopening the sheet.
+No global check-now or background-upgrade behavior was invoked or inferred.
+SDK removal closed the native detail and returned Installed to its empty state.
+
+The marketplace itself also fetched changed Git revisions. Independent SDK
+refresh first advanced its clone from v1 to v2. Native Browse → Refresh source
+then fetched v3; separate filesystem/Git readback verified the new commit and
+sentinel. The final marketplace recipe added the separate alias
+sdk-marketplace-acceptance, browsed it, and refreshed its clone from v3 to v4.
+The alias returned the manifest's native-git-acceptance catalog name, exposing
+and correcting a mistaken identity check in the new SDK recipe.
+
+Both owned marketplace registrations were removed through the final packed SDK.
+The open native catalog closed automatically. Independent readback proved the
+complete original marketplace list was restored exactly and the installed
+plugin list was empty. The two seeded marketplaces were never browsed or
+refreshed. Local fixture repositories/commits and baseline/upgrade/cleanup
+receipts remain at the fixture root for provenance. The plugin recipe tarball
+has SHA-256 `cf291967ba53461145a5d594632860a6f4a42ba267e6698f9c63290337195dc2`;
+the final marketplace recipe artifact and executed gates are in
+[SDK management evidence](sdk-management-evidence.md#marketplace-and-sandbox-approval-recipes).
+
+This closes the local-Git changed-revision and invalid-manifest recovery gaps
+for these iOS and SDK paths. It does not qualify remote GitHub/HTTPS
+authentication, background automatic upgrades, disconnect during mutation,
+realistic duplicate/long lists, large text, VoiceOver, visual polish or physical
+devices. MOB-014 remains in progress. Android qualification is deferred for
+iOS-only v1.
+
+![Invalid Git revision preserves installed v1](assets/plugins/ios-git-invalid-revision.jpg)
+![Repaired Git revision installs v2 on iPhone](assets/plugins/ios-git-upgraded-v2.jpg)
+![Native marketplace list after fixture cleanup](assets/plugins/ios-git-cleanup.jpg)

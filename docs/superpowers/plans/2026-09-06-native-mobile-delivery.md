@@ -363,3 +363,24 @@ Next are the remaining SDK acceptance/recovery recipes and the full reader
 continuity matrix, followed by VoiceOver/iPad/physical-device, multi-hub,
 performance, signing/install/update and final merge qualification. This scoped
 repair does not complete iOS-only v1. Android and voice remain deferred as above.
+
+## Git plugin and SDK decisions checkpoint
+
+Direct owned-v4 acceptance now verifies native Git upgrade rejection, preserved
+installed content, recovery to a new revision, and SDK-driven detail updates and
+removal. Native and SDK marketplace refresh each fetched a changed Git commit;
+cleanup restored the complete original marketplace registry and empty plugin
+list. See [plugin evidence](../../design/mobile/plugins-evidence.md#direct-v4-git-upgrade-and-recovery).
+
+Marketplace and sandbox approval recipes bring the packaged examples to 81
+passing contract tests across seven files. The final package and frontend gates
+pass. Live alias browsing exposed and repaired a recipe identity assumption.
+Approval decisions retain full-card and instance preflight, one dispatch and
+uncertain recovery; tool execution remains explicitly unverified. The SDK
+catalog names 42/91 requests across 12 recipes, which measures presence only.
+
+Next is actual scripted-provider approval/denial execution and further SDK
+decision/recovery work. The broader reader, VoiceOver/iPad/physical-device,
+multi-hub, performance, signing/install/update and final canonical merge gates
+remain open. No branch was pushed, package published or release declared.
+Unrelated Apple project/plist edits remain byte-for-byte preserved.

@@ -301,6 +301,17 @@ Picker-to-marketplace submission and source-type reselection now have both-platf
 native evidence at 666423050. Large directory lists, realistic catalog density,
 visual hierarchy, large text, screen readers and full failure acceptance remain.
 
+The 7 September direct-v4 iPhone pass adds [Git upgrade and recovery evidence](plugins-evidence.md#direct-v4-git-upgrade-and-recovery):
+an invalid upstream manifest preserves the complete installed v1 entry/content;
+a deliberate native retry after source repair installs a verified new Git
+revision. Packed SDK upgrade, enable/disable, auto-upgrade toggles and removal
+reconcile into the open native detail. Native and SDK source refresh each fetch
+a changed marketplace commit. Alias browsing preserves the distinction between
+registry and manifest names; both fixture registrations are removed and the
+complete original registry is restored. This qualifies local Git sources,
+not remote GitHub/HTTPS authentication or background auto-upgrade execution.
+The current release target is iOS-only; Android qualification is deferred.
+
 Presentation direction: compact Installed and Browse views, one tap target per
 plugin row, actions in detail, and marketplace source management alongside Browse.
 Keep hub identity visible and preserve source diagnostics in details. Match the
@@ -311,7 +322,7 @@ Child of MOB-006. Browse/add/remove/refresh marketplaces; install, upgrade,
 remove, enable/disable and set automatic upgrade for plugins. Use compact lists
 with detail actions and preserve marketplace identity alongside plugin name.
 
-Acceptance: both-platform native lifecycle on an owned fixture marketplace,
+Acceptance for v1: iOS native lifecycle on an owned fixture marketplace,
 notification refresh, partial loading errors, cross-device changes, long lists,
 large text, disconnect during mutation and hub switching without blind replay.
 
