@@ -1,0 +1,322 @@
+{
+  "source": "d48fe9471cd98b3a793c3b386fc1bb9cf116932e",
+  "ios": {
+    "configuration": "Release",
+    "device": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "bundleId": "com.primeradiant.evener.native",
+    "bundleSHA256": "3a79dc33780fba41382b972b774892c338807b88936c77d325ba6c7b3cfc82b3",
+    "textSize": "large"
+  },
+  "sdk": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-goals-cr0tj2v_",
+    "tarballSHA": "7fdc55fc57dd358ebff95404e0033cdb3b0393601a45540366e79420fb3e87cb",
+    "source": "d48fe9471cd98b3a793c3b386fc1bb9cf116932e",
+    "controls": {
+      "binding": {
+        "ref": "local:034KkPL4OQP7sp3RMXsh9k",
+        "instanceId": "034KkPL4OQP7sp3RMXsh9k",
+        "threadId": "034KkPL4OQP7sp3RMXsh9k"
+      },
+      "started": {
+        "outcome": "acknowledged",
+        "started": true,
+        "execution": "unverified"
+      },
+      "edited": {
+        "outcome": "uncertain",
+        "startedObservedByWrapper": false,
+        "recipeStartedAbsent": true,
+        "execution": "unverified",
+        "goal": {
+          "objective": "d1d960b7-9ec4-4a81-8b11-344133b0f14c",
+          "status": "active",
+          "iterations": 0
+        }
+      },
+      "goalSetRequests": 2,
+      "staleWrites": 0,
+      "editReads": 2,
+      "lossBoundary": "successful acknowledgment discarded by client wrapper; no network disconnection"
+    },
+    "completion": {
+      "binding": {
+        "ref": "local:034KkPL4OQP7sp3RMXsh9k",
+        "instanceId": "034KkPL4OQP7sp3RMXsh9k",
+        "threadId": "034KkPL4OQP7sp3RMXsh9k"
+      },
+      "completed": true,
+      "status": "awaiting",
+      "goal": {
+        "objective": "d1d960b7-9ec4-4a81-8b11-344133b0f14c",
+        "status": "complete",
+        "iterations": 1
+      },
+      "turns": [
+        {
+          "id": "turn_m1",
+          "status": "completed",
+          "items": [
+            {
+              "id": "item_goal_continuation_23",
+              "type": "systemMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_communicate_preview_24",
+              "type": "agentMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_round_timings_25",
+              "type": "systemMessage",
+              "status": "completed"
+            }
+          ]
+        },
+        {
+          "id": "turn_m2",
+          "status": "completed",
+          "items": [
+            {
+              "id": "item_goal_continuation_26",
+              "type": "systemMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_tool_27",
+              "type": "commandExecution",
+              "status": "completed"
+            },
+            {
+              "id": "item_round_timings_28",
+              "type": "systemMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_tool_29",
+              "type": "commandExecution",
+              "status": "completed"
+            },
+            {
+              "id": "item_round_timings_30",
+              "type": "systemMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_communicate_preview_31",
+              "type": "agentMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_round_timings_32",
+              "type": "systemMessage",
+              "status": "completed"
+            },
+            {
+              "id": "item_goal_ended_33",
+              "type": "systemMessage",
+              "status": "completed"
+            }
+          ]
+        }
+      ],
+      "completedEvents": 1,
+      "file": {
+        "bytes": 36,
+        "sha256": "4640c3a22411156b159a76fc5254b8a322a76e6f67b09074bad145e5fd64e607"
+      },
+      "userOrSteeringItems": 0
+    }
+  },
+  "hub": {
+    "rpc": "ws://127.0.0.1:54211/rpc",
+    "pid": 39981,
+    "binarySHA256": "606c8b19bbeb6139a1e1ecc1f2b70d70acd24634f286f940f5a365cd989cfbb7",
+    "proxy": false
+  },
+  "fixture": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-goals-mwazkcbq",
+    "driverCommit": "4fb08c9ce42c999bf0fbb182e00d8bb46ebacfe0",
+    "driverSHA256": "5bd553a1166950f2ecf21a73763fad00b803eeaaff4755aeb7ff24fab026c1fe",
+    "binarySHA256": "39f84cc4e3faace738808515ff3c0ce5a9925749fc6caae12e16586a9482f9a7",
+    "evidenceCommit": "dc331781dbb765534c5ea698c048480b8563559b",
+    "providerPid": 57728,
+    "providerExitCode": 0,
+    "requestChains": [
+      [
+        "call_fakellm_1",
+        "call_fakellm_2",
+        "call_fakellm_3",
+        "call_fakellm_4"
+      ],
+      [
+        "call_fakellm_5",
+        "call_fakellm_6",
+        "call_fakellm_7",
+        "call_fakellm_8"
+      ]
+    ],
+    "boundary": "scripted provider; real hub, daemon, goal loop and tools"
+  },
+  "native": {
+    "binding": {
+      "ref": "local:034KkPKKHzphJXVqsfzMXu",
+      "instanceId": "034KkPKKHzphJXVqsfzMXu",
+      "threadId": "034KkPKKHzphJXVqsfzMXu"
+    },
+    "completed": true,
+    "status": "awaiting",
+    "goal": {
+      "objective": "d1d960b7-9ec4-4a81-8b11-344133b0f14c",
+      "status": "complete",
+      "iterations": 1
+    },
+    "turns": [
+      {
+        "id": "turn_m1",
+        "status": "completed",
+        "items": [
+          {
+            "id": "item_goal_continuation_23",
+            "type": "systemMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_communicate_preview_24",
+            "type": "agentMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_round_timings_25",
+            "type": "systemMessage",
+            "status": "completed"
+          }
+        ]
+      },
+      {
+        "id": "turn_m2",
+        "status": "completed",
+        "items": [
+          {
+            "id": "item_goal_continuation_26",
+            "type": "systemMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_tool_27",
+            "type": "commandExecution",
+            "status": "completed"
+          },
+          {
+            "id": "item_round_timings_28",
+            "type": "systemMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_tool_29",
+            "type": "commandExecution",
+            "status": "completed"
+          },
+          {
+            "id": "item_round_timings_30",
+            "type": "systemMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_communicate_preview_31",
+            "type": "agentMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_round_timings_32",
+            "type": "systemMessage",
+            "status": "completed"
+          },
+          {
+            "id": "item_goal_ended_33",
+            "type": "systemMessage",
+            "status": "completed"
+          }
+        ]
+      }
+    ],
+    "completedEvents": 1,
+    "file": {
+      "bytes": 36,
+      "sha256": "1543055c519f1e6cb943fddebb6184b2f3864f938b46a9c65fe5c4a2a0bd8b31"
+    },
+    "userOrSteeringItems": 0
+  },
+  "nativeControls": {
+    "setAndEditOneObservedPressEach": true,
+    "exactWireCountOrStartedNotCaptured": true,
+    "replacementCancelled": true,
+    "clearVerifiedAbsent": true,
+    "relaunchVerifiedAbsent": true,
+    "afterRelaunchCompletedTurns": 2,
+    "nativeFaultInjection": false
+  },
+  "drafts": [
+    {
+      "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+      "bytes": 513,
+      "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc9793pXlhHyCRXdeAk",
+      "bytes": 513,
+      "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+      "bytes": 37,
+      "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kd12aed4Ah92lJZGUML",
+      "bytes": 27,
+      "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+      "bytes": 36,
+      "sha256": "fee839187da7bdc93d20bc97bc82a21ad841ffbda357c158298d4cd1ef8cb1b5",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KkPKKHzphJXVqsfzMXu",
+      "bytes": 36,
+      "sha256": "20038684cd4baf845d42d42214e148dd0e7b89de511a2c3d0bced3d56a557457",
+      "unconfirmed": false
+    }
+  ],
+  "cleanup": {
+    "sdkClear": {
+      "outcome": "acknowledged",
+      "started": false,
+      "goalSetRequests": 1,
+      "goalAbsent": true
+    },
+    "stopped": [
+      "local:034KkPKKHzphJXVqsfzMXu",
+      "local:034KkPL4OQP7sp3RMXsh9k"
+    ],
+    "bothGoalsAbsent": true,
+    "bothCompletedTurns": 2,
+    "providerRemoved": true,
+    "providerRegistryRestored": true
+  },
+  "limits": [
+    "Simulator only; no physical device, iPad or VoiceOver qualification",
+    "SDK acknowledgment discarded at client wrapper; not a socket disconnection",
+    "No concurrent second writer or server goal CAS proof",
+    "Provider responses intentionally omit action descriptions; fallback summaries remain a polish gap",
+    "Native malformed/lost acknowledgments are unit/SQLite-tested, not injected into this device run"
+  ]
+}

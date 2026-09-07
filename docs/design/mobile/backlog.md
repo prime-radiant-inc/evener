@@ -458,6 +458,15 @@ preservation across restart, simulated SDK acknowledgment loss without replay,
 and stale-entry/revision rejection. Native uncertainty, socket loss, held queues,
 concurrency and wider device/accessibility acceptance remain open.
 
+[Direct v4 goal evidence](goal-controls.md#direct-v4-ios-and-sdk-continuation--7-september)
+now proves native and independent SDK goal set/edit/clear, automatic continuation
+into a second turn, real file writes and terminal completion. Native cancellation
+of draft replacement, clear and relaunch preserve an ordinary draft. The SDK
+handles a deliberately discarded edit acknowledgment without replay and refuses
+a stale reviewed goal before dispatch. Native wire receipts were not intercepted;
+native fault injection, storage failures, concurrent writers and the wider device
+matrix remain open.
+
 [Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
 now covers four real restricted-session cases: native and packaged-SDK Allow
 and Deny for an owned file outside the workspace. Pending cards come from the

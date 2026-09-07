@@ -521,3 +521,21 @@ edit/clear and native uncertain delivery remain open. The installed iOS bundle
 still corresponds to the preceding queue-qualified `8fb3e343c` source; rebuild
 for the goal acceptance run. Full tasks/jobs, multi-hub, accessibility, physical
 device and release qualification remain active work.
+
+## Direct v4 goal continuation checkpoint
+
+Current iOS source `d48fe9471` and a fresh independent SDK package now prove
+set/edit/clear plus successful autonomous goal continuation. Two owned sessions
+each completed two turns, with one automatic continuation and a verified real
+file write before terminal goal completion. Native clear/relaunch preserves its
+ordinary draft; the five earlier checked drafts also retain their hashes.
+The SDK observes valid true/false acknowledgments, retains uncertainty after a
+deliberately discarded edit reply without replay, and blocks a stale reviewed
+goal before dispatch. [Goal evidence](../../design/mobile/goal-controls.md#direct-v4-ios-and-sdk-continuation--7-september)
+records exact source/hashes, native wire-observation limits, and completed cleanup.
+
+This is a bounded simulator/SDK proof. Native fault injection, concurrent writers,
+tasks/jobs, remaining SDK methods, full transcript polish, multi-hub, accessibility,
+physical-device and distribution qualification remain open. Luna medium review
+also identified acknowledgment information lost when an SDK mutation succeeds
+but its follow-up read fails; fix that error classification next.
