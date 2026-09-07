@@ -117,6 +117,11 @@ now replaces Work/Session with one overflow icon and preserves all three
 destinations. Both native destination/return paths pass; the narrow Android
 title frame grows from 34 to 381 physical pixels with the same touch minimum.
 Connection-row density and full-screen accessibility acceptance remain open.
+Session search now shares its normal-size row with Search/Clear; the Android
+first-session top moves from 809 to 651 pixels with identical content and touch
+minimums. Hub/search controls now scroll with the roster so largest-text users
+can reach usable session rows. Both platforms have final direct-hub typing,
+Search/Clear and large-text scrolling checks. See [roster evidence](roster-search.md).
 
 The [first spacing correction](transcript-spacing.md) removes an empty header
 slot and tightens routine-detail gaps. Android measurements show 284 pixels
