@@ -133,9 +133,10 @@ type Roster struct {
 	// an in-memory or sandboxed filesystem via SetFs.
 	fs afero.Fs
 
-	mu     sync.RWMutex
-	bySess map[string]LiveEntry // session_id -> entry
-	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	mu          sync.RWMutex
+	bySess      map[string]LiveEntry // session_id -> entry
+	byPID       map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+	unconfirmed []rendezvous.Entry   // live PIDs whose daemon ownership has not been established
 	// A completed pass may publish unless a newer pass already published.
 	refreshGen              uint64
 	publishedGen            uint64
@@ -341,6 +342,7 @@ func (r *Roster) refresh() error {
 
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
+	var unconfirmed []rendezvous.Entry
 	for _, res := range results {
 		e := res.entry
 		if !res.OK {
@@ -355,7 +357,8 @@ func (r *Roster) refresh() error {
 				continue
 			}
 			if r.procAlive(e.PID) {
-				continue // never confirmed live before, and still can't reach it
+				unconfirmed = append(unconfirmed, e)
+				continue // ownership is unresolved; do not publish it as a live daemon
 			}
 			// The process is confirmed GONE, yet its rendezvous file is still
 			// on disk. The rendezvous package writes that file on startup and
@@ -428,6 +431,7 @@ func (r *Roster) refresh() error {
 	prevBySess := r.bySess
 	r.bySess = bySess
 	r.byPID = byPID
+	r.unconfirmed = unconfirmed
 	changed := fp != r.fingerprint
 	r.fingerprint = fp
 	statusChanges := make([]string, 0)
@@ -622,4 +626,13 @@ func (r *Roster) Watch(ctx context.Context) error {
 			r.Refresh()
 		}
 	}
+}
+
+// UnconfirmedEntries returns rendezvous claims whose processes are alive but
+// whose daemon identity could not be established. They are not live sessions,
+// but callers must not treat their absence from List as proof of released ownership.
+func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return slices.Clone(r.unconfirmed)
 }

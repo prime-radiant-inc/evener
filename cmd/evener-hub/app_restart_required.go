@@ -34,8 +34,8 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		isSubagent                 bool
 	}
 	var edges []ownershipEdge
-	verifyOwner := func(entry hubcore.LiveEntry) (hubcore.LiveEntry, bool, error) {
-		if entry.Status != appwire.ThreadStatusRestartRequired {
+	verifyOwner := func(entry hubcore.LiveEntry, unconfirmed bool) (hubcore.LiveEntry, bool, error) {
+		if entry.Status != appwire.ThreadStatusRestartRequired && !unconfirmed {
 			return entry, false, nil
 		}
 		for _, edge := range edges {
@@ -50,6 +50,9 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 				return hubcore.LiveEntry{}, false, nil
 			}
 		}
+		if unconfirmed {
+			return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify daemon ownership for session %s", entry.SessionID)
+		}
 		return entry, true, nil
 	}
 	var jobTreeRootID string
@@ -57,7 +60,10 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 	for !seen[threadID] {
 		seen[threadID] = true
 		if entry, ok := liveDaemonForThread(cfg.Roster, threadID); ok {
-			return verifyOwner(entry)
+			return verifyOwner(entry, false)
+		}
+		if unconfirmedDaemonForThread(cfg.Roster, threadID) {
+			return verifyOwner(hubcore.LiveEntry{SessionID: threadID}, true)
 		}
 		// Ancestry locates a possible daemon. Every edge must have a persisted
 		// delegate descriptor before that daemon can be classified as the owner.
@@ -91,6 +97,9 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 	// its metadata and descriptor chain can be verified.
 	if owner, ok := liveDaemonForThread(cfg.Roster, jobTreeRootID); ok && owner.Status == appwire.ThreadStatusRestartRequired {
 		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify delegate ownership at session %s in incompatible job tree %s", threadID, jobTreeRootID)
+	}
+	if unconfirmedDaemonForThread(cfg.Roster, jobTreeRootID) {
+		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify daemon ownership in job tree %s", jobTreeRootID)
 	}
 	return hubcore.LiveEntry{}, false, nil
 }
@@ -219,4 +228,16 @@ func restartRequiredMutationError(err error, mutationID string) error {
 		wire.Data = updated
 	}
 	return wire
+}
+
+func unconfirmedDaemonForThread(roster *hubcore.Roster, threadID string) bool {
+	if threadID == "" {
+		return false
+	}
+	for _, entry := range roster.UnconfirmedEntries() {
+		if entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry) == localAppRef(threadID) {
+			return true
+		}
+	}
+	return false
 }

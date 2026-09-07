@@ -1088,3 +1088,36 @@ func TestRosterOwnershipRefreshReportsReadFailure(t *testing.T) {
 		t.Fatal("ownership refresh succeeded without reading the rendezvous directory")
 	}
 }
+
+func TestRosterUnconfirmedOwnershipClearsOnProbeOrExit(t *testing.T) {
+	for _, resolvesByProbe := range []bool{false, true} {
+		t.Run(strconv.FormatBool(resolvesByProbe), func(t *testing.T) {
+			dir := t.TempDir()
+			writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, SessionID: "owner", Protocol: "evener-appwire-v3"})
+			roster := NewRoster(dir, fakeProber{shouldFail: true})
+			alive := true
+			roster.procAlive = func(int) bool { return alive }
+			roster.Refresh()
+			claims := roster.UnconfirmedEntries()
+			if len(claims) != 1 || claims[0].SessionID != "owner" {
+				t.Fatalf("claims=%+v", claims)
+			}
+			if len(roster.List()) != 0 {
+				t.Fatal("unconfirmed process published as live daemon")
+			}
+			claims[0].SessionID = "modified"
+			if roster.UnconfirmedEntries()[0].SessionID != "owner" {
+				t.Fatal("caller modified roster ownership")
+			}
+			if resolvesByProbe {
+				roster.prober = fakeProber{sessionID: "owner", status: appwire.ThreadStatusRestartRequired}
+			} else {
+				alive = false
+			}
+			roster.Refresh()
+			if len(roster.UnconfirmedEntries()) != 0 {
+				t.Fatal("resolved ownership remained unconfirmed")
+			}
+		})
+	}
+}
