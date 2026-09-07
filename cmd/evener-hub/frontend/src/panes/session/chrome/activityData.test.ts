@@ -886,6 +886,16 @@ function treeFixture(entries: unknown[]) {
   };
 }
 
+function delegateFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    delegateId: "dlg_usage",
+    childSessionId: "sess_child",
+    childRef: "ref_child",
+    branch: {},
+    ...overrides,
+  };
+}
+
 describe("lastOutputAt and usage wire fields", () => {
   it("parses lastOutputAt on jobs", () => {
     const tree = parseActivityTree(
@@ -926,6 +936,45 @@ describe("lastOutputAt and usage wire fields", () => {
       kind: "delegate",
       delegate: { usage: { inputTokens: 41200, outputTokens: 6100 } },
     });
+  });
+
+  it.each([
+    [{ outputTokens: 8 }, { inputTokens: 0, outputTokens: 8 }],
+    [{ inputTokens: 4 }, { inputTokens: 4, outputTokens: 0 }],
+    [{ cacheReadTokens: 2 }, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 2 }],
+    [{}, { inputTokens: 0, outputTokens: 0 }],
+    [
+      { inputTokens: 0, outputTokens: 0 },
+      { inputTokens: 0, outputTokens: 0 },
+    ],
+  ])("normalizes omitted usage counters without dropping the delegate", (usage, expected) => {
+    const parsed = parseActivityTree(
+      treeFixture([
+        { kind: "shell", job: jobFixture() },
+        { kind: "delegate", delegate: delegateFixture({ usage }) },
+      ]),
+    );
+    expect(parsed?.root.entries).toHaveLength(2);
+    expect(parsed?.root.entries[1]).toMatchObject({ delegate: { usage: expected } });
+  });
+
+  it.each([
+    { inputTokens: null },
+    { outputTokens: "8" },
+    { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 1 },
+    { inputTokens: 1, outputTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { cacheReadTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { totalTokens: -1 },
+  ])("drops a delegate with malformed present usage while retaining valid neighbors", (usage) => {
+    const parsed = parseActivityTree(
+      treeFixture([
+        { kind: "shell", job: jobFixture() },
+        { kind: "delegate", delegate: delegateFixture({ usage }) },
+      ]),
+    );
+    expect(parsed?.root.entries).toHaveLength(1);
+    expect(parsed?.root.entries[0]?.kind).toBe("shell");
+    expect(parsed?.root.branch.error).toBe("incomplete");
   });
 
   it("omits optional activity fields when absent", () => {

@@ -341,6 +341,12 @@ such as these describe different observations:
 | `worktree` | Optional `{ path, branch, headSha, ahead, dirty }` snapshot; missing means no worktree snapshot was supplied. |
 | `structuredResult`, `structuredResultValid`, `structuredResultReason` | A result may be absent, primitive, or structured; validity is separately reported and does not follow from presence alone. |
 
+Within a present `usage` object, EvenerUsage omits zero-valued numeric counters.
+The activity parser therefore normalizes missing input/output counters to zero,
+matching the server's serialization contract. This does not create a usage
+object when the entire field is absent. Supplied counters must still be
+nonnegative safe integers; null, strings and unsafe numbers are malformed.
+
 For elapsed time, a resumed run uses `now - runStartedAt` while it is live; do
 not continue a prior run's `runEndedAt`. A terminal duration uses a valid
 `runEndedAt - runStartedAt` interval or the server's frozen duration. An absent

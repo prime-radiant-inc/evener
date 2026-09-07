@@ -222,8 +222,8 @@ function parseCounts(raw: unknown): ActivityCounts | null {
 function parseUsage(raw: unknown): ActivityUsage | null | undefined {
   if (typeof raw === "undefined") return undefined;
   if (!isPlainObject(raw)) return null;
-  const inputTokens = readNonNegativeInteger(raw, "inputTokens");
-  const outputTokens = readNonNegativeInteger(raw, "outputTokens");
+  const inputTokens = typeof raw.inputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "inputTokens");
+  const outputTokens = typeof raw.outputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "outputTokens");
   if (inputTokens === null || outputTokens === null) return null;
   const usage: ActivityUsage = { inputTokens, outputTokens };
   const cacheReadTokens = readNonNegativeInteger(raw, "cacheReadTokens");
