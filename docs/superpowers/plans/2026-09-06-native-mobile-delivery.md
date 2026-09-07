@@ -441,3 +441,38 @@ uncertain-answer native journeys, the whole conversation review and final iOS
 release qualification. Current question proof covers one two-question call,
 not the entire decision matrix. Physical devices, iPad/VoiceOver, multi-hub,
 reader/performance, signing/install/update and canonical merge gates remain open.
+
+## Queue receipt and SDK checkpoint
+
+The shared native conversation service now validates cancel, promote and drain
+responses before the UI treats them as acknowledged. It checks the mutation,
+thread and required instance identity, operation projection, queue entry IDs,
+turn identity where applicable, and cancellation echo. Decoder failures follow
+the existing unconfirmed-action path; the UI still refreshes without replaying.
+The demonstration hub now emits the same queue receipt shape as the real v4
+server: cancellation is removed, with the affected entry IDs, and promotion/
+drain carry both queue IDs and a turn ID.
+
+The packaged `queue.mjs` recipe provides read-only review and explicitly enabled
+queue/cancel/promote/drain operations. It sends server instance and entry/revision
+preconditions, validates receipts, reads back after success or failure, preserves
+uncertainty and never retries automatically. Full queue text is exposed only in
+an explicitly requested private review file. The coverage catalog now lists
+14 recipes covering 46/91 method names and three notification names; this counts
+recipe presence, not execution or outcome coverage.
+
+Verification: six native receipt regression cases failed before the decoder
+change. The focused conversation service suite now passes 107 tests. Broader
+checks pass 2,267 mobile tests, 583 native tests plus TypeScript, mobile
+TypeScript/boundaries, the canonical web gate, 105 SDK contracts across nine
+files, and the independent package gate. The native gate initially exposed the
+demo hub's invalid receipts; correcting their construction restored the existing
+real-WebSocket queue integration test.
+
+Luna medium implementation proposals and review informed this slice; the
+coordinator corrected proposal mismatches against actual generated/server
+contracts and executed all reported checks. Real direct-hub iOS queue actions,
+uncertain native delivery, concurrent queue changes, goals/tasks/jobs and
+release qualification remain open. The installed iOS app has not yet been
+rebuilt with this queue service change. The two unrelated Apple project/plist
+edits remain untouched and unstaged.

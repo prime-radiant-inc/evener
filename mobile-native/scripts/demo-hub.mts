@@ -260,7 +260,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 										evenerErrorInfo: "conflict",
 									});
 								texts.splice(0);
-								ids.splice(0);
+								entryIds = ids.splice(0);
 							} else {
 								if (
 									params.index < 0 ||
@@ -271,7 +271,7 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 										evenerErrorInfo: "conflict",
 									});
 								removedText = texts.splice(params.index, 1)[0];
-								ids.splice(params.index, 1);
+								entryIds = ids.splice(params.index, 1);
 							}
 						}
 						if (method !== "turn/steer") {
@@ -287,12 +287,11 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 							threadId: selected.id,
 							instanceId: selected.evener.instanceId,
 							projectionState:
-								method === "turn/cancelQueued" ? "reflected" : "pending",
-							...(entryIds
-								? { queueEntryIds: entryIds }
-								: method === "turn/cancelQueued"
-									? {}
-									: { turnId: selected.evener.activeTurnId }),
+								method === "turn/cancelQueued" ? "removed" : "pending",
+							...(entryIds ? { queueEntryIds: entryIds } : {}),
+							...(method === "turn/queue" || method === "turn/cancelQueued"
+								? {}
+								: { turnId: selected.evener.activeTurnId }),
 						};
 						result =
 							method === "turn/cancelQueued"

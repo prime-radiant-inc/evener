@@ -96,14 +96,68 @@ The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
-management and recovery paths. Additional creation cases, approvals, queue
-control, continuous reconnect recovery, credentials, marketplace management and
-hub upgrades remain to be added.
+management and recovery paths. Additional creation cases, goals, tasks/jobs,
+continuous reconnect recovery, credentials and hub upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
+
+### Reviewing and changing queued messages
+
+`queue.mjs` lists a session queue by default. Use a parameters file containing
+`{ "ref": "local:..." }`. An optional, unused absolute
+`EVENER_QUEUE_REVIEW_FILE` saves the full queue text, entry IDs, revision and
+session instance privately (mode 0600, exclusive creation). Standard output
+contains outcome and depth only.
+
+```sh
+EVENER_QUEUE_PARAMS_FILE=/absolute/queue-read.json \
+EVENER_QUEUE_REVIEW_FILE=/absolute/queue-review.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+node node_modules/@evener/appwire-client/examples/queue.mjs
+```
+
+For a mutation, author a fresh parameters file using the reviewed reference and
+`expectedInstanceId`. Supply a stable, caller-authored `clientMutationId` for
+that decision. Choose `EVENER_QUEUE_ACTION` and add its parameters:
+
+| Action | Additional parameters | Effect |
+| --- | --- | --- |
+| `queue` | `input: [{ "type": "text", "text": "..." }]` | Accept text for later processing. This recipe supports text only; the typed API also supports images. |
+| `cancel` | `index`, `expectedEntryId` | Remove the reviewed entry. |
+| `promote` | `index`, `expectedEntryId` | Use that entry as steering, or resume a held queue. |
+| `drain` | `expectedQueueRevision` | Combine the complete reviewed queue as one input. This recipe supplies no additional input. |
+
+Mutations additionally require `EVENER_QUEUE_MUTATION=1` and a separately
+authored `EVENER_QUEUE_OWNED_HUB` exactly matching `EVENER_RPC_URL`. The recipe
+checks capabilities, the session instance, and the selected entry or complete
+queue revision before dispatch. The server receives the instance and entry/
+revision preconditions too. Resuming a held queue also releases remaining
+waiting messages; review the full queue before promoting an entry.
+
+```sh
+EVENER_QUEUE_ACTION=cancel EVENER_QUEUE_MUTATION=1 \
+EVENER_QUEUE_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_QUEUE_PARAMS_FILE=/absolute/queue-cancel.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+node node_modules/@evener/appwire-client/examples/queue.mjs
+```
+
+Programmatic consumers can import `runQueue` from packaged
+`examples/queue-logic.mjs` and own the client lifetime. It sends at most one
+mutation, validates the operation-specific receipt, and reads the same session
+again after either acknowledgment or failure. A lost or malformed reply returns
+`outcome: "uncertain"` even if readback has changed; the CLI exits 2. A readback
+failure throws (both failures are retained in an ordered `AggregateError`).
+No response or readback triggers an automatic replay. All results report
+`execution: "unverified"`: pending input can already have been consumed before
+readback, and acknowledgment does not prove the model processed it. The contract
+tests cover client behavior at a scripted transport boundary; real native
+queue interactions require separate acceptance evidence.
 
 ### Reviewing and answering structured questions
 

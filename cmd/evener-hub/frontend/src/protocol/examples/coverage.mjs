@@ -56,6 +56,14 @@ const recipes = {
   ],
   "approvals.mjs": ["initialize", "thread/read", "evener/sandbox/escalation/resolve"],
   "questions.mjs": ["initialize", "thread/read", "thread/turns/list", "turn/start"],
+  "queue.mjs": [
+    "initialize",
+    "thread/read",
+    "turn/queue",
+    "turn/cancelQueued",
+    "turn/promoteQueuedAsSteer",
+    "turn/drainAsSteer",
+  ],
   "repository-trust.mjs": ["initialize", "evener/launch/resolve", "evener/launch/trustRepo"],
   "project-layer.mjs": [
     "initialize",

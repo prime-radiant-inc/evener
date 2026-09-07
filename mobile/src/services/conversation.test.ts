@@ -683,7 +683,11 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       const cancelResp: TurnCancelQueuedResponse = {
         removedText: "queued text",
-        receipt: makeReceipt(),
+        receipt: makeReceipt("queue", {
+          instanceId: "thread-1",
+          projectionState: "removed",
+          queueEntryIds: ["entry-1"],
+        }),
       };
       client.on("turn/cancelQueued", () => cancelResp);
       await service.open("ref-1");
@@ -2880,6 +2884,146 @@ describe("ConversationService", () => {
   });
 });
 
+describe("queue action receipts", () => {
+  const cases = [
+    {
+      method: "turn/cancelQueued" as const,
+      call: (service: ReturnType<typeof createConversationService>) =>
+        service.cancelQueued(1, "entry-b", "thread-1"),
+    },
+    {
+      method: "turn/promoteQueuedAsSteer" as const,
+      call: (service: ReturnType<typeof createConversationService>) =>
+        service.promoteQueuedAsSteer(1, "entry-b", "thread-1"),
+    },
+    {
+      method: "turn/drainAsSteer" as const,
+      call: (service: ReturnType<typeof createConversationService>) =>
+        service.drainAsSteer(7, "thread-1"),
+    },
+  ];
+  function response(method: string) {
+    const cancel = method === "turn/cancelQueued";
+    return {
+      ...(cancel ? { removedText: "sentinel", removedImages: 2 } : {}),
+      receipt: {
+        clientMutationId: "cmid-1",
+        threadId: "thread-1",
+        instanceId: "thread-1",
+        disposition: "applied",
+        projectionState: cancel ? "removed" : "pending",
+        queueEntryIds: ["entry-b"],
+        ...(cancel ? {} : { turnId: "turn-1" }),
+      },
+    };
+  }
+  it.each(cases)(
+    "validates $method before treating the action as acknowledged",
+    async ({ method, call }) => {
+      for (const change of [
+        () => null,
+        () => ({}),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, clientMutationId: "other" },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, threadId: "other" },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, instanceId: undefined },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, instanceId: "other" },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, disposition: "unknown" },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, projectionState: "reflected" },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, queueEntryIds: [] },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: { ...valid.receipt, queueEntryIds: ["entry-b", "entry-b"] },
+        }),
+        (valid: ReturnType<typeof response>) => ({
+          ...valid,
+          receipt: {
+            ...valid.receipt,
+            turnId: method === "turn/cancelQueued" ? "unexpected" : "",
+          },
+        }),
+      ]) {
+        idCounter = 0;
+        const { client, service } = setup();
+        client.on(method, () => change(response(method)) as never);
+        await service.open("ref-1");
+        await expect(call(service)).rejects.toThrow();
+        expect(
+          client.calls.filter((entry) => entry.method === method),
+        ).toHaveLength(1);
+        service.close();
+      }
+    },
+  );
+  it.each(cases)(
+    "returns the validated $method response",
+    async ({ method, call }) => {
+      idCounter = 0;
+      const { client, service } = setup();
+      const value = response(method);
+      client.on(method, () => value as never);
+      await service.open("ref-1");
+      await expect(call(service)).resolves.toEqual(value);
+      expect(
+        client.calls.filter((entry) => entry.method === method),
+      ).toHaveLength(1);
+      service.close();
+    },
+  );
+  it.each(cases.slice(0, 2))(
+    "rejects the wrong selected entry for $method",
+    async ({ method, call }) => {
+      idCounter = 0;
+      const { client, service } = setup();
+      const value = response(method);
+      value.receipt.queueEntryIds = ["other"];
+      client.on(method, () => value as never);
+      await service.open("ref-1");
+      await expect(call(service)).rejects.toThrow();
+      service.close();
+    },
+  );
+  it("rejects malformed cancellation echoes", async () => {
+    for (const change of [
+      { removedText: null },
+      { removedImages: -1 },
+      { removedImages: 0.5 },
+    ]) {
+      idCounter = 0;
+      const { client, service } = setup();
+      client.on(
+        "turn/cancelQueued",
+        () => ({ ...response("turn/cancelQueued"), ...change }) as never,
+      );
+      await service.open("ref-1");
+      await expect(
+        service.cancelQueued(1, "entry-b", "thread-1"),
+      ).rejects.toThrow();
+      service.close();
+    }
+  });
+});
+
 describe("observed queue guards", () => {
   beforeEach(() => {
     idCounter = 0;
@@ -2902,10 +3046,20 @@ describe("observed queue guards", () => {
     const thread = makeThread();
     thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
     const { service, client } = setup({ thread });
-    client.on("turn/promoteQueuedAsSteer", () => ({
-      receipt: makeReceipt("steer"),
+    client.on("turn/promoteQueuedAsSteer", ({ clientMutationId }) => ({
+      receipt: makeReceipt("steer", {
+        clientMutationId,
+        instanceId: "thread-1",
+        queueEntryIds: ["held-entry"],
+      }),
     }));
-    client.on("turn/drainAsSteer", () => ({ receipt: makeReceipt("steer") }));
+    client.on("turn/drainAsSteer", ({ clientMutationId }) => ({
+      receipt: makeReceipt("steer", {
+        clientMutationId,
+        instanceId: "thread-1",
+        queueEntryIds: ["held-entry"],
+      }),
+    }));
     await service.open("ref-1");
     await expect(
       service.promoteQueuedAsSteer(0, "held-entry", "thread-1"),

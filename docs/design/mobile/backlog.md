@@ -446,6 +446,13 @@ Goals, tasks, activity, queue operations, approvals and questions have partial
 implementation/evidence. Complete remaining paging, concurrent updates,
 resolution on another device, stale actions and uncertain delivery scenarios.
 
+Queue cancel/promote/drain now validate operation receipts before acknowledgment;
+the shared service rejects malformed or mismatched replies and preserves the
+existing unconfirmed-action/refresh path. The SDK has a guarded queue recipe
+with explicit ownership, entry/revision checks, one dispatch and conservative
+readback. Deterministic coverage includes a real-WebSocket demo queue journey;
+direct-hub iOS queue acceptance and concurrent/fault cases remain open.
+
 [Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
 now covers four real restricted-session cases: native and packaged-SDK Allow
 and Deny for an owned file outside the workspace. Pending cards come from the
@@ -508,8 +515,9 @@ and CommonJS, and ran the read-only inspection recipe against an authenticated
 isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
-The generated catalog has 88 methods and 35 notifications at this snapshot; the
-five recipes cover fourteen methods and three notifications. The opt-in project-layer
+The current generated catalog has 91 methods; fourteen recipes cover 46 method
+names and three notification names. These are recipe-presence counts, not full
+outcome coverage. The opt-in project-layer
 recipe verified mutation, notification, effective-value readback and restoration
 from a separate tarball consumer against the isolated hub. The packaged coverage
 report lists gaps. Repository trust also has an independently installed recipe
@@ -517,9 +525,10 @@ for stale-hash rejection and fresh revision confirmation. This
 is not completion: the installed session-lifecycle recipe now proves idle
 creation, subscription, send/interrupt receipts, start/completion pushes and
 authoritative input readback against a held-open scripted provider. Add
-remaining creation cases, streaming/rejoin, mutation recovery, approval, queue,
-navigation/management, provider, plugin management, trust failure and
-upgrade recipes, with method-specific errors, presence semantics and recovery.
+remaining creation cases, goals/tasks/jobs, continuous reconnect recovery,
+credentials and upgrades, with method-specific errors, presence semantics and
+recovery. Existing approval, question, queue, navigation, plugin/instance/
+marketplace and trust recipes still need their remaining acceptance variants.
 
 Acceptance: an independent client consumer can implement every supported flow
 from the guide and wire reference; the library and examples run outside this
