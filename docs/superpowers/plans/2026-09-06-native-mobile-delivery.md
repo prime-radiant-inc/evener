@@ -705,3 +705,19 @@ absent usage object absent. This matches the current Go wire contract and the
 existing token-accounting interpretation; it does not add a compatibility path.
 Luna owns the parser/tests; Bot owns integration, guide clarification, fresh
 package and iPhone builds, and repeating the direct fixture acceptance.
+
+### Delegate detail checkpoint — ef12d750e
+
+Implemented in 71750ee63, with current-wire usage repair in ef12d750e. The
+independent SDK and rebuilt iPhone retain all three fixture delegates. Native
+disclosures preserve model/timing, zero usage/ahead, false exhaustion resume and
+JSON null/string distinctions; child navigation returns to its parent on the
+same hub. See [acceptance and limits](../../design/mobile/activity.md#delegate-details-and-current-wire-usage--7-september).
+
+610 native tests plus TS, canonical frontend, five browser guards and external
+package qualification pass. Six drafts and the unrelated Apple patch are intact.
+This is projection evidence, not actual delegate execution or timer fault
+qualification. Next prioritize concurrent/stale questions and decisions, uncertain
+delivery and reconnect, then reader continuity and multi-hub pending operations.
+iOS release, accessibility, physical-device and performance gates remain open;
+the global goal stays active, with Android qualification deferred.
