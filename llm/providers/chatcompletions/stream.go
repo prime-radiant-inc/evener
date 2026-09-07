@@ -166,6 +166,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				} else {
 					s.Send(event)
 				}
+				// The provider may keep the body open after [DONE]. Stop the
+				// parser before its next read; finished preserves success accounting.
+				cancel()
 				return nil
 			}
 

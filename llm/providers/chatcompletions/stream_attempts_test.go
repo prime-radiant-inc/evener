@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,3 +128,82 @@ func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
 type idleAttemptRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestStreamDoneClosesOpenBodyWithoutIdleTimeout(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		name := "without_capture"
+		if capture {
+			name = "with_capture"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r, w := io.Pipe()
+				defer r.Close()
+				defer w.Close()
+				var requestContext context.Context
+				client := &http.Client{Transport: idleAttemptRoundTripper(func(req *http.Request) (*http.Response, error) {
+					requestContext = req.Context()
+					if req.Body != nil {
+						io.Copy(io.Discard, req.Body)
+						req.Body.Close()
+					}
+					// Deliberately leave the provider body open after its terminal marker.
+					go func() { _, _ = io.WriteString(w, chatSSE) }()
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: r, Request: req}, nil
+				})}
+				sink := &captureSink{}
+				ctx := t.Context()
+				if capture {
+					ctx = llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(ctx, llm.NewAPIAttemptGroup("ag_chat_done")), sink)
+				}
+				start := time.Now()
+				req := userReq("hi")
+				req.AdapterTimeout = &llm.AdapterTimeout{StreamRead: 10 * time.Minute}
+				s, err := (&Protocol{Client: client}).Stream(ctx, req, liveRes(&httptest.Server{URL: "https://example.invalid"}, nil))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var finishes, textEnds, toolEnds int
+				for ev := range s.Events() {
+					switch ev.Type {
+					case llm.StreamEventError:
+						t.Errorf("stream error: %v", ev.Err)
+					case llm.StreamEventTextEnd:
+						textEnds++
+					case llm.StreamEventToolCallEnd:
+						toolEnds++
+					case llm.StreamEventFinish:
+						finishes++
+						if capture && len(sink.records()) != 1 {
+							t.Error("attempt not persisted before finish")
+						}
+						resp := ev.Response
+						if resp == nil || resp.ID != "c1" || resp.Model != "m-wire" || resp.Finish.Reason != "tool_calls" || resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 5 {
+							t.Errorf("final response = %+v", resp)
+						} else if len(resp.Message.Content) != 2 || resp.Message.Content[0].Text != "hello" || resp.Message.Content[1].ToolCall.ID != "call_1" || string(resp.Message.Content[1].ToolCall.Arguments) != `{"a":1}` {
+							t.Errorf("final content = %+v", resp.Message.Content)
+						}
+					}
+				}
+				if elapsed := time.Since(start); elapsed != 0 {
+					t.Errorf("completion waited %s; want no idle timer advancement", elapsed)
+				}
+				if finishes != 1 || textEnds != 1 || toolEnds != 1 {
+					t.Errorf("terminal events: finish=%d text=%d tool=%d", finishes, textEnds, toolEnds)
+				}
+				if requestContext.Err() == nil || ctx.Err() != nil {
+					t.Errorf("request cancellation = %v, caller cancellation = %v", requestContext.Err(), ctx.Err())
+				}
+				if _, err := r.Read(make([]byte, 1)); !errors.Is(err, io.ErrClosedPipe) {
+					t.Errorf("body read after completion = %v, want closed pipe", err)
+				}
+				if capture {
+					llm.WaitForPriorAPIAttempts(ctx)
+					if records := sink.records(); len(records) != 1 || records[0].Outcome != apilog.AttemptSuccess {
+						t.Errorf("attempt records = %+v", records)
+					}
+				}
+			})
+		})
+	}
+}
