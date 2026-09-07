@@ -23,12 +23,11 @@ type TextInputModal struct {
 	prompt string
 	input  string
 	mask   bool
-	// summarize renders pasted material as a character count instead of the
-	// value itself, so a credential is never echoed while a typed path stays
-	// visible. sawPaste records that the terminal reported a paste, which is
-	// what distinguishes the two.
+	// summarize renders the value as a character count instead of the value
+	// itself. A prompt that asks for a credential sets it and echoes nothing:
+	// a terminal that marks no pastes makes typed and pasted material
+	// indistinguishable, and guessing from shape cannot be made reliable.
 	summarize bool
-	sawPaste  bool
 	paths     bool
 	done      bool
 	width     int
@@ -54,15 +53,15 @@ func NewTextInputModalMasked(prompt, tag string) TextInputModal {
 	return TextInputModal{prompt: prompt, tag: tag, mask: true}
 }
 
-// NewCredentialPasteModal takes a credential the user pastes whole — a
-// terminal delivers a bracketed paste as one KeyRunes message carrying every
-// rune, newlines included, so a pretty-printed JSON document arrives intact
-// and its newlines never reach the Enter branch. The alternative input is a
-// path to the file holding it, for a terminal that does not bracket its
-// pastes; the field keeps path completion for that, and shows a pasted
-// credential as a character count rather than echoing it.
+// NewCredentialPasteModal takes a credential document the user pastes whole:
+// a terminal delivers a bracketed paste as one KeyRunes message carrying
+// every rune, newlines included, so a pretty-printed JSON document arrives
+// intact and its newlines never reach the Enter branch. It echoes nothing —
+// the field shows a character count — because the prompt asks for exactly one
+// thing and that thing is secret. Reading the document from a file is a
+// separate prompt, which takes a path and has nothing to hide.
 func NewCredentialPasteModal(title, prompt, tag string) TextInputModal {
-	return TextInputModal{title: title, prompt: prompt, tag: tag, summarize: true, paths: true, width: 60}
+	return TextInputModal{title: title, prompt: prompt, tag: tag, summarize: true, width: 60}
 }
 
 func (m TextInputModal) Init() tea.Cmd { return nil }
@@ -97,35 +96,10 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input += "\n"
 			}
 		case tea.KeyRunes:
-			// The terminal marks its pastes, and that is the one signal that
-			// tells material the user brought in from elsewhere — a
-			// credential of any shape — from a path they typed here.
-			m.sawPaste = m.sawPaste || v.Paste
 			m.input += string(v.Runes)
 		}
 	}
 	return m, nil
-}
-
-// pastedMaterial reports whether the value is credential material rather than
-// a path the user typed. Every credential document evener accepts is a JSON
-// object (registry.CheckCredentialJSON unmarshals into a struct, so the text
-// must start with "{"), and a line break can only arrive by paste — so those
-// two tests cover the material that must never be echoed, whatever its
-// length. A path stays visible however long it is.
-func (m TextInputModal) pastedMaterial() bool {
-	value := strings.TrimSpace(m.input)
-	if value == "" {
-		return false
-	}
-	if m.sawPaste || strings.HasPrefix(value, "{") || strings.ContainsAny(value, "\n\r") {
-		return true
-	}
-	// A terminal without bracketed paste marks nothing as pasted, so nothing
-	// here can tell a pasted secret from a typed one. What the prompt asks to
-	// be typed is a path, so that is what it shows; anything else is treated
-	// as material to keep off the screen.
-	return !strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "~") && !strings.HasPrefix(value, ".")
 }
 
 // printable drops the control bytes a paste can carry, so clipboard content
@@ -141,8 +115,8 @@ func printable(s string) string {
 
 func (m TextInputModal) inputView() string {
 	display := printable(m.input)
-	if m.summarize && m.pastedMaterial() {
-		return fmt.Sprintf("> [%d characters pasted]", len([]rune(m.input)))
+	if m.summarize && m.input != "" {
+		return fmt.Sprintf("> [%d characters]", len([]rune(m.input)))
 	}
 	if m.mask {
 		display = ""

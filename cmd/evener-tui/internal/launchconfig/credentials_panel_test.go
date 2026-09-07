@@ -105,6 +105,30 @@ func TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson(t 
 	}
 }
 
+// TestCredentialsPanel_LoadsACredentialJsonFromAFile: reading the document
+// from a file is its own action, so neither prompt has to guess whether what
+// it was given is a path or a secret.
+func TestCredentialsPanel_LoadsACredentialJsonFromAFile(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "none", AuthModes: []string{"apiKey"}},
+		{Name: "google-vertex", ProviderID: "google-vertex", ActiveSource: "none", CredentialRequired: true, AuthModes: []string{"adc", "credentialJson"}},
+	}}})
+	onVertex, _ := updated.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := onVertex.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if cmd == nil {
+		t.Fatal("f on a credential-JSON instance should produce a cmd")
+	}
+	got, ok := cmd().(CredentialsActionMsg)
+	if !ok || got.Action != "loadCredentialJson" || got.Instance != "google-vertex" {
+		t.Fatalf("msg = %#v, want the load-from-file action for google-vertex", cmd())
+	}
+	// The key means nothing for an instance that takes no credential JSON.
+	if _, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")}); cmd != nil {
+		t.Fatalf("an API-key instance has no credential JSON to load; got %+v", cmd())
+	}
+}
+
 // --- new instance-based tests ---
 
 func TestCredentialsPanel_GroupsByType(t *testing.T) {

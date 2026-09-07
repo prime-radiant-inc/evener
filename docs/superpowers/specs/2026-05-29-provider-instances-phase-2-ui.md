@@ -26,7 +26,8 @@ same data as a grouped key-driven list — `↑↓` move, `enter` set key, `o` o
 clear, `n` new, `e` edit, `x` remove, `*` default, `esc` close. (Amended
 2026-09-06: Enter sets whichever credential the instance's auth modes offer —
 an API key, or a pasted Google credential JSON for a `gcp-adc` instance — so
-its hint reads "set credential".)
+its hint reads "set credential"; `f` reads that credential JSON from a file
+instead.)
 
 ## 3. Data contract (`internal/appwire/types.go`)
 

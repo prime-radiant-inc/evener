@@ -152,8 +152,14 @@ func (m hubModel) handleCredentialsAction(msg launchconfig.CredentialsActionMsg)
 	case "setCredentialJson":
 		modal := tuipick.NewCredentialPasteModal(
 			"Credential JSON for "+msg.Instance,
-			"Paste a service-account key or application_default_credentials.json,\nor type the path to the file holding it:",
+			"Paste a service-account key or application_default_credentials.json.\nTo read it from a file instead, cancel and press f.",
 			"credential-json-set:"+msg.Instance)
+		m.followupModal = &modal
+		return m, nil
+	case "loadCredentialJson":
+		modal := tuipick.NewPathTextInputModal(
+			"Path to the credential JSON for "+msg.Instance+":",
+			"credential-json-file:"+msg.Instance, "")
 		m.followupModal = &modal
 		return m, nil
 	case "logout":
@@ -331,19 +337,30 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 	if provider, ok := strings.CutPrefix(msg.Tag, "credential-json-set:"); ok {
 		m.followupModal = nil
 		value := strings.TrimSpace(msg.Value)
-		if msg.Cancelled || value == "" {
-			return m, nil
-		}
-		document, err := credentialJSONDocument(value)
-		if err != nil {
-			m.err = err
+		if msg.Cancelled || value == "" || m.client == nil {
 			return m, nil
 		}
 		m.err = nil
-		if m.client != nil {
-			return m, launchconfig.CmdAuthCredentialJsonSet(m.client, provider, document)
+		return m, launchconfig.CmdAuthCredentialJsonSet(m.client, provider, value)
+	}
+	if provider, ok := strings.CutPrefix(msg.Tag, "credential-json-file:"); ok {
+		m.followupModal = nil
+		path := strings.TrimSpace(msg.Value)
+		if msg.Cancelled || path == "" || m.client == nil {
+			return m, nil
 		}
-		return m, nil
+		m.err = nil
+		client := m.client
+		// The read happens inside the command, off the update loop, so a slow
+		// or unreadable path cannot hold up the interface. Its failure takes
+		// the same route as the hub's own, so both reach the error line.
+		return m, func() tea.Msg {
+			document, err := readCredentialFile(path)
+			if err != nil {
+				return launchconfig.AuthApiKeySetResultMsg{Err: err}
+			}
+			return launchconfig.CmdAuthCredentialJsonSet(client, provider, document)()
+		}
 	}
 	if rest, ok := strings.CutPrefix(msg.Tag, "oauth-redirect:"); ok {
 		parts := strings.SplitN(rest, ":", 2)
@@ -395,31 +412,19 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 	return m, nil
 }
 
-// credentialJSONDocument resolves what the credential-JSON prompt collected
-// into the document to store: the paste itself, or the contents of the file
-// the user named instead. A terminal that brackets its pastes delivers the
-// whole document in one key message; naming the file is the way in from one
-// that does not, and the file is read here because the path is on the
-// machine the user typed it on, not the hub's. The hub validates whatever
-// this returns, so no parsing happens here.
-func credentialJSONDocument(value string) (string, error) {
-	if strings.HasPrefix(value, "{") {
-		return value, nil
-	}
-	path := value
+// readCredentialFile reads a credential document from a path the user gave,
+// on the machine they typed it on rather than the hub's. Its caller runs it
+// inside a command, off the update loop, so a slow filesystem cannot hold up
+// the interface; the file is still opened without blocking, so a path that
+// names a pipe cannot leave that command waiting forever either. What the
+// open descriptor actually is decides whether it is read, and the read is
+// bounded — checking the path and then opening it by name again would leave
+// a window for it to become something else. The hub validates the document,
+// so no parsing happens here.
+func readCredentialFile(path string) (string, error) {
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
 	}
-	return readCredentialFile(path)
-}
-
-// readCredentialFile reads a credential document from a path the user gave.
-// This runs on the update loop, where a read that never returns stops the
-// interface responding and one that never ends exhausts the process, so the
-// file is opened without blocking, judged by what the open descriptor
-// actually is, and read through a bound. Checking the path and then opening
-// it by name again would leave a window for it to become something else.
-func readCredentialFile(path string) (string, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|nonblockingOpen, 0)
 	if err != nil {
 		return "", credentialPathError(err)
