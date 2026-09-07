@@ -33,7 +33,10 @@ Commit `394442767` adds pin catalog paging/invalidation and validates conditiona
 responses and tombstones against the current resource's revision. A cached
 first-page refresh also resets the next-page offset. The owned hub exposed
 manifest revision 8 and pin catalog revision 1 in the same generation: ETags and
-revisions are resource-scoped, not interchangeable across resources.
+revisions are resource-scoped, not interchangeable across resources. A receipt
+revision floor also belongs to its generation: after a failed receipt readback,
+an explicit fresh read can accept a restarted hub at its new revision. A read
+that is still confirming the original receipt must match that receipt generation.
 
 `NavigationActions` accepts a synchronous per-hub recovery journal. It saves
 the operation and immutable target before dispatch, persists an acknowledged
@@ -50,18 +53,18 @@ internal component with no registered route.
 
 Validation on 2026-09-07:
 
-- `make test-native`: 457 tests in 55 files and TypeScript passed.
+- `make test-native`: 458 tests in 55 files and TypeScript passed.
 - Focused controller coverage includes recreation, late acknowledgement,
   acknowledged receipt retention, failed begin/acknowledge/finish storage,
   corrupt storage, shared-journal admission, replaced checkpoints, and a new
   operation arriving during an initially empty-journal reconciliation.
-- Focused navigation coverage: 25 tests, including resource-specific receipt
+- Focused navigation coverage: 26 tests, including resource-specific receipt
   floors, stale conditional responses/tombstones, pin catalog invalidation,
-  and continued paging after conditional refresh.
+  continued paging after conditional refresh, and a fresh generation after hub restart.
 - Touched native sources passed Biome; the final editor adjustment also passed
   TypeScript. No native menu journey was run for this checkpoint.
 
-Native gate log: `/tmp/evener-organization-native-final-gate.log`.
+Native gate log: `/tmp/evener-organization-native-restart-gate.log`.
 
 ### Independent SDK organization recipe
 

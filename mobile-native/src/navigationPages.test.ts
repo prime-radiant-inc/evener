@@ -9,6 +9,24 @@ import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/test
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 
+it("reconciles a restarted hub without carrying a prior generation's receipt floor", async () => {
+	const { pages, requests } = boundary();
+	const first = pages.refresh();
+	requests[0].resolve(response(["old"], 0, 1));
+	await first;
+	const changed = pages.refreshAfter({
+		generation_id: "hub-generation",
+		targets: [{ kind: "catalog", catalog: "projects", revision: 8 }],
+	});
+	requests[1].resolve(response(["stale"], 0, 2));
+	await expect(changed).rejects.toThrow();
+	const reconnect = pages.refresh();
+	requests[2].resolve(response(["restarted"], 0, 1, 0, "restarted-hub"));
+	await reconnect;
+	expect(pages.getSnapshot().stale).toBe(false);
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["restarted"]);
+});
+
 it("uses only the current resource's mutation revision", async () => {
 	const { pages, requests } = boundary();
 	const read = pages.refreshAfter({
