@@ -4,6 +4,8 @@ import {
   type ConversationClientLike,
   createNewSessionService,
 } from "../../mobile/src/services/newSession";
+import { creationImageDraft } from "./creationImageDraft";
+import { ImageSelection } from "./imageSelection";
 import { createNewSessionStore } from "./newSession";
 
 function deferred() {
@@ -338,4 +340,102 @@ it("revalidates advanced-model composer reasoning on a project-settings round tr
   });
   await changed;
   expect(store.getState().reasoning).toBe("");
+});
+
+it("sends opening images with translated anchors and retains them after an uncertain start", async () => {
+  const { store, calls } = setup();
+  void store.getState().setCwd("/project");
+  store.getState().setPrompt("Look: ");
+  store.getState().addImage({
+    id: "image-a",
+    marker: 1,
+    name: "sample.png",
+    mediaType: "image/png",
+    data: "AQID",
+  });
+  const pending = store.getState().submit();
+  const start = calls.find((call) => call.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [
+      { type: "text", text: "Look: (attached image 1: sample.png)" },
+      {
+        type: "image",
+        name: "sample.png",
+        mediaType: "image/png",
+        data: "AQID",
+      },
+    ],
+  });
+  store.getState().removeImage("image-a");
+  expect(store.getState().images).toHaveLength(1);
+  start?.response.reject(new Error("lost reply"));
+  expect(await pending).toEqual({ status: "failed" });
+  store.getState().bind(null);
+  expect(store.getState().images[0]?.data).toBe("AQID");
+  expect(store.getState().prompt).toBe("Look: [image 1]");
+  expect(createNewSessionStore("another-hub").getState().images).toEqual([]);
+  store.getState().removeImage("image-a");
+  expect(store.getState().images).toEqual([]);
+  expect(store.getState().prompt).toBe("Look: ");
+});
+
+it("supports image-only creation and snapshots image bytes before sending", async () => {
+  const { store, calls } = setup();
+  void store.getState().setCwd("/project");
+  const image = {
+    id: "image-a",
+    marker: 1,
+    mediaType: "image/png",
+    data: "AQID",
+  };
+  store.getState().addImage(image);
+  image.data = "changed";
+  store.getState().setPrompt("  ");
+  const pending = store.getState().submit();
+  const start = calls.find((call) => call.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [{ type: "image", mediaType: "image/png", data: "AQID" }],
+  });
+  start?.response.resolve({
+    thread: { id: "t", evener: { ref: "local:t" } },
+    turn: {},
+  });
+  expect(await pending).toMatchObject({ status: "created" });
+});
+
+it("uses the shared picker pipeline without attaching late results to an abandoned creation form", async () => {
+  const { store } = setup();
+  const document = creationImageDraft(store);
+  const encoding = deferred();
+  const started = deferred();
+  const selection = new ImageSelection(document, {
+    id: () => "photo",
+    pick: async () => [
+      {
+        uri: "file:///photo.jpg",
+        name: "photo.jpg",
+        type: "image/jpeg",
+        size: 10,
+      },
+    ],
+    encode: async () => {
+      started.resolve(null);
+      return (await encoding.promise) as string;
+    },
+  });
+  const choosing = selection.choose();
+  await started.promise;
+  expect(selection.getSnapshot().busy).toBe(true);
+  selection.cancel();
+  encoding.resolve("AQID");
+  await choosing;
+  expect(store.getState().images).toEqual([]);
+  await selection.choose();
+  expect(document.imagePreviews()).toEqual([
+    { marker: 2, name: "photo.jpg", mediaType: "image/png", data: "AQID" },
+  ]);
+  expect(store.getState().prompt).toBe("[image 2]");
+  document.removeImage("photo");
+  expect(document.imagePreviews()).toEqual([]);
+  expect(store.getState().prompt).toBe("");
 });

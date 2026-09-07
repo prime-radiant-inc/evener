@@ -36,7 +36,7 @@ export class ImageSelection {
   private generation = 0;
   private nextMarker = 0;
   constructor(
-    private document: DraftDocument,
+    private document: Pick<DraftDocument, "getSnapshot" | "addImage">,
     private picker: ImagePicker,
   ) {}
   getSnapshot = () => this.snapshot;

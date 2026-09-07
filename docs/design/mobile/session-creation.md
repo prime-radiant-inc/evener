@@ -186,3 +186,54 @@ reasoning levels; the current fake models do not. Small screens, long catalogs,
 large text, multiline drafts and screen readers remain acceptance work under
 MOB-001/MOB-007/MOB-010/MOB-011. This is an improvement in space usage, not final
 visual acceptance.
+
+
+## Opening images
+
+The creation composer now uses the existing ImageSelection/nativeImagePicker
+pipeline, source type/count/size limits and ImageAttachments previews. The plus
+button shares the footer with model/reasoning/Create. Processing disables Create;
+leaving the route cancels pending results. Removing a settled image removes its
+editing marker. The form owns image bytes, preserving them through failed starts
+and connection changes. Like the existing creation text/settings form, this is
+memory-only: app termination or leaving creation loses it. Durable creation-draft
+storage remains required before reliability acceptance.
+
+Submission uses the shared buildComposerInput helper: an optional untrimmed text
+item with translated image references, followed by image items. Whitespace-only
+text can be omitted while images remain. Image identities and marker numbers are
+local editing state, not wire fields. Mutating an input object after adding it
+cannot alter the staged bytes; removal is blocked during submission.
+
+Manual Release checks on 6 September 2026 used the bundled 1024×1024 icon in the
+system photo libraries and the owned SecondHub skills directory. iOS selected,
+removed and reselected the icon (marker 2), chose Fake Alternate, and created
+local:034KOW69eSxSIzzMhenc3e. Android selected two copies, removed marker 1,
+chose Fake Test Model and created local:034KOXqTdi9Z7NJp85m0TP. Both remaining
+images survived model selection. The scripted turns were stopped from each app.
+Both native conversation viewers then opened the persisted image.
+
+A separate installed SDK consumer called thread/read for each session. Each
+contained exactly one user message and one image/png item, with the translated
+marker-2 text. Decoded bytes had the PNG signature and 1024×1024 IHDR dimensions:
+iOS 747473 bytes, Android 409093 bytes. Different platform encoders need not
+produce byte-identical PNGs. No production hub or provider was used.
+
+- [iOS staged image](assets/creation/images-staged-ios.png) and
+  [created-session viewer](assets/creation/created-image-viewer-ios.png).
+- [Android staged image](assets/creation/images-staged-android.png) and
+  [created-session viewer](assets/creation/created-image-viewer-android.png).
+
+324 native tests, TypeScript, touched-file Biome and both Release builds pass.
+Tests cover image-only wire input, translated markers, retained bytes after an
+uncertain response/disconnect, per-form ownership, immutable staging, blocked
+removal during submit, and the real selection controller canceling late results.
+Independent review found no actionable issue in this slice.
+
+Live transcript qualification is incomplete: the initial running-session native
+views showed the user text without its image tile. The tile appeared after Stop,
+while independent thread/read already contained the image during the Android
+run. Trace the initial snapshot/item notifications and native projection before
+claiming live image delivery works. This is tracked with the running-work matrix
+under MOB-008. Image-only native submission, limit/failure cases, long catalogs,
+keyboard attachment round trips, large text and screen readers remain unqualified.

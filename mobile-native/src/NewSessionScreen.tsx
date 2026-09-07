@@ -1,7 +1,14 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -15,8 +22,12 @@ import { useStore } from "zustand";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
 import { CreationComposerSettings } from "./CreationComposerSettings";
+import { creationImageDraft } from "./creationImageDraft";
 import { HubPathField } from "./HubPathField";
+import { ImageAttachments } from "./ImageAttachments";
+import { ImageSelection } from "./imageSelection";
 import { LaunchOverrides } from "./LaunchOverrides";
+import { nativeImagePicker } from "./nativeImagePicker";
 import { createNewSessionStore } from "./newSession";
 import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -43,6 +54,18 @@ export function NewSessionScreen({
   latest.current = { ready, client };
   const store = useMemo(() => createNewSessionStore(hubId), [hubId]);
   const form = useStore(store);
+  const imageDocument = useMemo(() => creationImageDraft(store), [store]);
+  const imageSelection = useMemo(
+    () => new ImageSelection(imageDocument, nativeImagePicker),
+    [imageDocument],
+  );
+  const imageState = useSyncExternalStore(
+    imageSelection.subscribe,
+    imageSelection.getSnapshot,
+  );
+  useFocusEffect(
+    useCallback(() => () => imageSelection.cancel(), [imageSelection]),
+  );
   const [harnessOpen, setHarnessOpen] = useState(false);
   const emptyPromptReason = form.harnesses.find(
     (h) => h.id === form.harness,
@@ -63,7 +86,8 @@ export function NewSessionScreen({
       }
     }, [store, service]),
   );
-  const disabled = !ready || form.submitting || form.loadingModels;
+  const disabled =
+    !ready || form.submitting || form.loadingModels || imageState.busy;
   const inputStyle = [
     styles.input,
     {
@@ -73,7 +97,7 @@ export function NewSessionScreen({
     },
   ];
   async function submit() {
-    if (!latest.current.ready) return;
+    if (!latest.current.ready || imageSelection.getSnapshot().busy) return;
     const submittedClient = latest.current.client;
     const outcome = await store.getState().submit();
     if (
@@ -262,10 +286,25 @@ export function NewSessionScreen({
                 { minHeight: 120, textAlignVertical: "top", borderWidth: 0 },
               ]}
             />
-            {emptyPromptReason && !form.prompt.trim() ? (
+            <ImageAttachments
+              document={imageDocument}
+              selection={imageSelection}
+              disabled={form.submitting}
+            />
+            <ErrorMessage message={imageState.error} />
+            {emptyPromptReason && !form.prompt.trim() && !form.images.length ? (
               <Copy muted>{emptyPromptReason}</Copy>
             ) : null}
             <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
+              <Action
+                label="Attach images"
+                disabled={form.submitting || imageState.busy}
+                onPress={() => {
+                  void imageSelection.choose();
+                }}
+              >
+                {imageState.busy ? "Processing…" : "+"}
+              </Action>
               <CreationComposerSettings
                 key={hubId}
                 models={form.models}
@@ -282,7 +321,9 @@ export function NewSessionScreen({
                 disabled={
                   disabled ||
                   !form.cwd.trim() ||
-                  (!!emptyPromptReason && !form.prompt.trim())
+                  (!!emptyPromptReason &&
+                    !form.prompt.trim() &&
+                    !form.images.length)
                 }
                 onPress={() => {
                   void submit();
