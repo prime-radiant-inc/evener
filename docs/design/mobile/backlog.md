@@ -372,7 +372,11 @@ is retained in the creation evidence; keyboard and accessibility acceptance
 remain incomplete. 321 native tests pass.
 Opening image selection/removal and creation now have native evidence on both
 platforms, independent SDK PNG readback and viewer checks; 324 native tests pass.
-Creation drafts still need durable storage. Live item-image projection is fixed;
+Creation drafts now persist per hub in SQLite, including images and an uncertain
+creation checkpoint. Both Release simulators restored project/prompt/model/image
+after process termination and created the restored input; 349 native tests pass.
+Storage failure UX on devices, two-hub return and large-draft performance still
+need qualification. Live item-image projection is fixed;
 remaining running-work qualification is tracked under MOB-008.
 Per-session plugin selection now has iOS explicit-one and Android explicit-none
 creation/runtime readback evidence, shared web selection semantics, and a packed

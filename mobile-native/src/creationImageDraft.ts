@@ -10,9 +10,9 @@ export function creationImageDraft(
   function snapshot(): ReturnType<DraftDocument["getSnapshot"]> {
     return {
       record: { draft: state.prompt, images: state.images, unconfirmed: null },
-      loaded: true,
+      loaded: state.storageLoaded,
       submitting: state.submitting,
-      error: null,
+      error: state.storageError,
     };
   }
   let current = snapshot();
