@@ -1003,3 +1003,5 @@ hashes, request-count scope and the archived driver. Owned instance/credential/A
 state was cleaned up and the hub exited zero; original hub, seven drafts and
 unrelated Apple changes remain preserved. This closes the bounded stored-credential
 recipe package, not OAuth, continuous recovery or iOS release acceptance.
+
+The complete canonical merge gate and separate vet passed at 700873dc9, including all Go modules/web, 639 native tests and TypeScript, and external SDK qualification. Acceptance documentation now corrects the stale no-preference-screen claim without treating dated feature artifacts as a current release matrix. The worktree retains only the two unrelated Apple edits after the documentation checkpoint. Next implementation/qualification remains the distinct-hub pending/uncertain native journey and broader iOS release matrix.
