@@ -155,6 +155,93 @@ function kinds(c: MobileConversation): string[] {
 
 // --- tests -------------------------------------------------------------------
 
+describe("completed question recaps", () => {
+  const argumentsJson = JSON.stringify({
+    questions: [
+      {
+        header: "header-alpha",
+        question: "prompt-alpha",
+        options: [{ label: "option-alpha", detail: "detail-alpha" }],
+      },
+      {
+        header: "header-beta",
+        question: "prompt-beta",
+        options: [{ label: "option-beta", detail: "detail-beta" }],
+      },
+    ],
+  });
+  function recap(overrides: Partial<ThreadItem> = {}, answered = true) {
+    const projected = projectThread(
+      thread([
+        turn("t1", [
+          item({
+            id: "ask-recap",
+            type: "commandExecution",
+            toolName: "ask_user",
+            status: "completed",
+            argumentsJson,
+            ...overrides,
+          }),
+          ...(answered
+            ? [
+                item({
+                  id: "answer-recap",
+                  type: "userMessage",
+                  text: "opaque-answer",
+                }),
+              ]
+            : []),
+        ]),
+      ]),
+    );
+    expect(kinds(projected)).not.toContain("question");
+    const activity = projected.items.find((row) => row.kind === "activity");
+    expect(activity?.kind).toBe("activity");
+    if (activity?.kind !== "activity")
+      throw new Error("question recap missing");
+    return activity;
+  }
+
+  it("retains posted headers and arguments after a later answer", () => {
+    const activity = recap();
+    expect(activity.state).toBe("completed");
+    expect(activity.detail.description).toContain("header-alpha");
+    expect(activity.detail.description).toContain("header-beta");
+    expect(activity.detail.description).not.toContain("opaque-answer");
+    expect(activity.detail.arguments).toBe(argumentsJson);
+  });
+
+  it("preserves an authoritative description without adding inferred details", () => {
+    expect(
+      recap({ description: "authored-description" }).detail.description,
+    ).toBe("authored-description");
+  });
+
+  it("keeps failed questions non-actionable with their question context and error", () => {
+    const activity = recap(
+      { error: "opaque-error", output: "opaque-output" },
+      false,
+    );
+    expect(activity.state).toBe("failed");
+    expect(activity.detail.description).toContain("header-alpha");
+    expect(activity.detail).toMatchObject({
+      error: "opaque-error",
+      output: "opaque-output",
+      arguments: argumentsJson,
+    });
+  });
+
+  it.each([
+    "{",
+    "{}",
+    JSON.stringify({ questions: [{ header: "unvalidated-header" }] }),
+  ])("does not invent context from malformed arguments %s", (malformed) => {
+    const activity = recap({ argumentsJson: malformed });
+    expect(activity.detail.description).toBeUndefined();
+    expect(activity.detail.arguments).toBe(malformed);
+  });
+});
+
 describe("projectThread", () => {
   describe("user text items", () => {
     it("projects a userMessage as a user item", () => {

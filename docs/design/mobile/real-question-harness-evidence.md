@@ -215,3 +215,32 @@ unfinished; the missing-description fallback is still visible.
 
 ![Answer selection and note restored before submission](assets/question-draft-restored.jpg)
 ![Both native question rounds complete with the ordinary draft retained](assets/question-draft-completed.jpg)
+
+
+## Completed question context — 7 September
+
+Completed ask_user calls without an authored description now retain a concise
+recap of their parsed question headers. The shared projection preserves any
+nonblank authored description and all original arguments, output and errors.
+Malformed arguments do not manufacture context; failed calls remain failed
+activities; pending calls retain the existing answer controls. The neutral
+Questions prefix identifies content without claiming a failed request was
+delivered or inferring selected answers from subsequent prose.
+
+Two regressions failed on missing descriptions before the repair. All 88 shared
+projection tests and 621 native tests plus TypeScript pass. Luna medium supplied
+the proposal and reviewed integrated source; Bot applied it, verified actual
+checks and ran native acceptance. The iPhone Release build passed with bundle
+`b8708d25356771c3409c8c8b6da09802a69fef91be608c9bf622e25c9a2ad9c9`.
+Source hashes appear in the [same-build lifecycle receipt](assets/reader-continuity/native-lifecycle-receipt-20260907.json).
+
+Opening the completed owned Draft before questions fixture displayed
+Questions: Delivery; Review and Questions: Next step between their associated
+input rows. No pending-question controls returned. Its original 63-byte ordinary
+draft remained intact, and all seven retained drafts and the unrelated Apple
+patch were verified unchanged after the build and hub round trip.
+
+![Completed question context on the final build](assets/reader-continuity/question-recap-20260907.jpg)
+
+This closes the reproduced missing-description presentation gap. Concurrent
+answers, uncertain delivery, accessibility and release qualification remain open.

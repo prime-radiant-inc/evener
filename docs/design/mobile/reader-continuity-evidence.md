@@ -1,5 +1,46 @@
 # iOS reader continuity evidence
 
+## Native live-to-saved continuity, 7 September 2026
+
+The environment identity fix at `5361555a6` now has an actual native journey.
+A separate direct authenticated hub and local scripted provider created 24
+completed turns. The iPhone 17 Pro/iOS 26.5 Release app connected through a new
+owned profile, loaded older messages and retained the first assistant message
+partway through its text, above input 02.
+
+The anchor was `apptranscript-item-v1:turn_m1:2:1`, position `(2,1)`, offset
+`143.33333333333331`. The independently installed SDK shut the session down and
+waited for authoritative `notLoaded` status. All 49 environment/user/assistant
+identities matched in live and persisted paged reads. The visible text stayed
+in place. After process termination/relaunch, the app restored the same older
+page and boundary; SQLite retained the exact anchor and touch time. Installing
+the subsequent Release build with the question-recap change restored it again.
+
+![Live reader position](assets/reader-continuity/native-lifecycle-before-20260907.jpg)
+![Saved reader after restart](assets/reader-continuity/native-lifecycle-restart-20260907.jpg)
+![Reader after the final build](assets/reader-continuity/native-lifecycle-final-build-20260907.jpg)
+
+The [receipt](assets/reader-continuity/native-lifecycle-receipt-20260907.json)
+records both identity vectors, status observations, anchors, source/binary
+hashes, screenshots and cleanup. The initial bundle was
+`3641870a5afc45389001c02227a8b3307ebc0e08e9026feb954fc27891ffa904`;
+the final bundle is
+`b8708d25356771c3409c8c8b6da09802a69fef91be608c9bf622e25c9a2ad9c9`.
+
+An initial unsupported 200-item read was rejected. No creation or input was
+replayed; qualification used the 40-item ceiling and an opaque older cursor.
+Simulator HID injection dropped modifiers and targeted keyboard-covered fields.
+Native paste with observed selection controls completed profile setup, and the
+simulator clipboard was restored. Keyboard-open hub-form focus remains a
+separate qualification item.
+
+The owned native profile and provider instance were removed, the separate hub
+and provider stopped, and the original v4 acceptance hub restored in the app.
+Seven prior drafts and the unrelated Apple patch remain unchanged. This
+qualifies this older-page live-to-saved/restart journey. Historical anchors,
+ongoing streaming/image reflow, iPad, physical devices and the remaining release
+matrix stay open.
+
 ## Environment identity across shutdown, 7 September 2026
 
 The real Session regression reproduced the first-user identity changing from
