@@ -32,6 +32,20 @@ Rule: small frequent commits; every claim backed by measurement.
 
 ### Frontend / daemon / test-infra / docs (PENDING)
 
+### Daemon/session/state overhead (dlg_034KXssYf5SNQu2pLvUjHI, DONE 2026-09-06)
+
+9 ranked opportunities (all unmeasured; highest confidence × lowest risk: #1, #2-double-load, #5-coalesce):
+
+1. jobstore single-event fsync per Append; AppendBatch exists but hot paths use single — `agent/internal/jobstore/store.go:146-173,179-214`, `agent/job_watch.go:499-520`. Risk low-med (crash-atomicity boundaries).
+2. Full journal re-fold on hot paths, twice in a row — `store.go:249,263,277,217` + callers `agent/job_watch.go:1613,1682,3160+3164,3742`, `agent/session_jobtree_drain.go:1272`. Risk low (cursor infra exists) to med.
+3. `rematerializeDurablePendings` full Load() on drain path, no dirty flag — `agent/session_jobtree_drain.go:1242,1271-1282`. Risk low (must preserve issue-#140 race window).
+4. 250ms drain-recheck ticker polling where events exist — `agent/session_jobtree_drain.go:44-50,899,912,915-916`. Risk med (backstop for lost wakes; backoff, never delete).
+5. One goroutine+ticker per progress watch + per delegate quiet-watchdog — `agent/job_watch.go:3304-3325,1973-1986,74-75`, `agent/delegate_runtime.go:152-173`. Risk low-med.
+6. OutputMatcher re-scans + reallocates whole window per chunk — `agent/internal/jobstore/watch.go:155,231,257-269,205-222`. Risk med (watch_fuzz_test.go is oracle).
+7. `deliveredWatchSendIDs` + `lastFedOffset` grow without visible eviction — `agent/jobs.go:88-102`, `agent/job_watch.go:511-513,524-527`. Risk low.
+8. Transcript resume + doctor both pay full strict re-decode — `agent/transcript/transcript.go:590-642,136-171`, `agent/doctor/transcript.go:29-74`. Risk med (strictness load-bearing).
+9. AppendDurable seeks every call; transcript default fsyncs every Append — `agent/transcript/transcript.go:230-236,436-442,453-466,497-513`. Risk low-med; `cmd/evener-hub/app_threadread_test.go:1089` pins no-fsync-per-Append for 200-turn case.
+
 ## Scout assignments (all muse-spark-1.3-contributor, xhigh reasoning)
 
 1. Backend hot paths (Go hot loops, allocs, cloning, polling, retries).
