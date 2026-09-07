@@ -4,9 +4,15 @@ import type {
 	NavigationMutation,
 	PinSectionDeleteParams,
 	PinSectionRenameParams,
+	SessionDeleteParams,
 	SessionPinAssignParams,
 	SessionPinUnpinParams,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import {
+	decodeSessionDeletionResult,
+	localSessionId,
+	type SessionDeletionResult,
+} from "./sessionDeletionResult";
 
 export type NavigationOperation =
 	| { kind: "archive"; params: ArchiveParams }
@@ -14,11 +20,13 @@ export type NavigationOperation =
 	| { kind: "assignPin"; params: SessionPinAssignParams }
 	| { kind: "unpin"; params: SessionPinUnpinParams }
 	| { kind: "renamePinSection"; params: PinSectionRenameParams }
-	| { kind: "deletePinSection"; params: PinSectionDeleteParams };
+	| { kind: "deletePinSection"; params: PinSectionDeleteParams }
+	| { kind: "deleteSession"; params: SessionDeleteParams };
 export interface NavigationActionCheckpoint {
 	id: string;
 	operation: NavigationOperation;
 	receipt: NavigationMutation | null;
+	deletion?: SessionDeletionResult;
 }
 export interface NavigationActionStorage {
 	load(): NavigationActionCheckpoint | null;
@@ -26,6 +34,7 @@ export interface NavigationActionStorage {
 	acknowledge(
 		checkpoint: NavigationActionCheckpoint,
 		receipt: NavigationMutation,
+		deletion?: SessionDeletionResult,
 	): NavigationActionCheckpoint;
 	finish(checkpoint: NavigationActionCheckpoint): boolean;
 }
@@ -102,6 +111,10 @@ function validateOperation(value: unknown): NavigationOperation {
 			keys(p, ["sectionId"]);
 			valid(text(p.sectionId));
 			break;
+		case "deleteSession":
+			keys(p, ["ref"]);
+			valid(typeof p.ref === "string" && localSessionId(p.ref));
+			break;
 		default:
 			throw Error("Invalid navigation recovery operation.");
 	}
@@ -152,10 +165,14 @@ function validateReceipt(value: unknown): NavigationMutation | null {
 }
 function validateCheckpoint(value: unknown): NavigationActionCheckpoint {
 	const checkpoint = record(value);
-	keys(checkpoint, ["id", "operation", "receipt"]);
+	keys(checkpoint, ["id", "operation", "receipt"], ["deletion"]);
 	valid(text(checkpoint.id));
-	validateOperation(checkpoint.operation);
+	const operation = validateOperation(checkpoint.operation);
 	validateReceipt(checkpoint.receipt);
+	if (Object.hasOwn(checkpoint, "deletion")) {
+		valid(operation.kind === "deleteSession" && checkpoint.receipt !== null);
+		decodeSessionDeletionResult(checkpoint.deletion);
+	}
 	return value as NavigationActionCheckpoint;
 }
 function clone<T>(value: T): T {
@@ -188,12 +205,17 @@ export function nativeNavigationActions(
 			backend.set(key, clone(checkpoint));
 			return clone(checkpoint);
 		},
-		acknowledge(checkpoint, receipt) {
+		acknowledge(checkpoint, receipt, deletion) {
 			validateCheckpoint(checkpoint);
 			valid(validateReceipt(receipt) !== null);
 			const current = load();
 			valid(current !== null && equal(current, checkpoint));
-			const next = { ...current, receipt: clone(receipt) };
+			const next = {
+				...current,
+				receipt: clone(receipt),
+				...(deletion ? { deletion: clone(deletion) } : {}),
+			};
+			validateCheckpoint(next);
 			backend.set(key, clone(next));
 			return clone(next);
 		},

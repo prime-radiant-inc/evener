@@ -1,9 +1,11 @@
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
+import { localSessionId } from "./sessionDeletionResult";
 
 export interface SavedLocation {
 	hubId: string;
 	conversation?: { ref: string; title: string };
 	pinAssignment?: true;
+	deleteSession?: true;
 	fork?: ForkTarget;
 	pinned?: { section?: { id: string; title: string }; manage?: true };
 }
@@ -67,6 +69,16 @@ export class LocationRepository {
 			return null;
 		const target = fork(value.fork);
 		if (
+			value.deleteSession !== undefined &&
+			(value.deleteSession !== true ||
+				!conversation(value.conversation) ||
+				!localSessionId(value.conversation.ref) ||
+				value.fork !== undefined ||
+				value.pinAssignment !== undefined ||
+				value.pinned !== undefined)
+		)
+			return null;
+		if (
 			value.fork !== undefined &&
 			(!target ||
 				!conversation(value.conversation) ||
@@ -91,6 +103,7 @@ export class LocationRepository {
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
 			...(value.pinAssignment === true ? { pinAssignment: true as const } : {}),
+			...(value.deleteSession === true ? { deleteSession: true as const } : {}),
 			...(conversation(value.conversation)
 				? {
 						conversation: {
@@ -140,18 +153,27 @@ export function locationForRoute(
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
 	}
-	if (route.name === "Conversation" || route.name === "PinAssignment") {
+	if (
+		route.name === "Conversation" ||
+		route.name === "PinAssignment" ||
+		route.name === "SessionDeletion"
+	) {
 		if (
 			!object(route.params) ||
 			route.params.hubId !== hubId ||
 			!conversation(route.params)
 		)
 			return null;
+		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref))
+			return null;
 		return {
 			hubId,
 			conversation: { ref: route.params.ref, title: route.params.title },
 			...(route.name === "PinAssignment"
 				? { pinAssignment: true as const }
+				: {}),
+			...(route.name === "SessionDeletion"
+				? { deleteSession: true as const }
 				: {}),
 		};
 	}
@@ -202,6 +224,11 @@ export function restoredStack(location: SavedLocation | null) {
 				...location.conversation,
 				...location.fork,
 			},
+		});
+	if (location?.deleteSession && location.conversation)
+		routes.push({
+			name: "SessionDeletion",
+			params: { hubId: location.hubId, ...location.conversation },
 		});
 	return { index: routes.length - 1, routes };
 }

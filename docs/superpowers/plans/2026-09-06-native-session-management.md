@@ -172,3 +172,29 @@ Ended-session deletion is next. Durable archive/favorite recovery and the full
 lifecycle/accessibility matrix remain open. The existing fork protocol cannot
 atomically reject a concurrent source replacement after the native preflight
 read; this limitation remains recorded rather than treated as resolved.
+
+### Ended-session deletion implementation
+
+1. Add a scrollable review destination from a stopped local session's menu.
+   Persist that destination, but never a confirmation or an automatically replayed
+   request. Recheck the session identity, name and stopped state after the final
+   native confirmation and before dispatch. The server still owns admission.
+2. Extend the existing per-hub navigation action journal with the exact delete
+   target and a validated deleted/missing/skipped acknowledgement. Response IDs
+   are bare session IDs. Save late acknowledgements even after screen disposal;
+   conditional journal updates must preserve newer operations.
+3. Converge each receipt target against its own resource revision. Check the
+   exact session through a non-subscribing metadata read, fenced by fresh hub
+   navigation generations. Only the exact missing-thread wire rejection proves
+   absence; transient failures never do. This also works after a hub restart
+   has discarded an old location tombstone. A pending project-deletion fence
+   remains an error, because its targetDeleted outcome also covers cleanup
+   still in progress.
+4. Keep unknown-present requests unresolved. A separate explicit allowance may
+   clear only that exact unknown checkpoint and sends nothing; another deletion
+   still requires confirmation. A skipped response keeps the session and shows
+   its reason. Navigate to Sessions only after absence is confirmed and the
+   destination is saved. Keep local unsent drafts and unrelated sessions.
+5. Run deterministic controller/repository/readback/route checks, then exercise
+   cancellation, stale confirmation, process restoration and actual deletion on
+   a newly owned iOS fixture. Preserve the earlier fork acceptance fixtures.
