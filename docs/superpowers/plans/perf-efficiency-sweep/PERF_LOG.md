@@ -76,7 +76,21 @@ Rule: small frequent commits; every claim backed by measurement.
 10. No artifact retention cap (default 90d) + duplicate goreleaser snapshot builds on main push — `binaries.yml:42-49`, `ci.yml:194-220`. Retention-days=7-14 is zero-risk; build-dedup med-high.
 - NOT proposed: deleting coverage without parity; gating on timing budget; re-enabling node compile cache (needs owner sign-off).
 
-### Docs audit (PENDING — 1 scout still running)
+### Docs + dead-weight audit (dlg_034KXujN2o0uGJCxPLZJx9, DONE 2026-09-06)
+
+10 ranked opportunities (static read-only; no coverage deletion proposed except byte-identical seed dupes):
+
+1. Deduplicate byte-identical fuzz seed files — `agent/testdata/fuzz/FuzzToolArgsValidate/` 13M/2327 files; pool 3364 files/~18M; repeated md5s (7×, 6×, 5×). Dedupe within a target dir only. Risk low-med.
+2. Shrink/derive `llm/registry/testdata/models.dev.sample.json` (1.5M) from `data/models.dev.json.gz` (435K) at test setup — UNVERIFIED subset assumption, check first. Risk med.
+3. Losslessly recompress `docs/web-ui` PNGs (~4.3M, one 1.1M file); docs total 27M. Risk low.
+4. Gate per-PR goreleaser snapshot on packaging inputs — `.github/workflows/ci.yml:194-220` (pinned by branch protection, needs settings change). Risk med.
+5. Merge two golangci-lint install steps — `ci.yml:63-69,80-86`. Risk low-med.
+6. `lint-naming` pays a `go run` compile to check 5 TOML files — `make/linting.mk:26-27`. Keep check, cheapen invocation. Risk low.
+7. secret-scan cost driver is the corpus itself — keep gate, shrink input via #1. Risk high if scoped instead; do NOT scope.
+8. Double AST walk (lint-fuzz-registry + fuzz-gap-check) in different jobs — combine into one job. Risk low.
+9. GOOS=windows vet duplication mostly must stay (issue #897, rotted-eval precedent); only valid trim: skip modules with zero tagged files. Risk med-high if deleted.
+10. lint-generated runs codegen in lint lane — cache the build, keep the check. Risk low (caching) / high (deleting).
+- Explicit non-proposals: 333 covtest + 2257 _test.go files (no dup evidence); plans/ history + test/scenarios (runner untraced).
 
 ## Implemented wins
 
