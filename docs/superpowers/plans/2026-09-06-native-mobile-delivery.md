@@ -384,3 +384,21 @@ decision/recovery work. The broader reader, VoiceOver/iPad/physical-device,
 multi-hub, performance, signing/install/update and final canonical merge gates
 remain open. No branch was pushed, package published or release declared.
 Unrelated Apple project/plist edits remain byte-for-byte preserved.
+
+## Real sandbox decision checkpoint
+
+The clean iPhone Release and packed SDK now each complete Allow and Deny through
+an actual restricted `read_file` waiter on the direct owned v4 hub. Independent
+provider sentinel observations, completed-turn events and transcript readback
+confirm execution versus denial; no notification is injected. The SDK sends one
+resolve request and continues to label its own acknowledgment execution-unverified.
+The fixture provider registry is restored, five created sessions shut down,
+and all four retained drafts and the original Apple patch remain unchanged.
+See [decision evidence](../../design/mobile/approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions).
+
+Next are structured question execution and its SDK recipe, followed by remaining
+decision/queue/goal recovery and release qualification. Single-file approval
+success does not close repeated grants, concurrent/replaced decisions,
+disconnect/acknowledgment loss, background/death or the broader reader,
+VoiceOver/iPad/physical-device, multi-hub, performance, signing/install/update
+and canonical merge gates. iOS-only v1 remains the release scope.

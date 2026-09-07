@@ -446,7 +446,16 @@ Goals, tasks, activity, queue operations, approvals and questions have partial
 implementation/evidence. Complete remaining paging, concurrent updates,
 resolution on another device, stale actions and uncertain delivery scenarios.
 
-Acceptance: both-platform real harness E2E, fault recovery without blind replay,
+[Direct sandbox execution evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions)
+now covers four real restricted-session cases: native and packaged-SDK Allow
+and Deny for an owned file outside the workspace. Pending cards come from the
+actual blocked tool. Independent completion/transcript reads and provider-side
+sentinel observations confirm success versus denial; SDK decisions dispatch
+once and retain their conservative execution-unverified result. Cleanup restores
+the original provider registry. Repeated grants, concurrent/stale decisions,
+disconnect/acknowledgment loss and broader device/accessibility work remain open.
+
+Acceptance for iOS-only v1: real harness E2E, fault recovery without blind replay,
 reachable decisions with the keyboard open, and accessible large-content views.
 Do not infer real execution/resumption from an injected notification alone.
 
