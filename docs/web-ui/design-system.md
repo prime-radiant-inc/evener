@@ -274,11 +274,14 @@ during implementation (noted inline); this table is the one to trust.
 `src/widgets/`, because it is transcript grammar rather than a reusable primitive: no barrel
 entry, no gallery section. It is what finally renders principle 2 of the mockup brief
 (`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
-turn, three or more consecutive completed, non-failed tool calls whose renderer does not declare
-`fold: "never"` collapse into one `<details>` row labelled `N steps · <last consequential
-summary>`. A descriptor with `fold: "consequential"` (the edit tools, shell, worktree) is a
-mutation, so it is the step the label names; `fold: "never"` (delegate, ask_user, task_list,
-use_skill, the `job_*` tools) never folds and always stays on its own row. A live turn never
+turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
+collapse into one `<details>` row labelled `N steps · <last consequential summary>`. Folding is
+opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
+counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
+names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`
+tools) and any descriptor with no policy, which is every unregistered or MCP tool, stay on their
+own row, because a tool the UI does not know may have had a side effect the reader must see.
+Scroll and focus anchors follow the same fold (`foldTurnEntries`): a folded run is one anchor. A live turn never
 folds at all, and a failure, a call still in flight, an auto-expanding card or any non-tool entry
 breaks the run rather than being spanned by it. Disclosure state goes through the shared
 disclosure store, so a reader's choice survives re-projection and the transcript's

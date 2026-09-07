@@ -24,7 +24,27 @@ const message = (id: string): Extract<ProjectedEntry, { kind: "item" }> => ({
 const descriptorFor = (name: string) => ({
   match: name,
   summary: () => (name === "write_file" ? "Wrote foo.py" : `Read ${name}`),
-  fold: name === "write_file" ? ("consequential" as const) : name === "delegate" ? ("never" as const) : undefined,
+  fold:
+    name === "write_file"
+      ? ("consequential" as const)
+      : name === "delegate"
+        ? ("never" as const)
+        : name === "mcp_send_email"
+          ? undefined
+          : ("quiet" as const),
+});
+
+test("a tool with no fold policy (an unregistered or MCP tool) never folds and breaks the run", () => {
+  const out = foldToolRuns(
+    [tool("a", "read_file"), tool("b", "mcp_send_email"), tool("c", "read_file"), tool("d", "read_file")],
+    { turnSettled: true, descriptorFor },
+  );
+  expect(out.map((e) => e.kind)).toEqual(["item", "item", "item", "item"]);
+  const alone = foldToolRuns([tool("x", "mcp_send_email"), tool("y", "mcp_send_email"), tool("z", "mcp_send_email")], {
+    turnSettled: true,
+    descriptorFor,
+  });
+  expect(alone.map((e) => e.kind)).toEqual(["item", "item", "item"]);
 });
 
 test("three settled quiet calls fold into one run", () => {

@@ -12,12 +12,15 @@
 //   - anything that is not a plain, completed, unremarkable call BREAKS the
 //     run and stays visible on its own: a failure, a call still in flight, a
 //     descriptor that auto-expands, a `fold: "never"` card (a delegate, an
-//     ask, a task list), and any non-tool entry (prose, reasoning, a system
-//     notice). A break flushes the run rather than spanning it, so a folded
-//     row can never gather calls the reader saw separated by an answer;
+//     ask, a task list), any descriptor that has not opted in at all (an
+//     unregistered or MCP tool may have side effects the reader must see,
+//     so only `fold: "quiet"` and `fold: "consequential"` join a run), and
+//     any non-tool entry (prose, reasoning, a system notice). A break
+//     flushes the run rather than spanning it, so a folded row can never
+//     gather calls the reader saw separated by an answer;
 //   - a run has to be worth folding. Two rows are not clutter; three are.
-import type { ProjectedEntry } from "../../../transcriptDisplay/projector";
-import type { ToolRendererDescriptor } from "./toolRenderers";
+import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
+import { type ToolRendererDescriptor, toolRendererFor } from "./toolRenderers";
 
 export type ToolItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
 
@@ -45,7 +48,7 @@ function foldable(entry: ProjectedEntry, opts: FoldOptions): entry is ToolItemEn
   if (item.status !== "completed") return false;
   if (item.error !== undefined && item.error !== "") return false;
   const descriptor = opts.descriptorFor(item.toolName ?? "");
-  if (descriptor.fold === "never") return false;
+  if (descriptor.fold !== "quiet" && descriptor.fold !== "consequential") return false;
   if (descriptor.failed?.(item) || descriptor.autoExpand?.(item)) return false;
   return true;
 }
@@ -86,4 +89,19 @@ export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor
   // future caller ever hands one over empty.
   if (!named) return steps;
   return `${steps} · ${descriptorFor(named.item.toolName ?? "").summary(named.item)}`;
+}
+
+/**
+ * The one fold every consumer of a turn's entries must agree on. TurnBlock
+ * renders from it and TranscriptBody registers scroll/focus anchors from it,
+ * so a folded run is ONE anchor in both places (its id, the first entry's
+ * source index) and never a set of entry ids that no rendered element carries
+ * while the run is closed. "inProgress" is TurnModel.status's live literal
+ * (the projector reads the same one).
+ */
+export function foldTurnEntries(turn: ProjectedTurn): (ProjectedEntry | ToolRun)[] {
+  return foldToolRuns(turn.entries, {
+    turnSettled: turn.source.status !== "inProgress",
+    descriptorFor: toolRendererFor,
+  });
 }

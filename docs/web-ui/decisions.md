@@ -848,12 +848,16 @@ models" is now **"Agent setup"**.
 
 **Tool-run folding lands principle 2 and topic 06's Alt A**, the row this
 document has carried as "ABSENT, unexplained". In a settled turn, three or
-more consecutive completed, non-failed tool calls whose renderer does not
-declare `fold: "never"` collapse into one `<details>` row labelled
-`N steps · <last consequential summary>`. `fold: "consequential"` (the edit
-tools, shell, worktree) marks the mutations a label may name, since that is
+more consecutive completed, non-failed tool calls whose renderer has opted
+in collapse into one `<details>` row labelled
+`N steps · <last consequential summary>`. Folding is opt-in per descriptor:
+`fold: "quiet"` (the reads, searches, web fetches and transcript reads)
+folds and only counts; `fold: "consequential"` (the edit tools, shell,
+worktree) folds and marks the mutations a label may name, since that is
 what a run amounted to; `fold: "never"` (delegate, ask_user, task_list,
-use_skill, the `job_*` tools) never folds away. A live turn never folds at
+use_skill, the `job_*` tools) and any descriptor with no policy at all,
+which is every unregistered or MCP tool, never fold away, because a tool the
+UI does not know may have had a side effect the reader must see. A live turn never folds at
 all, because while the agent is working each call appearing IS the progress
 signal, and a failure, a call still in flight, an auto-expanding card or any
 non-tool entry breaks the run rather than being spanned by it, so a folded row
