@@ -38,6 +38,19 @@ interface Form {
   loadModels(refresh?: boolean): Promise<void>;
   submit(): Promise<Outcome>;
 }
+export function creationModel(
+  models: ModelDescriptor[],
+  selected: ModelDescriptor | null,
+  overrides: LaunchConfigLayer,
+): ModelDescriptor | null {
+  const id = overrides.model?.trim();
+  if (!id) return selected;
+  const matches = models.filter(
+    (model) => `${model.provider}/${model.model}` === id || model.model === id,
+  );
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
 export function createNewSessionStore(hubId: string) {
   let service: NewSessionService | null = null;
   let connection = 0;
@@ -116,18 +129,30 @@ export function createNewSessionStore(hubId: string) {
         get().models.find(
           (m) => m.provider === value?.provider && m.model === value.model,
         ) ?? null;
+      const launchOverrides = { ...get().launchOverrides };
+      const reasoning = launchOverrides.reasoningEffort || get().reasoning;
+      delete launchOverrides.model;
+      delete launchOverrides.reasoningEffort;
       set({
         model,
-        reasoning: model?.reasoningEffortLevels?.includes(get().reasoning)
-          ? get().reasoning
+        launchOverrides,
+        reasoning: model?.reasoningEffortLevels?.includes(reasoning)
+          ? reasoning
           : "",
       });
     },
     setReasoning(value) {
+      const state = get();
+      const model = creationModel(
+        state.models,
+        state.model,
+        state.launchOverrides,
+      );
+      const launchOverrides = { ...state.launchOverrides };
+      delete launchOverrides.reasoningEffort;
       set({
-        reasoning: get().model?.reasoningEffortLevels?.includes(value)
-          ? value
-          : "",
+        launchOverrides,
+        reasoning: model?.reasoningEffortLevels?.includes(value) ? value : "",
       });
     },
     async loadMetadata() {
@@ -179,10 +204,15 @@ export function createNewSessionStore(hubId: string) {
                 item.provider === selection?.provider &&
                 item.model === selection.model,
             ) ?? null;
+          const settingsModel = creationModel(
+            result.data,
+            model,
+            get().launchOverrides,
+          );
           set({
             models: result.data,
             model,
-            reasoning: model?.reasoningEffortLevels?.includes(reasoning)
+            reasoning: settingsModel?.reasoningEffortLevels?.includes(reasoning)
               ? reasoning
               : "",
             modelError: null,
@@ -208,11 +238,14 @@ export function createNewSessionStore(hubId: string) {
       if (!current || submitting || refreshingModels || !cwd.trim())
         return { status: "blocked" };
       const launchOverrides = get().launchOverrides;
+      const settingsModel = creationModel(get().models, model, launchOverrides);
       const scalars = resolveScalars(
         {
           model: model?.model,
           modelProvider: model?.provider,
-          reasoningEffort: model?.reasoningEffortLevels?.includes(reasoning)
+          reasoningEffort: settingsModel?.reasoningEffortLevels?.includes(
+            reasoning,
+          )
             ? reasoning
             : undefined,
         },

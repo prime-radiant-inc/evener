@@ -261,3 +261,81 @@ it("keeps per-launch drafts isolated by hub and snapshots caller-owned values", 
   a.getState().setLaunchOverrides({});
   expect(a.getState().launchOverrides).toEqual({});
 });
+
+it("lets composer choices replace advanced model and reasoning without retaining a hidden override", async () => {
+  const { store, calls } = setup();
+  const loading = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await loading;
+  store.getState().setLaunchOverrides({
+    model: "q/old",
+    reasoningEffort: "high",
+    maxRounds: 7,
+  });
+  store.getState().selectModel(model);
+  expect(store.getState()).toMatchObject({
+    model,
+    reasoning: "high",
+    launchOverrides: { maxRounds: 7 },
+  });
+  store.getState().setLaunchOverrides({
+    model: "p/a",
+    reasoningEffort: "high",
+    maxRounds: 7,
+  });
+  store.getState().setReasoning("low");
+  expect(store.getState()).toMatchObject({
+    reasoning: "low",
+    launchOverrides: { model: "p/a", maxRounds: 7 },
+  });
+  store.getState().selectModel(null);
+  expect(store.getState()).toMatchObject({
+    model: null,
+    reasoning: "",
+    launchOverrides: { maxRounds: 7 },
+  });
+});
+
+it("submits composer reasoning for a model selected through session options", async () => {
+  const { store, calls } = setup();
+  const loading = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await loading;
+  store.getState().setLaunchOverrides({ model: "p/a", maxRounds: 7 });
+  store.getState().setReasoning("low");
+  const pending = store.getState().submit();
+  const start = calls.find((call) => call.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    model: "p/a",
+    reasoningEffort: "low",
+    launchOverrides: { maxRounds: 7 },
+  });
+  start?.response.resolve({
+    thread: { id: "t", evener: { ref: "canonical/t" } },
+    turn: {},
+  });
+  expect(await pending).toMatchObject({ status: "created" });
+});
+
+it("revalidates advanced-model composer reasoning on a project-settings round trip", async () => {
+  const { store, calls } = setup();
+  const loading = store.getState().setCwd("/project");
+  calls[0]?.response.resolve({ data: [model] });
+  await loading;
+  store.getState().setLaunchOverrides({ model: "p/a", maxRounds: 7 });
+  store.getState().setReasoning("low");
+  const refresh = store.getState().loadModels(true);
+  calls[1]?.response.resolve({ data: [model] });
+  await refresh;
+  expect(store.getState()).toMatchObject({
+    model: null,
+    reasoning: "low",
+    launchOverrides: { model: "p/a", maxRounds: 7 },
+  });
+  const changed = store.getState().loadModels(true);
+  calls[2]?.response.resolve({
+    data: [{ ...model, reasoningEffortLevels: ["high"] }],
+  });
+  await changed;
+  expect(store.getState().reasoning).toBe("");
+});
