@@ -15,6 +15,7 @@ import { create } from "zustand";
 import type {
   HarnessDescriptor,
   ModelDescriptor,
+  PluginPreviewResponse,
   Thread,
   Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -52,6 +53,10 @@ class FakeNewSessionService implements NewSessionService {
     this.lastParams = params;
     if (this.shouldReject !== null) throw this.shouldReject;
     return { thread: this.thread, turn: this.turn };
+  }
+
+  async previewPlugins(): Promise<PluginPreviewResponse> {
+    throw new Error("Unexpected plugin preview in this screen fixture");
   }
 
   async recentProjects(): Promise<string[]> {
