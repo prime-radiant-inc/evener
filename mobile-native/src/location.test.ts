@@ -18,6 +18,87 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("restores a selected fork message over its exact parent after restart", () => {
+		const disk = storage();
+		const params = {
+			hubId: "studio",
+			ref: "same/ref",
+			title: "Build",
+			instanceId: "instance-1",
+			entryIndex: 3,
+			preview: "Selected input",
+		};
+		new LocationRepository(disk).save(
+			locationForRoute({ name: "Fork", params }, "studio"),
+		);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(saved).toEqual({
+			hubId: "studio",
+			conversation: { ref: "same/ref", title: "Build" },
+			fork: {
+				instanceId: "instance-1",
+				entryIndex: 3,
+				preview: "Selected input",
+			},
+		});
+		const stack = restoredStack(saved);
+		expect(stack.index).toBe(3);
+		expect(stack.routes.map((route) => route.name)).toEqual([
+			"Hubs",
+			"Sessions",
+			"Conversation",
+			"Fork",
+		]);
+		expect(stack.routes.at(-1)?.params).toEqual(params);
+		expect(new LocationRepository(disk).read(["other"])).toBeNull();
+		expect(locationForRoute({ name: "Fork", params }, "other")).toBeNull();
+	});
+	it("rejects invalid fork targets and mixed destinations from disk and navigation", () => {
+		const valid = { instanceId: "i", entryIndex: 2, preview: "Input" };
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		for (const fork of [
+			null,
+			[],
+			{ ...valid, instanceId: " " },
+			{ ...valid, entryIndex: 0 },
+			{ ...valid, entryIndex: -1 },
+			{ ...valid, entryIndex: 1.5 },
+			{ ...valid, entryIndex: Number.MAX_SAFE_INTEGER + 1 },
+			{ ...valid, preview: 4 },
+		]) {
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({
+					hubId: "studio",
+					conversation: { ref: "r", title: "Build" },
+					fork,
+				}),
+			);
+			expect(repository.read(["studio"])).toBeNull();
+			if (fork && !Array.isArray(fork))
+				expect(
+					locationForRoute(
+						{
+							name: "Fork",
+							params: { hubId: "studio", ref: "r", title: "Build", ...fork },
+						},
+						"studio",
+					),
+				).toBeNull();
+		}
+		for (const extra of [
+			{},
+			{ conversation: { ref: "r", title: "Build" }, pinned: {} },
+			{ conversation: { ref: "r", title: "Build" }, pinAssignment: true },
+		]) {
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({ hubId: "studio", fork: valid, ...extra }),
+			);
+			expect(repository.read(["studio"])).toBeNull();
+		}
+	});
 	it.each(["PinSections", "PinnedSection", "PinSectionEditor"])(
 		"restores %s with its hub and parent destinations",
 		(name) => {

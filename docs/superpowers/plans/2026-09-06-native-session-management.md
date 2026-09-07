@@ -131,3 +131,24 @@ for the exact Release bundle and scope of the observed results.
 The next management work is ordinary selected-turn fork and ended-session
 deletion. Durable archive/favorite recovery and full lifecycle/accessibility
 qualification remain part of the unfinished overall checklist.
+
+### Ordinary fork implementation
+
+1. Preserve the user message's typed `transcriptEntryIndex` through the shared
+   projection. It is the RPC divergence position; turn IDs and row positions
+   must never be parsed or substituted. Offer the action only for a positive
+   safe entry index when the source advertises fork capability.
+2. Add a separate ordinary-fork action to the existing conversation service.
+   Use `thread/fork` with `deferInput: true`, matching the web workflow: copy
+   history before the selected message and prepare its text in the child's
+   editable composer. Validate acknowledged child identity; preserve aside.
+3. Persist a hub/parent-scoped checkpoint before creating a fork and retain
+   acknowledged child identity/input before opening it. Restore the source route,
+   prepare the child draft without replacing newer edits, and never replay an
+   unknown request. An uncertain outcome offers session-list inspection and an
+   explicit choice to permit a new request. Fence actions by source instance,
+   current connection/focus, and the exact saved checkpoint.
+4. Test typed divergence, deferred payload/capabilities, draft and checkpoint
+   failures, late acknowledgement, scope replacement and no replay. Exercise
+   the real iOS fork, child draft/restart and preserved parent history against
+   the owned scripted hub before recording acceptance.

@@ -282,7 +282,14 @@ function projectItem(
     const attachments = projectItemAttachments(item);
     return {
       kind: "final",
-      item: { kind: "user", id: item.id, text: item.text ?? "" },
+      item: {
+        kind: "user",
+        id: item.id,
+        text: item.text ?? "",
+        ...(isUserMessage(item) && item.transcriptEntryIndex !== undefined
+          ? { transcriptEntryIndex: item.transcriptEntryIndex }
+          : {}),
+      },
       attachments,
     };
   }

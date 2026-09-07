@@ -102,7 +102,7 @@ export interface AskBatch {
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
 export type MobileTimelineItem = (
-  | { kind: "user"; id: string; text: string }
+  | { kind: "user"; id: string; text: string; transcriptEntryIndex?: number }
   | { kind: "assistant"; id: string; markdown: string; streaming: boolean }
   | {
       kind: "activity";

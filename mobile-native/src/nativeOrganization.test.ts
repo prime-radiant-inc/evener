@@ -13,6 +13,7 @@ vi.mock("expo-sqlite/kv-store", () => ({
 }));
 
 import {
+	forkJournal,
 	organizationJournal,
 	pinDrafts,
 	removeOrganizationData,
@@ -59,6 +60,13 @@ describe("native organization persistence", () => {
 		organizationJournal("hub-a").begin(operation);
 		sectionDrafts("hub-a", "section").save("Rename A");
 		const savedRename = sectionDrafts("hub-b", "section").save("Rename B");
+		const forkTarget = {
+			instanceId: "instance",
+			entryIndex: 7,
+			preview: "Input",
+		};
+		forkJournal("hub-a", "parent").begin(forkTarget);
+		const savedFork = forkJournal("hub-b", "parent").begin(forkTarget);
 		organizationJournal("hub-b").begin({
 			...operation,
 			params: { ...operation.params, sessionRef: "s-b" },
@@ -70,6 +78,8 @@ describe("native organization persistence", () => {
 		expect(organizationJournal("hub-a").load()).toBeNull();
 		expect(sectionDrafts("hub-a", "section").load()).toBeNull();
 		expect(sectionDrafts("hub-b", "section").load()).toEqual(savedRename);
+		expect(forkJournal("hub-a", "parent").load()).toBeNull();
+		expect(forkJournal("hub-b", "parent").load()).toEqual(savedFork);
 		expect(pinDrafts("hub-b", "s-b").load()).not.toBeNull();
 		expect(organizationJournal("hub-b").load()).not.toBeNull();
 		expect(

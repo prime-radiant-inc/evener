@@ -22,6 +22,7 @@ export function TimelineItem({
 	activityPresentation,
 	expandByDefault = false,
 	showDuration = true,
+	fork,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -29,6 +30,7 @@ export function TimelineItem({
 	activityPresentation?: ActivityPresentation;
 	expandByDefault?: boolean;
 	showDuration?: boolean;
+	fork?: (entryIndex: number, preview: string) => void;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
@@ -63,7 +65,26 @@ export function TimelineItem({
 			);
 			break;
 		case "user":
-			content = <Copy label={`You: ${item.text}`}>{item.text}</Copy>;
+			content = (
+				<>
+					<Copy label={`You: ${item.text}`}>{item.text}</Copy>
+					{fork &&
+					item.transcriptEntryIndex !== undefined &&
+					Number.isSafeInteger(item.transcriptEntryIndex) &&
+					item.transcriptEntryIndex > 0 ? (
+						<Action
+							tone="quiet"
+							label={`Fork from message: ${item.text.slice(0, 80)}`}
+							onPress={() => {
+								if (item.transcriptEntryIndex !== undefined)
+									fork(item.transcriptEntryIndex, item.text);
+							}}
+						>
+							Fork from here
+						</Action>
+					) : null}
+				</>
+			);
 			break;
 		case "assistant":
 			content = (
