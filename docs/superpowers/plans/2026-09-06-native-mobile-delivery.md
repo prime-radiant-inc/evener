@@ -905,3 +905,27 @@ setup; native paste completed it, but focus/scroll behavior needs a separate
 observed journey. Historical reader anchors, ongoing streaming/image reflow and
 iPad/physical/accessibility/release gates remain open. iOS-only v1 and the full
 goal stay active.
+
+## Hub selection intent and gate follow-up — source e18c50c3e
+
+The full merge gate at 7d7e49535 passed lint, build, the other Go packages and
+web checks, but failed the root source-citation audit because two question
+scenarios still referenced the deleted answer-composition module. Luna repaired
+the citations; Bot verified both source-path and symbol audits and committed
+e18c50c3e. All five browser guards and independent SDK package qualification
+also pass. These results do not turn the failed full gate into a pass.
+
+The next native fix preserves the latest hub selection when secure storage is
+slow. Save completion currently selects its hub unconditionally, even after a
+newer selection or disconnect, and a token update uses a captured selection when
+deciding which connection to retry. Extract the existing async orchestration into
+a small selection owner, exercise it with real HubProfiles and a deferred
+SecureStorage boundary, and gate both selection and post-save navigation on the
+current intent. Restoration and removal must use the same ownership. Do not add
+a renderer dependency or disable unrelated hub actions. Luna medium implements
+and reviews; Bot verifies integration, the native build and the full gate.
+
+An installed-iPhone blank-form check exposed every input above the keyboard after
+scrolling and retained focus during origin/token selection. It did not reproduce
+the earlier automation problem. Evidence and its limits are in multiple-hubs.md;
+seven drafts and the unrelated Apple patch remain preserved.
