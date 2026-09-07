@@ -94,3 +94,154 @@ func initGitRepo(t *testing.T, dir string) {
 	run("add", "README.md")
 	run("commit", "-m", "init")
 }
+
+func TestLoadUserDoc_ReadsTheConfigRootFile(t *testing.T) {
+	t.Parallel()
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	doc, ok := LoadUserDoc(configRoot)
+	if !ok {
+		t.Fatal("expected the personal doc to load")
+	}
+	if doc.Path != filepath.Join(configRoot, "AGENTS.md") {
+		t.Fatalf("path: %q", doc.Path)
+	}
+	if doc.Content != "PERSONAL\n" {
+		t.Fatalf("content: %q", doc.Content)
+	}
+}
+
+func TestLoadUserDoc_MissingOrBlankFileIsAbsent(t *testing.T) {
+	t.Parallel()
+	if _, ok := LoadUserDoc(t.TempDir()); ok {
+		t.Fatal("a missing file must not load")
+	}
+	blank := t.TempDir()
+	if err := os.WriteFile(filepath.Join(blank, "AGENTS.md"), []byte("  \n\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, ok := LoadUserDoc(blank); ok {
+		t.Fatal("a blank file must not load")
+	}
+	if _, ok := LoadUserDoc(""); ok {
+		t.Fatal("an empty config root must not load")
+	}
+}
+
+func TestLoadUserDoc_CollapsesTheHomeDirectoryToTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configRoot := filepath.Join(home, ".config", "evener")
+	if err := os.MkdirAll(configRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	doc, ok := LoadUserDoc(configRoot)
+	if !ok {
+		t.Fatal("expected the personal doc to load")
+	}
+	if doc.Path != "~/.config/evener/AGENTS.md" {
+		t.Fatalf("path: %q, want the tilde-collapsed display path", doc.Path)
+	}
+}
+
+func TestLoadInstructionDocs_PersonalDocComesFirst(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	if truncated {
+		t.Fatal("did not expect truncation")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2 (%v)", len(docs), docs)
+	}
+	if docs[0].Path != filepath.Join(configRoot, "AGENTS.md") || docs[0].Content != "PERSONAL\n" {
+		t.Fatalf("doc0 = %+v, want the personal doc first", docs[0])
+	}
+	if docs[1].Path != "AGENTS.md" || docs[1].Content != "ROOT\n" {
+		t.Fatalf("doc1 = %+v, want the repo doc second", docs[1])
+	}
+}
+
+func TestLoadInstructionDocs_MissingPersonalDocChangesNothing(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, _ := LoadInstructionDocs(env, t.TempDir(), "AGENTS.md")
+	if len(docs) != 1 || docs[0].Path != "AGENTS.md" {
+		t.Fatalf("docs = %+v, want only the repo doc", docs)
+	}
+}
+
+func TestLoadInstructionDocs_PersonalDocCountsAgainstTheSharedBudget(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	half := strings.Repeat("r", projectDocByteBudget/2+1024)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(half), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	personal := strings.Repeat("p", projectDocByteBudget/2)
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte(personal), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	if !truncated {
+		t.Fatal("expected the repo doc to be truncated")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2", len(docs))
+	}
+	if docs[0].Content != personal {
+		t.Fatal("the personal doc must land intact; it is loaded first")
+	}
+	if !strings.Contains(docs[1].Content, projectDocTruncMark) {
+		t.Fatalf("the repo doc must carry the truncation marker, got:\n%s", docs[1].Content[len(docs[1].Content)-80:])
+	}
+	if len(docs[0].Content)+len(docs[1].Content) > projectDocByteBudget+len(projectDocTruncMark)+2 {
+		t.Fatalf("the two docs exceed the shared budget: %d", len(docs[0].Content)+len(docs[1].Content))
+	}
+}
+
+func TestLoadInstructionDocs_OversizedPersonalDocIsTruncatedAlone(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	huge := strings.Repeat("p", projectDocByteBudget+4096)
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte(huge), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	if !truncated || len(docs) != 1 {
+		t.Fatalf("docs = %d truncated = %v; an oversized personal doc consumes the whole budget", len(docs), truncated)
+	}
+	if !strings.Contains(docs[0].Content, projectDocTruncMark) {
+		t.Fatal("expected the truncation marker on the personal doc")
+	}
+}

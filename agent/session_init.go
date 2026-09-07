@@ -1440,7 +1440,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	// Cache project docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadProjectDocs(s.currentEnv(), s.profile.ProjectDocFiles()...)
+	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), userdirs.DefaultConfigRoot(), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
