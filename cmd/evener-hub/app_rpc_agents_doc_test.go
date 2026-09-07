@@ -287,6 +287,92 @@ func TestWriteAgentsDocFailureRemovesTheTempFile(t *testing.T) {
 	}
 }
 
+// A dotfiles-managed ~/.config keeps AGENTS.md as a symlink into the dotfiles
+// repo. Renaming over the link would replace it with a regular file and take
+// the dotfiles copy out of the loop without saying so, so the save follows it.
+func TestWriteAgentsDocFollowsASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
+	}
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	root := filepath.Join(base, "root")
+	for _, dir := range []string{realDir, root} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realFile := filepath.Join(realDir, "AGENTS.md")
+	if err := os.WriteFile(realFile, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := agentsDocPath(root)
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeAgentsDoc(link, "new"); err != nil {
+		t.Fatalf("writeAgentsDoc: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("mode = %v, want the symlink itself to survive the save", info.Mode())
+	}
+	onDisk, err := os.ReadFile(realFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != "new" {
+		t.Fatalf("linked file = %q, want the saved content", onDisk)
+	}
+	for _, tmp := range []string{link + ".tmp", realFile + ".tmp"} {
+		if _, statErr := os.Lstat(tmp); !os.IsNotExist(statErr) {
+			t.Fatalf("%s survived the rename: stat = %v", tmp, statErr)
+		}
+	}
+}
+
+// A link with no target has nothing to follow: EvalSymlinks fails and the
+// ordinary temp-and-rename applies, so the save lands as a regular file where
+// the broken link was.
+func TestWriteAgentsDocDanglingSymlinkIsReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := agentsDocPath(root)
+	if err := os.Symlink(filepath.Join(base, "gone", "AGENTS.md"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeAgentsDoc(link, "new"); err != nil {
+		t.Fatalf("writeAgentsDoc: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("mode = %v, want a regular file where the broken link was", info.Mode())
+	}
+	onDisk, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != "new" {
+		t.Fatalf("on disk = %q, want the saved content", onDisk)
+	}
+}
+
 func receiveAgentsDocChanged(t *testing.T, client *appwire.Client) appwire.AgentsDocResponse {
 	t.Helper()
 	select {

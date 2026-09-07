@@ -35,14 +35,23 @@ func readAgentsDoc(path string) (appwire.AgentsDocResponse, error) {
 
 // writeAgentsDoc replaces the file atomically (temp + rename, mode 0644,
 // parent created), the same way registry.WriteConfigFile lands
-// providers.toml beside it. Content is written byte for byte: this is the
-// user's own prose, and trimming or appending a newline would make the
-// editor disagree with the file it just saved.
+// providers.toml beside it, except that this writer follows a symlinked
+// AGENTS.md first so a dotfiles-managed copy keeps being the source of truth
+// (Jesse's ruling, 2026-09-07; providers.toml follows in its own PR).
+// Content is written byte for byte: this is the user's own prose, and
+// trimming or appending a newline would make the editor disagree with the
+// file it just saved.
 func writeAgentsDoc(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	// EvalSymlinks fails on a file that is not there yet, leaving target at
+	// path: a first save creates the file where the config root says it is.
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("AGENTS.md: mkdir: %w", err)
 	}
-	tmp := path + ".tmp"
+	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		// A write that dies partway (ENOSPC, EIO) has already created the
 		// temp file, so clear it too: the real file is untouched either way,
@@ -51,7 +60,7 @@ func writeAgentsDoc(path, content string) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("AGENTS.md: write: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("AGENTS.md: rename: %w", err)
 	}

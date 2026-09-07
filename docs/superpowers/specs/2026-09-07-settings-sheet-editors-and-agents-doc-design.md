@@ -53,7 +53,9 @@ outputs refreshed by `make generate`):
 - `evener/settings/agentsDoc/set` — params `AgentsDocSetParams{ content
   string }`; result `AgentsDocResponse`. Writes `content` as-is (no trimming,
   no forced trailing newline) with temp-file-and-rename at mode 0o644, the
-  same way `registry.WriteConfigFile` writes providers.toml, creating the
+  same way `registry.WriteConfigFile` writes providers.toml, except that a
+  symlinked AGENTS.md is followed so a dotfiles-managed copy stays the source
+  of truth (providers.toml gets the same fix in its own PR), creating the
   config root if needed. No precondition: the last write wins (Jesse's call).
 - `evener/settings/agentsDoc/changed` — broadcast after a successful set,
   carrying `AgentsDocResponse`, so other clients refresh.
