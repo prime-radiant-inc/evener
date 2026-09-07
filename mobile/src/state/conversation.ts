@@ -34,7 +34,11 @@ import type {
   MobileTimelineItem,
   MobileUsage,
 } from "../conversation/model";
-import { projectApproval, projectQueue } from "../conversation/project";
+import {
+  projectApproval,
+  projectItemAttachments,
+  projectQueue,
+} from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -42,6 +46,29 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
+
+function attachmentSourceId(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments" && item.id.endsWith(":attachments")
+    ? item.id.slice(0, -":attachments".length)
+    : null;
+}
+
+// Snapshot/live-tail merging can introduce a companion after later messages.
+// Keep attachments beside their source whenever both rows are retained.
+function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const ids = new Set(items.map((item) => item.id));
+  const companions = new Map<string, MobileTimelineItem>();
+  for (const item of items) {
+    const sourceId = attachmentSourceId(item);
+    if (sourceId !== null && ids.has(sourceId)) companions.set(sourceId, item);
+  }
+  return items.flatMap((item) => {
+    const sourceId = attachmentSourceId(item);
+    if (sourceId !== null && companions.has(sourceId)) return [];
+    const companion = companions.get(item.id);
+    return companion ? [item, companion] : [item];
+  });
+}
 
 export type ConversationStatus =
   | "idle"
@@ -1407,11 +1434,29 @@ export function createConversationStore() {
             }
           }
           // Replace superseded items in the reread with the current version.
-          let mergedItems = conversation.items.map((item) =>
-            supersededIds.has(item.id)
-              ? (supersededVersions.get(item.id) as MobileTimelineItem)
-              : item,
-          );
+          let mergedItems = conversation.items.flatMap((item) => {
+            // A newer whole-item notification can remove its attachment row.
+            // Use the retained source's revision so a stale snapshot cannot
+            // resurrect it, without keeping tombstones for evicted rows.
+            const sourceId = attachmentSourceId(item);
+            if (sourceId !== null) {
+              const sourceRev = liveOwnedRevs.get(sourceId);
+              if (
+                sourceRev !== undefined &&
+                sourceRev > entryLiveRev &&
+                !currentConvForMerge?.items.some(
+                  (current) => current.id === item.id,
+                )
+              ) {
+                return [];
+              }
+            }
+            return [
+              supersededIds.has(item.id)
+                ? (supersededVersions.get(item.id) as MobileTimelineItem)
+                : item,
+            ];
+          });
           let mergedCursor = olderCursor;
           if (pageOwnerChanged) {
             if (currentConvForMerge !== null) {
@@ -1456,6 +1501,19 @@ export function createConversationStore() {
               mergedItems = [...mergedItems, ...liveTailItems];
             }
           }
+          // Accept a snapshot's removal of a companion when it also contains
+          // the source, unless a live event changed that group during the read.
+          mergedItems = mergedItems.filter((item) => {
+            const sourceId = attachmentSourceId(item);
+            return (
+              sourceId === null ||
+              !rereadIds.has(sourceId) ||
+              rereadIds.has(item.id) ||
+              (liveOwnedRevs.get(sourceId) ?? 0) > entryLiveRev ||
+              (liveOwnedRevs.get(item.id) ?? 0) > entryLiveRev
+            );
+          });
+          mergedItems = attachToSources(mergedItems);
           const identity: ActivityIdentity = {
             threadId: conversation.id,
             ref,
@@ -1543,6 +1601,7 @@ export function createConversationStore() {
               liveOwnedRevs.delete(item.id);
             }
           }
+          pruneEvictedIds(committedItems);
           // I2: If we're committing the projected capabilities (cap owner
           // unchanged), increment the capability-owner revision.
           if (!capOwnerChanged) {
@@ -1634,9 +1693,12 @@ export function createConversationStore() {
             // the seen set during traversal, preserving order and first
             // occurrence semantics.
             const existingIds = new Set(currentConv.items.map((i) => i.id));
+            const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
               if (existingIds.has(item.id)) continue;
+              const sourceId = attachmentSourceId(item);
+              if (sourceId !== null && currentIds.has(sourceId)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
               // boundary too, not only in the service's projectOlderTurns. A
               // pending ask cannot legitimately be older than newer continuation
@@ -1662,7 +1724,6 @@ export function createConversationStore() {
             // Incoming raw page items matching a stale frozen ID that is NOT
             // in currentConv are independently judged from their raw content
             // (exceedsByteLimit), NOT carried over as frozen.
-            const currentIds = new Set(currentConv.items.map((i) => i.id));
             const priorFrozen = new Set<string>();
             for (const id of truncatedItemIds) {
               if (currentIds.has(id)) priorFrozen.add(id);
@@ -2268,96 +2329,45 @@ export function createConversationStore() {
             break;
           }
 
-          case "item/started": {
-            const params = n.params as { item: ThreadItem };
-            const projected = projectSingleItem(params.item, conv.askPending);
-            if (projected !== null) {
-              // Task 2A-Items: authoritative replacement — remove any stale
-              // freeze entry so the new content can accept future deltas.
-              truncatedItemIds.delete(params.item.id);
-              const truncated = truncateAndRecordSingle(projected);
-              const existingIdx = conv.items.findIndex(
-                (i) => i.id === params.item.id,
-              );
-              if (existingIdx >= 0) {
-                // Fix round 1: Mark as live-owned — accepted replacement.
-                markLiveOwned(params.item.id);
-                set({
-                  conversation: {
-                    ...conv,
-                    items: conv.items.map((i, idx) =>
-                      idx === existingIdx ? truncated : i,
-                    ),
-                  },
-                });
-              } else {
-                // Residual 2: Mark as live-owned — inserted by an actual
-                // accepted item lifecycle notification.
-                markLiveOwned(params.item.id);
-                const cappedItems = capItems([...conv.items, truncated]);
-                // Task 2A-Truncation residual fix round 2: prune evicted IDs
-                // from ownership maps after incremental append+cap.
-                pruneEvictedIds(cappedItems);
-                set({
-                  conversation: {
-                    ...conv,
-                    items: cappedItems,
-                  },
-                });
-              }
-            } else {
-              // Unsupported item transition — coalesce to one rehydrate.
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-            }
-            break;
-          }
-
+          case "item/started":
           case "item/completed": {
             const params = n.params as { item: ThreadItem };
             const projected = projectSingleItem(params.item, conv.askPending);
             if (projected !== null) {
-              // Task 2A-Items: authoritative replacement — remove any stale
-              // freeze entry so the new content can accept future deltas.
+              // Lifecycle events replace the whole source item, including any
+              // companion attachment row. An empty image list removes it.
               truncatedItemIds.delete(params.item.id);
-              const truncated = truncateAndRecordSingle(projected);
-              const existingIdx = conv.items.findIndex(
-                (i) => i.id === params.item.id,
-              );
-              if (existingIdx >= 0) {
-                // Replace existing item.
-                // Fix round 1: Mark as live-owned — accepted replacement.
-                markLiveOwned(params.item.id);
-                set({
-                  conversation: {
-                    ...conv,
-                    items: conv.items.map((i, idx) =>
-                      idx === existingIdx ? truncated : i,
-                    ),
-                  },
+              const replacement: MobileTimelineItem[] = [
+                truncateAndRecordSingle(projected),
+              ];
+              const attachmentId = `${params.item.id}:attachments`;
+              const attachments = projectItemAttachments(params.item);
+              markLiveOwned(params.item.id);
+              if (attachments) {
+                replacement.push({
+                  kind: "attachments",
+                  id: attachmentId,
+                  items: attachments,
                 });
-              } else {
-                // UPSERT: insert the authoritative completed item even if the
-                // start notification was missed.
-                // Residual 2: Mark as live-owned — inserted by an actual
-                // accepted item lifecycle notification.
-                markLiveOwned(params.item.id);
-                const cappedItems = capItems([...conv.items, truncated]);
-                // Task 2A-Truncation residual fix round 2: prune evicted IDs
-                // from ownership maps after incremental append+cap.
-                pruneEvictedIds(cappedItems);
-                set({
-                  conversation: {
-                    ...conv,
-                    items: cappedItems,
-                  },
-                });
+                markLiveOwned(attachmentId);
               }
-            } else {
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
+              const items: MobileTimelineItem[] = [];
+              let replaced = false;
+              for (const item of conv.items) {
+                if (item.id === params.item.id || item.id === attachmentId) {
+                  if (!replaced) items.push(...replacement);
+                  replaced = true;
+                } else {
+                  items.push(item);
+                }
               }
+              if (!replaced) items.push(...replacement);
+              const cappedItems = capItems(items);
+              pruneEvictedIds(cappedItems);
+              set({ conversation: { ...conv, items: cappedItems } });
+            } else if (state.ref !== null) {
+              // Unsupported transitions require the canonical projection.
+              requestRehydrate(state.ref);
             }
             break;
           }
