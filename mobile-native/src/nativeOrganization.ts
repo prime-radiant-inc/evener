@@ -2,6 +2,7 @@ import * as Crypto from "expo-crypto";
 import { Storage } from "expo-sqlite/kv-store";
 import { nativeNavigationActions } from "./navigationActionRepository";
 import { pinAssignmentDrafts } from "./pinAssignmentDrafts";
+import { pinSectionDrafts } from "./pinSectionDrafts";
 
 const backend = {
 	createId: () => Crypto.randomUUID(),
@@ -22,11 +23,17 @@ export const organizationJournal = (hubId: string) =>
 	nativeNavigationActions(hubId, backend);
 export const pinDrafts = (hubId: string, ref: string) =>
 	pinAssignmentDrafts(hubId, ref, backend);
+export const sectionDrafts = (hubId: string, sectionId: string) =>
+	pinSectionDrafts(hubId, sectionId, backend);
 export function removeOrganizationData(hubId: string) {
 	Storage.removeItemSync(`evener.native.navigation-action.${hubId}`);
-	const prefix = "evener.native.pin-assignment.";
+	const prefixes = [
+		"evener.native.pin-assignment.",
+		"evener.native.pin-section-name.",
+	];
 	for (const key of Storage.getAllKeysSync()) {
-		if (!key.startsWith(prefix)) continue;
+		const prefix = prefixes.find((prefix) => key.startsWith(prefix));
+		if (!prefix) continue;
 		let scope: unknown;
 		try {
 			scope = JSON.parse(key.slice(prefix.length));

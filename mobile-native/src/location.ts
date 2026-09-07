@@ -2,6 +2,7 @@ export interface SavedLocation {
 	hubId: string;
 	conversation?: { ref: string; title: string };
 	pinAssignment?: true;
+	pinned?: { section?: { id: string; title: string }; manage?: true };
 }
 interface Storage {
 	getItemSync(key: string): string | null;
@@ -18,6 +19,21 @@ function conversation(value: unknown): value is { ref: string; title: string } {
 		typeof value.ref === "string" &&
 		value.ref.length > 0 &&
 		typeof value.title === "string"
+	);
+}
+function pinned(value: unknown): value is NonNullable<SavedLocation["pinned"]> {
+	if (!object(value)) return false;
+	if (
+		value.section !== undefined &&
+		(!object(value.section) ||
+			typeof value.section.id !== "string" ||
+			!value.section.id.trim() ||
+			typeof value.section.title !== "string")
+	)
+		return false;
+	return (
+		value.manage === undefined ||
+		(value.manage === true && value.section !== undefined)
 	);
 }
 export class LocationRepository {
@@ -40,12 +56,20 @@ export class LocationRepository {
 		if (value.conversation !== undefined && !conversation(value.conversation))
 			return null;
 		if (
+			value.pinned !== undefined &&
+			(!pinned(value.pinned) ||
+				value.conversation !== undefined ||
+				value.pinAssignment !== undefined)
+		)
+			return null;
+		if (
 			value.pinAssignment !== undefined &&
 			(value.pinAssignment !== true || !conversation(value.conversation))
 		)
 			return null;
 		return {
 			hubId: value.hubId,
+			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
 			...(value.pinAssignment === true ? { pinAssignment: true as const } : {}),
 			...(conversation(value.conversation)
 				? {
@@ -67,6 +91,19 @@ export function locationForRoute(
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
+	if (
+		route.name === "PinSections" ||
+		route.name === "PinnedSection" ||
+		route.name === "PinSectionEditor"
+	) {
+		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		if (route.name === "PinSections") return { hubId, pinned: {} };
+		const destination = {
+			section: { id: route.params.sectionId, title: route.params.title },
+			...(route.name === "PinSectionEditor" ? { manage: true as const } : {}),
+		};
+		return pinned(destination) ? { hubId, pinned: destination } : null;
+	}
 	if (route.name === "Conversation" || route.name === "PinAssignment") {
 		if (
 			!object(route.params) ||
@@ -87,9 +124,27 @@ export function locationForRoute(
 export function restoredStack(location: SavedLocation | null) {
 	const routes: {
 		name: string;
-		params?: { hubId: string; ref: string; title: string };
+		params?: {
+			hubId: string;
+			ref?: string;
+			sectionId?: string;
+			title?: string;
+		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
+	if (location?.pinned) {
+		routes.push({ name: "PinSections", params: { hubId: location.hubId } });
+		if (location.pinned.section) {
+			const params = {
+				hubId: location.hubId,
+				sectionId: location.pinned.section.id,
+				title: location.pinned.section.title,
+			};
+			routes.push({ name: "PinnedSection", params });
+			if (location.pinned.manage)
+				routes.push({ name: "PinSectionEditor", params });
+		}
+	}
 	if (location?.conversation)
 		routes.push({
 			name: "Conversation",

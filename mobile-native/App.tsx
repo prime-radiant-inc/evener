@@ -17,6 +17,11 @@ import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
 import { PinAssignmentScreen } from "./src/PinAssignmentScreen";
+import { PinSectionEditorScreen } from "./src/PinSectionEditorScreen";
+import {
+	PinnedSectionScreen,
+	PinSectionsScreen,
+} from "./src/PinSectionsScreen";
 import { PluginsScreen } from "./src/PluginsScreen";
 import {
 	ProjectScreen,
@@ -104,6 +109,21 @@ function Navigation() {
 					/>
 					<Stack.Screen name="Sessions" component={SessionsScreen} />
 					<Stack.Screen name="Projects" component={ProjectsScreen} />
+					<Stack.Screen
+						name="PinSections"
+						component={PinSectionsScreen}
+						options={{ title: "Pinned sections" }}
+					/>
+					<Stack.Screen
+						name="PinnedSection"
+						component={PinnedSectionScreen}
+						options={{ title: "Pinned section" }}
+					/>
+					<Stack.Screen
+						name="PinSectionEditor"
+						component={PinSectionEditorScreen}
+						options={{ title: "Manage section" }}
+					/>
 					<Stack.Screen
 						name="PinAssignment"
 						component={PinAssignmentScreen}

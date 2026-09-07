@@ -18,6 +18,70 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it.each(["PinSections", "PinnedSection", "PinSectionEditor"])(
+		"restores %s with its hub and parent destinations",
+		(name) => {
+			const disk = storage();
+			const params =
+				name === "PinSections"
+					? { hubId: "studio" }
+					: { hubId: "studio", sectionId: "section/a", title: "Focus" };
+			new LocationRepository(disk).save(
+				locationForRoute({ name, params }, "studio"),
+			);
+			const saved = new LocationRepository(disk).read(["studio"]);
+			const expected = ["Hubs", "Sessions", "PinSections"];
+			if (name !== "PinSections") expected.push("PinnedSection");
+			if (name === "PinSectionEditor") expected.push("PinSectionEditor");
+			const stack = restoredStack(saved);
+			expect(stack.index).toBe(expected.length - 1);
+			expect(stack.routes.map((route) => route.name)).toEqual(expected);
+			expect(stack.routes.at(-1)?.params).toEqual(params);
+			expect(new LocationRepository(disk).read(["other"])).toBeNull();
+			expect(
+				locationForRoute(
+					{ name, params: { ...params, hubId: "other" } },
+					"studio",
+				),
+			).toBeNull();
+		},
+	);
+	it("rejects malformed, mixed, and incomplete pinned destinations", () => {
+		for (const pinned of [
+			null,
+			[],
+			{ manage: true },
+			{ section: { id: "", title: "Focus" } },
+			{ section: { id: "a", title: 42 } },
+			{ manage: false },
+		]) {
+			const disk = storage();
+			disk.setItemSync(
+				"evener.last-location",
+				JSON.stringify({ hubId: "studio", pinned }),
+			);
+			expect(new LocationRepository(disk).read(["studio"])).toBeNull();
+		}
+		const disk = storage();
+		disk.setItemSync(
+			"evener.last-location",
+			JSON.stringify({
+				hubId: "studio",
+				pinned: {},
+				conversation: { ref: "a", title: "Session" },
+			}),
+		);
+		expect(new LocationRepository(disk).read(["studio"])).toBeNull();
+		expect(
+			locationForRoute(
+				{
+					name: "PinSectionEditor",
+					params: { hubId: "studio", title: "Focus" },
+				},
+				"studio",
+			),
+		).toBeNull();
+	});
 	it("restores a pin proposal screen over its exact conversation without replaying an action", () => {
 		const disk = storage();
 		const saved = locationForRoute(

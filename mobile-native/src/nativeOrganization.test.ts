@@ -16,6 +16,7 @@ import {
 	organizationJournal,
 	pinDrafts,
 	removeOrganizationData,
+	sectionDrafts,
 } from "./nativeOrganization";
 
 beforeEach(() => {
@@ -56,6 +57,8 @@ describe("native organization persistence", () => {
 		pinDrafts("hub-a", "s-a").save({ kind: "existing", sectionId: "a" });
 		pinDrafts("hub-b", "s-b").save({ kind: "existing", sectionId: "b" });
 		organizationJournal("hub-a").begin(operation);
+		sectionDrafts("hub-a", "section").save("Rename A");
+		const savedRename = sectionDrafts("hub-b", "section").save("Rename B");
 		organizationJournal("hub-b").begin({
 			...operation,
 			params: { ...operation.params, sessionRef: "s-b" },
@@ -65,6 +68,8 @@ describe("native organization persistence", () => {
 		removeOrganizationData("hub-a");
 		expect(pinDrafts("hub-a", "s-a").load()).toBeNull();
 		expect(organizationJournal("hub-a").load()).toBeNull();
+		expect(sectionDrafts("hub-a", "section").load()).toBeNull();
+		expect(sectionDrafts("hub-b", "section").load()).toEqual(savedRename);
 		expect(pinDrafts("hub-b", "s-b").load()).not.toBeNull();
 		expect(organizationJournal("hub-b").load()).not.toBeNull();
 		expect(

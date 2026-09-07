@@ -98,6 +98,9 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+	PinSections: { hubId: string };
+	PinnedSection: { hubId: string; sectionId: string; title: string };
+	PinSectionEditor: { hubId: string; sectionId: string; title: string };
 	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string };
@@ -424,6 +427,17 @@ export function SessionsScreen({
 								}}
 							>
 								Browse projects
+							</Action>
+							<Action
+								disabled={!activeProfile}
+								onPress={() => {
+									if (activeProfile)
+										navigation.navigate("PinSections", {
+											hubId: activeProfile.id,
+										});
+								}}
+							>
+								Pinned sections
 							</Action>
 						</View>
 						<View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>

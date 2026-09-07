@@ -48,11 +48,13 @@ export async function refreshPinNavigation(
 	{
 		checkpoint,
 		sessionRef,
+		sectionId,
 		current,
 		confirmReceipt = false,
 	}: {
 		checkpoint?: NavigationActionCheckpoint;
 		sessionRef?: string;
+		sectionId?: string;
 		current: () => boolean;
 		confirmReceipt?: boolean;
 	},
@@ -89,7 +91,9 @@ export async function refreshPinNavigation(
 		locations.set(ref, await readPinLocation(client, ref));
 		checkCurrent();
 	}
-	await pages.refresh();
+	if (confirmReceipt && checkpoint?.receipt)
+		await pages.refreshAfter(checkpoint.receipt);
+	else await pages.refresh();
 	checkCurrent();
 	const checkedPage = () => {
 		const state = pages.getSnapshot();
@@ -103,13 +107,16 @@ export async function refreshPinNavigation(
 	const assignedIds = [...locations.values()].flatMap((value) =>
 		value.location?.pin_section_id ? [value.location.pin_section_id] : [],
 	);
+	const requestedIds = [...assignedIds, ...(sectionId ? [sectionId] : [])];
 	const readAll =
 		operation?.kind === "renamePinSection" ||
 		operation?.kind === "deletePinSection";
 	while (
 		page.remaining > 0 &&
 		(readAll ||
-			assignedIds.some((id) => !page.rows.some((section) => section.id === id)))
+			requestedIds.some(
+				(id) => !page.rows.some((section) => section.id === id),
+			))
 	) {
 		const before = page;
 		await pages.more();
@@ -157,7 +164,8 @@ export async function refreshPinNavigation(
 		generationId: version.generationId,
 		location,
 		section:
-			page.rows.find((section) => section.id === location?.pin_section_id) ??
-			null,
+			page.rows.find(
+				(section) => section.id === (sectionId ?? location?.pin_section_id),
+			) ?? null,
 	};
 }
