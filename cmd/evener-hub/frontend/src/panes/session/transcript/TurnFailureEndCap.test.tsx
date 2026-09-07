@@ -711,6 +711,98 @@ test("foreign prose beside an unmentioned unnamed image keeps the image on a fal
   );
 });
 
+test("prefix-colliding filenames refuse the images instead of guessing", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: a)) describe it";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a" },
+          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "a)" },
+        ],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
+test("a lone prefix filename still pairs when only it fits", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: a) describe it";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a" },
+          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "a)" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a" },
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "a)" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
+test("a reloaded marker-only input with a paren in the lost filename shows re-attach instead of Retry", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 1: plot).png)",
+          images: [{ src: "/s/sess_1/images/abc" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+});
+
+test("an image-only input whose filename holds a paren retries on a rebuilt anchor", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: plot).png)";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,cGxvdA==", name: "plot).png" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1]", [
+      { marker: 1, mediaType: "image/png", data: "cGxvdA==", name: "plot).png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
 test("foreign prose occupying the pairing slot still refuses the images", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: ghost.png) then (attached image 1) then (attached image 2)";

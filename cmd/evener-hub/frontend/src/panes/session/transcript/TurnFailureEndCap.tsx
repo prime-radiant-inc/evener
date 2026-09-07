@@ -75,10 +75,26 @@ interface ImageOccurrence {
 // parseOccurrences finds the "(attached image N[: name])" prose the submit
 // boundary wrote (attachmentMarkers.ts). A filename may itself contain ")",
 // so the name is not simply "up to the first closing paren": after the
-// "N: " prefix, the longest known attachment name followed by ")" wins; only
-// when no known name fits does the span fall back to the first ")". An
-// absent name (or an empty one) is undefined, matching the wire shape where
-// an unnamed attachment's marker translates with no name clause.
+// "N: " prefix, a known attachment name followed by ")" wins. But when
+// SEVERAL known names fit — filenames that are prefixes of one another, e.g.
+// "a" and "a)" against "(attached image 1: a))" — the pairing must NOT guess:
+// the mention parses with no name (ImageOccurrence.name stays undefined), so
+// it falls into the positional unnamed path, whose exact-count/order guards
+// refuse rather than misassign bytes. Only one fitting name is a safe claim.
+// With no fitting name at all the span falls back to the raw text up to the
+// first ")", which keeps foreign prose verbatim. An absent name (or an empty
+// one) is undefined, matching the wire shape where an unnamed attachment's
+// marker translates with no name clause.
+//
+// The raw first-")" fallback ALSO swallows a tight filename tail: a reloaded
+// marker-only input whose lost filename holds ")" (e.g. "(attached image 1:
+// plot).png)" with no bytes and no known names) parses as one span ending at
+// the tail's final ")", so markerOnly still classifies it as image-only and
+// the reader gets the re-attach note instead of a text-only Retry. Greedy
+// consumption looks ahead: it extends only through runs of ")<name-char>"
+// (a ")" glued to word characters), stopping at a ")" followed by anything
+// else, so user prose after the marker ("(attached image 9: ghost) hi") keeps
+// its existing span.
 function parseOccurrences(text: string, knownNames: (string | undefined)[]): ImageOccurrence[] {
   const names = knownNames.filter((name): name is string => name !== undefined && name !== "");
   const prefix = /\(attached image (\d+)/g;
@@ -89,31 +105,39 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
     const cursor = match.index + match[0].length;
     const rest = text.slice(cursor);
     if (rest.startsWith(")")) {
-      occurrences.push({ marker, start: match.index, end: cursor + 1 });
-      prefix.lastIndex = cursor + 1;
+      const spanEnd = extendSpanEnd(text, cursor);
+      occurrences.push({ marker, start: match.index, end: spanEnd });
+      prefix.lastIndex = spanEnd;
     } else if (rest.startsWith(":")) {
       const afterColon = rest.slice(1).startsWith(" ") ? rest.slice(2) : rest.slice(1);
       const base = cursor + (rest.length - afterColon.length);
-      const fitting = names
-        .filter((name) => afterColon.startsWith(`${name})`))
-        .sort((left, right) => right.length - left.length);
-      const best = fitting[0];
-      if (best !== undefined) {
+      const fitting = names.filter((name) => afterColon.startsWith(`${name})`));
+      if (fitting.length === 1) {
+        const best = fitting[0] as string;
         occurrences.push({ marker, name: best, start: match.index, end: base + best.length + 1 });
         prefix.lastIndex = base + best.length + 1;
+      } else if (fitting.length > 1) {
+        // Prefix-colliding filenames (see above): no name, so the mention
+        // joins the positional unnamed path instead of claiming bytes it may
+        // not own. The span still extends through the same tight tail the
+        // nameless branch consumes, so markerOnly sees one span.
+        const spanEnd = extendRawSpanEnd(afterColon, base);
+        occurrences.push({ marker, start: match.index, end: spanEnd });
+        prefix.lastIndex = spanEnd;
       } else {
         const close = afterColon.indexOf(")");
         if (close === -1) {
           prefix.lastIndex = match.index + 1;
         } else {
           const rawName = afterColon.slice(0, close);
+          const spanEnd = extendRawSpanEnd(afterColon, base);
           occurrences.push({
             marker,
             ...(rawName ? { name: rawName } : {}),
             start: match.index,
-            end: base + close + 1,
+            end: spanEnd,
           });
-          prefix.lastIndex = base + close + 1;
+          prefix.lastIndex = spanEnd;
         }
       }
     } else {
@@ -122,6 +146,40 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
     match = prefix.exec(text);
   }
   return occurrences;
+}
+
+// extendSpanEnd consumes a tight filename tail after a nameless ")"
+// occurrence: while the next characters are ")<name-char>" (a ")" glued to a
+// word character, another ")", or a "." that itself continues into a word
+// character — the shape of a filename tail such as ").png)" — the span
+// extends through them. A ")" followed by anything else (a space, end of
+// text, other punctuation) ends the span, so user prose after the marker
+// ("(attached image 9: ghost) hi") keeps its existing span.
+function extendSpanEnd(text: string, closeParen: number): number {
+  const continuesTail = (index: number): boolean => {
+    const next = text[index] ?? "";
+    if (/[\w)]/.test(next)) return true;
+    if (next !== ".") return false;
+    return /[\w)]/.test(text[index + 1] ?? "");
+  };
+  let end = closeParen + 1;
+  while (text[end - 1] === ")" && end < text.length && continuesTail(end)) {
+    const next = text.indexOf(")", end);
+    if (next === -1) break;
+    end = next + 1;
+  }
+  return end;
+}
+
+// extendRawSpanEnd is the same tight-tail consumption over the after-colon
+// slice of a named mention: afterColon starts just past the ": " separator
+// and base is its offset in text (an index INTO afterColon space). It first
+// skips to the first ")" within that space, then extends through any tight
+// tail exactly as extendSpanEnd does, mapping the result back to text space.
+function extendRawSpanEnd(afterColon: string, base: number): number {
+  const close = afterColon.indexOf(")");
+  if (close === -1) return base;
+  return base + extendSpanEnd(afterColon, close);
 }
 
 // occurrencesCoverText reports whether every non-whitespace character of
