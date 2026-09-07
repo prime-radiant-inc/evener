@@ -26,6 +26,14 @@ func TestSourceForThreadNilRegistryIsQuiet(t *testing.T) {
 	}
 }
 
+func TestSourceForThreadInvalidRefPreservesInvalidParams(t *testing.T) {
+	_, err := sourceForThread(appsource.NewRegistry(), "bad-ref", "")
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("invalid ref error = %v, want InvalidParams", err)
+	}
+}
+
 func TestHubAdmissionStableOwnerChangeSucceeds(t *testing.T) {
 	testHubAdmissionInventoryChange(t, true)
 }

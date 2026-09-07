@@ -14,7 +14,14 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 		return nil, errors.New("source registry unavailable")
 	}
 	if ref != "" {
-		return sources.SourceForRef(ref)
+		source, err := sources.SourceForRef(ref)
+		if err != nil {
+			if _, parseErr := appwire.ParseRef(ref); parseErr != nil {
+				return nil, appwire.InvalidParams(parseErr.Error())
+			}
+			return nil, err
+		}
+		return source, nil
 	}
 	source, ok := sources.Source("local")
 	if !ok {

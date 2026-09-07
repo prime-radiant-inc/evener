@@ -40,6 +40,23 @@ type ServerConfig struct {
 	// pure and synchronous; ordered dispatch uses it before starting the read or
 	// invoking the unsubscribe handler. It does not determine delivery routing.
 	SubscriptionAdmissionResolver func(appwire.Message) (string, bool)
+	// SubscriptionAdmissionResolverV2 distinguishes invalid target requests from
+	// unresolved subscribing reads, so native handlers retain validation errors.
+	SubscriptionAdmissionResolverV2 func(appwire.Message) SubscriptionAdmissionResolution
+}
+
+type SubscriptionAdmissionIntent uint8
+
+const (
+	SubscriptionAdmissionNotSubscribe SubscriptionAdmissionIntent = iota
+	SubscriptionAdmissionResolved
+	SubscriptionAdmissionUnresolved
+	SubscriptionAdmissionInvalid
+)
+
+type SubscriptionAdmissionResolution struct {
+	Key    string
+	Intent SubscriptionAdmissionIntent
 }
 
 // requestQueueCap bounds each connection's inbound request queue. It must
@@ -1375,13 +1392,24 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	var resolverPanic bool
 	var resolvedKey string
 	var resolved bool
-	if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+	intent := SubscriptionAdmissionNotSubscribe
+	if resolve := c.server.cfg.SubscriptionAdmissionResolverV2; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+		var result SubscriptionAdmissionResolution
+		result, resolverPanic = safeResolveAdmissionV2(c.server, resolve, msg)
+		resolvedKey, resolved, intent = result.Key, result.Intent == SubscriptionAdmissionResolved, result.Intent
+	} else if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
 		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
-		if resolverPanic {
-			ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
-		} else if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) && (!resolved || resolvedKey == "") {
-			ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
+		if msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) {
+			intent = SubscriptionAdmissionResolved
+			if !resolved || resolvedKey == "" {
+				intent = SubscriptionAdmissionUnresolved
+			}
 		}
+	}
+	if resolverPanic {
+		ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
+	} else if intent == SubscriptionAdmissionUnresolved {
+		ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
 		if resolved && resolvedKey != "" {
@@ -1423,6 +1451,16 @@ func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string,
 	}()
 	key, ok = resolve(msg)
 	return key, ok, false
+}
+
+func safeResolveAdmissionV2(server *Server, resolve func(appwire.Message) SubscriptionAdmissionResolution, msg appwire.Message) (result SubscriptionAdmissionResolution, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
+			result, panicked = SubscriptionAdmissionResolution{}, true
+		}
+	}()
+	return resolve(msg), false
 }
 
 func threadReadAdmissionEligible(raw json.RawMessage) bool {
