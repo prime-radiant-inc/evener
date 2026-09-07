@@ -188,6 +188,13 @@ func namedInstanceProfile(name, base, model string) *provider.Profile {
 	return resolveTestProfile(name, map[string]registry.Provider{name: {Base: base, APIKey: "test"}}, model)
 }
 
+// baseProviderProfile resolves model on the base provider itself, under its
+// own id. It is the reference a named instance's inherited facts are measured
+// against, so a catalog refresh moves both sides together.
+func baseProviderProfile(base, model string) *provider.Profile {
+	return resolveTestProfile(base, map[string]registry.Provider{base: {APIKey: "test"}}, model)
+}
+
 // namedOpenAIInstanceProfile is the fixture's renamed-openai instance profile:
 // an instance whose name differs from the provider id behind it.
 func namedOpenAIInstanceProfile(name, model string) *provider.Profile {
