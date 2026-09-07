@@ -1616,6 +1616,57 @@ describe("view-mode anchor preservation", () => {
     ).toEqual({ id: "run:a", index: 0, offset: 12 });
   });
 
+  // roborev on PR #947 (round seven): one source item wears a different id
+  // per view - intent:<id> in Intent, <id> in Tools/Full, run:<id> once it
+  // folds - so a restore across a view change has to match by source
+  // identity (with the source index agreeing), not by the literal id.
+  test("a position captured on an intent proxy restores to the same source item in a tool-call view", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "a", sourceIndex: 0, index: 0, offset: 0, isMessage: false },
+      { id: "b", sourceIndex: 1, index: 1, offset: 0, isMessage: false },
+      { id: "agent-4", sourceIndex: 4, index: 2, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "intent:b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "b", index: 1, offset: 7 });
+  });
+
+  test("a position captured on an intent proxy restores to the folded run that now holds its source item", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "run:a", sourceIndex: 0, index: 0, offset: 0, isMessage: false, members: ["a", "b", "c"] },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "intent:b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "run:a", index: 0, offset: 7 });
+  });
+
+  test("a tool-call view position restores to its intent proxy in Intent view", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "intent:b", sourceIndex: 1, index: 3, offset: 0, isMessage: false },
+      { id: "agent-4", sourceIndex: 4, index: 4, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }), positions),
+    ).toEqual({ id: "intent:b", index: 3, offset: 7 });
+  });
+
+  test("the same identity at a different source index is another item: the nearest message wins instead", () => {
+    const positions: ViewAnchorPosition[] = [
+      { id: "agent-0", sourceIndex: 0, index: 0, offset: 0, isMessage: true },
+      { id: "intent:b", sourceIndex: 5, index: 1, offset: 0, isMessage: false },
+    ];
+    expect(
+      restoreTopAnchor(captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 7, isMessage: false }), positions),
+    ).toEqual({ id: "agent-0", index: 0, offset: 7 });
+  });
+
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
 

@@ -122,16 +122,36 @@ export function captureTopAnchor(position: ViewAnchorPosition): ViewAnchor {
   };
 }
 
+// The rendered position that stands for a captured anchor's source item. One
+// source item wears a different id per view - intent:<id> in Intent, <id> in
+// Tools/Full, tools:<id>:… for a summary, run:<id> once it folds - so after
+// the literal id, match the source identity (sourceIdentity strips the view
+// prefixes) with the source index agreeing where the capture carries one,
+// then a folded run whose members carry the item (roborev on PR #947).
+function positionForAnchor(
+  anchor: { id: string; sourceIndex?: number },
+  positions: readonly ViewAnchorPosition[],
+): ViewAnchorPosition | undefined {
+  const exact = positions.find((position) => position.id === anchor.id);
+  if (exact) return exact;
+  const identity = sourceIdentity(anchor.id);
+  const sameSource = positions.find(
+    (position) =>
+      sourceIdentity(position.id) === identity &&
+      (anchor.sourceIndex === undefined || position.sourceIndex === anchor.sourceIndex),
+  );
+  if (sameSource) return sameSource;
+  return positions.find((position) =>
+    position.members?.some((member) => member === anchor.id || sourceIdentity(member) === identity),
+  );
+}
+
 export function restoreTopAnchor(
   anchor: ViewAnchor,
   positions: readonly ViewAnchorPosition[],
 ): RestoredViewAnchor | undefined {
-  const exact = positions.find((position) => position.id === anchor.id);
-  if (exact) return { id: exact.id, index: exact.index, offset: anchor.offset };
-  // The entry has folded into a tool run since it was captured: the run's
-  // anchor is the row that now stands where the entry stood.
-  const owner = positions.find((position) => position.members?.includes(anchor.id));
-  if (owner) return { id: owner.id, index: owner.index, offset: anchor.offset };
+  const same = positionForAnchor(anchor, positions);
+  if (same) return { id: same.id, index: same.index, offset: anchor.offset };
 
   const nearest = positions
     .filter((position) => position.isMessage)
@@ -273,7 +293,8 @@ function anchorFromCapture(
 ): ViewAnchor | undefined {
   const metadata = capturedAnchorMetadata.get(captured);
   if (metadata) return metadata;
-  const source = candidates.find((candidate) => candidate.id === captured.anchorId);
+  if (captured.anchorId === undefined) return undefined;
+  const source = positionForAnchor({ id: captured.anchorId }, candidates);
   if (!source) return undefined;
   return captureTopAnchor({ ...source, offset: captured.anchorOffset });
 }
