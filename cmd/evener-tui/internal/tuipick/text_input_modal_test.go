@@ -186,6 +186,37 @@ func TestCredentialPasteModal_SummarizesAnythingPasted(t *testing.T) {
 	}
 }
 
+// TestCredentialPasteModal_ShowsOnlyWhatLooksLikeAPath: a terminal without
+// bracketed paste marks nothing as pasted, so the field cannot tell a pasted
+// secret from a typed one. It shows what looks like a path and summarizes
+// everything else, which is the side to err on in a credential prompt.
+func TestCredentialPasteModal_ShowsOnlyWhatLooksLikeAPath(t *testing.T) {
+	withTestColorProfile(t)
+	m := NewCredentialPasteModal("Credential JSON", "Paste it:", "t")
+	for _, tt := range []struct {
+		name, typed string
+		shown       bool
+	}{
+		{name: "absolute path", typed: "/home/somebody/adc.json", shown: true},
+		{name: "home path", typed: "~/.config/gcloud/adc.json", shown: true},
+		{name: "relative path", typed: "./adc.json", shown: true},
+		{name: "unmarked secret", typed: "sk-ant-api03-SECRET-MATERIAL-typed-without-a-paste-mark", shown: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			typed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.typed)})
+			view := ansiPattern.ReplaceAllString(typed.(TextInputModal).View(), "")
+			// The summary marker is the reliable signal: a long value is
+			// wrapped by the overlay, so searching for it whole can miss it.
+			if summarized := strings.Contains(view, "characters pasted"); summarized == tt.shown {
+				t.Fatalf("summarized = %t, want shown = %t for %q: %q", summarized, tt.shown, tt.typed, view)
+			}
+			if tt.shown && !strings.Contains(view, tt.typed) {
+				t.Fatalf("a path short enough to fit must render whole: %q", view)
+			}
+		})
+	}
+}
+
 // TestTextInputModal_DoesNotRenderControlBytes: clipboard content reaches the
 // view, so an escape sequence in it must not reach the terminal.
 func TestTextInputModal_DoesNotRenderControlBytes(t *testing.T) {

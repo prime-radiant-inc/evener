@@ -114,7 +114,18 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // two tests cover the material that must never be echoed, whatever its
 // length. A path stays visible however long it is.
 func (m TextInputModal) pastedMaterial() bool {
-	return m.sawPaste || strings.HasPrefix(strings.TrimSpace(m.input), "{") || strings.ContainsAny(m.input, "\n\r")
+	value := strings.TrimSpace(m.input)
+	if value == "" {
+		return false
+	}
+	if m.sawPaste || strings.HasPrefix(value, "{") || strings.ContainsAny(value, "\n\r") {
+		return true
+	}
+	// A terminal without bracketed paste marks nothing as pasted, so nothing
+	// here can tell a pasted secret from a typed one. What the prompt asks to
+	// be typed is a path, so that is what it shows; anything else is treated
+	// as material to keep off the screen.
+	return !strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "~") && !strings.HasPrefix(value, ".")
 }
 
 // printable drops the control bytes a paste can carry, so clipboard content

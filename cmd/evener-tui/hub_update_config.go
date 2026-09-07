@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -409,21 +410,36 @@ func credentialJSONDocument(value string) (string, error) {
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
 	}
-	// This runs on the update loop, so what the path names is checked before
-	// it is opened: reading a pipe would never return and the interface would
-	// stop responding, and reading a character device would grow until the
-	// process died. A credential document is a small regular file.
-	switch info, err := os.Stat(path); {
-	case err != nil:
-		return "", credentialPathError(err)
-	case !info.Mode().IsRegular():
-		return "", errors.New("credential JSON: the path it was read as is not a regular file")
-	case info.Size() > maxCredentialFileBytes:
-		return "", fmt.Errorf("credential JSON: the file it was read as is too large (over %d bytes)", maxCredentialFileBytes)
-	}
-	data, err := os.ReadFile(path)
+	return readCredentialFile(path)
+}
+
+// readCredentialFile reads a credential document from a path the user gave.
+// This runs on the update loop, where a read that never returns stops the
+// interface responding and one that never ends exhausts the process, so the
+// file is opened without blocking, judged by what the open descriptor
+// actually is, and read through a bound. Checking the path and then opening
+// it by name again would leave a window for it to become something else.
+func readCredentialFile(path string) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|nonblockingOpen, 0)
 	if err != nil {
 		return "", credentialPathError(err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return "", credentialPathError(err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("credential JSON: the path it was read as is not a regular file")
+	}
+	// One byte past the bound, so a file at exactly the bound still reads and
+	// anything longer is refused however it grew.
+	data, err := io.ReadAll(io.LimitReader(f, maxCredentialFileBytes+1))
+	if err != nil {
+		return "", credentialPathError(err)
+	}
+	if len(data) > maxCredentialFileBytes {
+		return "", fmt.Errorf("credential JSON: the file it was read as is too large (over %d bytes)", maxCredentialFileBytes)
 	}
 	return string(data), nil
 }
