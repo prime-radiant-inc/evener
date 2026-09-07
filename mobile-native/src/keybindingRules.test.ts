@@ -6,6 +6,17 @@ import {
 } from "./keybindingRules";
 
 describe("native hub shortcut rules", () => {
+	it("resolves modifier aliases without rewriting authored pattern keys", () => {
+		const chord = String.raw`$mod+(\$mod)`;
+		const rules = [{ action: "palette.open", chord }];
+		for (const platform of ["apple", "other"] as const) {
+			const preview = keybindingPreview(rules, platform);
+			expect(preview.warnings).toEqual([]);
+			expect(
+				preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts,
+			).toEqual([chord]);
+		}
+	});
 	it("shows the authored winning rule through invalid repeats, collisions, and unbinding", () => {
 		const first = { action: "palette.open", chord: "(F6|F7)" };
 		const shortcuts = (rules: Parameters<typeof keybindingPreview>[0]) =>

@@ -105,6 +105,8 @@ client, services, stores, and notification handling.
 ## Standalone simulator builds
 
 After `npx expo prebuild`, install iOS pods with `pod install` in `ios/`.
+Also rerun `pod install` after `npm ci`: CocoaPods restores generated vendored
+sources inside native dependencies, including Expo SQLite's prefixed headers.
 Build the Evener workspace and scheme in Release for an iOS Simulator using
 normal simulator signing. Do not set `CODE_SIGNING_ALLOWED=NO`: that removes
 the application entitlement required by SecureStore, so saving hub credentials

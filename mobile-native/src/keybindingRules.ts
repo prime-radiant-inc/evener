@@ -12,6 +12,26 @@ import type { KeybindingsRule } from "../../cmd/evener-hub/frontend/src/protocol
 
 const actionIds = new Set(ACTION_DISPLAY_ROWS.map((row) => row.actionId));
 
+function resolveModifierAlias(chord: string, platform: KeybindingsPlatform) {
+	const modifier = platform === "apple" ? "Meta" : "Control";
+	// Use tinykeys' press and modifier boundaries; the final token is a key
+	// or pattern, whose literal $mod text must remain untouched.
+	return chord
+		.split(" ")
+		.map((press) => {
+			const parts = press.split(/(?<=\w|\])\+/);
+			return parts
+				.map((part, index) => {
+					if (index === parts.length - 1) return part;
+					if (part === "$mod") return modifier;
+					if (part === "[$mod]") return `[${modifier}]`;
+					return part;
+				})
+				.join("+");
+		})
+		.join(" ");
+}
+
 export function replaceKeybindingRule(
 	rules: readonly KeybindingsRule[],
 	actionId: string,
@@ -36,10 +56,7 @@ export function keybindingPreview(
 	const transformed = rules.map((rule) => ({
 		...rule,
 		chord:
-			rule.chord?.replaceAll(
-				"$mod",
-				platform === "apple" ? "Meta" : "Control",
-			) ?? null,
+			rule.chord === null ? null : resolveModifierAlias(rule.chord, platform),
 	}));
 	const result = validateOverrideRules(transformed, registry, platform);
 	const effective = new Set(result.rules.map((rule) => rule.action));
