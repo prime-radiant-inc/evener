@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
 // TestRetainedMatchesAccumulatorParity proves the O(1) running-accumulator
@@ -71,10 +73,15 @@ func BenchmarkSearchRetainedOutputManyMatches(b *testing.B) {
 		fmt.Fprintf(&sb, "match line %04d with some padding text to resemble log output\n", i)
 	}
 	data := []byte(sb.String())
+	// The nested literal stays: retainedSearchOptions embeds
+	// jobstore.SearchOptions, so its fields cannot be keyed directly.
+	// (modernize's embedlit suggestion does not compile here.)
 	opts := retainedSearchOptions{
-		Regexp:             regexp.MustCompile(`match line`),
-		MaxMatches:         100,
-		MaxSerializedBytes: 1 << 20,
+		Regexp: regexp.MustCompile(`match line`),
+		SearchOptions: jobstore.SearchOptions{
+			MaxMatches:         100,
+			MaxSerializedBytes: 1 << 20,
+		},
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
