@@ -215,7 +215,66 @@ Watch event triggered: file changed.
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
   expect(n.title).toBe("Watch triggered");
-  expect(n.tone).toBe("warning");
+  // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
+  // something needing a human — no watch notification earns a tone chip.
+  expect(n.tone).toBe("neutral");
+});
+
+test("a watch notification with concerns still reads neutral: words carry it, never a chip", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 300s).
+Note: keep an eye on the flaky edge case
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.tone).toBe("neutral");
+});
+
+test("a job-targeted condition fire classifies as watch with its prose and job kept", () => {
+  // RoboRev PR #954: a job-targeted watch fire carries job_id AND
+  // event/status watch. It is still a watch delivery — prose kept whole,
+  // tone neutral, job named in the title, trigger in the secondary.
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Matched output_match: ready on job_a1b2.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.tone).toBe("neutral");
+  expect(n.jobId).toBe("job_a1b2");
+  expect(n.title).toBe("Output matched on job_a1b2");
+  expect(n.secondary).toBe("output_match: ready");
+  expect(n.prose).toContain("Matched output_match: ready on job_a1b2.");
+  expect(n.excerpt).toBe("");
+});
+
+test("a job-less watch keeps the generic trigger title and its reason as secondary", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w9">
+Timer fired (every 300s).
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Timer fired");
+  expect(n.secondary).toBe("repeat");
+});
+
+test("watch titles derive from the trigger: event fires name the event, timers the timer (RoboRev PR #954)", () => {
+  const eventBlock = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="event: JOB_FINISHED" output_bytes="0">
+Watch event triggered: event: JOB_FINISHED.
+</job-notification>`;
+  const eventN = notif(notificationsOf(parseSteeringNotifications(eventBlock)), 0);
+  expect(eventN.type).toBe("watch");
+  expect(eventN.title).toBe("Event on job_a1b2: JOB_FINISHED");
+  expect(eventN.tone).toBe("neutral");
+  expect(eventN.prose).toContain("Watch event triggered");
+
+  const timerBlock = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="after" output_bytes="0" watch_id="w9">
+Timer fired after 300s.
+Note: check the build
+</job-notification>`;
+  const timerN = notif(notificationsOf(parseSteeringNotifications(timerBlock)), 0);
+  expect(timerN.type).toBe("watch");
+  expect(timerN.title).toBe("Timer fired");
+  expect(timerN.prose).toContain("Note: check the build");
 });
 
 test("an Observer callback parses as a notification", () => {
