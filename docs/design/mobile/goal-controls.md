@@ -15,3 +15,21 @@ Automated verification passes: 145 native tests, 432 targeted shared projector/s
 Manual iOS 26.5 iPhone 17 Pro and Android API 35 Pixel 7 checks set an objective through the Session-to-composer action, then observed the real isolated hub report blocked with six iterations. The scripted image provider repeats its response, so that terminal state verifies engine-driven updates, not successful autonomous goal execution. Both cleared the goal, and fresh thread/read responses confirmed absent goals for local:034K0xcRUdVXB4a529zcCs and local:034K15lO0VfSdITfzQSnBh. Android also reopened the objective for editing and retained that composer draft after clearing the goal. Draft replacement cancellation and confirmation were exercised on Android. A keyboard handoff issue was fixed by waiting for Android window focus to return after modal dismissal; the installed app then showed the keyboard with the composer above it. Both Release builds pass after these changes.
 
 Remaining acceptance includes iOS goal-edit replacement, native lost-acknowledgement and storage-failure injection, physical devices, VoiceOver/TalkBack, large text, and full command discovery. Successful set/clear and live status observation do not establish those cases. Production hub 9180 was not used.
+
+## v4 acknowledgment validation and SDK recipe — 7 September
+
+The shared native service now validates the boolean started response before
+clearing its durable goal-command checkpoint. Malformed acknowledgments retain
+unconfirmed delivery without replay; clear preserves the ordinary draft. Five
+service cases reproduced the previous false-success behavior. The 114-test
+service suite and two real-SQLite checkpoint regressions now pass.
+
+The independently packaged goals recipe adds explicit ownership and complete
+reviewed-goal/instance preflight, exact wire set/clear parameters, validated
+acknowledgment and same-instance readback after success or failure. goal/set has
+no server CAS, expected-instance or mutation-ID fields: preflight cannot prevent
+another writer racing the change, and the hub may resume an exited daemon.
+No goal result authorizes automatic replay or proves execution. The 112 SDK
+contracts and package gate pass; see the package README for runnable examples.
+Real successful autonomous goal continuation on the current iOS/SDK build and
+the remaining device/fault matrix are still unqualified.

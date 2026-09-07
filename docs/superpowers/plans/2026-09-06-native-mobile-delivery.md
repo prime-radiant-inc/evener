@@ -492,3 +492,32 @@ two fixture sessions/provider, and verifies the four pre-existing draft hashes.
 Current iOS source is 8fb3e343c. Native uncertainty/socket loss/concurrency,
 held queues, accessibility and release-wide work remain open. Goal SDK proposals
 and native acknowledgment-validation findings are ready for the next slice.
+
+## Goal acknowledgment and SDK checkpoint
+
+The native service now requires a boolean `started` acknowledgment from
+`goal/set`. Five malformed-response regressions failed before this check; after
+the fix, the 114-test service suite passes. Two native tests exercise the real
+SQLite draft path: malformed set retains the command as unconfirmed, malformed
+clear retains the ordinary draft, and another attempt sends no additional RPC.
+
+The packaged `goals.mjs` recipe supports read-only review, set and clear.
+Mutations require explicit ownership opt-in, the reviewed instance and complete
+goal state, and current goal capability. The recipe dispatches only the actual
+`{ref, objective}` wire parameters once. Its reviewed-goal check is nonatomic:
+the server has no goal revision, expected-instance or mutation-ID precondition
+and can resume an exited daemon. A malformed/lost reply remains uncertain even
+when readback changes; a boolean acknowledgment is not goal execution proof.
+
+Validation passes: 2,274 mobile tests, 585 native tests plus TypeScript, mobile
+TypeScript, the canonical web gate, 112 SDK contracts across ten files, and
+independent package qualification. The catalog lists 15 recipes covering 47/91
+method names and three notification names, measuring presence only. Luna medium
+proposals and independent review informed the implementation; the coordinator
+corrected proposal mismatches and ran all reported checks.
+
+Direct iOS/SDK goal continuation and successful completion, current-build goal
+edit/clear and native uncertain delivery remain open. The installed iOS bundle
+still corresponds to the preceding queue-qualified `8fb3e343c` source; rebuild
+for the goal acceptance run. Full tasks/jobs, multi-hub, accessibility, physical
+device and release qualification remain active work.

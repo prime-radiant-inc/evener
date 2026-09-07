@@ -96,13 +96,62 @@ The example reads handshake capabilities, model catalog, first session page,
 launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
-management and recovery paths. Additional creation cases, goals, tasks/jobs,
+management and recovery paths. Additional creation cases, tasks/jobs,
 continuous reconnect recovery, credentials and hub upgrades remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
+
+### Reviewing and changing a goal
+
+`goals.mjs` reads the current goal by default. Set `EVENER_GOAL_PARAMS_FILE` to a
+JSON file containing `{ "ref": "local:..." }`. An optional, unused absolute
+`EVENER_GOAL_REVIEW_FILE` saves `ref`, `expectedInstanceId` and the complete
+`reviewedGoal` (or explicit `null` when absent) privately with exclusive creation
+and mode 0600. Standard output reports outcome, presence and the acknowledgment's
+`started` boolean, without printing the objective.
+
+```sh
+EVENER_GOAL_PARAMS_FILE=/absolute/goal-read.json \
+EVENER_GOAL_REVIEW_FILE=/absolute/goal-review.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+node node_modules/@evener/appwire-client/examples/goals.mjs
+```
+
+Author a decision using those three review fields. For `EVENER_GOAL_ACTION=set`,
+also supply a nonempty `objective` string; the recipe preserves the authored
+text. For `clear`, omit `objective`; the wire request sends an empty objective.
+Both actions require `EVENER_GOAL_MUTATION=1` and a separately authored
+`EVENER_GOAL_OWNED_HUB` matching `EVENER_RPC_URL`.
+
+```sh
+EVENER_GOAL_ACTION=set EVENER_GOAL_MUTATION=1 \
+EVENER_GOAL_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_GOAL_PARAMS_FILE=/absolute/goal-set.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+node node_modules/@evener/appwire-client/examples/goals.mjs
+```
+
+The recipe checks the session instance, current goal and goal capability before
+one `goal/set` request. **This preflight is nonatomic:** that RPC has no instance
+precondition, goal revision or mutation ID. Another writer can change the goal
+after the check, and the hub can resume an exited session. The recipe cannot
+provide server idempotency or prevent that race.
+
+Programmatic callers can import `runGoals` from `examples/goals-logic.mjs` and
+own the client lifetime. The function validates the boolean `started` response
+and reads the same session again after either acknowledgment or failure. A lost
+or malformed reply remains uncertain (CLI exit 2), even when the requested state
+appears in readback; no action is automatically replayed. A readback error throws,
+and dual failures remain ordered in an `AggregateError`. A goal can complete or
+change before readback, so the returned goal is current observed state.
+`started: false` is a valid acknowledgment, and neither boolean proves goal
+completion. All outcomes retain `execution: "unverified"`. Actual autonomous
+goal continuation and terminal-state evidence require a separate harness run.
 
 ### Reviewing and changing queued messages
 

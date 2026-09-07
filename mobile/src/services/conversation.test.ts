@@ -181,6 +181,31 @@ function setup(options: { thread?: Thread; olderCursor?: string } = {}) {
 }
 
 describe("goal actions", () => {
+  it.each([null, undefined, {}, [], { started: "true" }])(
+    "rejects a malformed goal acknowledgment without replay: %j",
+    async (response) => {
+      const { client, service } = setup();
+      client.on("goal/set", () => response as never);
+      await service.open("local:test");
+      await expect(service.setGoal("objective-sentinel")).rejects.toThrow();
+      expect(
+        client.calls.filter((call) => call.method === "goal/set"),
+      ).toHaveLength(1);
+      service.close();
+    },
+  );
+  it.each([true, false])(
+    "accepts a boolean goal-start acknowledgment: %s",
+    async (started) => {
+      const { client, service } = setup();
+      client.on("goal/set", () => ({ started }));
+      await service.open("local:test");
+      await expect(
+        service.setGoal("objective-sentinel"),
+      ).resolves.toBeUndefined();
+      service.close();
+    },
+  );
   it("sets and clears the current session goal through the wire", async () => {
     const { client, service } = setup();
     client.on("goal/set", () => ({ started: false }));
