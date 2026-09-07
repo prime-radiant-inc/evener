@@ -149,13 +149,14 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 // instead of orphaned prose. An occurrence whose image has no bytes is left
 // verbatim: rewriting it would put a raw marker on the wire (kata 6nmz).
 //
-// ambiguous is true when the pairing cannot be uniquely determined: a name
-// shared by several paired occurrences or images means the true
-// marker-to-bytes identity was lost on the wire, and any assignment would be
-// a guess. It also covers the belt-and-braces case below: anchor text that
-// does not re-translate back to the stored prose byte-for-byte, which proves
-// the pairing corrupted something. Callers must refuse the images (degrade to
-// text-only or unavailable) rather than send a guessed payload.
+// ambiguous is true when the pairing cannot be uniquely determined, and the
+// caller must refuse the images rather than guess: a name claimed under
+// several DIFFERENT markers, or several attachments matching one name, means
+// the true marker-to-bytes identity was lost on the wire. Repeated copies of
+// one "(marker: name)" mention over a single attachment are the same claim
+// restated, not a conflict, and stay safe. It also covers the belt-and-braces
+// case below: anchor text that does not re-translate back to the stored prose
+// byte-for-byte, which proves the pairing corrupted something.
 function planRetryImages(
   images: ItemImage[] | undefined,
   text: string,
@@ -180,16 +181,23 @@ function planRetryImages(
     list.push(index);
     byName.set(image.name, list);
   });
-  const occurrenceNameCounts = new Map<string, number>();
+  // Only names participating on both sides can conflict: one name under
+  // several markers, or several attachments under one name. Anything else -
+  // foreign prose, unnamed images, a lone repeated mention - pairs exactly.
+  const markersByName = new Map<string, Set<number>>();
   occurrences.forEach((occurrence) => {
     if (occurrence.name === undefined || !byName.has(occurrence.name)) return;
-    occurrenceNameCounts.set(occurrence.name, (occurrenceNameCounts.get(occurrence.name) ?? 0) + 1);
+    const markers = markersByName.get(occurrence.name) ?? new Set<number>();
+    markers.add(occurrence.marker);
+    markersByName.set(occurrence.name, markers);
   });
-  let ambiguous =
-    [...occurrenceNameCounts.entries()].some(
-      ([name, occurrenceCount]) => occurrenceCount > 1 || (byName.get(name)?.length ?? 0) > 1,
-    ) ||
-    [...byName.entries()].some(([name, imageIndices]) => imageIndices.length > 1 && occurrenceNameCounts.has(name));
+  let ambiguous = false;
+  for (const [name, markers] of markersByName) {
+    if (markers.size > 1 || (byName.get(name)?.length ?? 0) > 1) {
+      ambiguous = true;
+      break;
+    }
+  }
   const pendingOccurrences: number[] = [];
   occurrences.forEach((occurrence, occurrenceIndex) => {
     if (occurrence.name !== undefined && !byName.has(occurrence.name)) return;
@@ -219,11 +227,23 @@ function planRetryImages(
     if (decoded[imageIndex] !== undefined) rewriteOccurrence[occurrenceIndex] = true;
   });
   const attachments: InputAttachment[] = [];
+  // Fallback markers come from the unused set, never positional indexes: an
+  // index+1 can collide with a real marker when earlier markers were removed
+  // or reordered, shadowing an attachment in the translation map and failing
+  // the round-trip check below (dropping every attachment, valid ones too).
+  const usedMarkers = new Set<number>();
+  occurrences.forEach((occurrence) => usedMarkers.add(occurrence.marker));
+  const allocFallbackMarker = (): number => {
+    let marker = 1;
+    while (usedMarkers.has(marker)) marker += 1;
+    usedMarkers.add(marker);
+    return marker;
+  };
   items.forEach((_, index) => {
     const bytes = decoded[index];
     if (bytes === undefined) return;
     attachments.push({
-      marker: markerForImage[index] ?? index + 1,
+      marker: markerForImage[index] ?? allocFallbackMarker(),
       mediaType: bytes.mediaType,
       data: bytes.data,
       ...(bytes.name ? { name: bytes.name } : {}),
