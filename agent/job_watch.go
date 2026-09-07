@@ -4628,12 +4628,12 @@ func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
-	// One fsync per batch: AppendBatch is all-or-nothing, so a settle+teardown
-	// group either lands together or rolls back together — the same boundary
-	// per-event appends had, minus an fsync per event. jm.appendEvents is the
-	// production batch seam (store.AppendBatch); fault-injection tests that stub
-	// only appendEvent keep working through the per-event fallback below.
-	if jm.appendEvents != nil {
+	// Batch multi-event groups through AppendBatch: one fsync, all-or-nothing,
+	// so a co-generated group either lands together or rolls back together.
+	// Single-event appends stay on the appendEvent seam — one fsync either way,
+	// and fault-injection harnesses stubbing only appendEvent keep intercepting
+	// settle/drop/pending writes (same shape as appendJobEvents).
+	if len(events) > 1 && jm.appendEvents != nil {
 		return jm.appendEvents(events)
 	}
 	for _, e := range events {
