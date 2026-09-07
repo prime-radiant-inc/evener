@@ -866,6 +866,7 @@ func Unsubscribe(ctx context.Context, threadID string) {
 
 type subscriptionLifecycleContextKey struct{}
 type subscriptionLifecycleContextKeysKey struct{}
+type subscriptionUnresolvedContextKey struct{}
 
 // UnsubscribeLifecycle uses the identity resolved at ordered request ingress.
 // Without a resolved identity, preserve the caller's raw delivery-key fallback.
@@ -881,7 +882,11 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 			conn.cancelSubscriptionAdmissions(keys[1])
 			conn.server.mu.Lock()
 			if conn.server.conns[conn.id] == conn {
-				conn.server.subs.UnsubscribeLifecycleAlias(conn.id, keys[0], keys[1])
+				if unresolved, _ := ctx.Value(subscriptionUnresolvedContextKey{}).(bool); unresolved {
+					conn.server.subs.Unsubscribe(conn.id, keys[0])
+				} else {
+					conn.server.subs.UnsubscribeLifecycleAlias(conn.id, keys[0], keys[1])
+				}
 			}
 			conn.server.mu.Unlock()
 			return
@@ -1449,6 +1454,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 				c.cancelSubscriptionAdmissions(secondaryKey)
 				if intent == SubscriptionAdmissionUnresolved {
 					ctx = context.WithValue(ctx, subscriptionLifecycleContextKeysKey{}, []string{secondaryKey, resolvedKey})
+					ctx = context.WithValue(ctx, subscriptionUnresolvedContextKey{}, true)
 				}
 			}
 		}

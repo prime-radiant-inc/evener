@@ -855,8 +855,8 @@ func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOn
 
 func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
 	requestedRef := strings.TrimSpace(rawRef)
-	if rawRef != "" {
-		ref, err := appwire.ParseRef(rawRef)
+	if requestedRef != "" {
+		ref, err := appwire.ParseRef(requestedRef)
 		if err != nil {
 			return LocalDaemonEntry{}, err
 		}
