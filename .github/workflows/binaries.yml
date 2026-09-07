@@ -47,6 +47,10 @@ jobs:
             dist/*.tar.gz
             dist/checksums.txt
           if-no-files-found: error
+          # The snapshot channel is republished to the `snapshot` release on
+          # every green main build; the intermediate artifact is consumed
+          # within minutes, so the 90-day default is pure storage.
+          retention-days: 14
 
   release:
     name: Publish release
