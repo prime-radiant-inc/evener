@@ -89,3 +89,38 @@ Inspect automatic scroll offset changes, virtualized cell measurements and
 restoration suppression before choosing a fix. Do not treat an inferred race
 mechanism as a demonstrated root cause. The simulator's content size was
 restored to `large`.
+
+## Reproduced round-trip drift, 7 September 2026
+
+The clean Release used for shortcut acceptance reproduces the defect. Its
+installed JavaScript bundle is
+`b0d1e4067fda6e6e5b63ffa3290861f64d0b18658c6134addc42dd4d292cdb64`,
+from native source `d65d234f5`; subsequent `93e817cd3` and `fda2b9c53` do not
+change native code. Device: iPhone 17 Pro simulator, iOS 26.5. Source hashes:
+
+- `screens.tsx`: `121f94a6980b4ee4a72424aaaac1e707ba3f0745d3eff3fe1120fe0f6e4a8488`
+- `readerPosition.ts`: `4e473319feaa00736417c65595562c53cf6fab52d1a2875917f15278b39f2bdf`
+
+With the same 30-turn fixture open at ordinary `large` text size, scroll upward
+to Load older messages, load the earlier page, and scroll to the end of marker
+09 with marker 10 below. The persisted anchor is the user message
+`apptranscript-item-v1:turn_m9:9:0`, position `{entry: 9, item: 0}`, within-item
+offset 332 points. This differs from the interruption-row anchor in the earlier
+failure.
+
+Changing to `accessibility-extra-extra-extra-large` keeps marker 09 visible.
+Returning to `large` moves the settled viewport to marker 16 with marker 17
+below. The accessibility snapshot also contains marker 15 near the viewport.
+The SQLite anchor remains exactly marker 09 / offset 332 / the same touch time
+through both transitions. No drag, send or session mutation occurs during the
+round trip. The final screenshot records the failed ordinary-size state.
+
+![Ordinary size before the round trip](assets/reader-continuity/size-roundtrip-before-20260907.jpg)
+![Ordinary size after the round trip](assets/reader-continuity/size-roundtrip-drift-20260907.jpg)
+
+This proves a rendered-position mismatch with retained semantic identity. It
+does not identify the cause. The next diagnostic must distinguish native
+content-size clamping, stale virtualized measurements and a queued approximate
+restore running after a newer exact restore. Capture bounded in-memory event
+order and flush outside the layout/scroll callbacks so logging does not mask
+the failure. The simulator is back at `large`; the defect remains open.
