@@ -178,6 +178,22 @@ type ExecutionEnvironment interface {
 type GlobExcluder interface {
 	// GlobWithExclusions behaves like Glob but also returns the number of
 	// candidate matches dropped by the default dotfile/gitignore exclusion
-	// (always 0 when includeIgnored is true).
+	// (always 0 when includeIgnored is true). A listing that would have been
+	// truncated by the match cap comes back as an error instead of a short
+	// list: this entry point has no budget of its own to report truncation
+	// through, so a caller that wants the partial list and a way to tell it
+	// was cut short uses GlobBudgeter instead.
 	GlobWithExclusions(ctx context.Context, pattern, basePath string, includeIgnored bool) (matches []string, excluded int, err error)
+}
+
+// GlobBudgeter is an optional capability an ExecutionEnvironment's Glob may
+// additionally implement, modelled on GlobExcluder for the same reason: it
+// exists so a caller that wants a truncated listing rather than the refusal
+// GlobExcluder gives does not have to widen Glob's own signature, which every
+// implementation — including test doubles with no budget accounting — would
+// otherwise have to grow a meaningless extra parameter for. The caller
+// supplies the budget and reads what the call had to cut off it once the
+// call returns.
+type GlobBudgeter interface {
+	GlobWithBudget(ctx context.Context, pattern, basePath string, includeIgnored bool, budget *GlobBudget) (matches []string, excluded int, err error)
 }
