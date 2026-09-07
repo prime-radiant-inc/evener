@@ -80,3 +80,48 @@ func TestSandboxedGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 		t.Fatalf("globBudget.peakDirEntries = %d, want at least the entry budget of %d but strictly less than the directory's %d entries (a listing that materializes everything before refusing must not pass this)", callBudget.peakDirEntries, budget, fileCount)
 	}
 }
+
+// TestSandboxedGrepWalkIsChargedToTheBudget is TestGrepWalkIsChargedToTheBudget's
+// sandboxed counterpart: sfs.grepNative's own directory walk charges every
+// directory it visits to the shared budget, on top of whatever ignore
+// discovery already charged for the same tree, so a huge tree grepNative
+// walks after ignore discovery completes still costs unbounded work. The tree
+// here has no .gitignore and is small enough that ignore discovery alone
+// stays well under the lowered listing budget, so a refusal can only be
+// attributed to grepNative's own walk over the tree it is grepping, not to
+// ignore discovery's separate pass over the same tree. Sandboxed sessions
+// always use native grep — LocalExecutionEnvironment.Grep routes to
+// sfs.grepNative whenever e.sandbox() is non-nil, even with ripgrep present —
+// so env.Grep is enough to reach this arm without defeating ripgrep
+// detection.
+//
+// This is a characterization pin, not a red test: it already passes on the
+// current tree.
+func TestSandboxedGrepWalkIsChargedToTheBudget(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+
+	const dirCount = 30
+	const budget = 40
+	for i := range dirCount {
+		dir := filepath.Join(worktree, fmt.Sprintf("dir%02d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "leaf.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubMaxGlobDirListings(t, budget)
+
+	_, err := env.Grep(t.Context(), "needle", worktree, "", false, 100, "")
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("sandboxed grep's own walk over a %d-directory tree with a listing budget of %d = (_, %v), want a *globBudgetError; sfs.grepNative's walk charges nothing to the budget", dirCount, budget, err)
+	}
+	if budgetErr.kind != budgetListings {
+		t.Fatalf("globBudgetError.kind = %v, want budgetListings", budgetErr.kind)
+	}
+	if budgetErr.op != "grep" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
+	}
+}

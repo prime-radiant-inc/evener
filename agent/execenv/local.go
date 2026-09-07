@@ -1963,20 +1963,16 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 		if err != nil {
 			// A budget refusal ends the grep with its reason; skipping it the
 			// way an unreadable entry is skipped would let the walk carry on
-			// past the bound it just hit.
+			// past the bound it just hit. In practice, loadIgnoreSet's walk
+			// above already visits every directory this one would — its skip
+			// set (dot-prefixed directories only) is a strict subset of this
+			// walk's (which also skips gitignored ones) — so it normally
+			// raises this refusal first. This guard is for the case where a
+			// directory grows past the bound between the two passes.
 			if _, refused := errors.AsType[*globBudgetError](err); refused {
 				return err
 			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
-		}
-		if d.IsDir() {
-			// fs.WalkDir never follows a directory symlink, so this walk
-			// cannot cycle back into itself the way the glob pattern walk's
-			// ancestor check has to guard against — the same reason ignore
-			// discovery's own budget charge is always cycleSafe.
-			if berr := budget.listing(true); berr != nil {
-				return berr
-			}
 		}
 		relPath := filepath.FromSlash(p)
 		if singleFile {
@@ -1992,6 +1988,15 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge is always cycleSafe. Charged only
+			// here, once the dot/gitignore skips above have already passed,
+			// so a directory the walk is about to skip anyway costs nothing.
+			if berr := budget.listing(true); berr != nil {
+				return berr
 			}
 			return nil
 		}

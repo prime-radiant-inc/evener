@@ -86,9 +86,15 @@ var globDirChunk = 4096
 
 // maxGlobDirEntries bounds how many entries a SINGLE directory listing may
 // materialize. It is per listing rather than cumulative because it bounds
-// peak memory: the walk frees each directory's slice when it moves on, so
-// what has to stay small is the largest one listing can hold, not the total
-// a legitimate walk reads across a whole tree.
+// peak memory — but the peak one listing being small does not mean the
+// walk's peak is: both fs.WalkDir and doublestar hold a directory's entry
+// slice live for as long as they are recursing into one of its children, so a
+// walk currently N levels deep is holding up to N listings at once, one per
+// ancestor on the path, and only frees a sibling's slice once it moves on to
+// the next one. The real peak is this cap times the walk's depth. An
+// os.dirEntry is roughly 105 bytes including its name, so one listing at the
+// cap costs on the order of 21 to 25 MB, which has to stay small enough to
+// multiply by a plausible depth without exhausting memory on its own.
 var maxGlobDirEntries = 200_000
 
 // maxGlobMatches bounds how many matches one glob call may accumulate.
@@ -134,22 +140,23 @@ func (b *globBudget) listing(cycleSafe bool) error {
 	if b.listings <= maxGlobDirListings {
 		return nil
 	}
-	return &globBudgetError{listings: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op, kind: budgetListings}
+	return &globBudgetError{count: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op, kind: budgetListings}
 }
 
 // tooManyEntries reports the refusal for a listing that has read more entries
-// than one directory may materialize, or nil while it is still under. It
-// records read against peakDirEntries on every call, not only the one that
-// finally trips, so peakDirEntries reflects how far a listing actually got
-// even on the chunks that stay under the bound.
-func (b *globBudget) tooManyEntries(read int) error {
+// than one directory may materialize, or nil while it is still under. dir is
+// the directory being listed, named in the refusal so a caller knows which
+// one to act on. It records read against peakDirEntries on every call, not
+// only the one that finally trips, so peakDirEntries reflects how far a
+// listing actually got even on the chunks that stay under the bound.
+func (b *globBudget) tooManyEntries(dir string, read int) error {
 	if read > b.peakDirEntries {
 		b.peakDirEntries = read
 	}
 	if read <= maxGlobDirEntries {
 		return nil
 	}
-	return &globBudgetError{listings: read, budget: maxGlobDirEntries, cycleSafe: true, op: b.op, kind: budgetEntries}
+	return &globBudgetError{count: read, dir: dir, budget: maxGlobDirEntries, cycleSafe: true, op: b.op, kind: budgetEntries}
 }
 
 // globBudgetKind tells apart the two things a globBudgetError can report:
@@ -167,24 +174,31 @@ const (
 // per-directory entry budget. cycleSafe records whether the walk that gave up
 // could have detected a symlink cycle on its own — the pattern walk can tell
 // only where the filesystem reports file identity, while ignore discovery
-// never follows symlinks and so always can — which picks which of Error's two
-// explanations applies; a single oversized directory says nothing about cycle
-// detection, so an entries refusal is always cycleSafe. listings and budget
-// are the values a caller can act on without parsing either sentence.
+// never follows symlinks and so always can — which picks which of the
+// listings kind's two explanations applies; a single oversized directory says
+// nothing about cycle detection, so an entries refusal is always cycleSafe.
+// count is the whole call's directory-listing tally for the listings kind, or
+// the entry count of the one oversized directory for the entries kind; dir
+// names that directory and is empty for the listings kind, which has no
+// single directory to blame. count, dir and budget are the values a caller
+// can act on without parsing either sentence.
 type globBudgetError struct {
-	listings  int
+	count     int
+	dir       string
 	budget    int
 	cycleSafe bool
 	op        string
 	kind      globBudgetKind
 }
 
-// advice names the lever that actually makes the walk smaller, which differs
-// by operation. A glob's pattern decides how much of the tree gets listed, so
-// tightening it is the first thing to try. A grep's pattern is a regex matched
-// against file contents after the walk has already listed everything, so
-// narrowing it changes nothing about the listings; only a smaller base
-// directory does.
+// advice names the lever that actually makes a whole call's listing count
+// smaller, which differs by operation. A glob's pattern decides how much of
+// the tree gets listed, so tightening it is the first thing to try. A grep's
+// pattern is a regex matched against file contents after the walk has already
+// listed everything, so narrowing it changes nothing about the listings; only
+// a smaller base directory does. The entries kind names a single directory
+// instead of using this: the lever there is that one directory, not the call
+// as a whole.
 func (e *globBudgetError) advice() string {
 	if e.op == "grep" {
 		return "narrow the base directory"
@@ -192,23 +206,24 @@ func (e *globBudgetError) advice() string {
 	return "narrow the pattern or its base directory"
 }
 
-// work names the unit of work e's kind bounds, so Error can report either
-// "made N directory listings" (one call ran past its listing budget) or
-// "read N directory entries from one directory" (one listing ran past the
-// per-directory entry budget) without duplicating the two sentences below for
-// each kind.
-func (e *globBudgetError) work() string {
-	if e.kind == budgetEntries {
-		return fmt.Sprintf("read %d directory entries from one directory", e.listings)
+// where names the oversized directory the way a caller can act on it. The
+// walk's own root comes through as ".", which tells a model nothing, so it is
+// reported as the base it passed in instead of echoed back as a bare dot.
+func (e *globBudgetError) where() string {
+	if e.dir == "" || e.dir == "." {
+		return "the base directory"
 	}
-	return fmt.Sprintf("made %d directory listings", e.listings)
+	return "directory " + e.dir
 }
 
 func (e *globBudgetError) Error() string {
-	if !e.cycleSafe {
-		return fmt.Sprintf("%s walk %s on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.work(), e.budget, e.advice())
+	if e.kind == budgetEntries {
+		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: that directory is too large to list, so match inside it more specifically or point the base elsewhere", e.op, e.count, e.where(), e.budget)
 	}
-	return fmt.Sprintf("%s walk %s, past the budget of %d for one call: %s", e.op, e.work(), e.budget, e.advice())
+	if !e.cycleSafe {
+		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.count, e.budget, e.advice())
+	}
+	return fmt.Sprintf("%s walk made %d directory listings, past the budget of %d for one call: %s", e.op, e.count, e.budget, e.advice())
 }
 
 // match reports whether the walk may keep the next match, so the caller can
@@ -253,15 +268,25 @@ type boundedDirFS struct {
 	budget *globBudget
 }
 
-// ReadDir pulls name in globDirChunk-sized pieces, charging the running total
-// to budget after each one and returning its refusal the moment it trips
-// rather than waiting for the rest of the directory to come back. The pieces
-// are sorted by name only once the whole read is done, not per chunk: a
-// listing that stays under the bound has to come back byte-for-byte what
-// os.ReadDir would have produced, because the match cap downstream truncates
-// to a deterministic, lexically-first prefix of it — sorting mid-stream would
-// let a chunk boundary that fell in a different place change which entries
-// end up in that prefix.
+// Stat forwards to the wrapped fs.FS's own Stat rather than letting fs.Stat
+// fall back to Open plus File.Stat. boundedDirFS embeds fs.FS as a bare
+// interface value, which exposes only Open, so without this forward
+// os.DirFS's fs.StatFS fast path is invisible here and a file that can be
+// stat'ed but not opened (mode 0000) fails a call that used to succeed.
+// fs.ReadFile and fs.Sub lose the same fast path and are deliberately not
+// forwarded: their fallbacks (Open plus ReadAll, and a path-prefixing
+// wrapper) are functionally identical to the fast path, and ReadFile's
+// fallback fails on exactly the unreadable file its fast path would have
+// failed on too, so only Stat's fallback actually changes behavior.
+func (b boundedDirFS) Stat(name string) (fs.FileInfo, error) {
+	return fs.Stat(b.FS, name)
+}
+
+// ReadDir lists name through readDirChunked once Open hands back an
+// fs.ReadDirFile, falling back to reading it whole only for a filesystem that
+// cannot list itself in pieces (a test fake, say) — a fallback that still
+// charges what it reads to budget so such a filesystem cannot slip past the
+// bound uncharged.
 func (b boundedDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	f, err := b.Open(name)
 	if err != nil {
@@ -270,23 +295,39 @@ func (b boundedDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	defer func() { _ = f.Close() }()
 	rdf, ok := f.(fs.ReadDirFile)
 	if !ok {
-		// Not every fs.FS hands back a directory file that can list itself in
-		// pieces (a test fake, say); fall back to reading it whole rather than
-		// letting such a filesystem slip past the bound uncharged.
 		entries, err := fs.ReadDir(b.FS, name)
 		if err != nil {
 			return nil, err
 		}
-		if berr := b.budget.tooManyEntries(len(entries)); berr != nil {
+		if berr := b.budget.tooManyEntries(name, len(entries)); berr != nil {
 			return nil, berr
 		}
 		return entries, nil
 	}
+	return readDirChunked(rdf, name, b.budget)
+}
+
+// readDirChunked lists dir by pulling entries from rdf in globDirChunk-sized
+// pieces, charging the running total to budget after each one and returning
+// its refusal the moment it trips rather than waiting for the rest of the
+// directory to come back. A single unchunked ReadDir(-1) call — the shape
+// both os.DirFS's ReadDir and a raw *os.File's ReadDir take — materializes a
+// directory's entire contents before the entry budget or match cap ever get
+// a say, which is exactly what lets one huge directory OOM the walk no
+// matter how tightly the other bounds are set. The pieces are sorted by name
+// only once the whole read is done, not per chunk: a listing that stays
+// under the bound has to come back byte-for-byte what os.ReadDir would have
+// produced, because the match cap downstream truncates to a deterministic,
+// lexically-first prefix of it — sorting mid-stream would let a chunk
+// boundary that fell in a different place change which entries end up in
+// that prefix, and the raw fd-backed listing secureDirFS builds this on top
+// of has no ordering guarantee of its own to begin with.
+func readDirChunked(rdf fs.ReadDirFile, dir string, budget *globBudget) ([]fs.DirEntry, error) {
 	var entries []fs.DirEntry
 	for {
 		chunk, err := rdf.ReadDir(globDirChunk)
 		entries = append(entries, chunk...)
-		if berr := b.budget.tooManyEntries(len(entries)); berr != nil {
+		if berr := budget.tooManyEntries(dir, len(entries)); berr != nil {
 			return nil, berr
 		}
 		if err != nil {

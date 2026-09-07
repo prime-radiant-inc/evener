@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -251,13 +252,7 @@ func TestGlobBudgetIsSharedAcrossBraceExpandedPatterns(t *testing.T) {
 // former avoids.
 func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	const fileCount = 30
-	root := t.TempDir()
-	for i := range fileCount {
-		p := filepath.Join(root, fmt.Sprintf("leaf%03d.txt", i))
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := flatEntriesFixture(t, fileCount)
 
 	const budget = 10
 	stubMaxGlobDirEntries(t, budget)
@@ -317,6 +312,69 @@ func TestGrepWalkIsChargedToTheBudget(t *testing.T) {
 	}
 	if budgetErr.op != "grep" {
 		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
+	}
+}
+
+// TestGrepWalkDoesNotChargeSkippedDirectories proves grepNative's own walk
+// charges the listing budget only for directories it actually descends into.
+// The d.IsDir() block in grepNative's callback charges budget.listing(true)
+// before the dot-directory and gitignore filepath.SkipDir checks further down
+// the same callback run, so a directory the walk immediately skips still
+// costs budget. The tree here mixes both kinds of exclusion the callback
+// applies — dot-prefixed directories and directories a root .gitignore
+// matches — and its excluded directories alone outnumber the lowered listing
+// budget, while only a handful of directories are ever actually listed.
+// loadIgnoreSet runs first over the same tree on the same budget, and it
+// skips only the dot-prefixed directories, not the gitignored ones, so its
+// own pass already charges for every gitignored directory before grepNative's
+// walk begins; the budget below is sized comfortably above that cost alone,
+// so only the walk's redundant charge for the directories it was about to
+// skip anyway can push the call over it.
+func TestGrepWalkDoesNotChargeSkippedDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	const realCount = 3
+	for i := range realCount {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir00", "leaf.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const dotCount = 20
+	for i := range dotCount {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf(".excluded%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const gitignoredCount = 10
+	gitignoreLines := make([]string, 0, gitignoredCount)
+	for i := range gitignoredCount {
+		dir := fmt.Sprintf("ignored%02d", i)
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitignoreLines = append(gitignoreLines, dir+"/")
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(strings.Join(gitignoreLines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const budget = 25
+	stubMaxGlobDirListings(t, budget)
+
+	out, err := NewLocalExecutionEnvironment(root).grepNative(t.Context(), "needle", root, "", false, 100, "")
+	if budgetErr, refused := errors.AsType[*globBudgetError](err); refused {
+		t.Fatalf("grepNative over a tree with %d dot-excluded and %d gitignored directories against only %d listed directories, with a listing budget of %d well above ignore discovery's own cost, refused: %v; the walk is charging directories it is about to skip toward the budget instead of only the ones it actually descends into", dotCount, gitignoredCount, realCount, budget, budgetErr)
+	}
+	if err != nil {
+		t.Fatalf("grepNative: %v", err)
+	}
+	if !strings.Contains(out, "needle") {
+		t.Fatalf("grepNative(%q) = %q, want a match for the needle in dir00/leaf.txt", "needle", out)
 	}
 }
 
@@ -650,11 +708,17 @@ func TestGlobIgnoreDiscoveryStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	}
 }
 
-// TestGrepWalkStopsOnADirectoryWithTooManyEntries is the same contract for
-// grep's two best-effort walks. Both loadIgnoreSet's callback and grepNative's
-// own walk callback skip past any error they are handed, so an oversized
-// directory would be read in full by each of them in turn and the call would
-// come back reporting no matches and no error at all.
+// TestGrepWalkStopsOnADirectoryWithTooManyEntries pins grep's ignore
+// discovery surfacing the entries refusal, not grepNative's own walk. root
+// itself is the one oversized directory here (30 files, no subdirectories),
+// and loadIgnoreSet's fs.WalkDir walk lists it before grepNative's own walk
+// ever starts, so the refusal always comes from ignore discovery's callback
+// swallowing-guard. It cannot also pin the equivalent guard in grepNative's
+// own walk callback: that guard only matters if a directory grows past the
+// entries bound between ignore discovery's pass and the walk's own, which a
+// deterministic test cannot construct — ignore discovery's skip set is
+// always a subset of the walk's, so ignore discovery always reaches (and
+// refuses) any oversized directory first.
 func TestGrepWalkStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	const fileCount = 30
 	const budget = 10
