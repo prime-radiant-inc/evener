@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -63,12 +65,47 @@ func (c cancelFS) Stat(name string) (fs.FileInfo, error) {
 // the cycle check works, an unbounded `**` over a huge tree (`/`) still costs
 // unbounded work.
 //
-// The value is a WORK bound, sized so a large monorepo with a wide brace
-// expansion never trips it while `/` does: a 60,000-directory monorepo
-// globbed with a 5-way brace expansion costs on the order of 300,000
+// The value itself is a WORK bound rather than a memory bound. Memory is held
+// down by three other things: the match cap, the O(depth) ancestor chain, and
+// the per-directory entry cap. What those leave is maxGlobDirEntries times the
+// walk's depth, which is bounded but not small (see that constant), and
+// raising this number does not make it larger. So this one only has to be big
+// enough that a legitimate call never pays for it: a 60,000-directory
+// monorepo globbed with a 5-way brace expansion costs on the order of 300,000
 // listings and must not error; `/` on a developer's machine is 500,000 to
 // several million directories and must. 1,000,000 sits between the two.
 var maxGlobDirListings = 1_000_000
+
+// globDirChunk is how many entries one bounded listing pulls per syscall. A
+// variable, not a constant: it is the unit the per-listing entry bound is
+// enforced in, so a test has to be able to shrink it below a fixture's size
+// to see a listing stop after a few chunks instead of needing a directory too
+// large to build in a test.
+var globDirChunk = 4096
+
+// maxGlobDirEntries bounds how many entries a SINGLE directory listing may
+// materialize. It is per listing rather than cumulative because it bounds
+// peak memory — but the peak one listing being small does not mean the
+// walk's peak is: both fs.WalkDir and doublestar hold a directory's entry
+// slice live for as long as they are recursing into one of its children, so a
+// walk currently N levels deep is holding up to N listings at once, one per
+// ancestor on the path, and only frees a sibling's slice once it moves on to
+// the next one. The real peak is this cap times the walk's depth. An
+// os.dirEntry is roughly 105 bytes including its name, so one listing at the
+// cap costs on the order of 21 to 25 MB, which has to stay small enough to
+// multiply by a plausible depth without exhausting memory on its own.
+var maxGlobDirEntries = 200_000
+
+// maxGlobLiveEntries bounds how many directory entries one call may hold live
+// at once, summed over every listing its walk still has open. maxGlobDirEntries
+// bounds a single listing, which does not bound the walk: fs.WalkDir and
+// doublestar both keep an ancestor's entry slice alive while they read a
+// child, so a walk N levels deep holds up to N listings at once. This is the
+// aggregate ceiling that makes that sum finite. At roughly 105 bytes per
+// os.dirEntry, 500,000 entries is about 52 MB — a couple of maximal
+// directories' worth, far above any real tree (a deep repository holds a few
+// thousand live entries) and far below what would threaten the process.
+var maxGlobLiveEntries = 500_000
 
 // maxGlobMatches bounds how many matches one glob call may accumulate.
 var maxGlobMatches = 10_000
@@ -84,16 +121,39 @@ func SetMaxGlobMatchesForTesting(n int) (restore func()) {
 	return func() { maxGlobMatches = orig }
 }
 
-// GlobBudget bounds the total work one glob call may spend, shared by every
-// brace-expanded pattern the call walks and, through GlobBudgeter, by every
-// caller that wants to see a truncated listing rather than being refused one.
-// Its fields stay unexported: a caller reads what the call had to cut off it
-// through TruncatedAt rather than inspecting the accounting directly.
+// GlobBudget bounds the total work and memory one glob call may spend, shared
+// by every brace-expanded pattern the call walks and, through GlobBudgeter, by
+// every caller that wants to see a truncated listing rather than being
+// refused one. Its fields stay unexported: a caller reads what the call had
+// to cut off it through TruncatedAt rather than inspecting the accounting
+// directly.
 type GlobBudget struct {
 	listings  int
 	matches   int
 	truncated bool
 	op        string
+	// peakDirEntries is the largest number of entries tooManyEntries has ever
+	// been asked to charge to a single listing. The per-listing bound exists
+	// to cap peak memory, not merely to end in a refusal eventually, so this
+	// is what lets a test tell a listing that stopped after a few chunks
+	// apart from one that read a whole huge directory and only then reported
+	// the refusal — a result-only assertion cannot see the difference, but the
+	// OOM only the former avoids.
+	peakDirEntries int
+	// live holds one entry per directory listing the walk currently has open,
+	// pruned by holdEntries down to just the ancestors of whichever directory
+	// is being listed now.
+	live []liveDir
+	// peakLiveEntries is the largest live total holdEntries has ever computed
+	// across b.live, recorded on every call rather than only the one that
+	// trips, so a test can see how far a walk actually got.
+	peakLiveEntries int
+}
+
+// liveDir is one directory whose listing the walk is still holding.
+type liveDir struct {
+	name string
+	n    int
 }
 
 // newGlobBudget constructs a GlobBudget for op, so every internal call site
@@ -124,20 +184,99 @@ func (b *GlobBudget) listing(cycleSafe bool) error {
 	if b.listings <= maxGlobDirListings {
 		return nil
 	}
-	return &globBudgetError{count: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op}
+	return &globBudgetError{count: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op, kind: budgetListings}
 }
 
-// globBudgetError reports that one glob call ran past its directory-listing
-// budget. cycleSafe records whether the walk that gave up could have
-// detected a symlink cycle on its own — true only where the filesystem
-// reports file identity — which picks which of Error's two explanations
-// applies. count, budget and op are the values a caller can act on without
-// parsing the message.
+// tooManyEntries reports the refusal for a listing that has read more entries
+// than one directory may materialize, or nil while it is still under. dir is
+// the directory being listed, named in the refusal so a caller knows which
+// one to act on. It records read against peakDirEntries on every call, not
+// only the one that finally trips, so peakDirEntries reflects how far a
+// listing actually got even on the chunks that stay under the bound.
+func (b *GlobBudget) tooManyEntries(dir string, read int) error {
+	if read > b.peakDirEntries {
+		b.peakDirEntries = read
+	}
+	if read <= maxGlobDirEntries {
+		return nil
+	}
+	return &globBudgetError{count: read, dir: dir, budget: maxGlobDirEntries, cycleSafe: true, op: b.op, kind: budgetEntries}
+}
+
+// isGlobWalkAncestor reports whether dir is a proper ancestor of name in the
+// slash-separated paths a walk uses.
+func isGlobWalkAncestor(dir, name string) bool {
+	return dir != name && (dir == "." || strings.HasPrefix(name, dir+"/"))
+}
+
+// holdEntries records dir's listing of n entries as live and releases every
+// directory that is not one of dir's ancestors: to be listing dir at all the
+// walk must have left them, the same reasoning globWalkFS.push uses for
+// identity. It refuses once the live total crosses maxGlobLiveEntries.
+func (b *GlobBudget) holdEntries(dir string, n int) error {
+	kept := 0
+	total := n
+	for _, d := range b.live {
+		if isGlobWalkAncestor(d.name, dir) {
+			b.live[kept] = d
+			kept++
+			total += d.n
+		}
+	}
+	b.live = append(b.live[:kept], liveDir{name: dir, n: n})
+	if total > b.peakLiveEntries {
+		b.peakLiveEntries = total
+	}
+	if total > maxGlobLiveEntries {
+		return &globBudgetError{count: total, budget: maxGlobLiveEntries, cycleSafe: true, op: b.op, kind: budgetLiveEntries}
+	}
+	return nil
+}
+
+// resetLive clears the record of directory listings this budget currently
+// holds live, so a traversal beginning now starts from none held open: the
+// total holdEntries computes is meant to reflect only what THAT walk has open
+// at the time, and this budget is shared across more than one traversal in a
+// call (ignore discovery, then each brace-expanded pattern's own walk) with
+// nothing else marking where one ends and the next begins. The cumulative
+// counters — listings, matches, peakDirEntries, peakLiveEntries — are left
+// alone: those are meant to span the whole call, not any one traversal in it.
+func (b *GlobBudget) resetLive() {
+	b.live = nil
+}
+
+// globBudgetKind tells apart the three things a globBudgetError can report:
+// too many directory listings across a whole call, too many entries
+// materialized by a single one of them, or too many entries held live at once
+// across the listings a walk still has open.
+type globBudgetKind int
+
+const (
+	budgetListings globBudgetKind = iota
+	budgetEntries
+	budgetLiveEntries
+)
+
+// globBudgetError reports that one glob call ran past one of its bounds: its
+// directory-listing budget, the per-directory entry budget for a single
+// listing within it, or the call-wide ceiling on entries held live at once.
+// cycleSafe records whether the walk that gave up could have detected a
+// symlink cycle on its own — true only where the filesystem reports file
+// identity — which picks which of the listings kind's two explanations
+// applies; neither a single oversized directory nor an aggregate live total
+// says anything about cycle detection, so those kinds are always cycleSafe.
+// count is the whole call's directory-listing tally, the entry count of the
+// one oversized directory, or the live total, according to kind; dir names
+// the oversized directory and is empty for the other two kinds, which have no
+// single directory to blame. count, dir and budget are the values a caller
+// can act on without parsing any of the sentences.
 type globBudgetError struct {
 	count     int
+	dir       string
 	budget    int
 	cycleSafe bool
 	op        string
+	kind      globBudgetKind
 }
 
 // advice names the lever that makes a whole call's listing count smaller.
@@ -148,7 +287,32 @@ func (e *globBudgetError) advice() string {
 	return "narrow the pattern or its base directory"
 }
 
+// entryAdvice names the lever that gets a caller past one oversized
+// directory, the entries kind's counterpart to advice.
+func (e *globBudgetError) entryAdvice() string {
+	if e.op == "grep" {
+		return "that directory is too large to list, so point the base at a smaller directory that does not contain it"
+	}
+	return "that directory is too large to list, so match inside it more specifically or point the base elsewhere"
+}
+
+// where names the oversized directory the way a caller can act on it. The
+// walk's own root comes through as ".", which tells a model nothing, so it is
+// reported as the base it passed in instead of echoed back as a bare dot.
+func (e *globBudgetError) where() string {
+	if e.dir == "" || e.dir == "." {
+		return "the base directory"
+	}
+	return "directory " + e.dir
+}
+
 func (e *globBudgetError) Error() string {
+	if e.kind == budgetEntries {
+		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: %s", e.op, e.count, e.where(), e.budget, e.entryAdvice())
+	}
+	if e.kind == budgetLiveEntries {
+		return fmt.Sprintf("%s walk is holding %d directory entries live across the listings it has open, past the call-wide budget of %d: %s", e.op, e.count, e.budget, e.advice())
+	}
 	if !e.cycleSafe {
 		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.count, e.budget, e.advice())
 	}
@@ -180,6 +344,133 @@ func (b *GlobBudget) TruncatedAt() int {
 		return maxGlobMatches
 	}
 	return 0
+}
+
+// boundedDirFS lists a directory in chunks instead of materializing it whole,
+// charging what it reads to budget after every chunk so one pathological
+// directory cannot exhaust memory before the listing budget or match cap ever
+// get a say — os.DirFS's own ReadDir, like the raw secureDirFS one it mirrors
+// on the sandboxed arm, reads a directory's entire contents before handing
+// any of it back, which is exactly the shape that lets a single huge
+// directory OOM the walk regardless of how tightly the other bounds are set.
+// It has to sit at the bottom of the plain path's stack, under any test
+// wrapper such as countingFS, so every listing that reaches the walk is
+// charged no matter what observes it from above.
+type boundedDirFS struct {
+	fs.FS
+	// ctx reaches readDirChunked, which checks it between chunks. A chunk
+	// loop reading from an already-open directory handle is invisible to
+	// cancelFS's Open/ReadDir/Stat checks: those see a listing starting, not
+	// the chunks inside one, so without this a cancelled call keeps reading a
+	// directory nobody is waiting for.
+	ctx    context.Context
+	budget *GlobBudget
+}
+
+// Stat forwards to the wrapped fs.FS's own Stat rather than letting fs.Stat
+// fall back to Open plus File.Stat. boundedDirFS embeds fs.FS as a bare
+// interface value, which exposes only Open, so without this forward
+// os.DirFS's fs.StatFS fast path is invisible here and a file that can be
+// stat'ed but not opened (mode 0000) fails a call that used to succeed.
+// fs.ReadFile and fs.Sub lose the same fast path and are deliberately not
+// forwarded: their fallbacks (Open plus ReadAll, and a path-prefixing
+// wrapper) are functionally identical to the fast path, and ReadFile's
+// fallback fails on exactly the unreadable file its fast path would have
+// failed on too, so only Stat's fallback actually changes behavior.
+func (b boundedDirFS) Stat(name string) (fs.FileInfo, error) {
+	return fs.Stat(b.FS, name)
+}
+
+// ReadDir lists name through readDirChunked once Open hands back an
+// fs.ReadDirFile, falling back to reading it whole only for a filesystem that
+// cannot list itself in pieces (a test fake, say). That fallback charges the
+// per-directory entry budget (tooManyEntries) against what it reads, but not
+// the call-wide live-entry ceiling (holdEntries): only readDirChunked folds a
+// listing into live tracking, and this path is unreachable with os.DirFS, the
+// only fs.FS boundedDirFS wraps in production.
+func (b boundedDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	f, err := b.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	rdf, ok := f.(fs.ReadDirFile)
+	if !ok {
+		entries, err := fs.ReadDir(b.FS, name)
+		if err != nil {
+			return nil, err
+		}
+		if berr := b.budget.tooManyEntries(name, len(entries)); berr != nil {
+			return nil, berr
+		}
+		return entries, nil
+	}
+	return readDirChunked(b.ctx, rdf, name, b.budget)
+}
+
+// readDirChunked lists dir by pulling entries from rdf in globDirChunk-sized
+// pieces, charging the running total to budget after each one and returning
+// its refusal the moment it trips rather than waiting for the rest of the
+// directory to come back. A single unchunked ReadDir(-1) call — the shape
+// both os.DirFS's ReadDir and a raw *os.File's ReadDir take — materializes a
+// directory's entire contents before the entry budget or match cap ever get
+// a say, which is exactly what lets one huge directory OOM the walk no
+// matter how tightly the other bounds are set. The pieces are sorted by name
+// only once the whole read is done, not per chunk: a listing that stays
+// under the bound has to come back byte-for-byte what os.ReadDir would have
+// produced, because the match cap downstream truncates to a deterministic,
+// lexically-first prefix of it — sorting mid-stream would let a chunk
+// boundary that fell in a different place change which entries end up in
+// that prefix, and the raw fd-backed listing secureDirFS builds this on top
+// of has no ordering guarantee of its own to begin with.
+//
+// ctx is checked between chunks because cancelFS cannot help here: it guards
+// Open, ReadDir and Stat at the filesystem level, so it tests the context
+// once as a listing begins and never again while this loop holds the
+// directory handle. See boundedDirFS.ctx and secureDirFS.ctx for how it is
+// threaded this far down.
+func readDirChunked(ctx context.Context, rdf fs.ReadDirFile, dir string, budget *GlobBudget) ([]fs.DirEntry, error) {
+	var entries []fs.DirEntry
+	for {
+		// cancelFS guards Open, ReadDir and Stat, so it checks ctx once as a
+		// listing starts and never again; this loop then holds the directory
+		// handle for as many chunks as the entry cap allows. Checking here is
+		// what keeps a cancelled call from reading the rest of a huge
+		// directory nobody is waiting for any more, and it answers with the
+		// same cancellation the rest of the walk returns.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
+		chunk, err := rdf.ReadDir(globDirChunk)
+		entries = append(entries, chunk...)
+		if berr := budget.tooManyEntries(dir, len(entries)); berr != nil {
+			return nil, berr
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		if len(chunk) == 0 {
+			// Defensive: a well-behaved ReadDirFile signals the end with
+			// io.EOF, but nothing here should trust that every fs.FS does, and
+			// a chunk that reads nothing without an error would otherwise spin
+			// forever.
+			break
+		}
+	}
+	// A cancellation that landed on the final chunk must not come back as a
+	// complete listing, so the answer is the cancellation however the loop
+	// happened to leave it.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
+	}
+	slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
+	if berr := budget.holdEntries(dir, len(entries)); berr != nil {
+		return nil, berr
+	}
+	return entries, nil
 }
 
 // listedDir is one entry on globWalkFS.chain: the identity of a directory on
@@ -241,6 +532,14 @@ func (w *globWalkFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	entries, err := fs.ReadDir(w.FS, name)
 	if err != nil {
+		// A per-directory entry-budget refusal has to reach the caller
+		// looking like itself, the same as the listing-count refusal admit
+		// already returns unhidden: folding it into the generic fs.ErrNotExist
+		// below would make doublestar quietly skip the very directory that
+		// tripped the bound instead of ending the walk with the reason why.
+		if _, refused := errors.AsType[*globBudgetError](err); refused {
+			return nil, err
+		}
 		return nil, w.hide("readdir", name)
 	}
 	return entries, nil
@@ -305,7 +604,7 @@ func (w *globWalkFS) identity(dir string) (fs.FileInfo, bool) {
 func (w *globWalkFS) push(name string, info fs.FileInfo) {
 	kept := 0
 	for _, d := range w.chain {
-		if d.name != name && (d.name == "." || strings.HasPrefix(name, d.name+"/")) {
+		if isGlobWalkAncestor(d.name, name) {
 			w.chain[kept] = d
 			kept++
 		}
@@ -345,7 +644,12 @@ var errGlobMatchesFull = errors.New("glob match cap reached")
 // after the cap has already tripped does not re-walk the tree just to
 // discover it can keep nothing, and it is checked on every match the walk
 // finds, so a `**` with millions of hits stops there instead of accumulating
-// all of them before the caller gets a chance to see any.
+// all of them before the caller gets a chance to see any. It also resets the
+// budget's live-entry tracking right before this walk starts (see
+// GlobBudget.resetLive): this is a fresh traversal over fsys, so it must not
+// inherit directories an earlier traversal sharing this budget — ignore
+// discovery, or an earlier pattern in this same call — recorded as held open
+// before it finished with them.
 //
 // GlobWalk rather than Glob: it ends the walk the moment the callback returns
 // an error, so a cancellation — or the match cap tripping — that lands
@@ -362,6 +666,7 @@ func globMatches(ctx context.Context, fsys fs.FS, pattern string, budget *GlobBu
 		}
 		return nil, nil
 	}
+	budget.resetLive()
 	walk := &globWalkFS{FS: fsys, ctx: ctx, budget: budget}
 	var matches []string
 	err := doublestar.GlobWalk(walk, pattern, func(p string, _ fs.DirEntry) error {

@@ -36,6 +36,15 @@ type secureDirFS struct {
 	baseFd   int
 	basePath string
 	fs       *sandboxFS
+	// budget bounds the entries a single ReadDir call may materialize, shared
+	// with the rest of the glob call's directory-listing budget. nil for a
+	// caller whose listing does not participate in that bound, in which case
+	// ReadDir falls back to reading the directory whole.
+	budget *GlobBudget
+	// ctx is threaded down to readDirChunked the same way boundedDirFS.ctx is
+	// on the off-sandbox path; see that field for why. Only consulted when
+	// budget is set, since that is the only case that reads in chunks.
+	ctx context.Context
 }
 
 func (f *secureDirFS) Open(name string) (fs.File, error) {
@@ -49,12 +58,15 @@ func (f *secureDirFS) Open(name string) (fs.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
-// ReadDir lists name and sorts the result by name: os.DirFS's own ReadDir
-// already returns entries sorted, and the match cap downstream truncates to a
-// deterministic, lexically-first prefix of what a listing returns, so this
-// arm has to produce the same order or a capped walk here could stop on a
-// different prefix than the same walk over the plain filesystem. The raw
-// fd-backed listing this builds on has no ordering guarantee of its own.
+// ReadDir lists name through readDirChunked when budget is set, the same
+// helper boundedDirFS uses on the off-sandbox path, so a huge directory here
+// cannot OOM the walk either. A caller with no budget reads the directory
+// whole and sorts it by name: os.DirFS's own ReadDir already returns entries
+// sorted, and the match cap downstream truncates to a deterministic,
+// lexically-first prefix of what a listing returns, so this arm has to
+// produce the same order or a capped walk here could stop on a different
+// prefix than the same walk over the plain filesystem. The raw fd-backed
+// listing both arms build on has no ordering guarantee of its own.
 func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	fd, err := openBeneathRoot(f.baseFd, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -62,12 +74,15 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	df := os.NewFile(uintptr(fd), name)
 	defer func() { _ = df.Close() }()
-	entries, err := df.ReadDir(-1)
-	if err != nil {
-		return nil, err
+	if f.budget == nil {
+		entries, err := df.ReadDir(-1)
+		if err != nil {
+			return nil, err
+		}
+		slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
+		return entries, nil
 	}
-	slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
-	return entries, nil
+	return readDirChunked(f.ctx, df, name, f.budget)
 }
 
 func (f *secureDirFS) Stat(name string) (fs.FileInfo, error) {
@@ -115,7 +130,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting

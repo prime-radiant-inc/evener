@@ -1709,8 +1709,12 @@ func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, ba
 
 // globBaseFS opens the filesystem the off-sandbox glob walks, rooted at the
 // resolved base directory; a variable so tests can drive the exported entry
-// point over a filesystem they control.
-var globBaseFS = os.DirFS
+// point over a filesystem they control. budget is threaded through so a
+// bounded implementation can charge what it reads while listing, and ctx down
+// to boundedDirFS so its chunk loop can observe cancellation.
+var globBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+	return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
+}
 
 // GlobWithBudget implements GlobBudgeter: same matching as Glob, but the
 // caller supplies budget and reads what the call had to cut off it once the
@@ -1734,7 +1738,7 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored, budget)
 	}
-	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
+	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(ctx, base, budget)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
