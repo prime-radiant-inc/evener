@@ -1005,3 +1005,26 @@ unrelated Apple changes remain preserved. This closes the bounded stored-credent
 recipe package, not OAuth, continuous recovery or iOS release acceptance.
 
 The complete canonical merge gate and separate vet passed at 700873dc9, including all Go modules/web, 639 native tests and TypeScript, and external SDK qualification. Acceptance documentation now corrects the stale no-preference-screen claim without treating dated feature artifacts as a current release matrix. The worktree retains only the two unrelated Apple edits after the documentation checkpoint. Next implementation/qualification remains the distinct-hub pending/uncertain native journey and broader iOS release matrix.
+
+
+## Direct two-hub iOS acceptance — 7 September 2026
+
+Progress: rebuilt `4bd05e280` iPhone Release (bundle SHA
+`6a5c839fca5e79be53091c43773102cfa21ddca390dbeb5958499ed7ffd2c8df`).
+Two direct isolated hubs from `700873dc9` preserve the same copied session ref
+and instance ID. Native A/B profile creation with distinct credentials, separate
+ordinary drafts, a held A model turn completing while viewing B, B background
+and cold launch, A real process restart, A draft/transcript restoration and
+scoped profile removal passed. Independent installed SDK reads verify provider
+markers, native input routing and no draft submission. Details and hashes are in
+`docs/design/mobile/multiple-hubs.md` and its `ios-twins-20260907.json` receipt.
+
+Luna medium implemented/tested the scripted LLM fixture and reviewed binding
+paths; Bot integrated harness fixes and ran native/SDK acceptance. No proxy or
+lost-RPC-reply qualification is claimed. Both owned sessions and instances were
+cleaned up; all four fixture processes exited zero. The original v4 acceptance
+conversation and all seven drafts are restored/verified. Two unrelated Apple
+file diffs remain byte-identical and unstaged. Android release work is deferred
+for iOS-only v1. The overall delivery goal remains active: credential rotation,
+native pending-RPC/uncertain-write cases and the complete accessibility/device/
+signing/update matrix remain open. No push, merge or publication.

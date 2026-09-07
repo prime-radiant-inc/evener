@@ -1,0 +1,121 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/test/e2e/fakellm"
+)
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal("condition did not become true")
+		}
+	}
+}
+
+func TestHarnessGateLifecycleAndCancellation(t *testing.T) {
+	g := &gate{}
+	if err := g.arm(); err != nil {
+		t.Fatal(err)
+	}
+	release := g.take()
+	if release == nil {
+		t.Fatal("take did not hold the call")
+	}
+	if err := g.releaseHold(); err != nil {
+		t.Fatal(err)
+	}
+	g.complete(release)
+	if held, completed := g.status(); held || completed != 1 {
+		t.Fatalf("after release/complete: held=%v completed=%d", held, completed)
+	}
+	if err := g.arm(); err != nil {
+		t.Fatalf("gate was not reusable: %v", err)
+	}
+
+	srv, err := fakellm.NewOn("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go serveCalls(ctx, srv, "A", g)
+
+	if err := g.releaseHold(); err == nil {
+		t.Fatal("release unexpectedly succeeded without a held call")
+	}
+	// The second arm is consumed by the first request, so cancellation tests
+	// the same explicit gate used by the control endpoint.
+	body, _ := json.Marshal(map[string]any{
+		"model":    fakellm.ModelID,
+		"stream":   false,
+		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "communicate"}}},
+		"messages": []any{},
+	})
+	requestCtx, requestCancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, srv.BaseURL()+"/chat/completions", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		response, requestErr := http.DefaultClient.Do(request)
+		if response != nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+		result <- requestErr
+	}()
+	waitFor(t, func() bool {
+		held, _ := g.status()
+		return held
+	})
+	requestCancel()
+	waitFor(t, func() bool {
+		held, _ := g.status()
+		return !held
+	})
+	<-result
+
+	response, err := http.Post(srv.BaseURL()+"/chat/completions", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("second request status=%d", response.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	choices := payload["choices"].([]any)
+	message := choices[0].(map[string]any)["message"].(map[string]any)
+	toolCalls := message["tool_calls"].([]any)
+	args := toolCalls[0].(map[string]any)["function"].(map[string]any)["arguments"].(string)
+	var communicate map[string]any
+	if err := json.Unmarshal([]byte(args), &communicate); err != nil {
+		t.Fatal(err)
+	}
+	if communicate["end_turn"] != true || communicate["output"] == nil || communicate["message"] != "fixture-A-communicate-2" {
+		t.Fatalf("communicate args=%v", communicate)
+	}
+}
