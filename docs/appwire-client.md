@@ -51,6 +51,13 @@ with a 10 second timeout while ready and reconnects with exponential backoff aft
 ordinary connection loss. It does not automatically repeat failed application
 requests, restore thread subscriptions or rebuild application state.
 
+An initial connection or handshake failure rejects `connect()` and closes that
+client instance; it does not start automatic retries. To retry, create a new
+client instance. Repeated calls to `connect()` on a live instance share its
+initial handshake promise. After a previously ready connection is lost, observe
+connection-state changes to follow reconnection rather than calling `connect()`
+as a fresh readiness check.
+
 On every new ready connection, restore subscriptions and read authoritative
 snapshots. Install notification listeners before subscribing. Keep unsent drafts
 separate from fetched state. Discard responses belonging to an old hub or an old
