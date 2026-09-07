@@ -914,70 +914,90 @@ func buildUpgradeDelegate(t *testing.T, stateDir, ownerID string) string {
 }
 
 func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
-	for _, delegate := range []bool{false, true} {
-		t.Run(fmt.Sprint("delegate=", delegate), func(t *testing.T) {
-			stateDir := filepath.Join(t.TempDir(), "projects", "upgrade-0000000000")
-			rootID := buildRPCParentSession(t, stateDir)
-			targetID := rootID
-			if delegate {
-				targetID = buildUpgradeDelegate(t, stateDir, rootID)
-			}
-			before, err := schema.LoadSessionMeta(stateDir, targetID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			metas, err := schema.ListSessionMetas(stateDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			runDir := t.TempDir()
-			writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID})
-			roster := hubcore.NewRoster(runDir, failedRPCProber{})
-			past := hubcore.NewPastIndex(stateDir)
-			if _, err := past.Rebuild(); err != nil {
-				t.Fatal(err)
-			}
-			hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: stateDir, Past: past, Roster: roster})
-			defer hub.Close()
-			client := dialHubRPC(t, hub)
-			defer client.Close()
-			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
-				t.Fatal(err)
-			}
-			ref := localAppRef(targetID)
-			var response any
-			if err := client.Request(t.Context(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "must not write"}, &response); err == nil {
-				t.Error("rename bypassed unresolved owner")
-			}
-			if _, err := client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: ref, Aside: true}); err == nil {
-				t.Error("fork bypassed unresolved owner")
-			}
-			err = client.Request(t.Context(), appwire.MethodTurnQueue, map[string]any{"ref": ref, "clientMutationId": "uncertain-upgrade", "expectedInstanceId": targetID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
-			var wire appwire.WireError
-			if !errors.As(err, &wire) {
-				t.Fatalf("queue error=%v", err)
-			}
-			data, ok := wire.Data.(map[string]any)
-			if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
-				t.Errorf("receipt=%+v", wire)
-			}
-			after, err := schema.LoadSessionMeta(stateDir, targetID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			afterMetas, err := schema.ListSessionMetas(stateDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if after.Name != before.Name || len(afterMetas) != len(metas) {
-				t.Error("unresolved owner allowed metadata writes")
-			}
-			if err := rendezvous.Remove(runDir, os.Getpid()); err != nil {
-				t.Fatal(err)
-			}
-			if err := client.Request(t.Context(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "released"}, &response); err != nil {
-				t.Fatalf("rename after removal: %v", err)
-			}
-		})
+	for _, fault := range []string{"probe", "malformed", "unreadable"} {
+		for _, delegate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/delegate=%v", fault, delegate), func(t *testing.T) {
+				stateDir := filepath.Join(t.TempDir(), "projects", "upgrade-0000000000")
+				rootID := buildRPCParentSession(t, stateDir)
+				targetID := rootID
+				if delegate {
+					targetID = buildUpgradeDelegate(t, stateDir, rootID)
+				}
+				before, err := schema.LoadSessionMeta(stateDir, targetID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				metas, err := schema.ListSessionMetas(stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runDir := t.TempDir()
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID})
+				roster := hubcore.NewRoster(runDir, failedRPCProber{})
+				if fault != "probe" {
+					roster = hubcore.NewRoster(runDir, fakeProber{sessionID: rootID, status: appwire.ThreadStatusRestartRequired})
+					roster.Refresh()
+					path := filepath.Join(runDir, fmt.Sprintf("%d.json", os.Getpid()))
+					if fault == "malformed" {
+						if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						if err := os.Remove(path); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(path, 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+
+				past := hubcore.NewPastIndex(stateDir)
+				if _, err := past.Rebuild(); err != nil {
+					t.Fatal(err)
+				}
+				hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: stateDir, Past: past, Roster: roster})
+				defer hub.Close()
+				client := dialHubRPC(t, hub)
+				defer client.Close()
+				if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+					t.Fatal(err)
+				}
+				ref := localAppRef(targetID)
+				var response any
+				if err := client.Request(t.Context(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "must not write"}, &response); err == nil {
+					t.Error("rename bypassed unresolved owner")
+				}
+				if _, err := client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: ref, Aside: true}); err == nil {
+					t.Error("fork bypassed unresolved owner")
+				}
+				err = client.Request(t.Context(), appwire.MethodTurnQueue, map[string]any{"ref": ref, "clientMutationId": "uncertain-upgrade", "expectedInstanceId": targetID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+				var wire appwire.WireError
+				if !errors.As(err, &wire) {
+					t.Fatalf("queue error=%v", err)
+				}
+				data, ok := wire.Data.(map[string]any)
+				if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+					t.Errorf("receipt=%+v", wire)
+				}
+				after, err := schema.LoadSessionMeta(stateDir, targetID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterMetas, err := schema.ListSessionMetas(stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.Name != before.Name || len(afterMetas) != len(metas) {
+					t.Error("unresolved owner allowed metadata writes")
+				}
+				if err := rendezvous.Remove(runDir, os.Getpid()); err != nil {
+					t.Fatal(err)
+				}
+				if err := client.Request(t.Context(), appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: ref, Name: "released"}, &response); err != nil {
+					t.Fatalf("rename after removal: %v", err)
+				}
+			})
+		}
 	}
 }

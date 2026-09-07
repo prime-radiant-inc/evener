@@ -309,7 +309,7 @@ func (r *Roster) refresh() error {
 	generation := r.refreshGen
 	r.mu.Unlock()
 
-	entries, err := rendezvous.List(r.runDir)
+	entries, err := rendezvous.ListStrict(r.runDir)
 	if err != nil {
 		return err
 	}

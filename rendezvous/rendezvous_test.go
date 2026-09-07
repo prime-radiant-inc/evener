@@ -269,3 +269,50 @@ func TestWrite_TargetIsDirectory(t *testing.T) {
 		t.Fatalf("expected error from the Rename branch, got %v", err)
 	}
 }
+
+func TestListStrictRejectsUnreadableOrInvalidClaims(t *testing.T) {
+	for _, fault := range []string{"malformed", "directory", "wrong-pid"} {
+		t.Run(fault, func(t *testing.T) {
+			dir := t.TempDir()
+			path, err := Write(dir, Entry{PID: 1001, SessionID: "owner"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := ListStrict(dir)
+			if err != nil || len(entries) != 1 || entries[0].SessionID != "owner" {
+				t.Fatalf("list=%+v, %v", entries, err)
+			}
+			switch fault {
+			case "directory":
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "malformed":
+				if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong-pid":
+				data, err := json.Marshal(Entry{PID: 1002, SessionID: "owner"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := ListStrict(dir); err == nil {
+				t.Fatal("invalid claim treated as complete ownership listing")
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			entries, err = ListStrict(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("after removal=%+v, %v", entries, err)
+			}
+		})
+	}
+}
