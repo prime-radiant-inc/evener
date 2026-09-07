@@ -231,9 +231,15 @@ function planRetryImages(
   // index+1 can collide with a real marker when earlier markers were removed
   // or reordered, shadowing an attachment in the translation map and failing
   // the round-trip check below (dropping every attachment, valid ones too).
+  // Raw "[image N]" anchors already in the stored text are reserved too: the
+  // user may have typed one literally, and a fallback reusing its number
+  // would capture it at send translation time, corrupting their prose.
   const usedMarkers = new Set<number>();
   occurrences.forEach((occurrence) => {
     usedMarkers.add(occurrence.marker);
+  });
+  Array.from(text.matchAll(/\[image (\d+)\]/g)).forEach((match) => {
+    usedMarkers.add(Number(match[1]));
   });
   const allocFallbackMarker = (): number => {
     let marker = 1;

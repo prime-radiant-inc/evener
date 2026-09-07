@@ -334,6 +334,34 @@ test("a fallback marker avoids markers the prose already uses", async () => {
   expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe("(attached image 2: b.png) plus stray");
 });
 
+test("a fallback marker avoids raw anchors the user typed literally", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 2: b.png) plus [image 1] typed";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
+          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
+        ],
+      }),
+    ],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2] plus [image 1] typed", [
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
+      { marker: 3, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
 test("duplicate attachment names refuse the images instead of guessing", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1: dup.png) and (attached image 2: dup.png)";
