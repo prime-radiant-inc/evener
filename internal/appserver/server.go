@@ -706,6 +706,12 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
+	if _, ok := ctx.Value(subscriptionAdmissionResolverPanicContextKey{}).(bool); ok {
+		return appwire.ErrorMessage(req.ID, appwire.InternalError("internal error handling request"))
+	}
+	if reason, ok := ctx.Value(subscriptionAdmissionFailureContextKey{}).(string); ok {
+		return appwire.ErrorMessage(req.ID, appwire.WireError{Code: appwire.CodeUnavailable, Message: reason})
+	}
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
 	// frames from JS). It bypasses the router and is answered here, before
 	// the initialize gate; the receive loop answers it inline, bypassing the
@@ -747,6 +753,8 @@ func (c *Connection) handleNotification(notification appwire.Notification) appwi
 
 type connectionContextKey struct{}
 type requestIDContextKey struct{}
+type subscriptionAdmissionFailureContextKey struct{}
+type subscriptionAdmissionResolverPanicContextKey struct{}
 
 // CaptureSubscriptionHandoff is the one-shot continuation paired with a
 // buffering subscription capture. Commit runs only after the matching response
@@ -1364,22 +1372,29 @@ func formatTally(tally map[string]int) string {
 // canceling the shared context is enough — the worker exits at its next
 // dequeue and the receive loop's next Recv fails into normal close handling.
 func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
+	var resolverPanic bool
+	var resolvedKey string
+	var resolved bool
+	if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+		resolvedKey, resolved, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
+		if resolverPanic {
+			ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
+		} else if msg.Request.Method == appwire.MethodThreadRead && threadReadSubscribes(msg.Request.Params) && (!resolved || resolvedKey == "") {
+			ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
+		}
+	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
-		if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil {
-			if key, ok := resolve(msg); ok && key != "" {
-				c.cancelSubscriptionAdmissions(key)
-				ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, key)
-			}
+		if resolved && resolvedKey != "" {
+			c.cancelSubscriptionAdmissions(resolvedKey)
+			ctx = context.WithValue(ctx, subscriptionLifecycleContextKey{}, resolvedKey)
 		}
 	}
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
 		method := msg.Request.Method
 		var admission *subscriptionAdmission
 		if method == appwire.MethodThreadRead {
-			if c.server.cfg.SubscriptionAdmissionResolver != nil {
-				if key, subscribes := c.server.cfg.SubscriptionAdmissionResolver(msg); subscribes && key != "" {
-					admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), key)
-				}
+			if resolved && resolvedKey != "" {
+				admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), resolvedKey)
 			}
 		}
 		if !c.acquireSlowReadSlot(ctx, method) {
@@ -1397,6 +1412,24 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 		return
 	}
 	c.handleAndEnqueue(ctx, msg)
+}
+
+func safeResolveAdmission(server *Server, resolve func(appwire.Message) (string, bool), msg appwire.Message) (key string, ok, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			server.panicLogf("appserver: panic resolving subscription admission for %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
+			key, ok, panicked = "", false, true
+		}
+	}()
+	key, ok = resolve(msg)
+	return key, ok, false
+}
+
+func threadReadSubscribes(raw json.RawMessage) bool {
+	var params struct {
+		Subscribe bool `json:"subscribe"`
+	}
+	return json.Unmarshal(raw, &params) == nil && params.Subscribe
 }
 
 // acquireSlowReadSlot takes one slowReadDispatchCap slot on behalf of the

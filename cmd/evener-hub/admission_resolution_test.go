@@ -20,6 +20,12 @@ func TestHubAdmissionInventoryChangeRejected(t *testing.T) {
 	testHubAdmissionInventoryChange(t, false)
 }
 
+func TestSourceForThreadNilRegistryIsQuiet(t *testing.T) {
+	if _, err := sourceForThread(nil, "", "thread"); err == nil {
+		t.Fatal("nil source registry unexpectedly resolved a thread")
+	}
+}
+
 func TestHubAdmissionStableOwnerChangeSucceeds(t *testing.T) {
 	testHubAdmissionInventoryChange(t, true)
 }

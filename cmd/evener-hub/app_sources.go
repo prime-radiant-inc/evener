@@ -10,6 +10,9 @@ import (
 )
 
 func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	if sources == nil {
+		return nil, errors.New("source registry unavailable")
+	}
 	if ref != "" {
 		return sources.SourceForRef(ref)
 	}
