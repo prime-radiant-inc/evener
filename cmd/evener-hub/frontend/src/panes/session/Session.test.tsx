@@ -2092,3 +2092,44 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
   expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
 });
+
+test("explicitly resumes a stopped session before reconciling its uncertain send", async () => {
+  const fake = connectFakeClient();
+  let status = "restartRequired";
+  let mutationId = "";
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: status },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, clientMutationIds: status === "idle" ? [mutationId] : [] },
+      },
+    }),
+  );
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse("ref_a", { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await screen.findByRole("alert");
+  await act(async () => {
+    mutationId = await seedPendingSend();
+    await mutationStorage.markUnknown(mutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  status = "notLoaded";
+  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+  fireEvent.click(resume);
+  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});

@@ -37,6 +37,7 @@ import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
+import { useBlockedMutationEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -103,13 +104,18 @@ function EmptyTranscript({ active, restartRequired }: { active: boolean; restart
 // actions) follows that shape. Automatic older-turn paging is the deliberate
 // exception: nobody pressed anything, so its failure reports inline at the top
 // of the transcript instead (useTranscript's olderError -> LoadOlderRow).
-function RestartRequiredNotice({ sessionRef }: { sessionRef: string }) {
+function RestartRequiredNotice({ sessionRef, stopped = false }: { sessionRef: string; stopped?: boolean }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refresh = async () => {
     setRefreshing(true);
     setError(null);
     try {
+      if (stopped) {
+        const { client, state } = connectionStore.getState();
+        if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
+        await client.request("thread/resume", { ref: sessionRef });
+      }
       await threadsStore.getState().refreshThread(sessionRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -119,10 +125,11 @@ function RestartRequiredNotice({ sessionRef }: { sessionRef: string }) {
   };
   return (
     <div role="alert">
-      Session restart required. Stop the older daemon, then refresh this session to restore messages and activity.
-      Stopping interrupts active work.
+      {stopped
+        ? "Resume this session to check whether its uncertain messages were delivered."
+        : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
       <Button disabled={refreshing} onClick={() => void refresh()}>
-        Refresh session
+        {stopped ? "Resume session" : "Refresh session"}
       </Button>
       {error && <span>{error}</span>}
     </div>
@@ -131,6 +138,7 @@ function RestartRequiredNotice({ sessionRef }: { sessionRef: string }) {
 
 export default function Session({ params, paneId, focused: paneFocused }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const blockedMutations = useBlockedMutationEntries(ref);
 
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount. AppShell mounts DockHost (and therefore this pane)
@@ -408,7 +416,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               retry={model.modelRetry}
               primaryModel={model.model}
             />
-            {model.status.type === "restartRequired" && <RestartRequiredNotice sessionRef={ref} />}
+            {(model.status.type === "restartRequired" ||
+              (model.status.type === "notLoaded" && blockedMutations.length > 0)) && (
+              <RestartRequiredNotice sessionRef={ref} stopped={model.status.type === "notLoaded"} />
+            )}
             <PendingChips sessionRef={ref} />
             <Composer ref={ref} />
           </div>
