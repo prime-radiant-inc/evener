@@ -445,9 +445,10 @@ func jcpWatchErrorPaths(t *testing.T) {
 		t.Fatalf("oversized seed window = %d", len(m.carry))
 	}
 	m.SeedCarry([]byte("other"))
-	carry := anchorText(append(bytes.Repeat([]byte("x"), 4), '\r', '\n'))
+	m2 := NewOutputMatcher(regexp.MustCompile(`x`))
+	carry := m2.anchoredFull(append(bytes.Repeat([]byte("x"), 4), '\r', '\n'))
 	if len(carry) != 6 || carry[4] != '\n' {
-		t.Fatalf("anchorText CRLF rewrite = %q", carry)
+		t.Fatalf("anchoredFull CRLF rewrite = %q", carry)
 	}
 }
 
