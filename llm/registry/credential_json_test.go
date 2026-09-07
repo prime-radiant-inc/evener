@@ -255,6 +255,32 @@ func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
 	}
 }
 
+// TestCheckCredentialJSONEchoesNothingATerminalWouldObey: the values these
+// refusals quote are rendered — the TUI puts one on its error line — and JSON
+// may carry control characters raw, C1 among them, which a terminal reads as
+// commands. None survives into the message.
+func TestCheckCredentialJSONEchoesNothingATerminalWouldObey(t *testing.T) {
+	// U+009B is CSI: a terminal treats it as the start of a control sequence.
+	// Raw in a JSON string it is legal, since JSON only requires escaping
+	// below U+0020.
+	for _, tt := range []struct{ name, raw string }{
+		{name: "type", raw: "{\"type\":\"bad\u009b2Jstill-bad\"}"},
+		{name: "token_uri", raw: "{\"type\":\"authorized_user\",\"client_id\":\"a\",\"client_secret\":\"b\",\"refresh_token\":\"c\",\"token_uri\":\"https://x.example/\u009b2J\u0085\"}"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := CheckCredentialJSON([]byte(tt.raw))
+			if err == nil {
+				t.Fatal("want a refusal")
+			}
+			for _, r := range err.Error() {
+				if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+					t.Fatalf("err carries control character %U: %q", r, err)
+				}
+			}
+		})
+	}
+}
+
 // testServiceAccountJSON returns a service_account credential JSON whose
 // private_key is a freshly generated PKCS#8 RSA key, so no key material
 // lives in the repository. llm/registry and llm/providers/tokenauth share no
