@@ -1,9 +1,9 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
 
-import { type Token, type Tokens } from "marked";
-import { markdownLexer } from "../../../../widgets/markdown";
+import type { Token, Tokens } from "marked";
 import { pendingTextJoined } from "../../../../protocol/reducer";
+import { markdownLexer } from "../../../../widgets/markdown";
 
 // Lexer-only use of the app's shared Markdown tokenizer (see
 // widgets/markdown/index.tsx) so nested links, block prefixes, and emphasis

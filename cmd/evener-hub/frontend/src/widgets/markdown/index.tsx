@@ -189,13 +189,19 @@ const LIVE_TAIL_WINDOW = 1000;
 // no other CommonMark block spans a blank line, and raw HTML needs no gate -
 // the html() override escapes it to text identically in both paths.
 const TAIL_BLOCK_MARKER =
-  /^ {0,3}#{1,6}(?:[ \t]+|\r?$)|^ {0,3}(?:=+|-+)[ \t]*\r?$|^ {0,3}(?:[-+*](?:[ \t]+|\r?$)|\d{1,9}[.)](?:[ \t]+|\r?$))|^ {0,3}(`{3,}|~{3,})|^ {0,3}>|^ {0,3}(?:\*[ \t]*){3,}\r?$|^ {0,3}(?:-[ \t]*){3,}\r?$|^ {0,3}(?:_[ \t]*){3,}\r?$|^\s*\||^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$|^ {0,3}\[[^\]\n]+\]:/m;
+  /^ {0,3}#{1,6}(?:[ \t]+|\r?$)|^ {0,3}(?:=+|-+)[ \t]*\r?$|^ {0,3}(?:[-+*](?:[ \t]+|\r?$)|\d{1,9}[.)](?:[ \t]+|\r?$))|^ {0,3}(`{3,}|~{3,})|^ {0,3}>|^ {0,3}(?:\*[ \t]*){3,}\r?$|^ {0,3}(?:-[ \t]*){3,}\r?$|^ {0,3}(?:_[ \t]*){3,}\r?$|^\s*\||^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$|^ {0,3}\[[^\]\n]+\]:|<!\[CDATA\[|\]\]>/m;
 
 // Head-side hazards for the split: a link definition or table delimiter row
 // in the head can resolve structure in the tail (a `[label]` use, table
 // rows) that a standalone tail parse would leave literal, so any hit falls
-// back to the full parse.
-const HEAD_SPLIT_HAZARD = /^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
+// back to the full parse. The link-definition arm also matches `>`-quoted
+// and list-item-nested definitions (valid anywhere a block can nest, and
+// registered globally by marked): without it a head-side definition would
+// leave the tail's `[label]` use literal under the windowed parse. Verified
+// against the shared lexer: top-level, blockquote-nested, and list-nested
+// definitions all trip this pattern while definition-free heads do not.
+const HEAD_SPLIT_HAZARD =
+  /^(?: {0,3}>[ \t]?)+ {0,3}\[[^\]\n]+\]:|^ {0,3}(?: {0,3}>[ \t]?)* {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+.*\[[^\]\n]+\]:|^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
 
 // HTML blocks (CommonMark types 1-6: pre/script/style/textarea, comments,
 // processing instructions, declarations, CDATA, block tags) run past blank
@@ -204,8 +210,8 @@ const HEAD_SPLIT_HAZARD = /^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*
 // the head, or a block ender in the tail (whose opener may sit anywhere
 // upstream, including before the head), falls back to the full parse.
 const HTML_BLOCK_START =
-  /^ {0,3}(?:<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|\[CDATA\[|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>\/]|$))/im;
-const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>/i;
+  /^ {0,3}(?:<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\[|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>/]|$))/im;
+const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>|\]\]>/i;
 
 // Splits a long live source into a settled head (ending on a blank line) and
 // the streaming tail after it, or null when there is no blank-line boundary
