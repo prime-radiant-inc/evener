@@ -955,7 +955,7 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
-  expect(call![1]).toContain("padding: var(--space-2) 0");
+  expect(call![1]).toContain("padding: var(--rhythm-item) 0");
 });
 
 // The intent is the agent's stated rationale for the call - commentary on

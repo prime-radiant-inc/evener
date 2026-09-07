@@ -27,7 +27,7 @@ export interface SettingsCluster {
 }
 
 export const SETTINGS_CLUSTERS: SettingsCluster[] = [
-  { id: "agents-models", label: "Agents & models" },
+  { id: "agents-models", label: "Agent setup" },
   { id: "extensions", label: "Extensions" },
   { id: "daemon", label: "Daemon" },
 ];

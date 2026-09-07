@@ -6,7 +6,7 @@
 .call {
   display: flex;
   flex-direction: column;
-  padding: var(--space-2) 0;
+  padding: var(--rhythm-item) 0;
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it

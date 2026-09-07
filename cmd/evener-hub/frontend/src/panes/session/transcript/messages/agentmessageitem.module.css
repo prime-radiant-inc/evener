@@ -12,9 +12,10 @@
  * size bump fired on every mid-turn narrative fragment, dozens per
  * session, and cancelled itself. */
 .message {
-  /* --space-1, not --space-2: with prose now in a per-fragment bubble (see
-   * .bubble), consecutive agent messages stack like chat rows - tight. */
-  padding: var(--space-1) 0;
+  /* One rhythm step inside an exchange: consecutive agent fragments stack
+   * like chat rows - tight. The larger steps live on the user message
+   * (exchange) and the turn separator (group). */
+  padding: var(--rhythm-line) 0;
 }
 
 /* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
@@ -103,12 +104,16 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+  margin-bottom: var(--rhythm-line);
 }
 
+/* Semibold: the speaker header is the transcript's one structural landmark
+ * per exchange, and at body size a medium weight next to regular prose was
+ * not a landmark (typography-spacing-critique-2026-09-06 finding 1). */
 .name {
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
-  font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
 
@@ -116,8 +121,8 @@
  * element itself only renders when at least one part exists. */
 .meta {
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
 }
 
 /* The live stream wrapper. Its only job is the streaming caret - the design

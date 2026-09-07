@@ -288,7 +288,7 @@ test("sets --prose-font-size once, on the .message ancestor the live and settled
 test("the agent message keeps .message a bare layout row - the bubble treatment lives on .bubble, not the row", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--space-1\)\s+0;/);
+  expect(css).toMatch(/\.message\s*\{[\s\S]*padding:\s*var\(--rhythm-line\)\s+0;/);
   expect(css).not.toMatch(/\.message\s*\{[\s\S]*--prose-font-size:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);

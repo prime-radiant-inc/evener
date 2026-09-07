@@ -299,7 +299,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
@@ -337,7 +337,7 @@
  * .actions menu borrows the same cell). The slot owns the right alignment
  * and the occupant/menu visibility swap; this class is only the text. */
 .time {
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
