@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"path"
 	"strings"
@@ -64,6 +65,15 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *globBudge
 	var budgetErr error
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A budget refusal is not an unreadable entry: skipping it would
+			// let the directory that tripped the bound be read again by
+			// whatever walks next, and would leave this set reported as
+			// complete when it stopped partway, silently under-excluding the
+			// rest of the tree.
+			if _, refused := errors.AsType[*globBudgetError](err); refused {
+				budgetErr = err
+				return err
+			}
 			return nil //nolint:nilerr // best-effort: skip unreadable entries
 		}
 		if p != "." && skip != nil && skip(p) {

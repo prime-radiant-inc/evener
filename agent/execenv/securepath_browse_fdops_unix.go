@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,6 +37,9 @@ type secureDirFS struct {
 	baseFd   int
 	basePath string
 	fs       *sandboxFS
+	// budget bounds the entries a single ReadDir call may materialize, shared
+	// with the rest of the glob or grep call's directory-listing budget.
+	budget *globBudget
 }
 
 func (f *secureDirFS) Open(name string) (fs.File, error) {
@@ -56,9 +60,27 @@ func (f *secureDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	}
 	df := os.NewFile(uintptr(fd), name)
 	defer func() { _ = df.Close() }()
-	entries, err := df.ReadDir(-1)
-	if err != nil {
-		return nil, err
+	// Pulled in globDirChunk-sized pieces and charged to budget after each
+	// one, the same as boundedDirFS on the plain path: a single df.ReadDir(-1)
+	// materializes the whole directory before the entry budget or match cap
+	// ever get a say, which is exactly the shape that lets one huge directory
+	// OOM the walk no matter how tightly the other bounds are set.
+	var entries []fs.DirEntry
+	for {
+		chunk, err := df.ReadDir(globDirChunk)
+		entries = append(entries, chunk...)
+		if berr := f.budget.tooManyEntries(len(entries)); berr != nil {
+			return nil, berr
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		if len(chunk) == 0 {
+			break
+		}
 	}
 	// os.DirFS sorts by name; the glob walk's match cap depends on that order
 	// to truncate to the same prefix every time, so this arm has to match it
@@ -111,8 +133,8 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
 	budget := newGlobBudget("glob")
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget}}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// Never list or read into a masked subtree while collecting
@@ -185,12 +207,13 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	if err != nil {
 		return "", err
 	}
-	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
+	budget := newGlobBudget("grep")
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return s.underMasked(filepath.Join(canonical, relPath))
-	}, newGlobBudget("grep"))
+	}, budget)
 	if err != nil {
 		return "", err
 	}
@@ -200,7 +223,22 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 			return cancelErr
 		}
 		if walkErr != nil {
+			// A budget refusal ends the grep with its reason; skipping it the
+			// way an unreadable or symlink-refused entry is skipped would let
+			// the walk carry on past the bound it just hit.
+			if _, refused := errors.AsType[*globBudgetError](walkErr); refused {
+				return walkErr
+			}
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
+		}
+		if d.IsDir() {
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge above is always cycleSafe.
+			if berr := budget.listing(true); berr != nil {
+				return berr
+			}
 		}
 		abs := filepath.Join(canonical, rel)
 		if s.underMasked(abs) {

@@ -152,7 +152,7 @@ func TestGlobWithExclusionsStopsMidWalk(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stubGlobBaseFS(t, func(string) fs.FS {
+	stubGlobBaseFS(t, func(string, *globBudget) fs.FS {
 		return &countingFS{FS: globCancelTree(), cancelOn: 3, cancel: cancel}
 	})
 
@@ -250,7 +250,7 @@ func TestSortPathsByMtimeDescStopsOnCancellation(t *testing.T) {
 // stubGlobBaseFS interposes on the fs.FS the off-sandbox glob walks, so a test
 // can drive the exported entry point over a filesystem it controls, and
 // restores the seam when the test ends.
-func stubGlobBaseFS(t *testing.T, open func(dir string) fs.FS) {
+func stubGlobBaseFS(t *testing.T, open func(dir string, budget *globBudget) fs.FS) {
 	t.Helper()
 	orig := globBaseFS
 	globBaseFS = open

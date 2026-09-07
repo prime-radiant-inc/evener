@@ -1709,8 +1709,11 @@ func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, ba
 
 // globBaseFS opens the filesystem the off-sandbox glob walks, rooted at the
 // resolved base directory; a variable so tests can drive the exported entry
-// point over a filesystem they control.
-var globBaseFS = os.DirFS
+// point over a filesystem they control. budget is threaded through so a
+// bounded implementation can charge what it reads while listing.
+var globBaseFS = func(dir string, budget *globBudget) fs.FS {
+	return boundedDirFS{FS: os.DirFS(dir), budget: budget}
+}
 
 // GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
 // reports how many candidate matches the default dotfile/gitignore exclusion
@@ -1737,8 +1740,8 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
-	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
 	budget := newGlobBudget("glob")
+	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base, budget)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
@@ -1938,15 +1941,16 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	// fs.WalkDir does not descend through directory symlinks, matching the
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
-	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(path)}
+	budget := newGlobBudget("grep")
+	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget}}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
+		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget}}
 	}
-	ignores, err := loadIgnoreSet(ignoreFS, nil, newGlobBudget("grep"))
+	ignores, err := loadIgnoreSet(ignoreFS, nil, budget)
 	if err != nil {
 		return "", err
 	}
@@ -1957,7 +1961,22 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			return cancelErr
 		}
 		if err != nil {
+			// A budget refusal ends the grep with its reason; skipping it the
+			// way an unreadable entry is skipped would let the walk carry on
+			// past the bound it just hit.
+			if _, refused := errors.AsType[*globBudgetError](err); refused {
+				return err
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
+		}
+		if d.IsDir() {
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge is always cycleSafe.
+			if berr := budget.listing(true); berr != nil {
+				return berr
+			}
 		}
 		relPath := filepath.FromSlash(p)
 		if singleFile {

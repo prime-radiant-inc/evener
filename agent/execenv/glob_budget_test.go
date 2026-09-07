@@ -34,6 +34,69 @@ func stubMaxGlobMatches(t *testing.T, n int) {
 	t.Cleanup(func() { maxGlobMatches = orig })
 }
 
+// stubMaxGlobDirEntries lowers the per-directory entry budget for a test and
+// restores it when the test ends, so a budget test can use a directory small
+// enough for t.TempDir() rather than one large enough to trip the real bound.
+func stubMaxGlobDirEntries(t *testing.T, n int) {
+	t.Helper()
+	orig := maxGlobDirEntries
+	maxGlobDirEntries = n
+	t.Cleanup(func() { maxGlobDirEntries = orig })
+}
+
+// stubGlobDirChunk shrinks the per-syscall chunk size for a test and restores
+// it when the test ends, so a bounded listing has to make several chunk reads
+// over a fixture small enough for t.TempDir() instead of a directory too
+// large to build here.
+func stubGlobDirChunk(t *testing.T, n int) {
+	t.Helper()
+	orig := globDirChunk
+	globDirChunk = n
+	t.Cleanup(func() { globDirChunk = orig })
+}
+
+// pacedDirEntriesFS wraps a directory so a test can observe how many entries
+// a chunked reader actually pulls from it. Its files hand back at most pace
+// entries per ReadDir(n) call once the caller asks for more than that,
+// mirroring the short reads a real filesystem can hand a chunked reader, so a
+// small fixture can still force several round trips instead of resolving in
+// the one big read a directory too large to build here would need. A caller
+// that asks for everything at once (n <= 0 — what an unbounded listing does)
+// still gets the whole directory back in a single call, which is what makes
+// this double also show that today's listing pulls everything at once.
+type pacedDirEntriesFS struct {
+	fs.FS
+	read *int
+	pace int
+}
+
+func (p pacedDirEntriesFS) Open(name string) (fs.File, error) {
+	f, err := p.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	rdf, ok := f.(fs.ReadDirFile)
+	if !ok {
+		return f, nil
+	}
+	return &pacedDirEntriesFile{ReadDirFile: rdf, read: p.read, pace: p.pace}, nil
+}
+
+type pacedDirEntriesFile struct {
+	fs.ReadDirFile
+	read *int
+	pace int
+}
+
+func (p *pacedDirEntriesFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if n > 0 && n > p.pace {
+		n = p.pace
+	}
+	entries, err := p.ReadDirFile.ReadDir(n)
+	*p.read += len(entries)
+	return entries, err
+}
+
 // globBudgetFixture builds a t.TempDir() tree of n sibling directories, each
 // holding one leaf.txt and one leaf.md, so tests can glob for one extension,
 // both extensions, or count total directories without rebuilding the tree.
@@ -80,8 +143,8 @@ func TestGlobStopsAtTheDirectoryListingBudgetWithFileIdentity(t *testing.T) {
 	stubMaxGlobDirListings(t, budget)
 
 	var counter *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		counter = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
+		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
 		return counter
 	})
 
@@ -114,8 +177,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	root := globBudgetFixture(t, fileCount)
 
 	var full *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		full = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
+		full = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
 		return full
 	})
 	fullMatches, _, fullTruncatedAt, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.txt", root, true)
@@ -129,8 +192,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	stubMaxGlobMatches(t, 5)
 
 	var capped *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		capped = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
+		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
 		return capped
 	})
 	matches, _, truncatedAt, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.txt", root, true)
@@ -170,6 +233,90 @@ func TestGlobBudgetIsSharedAcrossBraceExpandedPatterns(t *testing.T) {
 	}
 	if truncatedAt != 5 {
 		t.Fatalf("brace-expanded glob reported truncatedAt=%d, want 5 (the call-wide cap)", truncatedAt)
+	}
+}
+
+// TestGlobStopsOnADirectoryWithTooManyEntries is the unit-scale reproduction
+// of #497's other half (roborev High): the listing budget and match cap only
+// ever get a say once a directory's ReadDir call returns, and os.DirFS's
+// ReadDir is os.ReadDir, which reads every entry before handing any of them
+// back — so one directory with millions of entries can exhaust memory before
+// either bound is ever consulted. pacedDirEntriesFS paces what a chunked
+// reader gets per call, the same short-read shape a real filesystem can hand
+// back, so a small fixture can still show a listing stopping after a few
+// chunks instead of needing a directory too large to build here. The read
+// counter and peakDirEntries are what tell a fix that stops early apart from
+// one that reads the whole directory and only then reports the refusal — a
+// result-only assertion cannot tell the two apart, but the OOM only the
+// former avoids.
+func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
+	const fileCount = 30
+	root := t.TempDir()
+	for i := range fileCount {
+		p := filepath.Join(root, fmt.Sprintf("leaf%03d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const budget = 10
+	stubMaxGlobDirEntries(t, budget)
+
+	var read int
+	var seenBudget *globBudget
+	stubGlobBaseFS(t, func(dir string, callBudget *globBudget) fs.FS {
+		seenBudget = callBudget
+		return boundedDirFS{FS: pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: 5}, budget: callBudget}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "*.txt", root, true)
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Glob over a %d-entry directory with an entry budget of %d = (%v, %v), want a *globBudgetError; nothing bounds how many entries one listing may materialize", fileCount, budget, matches, err)
+	}
+	if budgetErr.kind != budgetEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetEntries", budgetErr.kind)
+	}
+	if budgetErr.op != "glob" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "glob")
+	}
+	if read > fileCount {
+		t.Fatalf("paced double reported %d entries read out of %d total in the directory, which is impossible", read, fileCount)
+	}
+	if read == fileCount {
+		t.Fatalf("listing read all %d entries before refusing; it must stop near the entry budget of %d instead of materializing the whole directory", read, budget)
+	}
+	if seenBudget.peakDirEntries < budget || seenBudget.peakDirEntries >= fileCount {
+		t.Fatalf("globBudget.peakDirEntries = %d, want at least the entry budget of %d but strictly less than the directory's %d entries (a listing that materializes everything before refusing must not pass this)", seenBudget.peakDirEntries, budget, fileCount)
+	}
+}
+
+// TestGrepWalkIsChargedToTheBudget proves grepNative's own directory walk has
+// no bound of its own, distinct from the ignore-discovery bound
+// TestGrepIgnoreDiscoveryIsChargedToTheBudget already covers: grepWalk is a
+// plain fs.WalkDir with nothing charging its listings to a budget, so a huge
+// tree grepNative walks after ignore discovery completes still costs
+// unbounded work. The tree here has no .gitignore and is small enough that
+// ignore discovery alone stays well under the lowered listing budget, so a
+// refusal can only be attributed to the walk grepNative runs over the tree it
+// is grepping, not to the ignore-discovery pass that already has its own
+// test above.
+func TestGrepWalkIsChargedToTheBudget(t *testing.T) {
+	const dirCount = 30
+	const budget = 40
+	root := globBudgetFixture(t, dirCount)
+	stubMaxGlobDirListings(t, budget)
+
+	_, err := NewLocalExecutionEnvironment(root).grepNative(t.Context(), "needle", root, "", false, 100, "")
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("grepNative's own walk over a %d-directory tree with a listing budget of %d = (_, %v), want a *globBudgetError; grepWalk charges nothing to the budget", dirCount, budget, err)
+	}
+	if budgetErr.kind != budgetListings {
+		t.Fatalf("globBudgetError.kind = %v, want budgetListings", budgetErr.kind)
+	}
+	if budgetErr.op != "grep" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
 	}
 }
 
@@ -244,8 +391,8 @@ func TestGlobIgnoreDiscoveryIsChargedToTheBudget(t *testing.T) {
 	stubMaxGlobDirListings(t, budget)
 
 	var counter *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		counter = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(dir string, budget *globBudget) fs.FS {
+		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget}}
 		return counter
 	})
 
@@ -453,5 +600,77 @@ func TestGlobMatchesReportsCancellationAfterTheCapTripped(t *testing.T) {
 	matches, err := globMatches(ctx, fstest.MapFS{}, "*.txt", budget)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("globMatches with a tripped cap and a cancelled context = (%v, %v), want context.Canceled", matches, err)
+	}
+}
+
+// flatEntriesFixture builds a t.TempDir() holding n files and no
+// subdirectories, so a test can force one directory listing to read past the
+// per-directory entry budget without building a tree.
+func flatEntriesFixture(t *testing.T, n int) string {
+	t.Helper()
+	root := t.TempDir()
+	for i := range n {
+		p := filepath.Join(root, fmt.Sprintf("leaf%03d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// TestGlobIgnoreDiscoveryStopsOnADirectoryWithTooManyEntries covers the arm
+// the pattern-walk entry test cannot reach: loadIgnoreSet walks the base with
+// fs.WalkDir, whose callback treats every error it is handed as an unreadable
+// entry to skip. A per-directory entry refusal handed to that callback is not
+// an unreadable entry — it is the bound doing its job — so swallowing it both
+// lets the oversized directory be read again by whatever walks next and
+// leaves ignore discovery reporting a set it never finished collecting, which
+// silently under-excludes the rest of the tree.
+//
+// The pattern is metacharacter-free and matches nothing, so doublestar
+// resolves it with a stat and lists no directory at all: the only walk that
+// can reach the entry bound here is ignore discovery's.
+func TestGlobIgnoreDiscoveryStopsOnADirectoryWithTooManyEntries(t *testing.T) {
+	const fileCount = 30
+	const budget = 10
+	root := flatEntriesFixture(t, fileCount)
+	stubMaxGlobDirEntries(t, budget)
+	stubGlobDirChunk(t, 5)
+
+	matches, _, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "does-not-exist.txt", root, false)
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("GlobWithExclusions(include_ignored=false) over a %d-entry directory with an entry budget of %d = (%v, %v), want a *globBudgetError; ignore discovery's walk is swallowing the refusal as if it were an unreadable entry", fileCount, budget, matches, err)
+	}
+	if budgetErr.kind != budgetEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetEntries", budgetErr.kind)
+	}
+	if budgetErr.op != "glob" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "glob")
+	}
+}
+
+// TestGrepWalkStopsOnADirectoryWithTooManyEntries is the same contract for
+// grep's two best-effort walks. Both loadIgnoreSet's callback and grepNative's
+// own walk callback skip past any error they are handed, so an oversized
+// directory would be read in full by each of them in turn and the call would
+// come back reporting no matches and no error at all.
+func TestGrepWalkStopsOnADirectoryWithTooManyEntries(t *testing.T) {
+	const fileCount = 30
+	const budget = 10
+	root := flatEntriesFixture(t, fileCount)
+	stubMaxGlobDirEntries(t, budget)
+	stubGlobDirChunk(t, 5)
+
+	out, err := NewLocalExecutionEnvironment(root).grepNative(t.Context(), "needle", root, "", false, 100, "")
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("grepNative over a %d-entry directory with an entry budget of %d = (%q, %v), want a *globBudgetError; grep's walks are swallowing the refusal as if it were an unreadable entry", fileCount, budget, out, err)
+	}
+	if budgetErr.kind != budgetEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetEntries", budgetErr.kind)
+	}
+	if budgetErr.op != "grep" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
 	}
 }
