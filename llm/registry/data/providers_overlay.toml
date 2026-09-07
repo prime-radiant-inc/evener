@@ -352,6 +352,12 @@ web_search = true
 # Amazon Bedrock (§9.3): Anthropic's Messages endpoint on bedrock-mantle
 # ---------------------------------------------------------------------------
 
+[providers.meta.models."muse-spark-1.3-contributor"]
+# Muse Spark 1.3 supports the max effort tier: the sibling 1.3 rows (base,
+# openrouter, kilo, vercel) already list it upstream, but meta's own
+# 1.3-contributor row stops at xhigh. Curated until upstream corrects it.
+effort_values = ["minimal", "low", "medium", "high", "xhigh", "max"]
+
 [providers."amazon-bedrock"]
 implicit = true
 surface = "anthropic"
@@ -513,7 +519,7 @@ base_url = "{BASE_URL}"
 vars = { "BASE_URL" = "https://api.moonshot.ai/v1" }
 vars_env = { "BASE_URL" = "MOONSHOTAI_BASE_URL" }
 default_model = "kimi-k3"
-cheap_model = "kimi-k2.5"
+cheap_model = "kimi-k2.6"
 structured_output = false
 tool_choice_forcing = false
 fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
