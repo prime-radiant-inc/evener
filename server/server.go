@@ -443,11 +443,11 @@ func NewServer(cfg ServerConfig) *Server {
 				if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
 					return "", false
 				}
-				threadID := runtime.appThreadIDForRead(params)
+				threadID, target := runtime.appReadTarget(params)
 				if threadID == "" {
 					return "", false
 				}
-				return runtime.appNotificationTarget(threadID), true
+				return target, true
 			},
 			Features: appwire.FeatureSet{
 				ThreadList:        true,

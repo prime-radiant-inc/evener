@@ -1089,11 +1089,11 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 			return true
 		},
 		func() appserver.SubscriptionTarget {
-			threadID = s.appThreadIDForRead(params)
+			var key string
+			threadID, key = s.appReadTarget(params)
 			if threadID == "" {
 				return appserver.SubscriptionTarget{}
 			}
-			key := s.appNotificationTarget(threadID)
 			return appserver.SubscriptionTarget{ThreadID: key, LifecycleKey: key}
 		},
 	)
@@ -1184,6 +1184,22 @@ func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.
 }
 
 func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
+	threadID, _ := s.appReadTarget(params)
+	return threadID
+}
+
+// appReadTarget takes one identity snapshot for both the requested thread and
+// its admission/delivery key. Ingress must not recompute the key after releasing
+// this lock: a same-workspace identity replacement could turn the saved root ID
+// into a stale bare key between those two reads.
+func (s *Server) appReadTarget(params appwire.ThreadReadParams) (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appReadTargetLocked(params)
+}
+
+// appReadTargetLocked requires s.mu and calls no lock-taking helpers.
+func (s *Server) appReadTargetLocked(params appwire.ThreadReadParams) (string, string) {
 	threadID := strings.TrimSpace(params.ThreadID)
 	rawRef := strings.TrimSpace(params.Ref)
 	if threadID == "" && rawRef != "" {
@@ -1194,25 +1210,29 @@ func (s *Server) appThreadIDForRead(params appwire.ThreadReadParams) string {
 		// else entirely (ledger #110/#111).
 		ref, err := appwire.ParseRef(rawRef)
 		if err != nil || ref.SourceID != "local" {
-			return ""
+			return "", ""
 		}
-		s.mu.RLock()
-		stableRef := s.appRef
-		currentThreadID := s.appThreadID
-		s.mu.RUnlock()
-		if rawRef == stableRef {
-			threadID = currentThreadID
+		if rawRef == s.appRef {
+			threadID = s.appThreadID
 		} else {
 			threadID = ref.ThreadID
 		}
 	}
+	rootID := s.appThreadID
+	if rootID == "" {
+		rootID = s.status.SessionID
+	}
 	if threadID == "" {
-		threadID = s.appProjectionThreadID()
+		threadID = rootID
 	}
-	if _, ok := s.appThreadForID(threadID); !ok {
-		return ""
+	if threadID == "" || (threadID != rootID && s.appDescendants[threadID] == nil) {
+		return "", ""
 	}
-	return threadID
+	target := threadID
+	if threadID == s.appThreadID && s.appRef != "" {
+		target = s.appRef
+	}
+	return threadID, target
 }
 
 func (s *Server) appThreadForID(threadID string) (appwire.Thread, bool) {
