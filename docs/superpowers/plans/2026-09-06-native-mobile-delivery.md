@@ -25,6 +25,18 @@ This is the whole-product delivery sequence, not a claim that every later code c
 
 Audit baseline: `ef3e5a5d3`, 6 September 2026. The last recorded checks passed 349 native tests and both simulator Release builds. These are historical checks, not release acceptance. A fresh fetch found 80 main-only commits and 463 branch-only commits; `origin/main` was `3b1c5f82c`. Integration is the first prerequisite.
 
+## AppWire v4 integration prerequisite
+
+The rebase introduced breaking contracts. Complete these before additional visual work:
+
+- Shared conversation service: item-count paging, opaque cursors, fragment identity/boundaries, stale-cursor recovery and subscription reconciliation.
+- Native navigation: representation version 2, snapshot/delta decoding and exact generation/revision/etag bases, including project reveal and mutation readback.
+- Provider/settings workflows: credential JSON, descriptor variable mapping, explicit base-URL clearing, and removal of obsolete Codex launch overview fields. Add keybinding settings to the coverage ledger.
+- Shared transport: accept and validate the current optional handshake capabilities; preserve current web readiness and native reconnect publication semantics.
+- Documentation/examples: current v4 handshake and source-backed migration guidance; historical v3 execution evidence remains historical, not v4 qualification.
+
+The first three packages are assigned to separate workers with disjoint file ownership. Bot owns shared transport, generated artifacts, integration checks and serialized commits. Native/server E2E follows deterministic migration tests on the integrated result.
+
 ## Execution and ownership
 
 Bot owns integration, architecture, UX coherence, reviewer triage and final acceptance. Default new implementation/audit/review workers to **Luna (`gpt-5.6-luna`), medium**, as Jesse requested. Use up to three independent workers alongside coordinator work. Reuse existing agents when the session's thread limit prevents new ones; report model limitations honestly.
@@ -39,11 +51,11 @@ The reusable work cycle is: source-backed gap → whole-workflow design → fail
 
 **Files:** branch history; `docs/design/mobile/backlog.md`; `mobile-native/README.md`; coverage spec above; `make/testing.mk`; existing `.github/workflows/` gates.
 
-- [ ] Preserve the unrelated generated Tauri iOS modifications, checkpoint the branch, and rebase onto freshly fetched main. Resolve conflicts against current contracts; preserve the original local modifications exactly.
+- [x] Preserve the unrelated generated Tauri iOS modifications, checkpoint the branch, and rebase onto freshly fetched main. Rebased onto `3b1c5f82c`, yielding `ee142bd5e`; unrelated edits restored with identical binary diff. Backup: `codex/mobile-before-main-rebase-20260906`.
 - [ ] Run affected generation and repository/native checks after integration. Record the new source revision before dispatching feature edits.
 - [ ] Replace historical status assertions in the coverage inventory with source-verified implementation and qualification columns. Keep historical evidence dated and attributed.
 - [ ] Create one acceptance ledger row per workflow below: web/server source, native source, deterministic tests, real-daemon scenario, iOS evidence, Android evidence, source/build identity, remaining acceptance, owner. Missing evidence stays open.
-- [ ] Add explicit native test/typecheck and clean API-package checks to the existing gate ownership. Audit found no native/package invocation in the repository gate paths; `make merge-approval-gate` alone does not qualify them.
+- [x] Add explicit native test/typecheck and clean API-package checks to the existing gate ownership. Implemented in `d7075ce74` and corrected/qualified in `cab95068c`: `make test-native`, `make test-api-package`, merge gate and CI ownership. Full repository gate still requires a successful integrated run.
 
 **Exit:** one source revision, an exhaustive workflow ledger, and gates that actually execute native/package checks. No feature declared absent or finished merely from an old document.
 

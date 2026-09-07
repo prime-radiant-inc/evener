@@ -481,3 +481,23 @@ with the original error. A killed process cannot run cleanup. If the creation
 reply is lost, the example cannot know the ref to clean up; inspect the isolated
 hub before repeating it. This recipe does not cover text deltas, tool execution,
 approvals, queueing, disconnect recovery or natural turn completion.
+
+
+### Isolated v4 execution record (6 September 2026)
+
+An outside-checkout tarball consumer built from `bfaf09359` passed ESM and
+CommonJS imports and strict TypeScript declarations without `skipLibCheck`.
+Against an isolated AppWire v4 hub using a scripted OpenAI-compatible provider,
+`inspect.mjs` read the model catalog, empty roster, launch options and trust.
+The empty-roster check exposed `data:null`; server commit `509c7bd57` corrected
+it to an empty array and the same consumer then passed.
+
+`session-lifecycle.mjs` created an owned session, verified Start receipt and
+lifecycle publication, interrupted a held turn, and independently read back the
+submitted input and idle send capability. Only this isolated session was
+mutated. Credential values were read from a file, not included in the record.
+
+These are executed v4 happy-path checks for these recipes. They do not establish
+complete method coverage, fault recovery, real-provider behavior or native
+release acceptance. `make test-api-package` separately checks package contents,
+imports and declarations in a temporary outside-checkout consumer.
