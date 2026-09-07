@@ -3,6 +3,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -13,6 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useStore } from "zustand";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { useConnection } from "./ConnectionProvider";
+import { CreationComposerSettings } from "./CreationComposerSettings";
 import { HubPathField } from "./HubPathField";
 import { LaunchOverrides } from "./LaunchOverrides";
 import { createNewSessionStore } from "./newSession";
@@ -26,13 +28,22 @@ export function NewSessionScreen({
   const { activeProfile, client, state, retry } = useConnection();
   const colors = useColors();
   const headerHeight = useHeaderHeight();
+  const formScroll = useRef<ScrollView>(null);
+  const promptFocused = useRef(false);
+  useEffect(() => {
+    const shown = Keyboard.addListener("keyboardDidShow", () => {
+      if (promptFocused.current)
+        formScroll.current?.scrollToEnd({ animated: false });
+    });
+    return () => shown.remove();
+  }, []);
   const hubId = route.params.hubId;
   const ready = activeProfile?.id === hubId && state === "ready" && !!client;
   const latest = useRef({ ready, client });
   latest.current = { ready, client };
   const store = useMemo(() => createNewSessionStore(hubId), [hubId]);
   const form = useStore(store);
-  const [modelSearch, setModelSearch] = useState("");
+  const [harnessOpen, setHarnessOpen] = useState(false);
   const emptyPromptReason = form.harnesses.find(
     (h) => h.id === form.harness,
   )?.emptyTaskUnsupportedReason;
@@ -89,6 +100,11 @@ export function NewSessionScreen({
         keyboardVerticalOffset={headerHeight}
       >
         <ScrollView
+          ref={formScroll}
+          onLayout={() => {
+            if (promptFocused.current)
+              formScroll.current?.scrollToEnd({ animated: false });
+          }}
           contentContainerStyle={styles.padded}
           keyboardShouldPersistTaps="handled"
         >
@@ -140,12 +156,13 @@ export function NewSessionScreen({
               {form.projects.map((project) => (
                 <Action
                   key={project}
+                  label={project}
                   disabled={disabled}
                   onPress={() => {
                     void form.setCwd(project);
                   }}
                 >
-                  {project}
+                  {project.split("/").filter(Boolean).at(-1) || project}
                 </Action>
               ))}
             </ScrollView>
@@ -161,88 +178,39 @@ export function NewSessionScreen({
           >
             Project launch settings
           </Action>
-          <Copy>Harness</Copy>
-          <View>
-            <Choice
-              label="Hub default harness"
-              selected={!form.harness}
-              disabled={disabled}
-              onPress={() => {
-                void form.setHarness("");
-              }}
-            />
-            {form.harnesses.map((harness) => (
+          <Action
+            disabled={disabled}
+            expanded={harnessOpen}
+            tone="quiet"
+            onPress={() => setHarnessOpen(!harnessOpen)}
+          >
+            {`Harness · ${form.harnesses.find((h) => h.id === form.harness)?.label || "Hub default"}`}
+          </Action>
+          {harnessOpen && (
+            <View>
               <Choice
-                key={harness.id}
-                label={harness.label}
-                selected={form.harness === harness.id}
+                label="Hub default harness"
+                selected={!form.harness}
                 disabled={disabled}
                 onPress={() => {
-                  void form.setHarness(harness.id);
+                  void form.setHarness("");
+                  setHarnessOpen(false);
                 }}
               />
-            ))}
-          </View>
-          <Copy>Model</Copy>
-          <Choice
-            label="Hub default model"
-            selected={!form.model}
-            disabled={disabled}
-            onPress={() => form.selectModel(null)}
-          />
-          {form.loadingModels ? <Copy muted>Loading models…</Copy> : null}
-          <TextInput
-            accessibilityLabel="Search models"
-            value={modelSearch}
-            onChangeText={setModelSearch}
-            placeholder="Search models"
-            placeholderTextColor={colors.secondary}
-            style={inputStyle}
-          />
-          <ScrollView
-            style={{ maxHeight: 220 }}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
-          >
-            {form.models
-              .filter((model) =>
-                `${model.displayName ?? ""} ${model.model} ${model.provider}`
-                  .toLowerCase()
-                  .includes(modelSearch.toLowerCase()),
-              )
-              .map((model) => (
+              {form.harnesses.map((harness) => (
                 <Choice
-                  key={JSON.stringify([model.provider, model.model])}
-                  label={`${model.displayName || model.model} · ${model.provider}`}
-                  selected={
-                    form.model?.provider === model.provider &&
-                    form.model.model === model.model
-                  }
+                  key={harness.id}
+                  label={harness.label}
+                  selected={form.harness === harness.id}
                   disabled={disabled}
-                  onPress={() => form.selectModel(model)}
-                />
-              ))}
-          </ScrollView>
-          {form.model?.reasoningEffortLevels?.length ? (
-            <View>
-              <Copy>Reasoning effort</Copy>
-              <Choice
-                label="Default reasoning effort"
-                selected={!form.reasoning}
-                disabled={disabled}
-                onPress={() => form.setReasoning("")}
-              />
-              {form.model.reasoningEffortLevels.map((effort) => (
-                <Choice
-                  key={effort}
-                  label={effort}
-                  selected={form.reasoning === effort}
-                  disabled={disabled}
-                  onPress={() => form.setReasoning(effort)}
+                  onPress={() => {
+                    void form.setHarness(harness.id);
+                    setHarnessOpen(false);
+                  }}
                 />
               ))}
             </View>
-          ) : null}
+          )}
           <ErrorMessage message={form.metadataError} />
           <ErrorMessage message={form.modelError} />
           {form.metadataError || form.modelError ? (
@@ -265,34 +233,65 @@ export function NewSessionScreen({
             disabled={disabled || !form.cwd.trim()}
           />
           <Copy>Opening prompt (optional)</Copy>
-          <TextInput
-            accessibilityLabel="Opening prompt"
-            multiline
-            value={form.prompt}
-            editable={!form.submitting}
-            onChangeText={form.setPrompt}
-            placeholder="What would you like to work on?"
-            placeholderTextColor={colors.secondary}
-            style={[
-              ...inputStyle,
-              { minHeight: 120, textAlignVertical: "top" },
-            ]}
-          />
-          {emptyPromptReason && !form.prompt.trim() ? (
-            <Copy muted>{emptyPromptReason}</Copy>
-          ) : null}
-          <Action
-            disabled={
-              disabled ||
-              !form.cwd.trim() ||
-              (!!emptyPromptReason && !form.prompt.trim())
-            }
-            onPress={() => {
-              void submit();
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: colors.border,
+              borderRadius: 16,
+              padding: 8,
+              backgroundColor: colors.surface,
             }}
           >
-            {form.submitting ? "Creating…" : "Create session"}
-          </Action>
+            <TextInput
+              accessibilityLabel="Opening prompt"
+              onFocus={() => {
+                promptFocused.current = true;
+                formScroll.current?.scrollToEnd({ animated: false });
+              }}
+              onBlur={() => {
+                promptFocused.current = false;
+              }}
+              multiline
+              value={form.prompt}
+              editable={!form.submitting}
+              onChangeText={form.setPrompt}
+              placeholder="What would you like to work on?"
+              placeholderTextColor={colors.secondary}
+              style={[
+                ...inputStyle,
+                { minHeight: 120, textAlignVertical: "top", borderWidth: 0 },
+              ]}
+            />
+            {emptyPromptReason && !form.prompt.trim() ? (
+              <Copy muted>{emptyPromptReason}</Copy>
+            ) : null}
+            <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
+              <CreationComposerSettings
+                key={hubId}
+                models={form.models}
+                model={form.model}
+                reasoning={form.reasoning}
+                overrides={form.launchOverrides}
+                disabled={disabled}
+                hubName={route.params.hubName}
+                selectModel={form.selectModel}
+                setReasoning={form.setReasoning}
+              />
+              <Action
+                tone="primary"
+                disabled={
+                  disabled ||
+                  !form.cwd.trim() ||
+                  (!!emptyPromptReason && !form.prompt.trim())
+                }
+                onPress={() => {
+                  void submit();
+                }}
+              >
+                {form.submitting ? "Creating…" : "Create session"}
+              </Action>
+            </View>
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

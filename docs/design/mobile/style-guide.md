@@ -135,3 +135,16 @@ Do not repeat effective and editable full paths by default. Verify viewport
 allocation with the same content before/after, keyboard reachability, and access
 to the entire expanded value. This direction does not constitute native visual
 acceptance.
+
+
+## New-session composition
+
+Treat the opening prompt as a composer, with its model and reasoning choices and
+Create action in a footer beneath full-width text. Use a searchable model sheet
+rather than an inline catalog. Display the actual effective selection, including
+advanced overrides; changing a composer choice must replace the corresponding
+hidden override. Collapse harness choices until requested. Recent-project labels
+can show directory names, retaining the full destination as the accessible label.
+On prompt focus and keyboard layout changes, reveal the composer footer without
+requiring the user to dismiss the keyboard. Large text may wrap the footer into
+multiple control rows; no control consumes the input's horizontal space.

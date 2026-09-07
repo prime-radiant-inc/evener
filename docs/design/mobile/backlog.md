@@ -365,6 +365,11 @@ Repository trust now has iOS approval and Android stale-file rejection/review/
 approval evidence, confirmed independently. 316 native tests and TypeScript pass.
 Per-session schema options now have native scalar creation/readback evidence
 on both platforms and share the saved-layer field editors. 318 native tests pass.
+Creation model/reasoning now share the composer footer with Create, with a
+searchable model sheet and collapsed harness choices. Both native model-picker
+round trips preserve the draft. An intermittent Android footer-overlap observation
+is retained in the creation evidence; keyboard and accessibility acceptance
+remain incomplete. 321 native tests pass.
 Plugin selection, creation images, per-launch collection/precedence failure
 coverage and complete project-layer/trust accessibility qualification remain open. The repository-trust SDK recipe now reproduces stale review and approval
 independently under MOB-018.

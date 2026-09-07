@@ -131,3 +131,58 @@ list is a functional baseline, not visual acceptance: density, model/reasoning
 presentation, large catalogs, keyboard and screen-reader behavior remain open.
 Native collection/per-launch precedence and reconnect/error cases still need
 expanded manual coverage. Creation images and plugin selection are not yet done.
+
+
+## Composer space and model selection
+
+The opening prompt now owns the full composer width. Model, supported reasoning
+and Create share the footer; the model catalog opens in a searchable native
+sheet instead of consuming the creation form. Harness choices are collapsed
+until requested. Recent projects show their directory basename while retaining
+the full path as the accessible label. Models and reasoning levels still come
+from the hub catalog. A composer choice replaces the corresponding advanced
+model/reasoning override, preserving unrelated per-session options. Choosing
+hub default clears both explicit model and reasoning. The submission test checks
+that reasoning chosen for an advanced model reaches thread/start.
+
+Manual Release checks on 6 September 2026 used SecondHub and an existing owned
+fixture directory. Both initial forms show the composer without scrolling at
+the tested default text size. On iOS, focusing the prompt initially left the
+footer under the keyboard: shrinking the ScrollView did not reveal its end.
+The form now scrolls the focused composer into view on keyboard presentation
+and viewport layout. iOS typed “keep this draft”, selected Fake Alternate in the
+model sheet and returned with the exact draft and visible footer. Android
+selected Fake Test Model and retained the same draft; dismissing and reopening
+the keyboard also left the footer visible. These interactions did not submit a
+prompt or issue a provider request.
+
+Evidence:
+
+- [Android before](assets/creation/composer-before-android.png) and
+  [after](assets/creation/composer-after-android.png).
+- [iOS initial form](assets/creation/composer-after-ios.png) and
+  [model-picker return](assets/creation/composer-picker-return-ios.png).
+- [Android model-picker return](assets/creation/composer-picker-return-android.png)
+  and [keyboard refocus](assets/creation/composer-refocus-android.png).
+
+Qualification remains incomplete. At the start of the follow-up, an Android
+[screenshot showed a partially covered footer](assets/creation/composer-overlap-observation-android.png)
+after earlier interrupted automation. The same app process remained alive;
+scrolling exposed the controls. The subsequent picker round trip and keyboard
+refocus did not reproduce the overlap. This observation is retained rather than
+claimed fixed or attributed to a specific cause. Uiautomator also timed out and
+returned a transient null root; screenshots and later semantic reads recovered
+without an app restart. A preceding slow Android launch remains unprofiled.
+
+Independent code review caught catalog refresh clearing composer reasoning for
+an advanced model. The refresh now validates reasoning against the effective
+model; a regression test fails before the fix, preserves supported effort after
+refresh and clears it if the refreshed catalog removes that level. A separate
+request test was also confirmed to fail under the former submit lookup.
+
+321 native tests and TypeScript pass. Both Release builds succeeded after the
+review fix. The screenshots precede that state-only refresh correction. Native reasoning-sheet checks need a fixture that advertises
+reasoning levels; the current fake models do not. Small screens, long catalogs,
+large text, multiline drafts and screen readers remain acceptance work under
+MOB-001/MOB-007/MOB-010/MOB-011. This is an improvement in space usage, not final
+visual acceptance.
