@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 11
+	turnIndexVersion        = 12
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -164,10 +164,13 @@ type indexedTurn struct {
 	// number of items this record contributes to its group's MERGED count
 	// and GroupCalls the call ids its merged items introduce (the counting
 	// form of mergeGroupedItems).
-	TurnKind   schema.TurnKind `json:"turn_kind,omitempty"`
-	TurnID     string          `json:"turn_id,omitempty"`
-	GroupItems uint32          `json:"group_items,omitempty"`
-	GroupCalls []string        `json:"group_calls,omitempty"`
+	TurnKind schema.TurnKind `json:"turn_kind,omitempty"`
+	// GoalContinuation distinguishes a top-level goal opener from ordinary
+	// steering without retaining model or display text in the derived index.
+	GoalContinuation bool     `json:"goal_continuation,omitempty"`
+	TurnID           string   `json:"turn_id,omitempty"`
+	GroupItems       uint32   `json:"group_items,omitempty"`
+	GroupCalls       []string `json:"group_calls,omitempty"`
 }
 
 // groupRole classifies a record within its logical turn group.
@@ -185,9 +188,9 @@ const (
 )
 
 // groupRoleFor classifies a turn kind's role in a logical turn.
-func groupRoleFor(kind schema.TurnKind) groupRole {
+func groupRoleFor(kind schema.TurnKind, goalContinuation bool) groupRole {
 	switch {
-	case opensLogicalTurn(kind):
+	case opensLogicalTurn(kind, goalContinuation):
 		return groupOpener
 	case continuesLogicalTurn(kind):
 		return groupContinuation
@@ -255,7 +258,7 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	groupItems := uint64(0)
 	for i := range n {
 		record := d.recordAt(i)
-		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind) {
+		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind, record.GoalContinuation) {
 			// The previous group just closed: count it when it projected
 			// items.
 			if groupItems > 0 {
@@ -300,7 +303,7 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
-		role := groupRoleFor(record.TurnKind)
+		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
 			group := &groups[len(groups)-1]
@@ -885,6 +888,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
+			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
 			// projected under its group's turn id (the opener's), exactly
@@ -897,7 +901,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			} else if n := index.recordCount(); n > 0 {
 				prevKind = index.recordAt(n - 1).TurnKind
 			}
-			if recordStartsGroup(entry.Turn.Kind, prevKind) {
+			if recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation) {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
 			} else if openCalls == nil || openTurnID == "" {
@@ -1158,7 +1162,7 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// groups: find where this group's span ends, then decide whether to
 		// project it.
 		spanEnd := i + 1
-		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind) {
+		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind, index.recordAt(spanEnd).GoalContinuation) {
 			spanEnd++
 		}
 		groupItems := uint64(0)
@@ -1769,7 +1773,7 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 			calls[id] = true
 		}
 		turnID = record.TurnID
-		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind) {
+		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind, record.GoalContinuation) {
 			break
 		}
 	}

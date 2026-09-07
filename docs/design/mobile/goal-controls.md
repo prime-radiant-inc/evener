@@ -88,3 +88,28 @@ storage faults, another writer, draft-replacement confirmation, iPad, physical
 devices, VoiceOver and broader lifecycle cases remain open. The scripted tool
 responses omit descriptions, so the transcript displays “Action summary
 unavailable”; this run does not qualify settled action summaries.
+
+## Saved continuation identity — 7 September
+
+Reopening the retired goal fixture in the Release app built from `2e4bad2de`
+exposed a separate replay defect: the saved transcript displayed the full model
+continuation instructions. The live notice had been compact. The daemon persisted
+ordinary steering without the notice or reserved turn identity, and saved reads
+merged it into the preceding turn.
+
+Goal acceptance now persists typed display metadata and the stable turn ID on
+the existing steering entry. Its full message remains in model history and the
+durable transcript. Saved projection uses the compact notice and opens a distinct
+logical goal turn. Full reads, bounded pages, item windows and incremental saved
+indexes use the same distinction; ordinary steering still joins the active turn.
+The derived index version is advanced so older indexes rebuild.
+
+Regression tests first reproduced missing durable metadata and incorrect turn
+grouping. Real writer/readback, full/bounded/item projections, page boundaries,
+warm-index appends and cache recreation now pass, along with the full agent,
+schema, transcript, apptranscript and appprojector suites, focused hub tests and
+vet. Luna medium reviewed the change; the coordinator ran the checks.
+
+This applies to newly recorded continuations. Existing entries with no typed
+goal metadata remain unchanged; no prompt-text guessing or transcript rewrite
+was added. Direct hub/iOS acceptance of the new recording path remains pending.
