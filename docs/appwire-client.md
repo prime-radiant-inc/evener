@@ -7,9 +7,10 @@ provides the transport used by Evener's web and native clients, without a UI
 framework dependency. Other languages can implement the same wire contract.
 
 The current documentation is being expanded toward independent implementation.
-Launch configuration and session creation are described below; full transcript
-reconciliation, mutation receipts, approvals, navigation, providers, plugins and
-upgrade recipes still require dedicated chapters and runnable fixtures. A method
+Launch configuration, creation and a start/interrupt lifecycle are described
+below. Full transcript reconciliation, mutation recovery, approvals, navigation,
+providers, plugin management and upgrades still require dedicated chapters and
+runnable fixtures. A method
 being listed or callable is not evidence that its full workflow is documented.
 
 ## Connecting
@@ -376,3 +377,89 @@ not a promise that every plugin component was exercised. The packaged
 `plugins.mjs` example verifies preview/default/none/explicit/missing-name behavior
 without creating a session. Full plugin installation and execution recipes remain
 outstanding.
+
+## Session lifecycle and turn receipts
+
+A session reference (`thread.evener.ref`, for example `local:abc`) and a thread ID
+(`thread.id`, for example `abc`) are distinct. Pass the former as `ref`; do not
+put a qualified reference into `threadId`. Read and subscribe with:
+
+```json
+{"id":10,"method":"thread/read","params":{"ref":"local:abc","includeTurns":true,"subscribe":true}}
+```
+
+Install notification listeners first. `turn/started` carries `threadId`, `ref`
+and `turn`; `turn/completed` additionally carries `turnId`. These pushes can
+arrive before the response to the request that caused them. Match both session
+identity and turn ID, and buffer lifecycle information until that response is
+correlated. A connection's subscription does not survive reconnect; restore it
+and reconcile a fresh snapshot after the next successful handshake.
+
+Read `thread.evener.instanceId` and `thread.evener.capabilities` from the current
+snapshot. Send input only when `capabilities.send` permits it. The instance ID
+protects against applying a mutation to a replacement runtime for the same
+session. Each logical mutation has its own client-generated ID:
+
+```json
+{"id":11,"method":"turn/start","params":{"ref":"local:abc","expectedInstanceId":"instance-from-read","clientMutationId":"unique-send-id","input":[{"type":"text","text":"Inspect this project"}]}}
+```
+
+The result contains `turn` and `receipt`. Validate the receipt's mutation ID,
+thread ID, optional instance ID and turn ID before associating it with pending
+input. `disposition` is `applied` or `replayed`; `turn/start` has
+`projectionState: "pending"`. Acceptance does not mean the turn is complete or
+that the snapshot already contains every resulting item. Observe lifecycle and
+item notifications, and reconcile authoritative state. An independently
+implementable transcript reducer also needs the item-event and pagination
+contracts; the lifecycle example alone does not implement that reducer.
+
+To stop the active turn, use a fresh mutation ID and the same current instance
+identity, after checking `capabilities.interrupt`:
+
+```json
+{"id":12,"method":"turn/interrupt","params":{"ref":"local:abc","expectedInstanceId":"instance-from-read","clientMutationId":"unique-stop-id"}}
+```
+
+The interrupt response contains a receipt with `projectionState: "reflected"`.
+The lifecycle recipe checks the corresponding `turn/completed` event, then reads
+`thread/read` again with `includeTurns:true, subscribe:false` to verify the
+interrupted turn and its submitted user item. A read with `subscribe:false` is
+an ordinary read; it does not remove an existing subscription. Explicitly leave
+it when done:
+
+```json
+{"id":13,"method":"thread/unsubscribe","params":{"ref":"local:abc"}}
+```
+
+A timeout or disconnection is not proof that a mutation failed. Keep its input
+and mutation identity until reconciliation resolves the outcome. Do not invent
+a new ID and resend uncertain input. Session creation (`thread/start`) has no
+client mutation ID; a lost creation reply requires inspecting the session list
+rather than automatically issuing another creation.
+
+### Runnable start/interrupt/readback recipe
+
+The packaged `examples/session-lifecycle.mjs` creates a fresh empty session,
+subscribes, submits a unique text fixture, validates receipts and lifecycle
+notifications, interrupts the turn, independently reads its input and terminal
+state, and unsubscribes. It leaves the idle session available for inspection.
+Use an empty-task-capable harness and a scripted provider that holds its turn
+open until interrupted; a fast naturally completed turn cannot prove Stop.
+The selected provider/model must appear in `model/list` for the chosen directory.
+
+```sh
+EVENER_EXAMPLE_CREATE_SESSION=1 \
+EVENER_MODEL_PROVIDER=fake EVENER_MODEL=fake-test-model \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/session-lifecycle.mjs
+```
+
+Run without concurrent writers to that newly created session. On failure, cleanup
+attempts to interrupt only that session and only if its instance still matches;
+it never repeats Start or deletes history. Cleanup failures are reported along
+with the original error. A killed process cannot run cleanup. If the creation
+reply is lost, the example cannot know the ref to clean up; inspect the isolated
+hub before repeating it. This recipe does not cover text deltas, tool execution,
+approvals, queueing, disconnect recovery or natural turn completion.
