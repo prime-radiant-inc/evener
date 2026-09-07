@@ -474,3 +474,36 @@ It does not establish recovery during thread/start, receipt reconciliation,
 stale replies after a hub switch, background execution or physical-device LAN
 behavior. The proxy was left listening on all interfaces and both apps were
 left on their recovered creation forms.
+
+## iOS creation with a lost successful reply
+
+A separate Reply e2e saved fixture profile connected to a temporary proxy on
+port 9201 backed by the isolated SecondHub. With the fixture project selected,
+Fake Alternate selected and the opening prompt empty, one Create action reached
+the hub. The proxy observed successful creation of
+local:034KRGBBoOvNhTM7SooK92, discarded that response and closed the socket.
+The app retained the project/model and showed its uncertainty warning.
+
+Returning to Sessions showed the created session. Reopening creation restored
+the project/model and the persisted earlier-creation warning. A fresh packaged
+client connection confirmed the session was idle and that it remained the
+newest session; the preceding entry was the earlier lifecycle fixture. No
+second Create action was taken. The fault-injection marker was removed after
+the single dropped response.
+After verification, the temporary Reply e2e profile and its local fixture draft
+were removed through the native confirmation dialog, and the port 9201 proxy
+was stopped. The idle hub session remains available for inspection; the ordinary
+SecondHub proxy on port 9200 remains running.
+
+The focused newSession and CreationDraftRepository suites passed 28 tests.
+This checks the installed iOS Release app's empty-prompt creation uncertainty
+and screen-remount persistence. It does not establish Android parity, process
+death at the dispatch boundary, nonempty prompt/image retention on devices or
+reconciliation of an uncertain turn mutation. The fixture creates an idle
+session, so no provider turn needed interruption.
+
+iOS automation caveat: text injection did not reliably focus its requested
+field, select existing text or preserve colon punctuation. The unsaved fixture
+address was corrected through the native Paste menu and verified as
+http://127.0.0.1:9201 before saving. These input-tool failures are not evidence
+of a production text-entry defect.
