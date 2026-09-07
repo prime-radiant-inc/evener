@@ -293,7 +293,7 @@ session archive/unarchive, restored filters/tiers, rejection of a stale native
 menu and unresolved-request continuation at maximum text size. SDK/SQLite reads
 confirmed no replay, preserved histories/drafts and an empty recovery journal.
 The final native gate passes 553 tests plus TypeScript and touched Biome. See
-[organization evidence](../../design/mobile/organization-evidence.md) for source,
+[organization recovery evidence](../../design/mobile/organization-recovery-evidence.md) for source,
 device, fixture and test boundaries; Luna reviewed supplied contracts/algorithms,
 and root executed the gate and simulator qualification.
 

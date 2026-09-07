@@ -255,7 +255,7 @@ unknown device intent was seeded at the storage boundary; transport/storage
 faults remain deterministic tests. Independent reads confirm retained histories,
 unchanged drafts, restored visible fixture organization and an empty journal.
 Native verification passes 553 tests in 66 files plus TypeScript and touched
-Biome. See [organization evidence](../../design/mobile/organization-evidence.md).
+Biome. See [organization recovery evidence](../../design/mobile/organization-recovery-evidence.md).
 
 Native keybindings and the broader lifecycle/accessibility qualification remain
 open. Archive placement cannot prove an unknown explicit decision was persisted;
