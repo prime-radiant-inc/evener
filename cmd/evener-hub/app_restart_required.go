@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -22,15 +23,45 @@ func restartRequiredDaemon(cfg hubcore.WebConfig, ref, threadID string) (hubcore
 	if cfg.Roster == nil {
 		return hubcore.LiveEntry{}, false
 	}
-	if entry, ok := cfg.Roster.Find(threadID); ok && !entry.Crashed {
-		return entry, entry.Status == appwire.ThreadStatusRestartRequired
-	}
-	workspaceRef := localAppRef(threadID)
-	for _, entry := range cfg.Roster.List() {
-		if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
+	seen := make(map[string]bool)
+	for !seen[threadID] {
+		seen[threadID] = true
+		if entry, ok := cfg.Roster.Find(threadID); ok && !entry.Crashed {
 			return entry, entry.Status == appwire.ThreadStatusRestartRequired
 		}
+		workspaceRef := localAppRef(threadID)
+		for _, entry := range cfg.Roster.List() {
+			if !entry.Crashed && localSpawnWorkspaceRef(entry.Entry) == workspaceRef {
+				return entry, entry.Status == appwire.ThreadStatusRestartRequired
+			}
+		}
+		// A fork shares ancestry but not daemon ownership. Require the parent's
+		// persisted delegate descriptor before following that ownership edge.
+		child, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: threadID})
+		if !ok || child.Meta.ParentSessionID == "" {
+			break
+		}
+		parent, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: child.Meta.ParentSessionID})
+		if !ok {
+			break
+		}
+		delegates, _, err := pastEntryDelegateStatus(context.Background(), parent)
+		if err != nil {
+			break
+		}
+		owner := ""
+		for _, delegate := range delegates {
+			if delegate.ChildSessionID == threadID && delegate.OwnerSessionID == parent.Meta.ID {
+				owner = delegate.OwnerSessionID
+				break
+			}
+		}
+		if owner == "" {
+			break
+		}
+		threadID = owner
 	}
+
 	return hubcore.LiveEntry{}, false
 }
 

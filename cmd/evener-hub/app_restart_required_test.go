@@ -2,10 +2,12 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
@@ -378,6 +382,85 @@ func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
 				data, ok := wire.Data.(map[string]any)
 				if !ok || data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
 					t.Fatalf("outcome=%+v", wire)
+				}
+			}
+		})
+	}
+}
+
+func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
+	for _, delegated := range []bool{false, true} {
+		t.Run(fmt.Sprint("delegated=", delegated), func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "upgrade-0000000000")
+			parentID := buildRPCParentSession(t, stateDir)
+			childID := "02wMz5Txv1C3Hut0M8GCeC"
+			writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", childID+".transcript.jsonl"), transcript.Header{SessionID: childID, ParentSessionID: parentID, ProfileID: "openai", Model: "gpt-5"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: childID, ParentSessionID: parentID, JobTreeRootSessionID: parentID, ProfileID: "openai", Model: "gpt-5"}); err != nil {
+				t.Fatal(err)
+			}
+			if delegated {
+				path := filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{"kind": "delegate_created", "seq": 1, "delegate_id": "dlg_upgrade", "created": map[string]any{"descriptor": map[string]any{"child_session_id": childID, "transcript_ref": "local:" + childID, "owner_session_id": parentID, "task": "sentinel", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, append(append([]byte("{\"version\":1}\n"), batch...), '\n'), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: parentID, SessionID: parentID, Endpoint: protocolMismatchPeer(t)})
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster.Refresh()
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + childID
+			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := read.Thread.Status.Type == "restartRequired"; got != delegated {
+				t.Errorf("restartRequired=%v, delegated=%v", got, delegated)
+			}
+			if !delegated {
+				return
+			}
+			if read.Thread.Evener.Capabilities.Rename || read.Thread.Evener.Capabilities.Queue {
+				t.Error("delegate advertises mutations")
+			}
+			for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue} {
+				var response any
+				err := client.Request(t.Context(), method, map[string]any{"ref": ref, "name": "changed", "clientMutationId": "child-retry", "expectedInstanceId": childID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+				if !isDaemonRestartRequiredError(err) {
+					t.Errorf("%s error=%v", method, err)
+				}
+				if method == appwire.MethodTurnQueue {
+					var wire appwire.WireError
+					if errors.As(err, &wire) {
+						data, _ := wire.Data.(map[string]any)
+						if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) {
+							t.Errorf("receipt=%+v", data)
+						}
+					}
 				}
 			}
 		})
