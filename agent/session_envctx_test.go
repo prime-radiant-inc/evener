@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -109,11 +110,28 @@ func TestFirstUserTurnIsPrecededByEnvironmentContext(t *testing.T) {
 func TestSecondUserTurnEmitsNoEnvironmentContextWhenUnchanged(t *testing.T) {
 	t.Parallel()
 	s := newTestSessionForEnvctx(t)
+	var emitted []events.EnvironmentData
+	drained := make(chan struct{})
+	s.ConsumeEventsLossless(func(event events.SessionEvent) {
+		if data, ok := event.Data.(events.EnvironmentData); ok {
+			emitted = append(emitted, data)
+		}
+	}, func() { close(drained) })
 	sendOneUserInput(t, s, "hello")
 	sendOneUserInput(t, s, "again")
+	s.Close()
+	<-drained
 
 	if count := countEnvironmentTurns(s); count != 1 {
 		t.Fatalf("unchanged environment must emit exactly once, got %d", count)
+	}
+	if len(emitted) != 1 || emitted[0].StableTurnID == "" {
+		t.Fatalf("environment event count=%d, want one named context", len(emitted))
+	}
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment && turn.StableTurnID != emitted[0].StableTurnID {
+			t.Fatal("environment event and history identities differ")
+		}
 	}
 }
 

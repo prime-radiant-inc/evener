@@ -835,3 +835,25 @@ that source contract. Do not add fuzzy reader matches or classify unrelated
 position matches as successful recovery. SDK bounded anchor traversal needs no
 new seek protocol. Completed-question recaps also remain unfinished. Goal stays
 active with iOS-only v1 and deferred Android release qualification.
+
+
+## Environment identity checkpoint — source ed43c914e
+
+The real Session/scripted-provider regression reproduced an environment turn
+missing from the live projection, shifting the first user from entry 1 live to
+entry 2 persisted. The session now assigns the environment an existing stable
+turn ID and emits a typed event; the projector keeps it separate from the
+reserved/active user turn. Full agent/events/projector/transcript/server tests,
+focused race checks, tagged event fuzz and full make lint pass. Luna medium
+reviewed proposals and event coverage; Bot integrated and verified actual source.
+
+The independently installed SDK completed two scripted turns on a separate
+isolated hub, then verified all environment/user/assistant keys, positions and
+turn IDs after actual notLoaded shutdown. The driver now waits for that
+authoritative ended state, since shutdown ACK only dispatches the operation.
+The initial premature assertion is excluded from acceptance. Metadata and
+source/binary/driver provenance are archived in reader-continuity-evidence.md.
+The owned instance, hub and provider were cleaned up; original hub, seven native
+drafts and unrelated Apple changes are preserved. Package qualification passes
+again. Native lifecycle viewport, historical anchors, uncertain-delivery and
+multi-hub acceptance remain open. iOS-only v1 and the full goal stay active.

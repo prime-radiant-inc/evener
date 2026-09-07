@@ -1,0 +1,98 @@
+{
+  "ref": "local:034KsdLB711Erf6KQkUNcg",
+  "threadId": "034KsdLB711Erf6KQkUNcg",
+  "instanceId": "034KsdLB711Erf6KQkUNcg",
+  "sends": [
+    {
+      "mutationId": "16c4eb22-5c4d-4b1d-ab72-c079544e91f7",
+      "turnId": "turn_m1"
+    },
+    {
+      "mutationId": "90a0dd16-63d2-4bf2-a668-70657d3da738",
+      "turnId": "turn_m2"
+    }
+  ],
+  "liveStatus": "awaiting",
+  "savedStatus": "notLoaded",
+  "shutdownObservedStatuses": [
+    "awaiting",
+    "notLoaded"
+  ],
+  "identities": [
+    {
+      "type": "systemMessage",
+      "eventKind": "environment",
+      "turnId": "turn_env_GKRXB5UGBMGGWBMYYJISCHHDBO",
+      "key": "apptranscript-item-v1:turn_env_GKRXB5UGBMGGWBMYYJISCHHDBO:1:0",
+      "position": {
+        "entry": 1,
+        "item": 0
+      }
+    },
+    {
+      "type": "userMessage",
+      "turnId": "turn_m1",
+      "key": "apptranscript-item-v1:turn_m1:2:0",
+      "position": {
+        "entry": 2,
+        "item": 0
+      },
+      "mutationId": "16c4eb22-5c4d-4b1d-ab72-c079544e91f7"
+    },
+    {
+      "type": "agentMessage",
+      "turnId": "turn_m1",
+      "key": "apptranscript-item-v1:turn_m1:2:1",
+      "position": {
+        "entry": 2,
+        "item": 1
+      }
+    },
+    {
+      "type": "userMessage",
+      "turnId": "turn_m2",
+      "key": "apptranscript-item-v1:turn_m2:3:0",
+      "position": {
+        "entry": 3,
+        "item": 0
+      },
+      "mutationId": "90a0dd16-63d2-4bf2-a668-70657d3da738"
+    },
+    {
+      "type": "agentMessage",
+      "turnId": "turn_m2",
+      "key": "apptranscript-item-v1:turn_m2:3:1",
+      "position": {
+        "entry": 3,
+        "item": 1
+      }
+    }
+  ],
+  "identityParity": true,
+  "environmentCount": 1,
+  "inputCount": 2,
+  "instanceRemoved": true,
+  "ownedHubStopped": true,
+  "ownedProviderStopped": true,
+  "sourceBase": "ed43c914e2bb37077099a8a25843c410d4763842",
+  "sourceSHA256": {
+    "agent/session.go": "a1ddf666391a66553eb9eb40907e29fc5e41345e16452e458e44700bbaf3cb05",
+    "agent/events/events.go": "0c637279b80fbbf76537ac1884858e6eef4506002fdf30876ba4e4fbee93d1ab",
+    "agent/events/payloads.go": "439f93d03c2580661e452e39539ee0a48be7a5580696b2b1712ef80b3e8d93a7",
+    "agent/events/eventdata.go": "ffed45a006926a2b9d74c3c851aa0354b565f120892b89955e2712022aca100a",
+    "internal/appprojector/appwire_projection.go": "360c1fcfe82a5a15972f7e70965c7f10ec50e7d619518570c18f3959b43d6707"
+  },
+  "hubBinarySHA256": "831042c875cefb0a0095a023249599c571f69cf154d7a018bbefd30af7c68f43",
+  "executedDriverSHA256": "a92935ba94c7a6364ec0b7de2b37829df19f1b0abbdeea4792b42a3ce23ca90b",
+  "archivedDriverSHA256": "3ab236ce401728784684cefde1327624cd157ba688583e4166ed1e8d1bcd7ed9",
+  "driverArchiveChange": "Fixture root reads EVENER_READER_FIXTURE_ROOT instead of the absolute local path.",
+  "sdkVersion": "@evener/appwire-client@0.1.0",
+  "sdkTarballSHA256": "3bed5ef3942c79a2915ac647ab632b95b517fd6065bdbe43447cbb7ce1e9cace",
+  "boundary": "Real isolated hub and session; scripted local LLM provider; independently installed TypeScript SDK.",
+  "excludedRun": "First run asserted notLoaded immediately after asynchronous shutdown acknowledgment; no pre-assertion identity checkpoint was retained. It is excluded from parity evidence. The qualified run records awaiting then notLoaded before comparing.",
+  "limits": [
+    "No physical device or native live-to-ended viewport acceptance in this receipt.",
+    "No provider API or persistence-write-failure qualification.",
+    "No migration or repair of historical transcript keys."
+  ]
+}

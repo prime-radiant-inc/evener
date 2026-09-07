@@ -1,5 +1,52 @@
 # iOS reader continuity evidence
 
+## Environment identity across shutdown, 7 September 2026
+
+The real Session regression reproduced the first-user identity changing from
+`turn_m1:1:0` live to `turn_m1:2:0` in the saved transcript. The session wrote an
+ENVIRONMENT turn before user input without emitting a corresponding live event.
+The persisted projection therefore allocated an entry missing from the live
+projection. A saved reader position could consequently identify the environment
+entry instead of the original user message.
+
+The session now assigns that environment turn an existing-format stable turn
+ID, persists it, and emits a typed environment event. Its projector notification
+contains one completed standalone environment turn without consuming or changing
+the reserved/active user identity. Existing stable-ID persistence supplies the
+same identity on file reads. No protocol fields or historical-data migration
+were added, and transcript-write failures retain the existing session policy.
+
+The real Session/scripted-provider regression now passes for both environment
+and user identity and ordering. Projector tests cover reserved and active user
+turns; the session test verifies unchanged context emits only once across two
+inputs. Full agent, events, projector, transcript and server packages pass, as
+do focused race checks, tagged event-fuzz coverage and the full `make lint` gate.
+Luna medium reviewed the implementation proposal and event coverage; Bot read
+the final source, reproduced failures and ran the actual checks.
+
+An independently installed SDK then created an isolated real hub session with a
+local scripted provider, completed two inputs, read its live items, shut it down
+and read the persisted items. All five environment/user/assistant identities
+match by turn ID, key and position; both mutation IDs remain attached to their
+original user turns. The authoritative status progressed from `awaiting` to
+`notLoaded`. Shutdown acknowledges dispatch, so the driver waits up to ten
+seconds for that ended state before comparing.
+
+[Metadata-only receipt](assets/reader-continuity/environment-identity-receipt-20260907.json)
+records source and binary hashes, identities, status observations and cleanup.
+The [driver](assets/reader-continuity/environment-identity-driver-20260907.mjs.txt)
+is archived with its owned fixture root supplied through an environment variable.
+An earlier run asserted ended state immediately after the asynchronous shutdown
+ACK and failed without retaining its live checkpoint; that run is excluded from
+parity evidence. The qualified run retains both checkpoints before assertions.
+The owned provider instance was removed and the separate hub/provider stopped.
+Seven native drafts and the unrelated Apple patch remain unchanged.
+
+This qualifies the reproduced live/file identity defect through an external
+consumer. Actual native viewport continuity across this transition, historical
+anchor recovery, write-failure behavior and the broader release matrix remain
+open. The original native fixture hub was left running.
+
 ## Current-key geometry repair, 7 September 2026
 
 Reader restoration could resolve a saved position to a differently keyed row,
