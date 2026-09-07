@@ -1144,7 +1144,8 @@ export function ConversationScreen({
 				animated: false,
 			});
 		} else {
-			const measurement = readerMeasurements.current.get(anchor.itemKey);
+			const currentKey = readerKey(timelineRows[command.index]);
+			const measurement = readerMeasurements.current.get(currentKey);
 			if (
 				!measurement ||
 				!shouldApplyExactRestore(
@@ -1156,7 +1157,7 @@ export function ConversationScreen({
 			)
 				return;
 			appliedReaderRestore.current = {
-				key: anchor.itemKey,
+				key: currentKey,
 				y: measurement.y,
 				height: measurement.height,
 				offset: anchor.withinItemOffset,

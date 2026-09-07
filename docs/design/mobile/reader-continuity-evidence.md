@@ -1,5 +1,43 @@
 # iOS reader continuity evidence
 
+## Current-key geometry repair, 7 September 2026
+
+Reader restoration could resolve a saved position to a differently keyed row,
+then incorrectly use measurements belonging to the obsolete key. The pure
+command and native screen now measure the resolved row's current key. A stale
+measurement alone leaves restoration approximate; current measurements produce
+exact restoration with the saved offset clamped to the current height.
+
+The behavioral regression failed against the original implementation, which
+accepted obsolete geometry as exact. All sixteen reader contracts, all 621
+native tests, TypeScript, touched Biome checks and the iPhone Release build pass.
+Luna medium reviewed the supplied algorithm; its workspace access failed, so
+Bot applied the source changes and performed actual verification.
+
+The direct owned hub remains on port 54211. On the iPhone 17 Pro/iOS 26.5,
+opening the retained reader fetched the older page containing the saved
+interruption after marker 09. After layout settled, process restart and another
+roster/reader round trip showed the same marker-10 position. SQLite retained
+the exact key, position, offset 37 and touch time. An initial screenshot taken
+before layout settled is excluded from positional comparison. The seven draft
+hashes and unrelated generated Apple patch are unchanged.
+
+[Source/build receipt](assets/reader-continuity/position-key-receipt-20260907.json)
+records the Release bundle and source hashes.
+
+![Settled reader after restart](assets/reader-continuity/position-key-restart-20260907.jpg)
+![Settled reader after returning](assets/reader-continuity/position-key-return-20260907.jpg)
+
+This does not qualify the separate live-to-persisted transition. Inspection of
+the completed question fixture found a saved live first-user anchor at
+`turn_m1:1:0`, while the persisted projection places an environment entry at
+position `(1,0)` and that user at `turn_m1:2:0`. Thus the turn ID survives while
+the key and position shift. The trailing `turn_1` is an environment turn, not a
+replacement ID for the final answer. Root-cause investigation and a differential
+regression are required before claiming lifecycle continuity. SDK traversal can
+use fresh opaque cursors after stale recovery; it does not require a seek API,
+but cannot safely treat a shifted position as unchanged message identity.
+
 ## Observed 6 September 2026, Pacific time
 
 The iPhone 17 Pro simulator (iOS 26.5, device
