@@ -1,10 +1,16 @@
 # Web UI typography, spacing and balance: critique and recommendations
 
-Status: **proposal**, 2026-09-06. Nothing here has shipped. It is the result of
-reading `design-system.md`, `decisions.md`, `ux-plan-2026-07.md`, the token
-and widget stylesheets under `cmd/evener-hub/frontend/src`, and measuring the
-running app (Vite dev server against a throwaway hub, a real glm-5.2-vision
-session, plus `/dev/surfaces`) at 1440×900 and 375×812 in both themes.
+Status: **implemented**, 2026-09-06, by
+`docs/superpowers/plans/2026-09-06-webui-typography-spacing.md` on branch
+`claude/evener-webui-typography-spacing-3d4fd4`; the decisions it settled,
+including the two earlier rulings it revises, are recorded in
+`decisions.md`'s 2026-09-06 entry. The measurements below are what the app
+looked like before that work, and are kept as the record of why. This
+document is the result of reading `design-system.md`, `decisions.md`,
+`ux-plan-2026-07.md`, the token and widget stylesheets under
+`cmd/evener-hub/frontend/src`, and measuring the running app (Vite dev
+server against a throwaway hub, a real glm-5.2-vision session, plus
+`/dev/surfaces`) at 1440×900 and 375×812 in both themes.
 
 Paths below are relative to `cmd/evener-hub/frontend/src/` unless they start
 with `docs/`.
@@ -332,6 +338,13 @@ disabled controls and hairline-adjacent chrome, which is what its comment says.
   side only, and it is the one recommendation here that is taste rather than
   measurement; it is the convention both major chat assistants converged on
   for long technical answers.
+
+As shipped: agent prose as a document is being applied in this same PR by
+the stream that owns that stylesheet, so the bubble wash is not yet gone
+at the commit this status line was written against. The run label grammar
+shipped as `N steps · <last consequential summary>` rather than the
+sketched "Read 4 files, edited 2 · 1.8s": the count and the consequential
+step survived, the per-run duration did not.
 
 ### R10. Enforce it the way colour is enforced
 
