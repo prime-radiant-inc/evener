@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
@@ -15,6 +15,7 @@ import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
+import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
@@ -2123,13 +2124,43 @@ test("explicitly resumes a stopped session before reconciling its uncertain send
     await refreshPendingTurnsProjection("ref_a");
     await flushPendingTurnsProjectionForTests();
   });
-  status = "notLoaded";
-  fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
-  const resume = await screen.findByRole("button", { name: "Resume session" });
-  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
-  fireEvent.click(resume);
-  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
-  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  const holds: ReturnType<typeof holdIndexedDBEvent>[] = [];
+  let announceRead: (() => void) | undefined;
+  const readHeld = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const getAll = IDBObjectStore.prototype.getAll;
+  const reads = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args
+  ) {
+    const request = getAll.apply(this, args);
+    if (this.name === "outbox" && threadsStore.getState().threads.get("ref_a")?.status.type === "notLoaded") {
+      const hold = holdIndexedDBEvent(request, "success");
+      holds.push(hold);
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const releaseReads = () => {
+    reads.mockRestore();
+    for (const hold of holds.splice(0)) hold.release();
+  };
+  try {
+    status = "notLoaded";
+    fireEvent.click(screen.getByRole("button", { name: "Refresh session" }));
+    await readHeld;
+    const resume = await screen.findByRole("button", { name: "Resume session" });
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+    expect((resume as HTMLButtonElement).disabled).toBe(true);
+    releaseReads();
+    await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(resume);
+    await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  } finally {
+    releaseReads();
+  }
 });
