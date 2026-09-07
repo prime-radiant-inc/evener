@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -18,12 +20,88 @@ type liveModelMetadataAdapter struct {
 
 	models    []registry.Model
 	listCalls int
+	observe   func(context.Context)
 }
 
 func (a *liveModelMetadataAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
-	_ = ctx
+	if a.observe != nil {
+		a.observe(ctx)
+	}
 	a.listCalls++
 	return append([]registry.Model(nil), a.models...), nil
+}
+
+// Every session-owned enumeration must forward the session policy while retaining
+// its independent caller enumeration deadline.
+func TestSessionListingsForwardIdlePolicy(t *testing.T) {
+	adapter := &liveModelMetadataAdapter{models: []registry.Model{{ID: "gpt-5.4"}, {ID: "gpt-5.5"}}}
+	adapter.name = "openai"
+	client := registryClient(t, map[string]registry.Provider{"openai": {Base: "openai", APIKey: "k"}}, adapter)
+	phase := "startup"
+	wantBudget := liveModelMetadataTimeout
+	calls := 0
+	adapter.observe = func(ctx context.Context) {
+		calls++
+		want := llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: 37 * time.Second}
+		if got := *llm.ModelListingTimeout(ctx); got != want {
+			t.Errorf("%s policy=%+v want %+v", phase, got, want)
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > wantBudget {
+			t.Errorf("%s lost caller enumeration budget %v", phase, wantBudget)
+		}
+	}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{ProviderIdleTimeout: "37s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if calls != 1 {
+		t.Fatalf("startup calls=%d want 1", calls)
+	}
+	phase, wantBudget = "model-switch", modelSwitchEnumerationTimeout
+	if err := sess.SetModel("gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("switch calls=%d want 2", calls)
+	}
+	phase, wantBudget = "plugin", liveModelMetadataTimeout
+	result := sess.resolvePluginAgentModel(context.Background(), sess.profile, "gpt-5.4")
+	if result.reason != "" {
+		t.Fatalf("plugin reason=%s", result.reason)
+	}
+	if calls != 3 {
+		t.Fatalf("plugin calls=%d want 3", calls)
+	}
+	phase, wantBudget = "explicit-subagent", modelSwitchEnumerationTimeout
+	sess.delegationAllowance = 1
+	if _, err := sess.selectSubagentModel(context.Background(), "gpt-5.4", ""); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 4 {
+		t.Fatalf("subagent calls=%d want 4", calls)
+	}
+	phase, wantBudget = "availability", liveModelMetadataTimeout
+	sess.delegationAllowance = 1
+	other := &liveModelMetadataAdapter{models: adapter.models, observe: adapter.observe}
+	other.name = "other"
+	client.Register(other)
+	sess.captureModelAvailability(liveModelEnumeration{listing: llm.ModelListing{Live: true}})
+	if other.listCalls != 1 {
+		t.Fatalf("availability calls=%d want 1", other.listCalls)
+	}
+	phase, wantBudget = "restore", liveModelMetadataTimeout
+	before := adapter.listCalls
+	meta := schema.SessionMeta{ID: "01RESTORELISTPOLICY000001", ProfileID: "openai", Model: "gpt-5.4", Config: schema.ConfigSnapshot{ProviderIdleTimeout: "37s"}}
+	restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if adapter.listCalls != before+1 {
+		t.Fatalf("restore calls=%d want %d", adapter.listCalls, before+1)
+	}
 }
 
 func TestNewSessionAppliesRegistryModelContextWindow(t *testing.T) {

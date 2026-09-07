@@ -151,7 +151,8 @@ func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (c
 // the initial SessionStart envelope. It returns an error if any input is nil or
 // if initialization fails.
 func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
-	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
+	idleTimeout, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout)
+	if err != nil {
 		return nil, err
 	}
 	if client == nil {
@@ -198,7 +199,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			_ = client.ReleaseSessionAPILog(sessionID)
 		}
 	}()
-	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID)
+	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +535,7 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 		// result rather than asking the provider a second time.
 		listing, err := selectedModels.listing, selectedModels.err
 		if name != s.profile.ID() {
-			listing, err = s.client.Models(ctx, name)
+			listing, err = s.client.Models(llm.WithModelListingTimeout(ctx, *s.providerAdapterTimeout()), name)
 		}
 		if err != nil {
 			return nil, err
@@ -914,7 +915,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
-	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id)
+	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id, *s.providerAdapterTimeout())
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true

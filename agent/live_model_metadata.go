@@ -25,9 +25,10 @@ type liveModelEnumeration struct {
 // controller-reserved cfg.spawn.sessionID; pass "" when no session id exists
 // yet (a brand-new root session), which leaves the attempt in the shared
 // unattributed bucket exactly as before.
-func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, liveModelEnumeration) {
+func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout) (*provider.Profile, liveModelEnumeration) {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
+	ctx = llm.WithModelListingTimeout(ctx, timeout)
 	if sessionID != "" {
 		ctx = llm.WithAPILogContext(ctx, sessionID)
 	}
@@ -79,8 +80,8 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // prior unvalidated behavior in that case. sessionID is forwarded to
 // resolveLiveModelProfileWithEnumerationTimeout for API-log attribution; see
 // its doc comment.
-func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, liveModelEnumeration, error) {
-	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile, sessionID)
+func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout) (*provider.Profile, liveModelEnumeration, error) {
+	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile, sessionID, timeout)
 	if enumeration.err == nil {
 		if err := validateModelSwitchMembership(client, filled, enumeration.listing); err != nil {
 			return filled, enumeration, err

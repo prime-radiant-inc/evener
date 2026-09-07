@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/anthropic"
 	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/providers/google"
@@ -20,6 +21,58 @@ import (
 )
 
 type modelListTransport func(*http.Request) (*http.Response, error)
+
+// A client-owned provider deadline must not become the protocol's caller deadline.
+func TestModelsRequestTimeoutAttemptOwnership(t *testing.T) {
+	for _, provider := range wireProviders() {
+		for _, scenario := range []string{"request", "caller-deadline", "caller-cancel"} {
+			t.Run(provider.name+"/"+scenario, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					httpClient := &http.Client{Transport: modelListTransport(func(req *http.Request) (*http.Response, error) {
+						<-req.Context().Done()
+						return nil, req.Context().Err()
+					})}
+					client := provider.wireClient(t, "http://example.invalid", httpClient, nil)
+					ctx := context.Background()
+					want := apilog.AttemptProviderTimeout
+					cause := context.DeadlineExceeded
+					switch scenario {
+					case "caller-deadline":
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, time.Second)
+						defer cancel()
+						want = apilog.AttemptCallerCancel
+					case "caller-cancel":
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithCancel(ctx)
+						defer cancel()
+						time.AfterFunc(time.Second, cancel)
+						want, cause = apilog.AttemptCallerCancel, context.Canceled
+					}
+					caller := ctx
+					sink := &lockedAttemptSink{}
+					ctx = llm.WithAPIAttemptSink(ctx, sink)
+					ctx = llm.WithAPIAttemptGroup(ctx, llm.NewAPIAttemptGroup("listing-ownership"))
+					ctx = llm.WithModelListingTimeout(ctx, llm.AdapterTimeout{Request: time.Minute})
+					_, err := client.Models(ctx, provider.name)
+					if !errors.Is(err, cause) {
+						t.Fatalf("error=%v want %v", err, cause)
+					}
+					attempts := sink.snapshot()
+					if len(attempts) != 1 {
+						t.Fatalf("attempts=%d want 1", len(attempts))
+					}
+					if attempts[0].Outcome != want {
+						t.Errorf("outcome=%s want %s", attempts[0].Outcome, want)
+					}
+					if scenario == "request" && caller.Err() != nil {
+						t.Errorf("provider deadline canceled original caller: %v", caller.Err())
+					}
+				})
+			})
+		}
+	}
+}
 
 func (f modelListTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
@@ -30,6 +83,51 @@ type timeoutListingAdapter struct {
 
 func (a *timeoutListingAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
 	return a.list(ctx)
+}
+
+func TestModelsOverrideRequestTimeoutOwnership(t *testing.T) {
+	for _, scenario := range []string{"request", "caller-deadline", "caller-cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				want := time.Minute
+				cause := context.DeadlineExceeded
+				switch scenario {
+				case "caller-deadline":
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, time.Second)
+					defer cancel()
+					want = time.Second
+				case "caller-cancel":
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithCancel(ctx)
+					defer cancel()
+					time.AfterFunc(time.Second, cancel)
+					want, cause = time.Second, context.Canceled
+				}
+				caller := ctx
+				ctx = llm.WithModelListingTimeout(ctx, llm.AdapterTimeout{Request: time.Minute})
+				a := &timeoutListingAdapter{list: func(ctx context.Context) ([]registry.Model, error) {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}}
+				a.name = "fake"
+				client := llm.NewClient()
+				client.Register(a)
+				start := time.Now()
+				_, err := client.Models(ctx, "fake")
+				if !errors.Is(err, cause) {
+					t.Fatalf("error=%v want %v", err, cause)
+				}
+				if elapsed := time.Since(start); elapsed != want {
+					t.Errorf("elapsed=%v want %v", elapsed, want)
+				}
+				if scenario == "request" && caller.Err() != nil {
+					t.Errorf("provider deadline canceled original caller: %v", caller.Err())
+				}
+			})
+		})
+	}
 }
 
 func TestModelsTimeoutPolicy(t *testing.T) {

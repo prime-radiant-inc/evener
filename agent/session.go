@@ -1229,7 +1229,7 @@ func (s *Session) SetModel(model string) error {
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
 	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id)
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout())
 	if err != nil {
 		return err
 	}
