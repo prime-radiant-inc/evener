@@ -34,6 +34,109 @@ func stubMaxGlobMatches(t *testing.T, n int) {
 	t.Cleanup(func() { maxGlobMatches = orig })
 }
 
+// stubMaxGlobDirEntries lowers the per-directory entry budget for a test and
+// restores it when the test ends, so a budget test can use a directory small
+// enough for t.TempDir() rather than one large enough to trip the real bound.
+func stubMaxGlobDirEntries(t *testing.T, n int) {
+	t.Helper()
+	orig := maxGlobDirEntries
+	maxGlobDirEntries = n
+	t.Cleanup(func() { maxGlobDirEntries = orig })
+}
+
+// stubMaxGlobLiveEntries lowers the call-wide live-entry budget for a test
+// and restores it when the test ends, so a budget test can use a tree small
+// enough for t.TempDir() rather than one large enough to trip the real bound.
+func stubMaxGlobLiveEntries(t *testing.T, n int) {
+	t.Helper()
+	orig := maxGlobLiveEntries
+	maxGlobLiveEntries = n
+	t.Cleanup(func() { maxGlobLiveEntries = orig })
+}
+
+// stubGlobDirChunk shrinks the per-syscall chunk size for a test and restores
+// it when the test ends, so a bounded listing has to make several chunk reads
+// over a fixture small enough for t.TempDir() instead of a directory too
+// large to build here.
+func stubGlobDirChunk(t *testing.T, n int) {
+	t.Helper()
+	orig := globDirChunk
+	globDirChunk = n
+	t.Cleanup(func() { globDirChunk = orig })
+}
+
+// pacedDirEntriesFS wraps a directory so a test can observe how many entries
+// a chunked reader actually pulls from it. Its files hand back at most pace
+// entries per ReadDir(n) call once the caller asks for more than that,
+// mirroring the short reads a real filesystem can hand a chunked reader, so a
+// small fixture can still force several round trips instead of resolving in
+// the one big read a directory too large to build here would need. A caller
+// that asks for everything at once (n <= 0 — what an unbounded listing does)
+// still gets the whole directory back in a single call, which is what makes
+// this double also show that today's listing pulls everything at once.
+//
+// When cancel is set, a file also cancels on its cancelOn'th ReadDir(n) call —
+// the same shape countingFS uses for a whole directory listing, scoped down to
+// the chunk calls inside one — so a test can watch how much of a listing a
+// chunk loop keeps pulling after the context that should have stopped it is
+// cancelled.
+type pacedDirEntriesFS struct {
+	fs.FS
+	read     *int
+	pace     int
+	cancelOn int
+	cancel   context.CancelFunc
+}
+
+func (p pacedDirEntriesFS) Open(name string) (fs.File, error) {
+	f, err := p.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	rdf, ok := f.(fs.ReadDirFile)
+	if !ok {
+		return f, nil
+	}
+	return &pacedDirEntriesFile{ReadDirFile: rdf, read: p.read, pace: p.pace, cancelOn: p.cancelOn, cancel: p.cancel}, nil
+}
+
+type pacedDirEntriesFile struct {
+	fs.ReadDirFile
+	read     *int
+	pace     int
+	cancelOn int
+	cancel   context.CancelFunc
+	calls    int
+}
+
+func (p *pacedDirEntriesFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if n > 0 && n > p.pace {
+		n = p.pace
+	}
+	entries, err := p.ReadDirFile.ReadDir(n)
+	*p.read += len(entries)
+	p.calls++
+	if p.cancel != nil && p.calls == p.cancelOn {
+		p.cancel()
+	}
+	return entries, err
+}
+
+// flatEntriesFixture builds a t.TempDir() holding n files and no
+// subdirectories, so a test can force one directory listing to read past the
+// per-directory entry budget without building a tree.
+func flatEntriesFixture(t *testing.T, n int) string {
+	t.Helper()
+	root := t.TempDir()
+	for i := range n {
+		p := filepath.Join(root, fmt.Sprintf("leaf%03d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 // globBudgetFixture builds a t.TempDir() tree of n sibling directories, each
 // holding one leaf.txt and one leaf.md, so tests can glob for one extension,
 // both extensions, or count total directories without rebuilding the tree.
@@ -80,8 +183,8 @@ func TestGlobStopsAtTheDirectoryListingBudgetWithFileIdentity(t *testing.T) {
 	stubMaxGlobDirListings(t, budget)
 
 	var counter *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		counter = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		counter = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return counter
 	})
 
@@ -114,8 +217,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	root := globBudgetFixture(t, fileCount)
 
 	var full *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		full = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		full = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return full
 	})
 	fullBudget := NewGlobBudget()
@@ -130,8 +233,8 @@ func TestGlobTruncatesAtTheMatchCap(t *testing.T) {
 	stubMaxGlobMatches(t, 5)
 
 	var capped *countingFS
-	stubGlobBaseFS(t, func(dir string) fs.FS {
-		capped = &countingFS{FS: os.DirFS(dir)}
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		capped = &countingFS{FS: boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}}
 		return capped
 	})
 	budget := NewGlobBudget()
@@ -189,6 +292,307 @@ func TestGlobBudgetIsSharedAcrossBraceExpandedPatterns(t *testing.T) {
 	}
 	if budget.TruncatedAt() != 5 {
 		t.Fatalf("brace-expanded glob reported truncatedAt=%d, want 5 (the call-wide cap)", budget.TruncatedAt())
+	}
+}
+
+// TestGlobStopsOnADirectoryWithTooManyEntries is the unit-scale reproduction
+// of #497's other half (roborev High): the listing budget and match cap only
+// ever get a say once a directory's ReadDir call returns, and os.DirFS's
+// ReadDir is os.ReadDir, which reads every entry before handing any of them
+// back — so one directory with millions of entries can exhaust memory before
+// either bound is ever consulted. pacedDirEntriesFS paces what a chunked
+// reader gets per call, the same short-read shape a real filesystem can hand
+// back, so a small fixture can still show a listing stopping after a few
+// chunks instead of needing a directory too large to build here. The read
+// counter and peakDirEntries are what tell a fix that stops early apart from
+// one that reads the whole directory and only then reports the refusal — a
+// result-only assertion cannot tell the two apart, but the OOM only the
+// former avoids.
+func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
+	const fileCount = 30
+	root := flatEntriesFixture(t, fileCount)
+
+	const budget = 10
+	stubMaxGlobDirEntries(t, budget)
+
+	var read int
+	var seenBudget *GlobBudget
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, callBudget *GlobBudget) fs.FS {
+		seenBudget = callBudget
+		return boundedDirFS{FS: pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: 5}, budget: callBudget, ctx: ctx}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "*.txt", root, true)
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Glob over a %d-entry directory with an entry budget of %d = (%v, %v), want a *globBudgetError; nothing bounds how many entries one listing may materialize", fileCount, budget, matches, err)
+	}
+	if budgetErr.kind != budgetEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetEntries", budgetErr.kind)
+	}
+	if budgetErr.op != "glob" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "glob")
+	}
+	if read > fileCount {
+		t.Fatalf("paced double reported %d entries read out of %d total in the directory, which is impossible", read, fileCount)
+	}
+	if read == fileCount {
+		t.Fatalf("listing read all %d entries before refusing; it must stop near the entry budget of %d instead of materializing the whole directory", read, budget)
+	}
+	if seenBudget.peakDirEntries < budget || seenBudget.peakDirEntries >= fileCount {
+		t.Fatalf("globBudget.peakDirEntries = %d, want at least the entry budget of %d but strictly less than the directory's %d entries (a listing that materializes everything before refusing must not pass this)", seenBudget.peakDirEntries, budget, fileCount)
+	}
+}
+
+// TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree proves the
+// call-wide live-entry bound catches what maxGlobDirEntries cannot: a walk
+// holds every ancestor directory's listing alive while it descends into a
+// child, so a deep tree's peak live total is the per-directory entry count
+// times its depth, not any single listing's size. Every directory in the
+// chain here holds fewer entries than a lowered maxGlobDirEntries, so the
+// per-directory cap never trips on its own, but the sum the walk is holding
+// live grows with every level it descends and crosses a lowered
+// maxGlobLiveEntries partway down. peakLiveEntries has to be checked
+// directly, not just the refusal, because a fix that walked the whole tree
+// and only complained at the end would return the same error this test's
+// errors.As check accepts; comparing what was actually held live against the
+// tree's full entry count is what tells the two apart.
+func TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree(t *testing.T) {
+	root := t.TempDir()
+
+	const depth = 10    // d00..d09
+	const perLevel = 5  // every directory in the chain holds this many entries
+	const decoySize = 8 // files in a directory outside the chain
+	const perDirBudget = 20
+	const liveBudget = 30
+
+	cur := root
+	for i := range depth {
+		cur = filepath.Join(cur, fmt.Sprintf("d%02d", i))
+		if err := os.MkdirAll(cur, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Every non-leaf directory holds perLevel-1 padding files plus the
+		// subdirectory that continues the chain; the leaf holds perLevel
+		// padding files and no subdirectory, so every level's own listing is
+		// the same size.
+		padding := perLevel - 1
+		if i == depth-1 {
+			padding = perLevel
+		}
+		for p := range padding {
+			if err := os.WriteFile(filepath.Join(cur, fmt.Sprintf("pad%02d.txt", p)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// zzz_decoy sorts after the whole d00..d09 chain, so the walk finishes
+	// descending and backing out of the chain before it ever lists this
+	// directory: it contributes to the tree's total entry count but is never
+	// one of the chain's ancestors, so it can never be live at the same time
+	// as the chain's peak.
+	decoy := filepath.Join(root, "zzz_decoy")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range decoySize {
+		if err := os.WriteFile(filepath.Join(decoy, fmt.Sprintf("leaf%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Total entries in the tree: root's own listing (d00 + zzz_decoy = 2),
+	// plus the chain (depth*perLevel), plus the decoy's own files.
+	totalEntries := 2 + depth*perLevel + decoySize
+
+	stubMaxGlobDirEntries(t, perDirBudget)
+	stubMaxGlobLiveEntries(t, liveBudget)
+
+	var seenBudget *GlobBudget
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		seenBudget = budget
+		return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "**/*.txt", root, true)
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Glob over a %d-level tree (peak live so far: %d) with a live-entry budget of %d = (%d matches, %v), want a *globBudgetError; nothing bounds how many entries a walk may hold live across the listings it still has open", depth, seenBudget.peakLiveEntries, liveBudget, len(matches), err)
+	}
+	if budgetErr.kind != budgetLiveEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetLiveEntries", budgetErr.kind)
+	}
+	if seenBudget.peakLiveEntries < liveBudget {
+		t.Fatalf("globBudget.peakLiveEntries = %d, want at least the live-entry budget of %d", seenBudget.peakLiveEntries, liveBudget)
+	}
+	if seenBudget.peakLiveEntries >= totalEntries {
+		t.Fatalf("globBudget.peakLiveEntries = %d, want strictly less than the tree's %d total entries (a fix that walked the whole tree before complaining must not pass this)", seenBudget.peakLiveEntries, totalEntries)
+	}
+}
+
+// TestGlobSucceedsOnAWideShallowTreeUnderTheLiveEntryCeiling is the control
+// for TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree above: it
+// holds the same 60 total entries (10 sibling directories of 5 files each,
+// plus the root's own 10-entry listing), but spread across siblings instead
+// of nested, so the walk only ever holds the root's listing plus whichever
+// one sibling it is currently reading — one directory's worth plus the root —
+// no matter how many siblings it has already finished with. The live-entry
+// budget is lowered to the same value the nested test uses, and the call
+// still has to succeed and report every match: a naive cumulative counter
+// that summed every listing ever made instead of releasing the ones the walk
+// has left would grow with every sibling visited and refuse partway through
+// this tree instead, which would break every large flat repository.
+func TestGlobSucceedsOnAWideShallowTreeUnderTheLiveEntryCeiling(t *testing.T) {
+	root := t.TempDir()
+
+	const siblings = 10
+	const filesPerSibling = 5
+	const perDirBudget = 20
+	const liveBudget = 30
+
+	for i := range siblings {
+		dir := filepath.Join(root, fmt.Sprintf("sib%02d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f := range filesPerSibling {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("leaf%02d.txt", f)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	stubMaxGlobDirEntries(t, perDirBudget)
+	stubMaxGlobLiveEntries(t, liveBudget)
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "**/*.txt", root, true)
+	if err != nil {
+		t.Fatalf("Glob over a %d-directory wide tree (same %d total entries as the nested tree above) under a live-entry budget of %d = %v, want nil error; the bound must charge only what the walk is currently holding live, not a running total across the whole call", siblings, siblings*(filesPerSibling+1), liveBudget, err)
+	}
+	if want := siblings * filesPerSibling; len(matches) != want {
+		t.Fatalf("Glob over the wide tree returned %d matches, want %d", len(matches), want)
+	}
+}
+
+// TestGlobMatchesStartsItsLiveEntryAccountingFresh pins the other half of the
+// scoping rule: that globMatches actually applies it. Each expanded pattern
+// is its own traversal, and the ignore-discovery pass before them is another,
+// so a walk has to begin holding nothing. This hands globMatches a budget
+// that is already holding a root listing, as a finished earlier traversal
+// would leave it, and asks for a pattern whose own listing fits the ceiling
+// comfortably on its own.
+func TestGlobMatchesStartsItsLiveEntryAccountingFresh(t *testing.T) {
+	const ceiling = 10
+	const staleRootEntries = 8
+	stubMaxGlobLiveEntries(t, ceiling)
+
+	root := t.TempDir()
+	nested := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		if err := os.WriteFile(filepath.Join(nested, fmt.Sprintf("leaf%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	budget := newGlobBudget("glob")
+	if err := budget.holdEntries(".", staleRootEntries); err != nil {
+		t.Fatalf("seeding a finished traversal's %d held entries: %v", staleRootEntries, err)
+	}
+
+	ctx := t.Context()
+	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: ctx}
+	matches, err := globMatches(ctx, fsys, "a/b/*.txt", budget)
+	if err != nil {
+		t.Fatalf("globMatches(a/b/*.txt) = %v, want no refusal: an earlier traversal's %d held entries are no longer live and must not be counted against the ceiling of %d", err, staleRootEntries, ceiling)
+	}
+	if len(matches) != 3 {
+		t.Fatalf("globMatches(a/b/*.txt) returned %d matches, want 3", len(matches))
+	}
+}
+
+// TestGlobLiveEntryTrackingIsScopedToOneTraversal proves the live-entry
+// ceiling is bookkeeping about ONE traversal rather than about the budget
+// object, which several traversals of a single call share. holdEntries keeps
+// every entry that is an ancestor of the directory being listed, which is
+// right inside a traversal — those listings really are still held — and wrong
+// across two, because a directory the previous traversal was holding when it
+// finished is not held any more. Root is an ancestor of everything, so
+// without a reset it survives forever and is counted against every later
+// traversal that starts beneath it.
+//
+// This drives the budget directly rather than through a glob call, so it
+// pins the rule itself instead of whatever order a particular call happens to
+// visit directories in.
+func TestGlobLiveEntryTrackingIsScopedToOneTraversal(t *testing.T) {
+	const ceiling = 10
+	const rootEntries = 8
+	const nestedEntries = 5
+	stubMaxGlobLiveEntries(t, ceiling)
+
+	// Within one traversal an ancestor's listing is still held, so its
+	// entries count toward the ceiling alongside the directory below it.
+	within := newGlobBudget("glob")
+	if err := within.holdEntries(".", rootEntries); err != nil {
+		t.Fatalf("holding %d entries under the root, within the ceiling of %d: %v", rootEntries, ceiling, err)
+	}
+	if err := within.holdEntries("a/b", nestedEntries); err == nil {
+		t.Fatalf("holding %d entries under a/b while the root's %d are still held stayed within the ceiling of %d, want a refusal: an ancestor's listing is still live and has to be counted", nestedEntries, rootEntries, ceiling)
+	}
+
+	// Once a traversal ends, what it was holding is no longer held, so the
+	// next traversal starts from nothing even where it shares ancestors.
+	across := newGlobBudget("glob")
+	if err := across.holdEntries(".", rootEntries); err != nil {
+		t.Fatalf("first traversal holding %d entries under the root: %v", rootEntries, err)
+	}
+	across.resetLive()
+	if err := across.holdEntries("a/b", nestedEntries); err != nil {
+		t.Fatalf("second traversal holding %d entries under a/b = %v, want no refusal: the first traversal's root listing is no longer held and must not be counted against a ceiling of %d", nestedEntries, err, ceiling)
+	}
+}
+
+// TestGlobStopsReadingAChunkedListingOnCancellation proves the other half of
+// reading a directory in chunks: readDirChunked's loop checks ctx between one
+// chunk and the next, so a cancellation landing mid-listing is noticed within
+// about one more chunk of work rather than after the whole directory has been
+// pulled through. cancelFS only checks ctx once, when a listing starts, and
+// the walk callback that finally sees ctx.Err() only runs after ReadDir
+// returns, so the call reports context.Canceled either way regardless of how
+// much of the directory the loop actually read — a test that checked only
+// the returned error would pass even if the loop read every remaining chunk
+// before giving up. What has to be pinned is the chunk loop itself stopping
+// promptly, which is why this also counts how many entries actually came out
+// of the directory file, the same way pacedDirEntriesFS's read counter does
+// for TestGlobStopsOnADirectoryWithTooManyEntries above. Losing the ctx check
+// between chunks would let the loop keep pulling chunks until the directory
+// is exhausted — up to maxGlobDirEntries/globDirChunk chunks of pointless
+// work after the caller asked to stop — while still reporting the same
+// context.Canceled this test's error check alone cannot tell apart from that.
+func TestGlobStopsReadingAChunkedListingOnCancellation(t *testing.T) {
+	const fileCount = 40
+	const chunkSize = 5
+	root := flatEntriesFixture(t, fileCount)
+	stubGlobDirChunk(t, chunkSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var read int
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		fsys := pacedDirEntriesFS{FS: os.DirFS(dir), read: &read, pace: chunkSize, cancelOn: 2, cancel: cancel}
+		return boundedDirFS{FS: fsys, budget: budget, ctx: ctx}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(ctx, "*.txt", root, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Glob over a listing cancelled mid-chunk = (%v, %v), want context.Canceled", matches, err)
+	}
+	if want := chunkSize * 3; read > want {
+		t.Fatalf("listing kept reading after cancellation: read %d of %d entries in the directory, want at most %d (about one chunk past the one that observed the cancellation)", read, fileCount, want)
 	}
 }
 
@@ -416,5 +820,104 @@ func TestGlobChargesThePatternWalkOnTheDefaultIgnoreExclusionPath(t *testing.T) 
 	}
 	if errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("budget refusal reported %v, which the walk skips silently; it must fail the glob visibly instead", err)
+	}
+}
+
+// TestGlobIgnoreDiscoveryRefusesRatherThanUnderExcluding pins that a budget
+// refusal during .gitignore discovery reaches the caller instead of being
+// skipped like an unreadable entry. Discovery reads the same filesystem the
+// pattern walk does, under the same bounds, so one can trip while it is
+// collecting rules. An ignoreSet that gave up partway still reports itself
+// complete, so every rule it never reached silently stops excluding: the call
+// then returns paths it was asked to leave out. That is a wrong answer rather
+// than a missing one, and it is worse than failing.
+//
+// The oversized directory here carries the .gitignore that would exclude the
+// candidate, so swallowing the refusal is directly observable: the glob comes
+// back with a path the rules cover.
+func TestGlobIgnoreDiscoveryRefusesRatherThanUnderExcluding(t *testing.T) {
+	const fileCount = 30
+	const entryCap = 10
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("secret.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := range fileCount {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("bulk%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubMaxGlobDirEntries(t, entryCap)
+
+	matches, _, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "secret.txt", root, false)
+	if err == nil {
+		t.Fatalf("Glob(\"secret.txt\") = (%v, nil), want a refusal: discovery gave up on the entry cap before reading the .gitignore that excludes secret.txt, so the rules were never loaded and the path came back anyway", matches)
+	}
+	if _, refused := errors.AsType[*globBudgetError](err); !refused {
+		t.Fatalf("Glob(\"secret.txt\") = %v (%T), want a *globBudgetError", err, err)
+	}
+}
+
+// TestBoundedReadRefusesMidListingOnTheLiveEntryCeiling pins that the
+// live-entry ceiling is consulted while a directory is being read, not once
+// the read is done. The total it bounds already includes every ancestor
+// listing the walk is holding, so a directory whose own entries sit well
+// under the per-directory cap can still cross the ceiling partway through its
+// own read. Charging only at the end would let the peak reach the ceiling
+// plus a whole directory cap before anything refused, which is a ceiling only
+// in retrospect.
+//
+// The assertion is on entries actually held at the moment of refusal, because
+// the returned error is identical either way: what distinguishes the two is
+// how much memory was committed before it arrived.
+func TestBoundedReadRefusesMidListingOnTheLiveEntryCeiling(t *testing.T) {
+	const ancestorHeld = 15
+	const ceiling = 20
+	const dirEntries = 10
+	const chunk = 2
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range dirEntries {
+		if err := os.WriteFile(filepath.Join(sub, fmt.Sprintf("f%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stubMaxGlobLiveEntries(t, ceiling)
+	stubGlobDirChunk(t, chunk)
+	// High enough that the per-directory cap never fires: the only bound in
+	// play here is the aggregate one.
+	stubMaxGlobDirEntries(t, 1000)
+
+	budget := newGlobBudget("glob")
+	if err := budget.holdEntries(".", ancestorHeld); err != nil {
+		t.Fatalf("seeding the ancestor's %d held entries: %v", ancestorHeld, err)
+	}
+
+	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
+	entries, err := fsys.ReadDir("sub")
+	budgetErr, refused := errors.AsType[*globBudgetError](err)
+	if !refused {
+		t.Fatalf("ReadDir(sub) with %d entries already held against a ceiling of %d = (%d entries, %v), want a *globBudgetError", ancestorHeld, ceiling, len(entries), err)
+	}
+	if budgetErr.kind != budgetLiveEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetLiveEntries", budgetErr.kind)
+	}
+	// Refusing mid-read means the peak sits just past the ceiling, within one
+	// chunk of it. Refusing after the read would put it at the ancestor's
+	// holdings plus the directory's whole contents.
+	if budgetErr.count > ceiling+chunk {
+		t.Fatalf("refused holding %d entries, want no more than the ceiling of %d plus one chunk of %d: the read ran to the end before the ceiling was consulted", budgetErr.count, ceiling, chunk)
+	}
+	if budget.peakLiveEntries >= ancestorHeld+dirEntries {
+		t.Fatalf("peakLiveEntries = %d, want less than the %d the whole directory would add to the ancestor's holdings: the ceiling was checked only after the read finished", budget.peakLiveEntries, ancestorHeld+dirEntries)
 	}
 }
