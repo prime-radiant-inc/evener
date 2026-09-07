@@ -121,9 +121,10 @@ function assertResult(result, expectedWidth) {
     failures.push(`mobile title is not the span the ${expectedWidth}px breakpoint selects`);
   if (displayed(result.desktopTitle) === mobile)
     failures.push(`desktop title is not the span the ${expectedWidth}px breakpoint selects`);
-  if (visible(result.mobileIntro) !== mobile)
-    failures.push(`prompt orientation visibility is wrong at ${expectedWidth}px`);
-
+  // The prompt heading and subtitle show at EVERY width now (the desktop
+  // pane used to hide them behind a 12px uppercase title - critique R7), so
+  // the intro must be visible whether or not the layout is the phone's.
+  if (!visible(result.promptIntro)) failures.push(`prompt intro is not visible at ${expectedWidth}px`);
   // Issue #198: the prompt card is the composer, so its control row holds the
   // composer's controls in the composer's place - at EVERY width, which is why
   // this block is outside the mobile branch. The pane used to pass PromptCard a
@@ -226,19 +227,6 @@ function assertResult(result, expectedWidth) {
       if (row.minHeight !== "48px" || row.height < 48)
         failures.push(`row ${row.label} is below 48px: ${JSON.stringify(row)}`);
     }
-    const prompt = result.accessiblePrompt;
-    if (
-      prompt.headingTag !== "h3" ||
-      prompt.headingText !== "What should the agent do?" ||
-      !prompt.headingVisible ||
-      prompt.subtitleTag !== "p" ||
-      prompt.subtitleText !== "Leave blank to start a dormant session." ||
-      !prompt.subtitleVisible ||
-      prompt.headingHiddenFromAT ||
-      prompt.subtitleHiddenFromAT
-    ) {
-      failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
-    }
   }
 
   // Staged attachments (kata 289v). The harness stages them through the
@@ -247,6 +235,21 @@ function assertResult(result, expectedWidth) {
   const staged = result.attachments;
   if (staged.tiles.length !== STAGED_ATTACHMENTS) {
     failures.push(`expected ${STAGED_ATTACHMENTS} staged attachment tiles in the tree, found ${staged.tiles.length}`);
+  }
+  // Persistently accessible at every width, not only the phone's: the heading
+  // is the page's own (an h2 under the pane title), never aria-hidden.
+  const prompt = result.accessiblePrompt;
+  if (
+    prompt.headingTag !== "h2" ||
+    prompt.headingText !== "What should the agent do?" ||
+    !prompt.headingVisible ||
+    prompt.subtitleTag !== "p" ||
+    prompt.subtitleText !== "Leave blank to start a dormant session." ||
+    !prompt.subtitleVisible ||
+    prompt.headingHiddenFromAT ||
+    prompt.subtitleHiddenFromAT
+  ) {
+    failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
   }
   if (staged.row === null) {
     failures.push("staged-attachment row is not in the measured tree");
