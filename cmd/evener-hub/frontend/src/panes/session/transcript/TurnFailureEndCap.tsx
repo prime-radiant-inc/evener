@@ -232,7 +232,9 @@ function planRetryImages(
   // or reordered, shadowing an attachment in the translation map and failing
   // the round-trip check below (dropping every attachment, valid ones too).
   const usedMarkers = new Set<number>();
-  occurrences.forEach((occurrence) => usedMarkers.add(occurrence.marker));
+  occurrences.forEach((occurrence) => {
+    usedMarkers.add(occurrence.marker);
+  });
   const allocFallbackMarker = (): number => {
     let marker = 1;
     while (usedMarkers.has(marker)) marker += 1;
