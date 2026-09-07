@@ -42,6 +42,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  retryBlockedMutation,
   setMutationStorageForTests,
   subscribeMutationPersistence,
   threadRoutingIndexesForTests,
@@ -7940,10 +7941,12 @@ for (const state of ["blockedUnknown", "submitting"] as const) {
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().refreshThread("ref_a");
     const inspector = new MutationOutboxIndexedDB();
+    expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
     expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
     status = "notLoaded";
     await threadsStore.getState().refreshThread("ref_a");
+    expect(await retryBlockedMutation(record.clientMutationId)).toBe(false);
     expect((await inspector.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
     expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
     status = "idle";

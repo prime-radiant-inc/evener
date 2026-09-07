@@ -777,6 +777,9 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
+  const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
+  if (!status || status === "restartRequired" || status === "notLoaded") return false;
+  if (pendingMutationReconciliations.has(record.targetRef)) return false;
   await runtime.storage.markUnknown(clientMutationId, "submitting");
   notifyMutationPersistence([record.targetRef]);
   handleDiscoveredMutations(runtime, [record.targetRef]);
