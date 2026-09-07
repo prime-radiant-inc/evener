@@ -149,11 +149,7 @@ const MODEL_CHOOSE_LABEL = "Choose a model";
 // (label "Starting", startedAt as stamped by the submit). Mounted only while
 // `busy`, so the interval exists exactly as long as the old pane-level effect
 // ran it - but a tick re-renders this leaf alone, never the whole pane.
-const StartingLoader = memo(function StartingLoader({
-  startedAt,
-}: {
-  startedAt: number;
-}): JSX.Element {
+const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: number }): JSX.Element {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);

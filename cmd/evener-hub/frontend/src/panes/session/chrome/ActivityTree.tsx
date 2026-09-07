@@ -1,9 +1,9 @@
 import {
-  Fragment,
   createContext,
+  Fragment,
   forwardRef,
-  memo,
   type KeyboardEvent,
+  memo,
   type ReactNode,
   useCallback,
   useContext,
@@ -470,7 +470,9 @@ const ContinuationStripView = memo(function ContinuationStripView({
 }: ContinuationStripViewProps): ReactNode {
   return (
     <div className={CLASS.rowActions}>
-      <span className={CLASS.rowContinuation}>{failure ?? strip.branchError ?? "This branch is partially retained."}</span>
+      <span className={CLASS.rowContinuation}>
+        {failure ?? strip.branchError ?? "This branch is partially retained."}
+      </span>
       {strip.token && (
         <Button
           variant="quiet"
@@ -706,68 +708,68 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow): void => {
-    const index = indexByID.get(row.id);
-    if (index === undefined) return;
-    // Alt/Ctrl/Meta mean the key belongs elsewhere: Alt+ArrowUp/Down and
-    // Alt+Home/End are the global transcript scroll/jump chords, and the
-    // dispatcher's editable test does not shield them from these row divs -
-    // a blanket preventDefault here would swallow them (roborev PR #884
-    // round 3). Shift stays: coarse-step and range conventions aside, the
-    // tree's own behavior is unchanged by it.
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
-    switch (event.key) {
-      case "ArrowDown": {
-        event.preventDefault();
-        const next = rows[index + 1];
-        if (next) focusRow(next.id);
-        break;
-      }
-      case "ArrowUp": {
-        event.preventDefault();
-        const previous = rows[index - 1];
-        if (previous) focusRow(previous.id);
-        break;
-      }
-      case "ArrowRight": {
-        event.preventDefault();
-        if (row.kind === "fold") {
-          if (!expandedFolds.has(row.id)) onToggleFold(row.id);
-        } else {
-          setDetailOpen(row, true);
+      const index = indexByID.get(row.id);
+      if (index === undefined) return;
+      // Alt/Ctrl/Meta mean the key belongs elsewhere: Alt+ArrowUp/Down and
+      // Alt+Home/End are the global transcript scroll/jump chords, and the
+      // dispatcher's editable test does not shield them from these row divs -
+      // a blanket preventDefault here would swallow them (roborev PR #884
+      // round 3). Shift stays: coarse-step and range conventions aside, the
+      // tree's own behavior is unchanged by it.
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      switch (event.key) {
+        case "ArrowDown": {
+          event.preventDefault();
+          const next = rows[index + 1];
+          if (next) focusRow(next.id);
+          break;
         }
-        break;
-      }
-      case "ArrowLeft": {
-        event.preventDefault();
-        if (row.kind === "fold") {
-          if (expandedFolds.has(row.id)) onToggleFold(row.id);
-        } else if (isDetailOpen(row)) {
-          setDetailOpen(row, false);
-        } else if (row.parentID && indexByID.has(row.parentID)) {
-          // parentID is the delegate ROW's id for child-session rows (Task 5
-          // contract), so it resolves through the row index directly; root
-          // rows' parentID is a session node id, which is never a row.
-          focusRow(row.parentID);
+        case "ArrowUp": {
+          event.preventDefault();
+          const previous = rows[index - 1];
+          if (previous) focusRow(previous.id);
+          break;
         }
-        break;
+        case "ArrowRight": {
+          event.preventDefault();
+          if (row.kind === "fold") {
+            if (!expandedFolds.has(row.id)) onToggleFold(row.id);
+          } else {
+            setDetailOpen(row, true);
+          }
+          break;
+        }
+        case "ArrowLeft": {
+          event.preventDefault();
+          if (row.kind === "fold") {
+            if (expandedFolds.has(row.id)) onToggleFold(row.id);
+          } else if (isDetailOpen(row)) {
+            setDetailOpen(row, false);
+          } else if (row.parentID && indexByID.has(row.parentID)) {
+            // parentID is the delegate ROW's id for child-session rows (Task 5
+            // contract), so it resolves through the row index directly; root
+            // rows' parentID is a session node id, which is never a row.
+            focusRow(row.parentID);
+          }
+          break;
+        }
+        case "Enter":
+        case " ":
+        case "Spacebar":
+        case "Space": {
+          // Enter/Space from a nested control (the chevron button, the Load
+          // more button) is that control's own activation; the row must not
+          // fire a second activation for it. Arrows, by contrast, always mean
+          // row navigation even when focus sits on a nested control (Firefox
+          // and Safari focus buttons on click).
+          if (event.target !== event.currentTarget) return;
+          event.preventDefault();
+          activateRow(row);
+          break;
+        }
+        default:
+          break;
       }
-      case "Enter":
-      case " ":
-      case "Spacebar":
-      case "Space": {
-        // Enter/Space from a nested control (the chevron button, the Load
-        // more button) is that control's own activation; the row must not
-        // fire a second activation for it. Arrows, by contrast, always mean
-        // row navigation even when focus sits on a nested control (Firefox
-        // and Safari focus buttons on click).
-        if (event.target !== event.currentTarget) return;
-        event.preventDefault();
-        activateRow(row);
-        break;
-      }
-      default:
-        break;
-    }
     },
     [activateRow, expandedFolds, focusRow, indexByID, isDetailOpen, onToggleFold, rows, setDetailOpen],
   );
