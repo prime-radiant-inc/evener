@@ -240,3 +240,24 @@ when concurrent project deletion has fenced the target but not finished cleanup.
 5. Cover late replies, paging, independent resource revisions, restarts,
    conflicting state, route restoration and no replay deterministically. Then
    qualify archive/favorite and restart recovery in the owned iOS Release.
+
+### Archive and favorite recovery checkpoint (2026-09-07)
+
+`60611f595` adds the durable journal integration, exact-target readback, explicit
+read-only continuation and restored project filters/tiers. `ef1cdf93e` separates
+an unresolved request from a failed read in the recovery UI. Final Release bundle:
+`7f14a22312fa38916cb64b7700a10788a6cd6ef1d4cbf40c6fb952f78182f7a2`.
+
+The final iOS artifact passed project pin/unpin/archive/unarchive, local session
+archive/unarchive, exact project/filter/tier restoration, stale Alert rejection,
+and unknown-intent continuation at maximum text size without a hub write. The
+unknown device intent was seeded at the storage boundary; transport/storage
+faults remain deterministic tests. Independent reads confirm retained histories,
+unchanged drafts, restored visible fixture organization and an empty journal.
+Native verification passes 553 tests in 66 files plus TypeScript and touched
+Biome. See [organization evidence](../../design/mobile/organization-evidence.md).
+
+Native keybindings and the broader lifecycle/accessibility qualification remain
+open. Archive placement cannot prove an unknown explicit decision was persisted;
+missing targets and unrelated recovery operations remain conservatively blocked.
+The whole iOS v1 goal remains active, with Android qualification deferred.

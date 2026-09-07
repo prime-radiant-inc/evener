@@ -280,3 +280,24 @@ Durable archive/favorite recovery is next. Native keybindings, additional SDK
 recipes, reader Dynamic Type drift, overlapping lifecycle failures and the full
 iOS release matrix remain unfinished. Android remains preserved and deferred for
 v1. No push, merge or publication has been performed.
+
+## Archive and favorite recovery checkpoint
+
+`60611f595` and `ef1cdf93e` add durable archive/favorite recovery to project
+browsing, preserve project/filter/tier destinations, and require an explicit
+read-only continuation when archive intent has no confirmed reply. Final Release:
+`7f14a22312fa38916cb64b7700a10788a6cd6ef1d4cbf40c6fb952f78182f7a2`.
+
+The final owned iOS journeys passed project pin/unpin/archive/unarchive, local
+session archive/unarchive, restored filters/tiers, rejection of a stale native
+menu and unresolved-request continuation at maximum text size. SDK/SQLite reads
+confirmed no replay, preserved histories/drafts and an empty recovery journal.
+The final native gate passes 553 tests plus TypeScript and touched Biome. See
+[organization evidence](../../design/mobile/organization-evidence.md) for source,
+device, fixture and test boundaries; Luna reviewed supplied contracts/algorithms,
+and root executed the gate and simulator qualification.
+
+Next is native keybinding configuration. Additional SDK recipes, reader Dynamic
+Type drift, overlapping lifecycle failures, full VoiceOver/iPad/device coverage,
+signing/update qualification and the final canonical merge gate remain open.
+Android sources are preserved and qualification remains deferred for iOS-only v1.
