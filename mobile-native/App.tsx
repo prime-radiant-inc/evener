@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
 import { locationForRoute, restoredStack } from "./src/location";
@@ -108,6 +109,11 @@ function Navigation() {
 						options={{ title: "Evener · Hubs" }}
 					/>
 					<Stack.Screen name="Sessions" component={SessionsScreen} />
+					<Stack.Screen
+						name="Fork"
+						component={ForkScreen}
+						options={{ title: "Fork conversation" }}
+					/>
 					<Stack.Screen name="Projects" component={ProjectsScreen} />
 					<Stack.Screen
 						name="PinSections"

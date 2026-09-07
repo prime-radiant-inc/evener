@@ -129,6 +129,10 @@ export interface ConversationForkActions {
   forkAside(): Promise<ThreadForkResponse>;
 }
 
+export interface ConversationTurnForkActions {
+  forkFromTurn(transcriptEntryIndex: number): Promise<ThreadForkResponse>;
+}
+
 export interface ConversationClearActions {
   clear(): Promise<ThreadClearResponse>;
   adoptClear(response: ThreadClearResponse): ConversationReadProjection;
@@ -377,6 +381,7 @@ export function createConversationService(
   ConversationModelCatalog &
   ConversationGoalActions &
   ConversationForkActions &
+  ConversationTurnForkActions &
   ConversationClearActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
@@ -848,6 +853,30 @@ export function createConversationService(
       capabilities = caps;
       opening = null;
       return { conversation, activity, olderCursor: null };
+    },
+
+    async forkFromTurn(transcriptEntryIndex) {
+      if (
+        !Number.isSafeInteger(transcriptEntryIndex) ||
+        transcriptEntryIndex <= 0
+      )
+        throw new Error("The selected message has no persisted fork position.");
+      requireCap("forkFromTurn", "forkFromTurn");
+      const parentRef = requireRef();
+      const response = await withCapabilityRefresh("forkFromTurn", () =>
+        client.request("thread/fork", {
+          ref: parentRef,
+          sourceTurnId: String(transcriptEntryIndex),
+          deferInput: true,
+        }),
+      );
+      const childRef = nonemptyString(
+        response.thread?.evener?.ref,
+        "fork session reference",
+      );
+      if (childRef === parentRef)
+        throw new Error("The fork response did not identify a new session.");
+      return response;
     },
 
     async forkAside() {

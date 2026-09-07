@@ -98,6 +98,14 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+	Fork: {
+		hubId: string;
+		ref: string;
+		title: string;
+		instanceId: string;
+		entryIndex: number;
+		preview: string;
+	};
 	PinSections: { hubId: string };
 	PinnedSection: { hubId: string; sectionId: string; title: string };
 	PinSectionEditor: { hubId: string; sectionId: string; title: string };
@@ -790,6 +798,28 @@ export function ConversationScreen({
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
 	const bindingInstance = snapshot.conversation?.instanceId;
+	function forkMessage(entryIndex: number, preview: string) {
+		const current = store.getState();
+		if (
+			!connectionReady.current ||
+			!navigation.isFocused() ||
+			current.status !== "open" ||
+			!current.conversation?.capabilities?.forkFromTurn ||
+			!bindingInstance ||
+			current.conversation.instanceId !== bindingInstance ||
+			current.conversationGeneration !== bindingGeneration ||
+			!Number.isSafeInteger(entryIndex) ||
+			entryIndex <= 0
+		)
+			return;
+		Keyboard.dismiss();
+		navigation.navigate("Fork", {
+			...route.params,
+			instanceId: bindingInstance,
+			entryIndex,
+			preview,
+		});
+	}
 	const controls = useMemo(
 		() =>
 			service && connected && focused
@@ -1691,6 +1721,13 @@ export function ConversationScreen({
 										)}
 										expandByDefault={presentation.expandByDefault}
 										showDuration={presentation.showDuration}
+										fork={
+											connected &&
+											focused &&
+											snapshot.conversation?.capabilities?.forkFromTurn
+												? forkMessage
+												: undefined
+										}
 									/>
 								</View>
 							)}

@@ -24,6 +24,66 @@ import { projectThread } from "./project";
 
 // --- fixture helpers ---------------------------------------------------------
 
+it.each([0, 7])(
+  "preserves the typed user transcript entry %s independently of turn and row identity",
+  (transcriptEntryIndex) => {
+    const projected = projectThread(
+      thread([
+        turn("turn_m99", [
+          item({
+            id: "row-without-an-index",
+            type: "userMessage",
+            turnId: "turn_m99",
+            text: "selected input",
+            transcriptEntryIndex,
+            position: { entry: 800, item: 1 },
+          }),
+        ]),
+      ]),
+    );
+    expect(projected.items.find((row) => row.kind === "user")).toMatchObject({
+      transcriptEntryIndex,
+      text: "selected input",
+    });
+  },
+);
+
+it("does not invent a fork entry from turn ids or row positions", () => {
+  const projected = projectThread(
+    thread([
+      turn("turn_7", [
+        item({
+          id: "user_7",
+          type: "userMessage",
+          text: "input",
+          position: { entry: 800, item: 1 },
+        }),
+      ]),
+    ]),
+  );
+  expect(projected.items.find((row) => row.kind === "user")).not.toHaveProperty(
+    "transcriptEntryIndex",
+  );
+});
+
+it("does not offer ordinary fork for a human steering notice rendered as a user row", () => {
+  const projected = projectThread(
+    thread([
+      turn("turn_m99", [
+        item({
+          id: "steering",
+          type: "steering",
+          source: "user",
+          text: "steering input",
+          transcriptEntryIndex: 7,
+        }),
+      ]),
+    ]),
+  );
+  expect(projected.items[0]?.kind).toBe("user");
+  expect(projected.items[0]).not.toHaveProperty("transcriptEntryIndex");
+});
+
 const ALL_TRUE_CAPS: ThreadCapabilities = {
   send: true,
   steer: true,

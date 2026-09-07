@@ -1,7 +1,10 @@
+import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
+
 export interface SavedLocation {
 	hubId: string;
 	conversation?: { ref: string; title: string };
 	pinAssignment?: true;
+	fork?: ForkTarget;
 	pinned?: { section?: { id: string; title: string }; manage?: true };
 }
 interface Storage {
@@ -36,6 +39,13 @@ function pinned(value: unknown): value is NonNullable<SavedLocation["pinned"]> {
 		(value.manage === true && value.section !== undefined)
 	);
 }
+function fork(value: unknown): ForkTarget | null {
+	try {
+		return decodeForkTarget(value);
+	} catch {
+		return null;
+	}
+}
 export class LocationRepository {
 	constructor(private readonly storage: Storage) {}
 	read(savedHubIds: readonly string[]): SavedLocation | null {
@@ -55,6 +65,15 @@ export class LocationRepository {
 			return null;
 		if (value.conversation !== undefined && !conversation(value.conversation))
 			return null;
+		const target = fork(value.fork);
+		if (
+			value.fork !== undefined &&
+			(!target ||
+				!conversation(value.conversation) ||
+				value.pinned !== undefined ||
+				value.pinAssignment !== undefined)
+		)
+			return null;
 		if (
 			value.pinned !== undefined &&
 			(!pinned(value.pinned) ||
@@ -69,6 +88,7 @@ export class LocationRepository {
 			return null;
 		return {
 			hubId: value.hubId,
+			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
 			...(value.pinAssignment === true ? { pinAssignment: true as const } : {}),
 			...(conversation(value.conversation)
@@ -91,6 +111,22 @@ export function locationForRoute(
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
+	if (route.name === "Fork") {
+		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		const target = fork({
+			instanceId: route.params.instanceId,
+			entryIndex: route.params.entryIndex,
+			preview: route.params.preview,
+		});
+		if (!conversation(route.params)) return null;
+		return target
+			? {
+					hubId,
+					conversation: { ref: route.params.ref, title: route.params.title },
+					fork: target,
+				}
+			: null;
+	}
 	if (
 		route.name === "PinSections" ||
 		route.name === "PinnedSection" ||
@@ -129,6 +165,9 @@ export function restoredStack(location: SavedLocation | null) {
 			ref?: string;
 			sectionId?: string;
 			title?: string;
+			instanceId?: string;
+			entryIndex?: number;
+			preview?: string;
 		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
@@ -154,6 +193,15 @@ export function restoredStack(location: SavedLocation | null) {
 		routes.push({
 			name: "PinAssignment",
 			params: { hubId: location.hubId, ...location.conversation },
+		});
+	if (location?.fork && location.conversation)
+		routes.push({
+			name: "Fork",
+			params: {
+				hubId: location.hubId,
+				...location.conversation,
+				...location.fork,
+			},
 		});
 	return { index: routes.length - 1, routes };
 }
