@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -272,21 +273,27 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			metas = append(metas, entry.Meta)
 		}
 	}
-	// Persisted delegates have no rendezvous of their own. Preserve the
-	// authenticated owner's restart restriction in every navigation projection.
-	for _, past := range pastEntries {
-		if past.Meta.ParentSessionID == "" {
-			continue
+	// Healthy navigation snapshots need no persisted ownership scan.
+	if slices.ContainsFunc(live, func(entry hubcore.LiveEntry) bool {
+		return !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired
+	}) {
+		// Persisted delegates have no rendezvous of their own. Preserve the
+		// authenticated owner's restart restriction in every navigation projection.
+		for _, past := range pastEntries {
+			if past.Meta.ParentSessionID == "" {
+				continue
+			}
+			owner, incompatible := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
+			if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
+				continue
+			}
+			child := hubcore.LiveEntry{Entry: owner.Entry, SessionID: past.Meta.ID, Status: owner.Status}
+			child.ThreadID = past.Meta.ID
+			child.WorkspaceRef = localAppRef(past.Meta.ID)
+			child.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
+			live = append(live, child)
 		}
-		owner, incompatible := restartRequiredDaemon(s.cfg, "", past.Meta.ID)
-		if !incompatible || owner.SessionID == past.Meta.ID || localSpawnWorkspaceRef(owner.Entry) == localAppRef(past.Meta.ID) {
-			continue
-		}
-		child := hubcore.LiveEntry{Entry: owner.Entry, SessionID: past.Meta.ID, Status: owner.Status}
-		child.ThreadID = past.Meta.ID
-		child.WorkspaceRef = localAppRef(past.Meta.ID)
-		child.WorkingDir = hubcore.EffectiveWorkingDir(past.Meta)
-		live = append(live, child)
+
 	}
 	fetch := s.remoteThreadFetch(ctx)
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
