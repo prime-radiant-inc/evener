@@ -136,7 +136,7 @@ func listFS(fs afero.Fs, dir string) ([]Entry, error) {
 func listFSMode(fs afero.Fs, dir string, strict bool) ([]Entry, error) {
 	entries, err := afero.ReadDir(fs, dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !strict {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read rendezvous dir: %w", err)

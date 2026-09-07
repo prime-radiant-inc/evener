@@ -141,6 +141,7 @@ type Roster struct {
 	// A completed pass may publish unless a newer pass already published.
 	refreshGen              uint64
 	publishedGen            uint64
+	entryPublishedGen       map[int]uint64
 	ownershipRefreshRunning bool
 	queuedOwnershipRefresh  *rosterRefreshBatch
 
@@ -177,12 +178,13 @@ type Roster struct {
 // If prober is nil, liveness is assumed (used for tests).
 func NewRoster(runDir string, prober Prober) *Roster {
 	return &Roster{
-		runDir:    runDir,
-		prober:    prober,
-		fs:        afero.NewOsFs(),
-		bySess:    make(map[string]LiveEntry),
-		byPID:     make(map[int]LiveEntry),
-		procAlive: processAlive,
+		runDir:            runDir,
+		prober:            prober,
+		fs:                afero.NewOsFs(),
+		bySess:            make(map[string]LiveEntry),
+		byPID:             make(map[int]LiveEntry),
+		entryPublishedGen: make(map[int]uint64),
+		procAlive:         processAlive,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
 			return fsnotifyWatcher{w}, err
@@ -310,9 +312,15 @@ func (r *Roster) refresh() error {
 	generation := r.refreshGen
 	r.mu.Unlock()
 
-	entries, err := rendezvous.ListStrict(r.runDir)
-	if err != nil {
-		return err
+	var entries []rendezvous.Entry
+	// An unconfigured roster has no discovery directory. A configured path
+	// disappearing is an incomplete read and must preserve existing ownership.
+	if r.runDir != "" {
+		var err error
+		entries, err = rendezvous.ListStrict(r.runDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Snapshot the previous PID map for the keep-alive fallback. Reading
@@ -417,6 +425,32 @@ func (r *Roster) refresh() error {
 	if generation < r.publishedGen {
 		r.mu.Unlock()
 		return nil
+	}
+	// A newer single-daemon confirmation supersedes only that daemon's
+	// observation. Keep the complete scan's findings for every other PID.
+	merged := false
+	for pid, confirmed := range r.entryPublishedGen {
+		if confirmed <= generation {
+			delete(r.entryPublishedGen, pid)
+			continue
+		}
+		if live, ok := r.byPID[pid]; ok {
+			byPID[pid] = live
+			merged = true
+		}
+		unconfirmed = slices.DeleteFunc(unconfirmed, func(claim rendezvous.Entry) bool { return claim.PID == pid })
+	}
+	if merged {
+		bySess = make(map[string]LiveEntry, len(byPID))
+		for _, live := range byPID {
+			if live.SessionID == "" {
+				continue
+			}
+			if previous, ok := bySess[live.SessionID]; !ok || preferLiveEntry(live, previous) {
+				bySess[live.SessionID] = live
+			}
+		}
+		fp = rosterFingerprint(bySess)
 	}
 	r.publishedGen = generation
 	prevBySess := r.bySess
@@ -679,7 +713,7 @@ func (r *Roster) RefreshEntry(ctx context.Context, entry rendezvous.Entry) error
 	}
 	live := liveEntryFromProbe(entry, result)
 	r.mu.Lock()
-	if generation < r.publishedGen {
+	if generation < r.publishedGen || generation < r.entryPublishedGen[entry.PID] {
 		r.mu.Unlock()
 		return nil
 	}
@@ -698,7 +732,8 @@ func (r *Roster) RefreshEntry(ctx context.Context, entry rendezvous.Entry) error
 	fp := rosterFingerprint(bySess)
 	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
 	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
-	r.publishedGen, r.fingerprint = generation, fp
+	r.entryPublishedGen[entry.PID] = generation
+	r.fingerprint = fp
 	onChange, onStatusChange := r.onChange, r.onStatusChange
 	r.mu.Unlock()
 	if hadPrevious && previous.Status != live.Status && onStatusChange != nil {

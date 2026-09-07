@@ -316,3 +316,19 @@ func TestListStrictRejectsUnreadableOrInvalidClaims(t *testing.T) {
 		})
 	}
 }
+
+func TestListStrictRequiresExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing")
+	if _, err := ListStrict(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("strict missing directory error=%v", err)
+	}
+	if entries, err := List(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("ordinary discovery=%+v, %v", entries, err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := ListStrict(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("existing empty directory=%+v, %v", entries, err)
+	}
+}

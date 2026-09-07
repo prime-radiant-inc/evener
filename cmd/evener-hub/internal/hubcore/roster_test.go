@@ -1193,21 +1193,30 @@ func TestRosterRefreshEntryPreservesOtherOwnership(t *testing.T) {
 }
 
 func TestRosterRefreshEntryDoesNotOverwriteNewerRefresh(t *testing.T) {
-	dir := t.TempDir()
-	entry := rendezvous.Entry{PID: 1001, SessionID: "parent", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
-	writeRendezvous(t, dir, entry)
-	prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
-	roster := NewRoster(dir, prober)
-	done := make(chan error, 1)
-	go func() { done <- roster.RefreshEntry(t.Context(), entry) }()
-	<-prober.firstStarted
-	roster.Refresh()
-	close(prober.releaseFirst)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if live, ok := roster.Find("parent"); !ok || live.Status != "new" {
-		t.Fatalf("stale confirmation replaced newer snapshot: %+v", live)
+	for _, fullScan := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fullScan), func(t *testing.T) {
+			dir := t.TempDir()
+			entry := rendezvous.Entry{PID: 1001, SessionID: "parent", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+			writeRendezvous(t, dir, entry)
+			prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
+			roster := NewRoster(dir, prober)
+			done := make(chan error, 1)
+			go func() { done <- roster.RefreshEntry(t.Context(), entry) }()
+			<-prober.firstStarted
+			if fullScan {
+				roster.Refresh()
+			} else if err := roster.RefreshEntry(t.Context(), entry); err != nil {
+				t.Fatal(err)
+			}
+			close(prober.releaseFirst)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if live, ok := roster.Find("parent"); !ok || live.Status != "new" {
+				t.Fatalf("stale confirmation replaced newer snapshot: %+v", live)
+			}
+
+		})
 	}
 }
 
@@ -1237,4 +1246,52 @@ func TestRosterRefreshEntryCancellation(t *testing.T) {
 			t.Fatal("cancelled confirmation published")
 		}
 	})
+}
+
+type entryConfirmationProber struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *entryConfirmationProber) Probe(entry rendezvous.Entry) ProbeResult {
+	if entry.PID == 1001 {
+		close(p.started)
+		<-p.release
+	}
+	return ProbeResult{OK: true, SessionID: entry.SessionID, Status: "idle"}
+}
+
+func TestRosterConcurrentConfirmationPreservesEveryRoute(t *testing.T) {
+	for _, fullScan := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fullScan), func(t *testing.T) {
+			dir := t.TempDir()
+			first := rendezvous.Entry{PID: 1001, SessionID: "first", Protocol: appwire.ProtocolVersion, Endpoint: "ws://first/rpc"}
+			second := rendezvous.Entry{PID: 1002, SessionID: "second", Protocol: appwire.ProtocolVersion, Endpoint: "ws://second/rpc"}
+			writeRendezvous(t, dir, first)
+			prober := &entryConfirmationProber{started: make(chan struct{}), release: make(chan struct{})}
+			roster := NewRoster(dir, prober)
+			done := make(chan error, 1)
+			go func() {
+				if fullScan {
+					done <- roster.RefreshAndWait(t.Context())
+				} else {
+					done <- roster.RefreshEntry(t.Context(), first)
+				}
+			}()
+			<-prober.started
+			writeRendezvous(t, dir, second)
+			if err := roster.RefreshEntry(t.Context(), second); err != nil {
+				t.Fatal(err)
+			}
+			close(prober.release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"first", "second"} {
+				if _, ok := roster.Find(id); !ok {
+					t.Errorf("confirmed session %s lost its route", id)
+				}
+			}
+		})
+	}
 }

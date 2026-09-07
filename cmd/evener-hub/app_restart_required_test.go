@@ -960,7 +960,7 @@ func buildUpgradeDelegate(t *testing.T, stateDir, ownerID string) string {
 }
 
 func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
-	for _, fault := range []string{"probe", "malformed", "unreadable"} {
+	for _, fault := range []string{"probe", "malformed", "unreadable", "missing-directory"} {
 		for _, delegate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/delegate=%v", fault, delegate), func(t *testing.T) {
 				stateDir := filepath.Join(t.TempDir(), "projects", "upgrade-0000000000")
@@ -978,17 +978,23 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 					t.Fatal(err)
 				}
 				runDir := t.TempDir()
+				hiddenRunDir := filepath.Join(t.TempDir(), "hidden")
 				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID})
 				roster := hubcore.NewRoster(runDir, failedRPCProber{})
 				if fault != "probe" {
 					roster = hubcore.NewRoster(runDir, fakeProber{sessionID: rootID, status: appwire.ThreadStatusRestartRequired})
 					roster.Refresh()
 					path := filepath.Join(runDir, fmt.Sprintf("%d.json", os.Getpid()))
-					if fault == "malformed" {
+					switch fault {
+					case "malformed":
 						if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
 							t.Fatal(err)
 						}
-					} else {
+					case "missing-directory":
+						if err := os.Rename(runDir, hiddenRunDir); err != nil {
+							t.Fatal(err)
+						}
+					default:
 						if err := os.Remove(path); err != nil {
 							t.Fatal(err)
 						}
@@ -1041,6 +1047,11 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 					web := &WebServer{cfg: hubcore.WebConfig{StateDir: stateDir, Past: past, Roster: roster}}
 					if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
 						t.Error("navigation published actions despite unresolved daemon ownership")
+					}
+				}
+				if fault == "missing-directory" {
+					if err := os.Rename(hiddenRunDir, runDir); err != nil {
+						t.Fatal(err)
 					}
 				}
 				if err := rendezvous.Remove(runDir, os.Getpid()); err != nil {
