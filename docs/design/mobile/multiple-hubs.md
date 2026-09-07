@@ -122,7 +122,7 @@ Observed on iPhone 17 Pro, iOS 26.5, with the Release bundle whose SHA-256 is
 (the completed-question and reader lifecycle build recorded in
 [reader evidence](reader-continuity-evidence.md)). No hub was added in this check.
 
-With five existing profiles, scrolling to Add hub and focusing Hub name opened
+With seven existing profiles, scrolling to Add hub and focusing Hub name opened
 the keyboard. A drag in the visible form area brought all three inputs and the
 disabled Save and connect control above the keyboard. Tapping the visible Hub
 origin and then Bearer token fields moved the caret to each field without losing
@@ -141,3 +141,42 @@ nor delayed save/selection ordering. Earlier setup automation targeted inputs
 covered by the keyboard; accessibility snapshots may list such inputs even when
 they cannot be tapped. This check used the visibly exposed fields and did not
 reproduce a focus/scroll defect.
+
+## Delayed saved-hub operations — 7 September 2026
+
+The selection owner separates the latest connection choice from the latest
+roster read. A pending save still persists its profile but cannot select it or
+navigate after a later save, selection, disconnect or removal. Token updates
+retry only the hub currently selected when the write/readback finishes, including
+a switch away and back. A readback failure cannot hide a committed credential
+change from that retry. Older roster reads cannot overwrite newer reads.
+Removal retains the existing partial-failure reconciliation and removes a row
+after confirmed deletion even when its follow-up roster read fails.
+
+The storage-boundary regressions use real HubProfiles and deferred reads/writes,
+with explicit entry and release promises. Bot observed three failures before
+the roster/fallback fix: resurrection after removal, loss of a newer hub, and a
+removed row surviving failed readback. A fourth regression proved committed
+credentials were not retried when the roster read failed. These cases pass after
+the fixes. The 18 selection cases also cover newer/disconnected selections,
+overlapping saves, restoration, full versus partial removal failure, ordinary
+save while already connected, and token-update switching. No injected delay was
+added to the installed app.
+
+The iPhone Release bundle SHA-256 is
+`6a5c839fca5e79be53091c43773102cfa21ddca390dbeb5958499ed7ffd2c8df`.
+In the actual form, a temporary profile named selection was saved with the owned
+hub origin and its credential. It became selected, navigated to Sessions and
+showed Connected. Returning to Hubs showed cleared fields; removing selection
+removed its row and selection marker. The original v4 acceptance profile was
+then selected and its Draft before questions conversation reopened. All seven
+retained drafts matched their verifiers. The simulator clipboard was restored
+and its temporary backup deleted. No session message was sent.
+
+Visually inspected captures: [saved and connected](assets/multiple-hubs/ios-selection-connected-20260907.jpg)
+and [removed with cleared fields](assets/multiple-hubs/ios-selection-removed-20260907.jpg).
+Both profiles addressed the same owned direct hub. This proves native save,
+selection and removal wiring; it does not qualify distinct-hub routing, native
+delayed-storage timing, uncertain network writes or physical-device behavior.
+Luna medium implemented the initial selection owner and reviewed interleavings;
+Bot added the roster/failure regressions, integrated the fixes and ran native QA.

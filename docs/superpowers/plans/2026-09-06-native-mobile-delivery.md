@@ -929,3 +929,22 @@ An installed-iPhone blank-form check exposed every input above the keyboard afte
 scrolling and retained focus during origin/token selection. It did not reproduce
 the earlier automation problem. Evidence and its limits are in multiple-hubs.md;
 seven drafts and the unrelated Apple patch remain preserved.
+
+### Selection integration checkpoint
+
+Luna implemented the selection owner and provider/form wiring. Bot expanded the
+deferred-storage tests, observed three roster/removal failures, and fixed read
+ordering plus the confirmed-removal fallback. A further RED/green regression
+preserves reconnect after committed credentials when readback fails. Eighteen
+selection cases plus the existing connection/removal cases pass (29 focused).
+The full native gate passed 638 tests and TypeScript before the final extra
+switch-away-and-back test variant; that variant also passes the focused suite.
+
+The rebuilt iPhone app restored the original conversation. Native save/connect,
+cleared form fields, selected-profile removal and return to the original hub
+passed, with seven drafts preserved. The temporary profile used the same owned
+direct hub, so this is wiring evidence rather than distinct-hub or delayed-native
+operation acceptance. See multiple-hubs.md for artifacts and source bundle hash.
+The full gate will be rerun on the committed integration; broader iOS release,
+multi-hub uncertain operations and complete SDK workflow qualification remain
+open. Android release qualification stays deferred.
