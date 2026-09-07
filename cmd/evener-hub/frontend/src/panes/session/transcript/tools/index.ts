@@ -22,6 +22,7 @@ import "./editTools";
 import "./webTools";
 import "./useSkillTool";
 import "./jobTools";
+import "./jobWatch";
 import "./subagentModule";
 import "./askUser";
 import "./taskCard";

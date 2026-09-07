@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
+import "./jobWatch";
 import type { ItemModel } from "../../../../protocol/model";
 
 afterEach(() => {
@@ -688,19 +689,29 @@ test("job_send_message aliases to the same descriptor as delegate_send, reading 
   );
 });
 
-// --- generic job_* family predicate (e.g. job_watch) ----------------------
+// --- generic job_* family predicate (job_watch has its own descriptor) ----
+// job_watch's exact-match descriptor lives in jobWatch.tsx (mockups
+// 23-job-watch §A-D); the family predicate below still covers every OTHER
+// unlisted job_* name. These pin the predicate with a name no exact
+// descriptor claims, plus the exact-wins-over-predicate precedence rule.
 
 test("an unlisted job_* tool falls to the generic family descriptor, mentioning its operation arg when present", () => {
-  const d = toolRendererFor("job_watch");
-  const args = JSON.stringify({ operation: "list" });
-  expect(d.summary(item({ id: "jw_1", toolName: "job_watch", argumentsJSON: args }))).toBe("job_watch: list");
+  const d = toolRendererFor("job_zzz_unlisted");
+  const args = JSON.stringify({ operation: "frobnicate" });
+  expect(d.summary(item({ id: "jw_1", toolName: "job_zzz_unlisted", argumentsJSON: args }))).toBe(
+    "job_zzz_unlisted: frobnicate",
+  );
 });
 
 test("the generic job_* descriptor degrades to the bare tool name with no operation arg", () => {
-  const d = toolRendererFor("job_watch");
-  expect(d.summary(item({ id: "jw_2", toolName: "job_watch", argumentsJSON: "{}" }))).toBe("job_watch");
+  const d = toolRendererFor("job_zzz_unlisted");
+  expect(d.summary(item({ id: "jw_2", toolName: "job_zzz_unlisted", argumentsJSON: "{}" }))).toBe("job_zzz_unlisted");
 });
 
 test("the generic job_* descriptor never wins over an exact match", () => {
-  expect(toolRendererFor("job_stop")).not.toBe(toolRendererFor("job_watch"));
+  expect(toolRendererFor("job_stop")).not.toBe(toolRendererFor("job_zzz_unlisted"));
+});
+
+test("job_watch resolves to its own descriptor, not the generic family fallback", () => {
+  expect(toolRendererFor("job_watch")).not.toBe(toolRendererFor("job_zzz_unlisted"));
 });
