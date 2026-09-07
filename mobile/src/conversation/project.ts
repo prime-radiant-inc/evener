@@ -441,9 +441,19 @@ function projectItem(
   };
 }
 
+function activityDescription(item: ThreadItem): string | undefined {
+  if (item.description?.trim() || !isAskUser(item)) return item.description;
+  const questions = parseAskUserQuestions(item);
+  if (!questions) return item.description;
+  // Describe the posted questions without inferring answers from later input.
+  return `Questions: ${questions
+    .map((question, index) => question.header.trim() || `Question ${index + 1}`)
+    .join("; ")}`;
+}
+
 function activityDetail(item: ThreadItem): ActivityDetail {
   return {
-    description: item.description,
+    description: activityDescription(item),
     arguments: item.argumentsJson,
     output: item.output,
     error: item.error,

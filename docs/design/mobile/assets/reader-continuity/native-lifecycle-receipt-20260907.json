@@ -1,0 +1,1060 @@
+{
+  "live": {
+    "binding": {
+      "ref": "local:034KsogqczNLqLKpWHqApY",
+      "threadId": "034KsogqczNLqLKpWHqApY",
+      "instanceId": "034KsogqczNLqLKpWHqApY"
+    },
+    "status": {
+      "type": "awaiting"
+    },
+    "identities": [
+      {
+        "type": "systemMessage",
+        "eventKind": "environment",
+        "turnId": "turn_env_HZUVPAZSR6NYH3U5UIGGPPKK3Q",
+        "key": "apptranscript-item-v1:turn_env_HZUVPAZSR6NYH3U5UIGGPPKK3Q:1:0",
+        "position": {
+          "entry": 1,
+          "item": 0
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m1",
+        "key": "apptranscript-item-v1:turn_m1:2:0",
+        "position": {
+          "entry": 2,
+          "item": 0
+        },
+        "mutationId": "a910f315-469e-4335-9834-18f0e1b1b1d8"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m1",
+        "key": "apptranscript-item-v1:turn_m1:2:1",
+        "position": {
+          "entry": 2,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m2",
+        "key": "apptranscript-item-v1:turn_m2:3:0",
+        "position": {
+          "entry": 3,
+          "item": 0
+        },
+        "mutationId": "953fe98c-37e7-46d4-95b0-d130f1841e97"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m2",
+        "key": "apptranscript-item-v1:turn_m2:3:1",
+        "position": {
+          "entry": 3,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m3",
+        "key": "apptranscript-item-v1:turn_m3:4:0",
+        "position": {
+          "entry": 4,
+          "item": 0
+        },
+        "mutationId": "602aeea8-f33b-4710-a0f7-2a68401628a1"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m3",
+        "key": "apptranscript-item-v1:turn_m3:4:1",
+        "position": {
+          "entry": 4,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m4",
+        "key": "apptranscript-item-v1:turn_m4:5:0",
+        "position": {
+          "entry": 5,
+          "item": 0
+        },
+        "mutationId": "5ed906e3-6232-4b96-bda1-0e223abb1711"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m4",
+        "key": "apptranscript-item-v1:turn_m4:5:1",
+        "position": {
+          "entry": 5,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m5",
+        "key": "apptranscript-item-v1:turn_m5:6:0",
+        "position": {
+          "entry": 6,
+          "item": 0
+        },
+        "mutationId": "a2b8ed59-ab3c-47de-a79f-7124f6242971"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m5",
+        "key": "apptranscript-item-v1:turn_m5:6:1",
+        "position": {
+          "entry": 6,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m6",
+        "key": "apptranscript-item-v1:turn_m6:7:0",
+        "position": {
+          "entry": 7,
+          "item": 0
+        },
+        "mutationId": "f7d0334f-da44-4eb6-b2f8-279388b57cf9"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m6",
+        "key": "apptranscript-item-v1:turn_m6:7:1",
+        "position": {
+          "entry": 7,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m7",
+        "key": "apptranscript-item-v1:turn_m7:8:0",
+        "position": {
+          "entry": 8,
+          "item": 0
+        },
+        "mutationId": "8e752608-1628-4eef-862c-d2239f5b1554"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m7",
+        "key": "apptranscript-item-v1:turn_m7:8:1",
+        "position": {
+          "entry": 8,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m8",
+        "key": "apptranscript-item-v1:turn_m8:9:0",
+        "position": {
+          "entry": 9,
+          "item": 0
+        },
+        "mutationId": "e2212c1e-7621-4ff5-a666-6db35998d7cc"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m8",
+        "key": "apptranscript-item-v1:turn_m8:9:1",
+        "position": {
+          "entry": 9,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m9",
+        "key": "apptranscript-item-v1:turn_m9:10:0",
+        "position": {
+          "entry": 10,
+          "item": 0
+        },
+        "mutationId": "9f8bdbf8-652c-438b-a756-7c2774c39da4"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m9",
+        "key": "apptranscript-item-v1:turn_m9:10:1",
+        "position": {
+          "entry": 10,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m10",
+        "key": "apptranscript-item-v1:turn_m10:11:0",
+        "position": {
+          "entry": 11,
+          "item": 0
+        },
+        "mutationId": "f7758534-269c-4712-9376-7b1cc15561e8"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m10",
+        "key": "apptranscript-item-v1:turn_m10:11:1",
+        "position": {
+          "entry": 11,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m11",
+        "key": "apptranscript-item-v1:turn_m11:12:0",
+        "position": {
+          "entry": 12,
+          "item": 0
+        },
+        "mutationId": "f6f57502-8f2b-4e8e-948c-edd9195c0879"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m11",
+        "key": "apptranscript-item-v1:turn_m11:12:1",
+        "position": {
+          "entry": 12,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m12",
+        "key": "apptranscript-item-v1:turn_m12:13:0",
+        "position": {
+          "entry": 13,
+          "item": 0
+        },
+        "mutationId": "829b352f-0a9d-4f34-aafe-6208391ce614"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m12",
+        "key": "apptranscript-item-v1:turn_m12:13:1",
+        "position": {
+          "entry": 13,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m13",
+        "key": "apptranscript-item-v1:turn_m13:14:0",
+        "position": {
+          "entry": 14,
+          "item": 0
+        },
+        "mutationId": "f7665ee1-9b9c-492d-a5ae-b58759b5e06b"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m13",
+        "key": "apptranscript-item-v1:turn_m13:14:1",
+        "position": {
+          "entry": 14,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m14",
+        "key": "apptranscript-item-v1:turn_m14:15:0",
+        "position": {
+          "entry": 15,
+          "item": 0
+        },
+        "mutationId": "4ba66b60-c552-40e6-92cb-1378e384266e"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m14",
+        "key": "apptranscript-item-v1:turn_m14:15:1",
+        "position": {
+          "entry": 15,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m15",
+        "key": "apptranscript-item-v1:turn_m15:16:0",
+        "position": {
+          "entry": 16,
+          "item": 0
+        },
+        "mutationId": "2a8ebb4d-a9de-4204-bfa3-ebd77e753285"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m15",
+        "key": "apptranscript-item-v1:turn_m15:16:1",
+        "position": {
+          "entry": 16,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m16",
+        "key": "apptranscript-item-v1:turn_m16:17:0",
+        "position": {
+          "entry": 17,
+          "item": 0
+        },
+        "mutationId": "9805c107-6f94-457b-aeb4-cde27b4f1cb1"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m16",
+        "key": "apptranscript-item-v1:turn_m16:17:1",
+        "position": {
+          "entry": 17,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m17",
+        "key": "apptranscript-item-v1:turn_m17:18:0",
+        "position": {
+          "entry": 18,
+          "item": 0
+        },
+        "mutationId": "534675c4-d091-4eee-97cb-f6dfa6ed9788"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m17",
+        "key": "apptranscript-item-v1:turn_m17:18:1",
+        "position": {
+          "entry": 18,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m18",
+        "key": "apptranscript-item-v1:turn_m18:19:0",
+        "position": {
+          "entry": 19,
+          "item": 0
+        },
+        "mutationId": "819e8fba-df5f-4ba9-9fc7-34cf7150bb83"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m18",
+        "key": "apptranscript-item-v1:turn_m18:19:1",
+        "position": {
+          "entry": 19,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m19",
+        "key": "apptranscript-item-v1:turn_m19:20:0",
+        "position": {
+          "entry": 20,
+          "item": 0
+        },
+        "mutationId": "15d18a94-598c-437f-afa0-08a23098b5cb"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m19",
+        "key": "apptranscript-item-v1:turn_m19:20:1",
+        "position": {
+          "entry": 20,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m20",
+        "key": "apptranscript-item-v1:turn_m20:21:0",
+        "position": {
+          "entry": 21,
+          "item": 0
+        },
+        "mutationId": "c6ea4354-ec00-4165-a994-41da7b0744f3"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m20",
+        "key": "apptranscript-item-v1:turn_m20:21:1",
+        "position": {
+          "entry": 21,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m21",
+        "key": "apptranscript-item-v1:turn_m21:22:0",
+        "position": {
+          "entry": 22,
+          "item": 0
+        },
+        "mutationId": "44e1fa3c-f423-497f-872b-349bf92b10c9"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m21",
+        "key": "apptranscript-item-v1:turn_m21:22:1",
+        "position": {
+          "entry": 22,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m22",
+        "key": "apptranscript-item-v1:turn_m22:23:0",
+        "position": {
+          "entry": 23,
+          "item": 0
+        },
+        "mutationId": "109fa14c-80d4-40d9-b25e-fd4de7c710ea"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m22",
+        "key": "apptranscript-item-v1:turn_m22:23:1",
+        "position": {
+          "entry": 23,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m23",
+        "key": "apptranscript-item-v1:turn_m23:24:0",
+        "position": {
+          "entry": 24,
+          "item": 0
+        },
+        "mutationId": "860dc2ee-027b-455a-8eaa-0e99ccaabcab"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m23",
+        "key": "apptranscript-item-v1:turn_m23:24:1",
+        "position": {
+          "entry": 24,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m24",
+        "key": "apptranscript-item-v1:turn_m24:25:0",
+        "position": {
+          "entry": 25,
+          "item": 0
+        },
+        "mutationId": "10a002e8-272c-41e2-b327-b3c244646113"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m24",
+        "key": "apptranscript-item-v1:turn_m24:25:1",
+        "position": {
+          "entry": 25,
+          "item": 1
+        }
+      }
+    ],
+    "olderPages": 1
+  },
+  "saved": {
+    "binding": {
+      "ref": "local:034KsogqczNLqLKpWHqApY",
+      "threadId": "034KsogqczNLqLKpWHqApY",
+      "instanceId": "034KsogqczNLqLKpWHqApY"
+    },
+    "status": {
+      "type": "notLoaded"
+    },
+    "identities": [
+      {
+        "type": "systemMessage",
+        "eventKind": "environment",
+        "turnId": "turn_env_HZUVPAZSR6NYH3U5UIGGPPKK3Q",
+        "key": "apptranscript-item-v1:turn_env_HZUVPAZSR6NYH3U5UIGGPPKK3Q:1:0",
+        "position": {
+          "entry": 1,
+          "item": 0
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m1",
+        "key": "apptranscript-item-v1:turn_m1:2:0",
+        "position": {
+          "entry": 2,
+          "item": 0
+        },
+        "mutationId": "a910f315-469e-4335-9834-18f0e1b1b1d8"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m1",
+        "key": "apptranscript-item-v1:turn_m1:2:1",
+        "position": {
+          "entry": 2,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m2",
+        "key": "apptranscript-item-v1:turn_m2:3:0",
+        "position": {
+          "entry": 3,
+          "item": 0
+        },
+        "mutationId": "953fe98c-37e7-46d4-95b0-d130f1841e97"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m2",
+        "key": "apptranscript-item-v1:turn_m2:3:1",
+        "position": {
+          "entry": 3,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m3",
+        "key": "apptranscript-item-v1:turn_m3:4:0",
+        "position": {
+          "entry": 4,
+          "item": 0
+        },
+        "mutationId": "602aeea8-f33b-4710-a0f7-2a68401628a1"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m3",
+        "key": "apptranscript-item-v1:turn_m3:4:1",
+        "position": {
+          "entry": 4,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m4",
+        "key": "apptranscript-item-v1:turn_m4:5:0",
+        "position": {
+          "entry": 5,
+          "item": 0
+        },
+        "mutationId": "5ed906e3-6232-4b96-bda1-0e223abb1711"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m4",
+        "key": "apptranscript-item-v1:turn_m4:5:1",
+        "position": {
+          "entry": 5,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m5",
+        "key": "apptranscript-item-v1:turn_m5:6:0",
+        "position": {
+          "entry": 6,
+          "item": 0
+        },
+        "mutationId": "a2b8ed59-ab3c-47de-a79f-7124f6242971"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m5",
+        "key": "apptranscript-item-v1:turn_m5:6:1",
+        "position": {
+          "entry": 6,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m6",
+        "key": "apptranscript-item-v1:turn_m6:7:0",
+        "position": {
+          "entry": 7,
+          "item": 0
+        },
+        "mutationId": "f7d0334f-da44-4eb6-b2f8-279388b57cf9"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m6",
+        "key": "apptranscript-item-v1:turn_m6:7:1",
+        "position": {
+          "entry": 7,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m7",
+        "key": "apptranscript-item-v1:turn_m7:8:0",
+        "position": {
+          "entry": 8,
+          "item": 0
+        },
+        "mutationId": "8e752608-1628-4eef-862c-d2239f5b1554"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m7",
+        "key": "apptranscript-item-v1:turn_m7:8:1",
+        "position": {
+          "entry": 8,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m8",
+        "key": "apptranscript-item-v1:turn_m8:9:0",
+        "position": {
+          "entry": 9,
+          "item": 0
+        },
+        "mutationId": "e2212c1e-7621-4ff5-a666-6db35998d7cc"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m8",
+        "key": "apptranscript-item-v1:turn_m8:9:1",
+        "position": {
+          "entry": 9,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m9",
+        "key": "apptranscript-item-v1:turn_m9:10:0",
+        "position": {
+          "entry": 10,
+          "item": 0
+        },
+        "mutationId": "9f8bdbf8-652c-438b-a756-7c2774c39da4"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m9",
+        "key": "apptranscript-item-v1:turn_m9:10:1",
+        "position": {
+          "entry": 10,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m10",
+        "key": "apptranscript-item-v1:turn_m10:11:0",
+        "position": {
+          "entry": 11,
+          "item": 0
+        },
+        "mutationId": "f7758534-269c-4712-9376-7b1cc15561e8"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m10",
+        "key": "apptranscript-item-v1:turn_m10:11:1",
+        "position": {
+          "entry": 11,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m11",
+        "key": "apptranscript-item-v1:turn_m11:12:0",
+        "position": {
+          "entry": 12,
+          "item": 0
+        },
+        "mutationId": "f6f57502-8f2b-4e8e-948c-edd9195c0879"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m11",
+        "key": "apptranscript-item-v1:turn_m11:12:1",
+        "position": {
+          "entry": 12,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m12",
+        "key": "apptranscript-item-v1:turn_m12:13:0",
+        "position": {
+          "entry": 13,
+          "item": 0
+        },
+        "mutationId": "829b352f-0a9d-4f34-aafe-6208391ce614"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m12",
+        "key": "apptranscript-item-v1:turn_m12:13:1",
+        "position": {
+          "entry": 13,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m13",
+        "key": "apptranscript-item-v1:turn_m13:14:0",
+        "position": {
+          "entry": 14,
+          "item": 0
+        },
+        "mutationId": "f7665ee1-9b9c-492d-a5ae-b58759b5e06b"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m13",
+        "key": "apptranscript-item-v1:turn_m13:14:1",
+        "position": {
+          "entry": 14,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m14",
+        "key": "apptranscript-item-v1:turn_m14:15:0",
+        "position": {
+          "entry": 15,
+          "item": 0
+        },
+        "mutationId": "4ba66b60-c552-40e6-92cb-1378e384266e"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m14",
+        "key": "apptranscript-item-v1:turn_m14:15:1",
+        "position": {
+          "entry": 15,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m15",
+        "key": "apptranscript-item-v1:turn_m15:16:0",
+        "position": {
+          "entry": 16,
+          "item": 0
+        },
+        "mutationId": "2a8ebb4d-a9de-4204-bfa3-ebd77e753285"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m15",
+        "key": "apptranscript-item-v1:turn_m15:16:1",
+        "position": {
+          "entry": 16,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m16",
+        "key": "apptranscript-item-v1:turn_m16:17:0",
+        "position": {
+          "entry": 17,
+          "item": 0
+        },
+        "mutationId": "9805c107-6f94-457b-aeb4-cde27b4f1cb1"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m16",
+        "key": "apptranscript-item-v1:turn_m16:17:1",
+        "position": {
+          "entry": 17,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m17",
+        "key": "apptranscript-item-v1:turn_m17:18:0",
+        "position": {
+          "entry": 18,
+          "item": 0
+        },
+        "mutationId": "534675c4-d091-4eee-97cb-f6dfa6ed9788"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m17",
+        "key": "apptranscript-item-v1:turn_m17:18:1",
+        "position": {
+          "entry": 18,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m18",
+        "key": "apptranscript-item-v1:turn_m18:19:0",
+        "position": {
+          "entry": 19,
+          "item": 0
+        },
+        "mutationId": "819e8fba-df5f-4ba9-9fc7-34cf7150bb83"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m18",
+        "key": "apptranscript-item-v1:turn_m18:19:1",
+        "position": {
+          "entry": 19,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m19",
+        "key": "apptranscript-item-v1:turn_m19:20:0",
+        "position": {
+          "entry": 20,
+          "item": 0
+        },
+        "mutationId": "15d18a94-598c-437f-afa0-08a23098b5cb"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m19",
+        "key": "apptranscript-item-v1:turn_m19:20:1",
+        "position": {
+          "entry": 20,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m20",
+        "key": "apptranscript-item-v1:turn_m20:21:0",
+        "position": {
+          "entry": 21,
+          "item": 0
+        },
+        "mutationId": "c6ea4354-ec00-4165-a994-41da7b0744f3"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m20",
+        "key": "apptranscript-item-v1:turn_m20:21:1",
+        "position": {
+          "entry": 21,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m21",
+        "key": "apptranscript-item-v1:turn_m21:22:0",
+        "position": {
+          "entry": 22,
+          "item": 0
+        },
+        "mutationId": "44e1fa3c-f423-497f-872b-349bf92b10c9"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m21",
+        "key": "apptranscript-item-v1:turn_m21:22:1",
+        "position": {
+          "entry": 22,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m22",
+        "key": "apptranscript-item-v1:turn_m22:23:0",
+        "position": {
+          "entry": 23,
+          "item": 0
+        },
+        "mutationId": "109fa14c-80d4-40d9-b25e-fd4de7c710ea"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m22",
+        "key": "apptranscript-item-v1:turn_m22:23:1",
+        "position": {
+          "entry": 23,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m23",
+        "key": "apptranscript-item-v1:turn_m23:24:0",
+        "position": {
+          "entry": 24,
+          "item": 0
+        },
+        "mutationId": "860dc2ee-027b-455a-8eaa-0e99ccaabcab"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m23",
+        "key": "apptranscript-item-v1:turn_m23:24:1",
+        "position": {
+          "entry": 24,
+          "item": 1
+        }
+      },
+      {
+        "type": "userMessage",
+        "turnId": "turn_m24",
+        "key": "apptranscript-item-v1:turn_m24:25:0",
+        "position": {
+          "entry": 25,
+          "item": 0
+        },
+        "mutationId": "10a002e8-272c-41e2-b327-b3c244646113"
+      },
+      {
+        "type": "agentMessage",
+        "turnId": "turn_m24",
+        "key": "apptranscript-item-v1:turn_m24:25:1",
+        "position": {
+          "entry": 25,
+          "item": 1
+        }
+      }
+    ],
+    "olderPages": 1
+  },
+  "shutdown": {
+    "binding": {
+      "ref": "local:034KsogqczNLqLKpWHqApY",
+      "threadId": "034KsogqczNLqLKpWHqApY",
+      "instanceId": "034KsogqczNLqLKpWHqApY"
+    },
+    "statuses": [
+      "awaiting",
+      "notLoaded"
+    ],
+    "ended": true
+  },
+  "anchorBefore": {
+    "45bec87c-1d9c-4d98-b57c-180dd5f5ff24\u0000local:034KsogqczNLqLKpWHqApY": {
+      "hubId": "45bec87c-1d9c-4d98-b57c-180dd5f5ff24",
+      "sessionRef": "local:034KsogqczNLqLKpWHqApY",
+      "conversationInstance": "034KsogqczNLqLKpWHqApY",
+      "itemKey": "apptranscript-item-v1:turn_m1:2:1",
+      "itemPosition": {
+        "entry": 2,
+        "item": 1
+      },
+      "withinItemOffset": 143.33333333333331,
+      "touchedAt": 1788815044880
+    }
+  },
+  "anchorRestart": {
+    "45bec87c-1d9c-4d98-b57c-180dd5f5ff24\u0000local:034KsogqczNLqLKpWHqApY": {
+      "hubId": "45bec87c-1d9c-4d98-b57c-180dd5f5ff24",
+      "sessionRef": "local:034KsogqczNLqLKpWHqApY",
+      "conversationInstance": "034KsogqczNLqLKpWHqApY",
+      "itemKey": "apptranscript-item-v1:turn_m1:2:1",
+      "itemPosition": {
+        "entry": 2,
+        "item": 1
+      },
+      "withinItemOffset": 143.33333333333331,
+      "touchedAt": 1788815044880
+    }
+  },
+  "anchorFinalBuild": {
+    "45bec87c-1d9c-4d98-b57c-180dd5f5ff24\u0000local:034KsogqczNLqLKpWHqApY": {
+      "hubId": "45bec87c-1d9c-4d98-b57c-180dd5f5ff24",
+      "sessionRef": "local:034KsogqczNLqLKpWHqApY",
+      "conversationInstance": "034KsogqczNLqLKpWHqApY",
+      "itemKey": "apptranscript-item-v1:turn_m1:2:1",
+      "itemPosition": {
+        "entry": 2,
+        "item": 1
+      },
+      "withinItemOffset": 143.33333333333331,
+      "touchedAt": 1788815044880
+    }
+  },
+  "cleanup": {
+    "ref": "local:034KsogqczNLqLKpWHqApY",
+    "ended": true,
+    "providerInstanceRemoved": true,
+    "ownedHubStopped": true,
+    "ownedProviderStopped": true,
+    "originalHubPreserved": true
+  },
+  "imagesSHA256": {
+    "native-lifecycle-before-20260907.jpg": "d1329088f4774ac59b21819c59b9ec245ade05c03e41ba59dc0837698790f2c7",
+    "native-lifecycle-ended-20260907.jpg": "ff427021a1142870742c776566b74332dc55c67ce17bc3bb0226a8ef39525858",
+    "native-lifecycle-restart-20260907.jpg": "ab60ffb95a1c112db4095b2e242168d0abacbd0a67ce07df79fa36d7be982ea1",
+    "native-lifecycle-final-build-20260907.jpg": "e4e6329411a5ebd229a62738f56d11164939aeb8c42bb681f9c9e2c0c56c183a",
+    "question-recap-20260907.jpg": "811dc09c276ba45427d50a1a827938312853c1eef3682709342a6a9a764c94c5"
+  },
+  "sourceBase": "5361555a6",
+  "sourceSHA256": {
+    "mobile/src/conversation/project.ts": "fd8019ef001c09bc08f25fb49601cef2f2e9734826ccdbaf978e545c836731ad",
+    "mobile/src/conversation/project.test.ts": "71964c8ab74bc8664e65e3de068cb62427de1873d2f997a6c33409e31c0c281a",
+    "mobile-native/src/screens.tsx": "518455dd7e82d9102d47da3221e1bd7b3360dc49422687b25ffa51c09ad674a8",
+    "mobile-native/src/readerPosition.ts": "7e959052be4b3f7f44a5c4cff73cbc4c189abed08ddbd979404d7e58dc328425"
+  },
+  "initialBundleSHA256": "3641870a5afc45389001c02227a8b3307ebc0e08e9026feb954fc27891ffa904",
+  "finalBundleSHA256": "b8708d25356771c3409c8c8b6da09802a69fef91be608c9bf622e25c9a2ad9c9",
+  "hubBinarySHA256": "831042c875cefb0a0095a023249599c571f69cf154d7a018bbefd30af7c68f43",
+  "sdk": "Independent installed @evener/appwire-client@0.1.0",
+  "platform": {
+    "device": "iPhone 17 Pro Simulator",
+    "os": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "configuration": "Release"
+  },
+  "nativeCleanup": {
+    "ownedLifecycleProfileRemovedThroughUI": true,
+    "originalV4AcceptanceProfileRestored": true,
+    "sevenDraftsPreserved": true,
+    "unrelatedApplePatchPreserved": true,
+    "simulatorClipboardRestored": true
+  },
+  "scope": "24 scripted-provider turns; actual native older-page drag, live-to-ended state, process restart, and final bundle reinstall. Same semantic anchor and settled message placement.",
+  "harnessCorrection": "The initial post-creation read requested itemLimit 200 and was rejected. No creation or inputs were replayed. Reads used the supported 40-item limit and an opaque older cursor.",
+  "limits": [
+    "Historical anchors created before environment identity fix are not repaired.",
+    "No iPad, physical device, image reflow or ongoing-stream reflow qualification.",
+    "HID typing and offscreen form targets were unreliable; native paste used. Keyboard form qualification remains separate."
+  ]
+}
