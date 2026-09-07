@@ -121,3 +121,92 @@ the full native suite passes 585 tests plus TypeScript. The canonical frontend
 gate passes typecheck, tests and lint after formatting. Current-source real v4
 device branch paging and the broader activity acceptance matrix remain open;
 the installed iOS bundle still corresponds to the goal-qualified source.
+
+## Direct v4 iOS paging and output — 7 September
+
+Implementation source `cb0dca5cc` is installed as a Release app on iPhone 17 Pro /
+iOS 26.5, bundle SHA
+`22974d41d3b24501cb710c4f4da74eced60f7caaec5d0a769e7c709716e677ff`.
+The direct owned hub at port 54211 runs `0f95ef200`. The independent SDK consumer
+packs `7b48a7314`, tarball SHA
+`6d5f65703f30ea7da2be5a610ef0894f2b4e008902bf4404e167d861e5b96046`.
+The [receipt](assets/activity-output-v4-receipt.json) records artifact paths,
+fixture Git provenance, exact session identities, structured page counts, UI
+snapshots and retained draft hashes.
+
+These are deliberately large **persisted read fixtures**. Newly minted sessions
+and journals live only under the existing disposable hub's XDG state. The real
+hub indexes, folds, projects and serves the data; the actual native controllers,
+iOS app and packed SDK read it without a proxy. Seeded job/delegate records do
+not prove shell execution or delegate processes. Header-only transcripts let
+the native app open these saved sessions. No model/provider was called.
+
+### Repairs exposed by the direct fixture
+
+The 2000-work-unit limit produces suffix pages. A 2505-job root and 2505-job
+child retained all IDs after the earlier prefix repair, but the merged root
+still reported the first page's 2000 completed entries and incomplete coverage.
+The child's last page reported only its 1011-entry suffix. Continuation merging
+now derives counts and aggregate state from all retained entries and merged
+children. Coverage completion means all branches are loaded; it does not mean
+every job is terminal. Ordinary root refresh still replaces omitted entries.
+
+A second fixture adds another child with one job. Loading the large child first
+also exposed an empty ancestor branch object erasing the root's outstanding
+cursor. Grafting now receives the requested node ID, replaces branch state within
+that target, and preserves other pending branches. Removed targets are ignored.
+These regressions failed before their repairs.
+
+The output decoder now rejects unsafe, negative, fractional or inverted byte
+offsets and malformed paging flags. Its required `truncated` field is validated;
+omitted `hasEarlier` remains the current wire's false value. Native, web and the
+new single-page SDK recipe share this decoder. A rejected page retains native
+content and retries from the same server offset.
+
+### Observed native journey
+
+The second fixture reached these states on the actual iOS screen:
+
+| Step | Root jobs | Large child jobs | Other child jobs | Remaining pages |
+| --- | ---: | ---: | ---: | --- |
+| Initial read | 2000 | 0 | 0 | Root |
+| Load root | 2505 | 1494 | 0 | Root and child |
+| Load child first | 2505 | 2505 | 0 | Root |
+| Load root again | 2505 | 2505 | 1 | None |
+
+The native-controller harness separately asserted exact ordered IDs with no
+duplicates, final counts of 5011 completed jobs plus two nonterminal delegate
+descriptors, foreign-ref cursor rejection, stale-cursor no-ops, and fresh-root
+replacement back to the first 2000 entries.
+
+![Two pending activity branches](assets/activity-v4-pending.jpg)
+![All activity branches loaded](assets/activity-v4-complete.jpg)
+
+iOS opened the large child's first job through its owning session. Load earlier
+moved the displayed byte start from 235950 to 231855 for a 240046-byte Unicode
+log; Refresh returned to 235950. Back retained the expanded job and loaded
+activity. The controller harness reassembled the complete log exactly. The
+separate packed SDK used four 64-KiB reads with server cursors, obtained the same
+SHA-256, accepted empty output and a one-byte request at a multibyte boundary,
+and rejected a child job requested through the root owner. Numeric output
+offsets do not contain ownership; clients must retain the ref/job binding.
+
+![Earlier Unicode output on iOS](assets/activity-v4-output.jpg)
+
+### Verification and limits
+
+593 native tests plus TypeScript, 131 SDK contracts across thirteen files,
+isolated package qualification, the canonical web gate and all five browser
+guards pass. Eighteen decoder regressions failed before validation was added.
+Luna medium supplied implementation proposals and independent reviews; the
+coordinator integrated and executed the checks. All six existing drafts and
+the unrelated Apple project/plist patch remain byte-identical.
+
+The automation tool's refreshed snapshot exceeded its 2500-ms settling deadline
+when opening output and loading earlier; both actions succeeded and subsequent
+snapshots verified the result. This is not performance qualification. Native
+output faults/reconnect, cross-hub ownership races, real ongoing/delegated
+execution on this build, complete metadata, styled ANSI, copy/selection,
+reading-position behavior, accessibility, large text and device/performance
+coverage remain open. SDK activity-tree traversal still lacks a packaged
+workflow. This checkpoint qualifies these iOS reads, not v1 as a whole.

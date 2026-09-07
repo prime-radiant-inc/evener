@@ -1,11 +1,14 @@
 # Native mobile backlog
 
-Owner: Bot, with Jesse setting product direction. Updated 6 September 2026.
+Owner: Bot, with Jesse setting product direction. Updated 7 September 2026.
 
 This is the working issue backlog for the shared iOS/Android app. Add feedback
 here with a stable ID, observed problem, acceptance criteria and evidence.
-Closing an issue requires the final implementation and both-platform manual
-evidence appropriate to its scope. A design study or passing unit suite alone
+Jesse selected iOS-only v1; Android sources and open issues are preserved, with
+Android release qualification deferred. Closing a v1 issue requires the final
+implementation and iOS manual evidence appropriate to its scope. Historical
+both-platform criteria below remain relevant to the later Android release.
+A design study or passing unit suite alone
 does not close a visual or interaction issue.
 
 The full scope remains every current Evener workflow, multiple hubs and a
@@ -22,7 +25,7 @@ does not replace that sequence. Integration/current evidence and lifecycle
 reliability precede complete conversation journeys and the remaining capability
 packages; protocol recipes accompany each package.
 
-### MOB-017 · P1 · Resolve Android input-dispatch ANR · Open
+### MOB-017 · P1 · Resolve Android input-dispatch ANR · Deferred for iOS-only v1
 
 The installed Release app timed out while entering the launch-settings search
 on Pixel 7/API 35. Android displayed “Evener isn't responding”; the event log
@@ -450,7 +453,13 @@ Activity continuation now retains earlier jobs when the server returns only
 the next page, and expands delegate children at unchanged projection revisions.
 The corrected native fixture and shared merge regressions reproduced the
 previous loss. [Activity evidence](activity.md#continuation-prefix-repair--7-september)
-separates this deterministic repair from outstanding real v4 branch paging.
+records that deterministic repair. The subsequent [direct v4 iOS check](activity.md#direct-v4-ios-paging-and-output--7-september)
+loaded 5011 persisted jobs across a root and two children, including independent
+pending root/child cursors. It exposed and fixed partial-page summary counts and
+ancestor cursor loss. Native output paging/refresh and a packed SDK single-page
+output recipe also have direct read evidence. These seeded journals establish
+real read/projection behavior, not shell execution. Fault, metadata, styled
+output, accessibility and performance acceptance remain open.
 
 Queue cancel/promote/drain now validate operation receipts before acknowledgment;
 the shared service rejects malformed or mismatched replies and preserves the

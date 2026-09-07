@@ -603,3 +603,35 @@ recipes covering 48 of 91 method names, with outcome coverage still incomplete.
 Next: real activity continuation paging and SDK jobs/output workflows, followed
 by remaining fault, reader, multi-hub, accessibility, iPad, physical-device and
 release qualification. iOS-only v1 scope continues; Android source is preserved.
+
+## Activity and output checkpoint — 7 September
+
+`7b48a7314` validates shared job-output byte windows and adds the packaged
+single-page output recipe. `cb0dca5cc` repairs continuation summary counts and
+preserves independently pending ancestor branches. The latter is installed on
+iOS as a Release bundle with SHA
+`22974d41d3b24501cb710c4f4da74eced60f7caaec5d0a769e7c709716e677ff`.
+
+[Direct v4 acceptance](../../design/mobile/activity.md#direct-v4-ios-paging-and-output--7-september)
+now covers the actual iOS root/child paging controls over a 5011-job persisted
+fixture, output earlier/refresh/return, and independent packed SDK output reads.
+The native-controller harness also asserts exact ordered identities, complete
+counts, cursor ownership, stale-page no-ops and ordinary root refresh replacement.
+The single-page SDK recipe reconstructs Unicode output under an external paging
+harness; it does not introduce an automatic paging workflow. Fixture records do
+not prove shell/delegate execution. The owned hub remains source `0f95ef200`
+on direct port 54211, with no provider or production-state changes.
+
+593 native tests plus TypeScript, 131 SDK contracts/thirteen files, isolated
+package qualification, canonical web gate and all five browser guards pass.
+Luna medium supplied bounded implementation/test proposals and independent
+review; the coordinator integrated and ran verification. Six earlier drafts and
+the unrelated Apple patch remain intact. The catalog now has seventeen recipes
+covering 49 of 91 method names; notification and outcome coverage remains partial.
+
+Next: packaged activity-tree traversal and complete delegate metadata, remaining
+runtime/concurrent-writer faults, reader and multi-hub journeys, accessibility,
+iPad/physical devices, performance and release gates. The output UI produced two
+automation snapshot-settling timeouts; subsequent snapshots verified success,
+but no performance conclusion follows. iOS-only v1 remains active; Android
+qualification and interactive voice remain deferred.
