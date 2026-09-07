@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"maps"
@@ -402,17 +403,7 @@ func (r *Roster) refresh() error {
 			bySess[sessionID] = crashed
 			continue
 		}
-		live := LiveEntry{
-			Entry:                 e,
-			SessionID:             res.SessionID,
-			Status:                res.Status,
-			PendingAsk:            res.PendingAsk,
-			PendingEscalation:     res.PendingEscalation,
-			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
-			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
-			RunningJobs:           cloneRunningJobs(res.RunningJobs),
-			CompletedJobs:         cloneRunningJobs(res.CompletedJobs),
-		}
+		live := liveEntryFromProbe(e, res.ProbeResult)
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
 				bySess[res.SessionID] = live
@@ -636,4 +627,85 @@ func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.unconfirmed)
+}
+
+func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
+	return LiveEntry{
+		Entry:                 e,
+		SessionID:             result.SessionID,
+		Status:                result.Status,
+		PendingAsk:            result.PendingAsk,
+		PendingEscalation:     result.PendingEscalation,
+		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
+		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
+		RunningJobs:           cloneRunningJobs(result.RunningJobs),
+		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+	}
+}
+
+// RefreshEntry confirms one freshly spawned daemon without depending on other
+// rendezvous files. Publishing it makes the ordinary source and relay paths
+// available for the pending mutation after a successful resume.
+func (r *Roster) RefreshEntry(ctx context.Context, entry rendezvous.Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" {
+		return errors.New("spawned daemon has no current protocol endpoint")
+	}
+	r.mu.Lock()
+	r.refreshGen++
+	generation := r.refreshGen
+	r.mu.Unlock()
+	results := make(chan ProbeResult, 1)
+	go func() {
+		if r.prober == nil {
+			results <- ProbeResult{OK: true, SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID)}
+		} else {
+			results <- r.prober.Probe(entry)
+		}
+	}()
+	var result ProbeResult
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case result = <-results:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !result.OK || result.SessionID == "" {
+		return fmt.Errorf("cannot confirm spawned daemon %s", entry.SessionID)
+	}
+	live := liveEntryFromProbe(entry, result)
+	r.mu.Lock()
+	if generation < r.publishedGen {
+		r.mu.Unlock()
+		return nil
+	}
+	previous, hadPrevious := r.bySess[live.SessionID]
+	bySess, byPID := maps.Clone(r.bySess), maps.Clone(r.byPID)
+	if old, ok := byPID[entry.PID]; ok && bySess[old.SessionID].PID == entry.PID {
+		delete(bySess, old.SessionID)
+	}
+	bySess[live.SessionID], byPID[entry.PID] = live, live
+	unconfirmed := make([]rendezvous.Entry, 0, len(r.unconfirmed))
+	for _, claim := range r.unconfirmed {
+		if claim.PID != entry.PID {
+			unconfirmed = append(unconfirmed, claim)
+		}
+	}
+	fp := rosterFingerprint(bySess)
+	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
+	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
+	r.publishedGen, r.fingerprint = generation, fp
+	onChange, onStatusChange := r.onChange, r.onStatusChange
+	r.mu.Unlock()
+	if hadPrevious && previous.Status != live.Status && onStatusChange != nil {
+		onStatusChange(live.SessionID)
+	}
+	if changed && onChange != nil {
+		onChange()
+	}
+	return nil
 }

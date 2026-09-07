@@ -351,7 +351,13 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	if cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
-			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+			if entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" || entry.ThreadID == "" {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+			}
+			if confirmErr := cfg.Roster.RefreshEntry(ctx, entry); confirmErr != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(err, confirmErr).Error())
+			}
+			fmt.Fprintf(os.Stderr, "[hub] resumed session %s; roster refresh failed: %v\n", entry.ThreadID, err)
 		}
 	}
 	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)

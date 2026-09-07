@@ -1157,3 +1157,84 @@ func TestRosterUnconfirmedOwnershipInvalidatesNavigation(t *testing.T) {
 		t.Fatalf("removed claim callbacks=%d, want 3", changes)
 	}
 }
+
+func TestRosterRefreshEntryPreservesOtherOwnership(t *testing.T) {
+	otherEntry := rendezvous.Entry{PID: 1001}
+	roster := NewRosterWithEntries(LiveEntry{Entry: otherEntry, SessionID: "other", Status: "active"})
+	roster.runDir = t.TempDir()
+	roster.prober = fakeProber{sessionID: "resumed", status: "idle"}
+	roster.unconfirmed = []rendezvous.Entry{{PID: 1002, SessionID: "resumed"}, {PID: 1003, SessionID: "uncertain"}}
+	if err := os.WriteFile(filepath.Join(roster.runDir, "1.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := roster.RefreshAndWait(t.Context()); err == nil {
+		t.Fatal("fixture did not fail discovery")
+	}
+	entry := rendezvous.Entry{PID: 1002, SessionID: "resumed", ThreadID: "resumed", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	if err := roster.RefreshEntry(t.Context(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if live, ok := roster.Find("resumed"); !ok || live.PID != 1002 || live.Status != "idle" {
+		t.Fatalf("resumed=%+v, %v", live, ok)
+	}
+	if other, ok := roster.Find("other"); !ok || other.Status != "active" {
+		t.Fatal("other owner changed")
+	}
+	if claims := roster.UnconfirmedEntries(); len(claims) != 1 || claims[0].SessionID != "uncertain" {
+		t.Fatalf("claims=%+v", claims)
+	}
+	roster.prober = fakeProber{shouldFail: true}
+	if err := roster.RefreshEntry(t.Context(), entry); err == nil {
+		t.Fatal("unconfirmed entry accepted")
+	}
+	if len(roster.List()) != 2 {
+		t.Fatal("failed confirmation changed roster")
+	}
+}
+
+func TestRosterRefreshEntryDoesNotOverwriteNewerRefresh(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "parent", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	writeRendezvous(t, dir, entry)
+	prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{})}
+	roster := NewRoster(dir, prober)
+	done := make(chan error, 1)
+	go func() { done <- roster.RefreshEntry(t.Context(), entry) }()
+	<-prober.firstStarted
+	roster.Refresh()
+	close(prober.releaseFirst)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if live, ok := roster.Find("parent"); !ok || live.Status != "new" {
+		t.Fatalf("stale confirmation replaced newer snapshot: %+v", live)
+	}
+}
+
+func TestRosterRefreshEntryCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		prober := &gateProber{sessionID: "parent", gate: make(chan struct{}), started: make(chan struct{}, 1)}
+		roster := NewRoster(t.TempDir(), prober)
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			done <- roster.RefreshEntry(ctx, rendezvous.Entry{PID: 1001, Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"})
+		}()
+		<-prober.started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v", err)
+			}
+		default:
+			t.Fatal("cancellation waited for probe")
+		}
+		close(prober.gate)
+		synctest.Wait()
+		if len(roster.List()) != 0 {
+			t.Fatal("cancelled confirmation published")
+		}
+	})
+}
