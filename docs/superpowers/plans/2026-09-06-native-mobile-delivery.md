@@ -2,13 +2,24 @@
 
 > **For agentic workers:** Use superpowers:subagent-driven-development for bounded implementation packages. Use superpowers:executing-plans for coordinated native verification. Jesse selected active subagent execution; do not ask him to choose it again.
 
-**Goal:** Deliver a beautiful, intuitive, reliable, feature-complete native Evener app on iOS and Android, with multiple hubs, automated tests and manual native E2E, plus an independently usable protocol and API client library.
+**Goal:** Deliver a beautiful, intuitive, reliable, feature-complete native Evener app on iOS (iPhone and iPad), with multiple hubs, automated tests and manual native E2E, plus an independently usable protocol and API client library.
 
 **Architecture:** Keep the shared Expo/React Native application in `mobile-native/`. Reuse the framework-independent AppWire client and validated shared services. Current web/server behavior defines capability; platform-specific interaction and layout belong in the native app.
 
 **Tech stack:** Expo SDK 57, React Native 0.86, React Navigation, SecureStore, SQLite, TypeScript AppWire client, real isolated Evener hubs with scripted providers at the LLM boundary.
 
 **Spec:** [Full coverage objective](../specs/2026-09-05-native-mobile-coverage.md), [product philosophy](../../design/mobile/philosophy.md), [style guide](../../design/mobile/style-guide.md), and [acceptance backlog](../../design/mobile/backlog.md).
+
+## V1 platform scope
+
+Jesse explicitly selected **iOS-only v1** during takeover continuation. Android
+implementation, builds, device testing, lifecycle investigation and release
+qualification are deferred. Preserve the existing Android source and evidence;
+do not remove its support or bypass shared checks. This decision supersedes
+both-platform requirements in the original handoff and historical studies.
+Shared feature completeness, multi-hub correctness and the independent SDK
+remain required. iPhone/iPad accessibility, physical networking, performance,
+signing and install/update qualification remain release gates.
 
 ## Global constraints and evidence baseline
 
@@ -63,23 +74,23 @@ The reusable work cycle is: source-backed gap → whole-workflow design → fail
 
 **Issues:** MOB-004, MOB-010, MOB-017. **Files:** `mobile-native/src/ConnectionProvider.tsx`, `connection.ts`, `location.ts`, `nativeLocation.ts`, `draftRepository.ts`, `creationDraftRepository.ts`, `removeHub.ts`, associated tests; shared `protocol/client.ts` and reconnect tests.
 
-- [ ] Diagnose Android ANR and font-change connection failure using timed lifecycle/transport evidence. Reproduction, thread state and system load must distinguish app failure from emulator pressure. Do not add retries or restart the app merely to hide the symptom.
+- [ ] **Deferred beyond v1:** Diagnose Android ANR and font-change connection failure using timed lifecycle/transport evidence. Reproduction, thread state and system load must distinguish app failure from emulator pressure. Do not add retries or restart the app merely to hide the symptom.
 - [ ] Define and verify per-hub connection/navigation lifetime. Saved multiple profiles alone is insufficient: switching away from a pending operation must retain its destination and unresolved state.
 - [ ] Test overlapping IDs, delayed old responses, hub removal, credential rotation/rejection, foreground/background and process death around dispatch. Preserve drafts and reject stale actions without cross-hub writes or automatic replay.
-- [ ] Run direct-hub native journeys on both OSes, then physical LAN/VPN/pairing checks when devices are available. Preserve unfinished resource-editor work across Android recreation as well as conversation drafts.
+- [ ] Run direct-hub native journeys on iPhone and iPad, then physical LAN/VPN/pairing checks when devices are available. Preserve unfinished resource-editor work and conversation drafts across iOS process death.
 
-**Exit:** the same end-to-end identity/recovery scenarios pass on both native builds; unresolved ANR or unexplained connection failure prevents lifecycle acceptance.
+**Exit:** the end-to-end identity/recovery scenarios pass on the iOS build; unexplained iOS connection failures prevent lifecycle acceptance. The Android ANR remains recorded for later Android delivery.
 
 ### 2. Finish conversation reading and composing as one screen
 
 **Issues:** MOB-001/002/003/009/011. **Files:** `mobile-native/src/screens.tsx`, `TimelineItem.tsx`, `MarkdownResponse.tsx`, `ComposerSettings.tsx`, `CommandCompletion.tsx`, `TranscriptImages.tsx`, `ImageAttachments.tsx`, `location.ts`; design study and style guide.
 
-- [ ] Update one whole-screen study with identical substantial content for reading, keyboard-open composition, running work, failure and pending decision. Show both themes/platforms and large text. Consolidate healthy connection chrome and secondary actions as a screen-level design decision.
+- [ ] Update one whole-screen study with identical substantial content for reading, keyboard-open composition, running work, failure and pending decision. Show both themes, iPhone/iPad layouts and large text. Consolidate healthy connection chrome and secondary actions as a screen-level design decision.
 - [ ] Implement reader restoration using message identity and within-message position; define persistence explicitly. Handle pagination, streaming, image reflow and returning from sheets without stealing the reader's place. Scope disclosure and position by hub/session.
 - [ ] Qualify Markdown, long code/tables, links/copy, multiple and authenticated images, error/loading states and return paths. A displayed source path is not proof that its destination opens.
 - [ ] Exercise long drafts/model names, model/default reasoning, command selection/failure, Send/Steer/Stop/Queue and attachments with real keyboards. Full-width input and reachable controls must coexist with useful reading space.
 
-**Exit:** open a long session, read history, expand output, compose, switch away and return without losing context; perform the journey on both platforms at ordinary/largest text, narrow and landscape sizes. Visual acceptance covers the journey, not pixel savings alone.
+**Exit:** open a long session, read history, expand output, compose, switch away and return without losing context; perform the journey on iPhone and iPad at ordinary/largest text, narrow and landscape sizes. Visual acceptance covers the journey, not pixel savings alone.
 
 ### 3. Running work, decisions and concurrent updates
 
@@ -88,7 +99,7 @@ The reusable work cycle is: source-backed gap → whole-workflow design → fail
 - [ ] Cover opening-window notification races, stale decisions resolved by another client, concurrent question batches, queue cancellation/promotion/drain and uncertain replies.
 - [ ] Qualify goal/task/activity paging and delegate navigation under concurrent updates. Keep consequential decisions visually distinct from routine progress and tool output.
 - [ ] Exercise a real scripted-provider session through sandbox execution/approval and question pause/resume; independently read resulting state. Injected UI notifications alone cannot prove execution resumes.
-- [ ] Repeat keyboard-open, reconnect and background cases on iOS/Android with no stale actionable controls or duplicated submissions.
+- [ ] Repeat keyboard-open, reconnect and background cases on iOS with no stale actionable controls or duplicated submissions.
 
 **Exit:** a user can understand running work, act on the correct decision, see real progress resume and recover when another client acted first.
 
@@ -111,10 +122,10 @@ These can run in parallel after lifecycle contracts stabilize, with disjoint fil
 | --- | --- | --- |
 | Creation, launch configuration and trust (MOB-007/015) | `NewSessionScreen.tsx`, `newSession.ts`, `CreationComposerSettings.tsx`, `CreationPlugins.tsx`, `LaunchSettingsScreen.tsx`, `launchSettings.ts`, `RepositoryLaunchReview.tsx`, image/draft controllers | Large catalogs; inherited/effective/edited values; real configuration readback; directory assistance; trust rejection/revision changes; MCP; durable image prompt; nonempty uncertain creation and dispatch-boundary death without duplicates |
 | Provider instances and login (MOB-012/013) | `ProvidersScreen.tsx`, `ProviderEditor.tsx`, `providerInstances.ts`, `ProviderSignInSheet.tsx`, `providerSignIn.ts` | Keys/defaults; browser/device flow success/denial/cancel; return from external browser; hub switch and restart; no credential leakage or wrong-hub updates |
-| Marketplace/plugin management (MOB-014) | `PluginsScreen.tsx`, `MarketplaceBrowser.tsx`, `marketplaces.ts`, `installedPlugins.ts` | Browse/preview/install/update/enable/remove and sources; actual Git/GitHub update; failure/readback, long lists and both-platform refresh |
+| Marketplace/plugin management (MOB-014) | `PluginsScreen.tsx`, `MarketplaceBrowser.tsx`, `marketplaces.ts`, `installedPlugins.ts` | Browse/preview/install/update/enable/remove and sources; actual Git/GitHub update; failure/readback, long lists and iOS refresh |
 | Hub overview/preferences and upgrade (MOB-015/016) | `HubSettingsScreen.tsx`, `hubOverview.ts`, launch editors; current settings section contracts | Correct scope and live invalidation; disposable-hub upgrade; progress/failure/reconnect; independent version/readiness readback. Production hub upgrade is not a test fixture |
 
-**Exit:** every supported administrative operation has a purposeful native workflow, validation, safe recovery and both-platform acceptance. Generic forms or callable RPC wrappers do not establish this.
+**Exit:** every supported administrative operation has a purposeful native workflow, validation, safe recovery and iOS acceptance. Generic forms or callable RPC wrappers do not establish this.
 
 ### 6. API library and complete independent protocol documentation
 
@@ -125,7 +136,7 @@ Run this lane alongside packages 1–5, not after them. The current report names
 - [ ] Map every supported/reserved method and notification from the generated catalog. Link each workflow to executable cases; account for reserved-method rejection separately from usable capabilities.
 - [ ] Add streaming/reset/paging/rejoin recipes first, then mutation recovery and decisions, then management, credentials/plugins, trust and upgrade with their native packages.
 - [ ] Explain exact presence/default semantics, errors, event ordering, snapshot reconciliation, lifecycle, identity and recovery without requiring implementation-source reading.
-- [ ] Verify outside-checkout tarball consumers, ESM/CommonJS, declarations without skipped checks, package contents, and both Metro Release bundles. Execute happy/failure cases against real isolated Evener with a scripted provider boundary; verify effects and cleanup.
+- [ ] Verify outside-checkout tarball consumers, ESM/CommonJS, declarations without skipped checks, package contents, and the iOS Metro Release bundle. Execute happy/failure cases against real isolated Evener with a scripted provider boundary; verify effects and cleanup.
 
 **Exit:** an independent client author can implement every supported flow from the guide/reference/library/examples alone. Publishing the package is distinct from local package qualification.
 
@@ -134,9 +145,9 @@ Run this lane alongside packages 1–5, not after them. The current report names
 **Issues:** MOB-010/017 plus every open acceptance item. **Files/artifacts:** acceptance ledger, native configs, existing CI/Make gates, signed device build records, screenshots/recordings, performance traces.
 
 - [ ] Run `make merge-approval-gate` plus explicitly owned native tests/typecheck/build/package checks. Run applicable browser geometry and race checks where shared web/runtime changes require them.
-- [ ] Execute the complete workflow matrix on the same final source and installed artifact for each OS. Record build identity, device/OS, fixture, steps, authoritative result and limitations.
-- [ ] Qualify VoiceOver/TalkBack, large text/live resizing, reduced motion, light/dark, small devices/iPad landscape, text selection, keyboard/back gestures and process restart.
-- [ ] Measure physical-device input/scroll latency, streaming load, long history and memory. Resolve the Android ANR causally. Verify signing, clean install, update, credential/draft retention and physical networking.
+- [ ] Execute the complete workflow matrix on the same final source and installed iOS artifact. Record build identity, device/OS, fixture, steps, authoritative result and limitations.
+- [ ] Qualify VoiceOver, large text/live resizing, reduced motion, light/dark, small devices/iPad landscape, text selection, keyboard/back gestures and process restart.
+- [ ] Measure physical-device input/scroll latency, streaming load, long history and memory. Verify signing, clean install, update, credential/draft retention and physical networking.
 - [ ] Audit every explicit requirement and catalog mapping against current evidence. Missing, historical-only or indirect evidence remains open. No release-complete claim based solely on simulator builds, green unit tests or screenshots.
 
 **Exit:** all workflows and cross-cutting requirements have final-build evidence and no unresolved required acceptance. Only then may the active goal be marked complete.

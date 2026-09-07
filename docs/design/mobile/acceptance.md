@@ -7,6 +7,14 @@ path exists; it does not prove that the complete native workflow is accepted.
 Every row therefore records the independent real-daemon, iOS, Android, build,
 and release evidence needed to close it.
 
+## Active v1 platform scope
+
+Jesse selected **iOS-only v1** during takeover continuation. All Android evidence
+and remaining work below is preserved for later delivery and does not block v1.
+Current acceptance requires iPhone/iPad, shared behavior and SDK qualification;
+physical-device, VoiceOver, performance and signed install/update checks remain
+required. Historical Android entries are not claims of current acceptance.
+
 ## Evidence rules
 
 “Historical” means evidence recorded for an earlier source or installed
