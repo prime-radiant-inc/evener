@@ -26,6 +26,7 @@ import { connectionFailure } from "./connectionRecovery";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
+import { removeOrganizationData } from "./nativeOrganization";
 import { removeSavedHub } from "./removeHub";
 
 const repository = new HubProfiles(SecureStore);
@@ -191,7 +192,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		[selected],
 	);
 	const removeHub = useCallback(async (id: string) => {
-		const result = await removeSavedHub(repository, drafts, id);
+		const result = await removeSavedHub(
+			repository,
+			{
+				removeHub(hubId: string) {
+					drafts.removeHub(hubId);
+					removeOrganizationData(hubId);
+				},
+			},
+			id,
+		);
 		setProfiles(
 			(current) =>
 				result.profiles ??

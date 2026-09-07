@@ -112,6 +112,7 @@ export class NavigationPages<T> {
 		});
 	}
 	getSnapshot = () => this.state;
+	getResourceVersion = () => this.normalized?.version ?? null;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);

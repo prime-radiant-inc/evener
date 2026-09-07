@@ -1,18 +1,18 @@
+import type { ReactNode } from "react";
 import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
+import type { PinAssignmentSelection } from "./pinAssignmentDrafts";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export type PinAssignmentSection = { id: string; name: string; count: number };
-export type PinAssignmentSelection =
-	| { kind: "existing"; sectionId: string }
-	| { kind: "new"; name: string }
-	| null;
 export interface PinAssignmentEditorProps {
+	status?: ReactNode;
 	title: string;
 	hubName: string;
 	sections: readonly PinAssignmentSection[];
 	selection: PinAssignmentSelection;
 	change(selection: PinAssignmentSelection): void;
 	connected: boolean;
+	canEdit: boolean;
 	loading: boolean;
 	stale: boolean;
 	remaining: number;
@@ -30,12 +30,14 @@ function validName(name: string) {
 	return length >= 1 && length <= 80;
 }
 export function PinAssignmentEditor({
+	status,
 	title,
 	hubName,
 	sections,
 	selection,
 	change,
 	connected,
+	canEdit,
 	loading,
 	stale,
 	remaining,
@@ -49,7 +51,8 @@ export function PinAssignmentEditor({
 	close,
 }: PinAssignmentEditorProps) {
 	const colors = useColors();
-	const blocked = pending || uncertain || !connected || stale || loading;
+	const blocked =
+		pending || uncertain || !canEdit || !connected || stale || loading;
 	const valid =
 		(selection?.kind === "existing" &&
 			sections.some((section) => section.id === selection.sectionId)) ||
@@ -57,7 +60,7 @@ export function PinAssignmentEditor({
 	const reason = uncertain
 		? "Refresh to confirm the previous pin change before editing it."
 		: pending
-			? "Saving the pin change…"
+			? "Checking the pin assignment…"
 			: !connected
 				? "Reconnect to change pin assignments."
 				: stale
@@ -65,26 +68,25 @@ export function PinAssignmentEditor({
 					: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
-			<View
-				style={[
-					styles.row,
-					{
-						paddingHorizontal: 20,
-						paddingVertical: 12,
-						borderBottomWidth: 1,
-						borderColor: colors.border,
-					},
-				]}
+			<ScrollView
+				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ padding: 20, gap: 16 }}
 			>
-				<View style={styles.fill}>
+				{status}
+				<View
+					style={[
+						{
+							gap: 8,
+							paddingVertical: 12,
+							borderBottomWidth: 1,
+							borderColor: colors.border,
+						},
+					]}
+				>
 					<Copy>{title}</Copy>
 					<Copy muted>{hubName}</Copy>
 				</View>
-				<Action tone="quiet" onPress={close}>
-					Close
-				</Action>
-			</View>
-			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
 				<ErrorMessage message={error} />
 				{reason ? <Copy muted>{reason}</Copy> : null}
 				<View
@@ -95,7 +97,7 @@ export function PinAssignmentEditor({
 					{sections.map((section) => (
 						<Choice
 							key={section.id}
-							label={`${section.name} · ${section.count} sessions`}
+							label={`${section.name} · ${section.count} ${section.count === 1 ? "session" : "sessions"}`}
 							selected={
 								selection?.kind === "existing" &&
 								selection.sectionId === section.id
@@ -138,7 +140,7 @@ export function PinAssignmentEditor({
 						<Copy muted>Use 1–80 characters.</Copy>
 					) : null}
 				</View>
-				<View style={styles.row}>
+				<View style={[styles.row, { flexWrap: "wrap" }]}>
 					<Action tone="primary" disabled={blocked || !valid} onPress={save}>
 						{selection?.kind === "new" ? "Create and pin" : "Pin to section"}
 					</Action>
@@ -163,6 +165,9 @@ export function PinAssignmentEditor({
 						Refresh sections
 					</Action>
 				) : null}
+				<Action tone="quiet" onPress={close}>
+					Close
+				</Action>
 			</ScrollView>
 		</View>
 	);

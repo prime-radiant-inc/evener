@@ -98,6 +98,7 @@ const noControls = () => null;
 const noControlSubscription = () => () => {};
 
 export type Routes = {
+	PinAssignment: { hubId: string; ref: string; title: string };
 	SessionLocation: { hubId: string; location: SessionLocation };
 	Projects: { hubId: string };
 	Providers: { hubId: string };
@@ -863,6 +864,14 @@ export function ConversationScreen({
 			Keyboard.dismiss();
 			const current = store.getState().conversation;
 			if (!current) return;
+			if (destination === "pin") {
+				navigation.navigate("PinAssignment", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+					title: route.params.title,
+				});
+				return;
+			}
 			if (destination === "session") {
 				setSessionOpen(true);
 				return;
@@ -886,6 +895,8 @@ export function ConversationScreen({
 			route.params.hubId,
 			route.params.ref,
 			activeProfile?.name,
+			navigation,
+			route.params.title,
 		],
 	);
 	useEffect(() => {
@@ -903,6 +914,11 @@ export function ConversationScreen({
 								type: "action",
 								label: "Session details",
 								onPress: () => openSessionDestination("session"),
+							},
+							{
+								type: "action",
+								label: "Pin to section",
+								onPress: () => openSessionDestination("pin"),
 							},
 							{
 								type: "action",
