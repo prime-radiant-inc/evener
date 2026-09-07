@@ -261,3 +261,22 @@ ended-session deletion, followed by durable archive/favorite recovery. Native
 keybindings, further SDK recipes, Dynamic Type reader drift and the full iOS
 release matrix remain unfinished. Android remains deferred for v1. These scoped
 results do not replace the final canonical merge gate or release acceptance.
+
+## Ended-session deletion checkpoint
+
+`29ac49032` adds native ended-session deletion with explicit confirmation, durable
+target/results, receipt-aware readback and retained local drafts. `d2188a67d`
+fixes the stale Sessions list found during acceptance: external changes now
+refresh a focused list while keeping its active search. Final Release bundle:
+`fe5e44502fe66d9a6f5e4fbd6a650e63eb12d4c3a69d9159d92c26da762d8e99`.
+
+The owned iOS journeys verified cancel, stale confirmation, maximum text controls,
+restart without replay, actual deletion, retained drafts and untouched original
+reader/fork histories. The final source passes 540 native tests, TypeScript and
+touched Biome checks. See [deletion evidence](../../design/mobile/session-deletion-evidence.md)
+for the two artifact boundaries and exact observed results.
+
+Durable archive/favorite recovery is next. Native keybindings, additional SDK
+recipes, reader Dynamic Type drift, overlapping lifecycle failures and the full
+iOS release matrix remain unfinished. Android remains preserved and deferred for
+v1. No push, merge or publication has been performed.
