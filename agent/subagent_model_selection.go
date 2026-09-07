@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -71,7 +72,7 @@ func (s *Session) selectSubagentModel(
 			if crossProvider {
 				resolved = resolved.WithCommunicateOverridesFrom(base)
 			}
-			resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id)
+			resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id, *s.providerAdapterTimeout())
 			if err != nil {
 				return subagentModelSelection{}, fmt.Errorf("model override %q: %w", explicitModel, err)
 			}
@@ -114,7 +115,7 @@ func (s *Session) selectSubagentModel(
 	if crossProvider {
 		resolved = resolved.WithCommunicateOverridesFrom(base)
 	}
-	resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id)
+	resolved, err = resolveModelSwitchTarget(s.client, resolved, s.id, *s.providerAdapterTimeout())
 	if err != nil {
 		return subagentModelSelection{}, fmt.Errorf("model override %q: %w", explicitModel, err)
 	}
@@ -145,6 +146,7 @@ func (s *Session) resolvePluginAgentModel(
 
 	listCtx, cancel := context.WithTimeout(ctx, liveModelMetadataTimeout)
 	defer cancel()
+	listCtx = llm.WithModelListingTimeout(listCtx, *s.providerAdapterTimeout())
 	listing, err := s.client.Models(listCtx, candidate.ID())
 	if err != nil {
 		return pluginAgentModelResolution{reason: "unverified"}

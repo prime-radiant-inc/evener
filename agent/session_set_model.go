@@ -85,9 +85,10 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // pre-session counterpart — every caller here (SetModel, subagent model
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
-func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string) (*provider.Profile, error) {
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout) (*provider.Profile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
+	ctx = llm.WithModelListingTimeout(ctx, timeout)
 	if sessionID != "" {
 		ctx = llm.WithAPILogContext(ctx, sessionID)
 	}

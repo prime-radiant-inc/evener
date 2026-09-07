@@ -439,8 +439,6 @@ type LiveModelLister interface {
 func (c *Client) Models(ctx context.Context, instance string) (ModelListing, error) {
 	timeout := ModelListingTimeout(ctx)
 	ctx = WithModelListingTimeout(ctx, *timeout)
-	ctx, cancel := ApplyAdapterTimeout(ctx, timeout, false)
-	defer cancel()
 	instance = normalizeProviderName(instance)
 	r := c.Registry()
 	c.overridesMu.RLock()
@@ -456,6 +454,11 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 		if !ok {
 			return ModelListing{}, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", instance)}
 		}
+		// Overrides have no protocol layer to apply their request deadline.
+		// Built-in protocols own it themselves, preserving the original caller
+		// context for canonical attempt timeout/cancellation attribution.
+		ctx, cancel := ApplyAdapterTimeout(ctx, timeout, false)
+		defer cancel()
 		opCtx, op := c.beginProviderOperation(ctx)
 		rows, err := lister.LiveModels(opCtx)
 		op.settle(opCtx, err)
