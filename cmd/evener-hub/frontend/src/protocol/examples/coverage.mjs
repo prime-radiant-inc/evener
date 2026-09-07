@@ -2,6 +2,13 @@ import { METHOD_NAMES, NOTIFICATION_NAMES } from "@evener/appwire-client";
 
 // A listed recipe exercises these requests; this is not branch/outcome coverage.
 const recipes = {
+  "preferences.mjs": [
+    "initialize",
+    "evener/settings/keybindings/get",
+    "evener/settings/keybindings/patch",
+    "evener/settings/transcriptDisplay/get",
+    "evener/settings/transcriptDisplay/patch",
+  ],
   "session-lifecycle.mjs": [
     "initialize",
     "model/list",

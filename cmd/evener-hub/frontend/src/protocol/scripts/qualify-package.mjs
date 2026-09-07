@@ -89,7 +89,11 @@ run(process.execPath, [join(fixtureDir, "commonjs-runtime.cjs")], fixtureDir);
 
 run(
   process.execPath,
-  ["--test", join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs")],
+  [
+    "--test",
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/preferences.contract.mjs"),
+  ],
   fixtureDir,
 );
 

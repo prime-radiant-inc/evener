@@ -112,7 +112,7 @@ release coverage.
 Its deterministic contract checks can run without a hub:
 
 ```sh
-node --test examples/streaming-rejoin.test.mjs
+node --test examples/streaming-rejoin.contract.mjs
 ```
 
 The project-layer recipe exercises a reversible settings mutation, independent
@@ -201,3 +201,45 @@ or deletes history. If a creation response is lost, inspect the hub manually;
 the script cannot identify the created session. No other writer should mutate
 this fixture session during the run. Natural completion, transcript deltas,
 approvals, queue control and reconnect recovery require separate recipes.
+
+### Hub preferences and revision conflicts
+
+`preferences.mjs` reads capability-supported keybindings and transcript display
+settings. It prints revisions and load status without exposing the configuration.
+The default invocation uses only GET requests.
+
+An explicit write replaces the **complete** selected domain configuration from a
+JSON file. For keybindings, supply `{ "version": 1, "rules": [...] }`, retaining
+every rule you intend to keep, including unknown action names. For transcript
+display, supply the generated `TranscriptDisplayConfig` shape with `version`,
+`content` and `advanced`. Transcript writes target the mobile layout; desktop
+preferences are unaffected. Read current values through the typed GET contract
+before preparing the file.
+
+Use a disposable hub whose endpoint you explicitly confirm:
+
+```sh
+EVENER_PREFERENCES_MUTATION=1 \
+EVENER_PREFERENCES_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_PREFERENCES_DOMAIN=transcript \
+EVENER_PREFERENCES_CONFIG_FILE=/path/to/complete-mobile-config.json \
+EVENER_RPC_URL=ws://127.0.0.1:9180/rpc \
+EVENER_TOKEN_FILE=/path/to/test-hub/auth-token \
+EVENER_CWD=/isolated/project/on/hub \
+node node_modules/@evener/appwire-client/examples/preferences.mjs
+```
+
+The recipe derives `expectedRevision` from a fresh read of the selected domain,
+then issues one PATCH. A conflict or lost reply triggers one independent GET,
+with no replay. Exit 0 means the read or acknowledged write completed; exit 2
+means a conflict or uncertain write with readback; exit 1 means the operation
+could not complete. Inspect the current settings and prepare a new deliberate
+edit before another write. The script does not restore changes automatically.
+Notifications, native editor persistence and concurrent editor reconciliation
+require separate qualification.
+
+Offline behavior checks run from the package:
+
+```sh
+node --test examples/preferences.contract.mjs
+```
