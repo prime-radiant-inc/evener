@@ -43,29 +43,6 @@
   margin-top: var(--rhythm-item);
 }
 
-/* Below the gutter breakpoint (turnblock.module.css's 700px) the opener
- * becomes a grid: the avatar and the speaker header share the first row and
- * the prose drops to a full-width second row. Measured before this: prose
- * got 260px of a 375px screen (28 characters a line) because the avatar
- * column indented the whole bubble. display: contents dissolves the column
- * so its header and bubble become the grid's own items. */
-@media (max-width: 699px) {
-  .opener {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    column-gap: var(--speaker-gap);
-    row-gap: var(--space-1);
-    align-items: center;
-  }
-
-  .opener > .column {
-    display: contents;
-  }
-
-  .opener .bubble {
-    grid-column: 1 / -1;
-  }
-}
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The
  * gap with the 24px avatar makes the 34px content column TurnBlock's gutter
@@ -155,5 +132,32 @@
     /* Disables the blink but keeps the static caret - the glyph itself
      * still honestly reflects "still live", only the motion is removed. */
     animation: none;
+  }
+}
+
+/* Last in the file on purpose: the base .opener rule sets display: flex at
+ * the same specificity, and the later declaration wins, so this block must
+ * follow it (measured on a 375px phone before the move: prose in a 187px
+ * column, 19 characters a line). Below the gutter breakpoint (turnblock.module.css's 700px) the opener
+ * becomes a grid: the avatar and the speaker header share the first row and
+ * the prose drops to a full-width second row. Measured before this: prose
+ * got 260px of a 375px screen (28 characters a line) because the avatar
+ * column indented the whole bubble. display: contents dissolves the column
+ * so its header and bubble become the grid's own items. */
+@media (max-width: 699px) {
+  .opener {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--speaker-gap);
+    row-gap: var(--space-1);
+    align-items: center;
+  }
+
+  .opener > .column {
+    display: contents;
+  }
+
+  .opener .bubble {
+    grid-column: 1 / -1;
   }
 }

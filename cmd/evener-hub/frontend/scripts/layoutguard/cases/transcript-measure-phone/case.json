@@ -1,0 +1,24 @@
+{
+  "name": "transcript-measure-phone",
+  "description": "transcript on a 375px phone: the opener's prose spans the pane under the avatar + header row instead of the column beside the avatar, and gets at least 30 characters per line (typography-spacing-critique-2026-09-06 finding 2)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/turnblock.module.css",
+    "panes/session/transcript/messages/agentmessageitem.module.css",
+    "widgets/speakeravatar/speakeravatar.module.css",
+    "widgets/markdown/markdown.module.css"
+  ],
+  "viewport": {
+    "width": 375,
+    "height": 812,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "agentmessageitem.module.css: the @media (max-width: 699px) block moved above the base .opener rule (the cascade-order bug this case was written for, 2026-09-06)",
+    "verified": "2026-09-06",
+    "expect": "fail",
+    "note": "With the phone block above the base rule the prose spans 55% of the pane (187px of 343) at 19 characters per line."
+  }
+}
