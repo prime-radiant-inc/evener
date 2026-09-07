@@ -44,7 +44,7 @@ type sessionNameResult struct {
 // doesn't burn the full 1+2+4+8s backoff as real wall time.
 // currentTitle is the session's existing title when refreshing from a
 // compaction turn, or "" when naming from the initial prompt (no title yet).
-func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text, currentTitle string, sleep llm.SleepFunc) (sessionNameResult, error) {
+func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text, currentTitle string, sleep llm.SleepFunc, timeout ...*llm.AdapterTimeout) (sessionNameResult, error) {
 	if client == nil {
 		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
@@ -86,6 +86,9 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 		Sleep:       sleep,
 		RetryPolicy: &namerPolicy,
 		Schema:      sessionNameSchema(),
+	}
+	if len(timeout) > 0 {
+		opts.AdapterTimeout = timeout[0]
 	}
 	res, err := llm.GenerateObject(callCtx, opts)
 	if err != nil && temp != nil && isTemperatureUnsupported(err) {
@@ -525,7 +528,7 @@ func (s *Session) nameSessionFromTextGated(ctx context.Context, source, text str
 	if s.cfg.testOnly.namerClient != nil {
 		namerClient = s.cfg.testOnly.namerClient
 	}
-	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.currentSessionName(), s.cfg.LLMSleep)
+	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text, s.currentSessionName(), s.cfg.LLMSleep, s.providerAdapterTimeout())
 	if err != nil {
 		// Record the suppression before writing the advisory: the advisory is
 		// the only externally observable marker that this attempt finished, so

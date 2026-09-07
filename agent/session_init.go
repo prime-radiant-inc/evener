@@ -1278,6 +1278,7 @@ func cacheReadPtr(n int64) *int {
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
 	s.cheap = cheapmodel.New(s.client)
+	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
@@ -1365,6 +1366,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 
 	s.contextMgr = contextmgr.NewManager(s.profile, s.client, s.cheap)
+	s.contextMgr.AdapterTimeout = s.providerAdapterTimeout()
 	s.contextMgr.ResultToolName = s.resultToolName()
 
 	var reg *tool.Registry
@@ -1597,6 +1599,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	s.plugins = plugins
 
 	runner := hooks.NewRunner(s.client, s.profile.Model())
+	runner.AdapterTimeout = s.providerAdapterTimeout()
 	runner.SetSandboxWrapper(s.sandboxWrapper())
 	allAgents := map[string]plugin.Agent{}
 

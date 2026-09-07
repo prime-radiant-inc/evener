@@ -103,7 +103,7 @@ func substituteHookVariables(prompt string, input Input) string {
 }
 
 // executePromptHook runs a prompt hook by calling the LLM with the substituted prompt.
-func executePromptHook(ctx context.Context, client promptHookClient, model string, hook plugin.RegisteredHook, input Input) (hookResult, error) {
+func executePromptHook(ctx context.Context, client promptHookClient, model string, hook plugin.RegisteredHook, input Input, timeout ...*llm.AdapterTimeout) (hookResult, error) {
 	prompt := substituteHookVariables(hook.Prompt, input)
 
 	reqModel := model
@@ -118,6 +118,9 @@ func executePromptHook(ctx context.Context, client promptHookClient, model strin
 		},
 	}
 
+	if len(timeout) > 0 {
+		req.AdapterTimeout = timeout[0]
+	}
 	resp, err := client.Generate(ctx, req)
 	if err != nil {
 		return hookResult{}, fmt.Errorf("prompt hook LLM call: %w", err)
@@ -129,10 +132,12 @@ func executePromptHook(ctx context.Context, client promptHookClient, model strin
 
 // Runner orchestrates hook matching and parallel dispatch.
 type Runner struct {
-	hooks   map[plugin.HookEvent][]plugin.RegisteredHook
-	client  promptHookClient
-	model   string
-	onEvent func(events.EventKind, events.EventData) // optional event callback
+	// AdapterTimeout is the session's prompt-hook request policy. Set before use.
+	AdapterTimeout *llm.AdapterTimeout
+	hooks          map[plugin.HookEvent][]plugin.RegisteredHook
+	client         promptHookClient
+	model          string
+	onEvent        func(events.EventKind, events.EventData) // optional event callback
 	// commandHookRuntime is a per-runner process/environment boundary. Production
 	// uses systemCommandHookRuntime; deterministic callers may provide a fake.
 	commandHookRuntime commandHookRuntime
@@ -471,7 +476,7 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event 
 		if r.client == nil {
 			return parsedHookOutput{Continue: true, SystemMessage: "prompt hook skipped: no LLM client"}
 		}
-		hr, err = executePromptHook(ctx, r.client, r.model, hook, input)
+		hr, err = executePromptHook(ctx, r.client, r.model, hook, input, r.AdapterTimeout)
 	default:
 		return parsedHookOutput{Continue: true}
 	}
