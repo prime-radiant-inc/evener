@@ -11054,9 +11054,12 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	// the dispatch loop further down calls every expected method with empty
 	// params, including the credential-mutating evener/auth/* handlers
 	// (apiKey/set, logout, apiKey/clear). A nil CredsStore makes
-	// newHubAuthControllerWithStore fall back to the real on-disk default
-	// (~/.config/evener/credentials.toml via the ambient HOME/XDG env) -
-	// this test must never read or write a developer's actual store.
+	// newHubAuthControllerWithStore fall back to the on-disk default under
+	// the ambient HOME/XDG env. TestMain redirects that env into a throwaway
+	// root and TestHubDefaultRootsStayInsideTheTestEnvironment pins the
+	// redirect, so an unset root cannot reach a developer's actual store;
+	// per-test temp dirs keep this test's writes out of the root the whole
+	// package shares as well.
 	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
 	if loadErr != nil {
 		t.Fatalf("LoadStore: %v", loadErr)
