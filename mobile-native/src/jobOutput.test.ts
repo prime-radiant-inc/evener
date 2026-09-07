@@ -8,6 +8,7 @@ it("pages output by server byte offsets and retains it on failure without duplic
     tail: "末尾",
     totalBytes: 20,
     retainedStart: 14,
+    truncated: true,
     hasEarlier: true,
   };
   let fail = false;
@@ -21,7 +22,13 @@ it("pages output by server byte offsets and retains it on failure without duplic
   } as ConversationClientLike;
   const log = new JobOutput(client, "local:owner", "job-id");
   await log.refresh();
-  data = { tail: "prefix", totalBytes: 20, retainedStart: 8, hasEarlier: true };
+  data = {
+    tail: "prefix",
+    totalBytes: 20,
+    retainedStart: 8,
+    truncated: true,
+    hasEarlier: true,
+  };
   await log.loadEarlier();
   expect(requests[1]).toEqual({
     method: "evener/jobs/output",
@@ -40,6 +47,7 @@ it("pages output by server byte offsets and retains it on failure without duplic
     tail: "latest",
     totalBytes: 30,
     retainedStart: 24,
+    truncated: true,
     hasEarlier: true,
   };
   await log.refresh();
@@ -66,7 +74,61 @@ it("serializes output reads and discards responses after leaving the owning job"
   expect(reads).toBe(1);
   log.dispose();
   const prior = log.getSnapshot();
-  complete({ data: { tail: "late", totalBytes: 4, retainedStart: 0 } });
+  complete({
+    data: { tail: "late", totalBytes: 4, retainedStart: 0, truncated: false },
+  });
   await pending;
   expect(log.getSnapshot()).toBe(prior);
+});
+
+it("rejects malformed output without losing the loaded page or advancing its byte cursor", async () => {
+  let data: unknown = {
+    tail: "日本語",
+    totalBytes: 100,
+    retainedStart: 91,
+    truncated: true,
+    hasEarlier: true,
+  };
+  const requests: unknown[] = [];
+  const client = {
+    onNotification: () => () => {},
+    request: async (method, params) => {
+      requests.push({ method, params });
+      return { data };
+    },
+  } as ConversationClientLike;
+  const log = new JobOutput(client, "local:owner", "job-id");
+  await log.refresh();
+  const retained = log.getSnapshot();
+  data = {
+    tail: "invalid",
+    totalBytes: 100,
+    retainedStart: 0.5,
+    truncated: true,
+    hasEarlier: true,
+  };
+  await log.loadEarlier();
+  expect(log.getSnapshot()).toMatchObject({
+    ...retained,
+    error: expect.any(String),
+  });
+  data = {
+    tail: "prefix",
+    totalBytes: 100,
+    retainedStart: 85,
+    truncated: true,
+    hasEarlier: true,
+  };
+  await log.loadEarlier();
+  expect(requests.slice(1)).toEqual(
+    Array(2).fill({
+      method: "evener/jobs/output",
+      params: { ref: "local:owner", jobId: "job-id", beforeBytes: 91 },
+    }),
+  );
+  expect(log.getSnapshot()).toMatchObject({
+    content: "prefix日本語",
+    earliestStart: 85,
+    error: null,
+  });
 });

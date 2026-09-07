@@ -10,14 +10,14 @@
 // offset on screen) and prepends, so the whole log is reachable. Refresh
 // re-reads the tail and drops the paged prefix.
 import { Fragment, useEffect, useMemo, useState } from "react";
+import type { JobLogTail } from "../../protocol/jobOutput";
+import { parseJobLogTail } from "../../protocol/jobOutput";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import { parseAnsiLines } from "../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
-import type { JobLogTail } from "./jobLogData";
-import { parseJobLogTail } from "./jobLogData";
 import styles from "./transcript.module.css";
 
 const CLASS = {
