@@ -682,3 +682,68 @@ func TestHubMutationOwnershipCancellationPreservesUnknownReceipt(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, mode := range []string{"aside", "edit", "defer"} {
+			t.Run(fmt.Sprintf("cached=%v/%s", cached, mode), func(t *testing.T) {
+				stateDir := t.TempDir()
+				parentID := buildRPCParentSession(t, stateDir)
+				runDir := t.TempDir()
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: parentID, SessionID: parentID, Endpoint: protocolMismatchPeer(t)})
+				roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+				if cached {
+					roster.Refresh()
+				}
+				hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: stateDir, Roster: roster})
+				defer hub.Close()
+				client := dialHubRPC(t, hub)
+				defer client.Close()
+				if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+					t.Fatal(err)
+				}
+				params := appwire.ThreadForkParams{Ref: localAppRef(parentID)}
+				if mode == "aside" {
+					params.Aside = true
+				} else {
+					params.SourceTurnID = "1"
+					params.Label = "parent branch"
+					if mode == "defer" {
+						params.DeferInput = true
+					} else {
+						params.EditedInput = "replacement"
+					}
+				}
+				_, err := client.ThreadFork(t.Context(), params)
+				if !isDaemonRestartRequiredError(err) {
+					t.Errorf("fork bypassed incompatible owner: %v", err)
+				}
+				metas, err := schema.ListSessionMetas(stateDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(metas) != 1 {
+					t.Errorf("fork created session metadata: count=%d, want 1", len(metas))
+				}
+				parent, err := schema.LoadSessionMeta(stateDir, parentID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if parent.ForkLabel != "" {
+					t.Errorf("fork changed live parent label: %q", parent.ForkLabel)
+				}
+				if err := rendezvous.Remove(runDir, 1001); err != nil {
+					t.Fatal(err)
+				}
+				forked, err := client.ThreadFork(t.Context(), params)
+				if err != nil {
+					t.Fatalf("fork after owner stopped: %v", err)
+				}
+				child, err := schema.LoadSessionMeta(stateDir, forked.Thread.ID)
+				if err != nil || child.ParentSessionID != parentID {
+					t.Errorf("fork after stop did not create child: %+v, err=%v", child, err)
+				}
+			})
+		}
+	}
+}

@@ -480,6 +480,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 		}
+		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
 		childID, err := hubAsideSession(stateDir, ref.ThreadID)
 		if err != nil {
 			return appwire.ThreadForkResponse{}, err
@@ -513,6 +516,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
+	}
+	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
 	}
 	var childID, originalInput string
 	if params.DeferInput {
