@@ -249,6 +249,7 @@ describe("projectThread", () => {
         expect(a.label).toBe("shell");
         expect(a.state).toBe("completed");
         expect(a.detail).toEqual({
+          description: "run tests",
           arguments: '{"command":"make"}',
           output: "ok",
           error: undefined,
@@ -1344,4 +1345,144 @@ describe("projectThread", () => {
       }
     });
   });
+});
+
+it("retains every clustered activity member and preserves mixed failure state", () => {
+  const projected = projectThread(
+    thread([
+      turn("t1", [
+        item({
+          id: "tool-a",
+          type: "commandExecution",
+          toolName: "shell",
+          status: "completed",
+          transcriptKey: "key-a",
+          position: { entry: 2, item: 0 },
+          outputImages: [{ source: "https://example.test/a.png" }],
+        }),
+        item({
+          id: "tool-c",
+          type: "commandExecution",
+          toolName: "cat",
+          status: "inProgress",
+          transcriptKey: "key-c",
+          position: { entry: 2, item: 2 },
+        }),
+        item({
+          id: "tool-b",
+          type: "commandExecution",
+          toolName: "grep",
+          status: "completed",
+          error: "failed",
+          transcriptKey: "key-b",
+          position: { entry: 2, item: 1 },
+        }),
+      ]),
+    ]),
+  );
+  const activity = projected.items.find((value) => value.kind === "activity");
+  expect(activity?.kind).toBe("activity");
+  if (activity?.kind !== "activity") return;
+  expect(activity.state).toBe("running");
+  expect(activity.members?.map((member) => member.id)).toEqual([
+    "tool-a",
+    "tool-c",
+  ]);
+  expect(activity.members?.map((member) => member.position?.item)).toEqual([
+    0, 2,
+  ]);
+  const failed = projected.items.find(
+    (value) => value.kind === "activity" && value.id === "tool-b",
+  );
+  expect(failed).toMatchObject({ kind: "activity", state: "failed" });
+  expect(projected.items).toContainEqual(
+    expect.objectContaining({
+      kind: "attachments",
+      id: "tool-a:attachments",
+      sourceTranscriptKey: "key-a",
+      items: [
+        expect.objectContaining({
+          id: "tool-a:out:0",
+          src: "https://example.test/a.png",
+        }),
+      ],
+    }),
+  );
+});
+
+it("retains typed system event and sourced hook exit metadata", () => {
+  const projected = projectThread(
+    thread([
+      turn("t1", [
+        item({
+          id: "hook-1",
+          type: "systemMessage",
+          eventKind: "hook_completed",
+          exitCode: 7,
+          text: "hook failed",
+        }),
+      ]),
+    ]),
+  );
+  const notice = projected.items[0];
+  expect(notice).toMatchObject({
+    kind: "notice",
+    eventKind: "hook_completed",
+    exitCode: 7,
+  });
+});
+
+it("retains distinct tool intent inside compact activity members", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "a",
+          type: "commandExecution",
+          toolName: "shell",
+          description: "Inspect source",
+          status: "completed",
+        }),
+        item({
+          id: "b",
+          type: "commandExecution",
+          toolName: "shell",
+          description: "Run checks",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+  const activity = projected.items.find((value) => value.kind === "activity");
+  expect(
+    activity?.kind === "activity"
+      ? activity.members?.map((member) => member.detail.description)
+      : [],
+  ).toEqual(["Inspect source", "Run checks"]);
+});
+
+it("keeps failures of unknown activity types individually visible", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "a",
+          type: "futureTool",
+          error: "first failure",
+          status: "failed",
+        }),
+        item({
+          id: "b",
+          type: "futureTool",
+          error: "second failure",
+          status: "failed",
+        }),
+      ]),
+    ]),
+  );
+  expect(
+    projected.items
+      .filter((value) => value.kind === "activity")
+      .map((value) => value.id),
+  ).toEqual(["a", "b"]);
 });

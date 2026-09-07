@@ -23,6 +23,7 @@ import type {
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   ActivityDetail,
+  ActivityMember,
   ActivityState,
   AttachmentRef,
   MobileAskOption,
@@ -303,14 +304,17 @@ function projectItem(
     return {
       kind: "activity",
       pre: {
-        family: `unknown:${item.type}`,
+        family:
+          activityState(item) === "failed"
+            ? `failed:${item.id}`
+            : `unknown:${item.type}`,
         item: {
           kind: "activity",
           id: item.id,
           label: "Reasoning",
           family: "reasoning",
           state: activityState(item),
-          detail: { output: item.text },
+          detail: { ...activityDetail(item), output: item.text },
         },
       },
     };
@@ -401,6 +405,8 @@ function projectItem(
         family: systemFamily(item.eventKind),
         tone,
         text: item.text ?? "",
+        ...(item.eventKind ? { eventKind: item.eventKind } : {}),
+        ...(item.exitCode !== undefined ? { exitCode: item.exitCode } : {}),
       },
     };
   }
@@ -412,14 +418,17 @@ function projectItem(
   return {
     kind: "activity",
     pre: {
-      family: `unknown:${item.type}`,
+      family:
+        activityState(item) === "failed"
+          ? `failed:${item.id}`
+          : `unknown:${item.type}`,
       item: {
         kind: "activity",
         id: item.id,
         label: "Activity",
         family: "unknown",
         state: activityState(item),
-        detail: { output: item.text },
+        detail: { ...activityDetail(item), output: item.text ?? item.output },
       },
     },
   };
@@ -427,6 +436,7 @@ function projectItem(
 
 function activityDetail(item: ThreadItem): ActivityDetail {
   return {
+    description: item.description,
     arguments: item.argumentsJson,
     output: item.output,
     error: item.error,
@@ -472,7 +482,16 @@ function clusterActivities(
         const state: ActivityState = run.some((p) => p.item.state === "running")
           ? "running"
           : "completed";
-        result.push({ ...first, state });
+        const members: ActivityMember[] = run.map(({ item }) => ({
+          id: item.id,
+          label: item.label,
+          family: item.family,
+          state: item.state,
+          detail: item.detail,
+          ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
+          ...(item.position ? { position: item.position } : {}),
+        }));
+        result.push({ ...first, state, members });
       }
     }
     run = [];

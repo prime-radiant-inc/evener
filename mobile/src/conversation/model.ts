@@ -37,12 +37,23 @@ export type ActivityFamily = "tool" | "reasoning" | "unknown";
 // diagnostics disclosure cite the stable identifier without exposing it in
 // the default collapsed row.
 export interface ActivityDetail {
+  description?: string;
   arguments?: string;
   output?: string;
   error?: string;
   exitCode?: number;
   durationMs?: number;
   callId?: string;
+}
+
+export interface ActivityMember {
+  id: string;
+  label: string;
+  family: ActivityFamily;
+  state: ActivityState;
+  detail: ActivityDetail;
+  transcriptKey?: string;
+  position?: { entry: number; item: number };
 }
 
 // Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
@@ -105,12 +116,15 @@ export type MobileTimelineItem = (
       family: ActivityFamily;
       state: ActivityState;
       detail: ActivityDetail;
+      members?: ActivityMember[];
     }
   | {
       kind: "notice";
       id: string;
       origin: NoticeOrigin;
       steeringKind?: string;
+      eventKind?: string;
+      exitCode?: number;
       family: NoticeFamily;
       tone: NoticeTone;
       text: string;
