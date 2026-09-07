@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,16 +14,8 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestItemTurnsFromEntriesLargeFixtureTiming times the file read against the
-// in-memory entries projection over a large synthetic transcript and gates
-// on a generous ratio floor: the file form (scan + decode + project) must be
-// at least 3x slower than the entries form (project only). The floor is
-// deliberately loose so machine load cannot flake it — a regression that
-// erases the entries form's win has to cost more than 3x before this fails.
-func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing measurement, not a correctness gate")
-	}
+func largeEntryProjectionFixture(t testing.TB) (string, transcript.Header, []transcript.Entry) {
+	t.Helper()
 	const entryCount = 20000
 	path := filepath.Join(t.TempDir(), "large.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
@@ -47,44 +40,59 @@ func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return []appwire.ThreadItem{{Type: "userMessage", ID: turnID, TurnID: turnID, Text: turn.Message.Content[0].Text}}
-	}
-
-	// File form.
-	fileStart := time.Now()
-	fileTurns, err := ItemTurnsFromFile(path, 1<<30, project)
-	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
-	}
-	fileElapsed := time.Since(fileStart)
-
-	// Entries form: decode once the way resume does, then project.
 	rw, entries, err := transcript.OpenWriterForSession(path, "th_large")
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
 	}
-	_ = rw.Close() //nolint:errcheck // measurement fixture
-	entriesStart := time.Now()
-	entryTurns, err := ItemTurnsFromEntries(rw.Header(), entries, project)
+	if err := rw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path, rw.Header(), entries
+}
+
+func largeEntryProjector(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	return []appwire.ThreadItem{{Type: "userMessage", ID: turnID, TurnID: turnID, Text: turn.Message.Content[0].Text}}
+}
+
+func TestItemTurnsFromEntriesLargeFixtureParity(t *testing.T) {
+	path, header, entries := largeEntryProjectionFixture(t)
+	fileTurns, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector)
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	entryTurns, err := ItemTurnsFromEntries(header, entries, largeEntryProjector)
 	if err != nil {
 		t.Fatalf("ItemTurnsFromEntries: %v", err)
 	}
-	entriesElapsed := time.Since(entriesStart)
+	if len(entryTurns) != len(entries)+1 {
+		t.Fatalf("got %d turns for %d entries and system prelude", len(entryTurns), len(entries))
+	}
+	if !reflect.DeepEqual(fileTurns, entryTurns) {
+		t.Fatal("file and in-memory projections differ")
+	}
+}
 
-	t.Logf("fixture: %d entries, %d bytes (%.1f MB)", entryCount, info.Size(), float64(info.Size())/1024/1024)
-	t.Logf("file form (scan+decode+project): %v, turns=%d", fileElapsed, len(fileTurns))
-	t.Logf("entries form (project only):     %v, turns=%d", entriesElapsed, len(entryTurns))
-	ratio := float64(fileElapsed) / float64(entriesElapsed)
-	t.Logf("ratio: %.1fx", ratio)
-	if ratio < 3 {
-		t.Fatalf("file form was only %.1fx slower than the entries form; the entries projection's skip of the file I/O + decode pass is its entire reason to exist", ratio)
-	}
-	if len(fileTurns) != len(entryTurns) {
-		t.Fatalf("turn counts diverge: file=%d entries=%d", len(fileTurns), len(entryTurns))
-	}
+// Benchmark the saved-file scan and the already-decoded projection separately;
+// scheduler load can change their timing ratio without changing either contract.
+func BenchmarkItemTurnsLargeFixture(b *testing.B) {
+	path, header, entries := largeEntryProjectionFixture(b)
+	b.Run("file", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("entries", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := ItemTurnsFromEntries(header, entries, largeEntryProjector); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

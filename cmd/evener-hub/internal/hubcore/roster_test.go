@@ -652,9 +652,9 @@ func TestRoster_RefreshRejectsStaleConcurrentCommit(t *testing.T) {
 	newDone := make(chan struct{})
 	go func() { r.Refresh(); close(newDone) }()
 	<-prober.secondStarted
+	<-newDone
 	close(prober.releaseFirst)
 	<-oldDone
-	<-newDone
 
 	entry, ok := r.Find("parent")
 	if !ok || entry.Status != "new" || len(entry.RunningSubagentIDs) != 1 || entry.RunningSubagentIDs[0] != "new-child" {
