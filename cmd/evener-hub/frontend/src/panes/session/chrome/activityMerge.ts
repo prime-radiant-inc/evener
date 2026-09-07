@@ -51,16 +51,14 @@ function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelega
   return state;
 }
 
-function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate, targetID: string): ActivityDelegate {
-  const delegateID = activityNodeID({ kind: "delegate", delegateId: current.delegateId });
+function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
   const state = revisionFencedDelegate(current, patch);
-  if (delegateID === targetID) return state;
   return {
     ...state,
     branch: { ...patch.branch },
     child:
       current.child && patch.child && current.child.sessionId === patch.child.sessionId
-        ? mergeSession(current.child, patch.child, targetID)
+        ? mergeSession(current.child, patch.child)
         : patch.child
           ? cloneSession(patch.child)
           : current.child
@@ -93,8 +91,8 @@ export function fenceRootSession(current: ActivitySessionNode, incoming: Activit
   };
 }
 
-function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode, targetID: string): ActivitySessionNode {
-  if (activityNodeID(current) === targetID) return cloneSession(patch);
+function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode): ActivitySessionNode {
+  // A continuation omits entries before its cursor, including at the target session.
   const patchByID = new Map<string, ActivityEntry>();
   for (const entry of patch.entries) patchByID.set(activityNodeID(entry), entry);
   const mergedEntries = current.entries.map((entry) => {
@@ -102,7 +100,7 @@ function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode, 
     const patchEntry = patchByID.get(id);
     if (!patchEntry) return cloneEntry(entry);
     if (entry.kind === "delegate" && patchEntry.kind === "delegate") {
-      return { kind: "delegate", delegate: mergeDelegate(entry.delegate, patchEntry.delegate, targetID) };
+      return { kind: "delegate", delegate: mergeDelegate(entry.delegate, patchEntry.delegate) };
     }
     return cloneEntry(patchEntry);
   }) as ActivityEntry[];
@@ -121,8 +119,8 @@ function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode, 
   };
 }
 
-export function graftContinuationTree(current: ActivityTree, targetID: string, patch: ActivityTree): ActivityTree {
-  const root = mergeSession(current.root, patch.root, targetID);
+export function graftContinuationTree(current: ActivityTree, patch: ActivityTree): ActivityTree {
+  const root = mergeSession(current.root, patch.root);
   // A continuation response describes one retained branch and can carry counts
   // for that partial window. The root counts are the badge's authoritative
   // summary, so a continuation must never replace them.

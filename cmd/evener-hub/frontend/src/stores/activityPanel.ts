@@ -168,7 +168,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
         } else if (result.kind === "ready") {
           const previousTree = retainedTree(current.load);
           if (previousTree) {
-            const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
+            const tree = graftContinuationTree(previousTree, result.tree);
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];

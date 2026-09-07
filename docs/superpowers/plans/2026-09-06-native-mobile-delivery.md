@@ -552,3 +552,24 @@ All 116 contracts across eleven files, independent package qualification and
 the canonical web gate pass. Luna medium reviewed the fix; the coordinator ran
 the checks. The earlier real goal proof remains tied to its recorded `d48fe9471`
 bundle/package hashes rather than silently claiming this newer SDK source.
+
+## Activity continuation checkpoint
+
+Source verification found that the real server returns a continuation suffix,
+but the native/web merge replaced the target session and lost its loaded prefix.
+A second early return suppressed delegate child expansion at equal projection
+revisions. Both paths now use the existing ordered ID merge. Regular root reads
+still replace missing entries; continuation ownership and revision guards remain.
+The internal merge no longer takes an unnecessary target ID, while both readers
+retain their advertised-cursor and per-branch request/error checks.
+
+One corrected native fixture and four new shared merge regressions failed before
+the fix. The 22 focused frontend tests, all 585 native tests plus TypeScript and
+the canonical frontend gate pass. Luna medium proposed and reviewed the repair;
+the coordinator verified server/caller contracts, corrected test fixtures and
+ran validation. No current-device nested-paging acceptance is claimed yet.
+
+Next: real v4 activity/tasks/jobs and packaged SDK coverage, then remaining fault,
+multi-hub, transcript, accessibility, physical-device and release qualification.
+The installed iOS source remains goal-qualified `d48fe9471`; rebuild before its
+next changed-code acceptance. The two unrelated Apple edits remain preserved.

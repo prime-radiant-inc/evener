@@ -98,3 +98,26 @@ after the failure was removed. This establishes native activity-tree
 retention and recovery; output-window reconnect/failure acceptance and
 cross-hub faults are still open. Nested delegate branch paging, full metadata,
 styled output, accessibility and performance acceptance remain outstanding.
+
+## Continuation prefix repair — 7 September
+
+The server's continuation cursor skips entries already returned. The shared
+native/web merge treated the target session as a replacement, dropping its
+loaded prefix. It also skipped child expansion when the target delegate's
+projection revision was unchanged. The native test previously repeated the
+prefix in its continuation fixture and therefore missed the loss.
+
+Continuation now uses the existing ordered ID merge throughout the returned
+branch: retain earlier entries, update overlaps, append new entries, and merge
+children independently of the delegate metadata revision fence. Both callers
+use this path only for continuations; ordinary root refresh continues to
+replace missing entries. Root summary retention, advertised-cursor checks,
+invalidation handling and ownership guards remain in effect.
+
+The corrected native suffix fixture failed before the fix, as did four new
+shared merge regressions for overlap, nested prefixes, equal-revision expansion
+and newer delegate metadata. The focused frontend suites pass 22 tests, and
+the full native suite passes 585 tests plus TypeScript. The canonical frontend
+gate passes typecheck, tests and lint after formatting. Current-source real v4
+device branch paging and the broader activity acceptance matrix remain open;
+the installed iOS bundle still corresponds to the goal-qualified source.

@@ -153,7 +153,7 @@ export class ActivityList {
           this.publish({
             tree: current
               ? branch
-                ? graftContinuationTree(current, branch.id, tree)
+                ? graftContinuationTree(current, tree)
                 : { ...tree, root: fenceRootSession(current.root, tree.root) }
               : tree,
           });

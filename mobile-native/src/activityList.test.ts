@@ -93,7 +93,7 @@ it("loads only a currently advertised continuation and preserves authoritative r
   const branch = list.branches()[0];
   expect(branch).toMatchObject({ continuation: "cursor" });
   if (!branch) throw new Error("missing branch");
-  io.read = async () => ({ data: tree(1, ["a", "b"]) });
+  io.read = async () => ({ data: tree(1, ["b"]) });
   await list.loadMore(branch.id, "stale-cursor");
   expect(requests).toHaveLength(1);
   await list.loadMore(branch.id, "cursor");
@@ -102,6 +102,13 @@ it("loads only a currently advertised continuation and preserves authoritative r
     params: { ref: "local:test", continuation: "cursor" },
   });
   expect(list.getSnapshot().tree?.root.entries).toHaveLength(2);
+  expect(
+    list
+      .getSnapshot()
+      .tree?.root.entries.map((entry) =>
+        entry.kind === "shell" ? entry.job.jobId : entry.delegate.delegateId,
+      ),
+  ).toEqual(["a", "b"]);
   expect(list.getSnapshot().tree?.root.counts.complete).toBe(false);
   expect(list.branches()).toHaveLength(0);
 });

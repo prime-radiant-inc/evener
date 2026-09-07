@@ -446,6 +446,12 @@ Goals, tasks, activity, queue operations, approvals and questions have partial
 implementation/evidence. Complete remaining paging, concurrent updates,
 resolution on another device, stale actions and uncertain delivery scenarios.
 
+Activity continuation now retains earlier jobs when the server returns only
+the next page, and expands delegate children at unchanged projection revisions.
+The corrected native fixture and shared merge regressions reproduced the
+previous loss. [Activity evidence](activity.md#continuation-prefix-repair--7-september)
+separates this deterministic repair from outstanding real v4 branch paging.
+
 Queue cancel/promote/drain now validate operation receipts before acknowledgment;
 the shared service rejects malformed or mismatched replies and preserves the
 existing unconfirmed-action/refresh path. The SDK has a guarded queue recipe
