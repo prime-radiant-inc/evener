@@ -23,6 +23,8 @@ description = "fuzz-toolkit test fixtures and shape-scrubbed seed corpora"
 # fake "sk-LIVETEST…" key used in subagent test fixtures and design docs.
 regexTarget = "match"
 regexes = [
+  # Exact deterministic native redaction-test fixtures; no live credentials.
+  '''AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8''',
   '''sk-proj-PLANT3D[A-Za-z0-9]+''',
   '''sk-proj-abcdefABCDEF[A-Za-z0-9]+''',
   '''sk-ant-api03-abcdefABCDEF[A-Za-z0-9]+''',
@@ -44,6 +46,11 @@ regexes = [
 # docs/superpowers/** are internal design/planning docs that carry illustrative
 # example keys (e.g. the package path "internal/hubapi" the generic rule trips on).
 paths = [
+  # Ignored native dependency/build products use third-party fixtures and signatures.
+  # Keep the corresponding tracked Rust and native app source in the scan.
+    '''(^|/)mobile/src-tauri/target/.*''',
+  '''(^|/)mobile/tauri-plugin-evener-native/target/.*''',
+  '''(^|/)mobile-native/ios/Pods/.*''',
   '''docs/superpowers/.*''',
   # The subagent-output redaction tests exist to PROVE the redactor strips
   # secrets: every "secret" in them is a deliberately-fake fixture (hunter2isweak,
