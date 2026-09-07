@@ -6,6 +6,22 @@ import {
 } from "./keybindingRules";
 
 describe("native hub shortcut rules", () => {
+	it("shows the authored winning rule through invalid repeats, collisions, and unbinding", () => {
+		const first = { action: "palette.open", chord: "(F6|F7)" };
+		const shortcuts = (rules: Parameters<typeof keybindingPreview>[0]) =>
+			keybindingPreview(rules).rows.find((row) => row.actionId === first.action)
+				?.shortcuts;
+		expect(shortcuts([first, { ...first, chord: "Meta+" }])).toEqual([
+			first.chord,
+		]);
+		expect(shortcuts([first, { ...first, chord: "(F8|F9)" }])).toEqual([
+			"(F8|F9)",
+		]);
+		const collision = [first, { ...first, chord: "Meta+I" }];
+		expect(keybindingPreview(collision).warnings[0]?.reason).toBe("conflict");
+		expect(shortcuts(collision)).toEqual(shortcuts([]));
+		expect(shortcuts([first, { ...first, chord: null }])).toEqual([]);
+	});
 	it("refuses newly introduced conflicts while preserving existing unknown rules", () => {
 		const raw = [
 			{ action: "future.action", chord: "Meta+U" },
