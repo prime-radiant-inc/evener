@@ -7921,6 +7921,33 @@ test("explicit refresh captures the replacement client with its ready epoch", as
   expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
 });
 
+test("saved snapshots retain restart protection for subsequently discovered outbox records", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "late-upgrade-record" });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  status = "notLoaded";
+  await threadsStore.getState().refreshThread("ref_a");
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "sentinel" }] },
+    attachments: [],
+    optimisticDisplay: { text: "sentinel" },
+  });
+  await threadsStore.getState().refreshThread("ref_a");
+  expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(0);
+  status = "idle";
+  await threadsStore.getState().refreshThread("ref_a");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+});
+
 for (const state of ["blockedUnknown", "submitting"] as const) {
   test(`incompatible refresh preserves ${state} until a compatible snapshot arrives`, async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "upgrade-pending" });

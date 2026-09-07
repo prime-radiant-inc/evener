@@ -205,6 +205,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // lets this pane render an honest terminal state instead of "Loading
   // transcript…" forever.
   const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
 
@@ -418,7 +419,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               primaryModel={model.model}
             />
             {(model.status.type === "restartRequired" ||
-              (model.status.type === "notLoaded" && blockedMutations.length > 0)) && (
+              (model.status.type === "notLoaded" && (restartPending || blockedMutations.length > 0))) && (
               <RestartRequiredNotice sessionRef={ref} stopped={model.status.type === "notLoaded"} />
             )}
             {reconciliationFailed && (

@@ -2094,6 +2094,29 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   expect(screen.getByText("Session unavailable until restart")).toBeTruthy();
 });
 
+test("offers explicit resume after restart even without pending messages", async () => {
+  const fake = connectFakeClient();
+  let status = "restartRequired";
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  fake.on("thread/resume", () => {
+    status = "idle";
+    return readResponse("ref_a", { status: { type: "idle" } });
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  status = "notLoaded";
+  fireEvent.click(refresh);
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(resume);
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+});
+
 test("explicitly resumes a stopped session before reconciling its uncertain send", async () => {
   const fake = connectFakeClient();
   let status = "restartRequired";

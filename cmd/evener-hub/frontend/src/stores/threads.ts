@@ -104,6 +104,7 @@ export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
+  restartBlockingObligations: ReadonlyMap<string, symbol>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -289,8 +290,6 @@ type PendingThreadHydration = {
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
-// Storage failure must not release an observed restart restriction.
-const restartBlockingObligations = new Map<string, symbol>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
 // --- Notification routing index ---------------------------------------------
@@ -631,7 +630,7 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (
     targetRef &&
     (pendingMutationReconciliations.has(targetRef) ||
-      restartBlockingObligations.has(targetRef) ||
+      threadsStore.getState().restartBlockingObligations.has(targetRef) ||
       threadsStore.getState().mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -795,7 +794,7 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   if (!status || status === "restartRequired" || status === "notLoaded") return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
-    restartBlockingObligations.has(record.targetRef) ||
+    threadsStore.getState().restartBlockingObligations.has(record.targetRef) ||
     threadsStore.getState().mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
@@ -1416,8 +1415,12 @@ async function publishAndReconcileThreadHydration(
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
-  if (published.status.type === "restartRequired") restartBlockingObligations.set(ref, Symbol());
-  const blockingObligation = restartBlockingObligations.get(ref);
+  if (published.status.type === "restartRequired") {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
+  }
+  const blockingObligation = threadsStore.getState().restartBlockingObligations.get(ref);
   // The authoritative read has succeeded, so the replay gate opens HERE — in
   // the same synchronous step publishThreadHydration deleted the ref's
   // pending-hydration entry — not after the storage hygiene below. Between
@@ -1471,8 +1474,17 @@ async function publishAndReconcileThreadHydration(
         await refreshMutationPins(runtime, [ref]);
         // A newer incompatible snapshot owns a different obligation. An older
         // successful reconciliation cannot clear that newer restriction.
-        if (current() && restartBlockingObligations.get(ref) === blockingObligation) {
-          restartBlockingObligations.delete(ref);
+        if (
+          current() &&
+          published.status.type !== "restartRequired" &&
+          published.status.type !== "notLoaded" &&
+          threadsStore.getState().restartBlockingObligations.get(ref) === blockingObligation
+        ) {
+          threadsStore.setState((state) => {
+            const restartBlockingObligations = new Map(state.restartBlockingObligations);
+            restartBlockingObligations.delete(ref);
+            return { restartBlockingObligations };
+          });
         }
       });
     pendingMutationReconciliations.set(ref, reconciliation);
@@ -2182,6 +2194,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
+  restartBlockingObligations: new Map(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
@@ -2841,7 +2854,6 @@ export function resetThreadsStoreForTests(): void {
   trackedHydrationCompletions.clear();
   pendingThreadHydrations.clear();
   pendingMutationReconciliations.clear();
-  restartBlockingObligations.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
   inflightWatchHydrateClients.clear();
