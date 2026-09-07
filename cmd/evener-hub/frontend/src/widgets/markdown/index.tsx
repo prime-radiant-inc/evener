@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked, type RendererObject, type Tokens } from "marked";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import styles from "./markdown.module.css";
@@ -154,6 +154,30 @@ const SANITIZE_CONFIG = {
   ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
 };
 
+// Live re-parse throttle: a full marked + DOMPurify pass per streamed token
+// is O(n^2) over a long stream. Below this source length every live render
+// takes the same full-parse path as before (all existing live tests stay on
+// it); past it, only the tail window is re-parsed per render while the
+// settled head is served from a prefix-keyed cache. Grown past the window
+// mid-stream, the head cache fills once per new head text and then hits.
+const LIVE_WINDOWED_MIN_LENGTH = 2000;
+// The tail window re-parsed on every live render past the threshold above -
+// sized to cover the in-progress block (a long paragraph, a fenced code
+// block still being written) without re-parsing the whole document.
+const LIVE_TAIL_WINDOW = 1000;
+
+// Finds the split point for the windowed live path: the last blank-line
+// boundary at or before `source.length - LIVE_TAIL_WINDOW`, so the head ends
+// on a settled block edge and the tail starts a fresh block. Falls back to a
+// hard cut at the window edge when the tail window holds no blank line (one
+// very long paragraph still streaming) - the tail's inline-scope parse below
+// makes that safe.
+function findWindowBoundary(source: string): number {
+  const edge = source.length - LIVE_TAIL_WINDOW;
+  const boundary = source.lastIndexOf("\n\n", edge);
+  return boundary === -1 ? edge : boundary + 2;
+}
+
 /**
  * Renders a markdown source string: marked tokenizes and generates HTML,
  * DOMPurify sanitizes it against a fixed allowlist, and the result is set
@@ -164,9 +188,41 @@ const SANITIZE_CONFIG = {
  * closed before parsing (see streaming.ts).
  */
 export function Markdown({ source, live = false }: MarkdownProps) {
+  // Live streams re-render per streamed token, and each render re-parses the
+  // whole message (marked + DOMPurify) - O(n^2) over a long stream. Past the
+  // window above, the settled head is served from a cache keyed on its own
+  // exact prefix text (a changed head is a cache miss and re-parses, never
+  // stale output), while only the tail window is re-parsed per render with
+  // the live auto-close, so formatting still previews while streaming.
+  // Settled renders (live=false) always take the full-parse path below
+  // unchanged, so the final HTML is byte-identical with or without this
+  // throttle.
+  const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
   const html = useMemo(() => {
-    const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
-    return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
+      const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
+      return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
+    }
+    const boundary = findWindowBoundary(source);
+    const headSource = source.slice(0, boundary);
+    const tailSource = source.slice(boundary);
+    const cached = headCacheRef.current;
+    const headHtml =
+      cached !== null && cached.headSource === headSource
+        ? cached.headHtml
+        : DOMPurify.sanitize(md.parse(headSource, { async: false }), SANITIZE_CONFIG);
+    if (cached === null || cached.headSource !== headSource) {
+      headCacheRef.current = { headSource, headHtml };
+    }
+    // The tail is a live preview, not a reopenable document: parsing it
+    // standalone can leave block structure open at its start (a list item, a
+    // fence), so it is kept to inline scope - the tail's own block boundary
+    // (see findWindowBoundary) plus closeOpenMarkdown already closed its
+    // emphasis/code spans, and any block wrapper marked emits here is
+    // dropped in favor of its inner content.
+    const tailClosed = closeOpenMarkdown(tailSource);
+    const tailHtml = DOMPurify.sanitize(md.parseInline(tailClosed, { async: false }) as string, SANITIZE_CONFIG);
+    return headHtml + tailHtml;
   }, [source, live]);
 
   // Reviewed: this is the narrow, legitimate case for dangerouslySetInnerHTML
