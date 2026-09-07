@@ -109,6 +109,10 @@ func (p *sseParser) processLine(line string, fn func(SSEEvent) error) (bool, err
 
 // ParseSSE parses Server-Sent Events from r and invokes fn for each complete event.
 // It handles "event:" and "data:" lines and emits an event on blank-line boundaries.
+// The caller retains ownership of r: ParseSSE never closes it. With a read
+// timeout, a background read may remain blocked after ParseSSE returns; callers
+// must close or otherwise interrupt their reader to release it. An arbitrary
+// borrowed io.Reader cannot be forcibly interrupted by this parser.
 func ParseSSE(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, opts ...SSEOption) error {
 	var cfg sseOptions
 	for _, o := range opts {
@@ -157,9 +161,6 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 	defer timer.stop()
 	done := make(chan struct{})
 	defer close(done)
-	if closer, ok := r.(io.Closer); ok {
-		defer func() { _ = closer.Close() }()
-	}
 	br := bufio.NewReader(&sseActivityReader{reader: r, progress: timer.progress})
 
 	lineCh := make(chan readResult, 1)

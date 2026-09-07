@@ -35,6 +35,10 @@ var ErrAllModelsRefused = errors.New("all auxiliary models refused")
 type Caller struct {
 	client *llm.Client
 
+	// AdapterTimeout is the session's default policy for auxiliary requests.
+	// Set before use; explicit request policies take precedence.
+	AdapterTimeout *llm.AdapterTimeout
+
 	mu      sync.Mutex
 	refused map[route]struct{}
 	probes  map[route]*probeCall
@@ -94,6 +98,9 @@ func (c *Caller) run(ctx context.Context, profile *provider.Profile, cheap route
 }
 
 func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap route, req llm.Request) (llm.Response, bool, error) {
+	if req.AdapterTimeout == nil {
+		req.AdapterTimeout = c.AdapterTimeout
+	}
 	active := sessionModel(profile)
 	if cheap != active && !c.serves(cheap) {
 		cheap = active

@@ -211,6 +211,9 @@ type Manager struct {
 	// Used to identify communicate tool calls during compaction.
 	ResultToolName string
 
+	// AdapterTimeout is the session's auxiliary request policy. Set before use.
+	AdapterTimeout *llm.AdapterTimeout
+
 	// Token measurement from the last API response. When available, used instead
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
@@ -1298,7 +1301,7 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	if len(routes) == 0 {
 		return llm.Response{}, errors.New("summarization model is empty")
 	}
-	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}}
+	req := llm.Request{Messages: []llm.Message{llm.User(prompt)}, AdapterTimeout: cm.AdapterTimeout}
 	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
 	resp, ranSessionModel, err := cm.cheap.CompleteConfigured(callCtx, profile, req)
 	if err != nil && !ranSessionModel && len(routes) > 1 && shouldFallbackSummarizationModel(ctx, err) {
