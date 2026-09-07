@@ -19,6 +19,11 @@ import (
 // for the model in the job_watch tool description and docs/job-control.md.
 const outputMatchWindowBytes = 4096
 
+// maxOutputMatcherScratchBytes bounds the matcher's reusable scratch buffers.
+// A chunk far larger than the window still scans exactly as before, but its
+// backing array is released instead of pinned on the matcher forever.
+const maxOutputMatcherScratchBytes = 4 * outputMatchWindowBytes
+
 // CompileOutputMatch compiles an output_match pattern the way the scanner runs
 // it: multiline, so ^ and $ anchor at newlines within the scan window rather
 // than only at the window's own edges. It is the single home for that decision,
@@ -61,6 +66,18 @@ type OutputMatcher struct {
 	// fall out of the window are pruned. This is what makes overlapping windows
 	// safe.
 	reported []matchRange
+	// windowBuf is scratch space for the carry+chunk scan window, reused across
+	// feeds so a streaming Feed does not allocate per chunk. It never escapes
+	// the feed: excerpts are copied to strings and the carry is copied out
+	// before the buffer is retained.
+	windowBuf []byte
+	// anchorBuf is scratch space for the CRLF-normalized bytes the pattern runs
+	// against, reused the same way. ScanRetained does NOT use it — it keeps a
+	// local scratch so a level scan stays a pure read of the matcher.
+	anchorBuf []byte
+	// carryHasCR records whether carry contains a '\r', so the feed's CRLF fast
+	// path only has to scan the fresh chunk.
+	carryHasCR bool
 }
 
 // matchRange is a half-open match extent in the stream's lifetime byte space.
@@ -101,6 +118,7 @@ func (m *OutputMatcher) Regexp() *regexp.Regexp { return m.re }
 func (m *OutputMatcher) SetScanOffset(off int64) {
 	m.scanOffset = off
 	m.carry = m.carry[:0]
+	m.carryHasCR = false
 	m.carryProvenance = nil
 	m.reported = nil
 }
@@ -116,6 +134,7 @@ func (m *OutputMatcher) SeedCarry(scanned []byte) {
 		scanned = scanned[len(scanned)-outputMatchWindowBytes:]
 	}
 	m.carry = append(m.carry[:0], scanned...)
+	m.carryHasCR = bytes.IndexByte(m.carry, '\r') >= 0
 	m.carryProvenance = nil
 	m.reported = m.scanWindow(m.carry, m.scanOffset-int64(len(m.carry)))
 }
@@ -152,12 +171,18 @@ func (m *OutputMatcher) FeedAtWithProvenance(chunk []byte, endOffset int64, p *p
 		m.carryProvenance = provenance.Union(m.carryProvenance, p)
 	}
 
-	window := make([]byte, 0, len(m.carry)+len(chunk))
-	window = append(window, m.carry...)
+	// The window is built incrementally in a reused buffer: at most the bounded
+	// carry (outputMatchWindowBytes) of already-scanned overlap plus the fresh
+	// chunk. The pattern still runs over the full window every chunk — the
+	// overlap re-scan is what lets the reported-range dedup below see a slid
+	// window's re-match as the same occurrence — so only the allocation is
+	// saved, never a match decision.
+	carryLen := len(m.carry)
+	window := append(m.windowBuf[:0], m.carry...)
 	window = append(window, chunk...)
 	windowStart := endOffset - int64(len(window))
 
-	fresh := unreportedRanges(m.scanWindow(window, windowStart), m.reported)
+	fresh := unreportedRanges(m.scanWindowFresh(window, windowStart, carryLen), m.reported)
 	var matches []OutputMatch
 	for _, r := range fresh {
 		matches = append(matches, OutputMatch{
@@ -172,10 +197,20 @@ func (m *OutputMatcher) FeedAtWithProvenance(chunk []byte, endOffset int64, p *p
 	}
 
 	m.scanOffset = endOffset
-	if len(window) > outputMatchWindowBytes {
-		window = window[len(window)-outputMatchWindowBytes:]
+	tail := window
+	if len(tail) > outputMatchWindowBytes {
+		tail = tail[len(tail)-outputMatchWindowBytes:]
 	}
-	m.carry = append(m.carry[:0], window...)
+	m.carry = append(m.carry[:0], tail...)
+	m.carryHasCR = bytes.IndexByte(m.carry, '\r') >= 0
+	if cap(window) > maxOutputMatcherScratchBytes {
+		m.windowBuf = nil
+	} else {
+		m.windowBuf = window[:0]
+	}
+	if cap(m.anchorBuf) > maxOutputMatcherScratchBytes {
+		m.anchorBuf = nil
+	}
 	m.reported = pruneRanges(mergeRanges(m.reported, fresh), endOffset-int64(len(m.carry)))
 	return matches
 }
@@ -206,12 +241,18 @@ func (m *OutputMatcher) ScanRetained(data []byte) (last string, matched bool) {
 	if len(data) == 0 {
 		return "", false
 	}
+	// Local scratch, reused across windows so every CRLF window in a large
+	// retained blob does not allocate its own normalized copy. It stays local
+	// so this remains a pure read of the matcher.
+	var scratch []byte
 	for start := ((len(data) - 1) / outputMatchWindowBytes) * outputMatchWindowBytes; start >= 0; start -= outputMatchWindowBytes {
 		window := data[start:min(start+2*outputMatchWindowBytes, len(data))]
-		if !m.re.Match(anchorText(window)) {
+		anchored, retained := anchorBytes(scratch, window)
+		scratch = retained
+		if !m.re.Match(anchored) {
 			continue
 		}
-		found := m.scanWindow(window, int64(start))
+		found := findMatchRanges(m.re, anchored, int64(start))
 		if len(found) == 0 {
 			continue
 		}
@@ -223,12 +264,34 @@ func (m *OutputMatcher) ScanRetained(data []byte) (last string, matched bool) {
 
 // scanWindow runs the pattern over window — whose first byte sits at stream
 // offset windowStart — and returns every match short enough to report, in
-// stream offsets, ascending.
+// stream offsets, ascending. The normalized bytes come from the reused
+// anchorBuf; the returned ranges are identical to a fresh full-window scan.
 func (m *OutputMatcher) scanWindow(window []byte, windowStart int64) []matchRange {
 	if len(window) == 0 {
 		return nil
 	}
-	locs := m.re.FindAllIndex(anchorText(window), -1)
+	return findMatchRanges(m.re, m.anchoredFull(window), windowStart)
+}
+
+// scanWindowFresh is scanWindow for a feed window built as carry+chunk, where
+// the first carryLen bytes are the already-scanned carry. Match results are
+// identical to scanWindow; only the CRLF fast path differs, consulting
+// carryHasCR so the carry bytes are not re-scanned for '\r'.
+func (m *OutputMatcher) scanWindowFresh(window []byte, windowStart int64, carryLen int) []matchRange {
+	if len(window) == 0 {
+		return nil
+	}
+	return findMatchRanges(m.re, m.anchoredFresh(window, carryLen), windowStart)
+}
+
+// findMatchRanges runs re over already-anchored bytes — whose first byte sits
+// at stream offset windowStart — and returns every match short enough to
+// report, in stream offsets, ascending.
+func findMatchRanges(re *regexp.Regexp, anchored []byte, windowStart int64) []matchRange {
+	if len(anchored) == 0 {
+		return nil
+	}
+	locs := re.FindAllIndex(anchored, -1)
 	if len(locs) == 0 {
 		return nil
 	}
@@ -255,17 +318,57 @@ func (m *OutputMatcher) scanWindow(window []byte, windowStart int64) []matchRang
 // matching a literal "\r\n" cannot match. Trading those for "$ works at all on
 // Windows-style output" is the better deal.
 func anchorText(window []byte) []byte {
+	anchored, _ := anchorBytes(nil, window)
+	return anchored
+}
+
+// anchoredFull returns the bytes the pattern runs against for window, reusing
+// the matcher's anchorBuf for the CRLF copy. Byte-identical to anchorText.
+func (m *OutputMatcher) anchoredFull(window []byte) []byte {
+	anchored, retained := anchorBytes(m.anchorBuf, window)
+	m.anchorBuf = retained
+	return anchored
+}
+
+// anchoredFresh is anchoredFull for a feed window whose first carryLen bytes
+// are the already-scanned carry. When the carry is known CR-free, only the
+// fresh tail is scanned for '\r'; a window with no '\r' anywhere is returned
+// as-is, exactly like anchorText. Any window containing a '\r' takes the same
+// full copy+rewrite anchorText performs.
+func (m *OutputMatcher) anchoredFresh(window []byte, carryLen int) []byte {
+	if carryLen >= 0 && carryLen <= len(window) && !m.carryHasCR {
+		fresh := window[carryLen:]
+		if bytes.IndexByte(fresh, '\r') < 0 {
+			return window
+		}
+	}
+	return m.anchoredFull(window)
+}
+
+// anchorBytes returns the bytes the pattern is actually run against: window
+// with every CRLF's '\r' rewritten to '\n'. When window holds no '\r' it is
+// returned as-is (no allocation); otherwise dst's capacity is reused for the
+// copy and the retained buffer is reported back so the caller keeps reusing
+// one backing array.
+func anchorBytes(dst, window []byte) (anchored, retained []byte) {
 	i := bytes.IndexByte(window, '\r')
 	if i < 0 {
-		return window
+		return window, dst
 	}
-	out := append([]byte(nil), window...)
+	dst = append(dst[:0], window...)
+	rewriteCRLF(dst, i)
+	return dst, dst
+}
+
+// rewriteCRLF rewrites every CRLF's '\r' in out to '\n', starting the scan at
+// i (the index of the first '\r'). The rewrite is length-preserving, so match
+// indices still address the original window.
+func rewriteCRLF(out []byte, i int) {
 	for ; i < len(out)-1; i++ {
 		if out[i] == '\r' && out[i+1] == '\n' {
 			out[i] = '\n'
 		}
 	}
-	return out
 }
 
 // matchExcerpt renders the reported text for a match at [start, end) in window:
