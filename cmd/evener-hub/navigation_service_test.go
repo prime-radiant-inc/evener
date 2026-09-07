@@ -2543,3 +2543,57 @@ func TestNavigationReadV2DeltaForResourceThatLosesAllEntities(t *testing.T) {
 		}
 	}
 }
+
+// corruptRetainedNavigationBase rewrites one retained history entry so it still
+// decodes but no longer validates against its own version, which makes the next
+// delta attempt against that base fail inside diffNavigationSnapshots.
+func corruptRetainedNavigationBase(t *testing.T, history *navigationHistory, view navigationResourceKey, base appwire.NavigationReadBase) {
+	t.Helper()
+	history.mu.Lock()
+	defer history.mu.Unlock()
+	element, ok := history.entries[history.key(view, base)]
+	if !ok {
+		t.Fatalf("base %+v was not retained", base)
+	}
+	entry := element.Value.(navigationHistoryEntry)
+	want := []byte(fmt.Sprintf(`"revision":%d`, base.Revision))
+	tampered := bytes.Replace(entry.data, want, []byte(fmt.Sprintf(`"revision":%d`, base.Revision+1000)), 1)
+	if bytes.Equal(tampered, entry.data) {
+		t.Fatalf("retained snapshot %s did not carry %s", entry.data, want)
+	}
+	entry.data = tampered
+	element.Value = entry
+}
+
+func TestNavigationReadV2FailedDeltaFallsBackToSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: 1}
+	initial, err := service.readV2(t.Context(), key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := appwire.NavigationReadBase{GenerationID: initial.Response.GenerationID, Revision: initial.Response.Revision, ETag: initial.Response.ETag}
+	corruptRetainedNavigationBase(t, service.history, key, base)
+	source.changeTitle("delta fallback")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := service.readV2(t.Context(), key, &base)
+	if err != nil {
+		t.Fatalf("read with unreconstructable base: %v", err)
+	}
+	if changed.Response.Status != "ok" || changed.Response.Representation != appwire.NavigationRepresentationSnapshot || changed.Response.Base != nil {
+		t.Fatalf("response = %+v, want ok snapshot without Base", changed.Response)
+	}
+	if changed.DeltaFallback == nil {
+		t.Fatal("result did not report why the delta was abandoned")
+	}
+	assertNavigationV2ResponseBudget(t, key, changed.Response)
+	currentBase := appwire.NavigationReadBase{GenerationID: changed.Response.GenerationID, Revision: changed.Response.Revision, ETag: changed.Response.ETag}
+	if _, ok := service.history.Lookup(key, currentBase); !ok {
+		t.Fatal("fallback snapshot was not retained as the next delta base")
+	}
+}

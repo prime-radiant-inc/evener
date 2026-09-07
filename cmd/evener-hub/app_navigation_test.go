@@ -613,3 +613,42 @@ func assertNavigationWireError(t *testing.T, err error, wantCode int, wantInfo a
 func uint32Pointer(value uint32) *uint32 {
 	return new(value)
 }
+
+func TestHubNavigationFailedDeltaServesSnapshotAndLogs(t *testing.T) {
+	var logs []string
+	source := newTestNavigationSource(testNavigationNow())
+	service := newTestNavigationService(t, source)
+	server := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "test",
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	})
+	registerNavigationReadHandler(server, service)
+
+	limit := uint32(1)
+	params := appwire.NavigationReadParams{Resource: "project_page", ProjectKey: "p1", Tier: "current", Limit: &limit, RepresentationVersion: 2}
+	first := dispatchNavigationRead(t, server, params)
+	if first.Status != "ok" || first.Representation != appwire.NavigationRepresentationSnapshot {
+		t.Fatalf("initial response = %+v, want ok snapshot", first)
+	}
+	base := appwire.NavigationReadBase{GenerationID: first.GenerationID, Revision: first.Revision, ETag: first.ETag}
+	key := navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: "p1", Tier: "current", Limit: limit}
+	corruptRetainedNavigationBase(t, service.history, key, base)
+	source.changeTitle("handler delta fallback")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	params.Base = &base
+	changed, err := dispatchNavigationReadResult(t, server, params)
+	if err != nil {
+		t.Fatalf("read with unreconstructable base: %v", err)
+	}
+	if changed.Status != "ok" || changed.Representation != appwire.NavigationRepresentationSnapshot || changed.Base != nil {
+		t.Fatalf("response = %+v, want ok snapshot without Base", changed)
+	}
+	if joined := strings.Join(logs, "\n"); !strings.Contains(joined, "navigation delta fallback:") {
+		t.Errorf("server diagnostics did not record the abandoned delta: %q", logs)
+	}
+}
