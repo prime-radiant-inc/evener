@@ -855,6 +855,27 @@ func TestHandleAppThreadReadUnknownThreadRemainsEmpty(t *testing.T) {
 	}
 }
 
+func TestSubscribedThreadReadWithoutConnectionPreservesSnapshotTarget(t *testing.T) {
+	srv := seedTranscriptServer(t, 1)
+	srv.mu.Lock()
+	childTurns := &appTurnSnapshot{threadID: "child"}
+	childTurns.Seed(srv.appTurns.Snapshot())
+	childThread := srv.appThreadLocked()
+	childThread.ID, childThread.SessionID = "child", "child"
+	childThread.Evener.Ref = "local:child"
+	srv.appDescendants["child"] = &appDescendantProjection{turns: childTurns, thread: childThread}
+	srv.mu.Unlock()
+	for _, ref := range []string{"local:th_1", "local:child"} {
+		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, Subscribe: true, IncludeTurns: true})
+		if err != nil {
+			t.Fatalf("subscribed thread/read without connection (%s): %v", ref, err)
+		}
+		if len(response.Thread.Turns) == 0 {
+			t.Fatalf("subscribed no-connection response (%s) = %+v, want seeded snapshot", ref, response)
+		}
+	}
+}
+
 func TestPrepareAppIdentityUsesPersistedItemIndexIncarnation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_index"})

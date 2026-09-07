@@ -81,15 +81,6 @@ func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
 	}
 }
 
-func TestCaptureWithoutConnectionKeepsLifecycleOnlyTarget(t *testing.T) {
-	captured := CaptureSubscription(context.Background(), false, nil, func() uint64 { return 0 }, func() bool { return true }, func() SubscriptionTarget {
-		return SubscriptionTarget{LifecycleKey: "local:past"}
-	})
-	if !captured {
-		t.Fatal("no-connection capture rejected a valid lifecycle-only target")
-	}
-}
-
 func TestResolvedAdmissionMismatchPreservesOwnership(t *testing.T) {
 	for _, immediate := range []bool{false, true} {
 		s := NewServer(ServerConfig{})
