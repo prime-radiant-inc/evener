@@ -19,12 +19,21 @@ import type {
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { buildComposerInput } from "../../cmd/evener-hub/frontend/src/stores/composerInput";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
+import {
+  type CreationDraft,
+  type CreationDraftRepository,
+  creationDraftMetadata,
+} from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
 
 type Outcome =
   | { status: "created"; hubId: string; thread: Thread }
   | { status: "blocked" | "failed" | "obsolete" };
 interface Form {
+  storageLoaded: boolean;
+  storageError: string | null;
+  unconfirmedCreation: boolean;
+  retryStorage(): void;
   cwd: string;
   prompt: string;
   images: DraftImageData[];
@@ -66,14 +75,29 @@ export function creationModel(
   return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
-export function createNewSessionStore(hubId: string) {
+export function createNewSessionStore(
+  hubId: string,
+  storage?: () => Pick<CreationDraftRepository, "read" | "write" | "clear">,
+) {
   let service: NewSessionService | null = null;
   let connection = 0;
   let catalog = 0;
   let refreshingModels = false;
   let loadedContext: string | null = null;
   let creationRequested = false;
-  return createStore<Form>((set, get) => ({
+  let saving = false;
+  let lastSaved = "";
+  const store = createStore<Form>((set, get) => ({
+    storageLoaded: !storage,
+    storageError: null,
+    unconfirmedCreation: false,
+    retryStorage() {
+      if (get().storageLoaded) saveDraft();
+      else {
+        restoreDraft();
+        if (get().storageLoaded) void get().loadModels(true);
+      }
+    },
     cwd: "",
     prompt: "",
     images: [],
@@ -131,8 +155,6 @@ export function createNewSessionStore(hubId: string) {
         projects: [],
         harnesses: [],
         models: [],
-        model: null,
-        reasoning: "",
         loadingModels: false,
         submitting: false,
         ...(uncertainCreation
@@ -164,6 +186,7 @@ export function createNewSessionStore(hubId: string) {
     async setHarness(harness) {
       if (get().submitting) return;
       set({
+        ...(harness !== get().harness ? { model: null, reasoning: "" } : {}),
         harness,
         launchOverrides: harnessSupportsPluginSelection(
           harness,
@@ -232,15 +255,13 @@ export function createNewSessionStore(hubId: string) {
       const { cwd, harness } = get();
       const context = JSON.stringify([cwd.trim(), harness]);
       if (current && loadedContext === context && !refresh) return;
-      const selection = loadedContext === context ? get().model : null;
+      const selection = get().model;
       const reasoning = get().reasoning;
       loadedContext = null;
       const generation = ++catalog;
       refreshingModels = !!current && refresh;
       set({
         models: [],
-        model: null,
-        reasoning: "",
         loadingModels: !!current,
       });
       if (!current) return;
@@ -288,7 +309,15 @@ export function createNewSessionStore(hubId: string) {
       const current = service;
       const generation = connection;
       const { cwd, prompt, harness, model, reasoning, submitting } = get();
-      if (!current || submitting || refreshingModels || !cwd.trim())
+      if (
+        !current ||
+        submitting ||
+        refreshingModels ||
+        !cwd.trim() ||
+        !get().storageLoaded ||
+        (model !== null &&
+          loadedContext !== JSON.stringify([cwd.trim(), harness]))
+      )
         return { status: "blocked" };
       const launchOverrides = harnessSupportsPluginSelection(
         harness,
@@ -336,6 +365,16 @@ export function createNewSessionStore(hubId: string) {
             return { status: "blocked" };
           }
         }
+        const previouslyUnconfirmed = get().unconfirmedCreation;
+        saving = true;
+        set({ unconfirmedCreation: true });
+        saving = false;
+        if (!saveDraft()) {
+          saving = true;
+          set({ unconfirmedCreation: previouslyUnconfirmed });
+          saving = false;
+          return { status: "blocked" };
+        }
         startDispatched = true;
         creationRequested = true;
         const result = await current.start({
@@ -352,6 +391,31 @@ export function createNewSessionStore(hubId: string) {
           ...(Object.keys(launchOverrides).length ? { launchOverrides } : {}),
         });
         if (generation !== connection) return { status: "obsolete" };
+        if (storage) {
+          saving = true;
+          try {
+            storage().clear(hubId);
+            set({
+              cwd: "",
+              prompt: "",
+              images: [],
+              harness: "",
+              model: null,
+              reasoning: "",
+              launchOverrides: {},
+              unconfirmedCreation: false,
+              storageError: null,
+            });
+            lastSaved = creationDraftMetadata(snapshot());
+          } catch {
+            set({
+              storageError:
+                "The session was created, but its local draft could not be cleared. Check the session list before reusing this draft.",
+            });
+          } finally {
+            saving = false;
+          }
+        }
         return { status: "created", hubId, thread: result.thread };
       } catch (error) {
         if (generation !== connection) return { status: "obsolete" };
@@ -367,4 +431,78 @@ export function createNewSessionStore(hubId: string) {
       }
     },
   }));
+  function snapshot(): CreationDraft {
+    const state = store.getState();
+    return {
+      cwd: state.cwd,
+      prompt: state.prompt,
+      harness: state.harness,
+      model: state.model,
+      reasoning: state.reasoning,
+      launchOverrides: state.launchOverrides,
+      images: state.images,
+      unconfirmed: state.unconfirmedCreation,
+    };
+  }
+  function saveDraft(): boolean {
+    if (!storage) return true;
+    if (!store.getState().storageLoaded) return false;
+    const draft = snapshot();
+    const signature = creationDraftMetadata(draft);
+    if (signature === lastSaved && !store.getState().storageError) return true;
+    saving = true;
+    try {
+      storage().write(hubId, draft);
+      lastSaved = signature;
+      store.setState({ storageError: null });
+      return true;
+    } catch {
+      store.setState({
+        storageError:
+          "Changes could not be saved on this device. Keep this form open and retry saving before creating a session.",
+      });
+      return false;
+    } finally {
+      saving = false;
+    }
+  }
+  function restoreDraft(): void {
+    if (!storage) return;
+    saving = true;
+    try {
+      const draft = storage().read(hubId);
+      if (draft) {
+        const { unconfirmed, ...fields } = draft;
+        store.setState({
+          ...fields,
+          unconfirmedCreation: unconfirmed,
+          error: unconfirmed
+            ? "An earlier creation could not be confirmed. Check the session list before trying again; the session may exist."
+            : null,
+        });
+      }
+      store.setState({ storageLoaded: true, storageError: null });
+      lastSaved = creationDraftMetadata(snapshot());
+    } catch {
+      store.setState({
+        storageLoaded: false,
+        storageError:
+          "The saved creation draft could not be loaded. Retry loading it before editing or creating a session.",
+      });
+    } finally {
+      saving = false;
+    }
+  }
+  if (storage) {
+    restoreDraft();
+    store.subscribe(() => {
+      if (
+        !saving &&
+        store.getState().storageLoaded &&
+        creationDraftMetadata(snapshot()) !== lastSaved
+      )
+        saveDraft();
+    });
+  }
+  return store;
 }

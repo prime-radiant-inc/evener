@@ -1,8 +1,9 @@
-import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import { CreationDraftRepository } from "./creationDraftRepository";
 import {
 	type DraftImage,
 	type DraftImageData,
 	imageInput,
+	parseImages,
 } from "./draftImages";
 import {
 	decodeQuestionSelections,
@@ -27,7 +28,9 @@ export interface DraftDatabase {
 }
 
 export class DraftRepository {
+	readonly creation: CreationDraftRepository;
 	constructor(private readonly db: DraftDatabase) {
+		this.creation = new CreationDraftRepository(db);
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
       media_type TEXT NOT NULL, data TEXT NOT NULL,
@@ -272,43 +275,13 @@ export class DraftRepository {
 	}
 
 	removeHub(hubId: string): void {
+		this.creation.clear(hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_drafts WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM question_positions WHERE hub_id = ?", hubId);
 	}
-}
-
-function parseImages(raw: string): DraftImage[] {
-	const images: unknown = JSON.parse(raw);
-	if (!Array.isArray(images) || images.length > MAX_ATTACHMENTS)
-		throw new Error("Invalid saved images.");
-	const ids = new Set<string>();
-	const markers = new Set<number>();
-	for (const image of images) {
-		if (
-			!image ||
-			typeof image.id !== "string" ||
-			!image.id ||
-			ids.has(image.id) ||
-			!Number.isSafeInteger(image.marker) ||
-			image.marker < 1 ||
-			markers.has(image.marker) ||
-			typeof image.mediaType !== "string" ||
-			!image.mediaType.startsWith("image/") ||
-			(image.name !== undefined && typeof image.name !== "string")
-		)
-			throw new Error("Invalid saved image.");
-		ids.add(image.id);
-		markers.add(image.marker);
-	}
-	return images.map((image) => ({
-		id: image.id,
-		marker: image.marker,
-		mediaType: image.mediaType,
-		...(image.name === undefined ? {} : { name: image.name }),
-	}));
 }
 
 /** Definitions are compared per question so another batch cannot erase edits. */

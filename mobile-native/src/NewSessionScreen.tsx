@@ -29,6 +29,7 @@ import { HubPathField } from "./HubPathField";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
 import { LaunchOverrides } from "./LaunchOverrides";
+import { nativeDrafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { createNewSessionStore } from "./newSession";
 import type { Routes } from "./screens";
@@ -54,7 +55,10 @@ export function NewSessionScreen({
   const ready = activeProfile?.id === hubId && state === "ready" && !!client;
   const latest = useRef({ ready, client });
   latest.current = { ready, client };
-  const store = useMemo(() => createNewSessionStore(hubId), [hubId]);
+  const store = useMemo(
+    () => createNewSessionStore(hubId, () => nativeDrafts().creation),
+    [hubId],
+  );
   const form = useStore(store);
   const imageDocument = useMemo(() => creationImageDraft(store), [store]);
   const imageSelection = useMemo(
@@ -89,7 +93,11 @@ export function NewSessionScreen({
     }, [store, service]),
   );
   const disabled =
-    !ready || form.submitting || form.loadingModels || imageState.busy;
+    !ready ||
+    !form.storageLoaded ||
+    form.submitting ||
+    form.loadingModels ||
+    imageState.busy;
   const inputStyle = [
     styles.input,
     {
@@ -144,6 +152,14 @@ export function NewSessionScreen({
             </View>
           ) : null}
           <ErrorMessage message={form.error} />
+          <ErrorMessage message={form.storageError} />
+          {form.storageError && (
+            <Action disabled={form.submitting} onPress={form.retryStorage}>
+              {form.storageLoaded
+                ? "Retry saving draft"
+                : "Retry loading draft"}
+            </Action>
+          )}
           <Copy>Project directory</Copy>
           {ready && client ? (
             <HubPathField
@@ -151,7 +167,7 @@ export function NewSessionScreen({
               kind="dir"
               label="Project directory"
               value={form.cwd}
-              disabled={form.submitting}
+              disabled={form.submitting || !form.storageLoaded}
               onChange={(value, selected) => {
                 void form.setCwd(value, selected === true);
               }}
@@ -163,7 +179,7 @@ export function NewSessionScreen({
             <TextInput
               accessibilityLabel="Project directory"
               value={form.cwd}
-              editable={!form.submitting}
+              editable={!form.submitting && form.storageLoaded}
               onChangeText={(value) => {
                 void form.setCwd(value, false);
               }}
@@ -291,7 +307,7 @@ export function NewSessionScreen({
               }}
               multiline
               value={form.prompt}
-              editable={!form.submitting}
+              editable={!form.submitting && form.storageLoaded}
               onChangeText={form.setPrompt}
               placeholder="What would you like to work on?"
               placeholderTextColor={colors.secondary}
@@ -303,7 +319,7 @@ export function NewSessionScreen({
             <ImageAttachments
               document={imageDocument}
               selection={imageSelection}
-              disabled={form.submitting}
+              disabled={form.submitting || !form.storageLoaded}
             />
             <ErrorMessage message={imageState.error} />
             {emptyPromptReason && !form.prompt.trim() && !form.images.length ? (
@@ -312,7 +328,9 @@ export function NewSessionScreen({
             <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
               <Action
                 label="Attach images"
-                disabled={form.submitting || imageState.busy}
+                disabled={
+                  form.submitting || !form.storageLoaded || imageState.busy
+                }
                 onPress={() => {
                   void imageSelection.choose();
                 }}
