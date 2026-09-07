@@ -192,3 +192,48 @@ still current: the daemon can clamp it and concurrent writers can replace it.
 The recipe returns actual readback without replaying. Native lost replies,
 continuous reconnect, broader provider behavior and release acceptance remain
 open. All prior native drafts and the new ordinary draft remain unchanged.
+
+
+## Packaged stored credentials — 7 September
+
+The independent `0.1.0` tarball with SHA256
+`6cef0b2cdcaca667be9aa096b6b7178f1fe7e86ef71b370606369c84dc0a5521`
+ran all six credential recipe methods against a separate authenticated loopback
+hub built from `3c5feb442`. The hub used a private HOME and XDG roots, four owned
+provider instances and fixture credential values. No provider inference, token
+exchange or `evener/auth/test` was requested.
+
+The driver verified stored-key set/clear, stale-review rejection before dispatch,
+absent and environment-only logout, stored-key logout revealing the environment
+credential, valid Google credential JSON, server rejection of incomplete JSON,
+and clearing stored JSON while preserving an ADC file. OAuth instances reject
+the API-key recipe before dispatch. A second independently connected client
+checked each mutation's authoritative status and observed all eleven successful
+credential update notifications. The packaged CLI performed the additional key
+clear and emitted only the documented summary fields.
+
+[Structured proof](assets/sdk-credentials-receipt.json) records the source, hub
+binary, tarball and [driver](assets/sdk-credentials-driver.mjs.txt) hashes,
+checks, request-count scope and cleanup. The first driver used the wrong
+notification callback signature; its state checks passed, but its zero
+notification count is excluded from notification acceptance. The corrected
+driver uses `onNotification(callback)` and completed all 21 checks. All four
+owned instances, stored entries and the fixture ADC file were removed; the
+owned hub exited zero. The original hub, seven native drafts and unrelated
+Apple patch remained intact.
+
+Twelve recipe contracts cover required reviewed snapshots, real thrown request
+failures, uncertain acknowledgments, readback failures, malformed/wrong-provider
+responses, null/invalid lists and CLI privacy. The complete packaged contract
+suite passed 169 tests across seventeen files. Fresh outside-checkout package
+qualification passed ESM/CommonJS runtime imports and strict TypeScript. The
+cookbook now contains 21 recipes covering 60 of 91 method names; its notification
+count remains three because this acceptance driver owns the auth observer.
+
+A status snapshot has no secret fingerprint or instance-definition revision and
+cannot exclude concurrent writes. The shared recipe conservatively reports a
+server-rejected mutation as uncertain when readback succeeds; the malformed JSON
+case proves unchanged state without calling it acknowledged. No mutation is
+automatically replayed. Provider execution remains unverified. Browser/device
+OAuth recipes, disconnect/restart outcomes, full streaming recovery and native
+iOS release qualification remain open.

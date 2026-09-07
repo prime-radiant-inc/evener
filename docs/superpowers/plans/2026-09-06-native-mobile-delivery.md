@@ -980,3 +980,26 @@ stored and environment-backed logout cases. Bot independently ran the complete
 `TestAuth_` suite successfully; a separate Luna review found no actionable issue.
 Fresh external package qualification also passed. The unpublished SDK remains
 pre-release; these checks do not close iOS release acceptance or SDK workflow gaps.
+
+
+### Stored credential recipe acceptance
+
+The six-method credential recipe now requires a complete reviewed auth snapshot,
+handles the real null-list response, validates known fields while preserving
+future data, and emits only validated top-level summary booleans. Root review
+caught optional-review and nil-list gaps, then a nested future-field privacy
+issue; Luna repaired each with RED/green regressions and a separate Luna review
+confirmed all three fixes. Twelve new contracts bring the outside-package suite
+to 169 tests. Independent package qualification, `make test-web`, targeted Biome
+and the secret scan passed. The cookbook covers 60/91 method names in 21 recipes.
+
+A fresh independent tarball ran all credential methods on an isolated authenticated
+hub built from 3c5feb442. Twenty-one checks passed, including actual stored-key/JSON
+changes, environment/ADC preservation, stale-review refusal, malformed-JSON
+rejection, CLI output and eleven updates seen by an independent observer. The
+first observer callback was incorrectly authored; its notification evidence was
+excluded and the corrected driver passed. See sdk-management-evidence.md for
+hashes, request-count scope and the archived driver. Owned instance/credential/ADC
+state was cleaned up and the hub exited zero; original hub, seven drafts and
+unrelated Apple changes remain preserved. This closes the bounded stored-credential
+recipe package, not OAuth, continuous recovery or iOS release acceptance.

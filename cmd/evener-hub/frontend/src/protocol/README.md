@@ -97,7 +97,7 @@ launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
 management and recovery paths, including activity-tree traversal. Additional
-creation cases, continuous reconnect recovery, credentials and hub upgrades
+creation cases, continuous reconnect recovery, OAuth login flows and hub upgrades
 remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
@@ -120,6 +120,50 @@ It also accepts an empty array. This means no commands, not an unavailable
 catalog. Missing/malformed response fields reject the entire read. The CLI emits
 only counts by source, never command descriptions or prompts. Reading a command
 does not execute it, and failures do not trigger automatic retries.
+
+### Reading and changing stored credentials
+
+`credentials.mjs` uses the connection variables above, including `EVENER_CWD`
+and `EVENER_TOKEN_FILE`, plus `EVENER_CREDENTIAL_ACTION`. The default action,
+`list`, takes no parameters. `status` reads exactly `{ "provider": "my-instance" }`
+from `EVENER_CREDENTIAL_PARAMS_FILE`. Import `runCredentials` from
+`examples/credentials-logic.mjs` for complete status objects in `readback`;
+the list action returns an array of status objects. An empty server list,
+including `providers: null`, becomes an empty array. Invalid fields or duplicate
+provider identities reject the entire read. Unknown status fields and optional
+field omission are preserved.
+
+Mutations require `EVENER_CREDENTIAL_MUTATION=1` and
+`EVENER_CREDENTIAL_OWNED_HUB` equal to `EVENER_RPC_URL`. Put `provider` and the
+complete status object from the reviewed read in `reviewed` in the private JSON
+params file, plus `value` only for either setter. Keep this file private, for
+example with mode `0600`; it contains credential data. The CLI reads the file
+without placing its contents in command-line arguments.
+
+| Action | Effect |
+| --- | --- |
+| `apiKey/set` | Store an authored key for an instance advertising `apiKey` auth. |
+| `credentialJson/set` | Store Google credential JSON for an instance advertising `credentialJson` auth. The server validates its supported type and fields. |
+| `apiKey/clear` | Clear only the stored file entry, including a stray key behind OAuth or ADC. |
+| `logout` | Clear the layer selected by the server's logout contract. Non-Codex instances clear the stored file entry; Codex clears its OAuth record first, or a stray stored key when no OAuth record exists. |
+
+The recipe captures parameters before connecting, validates support and auth mode,
+and compares the entire current status with `reviewed` before dispatch. The
+snapshot contains no secret fingerprint or instance-definition revision: it
+cannot detect replacement with identical status, or prevent a concurrent change
+between read and write. An environment or ADC credential can remain active after
+clear/logout; `signedIn` does not prove an exact secret or provider connectivity.
+
+One mutation is followed by one authoritative status read. A validated reply
+means `acknowledged`; a lost or malformed reply remains `uncertain` even when
+readback succeeds. Acknowledged writes whose readback fails retain that outcome
+in `AcknowledgedReadbackError`; two failures retain both causes in an
+`AggregateError`. Neither permits automatic replay. The result contains status
+readback, not the logout reply's `removed` field. Provider execution remains
+`unverified`. The CLI prints only action/outcome/execution and status booleans or
+a provider count; it excludes provider names, account details, environment names,
+keys, credential JSON and private error bodies. OAuth browser/device flows and
+`evener/auth/test` require separate workflows.
 
 ### Reading and changing session settings
 
