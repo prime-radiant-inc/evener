@@ -44,6 +44,11 @@ func writeAgentsDoc(path, content string) error {
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		// A write that dies partway (ENOSPC, EIO) has already created the
+		// temp file, so clear it too: the real file is untouched either way,
+		// and a half-written AGENTS.md.tmp has no business outliving the
+		// failure in the user's config root.
+		_ = os.Remove(tmp)
 		return fmt.Errorf("AGENTS.md: write: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -75,7 +80,13 @@ func registerAgentsDocHandlers(server *appserver.Server, configRoot string) {
 			}
 			resp, err := readAgentsDoc(path)
 			if err != nil {
-				return appwire.AgentsDocResponse{}, err
+				// The rename landed, so the save APPLIED. Surfacing the
+				// re-read failure would tell the requester its write was
+				// rejected and leave every other client on the old content,
+				// so describe what was just put on disk instead - the write
+				// is byte for byte, so this is the file (same reasoning as
+				// the post-rename path in registerKeybindingsHandlers).
+				resp = appwire.AgentsDocResponse{Path: path, Exists: true, Content: params.Content}
 			}
 			server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)
 			return resp, nil
