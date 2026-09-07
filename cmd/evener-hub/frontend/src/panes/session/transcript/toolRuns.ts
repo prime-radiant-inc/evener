@@ -20,7 +20,7 @@
 //     gather calls the reader saw separated by an answer;
 //   - a run has to be worth folding. Two rows are not clutter; three are.
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
-import { type ToolRendererDescriptor, toolRendererFor } from "./toolRenderers";
+import { type ToolRendererDescriptor, type ToolSummaryContext, toolRendererFor } from "./toolRenderers";
 
 export type ToolItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
 
@@ -79,7 +79,10 @@ export function foldToolRuns(entries: readonly ProjectedEntry[], opts: FoldOptio
 // to. The named step is the LAST consequential one (a mutation - an edit, a
 // shell command, a worktree change), because that is what the run did; with
 // none, the last call, because that is where the run ended up.
-export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor"]): string {
+// ctx is the same ToolSummaryContext an expanded row hands its descriptor
+// (ToolCallItem passes the thread's cwd), so a shell step's label drops the
+// redundant "cd <cwd> && " prefix exactly as the row beneath it does.
+export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor"], ctx?: ToolSummaryContext): string {
   const newestFirst = [...run.entries].reverse();
   const named =
     newestFirst.find((entry) => descriptorFor(entry.item.toolName ?? "").fold === "consequential") ?? newestFirst[0];
@@ -88,7 +91,7 @@ export function runLabel(run: ToolRun, descriptorFor: FoldOptions["descriptorFor
   // to name; the bare count keeps the row honest rather than throwing if a
   // future caller ever hands one over empty.
   if (!named) return steps;
-  return `${steps} · ${descriptorFor(named.item.toolName ?? "").summary(named.item)}`;
+  return `${steps} · ${descriptorFor(named.item.toolName ?? "").summary(named.item, ctx)}`;
 }
 
 /**

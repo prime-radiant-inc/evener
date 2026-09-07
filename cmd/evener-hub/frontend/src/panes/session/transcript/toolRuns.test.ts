@@ -23,9 +23,16 @@ const message = (id: string): Extract<ProjectedEntry, { kind: "item" }> => ({
 
 const descriptorFor = (name: string) => ({
   match: name,
-  summary: () => (name === "write_file" ? "Wrote foo.py" : `Read ${name}`),
-  fold:
+  summary: (_item: ItemModel, ctx?: { cwd?: string }) =>
     name === "write_file"
+      ? "Wrote foo.py"
+      : name === "shell"
+        ? ctx?.cwd
+          ? "Ran ls"
+          : "Ran cd /repo && ls"
+        : `Read ${name}`,
+  fold:
+    name === "write_file" || name === "shell"
       ? ("consequential" as const)
       : name === "delegate"
         ? ("never" as const)
@@ -137,4 +144,13 @@ test("with no consequential step the label names the last call", () => {
     descriptorFor,
   });
   expect(runLabel(run as ToolRun, descriptorFor)).toBe("3 steps · Read grep");
+});
+
+test("the label hands the working-directory context to the summary, as an expanded row does", () => {
+  const [run] = foldToolRuns([tool("a", "read_file"), tool("b", "shell"), tool("c", "read_file")], {
+    turnSettled: true,
+    descriptorFor,
+  });
+  expect(runLabel(run as never, descriptorFor, { cwd: "/repo" })).toBe("3 steps · Ran ls");
+  expect(runLabel(run as never, descriptorFor)).toBe("3 steps · Ran cd /repo && ls");
 });
