@@ -36,6 +36,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute("data-theme");
   delete document.body.dataset.phoneDensity;
   delete document.body.dataset.fontSize;
+  delete document.body.dataset.transcriptMeasure;
   resetPrefsStoreForTests();
   resetToastStoreForTests();
 });
@@ -114,5 +115,18 @@ describe("Font size", () => {
 
     expect(prefsStore.getState().fontSize).toBe("xl");
     expect(document.body.dataset.fontSize).toBe("xl");
+  });
+});
+
+describe("Transcript width", () => {
+  test("defaults to Reading and updates the pref plus document.body.dataset.transcriptMeasure", async () => {
+    const user = userEvent.setup();
+    renderWithToasts();
+    expect(screen.getByRole("radio", { name: "Reading" }).getAttribute("aria-checked")).toBe("true");
+
+    await user.click(screen.getByRole("radio", { name: "Wide" }));
+
+    expect(prefsStore.getState().transcriptMeasure).toBe("wide");
+    expect(document.body.dataset.transcriptMeasure).toBe("wide");
   });
 });

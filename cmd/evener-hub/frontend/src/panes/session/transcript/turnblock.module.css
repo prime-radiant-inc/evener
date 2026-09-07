@@ -1,16 +1,8 @@
 .turn {
-  /* Centered reading measure (webui-ux-transcript C2): the composer pins
-   * its own max-width to this SAME 76rem literal (composer.module.css, a
-   * sibling stream's file - out of this manifest's reach) so the input
-   * aligns with the conversation column above it; keep the two literals in
-   * sync until both consolidate onto a shared tokens.css custom property
-   * once the UX has settled. Declared and used on this one rule (not
-   * inherited from an ancestor) because .turn is also reused by the
-   * read-only "open beside" transcript pane (panes/transcript/
-   * Transcript.tsx), which doesn't sit under this stream's own FlowOverlay
-   * wrap - a single ancestor declaration wouldn't reach it there.
-   */
-  --session-measure: 76rem;
+  /* Centered reading measure: --session-measure is declared on <body> in
+   * tokens.css (44rem, or 64rem under the Transcript width preference), so
+   * this column, the composer's .measure and the cold-start block all read
+   * one value and stay aligned. */
   /* Speaker geometry (--speaker-avatar-size/-gap/-gutter) comes from
    * tokens.css: .turn and the focused view are sibling render trees, so no
    * component class could be the single source for both. */

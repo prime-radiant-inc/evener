@@ -157,20 +157,21 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(css).toMatch(/\.message\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*var\(--speaker-gap\);/);
   expect(css).toMatch(/\.avatar\s*\{[\s\S]*flex:\s*none;/);
   // The content column must SPAN the row (flex: 1 1 auto), matching the agent
-  // side's .column: left shrink-to-fit, the bubble's max-width: 92% becomes a
+  // side's .column: left shrink-to-fit, the bubble's max-width becomes a
   // cyclic percentage against a containing block sized by the bubble itself,
-  // which resolves to roughly 92% of the text's own width and wraps the tail
-  // words of every message wider than the header (2026-07-30 live-DOM
-  // measurement: "commit and merge" clamped to 133px and wrapped in a 651px
-  // row).
+  // which resolves against the text's own width and wraps the tail words of
+  // every message wider than the header (2026-07-30 live-DOM measurement at
+  // the old 92% cap: "commit and merge" clamped to 133px and wrapped in a
+  // 651px row).
   expect(css).toMatch(/\.content\s*\{[\s\S]*flex:\s*1 1 auto;[\s\S]*min-width:\s*0;/);
   expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
-  // Speaker name at body size / medium weight / --ink-hi (spec decision 1);
-  // clock time at caption / --ink-low.
+  // Speaker name at body size / semibold / --ink-hi (spec decision 1, weight
+  // raised by typography-spacing-critique-2026-09-06 R3 so the header is a
+  // landmark); clock time at ui size / --ink-mid (readable, not sub-AA).
   expect(css).toMatch(
-    /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-medium\);[\s\S]*color:\s*var\(--ink-hi\);/,
+    /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-semibold\);[\s\S]*color:\s*var\(--ink-hi\);/,
   );
-  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-caption\);[\s\S]*color:\s*var\(--ink-low\);/);
+  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-ui\);[\s\S]*color:\s*var\(--ink-mid\);/);
   // Text at --ink-hi (spec decision 5 - the header now carries the
   // boundary-scannability the old --ink-mid demotion was buying).
   expect(css).toMatch(/\.text\s*\{[\s\S]*color:\s*var\(--ink-hi\);/);
@@ -178,8 +179,18 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(css).toMatch(/\.actions\s*\{[\s\S]*margin-left:\s*auto;/);
   expect(css).toMatch(/\.message:hover\s+\.actions/);
   expect(css).toMatch(/\.message:focus-within\s+\.actions/);
-  // No breakpoint in this component - TurnBlock owns the gutter media query.
-  expect(css).not.toMatch(/@media/);
+  // One breakpoint, and it is not the gutter's (TurnBlock owns that): below
+  // 700px the row becomes a grid so the bubble spans the pane under the
+  // avatar + header row (typography-spacing-critique-2026-09-06 finding 2:
+  // prose got 260px of a 375px screen). The avatar never leaves the header
+  // line; the content column dissolves (display: contents) so its header and
+  // body are the grid's own items.
+  const phone = /@media \(max-width: 699px\)\s*\{([\s\S]*)\}\s*$/.exec(css);
+  expect(phone).not.toBeNull();
+  expect(phone![1]).toMatch(/\.message\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);/);
+  expect(phone![1]).toMatch(/\.message > \.content\s*\{[^}]*display:\s*contents;/);
+  expect(phone![1]).toMatch(/\.message \.body\s*\{[^}]*grid-column:\s*1 \/ -1;/);
+  expect(css.split("@media").length).toBe(2);
   expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
   expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
@@ -206,7 +217,7 @@ test("the user bubble is an accent-wash token fill, hugging its content, tailed 
   expect(body).not.toBeNull();
   expect(body![1]).toMatch(/background:\s*var\(--accent-bg\)/);
   expect(body![1]).toMatch(/width:\s*fit-content/);
-  expect(body![1]).toMatch(/max-width:\s*92%/);
+  expect(body![1]).toMatch(/max-width:\s*100%/);
   expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   // The 4px (control-radius) corner is the top-left one - toward the avatar.
   expect(body![1]).toMatch(

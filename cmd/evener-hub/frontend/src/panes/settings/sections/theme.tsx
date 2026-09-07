@@ -28,6 +28,11 @@ const FONT_SIZE_OPTIONS: RadioGroupOption[] = [
   { value: "xl", label: "XL" },
 ];
 
+const TRANSCRIPT_MEASURE_OPTIONS: RadioGroupOption[] = [
+  { value: "reading", label: "Reading" },
+  { value: "wide", label: "Wide" },
+];
+
 /**
  * Settings -> Theme (parity-m7-settings.md §3): 3 localStorage-only
  * preferences, no wire access - every control here reads/writes prefs.ts
@@ -52,11 +57,12 @@ export function ThemeSection() {
   const theme = usePrefsStore((s) => s.theme);
   const phoneDensity = usePrefsStore((s) => s.phoneDensity);
   const fontSize = usePrefsStore((s) => s.fontSize);
+  const transcriptMeasure = usePrefsStore((s) => s.transcriptMeasure);
   const { push } = useToasts();
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>Theme, density, and font size are saved per-browser.</p>
+      <p className={CLASS.intro}>Theme, density, font size and transcript width are saved per-browser.</p>
 
       <div className={CLASS.row}>
         <RadioGroup
@@ -89,6 +95,16 @@ export function ThemeSection() {
           onChange={(value) => prefsStore.getState().setFontSize(value as "s" | "m" | "l" | "xl")}
         />
         <p className={CLASS.help}>Scales all UI text. M is the default.</p>
+      </div>
+
+      <div className={CLASS.row}>
+        <RadioGroup
+          label="Transcript width"
+          value={transcriptMeasure}
+          options={TRANSCRIPT_MEASURE_OPTIONS}
+          onChange={(value) => prefsStore.getState().setTranscriptMeasure(value as "reading" | "wide")}
+        />
+        <p className={CLASS.help}>Reading keeps lines near 90 characters. Wide uses more of the window.</p>
       </div>
     </div>
   );

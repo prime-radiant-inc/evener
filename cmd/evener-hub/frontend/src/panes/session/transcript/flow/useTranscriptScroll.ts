@@ -95,6 +95,9 @@ export interface ViewAnchorPosition {
   height?: number;
   /** User/agent content survives every focused representation. */
   isMessage: boolean;
+  /** For a folded tool run (toolRuns.ts): the entry ids it stands in for. A
+   * capture on any of them resolves to this anchor. */
+  members?: readonly string[];
 }
 
 export interface ViewAnchor {
@@ -125,6 +128,10 @@ export function restoreTopAnchor(
 ): RestoredViewAnchor | undefined {
   const exact = positions.find((position) => position.id === anchor.id);
   if (exact) return { id: exact.id, index: exact.index, offset: anchor.offset };
+  // The entry has folded into a tool run since it was captured: the run's
+  // anchor is the row that now stands where the entry stood.
+  const owner = positions.find((position) => position.members?.includes(anchor.id));
+  if (owner) return { id: owner.id, index: owner.index, offset: anchor.offset };
 
   const nearest = positions
     .filter((position) => position.isMessage)
@@ -142,6 +149,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   return Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).map((row, renderedIndex) => {
     const rect = row.getBoundingClientRect();
     const sourceIndex = Number(row.dataset.viewAnchorSourceIndex ?? renderedIndex);
+    const members = row.dataset.viewAnchorMembers;
     return {
       id: row.dataset.viewAnchorId ?? "",
       sourceIndex,
@@ -149,6 +157,7 @@ function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
       offset: rect.top - viewportTop,
       height: rect.height,
       isMessage: row.dataset.viewAnchorMessage === "true",
+      ...(members ? { members: members.split(",") } : {}),
     };
   });
 }
@@ -177,6 +186,10 @@ const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusM
 
 function sourceIdentity(id: string): string {
   if (id.startsWith("intent:")) return id.slice("intent:".length);
+  // A folded tool run's anchor is its first entry's id under the run prefix
+  // (toolRuns.ts): a focus captured on that entry before the turn settled
+  // still resolves to the run it folded into.
+  if (id.startsWith("run:")) return id.slice("run:".length);
   if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
   return id;
 }
@@ -265,28 +278,49 @@ function anchorFromCapture(
   return captureTopAnchor({ ...source, offset: captured.anchorOffset });
 }
 
+// A folded run's anchor answers for every entry it folded (its members): a
+// focus captured on the third call of a run that has since folded restores to
+// the run - its summary when closed, the row itself when open.
+function membersMatch(members: readonly string[] | undefined, metadata: CapturedFocusMetadata): boolean {
+  return (
+    members?.some((member) => member === metadata.anchorId || sourceIdentity(member) === metadata.sourceIdentity) ??
+    false
+  );
+}
+
 function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
   if (candidate.id === metadata.anchorId) return true;
+  if (membersMatch(candidate.members, metadata)) return true;
   if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
   return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
 }
 
 function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
   if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
+  if (membersMatch(candidate.dataset.viewAnchorMembers?.split(","), metadata)) return true;
   if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
   const sourceIndex = sourceIndexFromDataset(candidate);
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-function closedIntentSummary(anchor: HTMLElement): HTMLElement | undefined {
-  if (!anchor.dataset.viewAnchorId?.startsWith("intent:")) return undefined;
-  const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-  const summary = details?.querySelector(":scope > summary");
+// A closed disclosure that owns the anchor: an intent-group entry's anchor
+// sits INSIDE its <details>, a folded tool run's anchor wraps its own
+// <details> (TurnBlock's runAnchorFor), so the two are looked up from
+// opposite directions. Either way the summary is the thing to focus.
+function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
+  const id = anchor.dataset.viewAnchorId ?? "";
+  let summary: Element | null | undefined;
+  if (id.startsWith("intent:")) {
+    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
+    summary = details?.querySelector(":scope > summary");
+  } else if (id.startsWith("run:")) {
+    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
+  }
   return summary instanceof HTMLElement ? summary : undefined;
 }
 
 function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  const summary = closedIntentSummary(anchor);
+  const summary = closedGroupSummary(anchor);
   if (summary) {
     summary.focus();
     if (summary.ownerDocument.activeElement === summary) return true;

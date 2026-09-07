@@ -2,8 +2,8 @@
    Follows the design system (docs/web-ui/design-system.md): all colors,
    spacing, radii, and fonts use var(--token) from tokens.css. The 4px
    space grid (--space-1..4) sizes all gaps and padding. Section eyebrows
-   use the micro-label pattern (caption size, --font-weight-medium,
-   --ink-low, uppercase, --tracking-micro). Mono (--font-mono) is reserved
+   use the eyebrow pattern (caption size, --font-weight-medium,
+   --ink-mid, uppercase, --tracking-eyebrow). Mono (--font-mono) is reserved
    for machine text (delegate ID, paths, model, sandbox mode, tool chips,
    transcript ref). The four attention hues carry their designated meanings:
    --alive for running, --attention for needs-human, --danger for failure. */
@@ -25,7 +25,7 @@
 
 .headId {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--font-size-caption);
   color: var(--ink-hi);
   font-weight: 500;
 }
@@ -40,14 +40,14 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
 
 .metaSeg {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   padding: 0 var(--space-2);
 }
 
@@ -58,7 +58,6 @@
 .metaSep {
   color: var(--edge-strong);
   user-select: none;
-  margin-right: 2px;
 }
 
 .metaK {
@@ -72,11 +71,11 @@
 
 /* --- Section eyebrow (micro-label pattern, design system §6) --- */
 .eyebrow {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  letter-spacing: var(--tracking-eyebrow);
   margin-bottom: var(--space-1);
 }
 
@@ -87,8 +86,8 @@
 }
 
 .mandateBody {
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
   color: var(--ink-hi);
 }
 
@@ -101,8 +100,8 @@
 }
 
 .diagnosticBody {
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
   color: var(--ink-hi);
 }
 
@@ -126,8 +125,8 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
 }
 
 .envK {
@@ -135,12 +134,12 @@
   flex-shrink: 0;
   color: var(--ink-low);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
 }
 
 .envV {
   color: var(--ink-hi);
-  font-size: 12px;
+  font-size: var(--font-size-caption);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -149,7 +148,7 @@
 
 .envVmono {
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--font-size-caption);
 }
 
 .envVmuted {
@@ -170,12 +169,12 @@
 
 .toolChip {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--font-size-caption);
   color: var(--ink-mid);
   background: var(--surface-inset);
   border: 1px solid var(--edge);
   border-radius: var(--radius-chip);
-  padding: 1px 6px;
+  padding: 0 var(--space-2);
 }
 
 /* --- Footer --- */

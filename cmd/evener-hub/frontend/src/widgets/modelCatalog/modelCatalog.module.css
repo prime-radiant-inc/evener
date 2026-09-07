@@ -63,7 +63,7 @@
   background: var(--surface-1);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-control);
 }
 
 .input:focus-visible {
@@ -95,7 +95,7 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {

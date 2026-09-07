@@ -200,7 +200,7 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
   expect(bodyRule).toContain(
-    "padding-bottom: calc(var(--space-4) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+    "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
   );
 });
 
@@ -282,13 +282,16 @@ test("the header sits on the inset surface", () => {
   expect(rule).toContain("border-bottom: 1px solid var(--edge)");
 });
 
-test("the title renders as an uppercase micro-label, not a pane-title-sized heading", () => {
+test("the title renders as a sentence-case pane-title heading, not an uppercase micro-label", () => {
+  // typography-spacing-critique-2026-09-06 R4: the pane IS the page, so its
+  // title is the page heading. The micro-label recipe stays for containers
+  // inside a page (InspectorCard, RecommendationCard, Table headers).
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("font-size: var(--font-size-caption)");
-  expect(rule).toContain("font-weight: var(--font-weight-medium)");
-  expect(rule).toContain("text-transform: uppercase");
-  expect(rule).toContain("letter-spacing: var(--tracking-micro)");
-  expect(rule).toContain("color: var(--ink-mid)");
+  expect(rule).toContain("font-size: var(--font-size-pane-title)");
+  expect(rule).toContain("font-weight: var(--font-weight-semibold)");
+  expect(rule).not.toContain("text-transform");
+  expect(rule).toContain("letter-spacing: var(--tracking-display)");
+  expect(rule).toContain("color: var(--ink-hi)");
 });

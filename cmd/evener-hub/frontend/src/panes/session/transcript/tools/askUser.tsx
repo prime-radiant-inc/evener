@@ -109,6 +109,7 @@ function AskUserBody({ item }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "ask_user",
+  fold: "never", // a question put to the reader is never folded away
   icon: "ask",
   summary(item: ItemModel) {
     const questions = parseAskUserQuestions(item);

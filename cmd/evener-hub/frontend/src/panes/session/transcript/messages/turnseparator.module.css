@@ -1,8 +1,11 @@
 /* Compact, chrome-only row - never machine-mono (this is UI furniture
  * summarizing a turn, not authored/machine content itself). */
 .row {
-  padding: var(--space-1) 0;
+  /* A turn footer closes a group: one group step above it, one line step
+   * below before whatever the next turn opens with. */
+  padding: var(--rhythm-group) 0 var(--rhythm-line);
   font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }

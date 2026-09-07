@@ -53,7 +53,9 @@
   box-shadow: var(--shadow-inset-field);
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  /* The body size, floored at the phone's 16px control size: body alone is
+   * 14.4px under the S preference on a phone (display-gates.test.ts). */
+  font-size: max(var(--font-size-control), var(--font-size-body));
   transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
@@ -87,12 +89,12 @@
 
 .sectionHeader {
   padding: var(--space-2) var(--space-2) var(--space-1);
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-display);
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {

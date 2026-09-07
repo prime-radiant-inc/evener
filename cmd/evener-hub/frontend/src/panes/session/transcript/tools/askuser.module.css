@@ -43,7 +43,7 @@
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .note {

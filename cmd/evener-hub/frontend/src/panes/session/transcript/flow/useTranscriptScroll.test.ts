@@ -1601,6 +1601,21 @@ describe("view-mode anchor preservation", () => {
     expect(transformedAnchors.every((anchor) => anchor.index >= 0 && anchor.index < 2)).toBe(true);
   });
 
+  test("an anchor captured on a call that has since folded restores to its run row", () => {
+    // roborev on PR #947: only the first folded entry's id used to map to the
+    // run; the second and third had no anchor to restore to.
+    const positions: ViewAnchorPosition[] = [
+      { id: "run:a", sourceIndex: 0, index: 0, offset: 0, isMessage: false, members: ["a", "b", "c"] },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "b", sourceIndex: 1, index: 0, offset: 12, isMessage: false }),
+        positions,
+      ),
+    ).toEqual({ id: "run:a", index: 0, offset: 12 });
+  });
+
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
 

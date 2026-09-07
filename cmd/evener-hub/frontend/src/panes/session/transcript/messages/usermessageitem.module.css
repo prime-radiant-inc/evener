@@ -14,12 +14,13 @@
  * exchange boundary scannable - that the new speaker header now does better;
  * the boundary no longer needs the words themselves muted.
  *
- * The exchange boundary is marked by the speaker header alone (avatar +
- * "You" + time) - deliberately NOT by extra vertical space above the
- * message: a turn is one LLM round-trip and a real session runs dozens of
- * them per accepted input, but even at true exchange boundaries added
- * margin read as dead air (Jesse's call, 2026-07-30). The boundary fires a
- * handful of times per session, and the header is signal enough. */
+ * The exchange boundary is marked by the speaker header AND one
+ * --rhythm-exchange step above the message. The 2026-07-30 ruling against
+ * added margin ("dead air") was made when lines ran 150 characters and
+ * every row sat 4px apart; with the column bounded to --session-measure
+ * (typography-spacing-critique-2026-09-06 R2/R3) the step reads as a
+ * paragraph break, not air, and it is what lets the eye find the next
+ * exchange in a long session without hunting for a 24px avatar. */
 .message {
   display: flex;
   align-items: flex-start;
@@ -36,10 +37,15 @@
    * (Session.tsx), so there is no ancestor there to inherit the custom
    * property from (kata T9). */
   gap: var(--speaker-gap);
-  /* --space-1, not --space-2: with the body now a bubble (see .body), the
-   * message is a chat row, and chat rows sit tight - the bubble's own fill
-   * carries the separation the old document rhythm bought with air. */
-  padding: var(--space-1) 0;
+  padding: var(--rhythm-line) 0;
+}
+
+/* The exchange step belongs to the message that OPENS an exchange (the
+ * default). Mid-turn user steering renders through this same view with
+ * opensExchange={false} (SteeringItem.tsx): it joins work already under
+ * way, so it takes no boundary spacing. */
+.message[data-opens-exchange="true"] {
+  margin-top: var(--rhythm-exchange);
 }
 
 /* flex: none - the tile keeps its 24px edge when the row is squeezed; the
@@ -49,13 +55,14 @@
 }
 
 /* flex: 1 1 auto - the column SPANS the row, it does not shrink-to-fit. It
- * must: the bubble below caps itself at max-width: 92% OF THIS COLUMN, and a
+ * must: the bubble below caps itself at 100% OF THIS COLUMN, and a
  * shrink-to-fit column is sized by the bubble in turn - a cyclic percentage
- * the browser resolves to roughly 92% of the bubble's own max-content, so
- * every message wider than the header got its tail words wrapped even in a
- * wide window (live-DOM measurement 2026-07-30: "commit and merge" clamped
- * to 133px in a 651px row). With the column spanning the row, 92% resolves
- * against the row width and fit-content hugs short messages instead. Same
+ * the browser resolves against the bubble's own max-content, so every
+ * message wider than the header got its tail words wrapped even in a wide
+ * window (live-DOM measurement 2026-07-30, at the old 92% cap: "commit and
+ * merge" clamped to 133px in a 651px row). With the column spanning the row,
+ * the cap resolves against the row width and fit-content hugs short messages
+ * instead. Same
  * contract as the agent side's .column (agentmessageitem.module.css).
  * min-width: 0 - a flex item's automatic minimum size would otherwise pin the
  * column to its longest unbreakable word and defeat the text's break-word
@@ -79,7 +86,7 @@
 .name {
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
-  font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
 
@@ -87,8 +94,8 @@
  * the item carries a startedAt - never a placeholder. */
 .time {
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
 }
 
 .actions {
@@ -115,7 +122,9 @@
   flex-direction: column;
   gap: var(--space-1);
   width: fit-content;
-  max-width: 92%;
+  /* Bounded by the column (--session-measure on body), not a percentage of
+   * the pane - see agentmessageitem.module.css's .bubble. */
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--accent-bg);
   border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
@@ -129,4 +138,26 @@
   line-height: var(--line-height-body);
   /* --ink-hi: spec decision 5 - see this file's header comment. */
   color: var(--ink-hi);
+}
+
+/* Below the gutter breakpoint the row becomes a grid so the bubble spans the
+ * pane under the avatar + header row (the agent side does the same - see
+ * agentmessageitem.module.css). The content column dissolves so its header
+ * and body are the grid's own items. */
+@media (max-width: 699px) {
+  .message {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--speaker-gap);
+    row-gap: var(--space-1);
+    align-items: center;
+  }
+
+  .message > .content {
+    display: contents;
+  }
+
+  .message .body {
+    grid-column: 1 / -1;
+  }
 }

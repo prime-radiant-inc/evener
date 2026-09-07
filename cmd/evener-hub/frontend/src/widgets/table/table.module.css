@@ -49,11 +49,11 @@
   padding: var(--space-2) var(--space-3);
   background: var(--surface-inset);
   border-bottom: 1px solid var(--edge);
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  letter-spacing: var(--tracking-eyebrow);
   white-space: nowrap;
 }
 

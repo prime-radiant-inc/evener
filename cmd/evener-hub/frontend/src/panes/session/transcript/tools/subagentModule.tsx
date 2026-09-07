@@ -385,6 +385,7 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
 
 registerToolRenderer({
   match: "delegate",
+  fold: "never", // a delegate card is never folded away into a run
   icon: "delegate",
   summary(item: ItemModel) {
     return item.description ?? "";

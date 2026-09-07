@@ -12,35 +12,37 @@
  * size bump fired on every mid-turn narrative fragment, dozens per
  * session, and cancelled itself. */
 .message {
-  /* --space-1, not --space-2: with prose now in a per-fragment bubble (see
-   * .bubble), consecutive agent messages stack like chat rows - tight. */
-  padding: var(--space-1) 0;
+  /* One rhythm step inside an exchange: consecutive agent fragments stack
+   * tight. The larger steps live on the user message (exchange) and the
+   * turn separator (group). */
+  padding: var(--rhythm-line) 0;
 }
 
-/* The chat bubble (2026-07-30-transcript-chat-bubbles-design.md, decisions
- * 1-3): every agent fragment - opener and continuation alike - sits in a
- * neutral ink wash, hugging its content (width: fit-content + max-width).
- * The fill is a color-mix over --ink-mid, NOT --surface-2: in the light
- * theme --surface-1 and --surface-2 measure identical to the pane, so a
- * surface token would be invisible exactly where the transcript is densest
- * (the same trap toolcallitem.module.css's hover note records). The 4px
- * corner faces the avatar (top-left, the chat "tail") on openers; .column
- * is a flex column and this is a flex item, so align-self keeps it hugged
- * there too. */
+/* The agent's answer is the document, not a bubble (typography-spacing-
+ * critique-2026-09-06 R9, revising the 2026-07-30 chat-bubbles decision for
+ * the agent side only): with the column bounded to --session-measure the
+ * neutral wash stopped doing any work and read as a slab behind every
+ * paragraph. The user's own words keep their accent wash
+ * (usermessageitem.module.css) - short, and helped by a shape. The wrapper
+ * survives as the prose's layout box: full column width, one rhythm step of
+ * vertical padding, no fill, no radius. */
 .bubble {
-  align-self: flex-start;
-  width: fit-content;
-  max-width: 92%;
-  padding: var(--space-2) var(--space-3);
-  background: color-mix(in oklab, var(--ink-mid) 6%, transparent);
-  border-radius: var(--radius-control) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  align-self: stretch;
+  width: 100%;
+  /* Bounded by the column (--session-measure on body), never by a
+   * percentage of the pane: 92% of a full-bleed pane measured 149
+   * characters per line at 1440 (typography-spacing-critique-2026-09-06). */
+  max-width: 100%;
+  padding: var(--rhythm-line) 0;
 }
 
-/* Continuation fragments (no avatar, no header): fully rounded - with no
- * tile beside them there is nothing for a tail to point at. */
+/* Continuation fragments (no avatar, no header) follow a tool run or a
+ * thought: one item step above them separates the prose from the row it
+ * continues from. */
 .continuation {
-  border-radius: var(--radius-pane);
+  margin-top: var(--rhythm-item);
 }
+
 
 /* Exchange openers only: the item becomes a flex row [avatar][column]. The
  * gap with the 24px avatar makes the 34px content column TurnBlock's gutter
@@ -76,12 +78,16 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+  margin-bottom: var(--rhythm-line);
 }
 
+/* Semibold: the speaker header is the transcript's one structural landmark
+ * per exchange, and at body size a medium weight next to regular prose was
+ * not a landmark (typography-spacing-critique-2026-09-06 finding 1). */
 .name {
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
-  font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-semibold);
   color: var(--ink-hi);
 }
 
@@ -89,8 +95,8 @@
  * element itself only renders when at least one part exists. */
 .meta {
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
 }
 
 /* The live stream wrapper. Its only job is the streaming caret - the design
@@ -126,5 +132,32 @@
     /* Disables the blink but keeps the static caret - the glyph itself
      * still honestly reflects "still live", only the motion is removed. */
     animation: none;
+  }
+}
+
+/* Last in the file on purpose: the base .opener rule sets display: flex at
+ * the same specificity, and the later declaration wins, so this block must
+ * follow it (measured on a 375px phone before the move: prose in a 187px
+ * column, 19 characters a line). Below the gutter breakpoint (turnblock.module.css's 700px) the opener
+ * becomes a grid: the avatar and the speaker header share the first row and
+ * the prose drops to a full-width second row. Measured before this: prose
+ * got 260px of a 375px screen (28 characters a line) because the avatar
+ * column indented the whole bubble. display: contents dissolves the column
+ * so its header and bubble become the grid's own items. */
+@media (max-width: 699px) {
+  .opener {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--speaker-gap);
+    row-gap: var(--space-1);
+    align-items: center;
+  }
+
+  .opener > .column {
+    display: contents;
+  }
+
+  .opener .bubble {
+    grid-column: 1 / -1;
   }
 }

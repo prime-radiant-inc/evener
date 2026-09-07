@@ -1,9 +1,14 @@
-/* Session creation: project directory, prompt, then secondary settings. */
+/* Session creation: heading, project directory, prompt, then secondary
+ * settings - one centred column on the same measure the transcript reads
+ * at, so the form sits in the pane instead of pinned to its left edge
+ * (typography-spacing-critique-2026-09-06 R7). */
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  max-width: 720px;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
   /* The query container for the Start button's word collapse below: a docked
    * pane squeezed narrow inside a desktop viewport must compact exactly like
    * the phone does. inline-size containment is safe here - this box's width
@@ -180,6 +185,9 @@
    * disabled control and promise an interaction the select refuses. */
   cursor: inherit;
   font: inherit;
+  /* A real native select: it must not inherit the trigger's caption size,
+   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
+  font-size: var(--font-size-control);
 }
 
 .effortTrigger:not([data-disabled="true"]) .effortSelect {
@@ -207,19 +215,22 @@
   display: none;
 }
 
-.mobilePromptIntro {
-  display: none;
+/* The page's heading, at every width: the phone always had it, desktop hid
+ * it behind a 12px uppercase pane title (critique finding 8). */
+.promptIntro {
+  display: block;
 }
 
-.mobilePromptHeading {
+.promptHeading {
   margin: 0;
   color: var(--ink-hi);
-  font-size: var(--font-size-pane-title);
+  font-size: var(--font-size-page-title);
   font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
 }
 
-.mobilePromptSubtitle {
+.promptSubtitle {
   margin: var(--space-1) 0 0;
   color: var(--ink-mid);
   font-size: var(--font-size-body);
@@ -324,12 +335,11 @@
     max-width: none;
   }
 
-  /* 16px is the floor iOS Safari zooms the page to reach; a smaller field font
-   * makes focusing the prompt scale the whole layout. The min-height keeps the
-   * field a usable writing surface on a short viewport where the card's
-   * line-count floor would otherwise be all it gets. */
+  /* The field's size comes from widgets/textarea (the 16px phone floor lives
+   * there); the min-height keeps the field a usable writing surface on a
+   * short viewport where the card's line-count floor would otherwise be all
+   * it gets. */
   .form textarea {
-    font-size: 16px;
     min-height: 96px;
   }
 
@@ -338,10 +348,6 @@
   }
 
   .mobileConfig {
-    display: block;
-  }
-
-  .mobilePromptIntro {
     display: block;
   }
 }

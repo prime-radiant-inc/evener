@@ -109,6 +109,7 @@ function worktreeSummary(item: { argumentsJSON?: string; output?: string }): str
 registerToolRenderer({
   match: "manage_worktree",
   summary: worktreeSummary,
+  fold: "consequential", // creates/switches/removes a tree: a mutation
   // The output really is parseable JSON here (see this file's header), but
   // whether each operation deserves its own structured body is a bigger
   // question than the row this fix is about - a head-clipped dump is honest
@@ -174,6 +175,9 @@ function FindSessionTranscriptsBody(props: ToolRenderProps) {
 
 registerToolRenderer({
   match: "find_session_transcripts",
+  // A read-only search: folds and only counts (toolFoldPolicy.test.ts pins
+  // every registered tool's policy).
+  fold: "quiet",
   summary: findSessionsSummary,
   body: FindSessionTranscriptsBody,
 });

@@ -1,0 +1,28 @@
+{
+  "name": "transcript-measure",
+  "description": "transcript: a plain agent paragraph never runs past 100 characters per line in a 1440- or 1920-wide window, and the conversation column is centred in the pane at both widths (typography-spacing-critique-2026-09-06 R2)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/turnblock.module.css",
+    "panes/session/transcript/messages/agentmessageitem.module.css",
+    "widgets/speakeravatar/speakeravatar.module.css",
+    "widgets/markdown/markdown.module.css"
+  ],
+  "viewport": {
+    "width": 1920,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    { "width": 1112, "window": 1440 },
+    { "width": 1592, "window": 1920 }
+  ],
+  "mutation": {
+    "declaration": "tokens.css: body { --session-measure: 44rem } set to 76rem (the pre-2026-09-06 literal)",
+    "verified": "2026-09-06",
+    "expect": "fail",
+    "note": "Measured 2026-09-06: at 76rem the paragraph runs 126 characters per line in the 1440 window (the 1216px column exceeds the 1112px pane) and 157 in the 1920 window."
+  }
+}

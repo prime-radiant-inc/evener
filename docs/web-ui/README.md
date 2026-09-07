@@ -14,6 +14,9 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 - **[ux-plan-2026-07.md](ux-plan-2026-07.md)** — the five-participant study of
   the SPA against the old server-rendered build, and the plan that came out of
   it. Cited from live source comments.
+- **[typography-spacing-critique-2026-09-06.md](typography-spacing-critique-2026-09-06.md)** —
+  measured critique of type scale, measure, rhythm and balance on desktop and
+  phone, with a proposed ramp and enforcement plan. Proposal, not shipped.
 - **[keybindings.md](keybindings.md)** — the keybindings dispatcher: registry,
   scope stack, precedence layers, per-binding policy flags, and how to
   register an action or a chord, the shipped default binding map (including
@@ -39,6 +42,11 @@ There is no static example gallery to keep in sync. Run the dev server and open
 **`/dev/widgets`** — every widget, every documented state, in both themes,
 rendered from the real tokens. `src/dev/WidgetGallery.test.tsx` fails the build
 the day a widget has no section, so it cannot silently go stale.
+
+**`/dev/type`** does the same for the type system itself: the size ramp, the
+three line-heights, the eyebrow recipe, the four rhythm steps and a paragraph
+at each measure, in both themes, so a ramp change is reviewed as a picture
+rather than a diff.
 
 The gallery is dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.

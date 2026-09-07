@@ -1,3 +1,16 @@
 .singleScrollPanel {
   overflow: hidden;
 }
+
+/* The rail fills the drawer flush: the sheet body's own inset made the rail
+ * read as a panel nested inside a panel (Rail.module.css's own mobile rule
+ * already drops the rail's width and border for the same reason). */
+.flushBody {
+  padding: 0;
+}
+
+/* The welcome copy that shows when nothing is focused keeps the inset the
+ * body gave up. */
+.drawerWelcome {
+  padding: var(--space-4);
+}

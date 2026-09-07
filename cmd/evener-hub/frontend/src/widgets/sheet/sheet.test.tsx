@@ -304,3 +304,12 @@ test("tap on handle toggles peek to full", () => {
   fireEvent.pointerUp(window, { clientY: 100 });
   expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
 });
+
+test("bodyClassName is appended to the body element", () => {
+  render(
+    <Sheet side="left" open onClose={() => {}} title="Sessions" bodyClassName="flush">
+      drawer body
+    </Sheet>,
+  );
+  expect(screen.getByText("drawer body").className).toMatch(/flush/);
+});

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
@@ -71,22 +71,22 @@ test("the type ramp no longer sits as raw px in :root (single source of truth is
   expect(rootBlock![1]).not.toMatch(/--font-size-body:/);
 });
 
-test("phone density is gated behind the <=900px phone media query", () => {
+test("phone density is gated behind the <=899px phone media query", () => {
   // Desktop must never inherit a density override: the whole gate lives inside
   // the phone media query. Assert the comfortable multiplier is inside a
-  // max-width:900px block, not at top level.
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:900px media block").not.toBeNull();
+  // max-width:899px block, not at top level.
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
   expect(media![1]).toMatch(/body\[data-phone-density="comfortable"\]\s*\{[^}]*--density-scale:\s*1\.25/);
 });
 
 test("phone density opens vertical rhythm by scaling line-height through --density-scale", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   expect(media![1]).toMatch(/--line-height-body:\s*calc\([^;]*var\(--density-scale\)/);
 });
 
 test("the compact density default leaves the base grid unscaled (multiplier 1)", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   // The base body rule inside the media query seeds --density-scale: 1 so
   // "compact" (and any unset value) holds the base line-height. Reads the
   // bare body rule's own value (baseDensityScale above) rather than
@@ -100,7 +100,58 @@ test("the compact density default leaves the base grid unscaled (multiplier 1)",
 });
 
 test("the 44px touch-target floor is declared inside the phone media query (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
-  const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
-  expect(media, "tokens.css must have a max-width:900px media block").not.toBeNull();
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media, "tokens.css must have a max-width:899px media block").not.toBeNull();
   expect(media![1]).toMatch(/--tap-min:\s*44px/);
+});
+
+// --- editable controls are 16px on phones -------------------------------
+//
+// index.html no longer locks zoom (viewport-pin.test.ts), so the guarantee
+// that iOS Safari has nothing to auto-zoom into moves here: every rule that
+// styles an editable control - an input/select/textarea element selector, or
+// one of the classes the widgets and panes put on their own controls - sizes
+// its text from --font-size-control (the ui step on desktop, the body step on
+// phones) or --font-size-body. roborev on PR #947 caught the inputs and
+// selects that still took --font-size-ui after the lock was removed.
+const CONTROL_SELECTOR_RE =
+  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect)(\b|[:.[])/;
+// var(--font-size-control), or the textarea's max(control, body) - never the
+// body size alone, which the S preference scales under 16px on phones.
+const CONTROL_SIZE_RE =
+  /font-size:\s*(var\(--font-size-control\)|max\(var\(--font-size-control\), var\(--font-size-body\)\))/;
+
+function walkCss(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...walkCss(full));
+    else if (entry.isFile() && entry.name.endsWith(".css")) found.push(full);
+  }
+  return found;
+}
+
+test("--font-size-control is the ui step on desktop and the body (16px) step on phones", () => {
+  expect(CSS).toMatch(/\n\s*--font-size-control: var\(--font-size-ui\);/);
+  const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
+  expect(media).not.toBeNull();
+  // max(16px, …), not the body size alone: the S font-size preference scales
+  // the phone body to 14.4px, and iOS zooms into a 14.4px field just the same
+  // (roborev on PR #947).
+  expect(media![1]).toMatch(/--font-size-control: max\(16px, var\(--font-size-body\)\);/);
+  expect(media![1]).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
+});
+
+test("every rule that sizes an editable control uses --font-size-control or --font-size-body", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const file of walkCss(srcRoot)) {
+    const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = block[1]!.trim().split("\n").pop() ?? "";
+      const body = block[2]!;
+      if (!CONTROL_SELECTOR_RE.test(selector)) continue;
+      if (!/font-size:/.test(body)) continue;
+      expect(body, `${file.slice(srcRoot.length + 1)}: ${selector}`).toMatch(CONTROL_SIZE_RE);
+    }
+  }
 });
