@@ -41,7 +41,7 @@
   --edge-strong: #3A3C40; /* control borders, overlay rings */
   --ink-hi: #F2F3F4; /* primary text */
   --ink-mid: #A5A8AD; /* secondary text */
-  --ink-low: #6C6F75; /* placeholders, disabled, timestamps */
+  --ink-low: #8A8E95; /* placeholders, disabled, timestamps - 4.7:1 on --surface-1, 5.4:1 on --surface-0 (AA, token-contract) */
 
   /* --- the four attention-family hues (dark) --------------------------
    * Exactly one meaning per hue, everywhere in the app. Reaching for one
@@ -129,13 +129,14 @@
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --tracking-display: -0.02em; /* display weight (600) titles only */
-  --tracking-micro: 0.08em; /* uppercase micro-labels (card/pane section headers) */
+  --tracking-eyebrow: 0.06em; /* THE uppercase eyebrow tracking: caption size, <=2 words, never sentences */
 
   /* The type ramp itself is declared on <body> (see the font-size preference
    * gate below), not here, so the Settings → Theme font-size choice can scale
    * the whole ramp. Only the theme-invariant line-heights stay at the root. */
   --line-height-body: 1.5;
   --line-height-title: 1.3;
+  --line-height-ui: 1.4; /* dense chrome rows: rail, status row, tables */
 
   /* --- space + shape ------------------------------------------------- */
   /* 4px grid. */
@@ -148,6 +149,13 @@
   --space-7: 40px;
   --space-8: 48px;
   --space-9: 64px;
+
+  /* Vertical rhythm, named by what sits on either side (docs/web-ui/
+   * typography-spacing-critique-2026-09-06.md R3). */
+  --rhythm-line: var(--space-1); /* 4: inside one item (intent -> call) */
+  --rhythm-item: var(--space-2); /* 8: between items in a run */
+  --rhythm-group: var(--space-4); /* 16: run -> next speaker header; above a turn footer */
+  --rhythm-exchange: var(--space-5); /* 24: above a user message */
 
   /* Transcript speaker geometry, declared once for every surface that
    * renders speaker rows (session pane's turn blocks AND focused view, the
@@ -249,10 +257,10 @@
   --edge-strong: #E0E2E5;
   --ink-hi: #1F2124;
   --ink-mid: #62656B;
-  /* Beautiful UI's #9A9DA3 is too light to serve as the diff marker ink
-   * (the contract needs >=3:1 on the diff washes); darkened to the nearest
-   * neutral that clears it. */
-  --ink-low: #86898F;
+  /* Beautiful UI's #9A9DA3 is too light to serve as text at all: --ink-low
+   * carries 96 text rules, so it clears AA on white (4.8:1) and --surface-0
+   * (4.6:1), which also covers the diff marker's own >=3:1 floor. */
+  --ink-low: #6F737A;
 
   /* Deviation from Beautiful UI's #EF720C: its 15%/24% -bg tints on white
    * render salmon/peach (#FFEBE0/#FFDFCD, oklch hue ~51deg), while the design
@@ -340,6 +348,7 @@ body {
   --font-size-body: calc(14px * var(--font-scale));
   --font-size-pane-title: calc(16px * var(--font-scale));
   --font-size-page-title: calc(20px * var(--font-scale));
+  --font-size-display: calc(28px * var(--font-scale)); /* welcome hero only */
 }
 
 body[data-font-size="s"] { --font-scale: 0.9; }

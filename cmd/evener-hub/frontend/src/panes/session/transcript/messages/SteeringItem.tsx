@@ -21,7 +21,7 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 import { memo } from "react";
 import type { SteeringKind } from "../../../../protocol/types.gen";
-import { SteeringGlyph } from "../../../../widgets";
+import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { itemScopeKey } from "../tools/subagentModuleStore";
@@ -132,7 +132,7 @@ function SteeringDivider({
           data-open={open ? "true" : "false"}
           data-testid="steering-chevron"
         >
-          ▸
+          <Chevron />
         </span>
       </summary>
       <pre className={CLASS.body}>{text}</pre>

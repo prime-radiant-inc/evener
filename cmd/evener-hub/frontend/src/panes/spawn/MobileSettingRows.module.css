@@ -54,7 +54,7 @@
 .caret {
   flex: 0 0 auto;
   color: var(--ink-mid);
-  font-size: var(--font-size-title);
+  font-size: var(--font-size-pane-title);
   line-height: 1;
 }
 

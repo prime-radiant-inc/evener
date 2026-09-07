@@ -329,7 +329,7 @@
    * field a usable writing surface on a short viewport where the card's
    * line-count floor would otherwise be all it gets. */
   .form textarea {
-    font-size: 16px;
+    font-size: var(--font-size-body);
     min-height: 96px;
   }
 

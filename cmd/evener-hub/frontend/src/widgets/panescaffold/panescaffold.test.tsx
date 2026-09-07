@@ -289,6 +289,6 @@ test("the title renders as an uppercase micro-label, not a pane-title-sized head
   expect(rule).toContain("font-size: var(--font-size-caption)");
   expect(rule).toContain("font-weight: var(--font-weight-medium)");
   expect(rule).toContain("text-transform: uppercase");
-  expect(rule).toContain("letter-spacing: var(--tracking-micro)");
+  expect(rule).toContain("letter-spacing: var(--tracking-eyebrow)");
   expect(rule).toContain("color: var(--ink-mid)");
 });

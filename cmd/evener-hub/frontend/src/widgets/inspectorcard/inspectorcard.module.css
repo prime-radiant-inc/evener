@@ -20,7 +20,7 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  letter-spacing: var(--tracking-micro);
+  letter-spacing: var(--tracking-eyebrow);
 }
 
 .body {

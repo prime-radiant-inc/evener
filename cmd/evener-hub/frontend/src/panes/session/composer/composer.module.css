@@ -62,7 +62,7 @@
   width: 80px;
   height: 80px;
   border: 1px solid var(--edge);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-chip);
   overflow: hidden;
   background: var(--surface-2);
   transition: border-color var(--motion-duration-overlay);
@@ -125,7 +125,7 @@
   right: 0;
   background: color-mix(in oklab, var(--surface-0) 90%, transparent);
   color: var(--ink-hi);
-  font-size: 11px;
+  font-size: var(--font-size-caption);
   padding: 2px 4px;
   text-align: center;
   font-family: var(--font-mono);

@@ -850,6 +850,28 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
   }
 });
 
+// --ink-low is documented as placeholder/disabled/timestamp ink, but 96
+// text rules set it as `color` (docs/web-ui/typography-spacing-critique-
+// 2026-09-06.md finding 7). It therefore has to clear AA on the two grounds
+// text actually sits on in each theme, the same bar the -ink companions meet.
+test("--ink-low clears 4.5:1 on the page and pane surfaces in both themes", () => {
+  const themes = [
+    { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
+    { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
+  ];
+  for (const theme of themes) {
+    const inkLow = declaredToken(theme.block, "--ink-low");
+    expect(inkLow, `${theme.name} declares --ink-low`).toBeDefined();
+    for (const groundName of ["--surface-0", "--surface-1"]) {
+      const ground = declaredToken(theme.block, groundName);
+      expect(ground, `${theme.name} declares ${groundName}`).toBeDefined();
+      if (!inkLow || !ground) continue;
+      const ratio = contrastRatio(parseHexColor(inkLow), parseHexColor(ground));
+      expect(ratio, `${theme.name} --ink-low on ${groundName}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
 // --- (d) z-index values must use the token ladder ----------------------
 //
 // Every z-index in the app comes from the token ladder (--z-raised, --z-sticky-bar,

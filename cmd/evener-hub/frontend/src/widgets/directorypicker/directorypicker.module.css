@@ -199,7 +199,7 @@
     padding: var(--space-3);
   }
   .input {
-    font-size: 16px;
+    font-size: var(--font-size-body);
   }
   .row {
     min-height: var(--tap-min);
