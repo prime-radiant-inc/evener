@@ -159,9 +159,17 @@ func isExcluded(rel string) bool {
 	// Hidden dirs (anything whose path segment starts with a dot, e.g.
 	// .github, .git) are walked at top level but otherwise skipped.
 	for seg := range strings.SplitSeq(rel, "/") {
+		if seg == "node_modules" || seg == "target" || seg == "vendor" {
+			return true
+		}
 		if len(seg) > 1 && strings.HasPrefix(seg, ".") && seg != ".github" {
 			return true
 		}
+	}
+	// Cargo manifests use Cargo's own hyphenated dependency/table keys rather
+	// than Evener's TOML data-file convention.
+	if filepath.Base(rel) == "Cargo.toml" {
+		return true
 	}
 	return false
 }
