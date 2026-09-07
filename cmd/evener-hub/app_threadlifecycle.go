@@ -153,11 +153,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
 	defer cancelDetached()
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
-		Project:    spawnResolved.Project,
-		Resolved:   spawnResolved,
-		WorkingDir: workingDir,
-		PluginRoot: cfg.PluginRoot,
-		Provider:   modelRef.Provider,
+		Project:       spawnResolved.Project,
+		Resolved:      spawnResolved,
+		WorkingDir:    workingDir,
+		PluginRoot:    cfg.PluginRoot,
+		AgentsDocPath: agentsDocPath(hubLaunchConfigRoot(cfg)),
+		Provider:      modelRef.Provider,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
@@ -398,7 +399,7 @@ func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, 
 }
 
 func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeRequest, error) {
-	req := hubcore.ResumeRequest{SessionID: id}
+	req := hubcore.ResumeRequest{SessionID: id, AgentsDocPath: agentsDocPath(hubLaunchConfigRoot(cfg))}
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(id); ok {
 			// Restore root, not the live working dir: a session actively

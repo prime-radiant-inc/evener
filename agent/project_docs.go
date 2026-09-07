@@ -34,14 +34,14 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 }
 
 // LoadInstructionDocs is a session's whole instruction set: the personal doc
-// under configRoot first, then the repo's project docs, sharing one byte
+// at userDocPath first, then the repo's project docs, sharing one byte
 // budget. The personal doc is loaded first because it is the user's own
 // standing instructions for every session; the repo docs get whatever budget
 // remains, truncated exactly as LoadProjectDocs truncates them.
-func LoadInstructionDocs(env execenv.ExecutionEnvironment, configRoot string, filenames ...string) ([]ProjectDoc, bool) {
+func LoadInstructionDocs(env execenv.ExecutionEnvironment, userDocPath string, filenames ...string) ([]ProjectDoc, bool) {
 	out := []ProjectDoc{}
 	used := 0
-	if user, ok := LoadUserDoc(configRoot); ok {
+	if user, ok := LoadUserDoc(userDocPath); ok {
 		if len(user.Content) > projectDocByteBudget {
 			user.Content = truncateDoc(user.Content, projectDocByteBudget)
 			return append(out, user), true
@@ -53,17 +53,16 @@ func LoadInstructionDocs(env execenv.ExecutionEnvironment, configRoot string, fi
 	return append(out, project...), truncated
 }
 
-// LoadUserDoc reads <configRoot>/AGENTS.md. ok is false when the config root
-// is empty or the file is missing or blank. Path is the display path the
-// prompt labels the block with: the home directory collapsed to "~", so the
-// model sees "~/.config/evener/AGENTS.md" rather than a machine-specific
+// LoadUserDoc reads the personal instructions file at path. ok is false when
+// the path is empty or the file is missing or blank. Path is the display path
+// the prompt labels the block with: the home directory collapsed to "~", so
+// the model sees "~/.config/evener/AGENTS.md" rather than a machine-specific
 // absolute path.
-func LoadUserDoc(configRoot string) (ProjectDoc, bool) {
-	configRoot = strings.TrimSpace(configRoot)
-	if configRoot == "" {
+func LoadUserDoc(path string) (ProjectDoc, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return ProjectDoc{}, false
 	}
-	path := filepath.Join(configRoot, UserDocFile)
 	b, err := os.ReadFile(path)
 	if err != nil || strings.TrimSpace(string(b)) == "" {
 		return ProjectDoc{}, false

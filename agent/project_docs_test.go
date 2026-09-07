@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T) {
@@ -101,7 +102,7 @@ func TestLoadUserDoc_ReadsTheConfigRootFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	doc, ok := LoadUserDoc(configRoot)
+	doc, ok := LoadUserDoc(filepath.Join(configRoot, "AGENTS.md"))
 	if !ok {
 		t.Fatal("expected the personal doc to load")
 	}
@@ -115,18 +116,18 @@ func TestLoadUserDoc_ReadsTheConfigRootFile(t *testing.T) {
 
 func TestLoadUserDoc_MissingOrBlankFileIsAbsent(t *testing.T) {
 	t.Parallel()
-	if _, ok := LoadUserDoc(t.TempDir()); ok {
+	if _, ok := LoadUserDoc(filepath.Join(t.TempDir(), "AGENTS.md")); ok {
 		t.Fatal("a missing file must not load")
 	}
 	blank := t.TempDir()
 	if err := os.WriteFile(filepath.Join(blank, "AGENTS.md"), []byte("  \n\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, ok := LoadUserDoc(blank); ok {
+	if _, ok := LoadUserDoc(filepath.Join(blank, "AGENTS.md")); ok {
 		t.Fatal("a blank file must not load")
 	}
 	if _, ok := LoadUserDoc(""); ok {
-		t.Fatal("an empty config root must not load")
+		t.Fatal("an empty path must not load")
 	}
 }
 
@@ -140,12 +141,40 @@ func TestLoadUserDoc_CollapsesTheHomeDirectoryToTilde(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	doc, ok := LoadUserDoc(configRoot)
+	doc, ok := LoadUserDoc(filepath.Join(configRoot, "AGENTS.md"))
 	if !ok {
 		t.Fatal("expected the personal doc to load")
 	}
 	if doc.Path != "~/.config/evener/AGENTS.md" {
 		t.Fatalf("path: %q, want the tilde-collapsed display path", doc.Path)
+	}
+}
+
+// The path the loader is handed is the file it reads, whatever the process
+// environment would resolve on its own: a hub whose launch config overrides
+// XDG_CONFIG_HOME per launch hands its own concrete path to the session, and
+// Settings and that session have to agree on the file.
+func TestLoadUserDoc_ReadsTheGivenPathNotTheEnvironment(t *testing.T) {
+	decoyConfigHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", decoyConfigHome)
+	decoyRoot := userdirs.DefaultConfigRoot()
+	if err := os.MkdirAll(decoyRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(decoyRoot, UserDocFile), []byte("DECOY\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	wanted := filepath.Join(t.TempDir(), UserDocFile)
+	if err := os.WriteFile(wanted, []byte("EXPLICIT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	doc, ok := LoadUserDoc(wanted)
+	if !ok {
+		t.Fatal("expected the explicitly named file to load")
+	}
+	if doc.Content != "EXPLICIT\n" {
+		t.Fatalf("content = %q, want the file at the given path", doc.Content)
 	}
 }
 
@@ -162,7 +191,7 @@ func TestLoadInstructionDocs_PersonalDocComesFirst(t *testing.T) {
 	}
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
 	if truncated {
 		t.Fatal("did not expect truncation")
 	}
@@ -185,7 +214,7 @@ func TestLoadInstructionDocs_MissingPersonalDocChangesNothing(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(root)
-	docs, _ := LoadInstructionDocs(env, t.TempDir(), "AGENTS.md")
+	docs, _ := LoadInstructionDocs(env, filepath.Join(t.TempDir(), "AGENTS.md"), "AGENTS.md")
 	if len(docs) != 1 || docs[0].Path != "AGENTS.md" {
 		t.Fatalf("docs = %+v, want only the repo doc", docs)
 	}
@@ -206,7 +235,7 @@ func TestLoadInstructionDocs_PersonalDocCountsAgainstTheSharedBudget(t *testing.
 	}
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
 	if !truncated {
 		t.Fatal("expected the repo doc to be truncated")
 	}
@@ -237,7 +266,7 @@ func TestLoadInstructionDocs_OversizedPersonalDocIsTruncatedAlone(t *testing.T) 
 		t.Fatalf("WriteFile: %v", err)
 	}
 	env := execenv.NewLocalExecutionEnvironment(root)
-	docs, truncated := LoadInstructionDocs(env, configRoot, "AGENTS.md")
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
 	if !truncated || len(docs) != 1 {
 		t.Fatalf("docs = %d truncated = %v; an oversized personal doc consumes the whole budget", len(docs), truncated)
 	}

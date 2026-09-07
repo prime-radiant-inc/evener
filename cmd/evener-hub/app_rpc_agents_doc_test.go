@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -301,5 +302,44 @@ func receiveAgentsDocChanged(t *testing.T, client *appwire.Client) appwire.Agent
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for the agentsDoc notification")
 		return appwire.AgentsDocResponse{}
+	}
+}
+
+// Settings edits the hub's AGENTS.md and the sessions the hub spawns have to
+// read that same file. Both come from one expression over the hub's config
+// root; this pins them together so neither can move on its own.
+func TestThreadStartHandsSpawnedSessionsThePathSettingsEdits(t *testing.T) {
+	spawner := &recordingSpawner{}
+	cfg := hubcore.WebConfig{LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(), Spawner: spawner}
+
+	if _, err := hubThreadStart(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:   t.TempDir(),
+		Model: "openai/gpt-5",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	spawns := spawner.Spawns()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(spawns))
+	}
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var settings appwire.AgentsDocResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &settings); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	if spawns[0].AgentsDocPath != settings.Path {
+		t.Fatalf("spawn AgentsDocPath = %q, want the file Settings edits %q", spawns[0].AgentsDocPath, settings.Path)
+	}
+	args := buildSpawnArgs(spawns[0])
+	if !slicesContainOrderedFlag(args, "--agents-doc", settings.Path) {
+		t.Fatalf("spawn args = %v, want --agents-doc %q", args, settings.Path)
 	}
 }

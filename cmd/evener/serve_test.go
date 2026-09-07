@@ -1353,3 +1353,30 @@ func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
 		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }
+
+// A hub hands every session it spawns the hub's own concrete AGENTS.md path,
+// the way it hands over the plugin root, so a per-launch XDG_CONFIG_HOME
+// override cannot make Settings and the session read different files.
+func TestServeAgentsDocFlagReachesTheSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	wantPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	got := ""
+	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		got = cfg.AgentsDocPath
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--agents-doc", wantPath,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+	if got != wantPath {
+		t.Fatalf("SessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
