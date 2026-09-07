@@ -1121,3 +1121,39 @@ func TestRosterUnconfirmedOwnershipClearsOnProbeOrExit(t *testing.T) {
 		})
 	}
 }
+
+func TestRosterUnconfirmedOwnershipInvalidatesNavigation(t *testing.T) {
+	dir := t.TempDir()
+	roster := NewRoster(dir, fakeProber{shouldFail: true})
+	roster.procAlive = func(int) bool { return true }
+	roster.Refresh()
+	changes := 0
+	roster.SetOnChange(func() { changes++ })
+	entry := rendezvous.Entry{PID: 1001, SessionID: "owner"}
+	writeRendezvous(t, dir, entry)
+	roster.Refresh()
+	if changes != 1 {
+		t.Fatalf("new claim callbacks=%d, want 1", changes)
+	}
+	roster.Refresh()
+	if changes != 1 {
+		t.Fatal("unchanged claim invalidated navigation")
+	}
+	entry.WorkspaceRef = "local:workspace"
+	writeRendezvous(t, dir, entry)
+	roster.Refresh()
+	if changes != 2 {
+		t.Fatalf("changed identity callbacks=%d, want 2", changes)
+	}
+	roster.Refresh()
+	if changes != 2 {
+		t.Fatal("unchanged identity invalidated navigation")
+	}
+	if err := rendezvous.Remove(dir, entry.PID); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	if changes != 3 {
+		t.Fatalf("removed claim callbacks=%d, want 3", changes)
+	}
+}

@@ -156,7 +156,7 @@ type Roster struct {
 	newTicker    func(time.Duration) rosterTicker
 
 	// onChange, when set via SetOnChange, is fired by Refresh only when the
-	// live set's membership, per-session status, or running-child set changes.
+	// live set's membership, per-session status, running-child set, or unresolved ownership changes.
 	onChange func()
 	// fingerprint is the live-set hash from the most recent Refresh (see
 	// rosterFingerprint), used to gate onChange against no-op refreshes.
@@ -431,8 +431,9 @@ func (r *Roster) refresh() error {
 	prevBySess := r.bySess
 	r.bySess = bySess
 	r.byPID = byPID
+	ownershipChanged := !slices.Equal(r.unconfirmed, unconfirmed)
 	r.unconfirmed = unconfirmed
-	changed := fp != r.fingerprint
+	changed := fp != r.fingerprint || ownershipChanged
 	r.fingerprint = fp
 	statusChanges := make([]string, 0)
 	for id, cur := range bySess {
