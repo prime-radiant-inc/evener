@@ -1024,6 +1024,8 @@ function productionConversationStore(
     conversationGeneration: 1,
     conversation,
     olderCursor: null,
+    hasEarlierItems: false,
+    hasLaterItems: false,
     loadingOlder: false,
     status: "open",
     error: null,
