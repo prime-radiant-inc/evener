@@ -102,14 +102,16 @@ func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// printable drops the control bytes a paste can carry, so clipboard content
-// cannot drive the terminal from a rendered field.
+// printable drops the control characters a paste can carry, so clipboard
+// content cannot drive the terminal from a rendered field. C1 goes with C0
+// and DEL: U+009B is CSI and U+009D is OSC, each a control introducer on its
+// own rather than part of an escape sequence.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r == '\t' || (r >= 0x20 && r != 0x7f) {
-			return r
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
 		}
-		return -1
+		return r
 	}, s)
 }
 
