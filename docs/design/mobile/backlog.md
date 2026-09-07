@@ -379,8 +379,10 @@ attachment-heavy large-text and long-label qualification remain open.
 Creation drafts now persist per hub in SQLite, including images and an uncertain
 creation checkpoint. Both Release simulators restored project/prompt/model/image
 after process termination and created the restored input; 349 native tests pass.
-Storage failure UX on devices, two-hub return and large-draft performance still
-need qualification. Live item-image projection is fixed;
+Ordinary two-hub return now preserves project and prompt on both Release
+simulators; iOS also retains its plugin selection and override count. Delayed
+responses, switching during failures, storage failure UX on devices and
+large-draft performance still need qualification. Live item-image projection is fixed;
 remaining running-work qualification is tracked under MOB-008.
 Per-session plugin selection now has iOS explicit-one and Android explicit-none
 creation/runtime readback evidence, shared web selection semantics, and a packed

@@ -436,3 +436,20 @@ methods and 3 of 35 notifications across five recipes. These counts describe
 recipe presence, not exhaustive branches, supported-feature parity or release
 readiness. The current protocol/client guide documents the lifecycle and its
 uncertainty/cleanup limits.
+
+## Creation draft isolation across saved hubs
+
+Manual checks on the installed c9419a06a Release builds switched iOS from
+SecondHu to Playground and Android from SecondHub to Android test hub.
+Each destination connected and showed its own session list. Opening creation
+there showed empty project and prompt fields, without the source hub's draft.
+Returning to SecondHu/SecondHub and reopening creation restored the original
+project path and exact previously observed prompt on both platforms. iOS also
+retained Plugins · 1 selected and Session options · 1 overrides; Android
+retained its launch defaults.
+
+The check used existing saved fixture profiles and left both original drafts
+unsubmitted. It establishes ordinary navigation isolation, not simultaneous
+connections, late-response rejection, network fault recovery or exact
+serialization of the displayed plugin/override summaries. Those remain separate
+acceptance checks. Both apps were left on their restored creation forms.
