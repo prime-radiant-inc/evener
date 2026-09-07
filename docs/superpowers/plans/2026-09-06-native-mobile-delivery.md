@@ -960,3 +960,23 @@ scoped hub/SDK evidence and explicitly applies iOS-only release requirements.
 Its updates are documentation only. The original hub, seven drafts and unrelated
 Apple patch remain preserved. The full project goal remains active; the release
 and workflow gaps above are still open.
+
+### Credential workflow qualification
+
+The credential recipe is being added for auth list/status, API-key set/clear,
+credential-JSON set and logout. Its independent package contracts and documented
+readback semantics still need integration. Browser/device OAuth, provider
+execution, continuous reconnect recovery and the remaining notification paths
+remain separate qualification work; catalog recipe counts do not imply complete
+workflow coverage.
+
+Luna's auth review found two server contract defects while preparing this work:
+device polling did not bind a flow to its provider instance, and non-Codex logout
+reported removal even without a stored credential. The fixes reject mismatched
+flows before polling and derive removal from actual stored-file presence.
+Regression tests preserve the original flow through pending and authorization,
+exclude credentials under the wrong instance, and cover absent, environment-only,
+stored and environment-backed logout cases. Bot independently ran the complete
+`TestAuth_` suite successfully; a separate Luna review found no actionable issue.
+Fresh external package qualification also passed. The unpublished SDK remains
+pre-release; these checks do not close iOS release acceptance or SDK workflow gaps.

@@ -311,6 +311,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	name := normalizeAuthProvider(params.Provider)
 
 	if !c.instanceIsCodex(name) {
+		_, hadFile := c.creds.Get(name)
 		if err := c.clearCredential(name); err != nil {
 			return appwire.AuthLogoutResponse{}, err
 		}
@@ -318,7 +319,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 			return appwire.AuthLogoutResponse{}, err
 		}
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
-		return appwire.AuthLogoutResponse{Removed: true, Status: status}, nil
+		return appwire.AuthLogoutResponse{Removed: hadFile, Status: status}, nil
 	}
 
 	// The Codex transport: clear the effective layer only. An OAuth record
@@ -530,6 +531,9 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Unlock()
 	if !ok {
 		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	}
+	if flow.Provider != provider {
+		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
 	}
 	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
 		c.mu.Lock()
