@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { AgentsDocResponse, AnyNotification } from "../../../protocol/types.gen";
@@ -17,6 +17,17 @@ function connectFakeClient(doc: AgentsDocResponse = DOC): FakeClient {
   fake.on("evener/settings/agentsDoc/get", () => doc);
   fake.on("evener/settings/agentsDoc/set", (params) => ({ ...doc, exists: true, content: params.content }));
   connectionStore.getState().connect(fake);
+  return fake;
+}
+
+// A WireError, as the hub really sends: friendlyErrorMessage passes a wire
+// message through but replaces a plain Error with a generic line
+// (mcp.test.tsx pins that), so a plain Error here would never reach the DOM.
+function failingSaveClient(): FakeClient {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/agentsDoc/set", () => {
+    throw new WireError("read-only file system", -1);
+  });
   return fake;
 }
 
@@ -45,7 +56,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
 });
 
 test("loads the file on mount and shows its path and content", async () => {
@@ -111,13 +121,7 @@ test("Save sends the draft, toasts, and the editor is clean afterwards", async (
 });
 
 test("a failed save shows the hub's error inline and keeps the draft", async () => {
-  const fake = connectFakeClient();
-  // A WireError, as the hub really sends: friendlyErrorMessage passes a
-  // wire message through but replaces a plain Error with a generic line
-  // (mcp.test.tsx pins that), so a plain Error here would never reach the DOM.
-  fake.on("evener/settings/agentsDoc/set", () => {
-    throw new WireError("read-only file system", -1);
-  });
+  failingSaveClient();
   renderSection();
   await waitFor(() => expect(editor().value).toBe("# hi\n"));
   const user = userEvent.setup();
@@ -126,6 +130,38 @@ test("a failed save shows the hub's error inline and keeps the draft", async () 
   await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("read-only file system"));
   expect(editor().value).toBe("# hi\nmore");
   expect(saveButton().disabled).toBe(false);
+});
+
+test("Revert clears a failed save's error", async () => {
+  failingSaveClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+  await user.click(saveButton());
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("read-only file system"));
+
+  await user.click(screen.getByRole("button", { name: "Revert" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("Load current clears a failed save's error", async () => {
+  const fake = failingSaveClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+  await user.click(saveButton());
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("read-only file system"));
+
+  act(() => {
+    fake.emitNotification({
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "# from the TUI\n" },
+    } as AnyNotification);
+  });
+  await user.click(screen.getByRole("button", { name: "Load current" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test("a changed broadcast while the draft is clean replaces the editor", async () => {
@@ -139,7 +175,7 @@ test("a changed broadcast while the draft is clean replaces the editor", async (
     } as AnyNotification);
   });
   await waitFor(() => expect(editor().value).toBe("# from the TUI\n"));
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 test("a changed broadcast while the draft is dirty keeps the draft and offers Load current", async () => {
@@ -154,11 +190,42 @@ test("a changed broadcast while the draft is dirty keeps the draft and offers Lo
       params: { ...DOC, content: "# from the TUI\n" },
     } as AnyNotification);
   });
-  await waitFor(() => expect(screen.getByText(/changed on disk/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
   expect(editor().value).toBe("# hi\nmore");
 
   await user.click(screen.getByRole("button", { name: "Load current" }));
   expect(editor().value).toBe("# from the TUI\n");
-  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
   expect(saveButton().disabled).toBe(true);
+});
+
+// The hub broadcasts every write, this client's own save included, and
+// Task 4's store deliberately does not suppress that self-echo: the section's
+// content-keyed stale test is what makes the echo inert. An echo arriving
+// after the user has typed again is where a dirtiness-keyed test would go
+// wrong, so that is the shape this pins.
+test("a changed broadcast echoing this client's own save leaves later keystrokes alone", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+  await user.click(saveButton());
+  // The whole round-trip has settled: the toast landed and the editor is
+  // editable again (it is disabled only while saving).
+  await waitFor(() => {
+    expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(true);
+    expect(editor().disabled).toBe(false);
+  });
+  await user.type(editor(), " again");
+
+  act(() => {
+    fake.emitNotification({
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "# hi\nmore" },
+    } as AnyNotification);
+  });
+
+  expect(editor().value).toBe("# hi\nmore again");
+  expect(screen.queryByRole("status")).toBeNull();
 });

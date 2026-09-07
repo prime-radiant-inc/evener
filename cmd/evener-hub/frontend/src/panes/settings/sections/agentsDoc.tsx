@@ -11,7 +11,7 @@
 // nor the draft while dirty is someone else's write, and flips `stale` -
 // this client's own save lands with content equal to the draft, so it never
 // reads as stale.
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import { agentsDocStore, useAgentsDocStore } from "../../../stores/agentsDoc";
 import { Button, Skeleton, Textarea, useToasts } from "../../../widgets";
@@ -45,7 +45,6 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const toast = useToasts();
-  const fieldId = useId();
 
   useConnectedEffect(() => agentsDocStore.getState().fetch(), []);
 
@@ -80,6 +79,7 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
 
   function handleRevert(): void {
     if (baseline !== null) setDraft(baseline);
+    setSaveError(null);
   }
 
   function handleLoadCurrent(): void {
@@ -87,6 +87,7 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
     setDraft(doc.content);
     setBaseline(doc.content);
     setStale(false);
+    setSaveError(null);
   }
 
   if (doc === null && loading) return <Skeleton />;
@@ -102,7 +103,6 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
       </p>
       <div className={CLASS.editor}>
         <Textarea
-          id={fieldId}
           aria-label="AGENTS.md contents"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
