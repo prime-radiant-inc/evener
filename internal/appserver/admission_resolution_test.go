@@ -22,6 +22,13 @@ func TestSubscriptionAdmissionResolverPanicIsContained(t *testing.T) {
 		}
 	}()
 	c.executeOrdered(context.Background(), msg)
+	response := <-c.send
+	if response.Error == nil || response.Error.Error.Code != appwire.CodeInternalError {
+		t.Fatalf("resolver panic response = %+v, want internal error", response)
+	}
+	if len(c.pendingAdmissions) != 0 || len(s.subs.byConn[c.id]) != 0 {
+		t.Fatal("resolver panic caused admission or subscription side effects")
+	}
 }
 
 func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
@@ -42,6 +49,23 @@ func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
 	}
 	if s.subs.IsSubscribed(c.id, "thread") {
 		t.Fatal("unresolved subscribe installed a subscription")
+	}
+}
+
+func TestInvalidSubscribingReadPreservesInvalidParams(t *testing.T) {
+	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) (string, bool) {
+		return "", false
+	}})
+	c := s.NewConnection("invalid")
+	c.setInitialized()
+	HandleTyped(s.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{}, nil
+	})
+	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true,"threadId":123}`))
+	c.executeOrdered(context.Background(), msg)
+	response := <-c.send
+	if response.Error == nil || response.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Fatalf("invalid subscribing read response = %+v, want invalid params", response)
 	}
 }
 

@@ -1166,7 +1166,7 @@ func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams,
 // form and the bare thread ID, and Unsubscribe is idempotent, so trying both
 // costs nothing and leaks nothing.
 func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
-	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	threadID, target := s.appReadTarget(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if threadID == "" {
 		// Teardown finding nothing is a success; still try the raw identities
 		// so a pre-swap key does not linger until connection close.
@@ -1179,7 +1179,7 @@ func (s *Server) handleAppThreadUnsubscribe(ctx context.Context, params appwire.
 		}
 		return appwire.EmptyResponse{}, nil
 	}
-	appserver.Unsubscribe(ctx, s.appNotificationTarget(threadID))
+	appserver.Unsubscribe(ctx, target)
 	return appwire.EmptyResponse{}, nil
 }
 
