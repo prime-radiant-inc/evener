@@ -74,3 +74,25 @@ These are foundation and API results. Production journal wiring, persistent pin
 proposals, target-specific readback, native routes/menus and their UI/lifecycle
 acceptance remain open; the remaining implementation checklist above is not
 complete.
+
+## iOS assignment checkpoint (2026-09-07)
+
+`c9466f954` registers the pin assignment screen and native session-menu action,
+wires per-hub durable operation recovery, stores per-session proposals, restores
+the route after restart, and reads current assignment plus catalog before clearing
+recovery. Maximum text size exposed and corrected fixed headers hiding the form;
+all content now scrolls and action rows wrap.
+
+The final Release app restored a saved proposal without sending it, then created
+and pinned a section and unpinned the session. An earlier same-controller journey
+assigned an existing section. Separate reads confirmed server state. External
+deletion exposed a hub empty-graph delta comparison bug, corrected in `c9fb42abc`;
+the final iOS Refresh then succeeded. The owned fixture was restored.
+
+Native validation is now 477 tests plus TypeScript; frontend gates, the full hub
+test package and the runtime build passed. Evidence is appended to
+[organization evidence](../../design/mobile/organization-evidence.md#ios-pin-assignment-checkpoint-2026-09-07).
+
+The next management slice is native catalog/section browsing and rename/delete.
+The broader checklist stays open until those destinations, ordinary fork, session
+deletion and lifecycle/accessibility acceptance are implemented and exercised.
