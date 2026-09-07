@@ -17,6 +17,7 @@ import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
+import { foldTurnEntries } from "./toolRuns";
 import { asTurnError } from "./turnFailure";
 import "./messages";
 import "./tools";
@@ -208,15 +209,35 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
   return rows;
 }
 
+// Anchors are registered from the SAME fold TurnBlock renders (toolRuns.ts's
+// foldTurnEntries): a folded run is one anchor under the run's id, carrying
+// its first entry's source index, because while the run is closed no element
+// carries the individual entry ids and a restore that looked for one would
+// find nothing (roborev on PR #947).
 export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[]): readonly TranscriptAnchorEntry[] {
   return rows.flatMap((row, index) => {
-    const entries = row.kind === "intentGroup" ? row.entries : row.turn.entries;
-    return entries.map((entry) => ({
-      id: entry.id,
-      sourceIndex: entry.sourceIndex,
-      index,
-      isMessage: entry.kind === "item" && entry.isMessage,
-    }));
+    if (row.kind === "intentGroup") {
+      return row.entries.map((entry) => ({
+        id: entry.id,
+        sourceIndex: entry.sourceIndex,
+        index,
+        isMessage: false,
+      }));
+    }
+    return foldTurnEntries(row.turn).flatMap((entry) => {
+      if (entry.kind === "run") {
+        const first = entry.entries[0];
+        return first ? [{ id: entry.id, sourceIndex: first.sourceIndex, index, isMessage: false }] : [];
+      }
+      return [
+        {
+          id: entry.id,
+          sourceIndex: entry.sourceIndex,
+          index,
+          isMessage: entry.kind === "item" && entry.isMessage,
+        },
+      ];
+    });
   });
 }
 

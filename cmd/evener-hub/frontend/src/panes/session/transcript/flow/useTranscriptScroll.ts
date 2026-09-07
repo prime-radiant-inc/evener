@@ -177,6 +177,10 @@ const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusM
 
 function sourceIdentity(id: string): string {
   if (id.startsWith("intent:")) return id.slice("intent:".length);
+  // A folded tool run's anchor is its first entry's id under the run prefix
+  // (toolRuns.ts): a focus captured on that entry before the turn settled
+  // still resolves to the run it folded into.
+  if (id.startsWith("run:")) return id.slice("run:".length);
   if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
   return id;
 }
@@ -278,15 +282,24 @@ function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadat
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-function closedIntentSummary(anchor: HTMLElement): HTMLElement | undefined {
-  if (!anchor.dataset.viewAnchorId?.startsWith("intent:")) return undefined;
-  const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-  const summary = details?.querySelector(":scope > summary");
+// A closed disclosure that owns the anchor: an intent-group entry's anchor
+// sits INSIDE its <details>, a folded tool run's anchor wraps its own
+// <details> (TurnBlock's runAnchorFor), so the two are looked up from
+// opposite directions. Either way the summary is the thing to focus.
+function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
+  const id = anchor.dataset.viewAnchorId ?? "";
+  let summary: Element | null | undefined;
+  if (id.startsWith("intent:")) {
+    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
+    summary = details?.querySelector(":scope > summary");
+  } else if (id.startsWith("run:")) {
+    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
+  }
   return summary instanceof HTMLElement ? summary : undefined;
 }
 
 function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
-  const summary = closedIntentSummary(anchor);
+  const summary = closedGroupSummary(anchor);
   if (summary) {
     summary.focus();
     if (summary.ownerDocument.activeElement === summary) return true;

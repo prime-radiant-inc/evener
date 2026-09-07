@@ -31,7 +31,7 @@ import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
-import { foldToolRuns, type ToolRun } from "./toolRuns";
+import { foldTurnEntries, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -227,10 +227,7 @@ export function TurnBlock({
   // row (critique R9, toolRuns.ts). "inProgress" is the wire's own live turn
   // status (the projector reads the same literal), so a turn still working
   // keeps every call visible as it arrives.
-  const laidOut = foldToolRuns(projectedTurn.entries, {
-    turnSettled: sourceTurn.status !== "inProgress",
-    descriptorFor: toolRendererFor,
-  });
+  const laidOut = foldTurnEntries(projectedTurn);
   const renderedEntries: ReactNode[] = [];
   for (let index = 0; index < laidOut.length; index += 1) {
     const entry = laidOut[index];
