@@ -105,6 +105,58 @@ recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
 
+### Reading the command catalog
+
+Run `commands.mjs` with the connection variables above to read
+`evener/command/list` once. The hub-wide catalog combines enabled plugin commands
+and Evener-wide user commands; it excludes project-scoped commands. Names are
+unqualified: retain `pluginName` and `source` when distinguishing entries.
+
+Programmatic consumers can import `runCommands` and `summarizeCommands` from
+`examples/commands-logic.mjs`. The reader validates descriptors and preserves
+complete rows, order and future fields. The current Go response serializes an
+empty catalog as `commands: null`; the recipe returns an empty `readback` array.
+It also accepts an empty array. This means no commands, not an unavailable
+catalog. Missing/malformed response fields reject the entire read. The CLI emits
+only counts by source, never command descriptions or prompts. Reading a command
+does not execute it, and failures do not trigger automatic retries.
+
+### Reading and changing session settings
+
+`session-settings.mjs` uses `EVENER_SESSION_SETTING` (`list`, `model`,
+`reasoning-effort`, or `vision-model`) and reads JSON from
+`EVENER_SESSION_SETTINGS_PARAMS_FILE`. A read takes exactly `{ "ref": "local:..." }`.
+Import `runSessionSettings` from `examples/session-settings-logic.mjs` to obtain
+the full `readback` and `settings` objects; the CLI prints only outcome, execution
+status and the number of present settings.
+
+Mutations additionally require `EVENER_SESSION_SETTINGS_MUTATION=1` and
+`EVENER_SESSION_SETTINGS_OWNED_HUB` equal to `EVENER_RPC_URL`, using the existing
+owned-hub restrictions. Pass `ref`, `expectedInstanceId`, and the exact `settings`
+object from the reviewed read as `reviewed`. Then supply the selected fields:
+
+| Setting | Authored fields | Meaning |
+| --- | --- | --- |
+| `model` | `modelProvider`, `model` | Provider may be empty for a model ref resolved by the server; model must be nonempty. Select from the current `model/list` catalog. |
+| `reasoning-effort` | `reasoningEffort` | Empty resets to the session/model default; `none` disables reasoning. The daemon validates and clamps the value. |
+| `vision-model` | `visionModel` | Empty uses the active session model, `off` disables the side-channel, otherwise supply a model or provider/model ref. |
+
+`thread.modelProvider` is the complete current model value despite its field
+name. Retain it exactly for review; do not split or reconstruct a fallback
+ladder from it. Optional effort/vision fields remain absent when omitted, rather
+than becoming a fabricated default. The setter accepts an authored model choice;
+do not assume it edits one rung of a fallback ladder.
+
+The recipe checks the current ref, instance, relevant capability and reviewed
+settings before dispatch, then checks the same thread and instance on readback.
+These setters have no atomic instance/revision/mutation-ID precondition, so the
+review cannot prevent a change between read and write. A valid object response
+means `acknowledged`; it does not prove the requested value remains current.
+Readback can show clamping or another writer's value. A lost/malformed reply
+means `uncertain`, even if readback succeeds. Acknowledged mutations with failed
+readback retain that distinction through `AcknowledgedReadbackError`. Neither
+case authorizes automatic replay. Actual model/provider execution is unverified.
+
 ### Reading the task list
 
 `tasks.mjs` reads `evener/tasks/list` once for `EVENER_REF`, or for the exact

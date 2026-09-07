@@ -566,7 +566,7 @@ and CommonJS, and ran the read-only inspection recipe against an authenticated
 isolated hub. The reference generator includes nested wire objects and JSON
 representations. See the [client guide](../../appwire-client.md).
 
-The current generated catalog has 91 methods; eighteen recipes cover 50 method
+The current generated catalog has 91 methods; twenty recipes cover 54 method
 names and three notification names. These are recipe-presence counts, not full
 outcome coverage. The opt-in project-layer
 recipe verified mutation, notification, effective-value readback and restoration
