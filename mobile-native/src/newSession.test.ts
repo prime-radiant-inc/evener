@@ -4,6 +4,7 @@ import {
   type ConversationClientLike,
   createNewSessionService,
 } from "../../mobile/src/services/newSession";
+import type { CreationDraft } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
 import { ImageSelection } from "./imageSelection";
 import { createNewSessionStore } from "./newSession";
@@ -120,6 +121,61 @@ it("suppresses completion and metadata after disconnect", async () => {
     harnesses: [],
     models: [],
   });
+});
+
+it("retains hub A creation uncertainty when a delayed start completes after switching to hub B", async () => {
+  const saved = new Map<string, CreationDraft>();
+  const storage = () => ({
+    read: (hubId: string) => saved.get(hubId) ?? null,
+    write: (hubId: string, draft: CreationDraft) => {
+      saved.set(hubId, structuredClone(draft));
+    },
+    clear: (hubId: string) => saved.delete(hubId),
+  });
+  const calls: ReturnType<typeof deferred>[] = [];
+  const service = createNewSessionService({
+    request(_method: string, _params: unknown) {
+      const response = deferred();
+      calls.push(response);
+      return response.promise;
+    },
+  } as ConversationClientLike);
+  const hubA = createNewSessionStore("hub-a", storage);
+  hubA.getState().setCwd("/a");
+  hubA.getState().setPrompt("keep A");
+  hubA.getState().bind(service);
+  const pending = hubA.getState().submit();
+  expect(calls).toHaveLength(1);
+
+  hubA.getState().bind(null);
+  const hubB = createNewSessionStore("hub-b", storage);
+  hubB.getState().setCwd("/b");
+  hubB.getState().setPrompt("keep B");
+  calls[0]?.resolve({
+    thread: { evener: { ref: "hub-a/session" } },
+    turn: {},
+  });
+
+  expect(await pending).toEqual({ status: "obsolete" });
+  expect(hubB.getState()).toMatchObject({ cwd: "/b", prompt: "keep B" });
+  expect(saved.get("hub-a")).toMatchObject({
+    cwd: "/a",
+    prompt: "keep A",
+    unconfirmed: true,
+  });
+  expect(saved.get("hub-b")).toMatchObject({
+    cwd: "/b",
+    prompt: "keep B",
+    unconfirmed: false,
+  });
+
+  const returnedA = createNewSessionStore("hub-a", storage);
+  expect(returnedA.getState()).toMatchObject({
+    cwd: "/a",
+    prompt: "keep A",
+    unconfirmedCreation: true,
+  });
+  expect(calls).toHaveLength(1);
 });
 
 it("keeps explicit choices when blurring an unchanged project directory", async () => {
