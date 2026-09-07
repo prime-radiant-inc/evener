@@ -29,11 +29,13 @@ import (
 
 func TestHubProtocolUpgradePreservesTranscriptAndRejectsUndeliverableMessages(t *testing.T) {
 	for _, cleared := range []bool{false, true} {
-		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubProtocolUpgrade(t, cleared) })
+		for _, cached := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cleared=%v/cached=%v", cleared, cached), func(t *testing.T) { testHubProtocolUpgrade(t, cleared, cached) })
+		}
 	}
 }
 
-func testHubProtocolUpgrade(t *testing.T, cleared bool) {
+func testHubProtocolUpgrade(t *testing.T, cleared, cached bool) {
 	root := t.TempDir()
 	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -45,15 +47,21 @@ func testHubProtocolUpgrade(t *testing.T, cleared bool) {
 	if cleared {
 		daemonSessionID = "02wMz5Txv1C3Hut0M8GCeC"
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: daemonSessionID, SessionID: daemonSessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)})
+	entry := rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: daemonSessionID, SessionID: daemonSessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)}
 	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
-	roster.Refresh()
+	if cached {
+		writeRendezvous(t, runDir, entry)
+		roster.Refresh()
+	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatal(err)
+	}
+	if !cached {
+		writeRendezvous(t, runDir, entry)
 	}
 	ref := "local:" + sessionID
 	t.Run("saved transcript remains readable with explicit restart state", func(t *testing.T) {

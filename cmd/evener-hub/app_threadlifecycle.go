@@ -338,8 +338,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// through the current local source. A dead daemon may remain as a
 		// crash marker and must fall through to spawning.
 		if cfg.Roster != nil {
-			if le, ok := cfg.Roster.Find(sessionID); ok &&
-				!le.Crashed &&
+			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
 				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
 			}

@@ -683,6 +683,12 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubSteersSurvivingDaemon(t, cleared) })
+	}
+}
+
+func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	const (
 		daemonProtocol = appwire.ProtocolVersion
 		threadID       = "th_compatible"
@@ -704,6 +710,18 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	})
 	defer daemonHTTP.Close()
 
+	resumeID := threadID
+	if cleared {
+		resumeID = "workspace_before_clear"
+		entries, err := rendezvous.List(runDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("rendezvous entries=%+v error=%v", entries, err)
+		}
+		entry := entries[0]
+		entry.WorkspaceRef = "local:" + resumeID
+		writeRendezvous(t, runDir, entry)
+	}
+
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
 
@@ -724,11 +742,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+	if resumed.Thread.ID != threadID || resumed.Thread.Evener.Ref != "local:"+threadID || resumeCalls != 0 {
 		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
 	}
 
