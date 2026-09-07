@@ -1,16 +1,16 @@
 # AppWire protocol coverage inventory
 
-This inventory is generated from the authoritative `appwire.Methods` and `appwire.Notifications` catalogs at HEAD `5361555a6`. It distinguishes cookbook presence, deterministic contract tests, real hub acceptance, and native qualification. A recipe or contract is not evidence of live-hub or native acceptance; “deterministic contract” below means the recipe logic contract, not server method acceptance. Dated acceptance links below are evidence from separate controlled owned fixtures, with their stated scope and limits. No operation was performed for this inventory.
+This inventory is generated from the authoritative `appwire.Methods` and `appwire.Notifications` catalogs at HEAD `5361555a6`, with credential recipe registration against `3c5feb442`. It distinguishes cookbook presence, deterministic contract tests, real hub acceptance, and native qualification. A recipe or contract is not evidence of live-hub or native acceptance; “deterministic contract” below means the recipe logic contract, not server method acceptance. Dated acceptance links below are evidence from separate controlled owned fixtures, with their stated scope and limits. No operation was performed for this inventory.
 
 ## Counts and interpretation
 
-The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names 54 distinct methods and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented`.
+The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names 60 distinct methods and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented`.
 
 ## Methods
 
 | Method | Scope | Cookbook recipe(s) | Evidence currently present | Unassessed or remaining qualification |
 |---|---|---|---|---|
-| `initialize` | `connection` | `commands.mjs`, `session-settings.mjs`, `preferences.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `organization.mjs`, `plugins.mjs`, `plugin-management.mjs`, `instances.mjs`, `marketplaces.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `tasks.mjs`, `job-output.mjs`, `activity.mjs`, `queue.mjs`, `repository-trust.mjs`, `project-layer.mjs`, `inspect.mjs` | Live prerequisite in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); no handshake-specific assertion | handshake failure/skew and native qualification not assessed here |
+| `initialize` | `connection` | `credentials.mjs`, `commands.mjs`, `session-settings.mjs`, `preferences.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `organization.mjs`, `plugins.mjs`, `plugin-management.mjs`, `instances.mjs`, `marketplaces.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `tasks.mjs`, `job-output.mjs`, `activity.mjs`, `queue.mjs`, `repository-trust.mjs`, `project-layer.mjs`, `inspect.mjs` | Live prerequisite in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); no handshake-specific assertion | handshake failure/skew and native qualification not assessed here |
 | `ping` | `connection` | — | — | live keepalive acceptance + native qualification not assessed here |
 | `thread/list` | `both` | `inspect.mjs` | recipe | server/live acceptance + native qualification |
 | `thread/read` | `both` | `session-settings.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `queue.mjs` | [SDK management/question/reader/approval evidence](sdk-management-evidence.md#structured-question-recipe-and-real-completion), [reader evidence](reader-continuity-evidence.md#environment-identity-across-shutdown-7-september-2026), [approval evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions) | remaining failure/platform cases are documented in cited evidence |
@@ -58,15 +58,15 @@ The structured catalog contains **91 methods** and **36 notifications**. The coo
 | `evener/search` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/harnesses/list` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/upgrade` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/status` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/auth/status` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
 | `evener/auth/test` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/auth/login/start` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/auth/login/complete` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/logout` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/list` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/apiKey/set` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/apiKey/clear` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/auth/credentialJson/set` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/auth/logout` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
+| `evener/auth/list` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
+| `evener/auth/apiKey/set` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
+| `evener/auth/apiKey/clear` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
+| `evener/auth/credentialJson/set` | `hub` | `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) | OAuth/disconnect/provider/native outcomes remain open |
 | `evener/auth/device/start` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/auth/device/poll` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/launch/resolve` | `hub` | `repository-trust.mjs`, `project-layer.mjs`, `inspect.mjs` | recipe | server/live acceptance + native qualification |
@@ -129,7 +129,7 @@ The structured catalog contains **91 methods** and **36 notifications**. The coo
 | `evener/job/finished` | — | catalog only | live ordering/failure + native qualification |
 | `evener/delegate/updated` | — | catalog only | live ordering/failure + native qualification |
 | `evener/jobs/treeUpdated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/auth/updated` | — | catalog only | live ordering/failure + native qualification |
+| `evener/auth/updated` | — | [independent observer received eleven credential updates](sdk-management-evidence.md#packaged-stored-credentials--7-september) | continuous recovery, failure and native qualification remain open |
 | `evener/launch/updated` | `repository-trust.mjs`, `project-layer.mjs` | recipe inventory + deterministic contract where listed | live ordering/failure + native qualification |
 | `evener/attention/changed` | — | catalog only | live ordering/failure + native qualification |
 | `evener/navigation/invalidated` | — | catalog only | live ordering/failure + native qualification |
