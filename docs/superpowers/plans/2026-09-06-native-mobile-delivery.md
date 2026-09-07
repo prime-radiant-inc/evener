@@ -857,3 +857,51 @@ The owned instance, hub and provider were cleaned up; original hub, seven native
 drafts and unrelated Apple changes are preserved. Package qualification passes
 again. Native lifecycle viewport, historical anchors, uncertain-delivery and
 multi-hub acceptance remain open. iOS-only v1 and the full goal stay active.
+
+
+## Next bounded packages — source 5361555a6
+
+1. Restore useful completed-question recaps. In shared conversation projection,
+   preserve any authoritative tool description; when absent and valid ask_user
+   question arguments exist, derive a concise description from their headers.
+   Keep completed/errored calls as non-actionable activity and retain arguments,
+   outputs and errors for disclosure. Do not infer selected answers from later
+   prose. Behavioral tests cover authored description, multiple headers, malformed
+   arguments, answered/failed status and unchanged pending question controls.
+   Luna medium owns project.ts/project.test.ts; Bot owns native integration.
+2. Produce a complete source-backed SDK support inventory for all current methods
+   and notifications, distinguishing router scope/reserved methods, recipe
+   presence and actual acceptance. Identify missing lifecycle and recovery docs
+   explicitly. Luna medium owns the dedicated protocol-coverage document.
+3. Bot qualifies the newly repaired environment identity on the installed native
+   iPhone reader using a fresh owned direct hub and scripted provider. Capture
+   saved anchor and settled viewport before and after actual ended-state reads
+   and process restart. Preserve existing drafts and restore the original hub.
+
+
+## Native lifecycle and question recap checkpoint — source 5361555a6
+
+A separate real hub/scripted provider produced 24 turns for actual iPhone
+reading. After loading older history and dragging to the first assistant, the
+reader retained key turn_m1:2:1 and offset 143.33333333333331 across shutdown,
+process restart and final bundle reinstall. All 49 live/persisted identities
+matched through independent SDK paged reads. Owned profile/instance/processes
+were cleaned up and original hub, seven drafts and Apple patch preserved.
+See reader-continuity-evidence.md for source/artifact limits.
+
+Completed question activities derive missing descriptions from validated
+headers, preserve authored descriptions and all details, and never infer answers.
+RED/green regressions, 88 shared projection tests, 621 native tests, TypeScript
+and Release pass; the installed app displays both completed question recaps
+with its ordinary draft unchanged. Luna medium proposed/reviewed this code and
+authored protocol-coverage.md; Bot verified actual sources and results. The
+inventory matches all 91 method scopes and 36 notification names exactly once,
+with valid local evidence links and reserved support distinguished from required
+v1 functionality. This does not qualify every method.
+
+Next: native multi-hub pending/uncertain operations and keyboard-open hub-form
+focus. Simulator HID modifiers and offscreen targets were unreliable during
+setup; native paste completed it, but focus/scroll behavior needs a separate
+observed journey. Historical reader anchors, ongoing streaming/image reflow and
+iPad/physical/accessibility/release gates remain open. iOS-only v1 and the full
+goal stay active.
