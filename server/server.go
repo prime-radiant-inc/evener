@@ -446,10 +446,8 @@ func NewServer(cfg ServerConfig) *Server {
 						return "", false
 					}
 					params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
-				} else {
-					if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
-						return "", false
-					}
+				} else if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+					return "", false
 				}
 				threadID, target := runtime.appReadTarget(params)
 				if threadID == "" {
