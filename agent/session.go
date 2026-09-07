@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1609,7 +1610,13 @@ func (s *Session) maybeAppendEnvironmentContext() {
 		return
 	}
 
-	s.appendTurn(schema.TurnEnvironment, llm.User(block))
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn.StableTurnID = "turn_env_" + rand.Text()
+	s.recordTurn(turn, turn)
+	s.emit(events.EventEnvironment, events.EnvironmentData{
+		StableTurnID: turn.StableTurnID,
+		Text:         block,
+	})
 	// Persist tracker state so resume stays silent when nothing changed.
 	s.setEnvContextState(st)
 }

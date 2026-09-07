@@ -336,6 +336,28 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		data := eventData[events.TurnStartedData](event.Data)
 		_, out := p.openTurn(data.TurnID, event.Timestamp)
 		return append(out, p.threadStatus(appwire.ThreadStatusActive))
+	case events.EventEnvironment:
+		data := eventData[events.EnvironmentData](event.Data)
+		if data.StableTurnID == "" || strings.TrimSpace(data.Text) == "" {
+			return nil
+		}
+		// Environment context precedes its user input but does not consume that
+		// input's reserved identity or become an active model turn.
+		item := appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          "item_environment_" + data.StableTurnID,
+			TurnID:      data.StableTurnID,
+			Description: "Environment",
+			Text:        data.Text,
+			Status:      appwire.TurnStatusCompleted,
+			EventKind:   appwire.ThreadItemEventKindEnvironment,
+		}
+		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   data.StableTurnID,
+			Turn:     appwire.Turn{ID: data.StableTurnID, Status: appwire.TurnStatusCompleted, ItemsView: "full", Items: []appwire.ThreadItem{item}},
+		})}
 	case events.EventUserInput:
 		data := eventData[events.UserInputData](event.Data)
 		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp)

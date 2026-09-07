@@ -36,6 +36,7 @@ func New(data EventData) SessionEvent {
 func (SessionStartData) eventKind() EventKind            { return EventSessionStart }
 func (SessionEndData) eventKind() EventKind              { return EventSessionEnd }
 func (UserInputData) eventKind() EventKind               { return EventUserInput }
+func (EnvironmentData) eventKind() EventKind             { return EventEnvironment }
 func (AssistantTextStartData) eventKind() EventKind      { return EventAssistantTextStart }
 func (AssistantTextDeltaData) eventKind() EventKind      { return EventAssistantTextDelta }
 func (AssistantTextEndData) eventKind() EventKind        { return EventAssistantTextEnd }
@@ -98,6 +99,7 @@ var (
 	_ EventData = SessionStartData{}
 	_ EventData = SessionEndData{}
 	_ EventData = UserInputData{}
+	_ EventData = EnvironmentData{}
 	_ EventData = AssistantTextStartData{}
 	_ EventData = AssistantTextDeltaData{}
 	_ EventData = CommunicatePreviewStartData{}

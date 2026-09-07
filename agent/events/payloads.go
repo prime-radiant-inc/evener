@@ -64,6 +64,13 @@ type SessionEndData struct {
 	Interrupted bool `json:"interrupted,omitempty"`
 }
 
+// EnvironmentData identifies the standalone environment turn shared by the
+// live event projection and persisted transcript.
+type EnvironmentData struct {
+	StableTurnID string `json:"stable_turn_id"`
+	Text         string `json:"text"`
+}
+
 // UserInputData is the payload for an EventUserInput event.
 type UserInputData struct {
 	Text             string           `json:"text"`

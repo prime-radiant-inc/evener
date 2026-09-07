@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
+import {clientFromEnvironment} from './node_modules/@evener/appwire-client/examples/connection.mjs';
+const root=process.env.EVENER_READER_FIXTURE_ROOT;
+assert.ok(root, 'EVENER_READER_FIXTURE_ROOT is required');
+const runtime=JSON.parse(await fs.readFile(root+'/runtime.json','utf8'));
+const provider=JSON.parse((await fs.readFile(root+'/provider.log','utf8')).split('\n')[0]);
+process.env.EVENER_RPC_URL=runtime.url;process.env.EVENER_CWD=runtime.cwd;process.env.EVENER_TOKEN_FILE=runtime.tokenFile;
+const {hub}=clientFromEnvironment();
+let stage='connect';
+try {
+ await hub.connect();
+ stage='instance';
+ await hub.request('evener/instance/create',{name:'reader-fixture',base:'openai-compatible',baseUrl:provider.baseURL,protocol:'openai-chat'});
+ const catalog=await hub.request('model/list',{cwd:runtime.cwd});
+ assert.ok(catalog.data.some(m=>m.provider==='reader-fixture'&&m.model==='fake-test-model'));
+ stage='create';
+ const {thread}=await hub.request('thread/start',{cwd:runtime.cwd,modelProvider:'reader-fixture',model:'fake-test-model',launchOverrides:{noProjectPrompts:true,maxRounds:4}});
+ const binding={ref:thread.evener.ref,threadId:thread.id,instanceId:thread.evener.instanceId};
+ await fs.writeFile(root+'/binding.json',JSON.stringify(binding,null,2)+'\n');
+ const completed=new Set();let wake;
+ const stop=hub.onNotification(n=>{if(n.params.ref===binding.ref&&n.method==='turn/completed'){completed.add(n.params.turn.id);wake?.()}});
+ await hub.request('thread/read',{ref:binding.ref,includeTurns:true,subscribe:true});
+ const sends=[];
+ for(let i=0;i<2;i++){
+  stage='send '+i;
+  const mutationId=randomUUID();
+  const reply=await hub.request('turn/start',{ref:binding.ref,expectedInstanceId:binding.instanceId,clientMutationId:mutationId,input:[{type:'text',text:'Reader identity input '+(i+1)}]});
+  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('completion deadline')),30000);wake=()=>{if(completed.has(reply.turn.id)){clearTimeout(timer);wake=undefined;resolve()}};wake()});
+  sends.push({mutationId,turnId:reply.turn.id});
+ }
+ stage='live read';
+ const live=(await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemsView:'full',subscribe:false})).thread;
+ assert.equal(live.evener.instanceId,binding.instanceId);
+ assert.notEqual(live.status.type,'active');
+ const identities=t=>t.turns.flatMap(turn=>turn.items).filter(i=>i.type==='userMessage'||i.type==='agentMessage'||i.eventKind==='environment').map(i=>({type:i.type,eventKind:i.eventKind,turnId:i.turnId,key:i.transcriptKey,position:i.position,mutationId:i.clientMutationId}));
+ const liveItems=identities(live);
+ await fs.writeFile(root+'/live-checkpoint.json',JSON.stringify({binding,status:live.status,items:liveItems},null,2)+'\n');
+ assert.equal(liveItems.filter(i=>i.eventKind==='environment').length,1);
+ assert.equal(liveItems.filter(i=>i.type==='userMessage').length,2);
+ stage='shutdown';await hub.request('thread/shutdown',{ref:binding.ref});
+ stop();
+ stage='persisted read';
+ // Shutdown acknowledges dispatch. Wait for the authoritative ended state.
+ const statuses=[];
+ const deadline=Date.now()+10000;
+ let saved;
+ do {
+  saved=(await hub.request('thread/read',{ref:binding.ref,includeTurns:true,itemsView:'full',subscribe:false})).thread;
+  statuses.push(saved.status.type);
+  if(saved.status.type==='notLoaded') break;
+  await delay(100);
+ } while(Date.now()<deadline);
+ const savedItems=identities(saved);
+ await fs.writeFile(root+'/saved-checkpoint.json',JSON.stringify({binding,statuses,status:saved.status,items:savedItems},null,2)+'\n');
+ stage='ended status';assert.equal(saved.status.type,'notLoaded');
+ stage='identity parity';assert.deepEqual(savedItems,liveItems);
+ for(const send of sends){const item=savedItems.find(i=>i.mutationId===send.mutationId);assert.equal(item?.turnId,send.turnId)}
+ stage='cleanup';await hub.request('evener/instance/remove',{name:'reader-fixture'});
+ const instances=await hub.request('evener/instance/list',{});assert.ok(!instances.instances.some(i=>i.name==='reader-fixture'));
+ const receipt={...binding,sends,liveStatus:live.status.type,savedStatus:saved.status.type,shutdownObservedStatuses:statuses,identities:liveItems,identityParity:true,environmentCount:1,inputCount:2,instanceRemoved:true};
+ await fs.writeFile(root+'/acceptance.json',JSON.stringify(receipt,null,2)+'\n');
+ console.log(JSON.stringify({ref:binding.ref,identityParity:true,environmentCount:1,inputCount:2,instanceRemoved:true}));
+}catch(e){console.error('Reader environment acceptance failed at '+stage+' ('+(e.code??e.name)+')');process.exitCode=1}finally{hub.close()}
