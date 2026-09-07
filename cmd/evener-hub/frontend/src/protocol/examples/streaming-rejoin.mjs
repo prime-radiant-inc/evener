@@ -11,12 +11,21 @@ const { hub } = clientFromEnvironment();
 try {
   await hub.connect();
   const result = await runReadRecipe(hub, ref, () => setTimeout(seconds * 1000));
-  console.log(JSON.stringify({ ref, first: result.first, paged: result.paged,
-    staleCursorRecovered: result.staleCursorRecovered,
-    reconciledItemCount: result.reconciledItems.length,
-    rejoinedItemCount: result.rejoinedItems.length,
-    observedNotificationKinds: result.notifications,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        ref,
+        first: result.first,
+        paged: result.paged,
+        staleCursorRecovered: result.staleCursorRecovered,
+        reconciledItemCount: result.reconciledItems.length,
+        rejoinedItemCount: result.rejoinedItems.length,
+        observedNotificationKinds: result.notifications,
+      },
+      null,
+      2,
+    ),
+  );
 } finally {
   hub.close();
 }

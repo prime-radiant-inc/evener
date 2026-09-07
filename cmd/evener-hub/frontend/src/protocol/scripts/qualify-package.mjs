@@ -29,9 +29,7 @@ function run(command, args, cwd) {
   }
 }
 
-const packed = JSON.parse(
-  run("npm", ["pack", "--json", "--pack-destination", fixtureDir], packageDir),
-)[0];
+const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", fixtureDir], packageDir))[0];
 const tarball = join(fixtureDir, packed.filename);
 run(
   "npm",
@@ -59,7 +57,18 @@ void app; void version;
 const tsc = resolve(packageDir, "node_modules/.bin/tsc");
 run(
   tsc,
-  ["--strict", "--noEmit", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", "esm.mts", "commonjs.cts"],
+  [
+    "--strict",
+    "--noEmit",
+    "--module",
+    "NodeNext",
+    "--moduleResolution",
+    "NodeNext",
+    "--target",
+    "ES2022",
+    "esm.mts",
+    "commonjs.cts",
+  ],
   fixtureDir,
 );
 
@@ -78,7 +87,11 @@ if (typeof AppwireClient !== "function" || typeof APPWIRE_PROTOCOL_VERSION !== "
 run(process.execPath, [join(fixtureDir, "esm-runtime.mjs")], fixtureDir);
 run(process.execPath, [join(fixtureDir, "commonjs-runtime.cjs")], fixtureDir);
 
-run(process.execPath, ["--test", join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.test.mjs")], fixtureDir);
+run(
+  process.execPath,
+  ["--test", join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs")],
+  fixtureDir,
+);
 
 const listing = run("tar", ["-tzf", tarball], fixtureDir);
 for (const expected of [
