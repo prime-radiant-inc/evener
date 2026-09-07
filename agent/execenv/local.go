@@ -1743,7 +1743,7 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
 		var err error
-		ignores, err = loadIgnoreSet(fsys, nil)
+		ignores, err = loadIgnoreSet(fsys, nil, budget, ignoreScopeForPatterns(patterns))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -1963,15 +1963,16 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	// fs.WalkDir does not descend through directory symlinks, matching the
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
-	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(path)}
+	budget := newGlobBudget("grep")
+	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
+		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
 	}
-	ignores, err := loadIgnoreSet(ignoreFS, nil)
+	ignores, err := loadIgnoreSet(ignoreFS, nil, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
@@ -1982,6 +1983,19 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			return cancelErr
 		}
 		if err != nil {
+			// loadIgnoreSet's walk above already visits every directory this
+			// one would — its skip set (dot-prefixed directories only) is a
+			// strict subset of this walk's (which also skips gitignored
+			// ones) — so it always reaches an oversized directory first on
+			// any static tree and this guard cannot be reached that way. It
+			// is reachable only when a directory grows past the entry bound
+			// in the gap between the two passes, which
+			// TestGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// forces by stubbing grepWalk itself to grow the tree after
+			// ignore discovery has already listed it.
+			if _, refused := errors.AsType[*globBudgetError](err); refused {
+				return err
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
 		relPath := filepath.FromSlash(p)
@@ -1998,6 +2012,16 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge is always cycleSafe. Charged
+			// only here, once the dot/gitignore skips above have already
+			// passed, so a directory the walk is about to skip anyway costs
+			// nothing.
+			if berr := budget.listing(true); berr != nil {
+				return berr
 			}
 			return nil
 		}

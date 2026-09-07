@@ -291,18 +291,27 @@ type globBudgetError struct {
 	kind      globBudgetKind
 }
 
-// advice names the lever that makes a whole call's listing count smaller.
-// Every budget here belongs to a glob, whose pattern decides how much of the
-// tree gets listed, so tightening it is the first thing to try.
+// advice names the lever that makes a whole call's listing count smaller,
+// which differs by operation. A glob's pattern decides how much of the tree
+// gets listed, so tightening it is the first thing to try. A grep's pattern is
+// a regex matched against file contents after the walk has already listed
+// everything, so narrowing it changes nothing about the listings; only a
+// smaller base directory does.
 func (e *globBudgetError) advice() string {
+	if e.op == "grep" {
+		return "narrow the base directory"
+	}
 	return "narrow the pattern or its base directory"
 }
 
 // entryAdvice names the lever that gets a caller past one oversized
-// directory, the entries kind's counterpart to advice. Every budget here
-// belongs to a glob, which can spell a pattern that matches inside such a
-// directory without listing all of it.
+// directory, the entries kind's counterpart to advice. A glob can spell a
+// pattern that matches inside the directory without listing all of it; a grep
+// cannot, so its only lever is a base that does not contain it.
 func (e *globBudgetError) entryAdvice() string {
+	if e.op == "grep" {
+		return "that directory is too large to list, so point the base at a smaller directory that does not contain it"
+	}
 	return "that directory is too large to list, so match inside it more specifically or point the base elsewhere"
 }
 

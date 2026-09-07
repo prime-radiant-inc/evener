@@ -40,7 +40,7 @@ func TestIgnoreSet_Matches_PathEqualsDir(t *testing.T) {
 		"sub":            {Mode: os.ModeDir | 0o755},
 		"sub/.gitignore": {Data: []byte(content)},
 	}
-	set, err := loadIgnoreSet(fsys, nil)
+	set, err := loadIgnoreSet(fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLoadIgnoreSet_SkipFile(t *testing.T) {
 	}
 	set, err := loadIgnoreSet(fsys, func(relPath string) bool {
 		return relPath == "skipme"
-	})
+	}, newGlobBudget("glob"), wholeBaseIgnoreScope())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func loadIgnoreSetFromLines(t *testing.T, dir string, lines ...string) *ignoreSe
 	fsys := fstest.MapFS{
 		path: {Data: []byte(content)},
 	}
-	set, err := loadIgnoreSet(fsys, nil)
+	set, err := loadIgnoreSet(fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
 	if err != nil {
 		t.Fatal(err)
 	}

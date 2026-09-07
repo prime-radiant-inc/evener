@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -136,5 +137,114 @@ func TestSandboxedGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree(t *testi
 	}
 	if budgetErr.kind != budgetLiveEntries {
 		t.Fatalf("globBudgetError.kind = %v, want budgetLiveEntries", budgetErr.kind)
+	}
+}
+
+// TestSandboxedGrepWalkIsChargedToTheBudget is TestGrepWalkIsChargedToTheBudget's
+// sandboxed counterpart: sfs.grepNative's own directory walk charges every
+// directory it visits to the shared budget, on top of whatever ignore
+// discovery already charged for the same tree, so a huge tree grepNative
+// walks after ignore discovery completes still costs unbounded work. The tree
+// here has no .gitignore and is small enough that ignore discovery alone
+// stays well under the lowered listing budget, so a refusal can only be
+// attributed to grepNative's own walk over the tree it is grepping, not to
+// ignore discovery's separate pass over the same tree. Sandboxed sessions
+// always use native grep — LocalExecutionEnvironment.Grep routes to
+// sfs.grepNative whenever e.sandbox() is non-nil, even with ripgrep present —
+// so env.Grep is enough to reach this arm without defeating ripgrep
+// detection.
+func TestSandboxedGrepWalkIsChargedToTheBudget(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+
+	const dirCount = 30
+	const budget = 40
+	for i := range dirCount {
+		dir := filepath.Join(worktree, fmt.Sprintf("dir%02d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "leaf.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stubMaxGlobDirListings(t, budget)
+
+	_, err := env.Grep(t.Context(), "needle", worktree, "", false, 100, "")
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("sandboxed grep's own walk over a %d-directory tree with a listing budget of %d = (_, %v), want a *globBudgetError; sfs.grepNative's walk charges nothing to the budget", dirCount, budget, err)
+	}
+	if budgetErr.kind != budgetListings {
+		t.Fatalf("globBudgetError.kind = %v, want budgetListings", budgetErr.kind)
+	}
+	if budgetErr.op != "grep" {
+		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
+	}
+}
+
+// TestSandboxedGrepWalkDoesNotChargeSkippedDirectories is the sandboxed
+// counterpart to TestGrepWalkDoesNotChargeSkippedDirectories: sandboxFS's own
+// walk charges budget.listing(true) once per directory it actually descends
+// into, after the masked/dot/gitignore fs.SkipDir checks earlier in the same
+// callback, not before them. The fixture and budget here are the same
+// arithmetic as the off-sandbox test, because loadIgnoreSet is the identical
+// shared code on both arms: it does not yet know a directory is gitignored
+// while it is still collecting the .gitignore rules that would exclude it, so
+// it charges the base plus every real and gitignored directory (1 + 3 + 10 =
+// 14 listings) but skips only the dot-prefixed ones for free. The
+// sandboxed walk then adds 4 more of its own — the base plus the 3 real
+// directories it actually descends into — for a total of 18, comfortably
+// under the budget of 25 and comfortably above ignore discovery's 14-listing
+// cost alone, so headroom cannot hide a regression here. Moving the charge
+// above the skip checks would instead start charging the 20 dot and 10
+// gitignored directories the walk was about to skip anyway, which on their
+// own are more than enough to cross the budget of 25 partway through (the
+// walk gives up as soon as the running total does, well short of a
+// legitimate 18): that is the only way this test can fail.
+func TestSandboxedGrepWalkDoesNotChargeSkippedDirectories(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+
+	const realCount = 3
+	for i := range realCount {
+		if err := os.MkdirAll(filepath.Join(worktree, fmt.Sprintf("dir%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "dir00", "leaf.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const dotCount = 20
+	for i := range dotCount {
+		if err := os.MkdirAll(filepath.Join(worktree, fmt.Sprintf(".excluded%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const gitignoredCount = 10
+	gitignoreLines := make([]string, 0, gitignoredCount)
+	for i := range gitignoredCount {
+		dir := fmt.Sprintf("ignored%02d", i)
+		if err := os.MkdirAll(filepath.Join(worktree, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitignoreLines = append(gitignoreLines, dir+"/")
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte(strings.Join(gitignoreLines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const budget = 25
+	stubMaxGlobDirListings(t, budget)
+
+	out, err := env.Grep(t.Context(), "needle", worktree, "", false, 100, "")
+	if budgetErr, refused := errors.AsType[*globBudgetError](err); refused {
+		t.Fatalf("sandboxed grepNative over a tree with %d dot-excluded and %d gitignored directories against only %d listed directories, with a listing budget of %d well above ignore discovery's own cost, refused: %v; the walk is charging directories it is about to skip toward the budget instead of only the ones it actually descends into", dotCount, gitignoredCount, realCount, budget, budgetErr)
+	}
+	if err != nil {
+		t.Fatalf("sandboxed Grep: %v", err)
+	}
+	if !strings.Contains(out, "needle") {
+		t.Fatalf("sandboxed Grep(%q) = %q, want a match for the needle in dir00/leaf.txt", "needle", out)
 	}
 }
