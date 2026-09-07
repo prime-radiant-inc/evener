@@ -409,18 +409,38 @@ func credentialJSONDocument(value string) (string, error) {
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
 	}
+	// This runs on the update loop, so what the path names is checked before
+	// it is opened: reading a pipe would never return and the interface would
+	// stop responding, and reading a character device would grow until the
+	// process died. A credential document is a small regular file.
+	switch info, err := os.Stat(path); {
+	case err != nil:
+		return "", credentialPathError(err)
+	case !info.Mode().IsRegular():
+		return "", errors.New("credential JSON: the path it was read as is not a regular file")
+	case info.Size() > maxCredentialFileBytes:
+		return "", fmt.Errorf("credential JSON: the file it was read as is too large (over %d bytes)", maxCredentialFileBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// What was submitted is either a mistyped path or a secret pasted
-		// into the wrong prompt, and this error is rendered and outlives the
-		// panel — so report why it failed and none of the value itself. A
-		// PathError's message repeats the path, so only its reason is kept.
-		if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
-			err = pathErr.Err
-		}
-		return "", fmt.Errorf("credential JSON: it does not start with %q, and the path it was read as could not be opened: %w", "{", err)
+		return "", credentialPathError(err)
 	}
 	return string(data), nil
+}
+
+// maxCredentialFileBytes bounds the file the prompt will read. The largest
+// real credential document is a service-account key of a few kilobytes.
+const maxCredentialFileBytes = 1 << 20
+
+// credentialPathError reports why a submitted value could not be read as a
+// path without repeating the value: it is either a mistyped path or a secret
+// pasted into the wrong prompt, and this error is rendered and outlives the
+// panel. A PathError's own message names the path, so only its reason is kept.
+func credentialPathError(err error) error {
+	if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
+		err = pathErr.Err
+	}
+	return fmt.Errorf("credential JSON: it does not start with %q, and the path it was read as could not be opened: %w", "{", err)
 }
 
 func (m hubModel) handleAuthApiKeySetResult(msg launchconfig.AuthApiKeySetResultMsg) (tea.Model, tea.Cmd) {

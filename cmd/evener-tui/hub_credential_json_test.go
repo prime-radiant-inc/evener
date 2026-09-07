@@ -5,8 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"testing"
 
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
@@ -150,6 +153,54 @@ func TestCredentialJsonResult_NeverEchoesWhatWasSubmitted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// assertCredentialPathRefused runs the credential-JSON result for a path the
+// prompt must refuse, on a goroutine with a deadline: the read happens on the
+// update loop, so a path that never returns has to be refused before it is
+// opened rather than hanging the interface.
+func assertCredentialPathRefused(t *testing.T, value, want string) {
+	t.Helper()
+	client, got, cleanup := credentialJSONHub(t)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.followupModal = &tuipick.TextInputModal{}
+	done := make(chan tea.Model, 1)
+	go func() {
+		updated, cmd := m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "credential-json-set:google-vertex", Value: value})
+		if cmd != nil {
+			t.Errorf("nothing should be sent; got %+v", cmd())
+		}
+		done <- updated
+	}()
+	var updated tea.Model
+	select {
+	case updated = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handling blocked: the path was opened instead of being refused")
+	}
+	err := updated.(hubModel).err
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want one saying %q", err, want)
+	}
+	if got.Value != "" {
+		t.Fatalf("the hub must not be called; it received %q", got.Value)
+	}
+}
+
+// TestCredentialJsonResult_RefusesWhatIsNotAReadableFile covers the refusals
+// every platform can express; the pipe and device cases are in the unix file.
+func TestCredentialJsonResult_RefusesWhatIsNotAReadableFile(t *testing.T) {
+	dir := t.TempDir()
+	huge := filepath.Join(dir, "huge.json")
+	if err := os.WriteFile(huge, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(huge, maxCredentialFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("directory", func(t *testing.T) { assertCredentialPathRefused(t, dir, "not a regular file") })
+	t.Run("too large", func(t *testing.T) { assertCredentialPathRefused(t, huge, "too large") })
 }
 
 // TestCredentialJsonResult_CancelledOrEmptyStoresNothing mirrors the API-key
