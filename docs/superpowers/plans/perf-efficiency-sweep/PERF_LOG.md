@@ -60,7 +60,23 @@ Rule: small frequent commits; every claim backed by measurement.
 10. Split 1000+ line panes at lazy sub-boundaries (Rail 1604, Composer 1475, Spawn 1213, CommandPalette 1003). Risk med.
 - Explicitly NOT recommended (already fine): dockview chunking, DEV-only routes, tooltip/popover policies, font loading, zustand selectors, mutationOutbox 2s scan.
 
-### Test/build infra + docs audit (PENDING — 2 scouts still running)
+### Test/build infra (dlg_034KXtmP3VL6XZCP5DRiPq, DONE 2026-09-06)
+
+10 ranked opportunities (all unmeasured; static scan, nothing run):
+
+1. `make fuzz` replays committed Fuzz seed corpus 2× plus rapid replay — `make/fuzzing.mk:86-92` (~144s native portion). Risk low-med (prove pass-set parity first).
+2. FuzzToolArgsValidate corpus bloat: 2327 files/13MB of 16MB agent total, 4235 files repo-wide — coverage parity required before minimizing. Risk med.
+3. setup-go has NO Go build/module cache in CI — `.github/actions/setup-toolchain/action.yml:8-16`, `ci.yml:59,76,93`. Risk low (cache-only).
+4. Race lanes oversubscribed then throttled (AGENT_SHARDS=0 under -race) — `ci.yml:140-154`, `run-module-tests.sh:97-109`. Risk low (scheduling only).
+5. `build-linux` wipes whole Go build cache (`go clean -cache`) — `make/building.mk:39-41`. Risk low.
+6. lint-golangci double pass + serial LINT_TARGETS chain, each paying fresh `go run` compile — `make/linting.mk:119-120,207`. Risk low (prebuild evener-dev once).
+7. vet runs ~2×+ (host + GOOS=windows + tagged vets, ~40 invocations) — `ci.yml:41-49`, `testing.mk:116-117`. Keep windows vet (issue #897); win via shared GOCACHE. Risk low-med.
+8. Real-sleep abuse: `llm/provider_idle_test.go:37` (40s!), `agent/deadline_audit_test.go:240` (5s), `local_daemon_test.go:227` (2s), tmux_e2e 9 sleeps; budgets: evener-hub 67.09s, evener-tui 40.39s, plugins 31.94s. Risk med (convert to bounded poll, never delete).
+9. coverage-floor.sh re-runs entire suite 2× per module — `scripts/coverage/coverage-floor.sh:130-142`. Risk med.
+10. No artifact retention cap (default 90d) + duplicate goreleaser snapshot builds on main push — `binaries.yml:42-49`, `ci.yml:194-220`. Retention-days=7-14 is zero-risk; build-dedup med-high.
+- NOT proposed: deleting coverage without parity; gating on timing budget; re-enabling node compile cache (needs owner sign-off).
+
+### Docs audit (PENDING — 1 scout still running)
 
 ## Implemented wins
 
