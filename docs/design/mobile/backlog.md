@@ -458,8 +458,14 @@ loaded 5011 persisted jobs across a root and two children, including independent
 pending root/child cursors. It exposed and fixed partial-page summary counts and
 ancestor cursor loss. Native output paging/refresh and a packed SDK single-page
 output recipe also have direct read evidence. These seeded journals establish
-real read/projection behavior, not shell execution. Fault, metadata, styled
-output, accessibility and performance acceptance remain open.
+real read/projection behavior, not shell execution. Subsequent
+[native ANSI checks](activity.md#sdk-traversal-and-native-ansi-output--7-september)
+cover both themes, and [delegate detail acceptance](activity.md#delegate-details-and-current-wire-usage--7-september)
+covers models, timing, usage, reported worktrees, reports, diagnostics and falsy
+result values. That direct read exposed and fixed a shared-parser bug dropping
+valid delegates when zero usage counters were omitted. The corrected standalone
+SDK and iPhone both retain all three fixture delegates. Live concurrent faults,
+accessibility and performance acceptance remain open.
 
 Queue cancel/promote/drain now validate operation receipts before acknowledgment;
 the shared service rejects malformed or mismatched replies and preserves the

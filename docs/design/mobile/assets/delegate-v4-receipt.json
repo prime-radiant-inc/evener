@@ -1,0 +1,229 @@
+{
+  "source": "ef12d750e434e25798782a40099dfb36f0c6a82d",
+  "nativeBundleSHA256": "8dd7fe2db1b514a6637b6542e14732c70c673a3f12ab1217f8375fc9b6cff1e8",
+  "build": {
+    "summary": {
+      "status": "SUCCEEDED",
+      "durationMs": 49941,
+      "target": "simulator"
+    },
+    "artifacts": {
+      "appPath": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+      "bundleId": "com.primeradiant.evener.native",
+      "processId": 32092,
+      "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+      "buildLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/build_run_sim_2026-09-07T18-55-08-237Z_pid64510_09cbf70e.log",
+      "runtimeLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_2026-09-07T18-55-55-733Z_helperpid31931_ownerpid64510_abc27e0a.log",
+      "osLogPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/logs/com.primeradiant.evener.native_oslog_2026-09-07T18-55-57-901Z_helperpid32384_ownerpid64510_79c26efa.log"
+    }
+  },
+  "fixturePath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-delegate-v4-f890adpd",
+  "fixtureCommit": "821c6920c73a7ab1be76f4f5fdbc9d3d851a25aa",
+  "consumerPath": "/tmp/evener-sdk-delegate-Sv1dWF",
+  "hub": {
+    "url": "ws://127.0.0.1:54211/rpc",
+    "source": "0f95ef200",
+    "binarySHA256": "e5fd01f5dcc7dfa9f5757feb5c4e2066cc485ee0064e87c078b9745774cc46a2"
+  },
+  "sdk": {
+    "tarballSHA256": "be6651ac3f43f0270a009fc94f2c7641289d3010ba926b293ff57aec53124d9d",
+    "rawDelegates": 3,
+    "oldParsedDelegates": 1,
+    "correctedParsedDelegates": 3,
+    "counts": {
+      "active": 1,
+      "failed": 1,
+      "completed": 1,
+      "complete": false
+    },
+    "normalizedUsage": {
+      "inputTokens": 0,
+      "outputTokens": 8,
+      "totalTokens": 8
+    },
+    "zeroWorktreeAhead": true,
+    "terminalDurationMs": 65000,
+    "resumedRetainsPriorOutcomeAndEnd": true,
+    "exhaustedResult": {
+      "value": null,
+      "valid": false,
+      "exhaustionResumable": false
+    },
+    "invalidMetadataResult": {
+      "value": "null",
+      "valid": true,
+      "diagnostic": "delegate terminal metadata is invalid"
+    }
+  },
+  "native": {
+    "observed": [
+      "Resumed row renders resolved/requested model, reasoning, instruction preview and expanded full instruction.",
+      "Live run and quiet clocks advanced from 15m33s in snapshot 784 to 16m09s in snapshot 785; retained old end is not rendered.",
+      "Both inactive rows remain visible beside the resumed row; only the deliberately invalid metadata branch reports an error.",
+      "Terminal duration remains 1m05s, with human-readable start/end timestamps.",
+      "Usage disclosure shows input 0, output 8, total 8; absent cache count is not rendered.",
+      "Worktree disclosure shows full wrapped directory, reported snapshot note, clean state and ahead 0.",
+      "Exhausted result renders Invalid, validation reason and JSON null; run details show limit 4 and No for resume after exhaustion.",
+      "Invalid metadata row renders warnings, diagnostics, Markdown latest report, Valid and quoted JSON string null.",
+      "Open session reaches Invalid report metadata on v4 acceptance; Back returns to Delegate detail reader on the same hub."
+    ],
+    "snapshots": {
+      "resumed": 784,
+      "expandedInstruction": 785,
+      "allRows": 787,
+      "terminal": 788,
+      "usage": 790,
+      "worktree": 792,
+      "nullResult": 793,
+      "exhaustion": 796,
+      "stringResult": 805,
+      "child": 807,
+      "parent": 808
+    }
+  },
+  "fixtureCorrections": [
+    "Changed seeded exhaustion reason to the required turn_budget_exhausted value.",
+    "Added empty child jobs journals required by retained activity traversal."
+  ],
+  "preservation": {
+    "draftRecords": 6,
+    "verifiedAfterNativeNavigation": true,
+    "unrelatedApplePatchByteIdentical": true
+  },
+  "validation": [
+    "610 native tests across 71 files and TypeScript",
+    "make test-web",
+    "all five make test-web-browser guards",
+    "make test-api-package",
+    "scoped Biome and git diff --check"
+  ],
+  "limits": [
+    "Persisted projection fixture; resumed status does not establish a running daemon or delegate execution.",
+    "Worktree facts are packet metadata, not an independently verified Git worktree.",
+    "Background/disconnect timer lifecycle has source and helper coverage; this checkpoint does not qualify the actual fault journey.",
+    "Actual VoiceOver, selection/copy, large text, huge reports, iPad/physical device and performance acceptance remain open.",
+    "UI automation occasionally reported snapshot-settling timeouts after successful actions; refreshed snapshots verified outcomes. No performance conclusion follows.",
+    "iOS-only v1 remains incomplete; Android qualification is deferred."
+  ],
+  "screenshots": [
+    {
+      "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_cf4f4dcb-26f1-4b65-93e0-31ff337ac81c.jpg",
+      "artifact": "docs/design/mobile/assets/delegate-v4-running.jpg",
+      "sha256": "82300d7ba7c26d679cd0928f3784de9ca4ada3d1cb97efdc665978be139315b0"
+    },
+    {
+      "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_a5011b52-0aeb-4e41-b661-90b459f49d2a.jpg",
+      "artifact": "docs/design/mobile/assets/delegate-v4-usage.jpg",
+      "sha256": "0557b23a287c5cf3dcdd6edab2f4ba97a3f1b04b18b91923224861521aedc42d"
+    },
+    {
+      "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_85f75d09-b1b9-49bd-b224-14be4306e522.jpg",
+      "artifact": "docs/design/mobile/assets/delegate-v4-worktree.jpg",
+      "sha256": "6f337390fd63a265c3db2ee534c432a710e4aad1d58161aab0f0c73898eb0fc6"
+    },
+    {
+      "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_0e2ff687-9b80-4ec7-b45a-3e1f93a61591.jpg",
+      "artifact": "docs/design/mobile/assets/delegate-v4-exhaustion.jpg",
+      "sha256": "cbd3339d85e4a7e073f9804c93f4d8c979d1b48c8a5e3474c82a6ee259db8617"
+    },
+    {
+      "capture": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_e730a44c-3f40-476c-ba5c-7d91c16e9ef4.jpg",
+      "artifact": "docs/design/mobile/assets/delegate-v4-report.jpg",
+      "sha256": "b13d1973508791f54a88c6297d2886102aa139adb1595c788f18aa3ff244af04"
+    }
+  ],
+  "localSourceSHA256": {
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-delegate-v4-f890adpd/seed.go": "77f0977fafbf22c08082057a57ef09d581d72bebe11be183feac17c48f2f5775",
+    "/tmp/evener-sdk-delegate-Sv1dWF/delegate-observe.mjs": "bfddf43b3c0adac3de6a32d2a599f4f2121fca3eb68a8f8c278fbc879291b201"
+  },
+  "binding": {
+    "childIDs": [
+      "034KpXjywE5aZCnX3kggG6",
+      "034KpXjywE6zRuSJKwr0AH",
+      "034KpXjywE8SA6t2r3nUh0"
+    ],
+    "cwd": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-delegate-v4-f890adpd/workspace",
+    "kind": "persisted delegate projection fixture",
+    "project": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-v4-80twi7qt/state/evener/projects/delegate-details-ji1ywOEp5x",
+    "rootID": "034KpXjywDCIji1ywOEp5x",
+    "rootRef": "local:034KpXjywDCIji1ywOEp5x",
+    "terminalDurationMs": 65000
+  },
+  "sdkReceipt": {
+    "source": "persisted delegate projection fixture",
+    "rootID": "034KpXjywDCIji1ywOEp5x",
+    "rootRef": "local:034KpXjywDCIji1ywOEp5x",
+    "children": [
+      {
+        "childSessionId": "034KpXjywE5aZCnX3kggG6",
+        "terminal": true,
+        "durationMs": 65000
+      },
+      {
+        "childSessionId": "034KpXjywE6zRuSJKwr0AH",
+        "terminal": false,
+        "durationMs": null
+      },
+      {
+        "childSessionId": "034KpXjywE8SA6t2r3nUh0",
+        "terminal": true,
+        "durationMs": 65000
+      }
+    ],
+    "resumed": {
+      "childSessionId": "034KpXjywE6zRuSJKwr0AH",
+      "staleOutcome": "completed",
+      "hasRunEndedAt": true,
+      "usage": {
+        "inputTokens": 0,
+        "outputTokens": 8,
+        "totalTokens": 8
+      },
+      "worktreeAhead": 0
+    },
+    "invalidMetadata": {
+      "diagnosticCount": 1,
+      "structuredResultIsStringNull": true,
+      "branchError": true
+    },
+    "execution": "read-only SDK projection read; no delegate execution performed"
+  },
+  "drafts": [
+    {
+      "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+      "bytes": 513,
+      "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc9793pXlhHyCRXdeAk",
+      "bytes": 513,
+      "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+      "bytes": 37,
+      "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kd12aed4Ah92lJZGUML",
+      "bytes": 27,
+      "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kjo1wmWpBXjjTfGlJ5z",
+      "bytes": 36,
+      "sha256": "fee839187da7bdc93d20bc97bc82a21ad841ffbda357c158298d4cd1ef8cb1b5",
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KkPKKHzphJXVqsfzMXu",
+      "bytes": 36,
+      "sha256": "20038684cd4baf845d42d42214e148dd0e7b89de511a2c3d0bced3d56a557457",
+      "unconfirmed": false
+    }
+  ]
+}

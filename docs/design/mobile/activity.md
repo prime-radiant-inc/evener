@@ -265,3 +265,65 @@ Actual VoiceOver, selection/copy, large text, long-output memory/performance,
 ANSI contrast, multi-hub faults, delegate metadata and final release acceptance
 remain open. Android sources remain preserved; Android release qualification is
 deferred for iOS-only v1.
+
+## Delegate details and current-wire usage — 7 September
+
+Source `ef12d750e434e25798782a40099dfb36f0c6a82d` adds native instruction
+disclosure, requested/resolved model and reasoning, live/terminal timing, usage,
+reported worktrees, warnings/diagnostics, latest reports, structured results and
+run/budget facts. Detail clocks use valid current-run timestamps, stop on
+background/disconnect/unmount, and label server-only durations as last reported.
+The sheet waits for a connected client before its first activity read.
+
+Direct acceptance used a new owned persisted journal with three delegates: an
+exhausted result, a resumed run retaining an old outcome/report, and a terminal
+result with deliberately invalid metadata. The initial fixture violated the
+journal's exhaustion-reason enum; correcting that value and adding empty child
+job journals repaired the fixture without changing production code.
+
+The valid fixture then exposed a product defect: the hub returned all three
+delegates, but the shared parser retained only the invalid-metadata row. The
+other two had output-only usage objects because Go omits zero-valued counters.
+The parser incorrectly required both input and output counts. Isolated tests
+reproduced the lost rows; the fix normalizes omitted input/output counters within
+a present usage object while still rejecting malformed supplied values. Missing
+usage remains missing. The independent guide now explains this wire rule.
+
+An outside-checkout consumer installed the corrected tarball and verified all
+three raw and parsed children, incomplete counts from the intentional error,
+65-second terminal durations, retained prior outcome/end on the resumed child,
+input 0/output 8/total 8, ahead 0, false exhaustion resumability, and JSON null
+versus the string "null". The tarball SHA-256 is
+`be6651ac3f43f0270a009fc94f2c7641289d3010ba926b293ff57aec53124d9d`.
+
+The iPhone 17 Pro Release build on iOS 26.5 displayed all three rows. The resumed
+clock advanced from 15m33s to 16m09s, while terminal duration stayed 1m05s. Full
+instruction disclosure, model settings, zero usage, wrapped worktree path and
+zero commits ahead rendered correctly. The exhausted result showed Invalid,
+its validation reason, JSON null and No for resume after exhaustion. The other
+terminal row retained its warning/diagnostic, Markdown report and a Valid quoted
+JSON string. Open session reached that child on the selected hub, and Back
+returned to the parent. The native bundle SHA-256 is
+`8dd7fe2db1b514a6637b6542e14732c70c673a3f12ab1217f8375fc9b6cff1e8`.
+
+![Resumed delegate details](assets/delegate-v4-running.jpg)
+![Terminal duration and usage](assets/delegate-v4-usage.jpg)
+![Report, diagnostic and structured string result](assets/delegate-v4-report.jpg)
+
+The [receipt](assets/delegate-v4-receipt.json) includes fixture/source hashes,
+build logs, additional worktree/exhaustion captures and all six preserved drafts.
+610 native tests and TypeScript, the canonical frontend gate, all five browser
+guards and outside-checkout package qualification passed. The unrelated Apple
+project/plist patch remains byte-identical. Luna medium workers implemented the
+helpers/parser regressions, reviewed integration and ran the independent SDK
+read; Bot integrated, corrected weak assertions and verified the native UI.
+
+These are persisted projection reads. The resumed journal is not proof of an
+executing delegate, and the worktree fields are reported packet metadata, not
+independently checked Git state. Background/disconnect lifecycle has source and
+helper coverage but still needs its actual fault journey. UI automation sometimes
+timed out waiting for snapshots to settle after successful actions; refreshed
+snapshots verified the resulting state, without establishing performance.
+Live concurrent faults, VoiceOver, selection/copy, large text/reports, iPad,
+physical-device and release acceptance remain open. Android qualification stays
+deferred for iOS-only v1.
