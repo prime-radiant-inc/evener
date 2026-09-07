@@ -20,6 +20,7 @@ import { useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ItemImage, ItemModel, TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
+import { translateAttachmentMarkers } from "../../../stores/attachmentMarkers";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -71,13 +72,56 @@ interface ImageOccurrence {
   end: number;
 }
 
-function parseOccurrences(text: string): ImageOccurrence[] {
-  return Array.from(text.matchAll(/\(attached image (\d+)(?:: ([^)]*))?\)/g), (match) => ({
-    marker: Number(match[1]),
-    ...(match[2] === undefined ? {} : { name: match[2] }),
-    start: match.index ?? -1,
-    end: (match.index ?? -1) + match[0].length,
-  })).filter((occurrence) => occurrence.start >= 0);
+// parseOccurrences finds the "(attached image N[: name])" prose the submit
+// boundary wrote (attachmentMarkers.ts). A filename may itself contain ")",
+// so the name is not simply "up to the first closing paren": after the
+// "N: " prefix, the longest known attachment name followed by ")" wins; only
+// when no known name fits does the span fall back to the first ")". An
+// absent name (or an empty one) is undefined, matching the wire shape where
+// an unnamed attachment's marker translates with no name clause.
+function parseOccurrences(text: string, knownNames: (string | undefined)[]): ImageOccurrence[] {
+  const names = knownNames.filter((name): name is string => name !== undefined && name !== "");
+  const prefix = /\(attached image (\d+)/g;
+  const occurrences: ImageOccurrence[] = [];
+  let match = prefix.exec(text);
+  while (match !== null) {
+    const marker = Number(match[1]);
+    const cursor = match.index + match[0].length;
+    const rest = text.slice(cursor);
+    if (rest.startsWith(")")) {
+      occurrences.push({ marker, start: match.index, end: cursor + 1 });
+      prefix.lastIndex = cursor + 1;
+    } else if (rest.startsWith(":")) {
+      const afterColon = rest.slice(1).startsWith(" ") ? rest.slice(2) : rest.slice(1);
+      const base = cursor + (rest.length - afterColon.length);
+      const fitting = names
+        .filter((name) => afterColon.startsWith(`${name})`))
+        .sort((left, right) => right.length - left.length);
+      const best = fitting[0];
+      if (best !== undefined) {
+        occurrences.push({ marker, name: best, start: match.index, end: base + best.length + 1 });
+        prefix.lastIndex = base + best.length + 1;
+      } else {
+        const close = afterColon.indexOf(")");
+        if (close === -1) {
+          prefix.lastIndex = match.index + 1;
+        } else {
+          const rawName = afterColon.slice(0, close);
+          occurrences.push({
+            marker,
+            ...(rawName ? { name: rawName } : {}),
+            start: match.index,
+            end: base + close + 1,
+          });
+          prefix.lastIndex = base + close + 1;
+        }
+      }
+    } else {
+      prefix.lastIndex = match.index + 1;
+    }
+    match = prefix.exec(text);
+  }
+  return occurrences;
 }
 
 // planRetryImages recovers the originating input's image bytes from the
@@ -93,7 +137,10 @@ function parseOccurrences(text: string): ImageOccurrence[] {
 // while the attachment array is acceptance order, so positional pairing
 // corrupts identity when the user reordered markers in the text. Occurrences
 // without a name match fall back to positional pairing over the leftovers,
-// and images with no occurrence keep a 1-based positional marker.
+// and images with no occurrence keep a 1-based positional marker. A named
+// occurrence that matches no image at all is foreign (user-typed prose, not a
+// translated marker) and is never consumed: pairing it would steal a real
+// image under a marker it was never staged with.
 //
 // The returned text rewrites each resolvable occurrence back to its
 // "[image N]" composer anchor: send() re-translates anchors to prose on the
@@ -101,12 +148,23 @@ function parseOccurrences(text: string): ImageOccurrence[] {
 // anchor text as composerText, so a failed retry recovers tiled images
 // instead of orphaned prose. An occurrence whose image has no bytes is left
 // verbatim: rewriting it would put a raw marker on the wire (kata 6nmz).
+//
+// ambiguous is true when the pairing cannot be uniquely determined: a name
+// shared by several paired occurrences or images means the true
+// marker-to-bytes identity was lost on the wire, and any assignment would be
+// a guess. It also covers the belt-and-braces case below: anchor text that
+// does not re-translate back to the stored prose byte-for-byte, which proves
+// the pairing corrupted something. Callers must refuse the images (degrade to
+// text-only or unavailable) rather than send a guessed payload.
 function planRetryImages(
   images: ItemImage[] | undefined,
   text: string,
-): { attachments: InputAttachment[]; anchorText: string } {
-  const occurrences = parseOccurrences(text);
+): { attachments: InputAttachment[]; anchorText: string; ambiguous: boolean } {
   const items = images ?? [];
+  const occurrences = parseOccurrences(
+    text,
+    items.map((image) => image.name),
+  );
   const decoded = items.map((image) => {
     const dataUri = /^data:([^;,]+)?;base64,(.*)$/s.exec(image.src);
     if (!dataUri) return undefined;
@@ -117,17 +175,28 @@ function planRetryImages(
   const claimedImage = items.map(() => false);
   const byName = new Map<string, number[]>();
   items.forEach((image, index) => {
-    if (image.name === undefined) return;
+    if (image.name === undefined || image.name === "") return;
     const list = byName.get(image.name) ?? [];
     list.push(index);
     byName.set(image.name, list);
   });
+  const occurrenceNameCounts = new Map<string, number>();
+  occurrences.forEach((occurrence) => {
+    if (occurrence.name === undefined || !byName.has(occurrence.name)) return;
+    occurrenceNameCounts.set(occurrence.name, (occurrenceNameCounts.get(occurrence.name) ?? 0) + 1);
+  });
+  let ambiguous =
+    [...occurrenceNameCounts.entries()].some(
+      ([name, occurrenceCount]) => occurrenceCount > 1 || (byName.get(name)?.length ?? 0) > 1,
+    ) ||
+    [...byName.entries()].some(([name, imageIndices]) => imageIndices.length > 1 && occurrenceNameCounts.has(name));
   const pendingOccurrences: number[] = [];
   occurrences.forEach((occurrence, occurrenceIndex) => {
+    if (occurrence.name !== undefined && !byName.has(occurrence.name)) return;
     const candidate =
       occurrence.name === undefined
         ? undefined
-        : ((byName.get(occurrence.name) ?? []).find((index) => !claimedImage[index]) as number | undefined);
+        : (byName.get(occurrence.name) ?? []).find((index) => !claimedImage[index]);
     if (candidate === undefined) {
       pendingOccurrences.push(occurrenceIndex);
       return;
@@ -170,7 +239,10 @@ function planRetryImages(
     cursor = occurrence.end;
   });
   anchorText += text.slice(cursor);
-  return { attachments, anchorText };
+  if (!ambiguous && attachments.length > 0 && translateAttachmentMarkers(anchorText, attachments) !== text) {
+    ambiguous = true;
+  }
+  return { attachments, anchorText, ambiguous };
 }
 
 function retryItem(turn: TurnModel): ItemModel | undefined {
@@ -184,12 +256,19 @@ function originFromItem(item: ItemModel): OriginatingInput | undefined {
   const plan = planRetryImages(item.images, text);
   // An image-only input is retryable: buildInput and the server both accept
   // empty text with attachments (parity-m5-composer §B). Text is required
-  // only when there is nothing else to send.
+  // only when there is nothing else to send. An ambiguous pairing (duplicate
+  // names the wire cannot disambiguate) refuses the images instead of
+  // guessing: text still retries with the dropped-image warning below, while
+  // an image-only input degrades to the explicit re-attach state.
   if (text || plan.attachments.length > 0) {
+    if (plan.ambiguous) {
+      if (!text) return { kind: "images-unavailable", sourceImageCount };
+      return { kind: "retry", input: { text, sourceImageCount } };
+    }
     return {
       kind: "retry",
       input: {
-        text: plan.anchorText || text,
+        text: plan.anchorText,
         ...(plan.attachments.length > 0 ? { attachments: plan.attachments } : {}),
         sourceImageCount,
       },
