@@ -1,0 +1,297 @@
+import { describe, expect, it } from "vitest";
+import {
+	captureReaderAnchor,
+	comparePosition,
+	ReaderPositionRepository,
+	type ReaderStorage,
+	readerKey,
+	resolveReaderAnchor,
+	restoreReaderCommand,
+	shouldApplyExactRestore,
+} from "./readerPosition";
+import type { TimelineRow } from "./timeline";
+
+function storage(): ReaderStorage {
+	const values = new Map<string, string>();
+	return {
+		getItemSync: (key) => values.get(key) ?? null,
+		setItemSync: (key, value) => void values.set(key, value),
+		removeItemSync: (key) => void values.delete(key),
+	};
+}
+const row = (
+	id: string,
+	position: { entry: number; item: number },
+): TimelineRow => ({
+	kind: "assistant",
+	id,
+	transcriptKey: `key-${id}`,
+	markdown: id,
+	streaming: false,
+	position,
+});
+describe("reader positions", () => {
+	it("uses stable transcript identity and pair ordering", () => {
+		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
+		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(
+			-1,
+		);
+	});
+	it("captures content-space measurements and restores with a negative view offset", () => {
+		const rows = [
+			row("a", { entry: 1, item: 1 }),
+			row("b", { entry: 2, item: 1 }),
+		];
+		const anchor = captureReaderAnchor(
+			"hub",
+			"session",
+			rows[1],
+			318,
+			[{ key: readerKey(rows[1]), y: 300, height: 80 }],
+			1,
+		);
+		if (!anchor) throw new Error("expected measured anchor");
+		expect(anchor.withinItemOffset).toBe(18);
+		expect(
+			restoreReaderCommand(
+				anchor,
+				rows,
+				[{ key: readerKey(rows[1]), y: 300, height: 80 }],
+				80,
+			),
+		).toEqual({
+			kind: "exact",
+			index: 1,
+			viewOffset: -18,
+		});
+	});
+	it("does not capture an unmeasured row", () => {
+		const item = row("a", { entry: 1, item: 1 });
+		expect(captureReaderAnchor("hub", "session", item, 12, [], 1)).toBeNull();
+	});
+	it("advances virtualization before exact restoration and preserves anchor on reflow", () => {
+		const rows = Array.from({ length: 30 }, (_, i) =>
+			row(String(i), { entry: i, item: 1 }),
+		);
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: readerKey(rows[20]),
+			itemPosition: { entry: 20, item: 1 },
+			withinItemOffset: 12,
+			touchedAt: 1,
+		};
+		expect(restoreReaderCommand(anchor, rows, [], 80, false)).toBeNull();
+		expect(restoreReaderCommand(anchor, rows, [], 80)).toEqual({
+			kind: "approximate",
+			offset: 20 * 80 + 12,
+		});
+		expect(
+			restoreReaderCommand(
+				anchor,
+				rows,
+				[{ key: readerKey(rows[20]), y: 600, height: 120 }],
+				80,
+			),
+		).toEqual({
+			kind: "exact",
+			index: 20,
+			viewOffset: -12,
+		});
+		expect(
+			restoreReaderCommand(
+				{ ...anchor, withinItemOffset: 999 },
+				rows,
+				[{ key: readerKey(rows[20]), y: 600, height: 120 }],
+				80,
+			),
+		).toEqual({ kind: "exact", index: 20, viewOffset: -120 });
+		const measurement = { key: readerKey(rows[20]), y: 600, height: 120 };
+		expect(shouldApplyExactRestore(null, measurement, null, 12)).toBe(true);
+		expect(shouldApplyExactRestore(measurement, measurement, 12, 12)).toBe(
+			false,
+		);
+		expect(
+			shouldApplyExactRestore(
+				{ ...measurement, height: 80 },
+				measurement,
+				12,
+				12,
+			),
+		).toBe(true);
+	});
+	it("requires exact identity or exact protocol position", () => {
+		const rows = [
+			row("a", { entry: 1, item: 1 }),
+			row("b", { entry: 3, item: 1 }),
+		];
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "gone",
+			itemPosition: { entry: 2, item: 1 },
+			withinItemOffset: 1,
+			touchedAt: 1,
+		};
+		expect(resolveReaderAnchor(anchor, rows)).toBeNull();
+	});
+	it("resolves an exact row or exact protocol position only", () => {
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "gone",
+			itemPosition: { entry: 2, item: 1 },
+			withinItemOffset: 18,
+			touchedAt: 1,
+		};
+		expect(
+			resolveReaderAnchor(anchor, [
+				row("a", { entry: 1, item: 1 }),
+				row("b", { entry: 3, item: 1 }),
+			]),
+		).toBeNull();
+		expect(
+			resolveReaderAnchor({ ...anchor, itemKey: "key-a" }, [
+				row("a", { entry: 1, item: 1 }),
+			]),
+		).toBe(0);
+		expect(
+			resolveReaderAnchor({ ...anchor, itemPosition: { entry: 3, item: 1 } }, [
+				row("a", { entry: 1, item: 1 }),
+				row("b", { entry: 3, item: 1 }),
+			]),
+		).toBe(1);
+	});
+	it("retains independent hub/session anchors and bounds the store", () => {
+		const disk = storage();
+		const repo = new ReaderPositionRepository(disk);
+		const anchor = (hubId: string, sessionRef: string, touchedAt: number) => ({
+			hubId,
+			sessionRef,
+			itemKey: "item",
+			withinItemOffset: 4,
+			touchedAt,
+		});
+		repo.save(anchor("a", "one", 1));
+		repo.save(anchor("b", "two", 2));
+		expect(repo.read("a", "one")?.withinItemOffset).toBe(4);
+		expect(repo.read("b", "two")?.withinItemOffset).toBe(4);
+		for (let i = 0; i < 101; i += 1)
+			repo.save(anchor("bounded", String(i), i + 3));
+		expect(repo.read("bounded", "0")).toBeNull();
+		expect(repo.read("bounded", "100")).not.toBeNull();
+	});
+	it("does not throw when reader storage is unavailable", () => {
+		const repo = new ReaderPositionRepository({
+			getItemSync: () => {
+				throw new Error("offline");
+			},
+			setItemSync: () => {
+				throw new Error("offline");
+			},
+			removeItemSync: () => undefined,
+		});
+		expect(repo.read("hub", "session")).toBeNull();
+		expect(() =>
+			repo.save({
+				hubId: "hub",
+				sessionRef: "session",
+				itemKey: "item",
+				withinItemOffset: 1,
+				touchedAt: 1,
+			}),
+		).not.toThrow();
+	});
+	it("keeps the in-memory anchor when persistence fails", () => {
+		const disk = storage();
+		disk.setItemSync = () => {
+			throw new Error("full");
+		};
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "item",
+			withinItemOffset: 1,
+			touchedAt: 1,
+		};
+		const repo = new ReaderPositionRepository(disk);
+		repo.save(anchor);
+		expect(new ReaderPositionRepository(disk).read("hub", "session")).toEqual(
+			anchor,
+		);
+	});
+	it("does not write after a failed disk read", () => {
+		let writes = 0;
+		const repo = new ReaderPositionRepository({
+			getItemSync: () => {
+				throw new Error("unavailable");
+			},
+			setItemSync: () => {
+				writes += 1;
+			},
+			removeItemSync: () => undefined,
+		});
+		repo.save({
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "item",
+			withinItemOffset: 1,
+			touchedAt: 1,
+		});
+		expect(writes).toBe(0);
+	});
+	it("rejects negative protocol positions", () => {
+		const repo = new ReaderPositionRepository({
+			...storage(),
+			getItemSync: () =>
+				JSON.stringify({
+					"hub\u0000session": {
+						hubId: "hub",
+						sessionRef: "session",
+						itemKey: "item",
+						itemPosition: { entry: -1, item: 0 },
+						withinItemOffset: 1,
+						touchedAt: 1,
+					},
+				}),
+		});
+		expect(repo.read("hub", "session")).toBeNull();
+	});
+	it("keeps a newer failed write over older disk data and retains other hubs", () => {
+		const old = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "old",
+			withinItemOffset: 1,
+			touchedAt: 1,
+		};
+		const other = {
+			hubId: "other",
+			sessionRef: "session",
+			itemKey: "other",
+			withinItemOffset: 2,
+			touchedAt: 1,
+		};
+		const values = new Map([
+			[
+				"evener.reader-positions",
+				JSON.stringify({
+					"hub\u0000session": old,
+					"other\u0000session": other,
+				}),
+			],
+		]);
+		const disk: ReaderStorage = {
+			getItemSync: (key) => values.get(key) ?? null,
+			setItemSync: () => {
+				throw new Error("disk full");
+			},
+			removeItemSync: (key) => void values.delete(key),
+		};
+		const newer = { ...old, itemKey: "new", touchedAt: 2 };
+		new ReaderPositionRepository(disk).save(newer);
+		const remounted = new ReaderPositionRepository(disk);
+		expect(remounted.read("hub", "session")).toEqual(newer);
+		expect(remounted.read("other", "session")).toEqual(other);
+	});
+});

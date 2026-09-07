@@ -1,0 +1,252 @@
+import type { TimelineRow } from "./timeline";
+
+export interface ReaderAnchor {
+	hubId: string;
+	sessionRef: string;
+	conversationInstance?: string;
+	itemKey: string;
+	itemPosition?: { entry: number; item: number };
+	withinItemOffset: number;
+	touchedAt: number;
+}
+
+export interface ReaderStorage {
+	getItemSync(key: string): string | null;
+	setItemSync(key: string, value: string): void;
+	removeItemSync(key: string): void;
+}
+export interface ReaderMeasurement {
+	key: string;
+	y: number;
+	height: number;
+}
+
+const key = "evener.reader-positions";
+const limit = 100;
+type Stored = Record<string, ReaderAnchor>;
+const memory = new WeakMap<ReaderStorage, Stored>();
+
+function mergeStored(...maps: readonly Stored[]): Stored {
+	const merged: Stored = {};
+	for (const map of maps)
+		for (const [entryKey, candidate] of Object.entries(map)) {
+			const prior = merged[entryKey];
+			if (!prior || candidate.touchedAt >= prior.touchedAt)
+				merged[entryKey] = candidate;
+		}
+	return merged;
+}
+
+function position(value: unknown): value is { entry: number; item: number } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		typeof (value as { entry?: unknown }).entry === "number" &&
+		Number.isInteger((value as { entry: number }).entry) &&
+		(value as { entry: number }).entry >= 0 &&
+		typeof (value as { item?: unknown }).item === "number" &&
+		Number.isInteger((value as { item: number }).item) &&
+		(value as { item: number }).item >= 0
+	);
+}
+function valid(value: unknown): value is ReaderAnchor {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return false;
+	const v = value as Partial<ReaderAnchor>;
+	return (
+		typeof v.hubId === "string" &&
+		typeof v.sessionRef === "string" &&
+		typeof v.itemKey === "string" &&
+		v.itemKey.length > 0 &&
+		(v.conversationInstance === undefined ||
+			typeof v.conversationInstance === "string") &&
+		(v.itemPosition === undefined || position(v.itemPosition)) &&
+		typeof v.withinItemOffset === "number" &&
+		Number.isFinite(v.withinItemOffset) &&
+		v.withinItemOffset >= 0 &&
+		typeof v.touchedAt === "number" &&
+		Number.isFinite(v.touchedAt)
+	);
+}
+export function readerKey(row: TimelineRow): string {
+	if (row.kind === "details") return row.id;
+	return row.transcriptKey ?? row.id;
+}
+export function readerPosition(row: TimelineRow) {
+	return row.kind === "details" ? row.entries[0]?.position : row.position;
+}
+export function comparePosition(
+	a?: { entry: number; item: number },
+	b?: { entry: number; item: number },
+) {
+	if (!a && !b) return 0;
+	if (!a) return 1;
+	if (!b) return -1;
+	return a.entry - b.entry || a.item - b.item;
+}
+export function resolveReaderAnchor(
+	anchor: ReaderAnchor,
+	rows: readonly TimelineRow[],
+): number | null {
+	const exact = rows.findIndex((row) => readerKey(row) === anchor.itemKey);
+	if (exact >= 0) return exact;
+	if (!anchor.itemPosition) return null;
+	let best = -1;
+	for (let i = 0; i < rows.length; i += 1) {
+		const candidate = readerPosition(rows[i]);
+		if (candidate && comparePosition(candidate, anchor.itemPosition) === 0) {
+			best = i;
+			break;
+		}
+	}
+	return best >= 0 ? best : null;
+}
+export function captureReaderAnchor(
+	hubId: string,
+	sessionRef: string,
+	row: TimelineRow,
+	contentOffset: number,
+	measurements: readonly ReaderMeasurement[],
+	touchedAt: number,
+	conversationInstance?: string,
+): ReaderAnchor | null {
+	const measurement = measurements.find(
+		(candidate) => candidate.key === readerKey(row),
+	);
+	if (!measurement) return null;
+	return {
+		hubId,
+		sessionRef,
+		...(conversationInstance ? { conversationInstance } : {}),
+		itemKey: readerKey(row),
+		...(readerPosition(row) ? { itemPosition: readerPosition(row) } : {}),
+		withinItemOffset: Math.min(
+			measurement.height,
+			Math.max(0, contentOffset - measurement.y),
+		),
+		touchedAt,
+	};
+}
+export type ReaderRestoreCommand =
+	| { kind: "exact"; index: number; viewOffset: number }
+	| { kind: "approximate"; offset: number };
+export function shouldApplyExactRestore(
+	previous: ReaderMeasurement | null,
+	measurement: ReaderMeasurement,
+	previousOffset: number | null,
+	offset: number,
+) {
+	return (
+		previous?.key !== measurement.key ||
+		previous.y !== measurement.y ||
+		previous.height !== measurement.height ||
+		previousOffset !== offset
+	);
+}
+export function restoreReaderCommand(
+	anchor: ReaderAnchor,
+	rows: readonly TimelineRow[],
+	measurements: readonly ReaderMeasurement[],
+	averageItemHeight: number,
+	allowRestore = true,
+): ReaderRestoreCommand | null {
+	if (!allowRestore) return null;
+	const index = resolveReaderAnchor(anchor, rows);
+	if (index === null) return null;
+	if (measurements.some((measurement) => measurement.key === anchor.itemKey))
+		return {
+			kind: "exact",
+			index,
+			viewOffset: -Math.min(
+				anchor.withinItemOffset,
+				measurements.find((measurement) => measurement.key === anchor.itemKey)
+					?.height ?? anchor.withinItemOffset,
+			),
+		};
+	return {
+		kind: "approximate",
+		offset: Math.max(
+			0,
+			index * Math.max(1, averageItemHeight) + anchor.withinItemOffset,
+		),
+	};
+}
+export function storageKey(hubId: string, sessionRef: string) {
+	return `${hubId}\u0000${sessionRef}`;
+}
+export class ReaderPositionRepository {
+	constructor(private readonly storage: ReaderStorage) {}
+	read(hubId: string, sessionRef: string): ReaderAnchor | null {
+		let raw: string | null;
+		try {
+			raw = this.storage.getItemSync(key);
+		} catch {
+			const cached = memory.get(this.storage)?.[storageKey(hubId, sessionRef)];
+			return cached ?? null;
+		}
+		if (!raw)
+			return memory.get(this.storage)?.[storageKey(hubId, sessionRef)] ?? null;
+		let value: unknown;
+		try {
+			value = JSON.parse(raw);
+		} catch {
+			return null;
+		}
+		if (typeof value !== "object" || value === null || Array.isArray(value))
+			return null;
+		const disk = Object.fromEntries(
+			Object.entries(value).filter(([, candidate]) => valid(candidate)),
+		) as Stored;
+		const stored = mergeStored(disk, memory.get(this.storage) ?? {});
+		memory.set(this.storage, stored);
+		const candidate = stored[storageKey(hubId, sessionRef)];
+		return valid(candidate) &&
+			candidate.hubId === hubId &&
+			candidate.sessionRef === sessionRef
+			? candidate
+			: null;
+	}
+	save(anchor: ReaderAnchor | null) {
+		if (!anchor) return;
+		let raw: string | null;
+		try {
+			raw = this.storage.getItemSync(key);
+		} catch {
+			const stored = memory.get(this.storage) ?? {};
+			stored[storageKey(anchor.hubId, anchor.sessionRef)] = anchor;
+			memory.set(this.storage, stored);
+			return;
+		}
+		let disk: Stored = {};
+		if (raw) {
+			try {
+				const value: unknown = JSON.parse(raw);
+				if (
+					typeof value === "object" &&
+					value !== null &&
+					!Array.isArray(value)
+				)
+					disk = Object.fromEntries(
+						Object.entries(value).filter(([, candidate]) => valid(candidate)),
+						);
+				} catch {
+					disk = {};
+				}
+		}
+		let stored = mergeStored(disk, memory.get(this.storage) ?? {});
+		stored[storageKey(anchor.hubId, anchor.sessionRef)] = anchor;
+		const entries = Object.entries(stored)
+			.sort(([, a], [, b]) => b.touchedAt - a.touchedAt)
+			.slice(0, limit);
+		memory.set(this.storage, Object.fromEntries(entries));
+		try {
+			this.storage.setItemSync(
+				key,
+				JSON.stringify(Object.fromEntries(entries)),
+			);
+		} catch {
+			// Keep the caller's in-memory anchor when persistence is unavailable.
+		}
+	}
+}
