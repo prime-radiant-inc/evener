@@ -19,9 +19,9 @@ import (
 //
 // The grouping rule reproduces the live allocation from the file alone:
 //
-//   - USER_INPUT opens a logical turn. STEERING joins that open turn because
-//     live steering is attached to the active turn; only a steer with no open
-//     group starts a group of its own.
+//   - USER_INPUT and typed goal-continuation STEERING open a logical turn.
+//     Ordinary STEERING joins the open turn because live steering attaches
+//     to the active turn; with no open group it starts a group of its own.
 //   - CONTINUATIONS extend the open logical turn: ASSISTANT, TOOL,
 //     TOOL_RESULTS, and TURN_FAILURE (a failure closes nothing — the daemon
 //     may retry after a failure, and grouping it into the opener's turn keeps
@@ -32,13 +32,13 @@ import (
 //     turn, grouped with nothing, and CLOSES the open group. This matches live
 //     gap-turn semantics.
 //
-// Turn ids are exact for client-mutation turns (the opener's persisted
+// Turn ids are exact for client-mutation and goal turns (the opener's persisted
 // StableTurnID or its entry-index fallback) and stable-but-not-live-identical
-// for daemon-minted/continuation turns.
+// for other daemon-minted turns.
 
-// opensLogicalTurn reports whether a turn kind starts a new logical turn.
-func opensLogicalTurn(kind schema.TurnKind) bool {
-	return kind == schema.TurnUserInput
+// opensLogicalTurn distinguishes top-level goal input from ordinary steering.
+func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
+	return kind == schema.TurnUserInput || kind == schema.TurnSteering && goalContinuation
 }
 
 // continuesLogicalTurn reports whether a turn kind extends the open logical
@@ -56,7 +56,7 @@ func continuesLogicalTurn(kind schema.TurnKind) bool {
 // continuations once this kind has been appended: openers and continuations
 // leave a group open; standalone kinds close it.
 func groupOpenAfter(kind schema.TurnKind) bool {
-	return opensLogicalTurn(kind) || continuesLogicalTurn(kind)
+	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
 }
 
 // recordStartsGroup reports whether a record of this kind starts a new
@@ -64,8 +64,8 @@ func groupOpenAfter(kind schema.TurnKind) bool {
 // there is none). Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind) bool {
-	if opensLogicalTurn(kind) {
+func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool) bool {
+	if opensLogicalTurn(kind, goalContinuation) {
 		return true
 	}
 	if continuesLogicalTurn(kind) {
@@ -104,7 +104,7 @@ type logicalTurnAccumulator struct {
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	kind := entry.Kind
 	switch {
-	case opensLogicalTurn(kind):
+	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = true
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
