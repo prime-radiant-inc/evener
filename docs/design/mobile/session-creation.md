@@ -230,10 +230,34 @@ uncertain response/disconnect, per-form ownership, immutable staging, blocked
 removal during submit, and the real selection controller canceling late results.
 Independent review found no actionable issue in this slice.
 
-Live transcript qualification is incomplete: the initial running-session native
-views showed the user text without its image tile. The tile appeared after Stop,
-while independent thread/read already contained the image during the Android
-run. Trace the initial snapshot/item notifications and native projection before
-claiming live image delivery works. This is tracked with the running-work matrix
-under MOB-008. Image-only native submission, limit/failure cases, long catalogs,
-keyboard attachment round trips, large text and screen readers remain unqualified.
+## Live image delivery
+
+The missing live tile was a client projection bug: full snapshots generated a
+companion attachment row, but item lifecycle notifications replaced only the
+text/activity row. Both paths now share attachment mapping. Live replacements
+update the whole row group, remove obsolete images, and preserve source order.
+Snapshot and older-page reconciliation respect newer live replacements and also
+accept authoritative snapshot removal without retaining stale image ownership.
+
+Release simulator checks sent a second image from the existing sessions above.
+iOS sent icon.png and Android sent 1000000267.png; both showed the new thumbnail
+while Stop was available and opened it in the native viewer before stopping.
+Independent installed-SDK thread/read calls confirmed each thread was active,
+turn_m2 was inProgress, and item_user_25 contained one image. These are real hub
+and native UI checks with the isolated scripted provider, not model-quality tests.
+The final recovery refinement was exercised by deterministic tests and rebuilt
+on both platforms after the live-send checks.
+
+- [iOS image visible during execution](assets/creation/live-image-ios.jpg).
+- [Android image visible during execution](assets/creation/live-image-android.png).
+
+331 native tests, 339 shared conversation/projection tests, TypeScript, touched
+Biome checks and both Release builds pass. Seven regression tests cover live
+input/output images, replacement/removal, stale snapshot and page overlap,
+source-adjacent ordering, and authoritative removal. Independent review's
+snapshot-removal finding was reproduced, fixed, and rechecked.
+
+This closes the observed live-item projection gap, not all of MOB-008 or image
+qualification. New-session opening-window races, image-only native submission,
+limit/failure cases, long catalogs, keyboard attachment round trips, large text
+and screen readers still need their own acceptance evidence.
