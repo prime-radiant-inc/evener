@@ -116,7 +116,7 @@ const FEATURE_KEYS = [
   "directoryComplete",
   "auth",
 ] as const;
-const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings"] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
 const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -158,10 +158,13 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     !isRecord(features) ||
     !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
-    (Object.hasOwn(features, "transcriptDisplaySettings") && typeof features.transcriptDisplaySettings !== "boolean") ||
+    FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean") ||
     (Object.hasOwn(value, "navigation") &&
       (!isRecord(navigation) ||
-        !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS) ||
+        !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"]) ||
+        (Object.hasOwn(navigation, "readVersions") &&
+          (!Array.isArray(navigation.readVersions) ||
+            navigation.readVersions.some((version) => !Number.isSafeInteger(version) || version < 1))) ||
         typeof navigation.version !== "number" ||
         !Number.isSafeInteger(navigation.version) ||
         navigation.version < 1 ||

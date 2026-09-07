@@ -29,7 +29,7 @@ have no ID and may arrive while a request is outstanding. The examples omit
 `jsonrpc`, matching the shipped client. Start with:
 
 ```json
-{"id":1,"method":"initialize","params":{"protocolVersion":"evener-appwire-v3","clientInfo":{"name":"example-client","version":"1.0.0"},"capabilities":{"experimentalApi":false}}}
+{"id":1,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4","clientInfo":{"name":"example-client","version":"1.0.0"},"capabilities":{"experimentalApi":false}}}
 ```
 
 The successful result is an `InitializeResponse`. Validate the exact
@@ -44,6 +44,17 @@ incompatible protocol is a terminal compatibility error, not a reason to retry
 mutations. Inspect advertised capabilities and each thread's capabilities before
 offering operations. Catalog entries marked `unimplemented` are reserved, not
 usable features.
+
+When `navigation` is present, its `version` describes the invalidation stream;
+`readVersions` advertises supported navigation read representations. The current
+hub sends `version: 1` and `readVersions: [2]`. These are separate versions:
+send `representationVersion: 2` on navigation reads. `generationId` and
+`sequence` identify the current invalidation stream; discard cached conditional
+bases after a generation change. `readVersions` is optional in the wire type;
+when absent, it does not advertise any read representation. Each advertised
+version must be a positive integer. Optional `features.keybindingsSettings`
+and `features.transcriptDisplaySettings` are booleans when present; a missing
+or false capability does not authorize offering the corresponding operation.
 
 The TypeScript library performs this handshake and correlates calls. Its default
 request timeout is 30 seconds, overridable per call. It sends `ping` every 20 seconds
