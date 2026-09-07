@@ -16,16 +16,16 @@ export function ApprovalSheet({
   controls,
   hubName,
   close,
-  refresh,
 }: {
   approvals: MobileApproval[];
   controls: ApprovalControls;
   hubName: string;
   close: () => void;
-  refresh: () => Promise<void>;
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
+  const decisionDisabled =
+    state.pending !== null || state.refreshing || state.error !== null;
   return (
     <Modal
       animationType="slide"
@@ -63,11 +63,12 @@ export function ApprovalSheet({
             <View style={{ gap: 8 }}>
               <ErrorMessage message={state.error} />
               <Action
+                disabled={state.refreshing || state.pending !== null}
                 onPress={() => {
-                  void refresh();
+                  void controls.refresh();
                 }}
               >
-                Refresh session
+                {state.refreshing ? "Refreshing session…" : "Refresh session"}
               </Action>
             </View>
           ) : null}
@@ -111,7 +112,7 @@ export function ApprovalSheet({
               <Copy muted>Allow access for this one action?</Copy>
               <View style={[styles.row, { flexWrap: "wrap" }]}>
                 <Action
-                  disabled={state.pending !== null}
+                  disabled={decisionDisabled}
                   onPress={() => {
                     void controls.resolve(approval, false);
                   }}
@@ -119,7 +120,7 @@ export function ApprovalSheet({
                   Deny
                 </Action>
                 <Action
-                  disabled={state.pending !== null}
+                  disabled={decisionDisabled}
                   tone="primary"
                   onPress={() => {
                     void controls.resolve(approval, true);
