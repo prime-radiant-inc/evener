@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -55,7 +57,10 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		}
 		// Ancestry locates a possible daemon. Every edge must have a persisted
 		// delegate descriptor before that daemon can be classified as the owner.
-		child, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: threadID})
+		child, ok, err := ownershipEntry(ctx, cfg, threadID)
+		if err != nil {
+			return hubcore.LiveEntry{}, false, fmt.Errorf("read session ownership for %s: %w", threadID, err)
+		}
 		if !ok {
 			break
 		}
@@ -84,6 +89,28 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		return hubcore.LiveEntry{}, false, fmt.Errorf("cannot verify delegate ownership at session %s in incompatible job tree %s", threadID, jobTreeRootID)
 	}
 	return hubcore.LiveEntry{}, false, nil
+}
+
+// Ownership uses the same configured state directory as local fork operations,
+// including configurations without a past-session index.
+func ownershipEntry(ctx context.Context, cfg hubcore.WebConfig, threadID string) (hubcore.PastEntry, bool, error) {
+	if entry, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: threadID}); ok {
+		return entry, true, nil
+	}
+	if cfg.StateDir == "" {
+		return hubcore.PastEntry{}, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return hubcore.PastEntry{}, false, err
+	}
+	meta, err := schema.LoadSessionMeta(cfg.StateDir, threadID)
+	if errors.Is(err, os.ErrNotExist) {
+		return hubcore.PastEntry{}, false, nil
+	}
+	if err != nil {
+		return hubcore.PastEntry{}, false, err
+	}
+	return hubcore.PastEntry{ID: threadID, Meta: meta, StateDir: cfg.StateDir}, true, nil
 }
 
 func liveDaemonForThread(roster *hubcore.Roster, threadID string) (hubcore.LiveEntry, bool) {

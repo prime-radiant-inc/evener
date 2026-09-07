@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -769,15 +770,21 @@ func TestHubMutationOwnershipCancellationPreservesUnknownReceipt(t *testing.T) {
 }
 
 func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
-	for _, cached := range []bool{false, true} {
+	for _, scenario := range []struct{ cached, delegate bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		for _, mode := range []string{"aside", "edit", "defer"} {
-			t.Run(fmt.Sprintf("cached=%v/%s", cached, mode), func(t *testing.T) {
+			t.Run(fmt.Sprintf("cached=%v/delegate=%v/%s", scenario.cached, scenario.delegate, mode), func(t *testing.T) {
 				stateDir := t.TempDir()
-				parentID := buildRPCParentSession(t, stateDir)
+				rootID := buildRPCParentSession(t, stateDir)
+				parentID := rootID
+				expectedMetas := 1
+				if scenario.delegate {
+					parentID = buildUpgradeDelegate(t, stateDir, rootID)
+					expectedMetas++
+				}
 				runDir := t.TempDir()
-				writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: parentID, SessionID: parentID, Endpoint: protocolMismatchPeer(t)})
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID, Endpoint: protocolMismatchPeer(t)})
 				roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
-				if cached {
+				if scenario.cached {
 					roster.Refresh()
 				}
 				hub := newHubRPCTestServer(t, hubcore.WebConfig{StateDir: stateDir, Roster: roster})
@@ -807,8 +814,8 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(metas) != 1 {
-					t.Errorf("fork created session metadata: count=%d, want 1", len(metas))
+				if len(metas) != expectedMetas {
+					t.Errorf("fork created session metadata: count=%d, want %d", len(metas), expectedMetas)
 				}
 				parent, err := schema.LoadSessionMeta(stateDir, parentID)
 				if err != nil {
@@ -831,4 +838,34 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 			})
 		}
 	}
+}
+
+func buildUpgradeDelegate(t *testing.T, stateDir, ownerID string) string {
+	t.Helper()
+	childID, err := agent.ForkSession(stateDir, ownerID, 1, "delegate prompt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.IsSubagent = true
+	meta.JobTreeRootSessionID = ownerID
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := map[string]any{"child_session_id": childID, "transcript_ref": localAppRef(childID), "owner_session_id": ownerID, "task": "sentinel", "agent_type": "explorer", "tool_name_ceiling": []string{"communicate"}, "resumable": true, "config": map[string]any{}}
+	batch, err := json.Marshal(map[string]any{"events": []map[string]any{{"kind": "delegate_created", "seq": 1, "delegate_id": "dlg_upgrade", "created": map[string]any{"descriptor": descriptor}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(stateDir, "sessions", ownerID, "delegates.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte("{\"version\":1}\n"), batch...), '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return childID
 }
