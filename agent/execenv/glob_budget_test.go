@@ -45,6 +45,16 @@ func stubMaxGlobDirEntries(t *testing.T, n int) {
 	t.Cleanup(func() { maxGlobDirEntries = orig })
 }
 
+// stubMaxGlobLiveEntries lowers the call-wide live-entry budget for a test
+// and restores it when the test ends, so a budget test can use a tree small
+// enough for t.TempDir() rather than one large enough to trip the real bound.
+func stubMaxGlobLiveEntries(t *testing.T, n int) {
+	t.Helper()
+	orig := maxGlobLiveEntries
+	maxGlobLiveEntries = n
+	t.Cleanup(func() { maxGlobLiveEntries = orig })
+}
+
 // stubGlobDirChunk shrinks the per-syscall chunk size for a test and restores
 // it when the test ends, so a bounded listing has to make several chunk reads
 // over a fixture small enough for t.TempDir() instead of a directory too
@@ -301,19 +311,154 @@ func TestGlobStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	}
 }
 
+// TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree proves the
+// call-wide live-entry bound catches what maxGlobDirEntries cannot: a walk
+// holds every ancestor directory's listing alive while it descends into a
+// child, so a deep tree's peak live total is the per-directory entry count
+// times its depth, not any single listing's size. Every directory in the
+// chain here holds fewer entries than a lowered maxGlobDirEntries, so the
+// per-directory cap never trips on its own, but the sum the walk is holding
+// live grows with every level it descends and crosses a lowered
+// maxGlobLiveEntries partway down. peakLiveEntries has to be checked
+// directly, not just the refusal, because a fix that walked the whole tree
+// and only complained at the end would return the same error this test's
+// errors.As check accepts; comparing what was actually held live against the
+// tree's full entry count is what tells the two apart.
+func TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree(t *testing.T) {
+	root := t.TempDir()
+
+	const depth = 10    // d00..d09
+	const perLevel = 5  // every directory in the chain holds this many entries
+	const decoySize = 8 // files in a directory outside the chain
+	const perDirBudget = 20
+	const liveBudget = 30
+
+	cur := root
+	for i := range depth {
+		cur = filepath.Join(cur, fmt.Sprintf("d%02d", i))
+		if err := os.MkdirAll(cur, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Every non-leaf directory holds perLevel-1 padding files plus the
+		// subdirectory that continues the chain; the leaf holds perLevel
+		// padding files and no subdirectory, so every level's own listing is
+		// the same size.
+		padding := perLevel - 1
+		if i == depth-1 {
+			padding = perLevel
+		}
+		for p := range padding {
+			if err := os.WriteFile(filepath.Join(cur, fmt.Sprintf("pad%02d.txt", p)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// zzz_decoy sorts after the whole d00..d09 chain, so the walk finishes
+	// descending and backing out of the chain before it ever lists this
+	// directory: it contributes to the tree's total entry count but is never
+	// one of the chain's ancestors, so it can never be live at the same time
+	// as the chain's peak.
+	decoy := filepath.Join(root, "zzz_decoy")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range decoySize {
+		if err := os.WriteFile(filepath.Join(decoy, fmt.Sprintf("leaf%02d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Total entries in the tree: root's own listing (d00 + zzz_decoy = 2),
+	// plus the chain (depth*perLevel), plus the decoy's own files.
+	totalEntries := 2 + depth*perLevel + decoySize
+
+	stubMaxGlobDirEntries(t, perDirBudget)
+	stubMaxGlobLiveEntries(t, liveBudget)
+
+	var seenBudget *globBudget
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *globBudget) fs.FS {
+		seenBudget = budget
+		return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
+	})
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "**/*.txt", root, true)
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("Glob over a %d-level tree (peak live so far: %d) with a live-entry budget of %d = (%d matches, %v), want a *globBudgetError; nothing bounds how many entries a walk may hold live across the listings it still has open", depth, seenBudget.peakLiveEntries, liveBudget, len(matches), err)
+	}
+	if budgetErr.kind != budgetLiveEntries {
+		t.Fatalf("globBudgetError.kind = %v, want budgetLiveEntries", budgetErr.kind)
+	}
+	if seenBudget.peakLiveEntries < liveBudget {
+		t.Fatalf("globBudget.peakLiveEntries = %d, want at least the live-entry budget of %d", seenBudget.peakLiveEntries, liveBudget)
+	}
+	if seenBudget.peakLiveEntries >= totalEntries {
+		t.Fatalf("globBudget.peakLiveEntries = %d, want strictly less than the tree's %d total entries (a fix that walked the whole tree before complaining must not pass this)", seenBudget.peakLiveEntries, totalEntries)
+	}
+}
+
+// TestGlobSucceedsOnAWideShallowTreeUnderTheLiveEntryCeiling is the control
+// for TestGlobStopsWhenTooManyEntriesAreHeldLiveAcrossADeepTree above: it
+// holds the same 60 total entries (10 sibling directories of 5 files each,
+// plus the root's own 10-entry listing), but spread across siblings instead
+// of nested, so the walk only ever holds the root's listing plus whichever
+// one sibling it is currently reading — one directory's worth plus the root —
+// no matter how many siblings it has already finished with. The live-entry
+// budget is lowered to the same value the nested test uses, and the call
+// still has to succeed and report every match: a naive cumulative counter
+// that summed every listing ever made instead of releasing the ones the walk
+// has left would grow with every sibling visited and refuse partway through
+// this tree instead, which would break every large flat repository.
+func TestGlobSucceedsOnAWideShallowTreeUnderTheLiveEntryCeiling(t *testing.T) {
+	root := t.TempDir()
+
+	const siblings = 10
+	const filesPerSibling = 5
+	const perDirBudget = 20
+	const liveBudget = 30
+
+	for i := range siblings {
+		dir := filepath.Join(root, fmt.Sprintf("sib%02d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f := range filesPerSibling {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("leaf%02d.txt", f)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	stubMaxGlobDirEntries(t, perDirBudget)
+	stubMaxGlobLiveEntries(t, liveBudget)
+
+	matches, err := NewLocalExecutionEnvironment(root).Glob(t.Context(), "**/*.txt", root, true)
+	if err != nil {
+		t.Fatalf("Glob over a %d-directory wide tree (same %d total entries as the nested tree above) under a live-entry budget of %d = %v, want nil error; the bound must charge only what the walk is currently holding live, not a running total across the whole call", siblings, siblings*(filesPerSibling+1), liveBudget, err)
+	}
+	if want := siblings * filesPerSibling; len(matches) != want {
+		t.Fatalf("Glob over the wide tree returned %d matches, want %d", len(matches), want)
+	}
+}
+
 // TestGlobStopsReadingAChunkedListingOnCancellation proves the other half of
-// reading a directory in chunks: readDirChunked's loop never looks at ctx
-// between one chunk and the next, so a cancellation landing mid-listing is
-// not noticed until the whole directory has been pulled through — up to
-// maxGlobDirEntries/globDirChunk pointless chunks of work after the caller
-// asked to stop. cancelFS only checks ctx once, when a listing starts, and
+// reading a directory in chunks: readDirChunked's loop checks ctx between one
+// chunk and the next, so a cancellation landing mid-listing is noticed within
+// about one more chunk of work rather than after the whole directory has been
+// pulled through. cancelFS only checks ctx once, when a listing starts, and
 // the walk callback that finally sees ctx.Err() only runs after ReadDir
-// returns — so the call comes back reporting context.Canceled either way,
-// and a test that checked only that would pass today without pinning
-// anything. What has to be pinned is the chunk loop itself stopping
+// returns, so the call reports context.Canceled either way regardless of how
+// much of the directory the loop actually read — a test that checked only
+// the returned error would pass even if the loop read every remaining chunk
+// before giving up. What has to be pinned is the chunk loop itself stopping
 // promptly, which is why this also counts how many entries actually came out
 // of the directory file, the same way pacedDirEntriesFS's read counter does
-// for TestGlobStopsOnADirectoryWithTooManyEntries above.
+// for TestGlobStopsOnADirectoryWithTooManyEntries above. Losing the ctx check
+// between chunks would let the loop keep pulling chunks until the directory
+// is exhausted — up to maxGlobDirEntries/globDirChunk chunks of pointless
+// work after the caller asked to stop — while still reporting the same
+// context.Canceled this test's error check alone cannot tell apart from that.
 func TestGlobStopsReadingAChunkedListingOnCancellation(t *testing.T) {
 	const fileCount = 40
 	const chunkSize = 5
@@ -338,16 +483,19 @@ func TestGlobStopsReadingAChunkedListingOnCancellation(t *testing.T) {
 	}
 }
 
-// TestGrepWalkIsChargedToTheBudget proves grepNative's own directory walk has
-// no bound of its own, distinct from the ignore-discovery bound
-// TestGrepIgnoreDiscoveryIsChargedToTheBudget already covers: grepWalk is a
-// plain fs.WalkDir with nothing charging its listings to a budget, so a huge
-// tree grepNative walks after ignore discovery completes still costs
-// unbounded work. The tree here has no .gitignore and is small enough that
-// ignore discovery alone stays well under the lowered listing budget, so a
-// refusal can only be attributed to the walk grepNative runs over the tree it
-// is grepping, not to the ignore-discovery pass that already has its own
-// test above.
+// TestGrepWalkIsChargedToTheBudget proves grepNative's own directory walk
+// charges every directory it descends into to the same budget
+// TestGrepIgnoreDiscoveryIsChargedToTheBudget already covers for ignore
+// discovery: grepWalk's callback calls budget.listing(true) once per
+// directory, so a huge tree grepNative walks after ignore discovery completes
+// still costs bounded work rather than an unbounded second pass. The tree
+// here has no .gitignore and is small enough that ignore discovery alone
+// stays well under the lowered listing budget, so a refusal can only be
+// attributed to the walk grepNative runs over the tree it is grepping, not to
+// the ignore-discovery pass that already has its own test above. Removing the
+// budget.listing(true) call from grepWalk's callback would let this walk
+// relist the whole tree for free, and the refusal this test asserts would
+// never come.
 func TestGrepWalkIsChargedToTheBudget(t *testing.T) {
 	const dirCount = 30
 	const budget = 40
@@ -370,18 +518,25 @@ func TestGrepWalkIsChargedToTheBudget(t *testing.T) {
 // TestGrepWalkDoesNotChargeSkippedDirectories proves grepNative's own walk
 // charges the listing budget only for directories it actually descends into.
 // The d.IsDir() block in grepNative's callback charges budget.listing(true)
-// before the dot-directory and gitignore filepath.SkipDir checks further down
-// the same callback run, so a directory the walk immediately skips still
-// costs budget. The tree here mixes both kinds of exclusion the callback
-// applies — dot-prefixed directories and directories a root .gitignore
-// matches — and its excluded directories alone outnumber the lowered listing
-// budget, while only a handful of directories are ever actually listed.
-// loadIgnoreSet runs first over the same tree on the same budget, and it
-// skips only the dot-prefixed directories, not the gitignored ones, so its
-// own pass already charges for every gitignored directory before grepNative's
-// walk begins; the budget below is sized comfortably above that cost alone,
-// so only the walk's redundant charge for the directories it was about to
-// skip anyway can push the call over it.
+// only after the dot-directory and gitignore filepath.SkipDir checks earlier
+// in the same callback run, so a directory the walk immediately skips costs
+// nothing. The tree here mixes both kinds of exclusion the callback applies —
+// dot-prefixed directories and directories a root .gitignore matches — and
+// its excluded directories alone outnumber the lowered listing budget, while
+// only a handful of directories are ever actually listed. loadIgnoreSet runs
+// first over the same tree on the same budget, and it skips only the
+// dot-prefixed directories, not the gitignored ones, so its own pass already
+// charges the base plus every real and gitignored directory (1 + 3 + 10 = 14
+// listings) before grepNative's walk begins. grepWalk's own pass then adds 4
+// more — the base plus the 3 real directories it actually descends into —
+// for a total of 18, comfortably under the budget of 25 and comfortably
+// above ignore discovery's 14-listing cost alone, so headroom cannot hide a
+// regression here. Moving the charge above the skip checks would instead
+// start charging the 20 dot and 10 gitignored directories the walk was about
+// to skip anyway, which on their own are more than enough to cross the
+// budget of 25 partway through (the walk gives up as soon as the running
+// total does, well short of a legitimate 18): that is the only way this test
+// can fail.
 func TestGrepWalkDoesNotChargeSkippedDirectories(t *testing.T) {
 	root := t.TempDir()
 
@@ -645,13 +800,18 @@ func TestGlobBudgetErrorRecordsWhetherTheWalkCouldDetectCycles(t *testing.T) {
 // TestSandboxedGlobTruncatesToAStablePrefix proves the sandboxed walk's match
 // cap truncates to a deterministic prefix rather than to whichever entries
 // the filesystem's raw directory order happened to hand back first.
-// secureDirFS.ReadDir returns df.ReadDir(-1) unsorted, unlike os.DirFS (which
-// sorts), so which files survive a cap tripping mid-listing is otherwise the
-// filesystem's business, not the glob's. Every file is written in
-// reverse-lexical order and given an identical mtime, so neither creation
-// order nor modification time can accidentally line up with the alphabetical
-// order the fix is supposed to guarantee, and two back-to-back runs over the
-// unchanged tree must agree with each other and with that order.
+// secureDirFS.ReadDir lists through readDirChunked, which sorts the entries
+// lexically once the whole chunked read finishes, so which files survive a
+// cap tripping mid-listing is the glob's business, not an accident of the
+// fd-backed listing's own order (which has no ordering guarantee of its own
+// to begin with). Every file is written in reverse-lexical order and given an
+// identical mtime, so neither creation order nor modification time can
+// accidentally line up with the alphabetical order the sort guarantees, and
+// two back-to-back runs over the unchanged tree must agree with each other
+// and with that order. An unsorted ReadDir would let the raw fd order decide
+// which files survive truncation instead, breaking the fixture's guarantee
+// that both runs and the lexically-first "want" prefix agree with each
+// other: that is the only way this test can fail.
 func TestSandboxedGlobTruncatesToAStablePrefix(t *testing.T) {
 	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
 
@@ -790,5 +950,35 @@ func TestGrepWalkStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 	}
 	if budgetErr.op != "grep" {
 		t.Fatalf("globBudgetError.op = %q, want %q", budgetErr.op, "grep")
+	}
+}
+
+// TestGlobBudgetErrorAdviceDependsOnTheOperationAndTheBound pins that advice
+// and entryAdvice each name the lever that can actually fix the refusal they
+// describe, not one that only sounds plausible. A model acts on this advice
+// directly: a grep's pattern is a regex applied to file contents after the
+// walk has already listed everything, so narrowing it cannot reduce how much
+// the walk lists, while a glob's pattern controls what gets listed in the
+// first place, and one oversized directory is a different lever again from a
+// whole call's listing count. Advice that names the wrong lever sends a model
+// off to change something that cannot help, so this asserts the three
+// distinctions structurally instead of embedding either method's wording:
+// collapsing any one of them to a single return value still passes every
+// other test in this package.
+func TestGlobBudgetErrorAdviceDependsOnTheOperationAndTheBound(t *testing.T) {
+	grepListings := &globBudgetError{op: "grep", kind: budgetListings}
+	globListings := &globBudgetError{op: "glob", kind: budgetListings}
+	if grepAdvice, globAdvice := grepListings.advice(), globListings.advice(); grepAdvice == globAdvice {
+		t.Fatalf("advice() collapsed the grep/glob distinction for a listings refusal: grep = %q, glob = %q; narrowing a grep's pattern cannot reduce how much it lists, so the two operations need different advice", grepAdvice, globAdvice)
+	}
+
+	grepEntries := &globBudgetError{op: "grep", kind: budgetEntries}
+	globEntries := &globBudgetError{op: "glob", kind: budgetEntries}
+	if grepEntryAdvice, globEntryAdvice := grepEntries.entryAdvice(), globEntries.entryAdvice(); grepEntryAdvice == globEntryAdvice {
+		t.Fatalf("entryAdvice() collapsed the grep/glob distinction for an entries refusal: grep = %q, glob = %q; a grep cannot spell a pattern that lists less of one directory, so the two operations need different advice", grepEntryAdvice, globEntryAdvice)
+	}
+
+	if entryAdvice, callAdvice := globEntries.entryAdvice(), globListings.advice(); entryAdvice == callAdvice {
+		t.Fatalf("entryAdvice() collapsed into advice() for the same operation: entryAdvice = %q, advice = %q; one oversized directory and a whole call's listing count are not the same lever, so they need different advice", entryAdvice, callAdvice)
 	}
 }

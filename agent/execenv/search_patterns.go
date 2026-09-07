@@ -100,8 +100,25 @@ var globDirChunk = 4096
 // multiply by a plausible depth without exhausting memory on its own.
 var maxGlobDirEntries = 200_000
 
+// maxGlobLiveEntries bounds how many directory entries one call may hold live
+// at once, summed over every listing its walk still has open. maxGlobDirEntries
+// bounds a single listing, which does not bound the walk: fs.WalkDir and
+// doublestar both keep an ancestor's entry slice alive while they read a
+// child, so a walk N levels deep holds up to N listings at once. This is the
+// aggregate ceiling that makes that sum finite. At roughly 105 bytes per
+// os.dirEntry, 500,000 entries is about 52 MB — a couple of maximal
+// directories' worth, far above any real tree (a deep repository holds a few
+// thousand live entries) and far below what would threaten the process.
+var maxGlobLiveEntries = 500_000
+
 // maxGlobMatches bounds how many matches one glob call may accumulate.
 var maxGlobMatches = 10_000
+
+// liveDir is one directory whose listing the walk is still holding.
+type liveDir struct {
+	name string
+	n    int
+}
 
 // globBudget bounds the total work and memory one glob or grep call may
 // spend, shared by every brace-expanded pattern the call walks. op names the
@@ -121,6 +138,14 @@ type globBudget struct {
 	// the refusal — a result-only assertion cannot see the difference, but the
 	// OOM only the former avoids.
 	peakDirEntries int
+	// live holds one entry per directory listing the walk currently has open,
+	// pruned by holdEntries down to just the ancestors of whichever directory
+	// is being listed now.
+	live []liveDir
+	// peakLiveEntries is the largest live total holdEntries has ever computed
+	// across b.live, recorded on every call rather than only the one that
+	// trips, so a test can see how far a walk actually got.
+	peakLiveEntries int
 }
 
 // newGlobBudget constructs a globBudget for op, so every call site names the
@@ -162,29 +187,62 @@ func (b *globBudget) tooManyEntries(dir string, read int) error {
 	return &globBudgetError{count: read, dir: dir, budget: maxGlobDirEntries, cycleSafe: true, op: b.op, kind: budgetEntries}
 }
 
-// globBudgetKind tells apart the two things a globBudgetError can report:
-// too many directory listings across a whole call, or too many entries
-// materialized by a single one of them.
+// isGlobWalkAncestor reports whether dir is a proper ancestor of name in the
+// slash-separated paths a walk uses.
+func isGlobWalkAncestor(dir, name string) bool {
+	return dir != name && (dir == "." || strings.HasPrefix(name, dir+"/"))
+}
+
+// holdEntries records dir's listing of n entries as live and releases every
+// directory that is not one of dir's ancestors: to be listing dir at all the
+// walk must have left them, the same reasoning globWalkFS.push uses for
+// identity. It refuses once the live total crosses maxGlobLiveEntries.
+func (b *globBudget) holdEntries(dir string, n int) error {
+	kept := 0
+	total := n
+	for _, d := range b.live {
+		if isGlobWalkAncestor(d.name, dir) {
+			b.live[kept] = d
+			kept++
+			total += d.n
+		}
+	}
+	b.live = append(b.live[:kept], liveDir{name: dir, n: n})
+	if total > b.peakLiveEntries {
+		b.peakLiveEntries = total
+	}
+	if total > maxGlobLiveEntries {
+		return &globBudgetError{count: total, budget: maxGlobLiveEntries, cycleSafe: true, op: b.op, kind: budgetLiveEntries}
+	}
+	return nil
+}
+
+// globBudgetKind tells apart the three things a globBudgetError can report:
+// too many directory listings across a whole call, too many entries
+// materialized by a single one of them, or too many entries held live at once
+// across the listings a walk still has open.
 type globBudgetKind int
 
 const (
 	budgetListings globBudgetKind = iota
 	budgetEntries
+	budgetLiveEntries
 )
 
-// globBudgetError reports that one glob or grep call ran past its
-// directory-listing budget, or that one listing within it read past the
-// per-directory entry budget. cycleSafe records whether the walk that gave up
-// could have detected a symlink cycle on its own — the pattern walk can tell
-// only where the filesystem reports file identity, while ignore discovery
-// never follows symlinks and so always can — which picks which of the
-// listings kind's two explanations applies; a single oversized directory says
-// nothing about cycle detection, so an entries refusal is always cycleSafe.
-// count is the whole call's directory-listing tally for the listings kind, or
-// the entry count of the one oversized directory for the entries kind; dir
-// names that directory and is empty for the listings kind, which has no
-// single directory to blame. count, dir and budget are the values a caller
-// can act on without parsing either sentence.
+// globBudgetError reports that one glob or grep call ran past one of its
+// bounds: its directory-listing budget, the per-directory entry budget for a
+// single listing within it, or the call-wide ceiling on entries held live at
+// once. cycleSafe records whether the walk that gave up could have detected a
+// symlink cycle on its own — the pattern walk can tell only where the
+// filesystem reports file identity, while ignore discovery never follows
+// symlinks and so always can — which picks which of the listings kind's two
+// explanations applies; neither a single oversized directory nor an aggregate
+// live total says anything about cycle detection, so those kinds are always
+// cycleSafe. count is the whole call's directory-listing tally, the entry
+// count of the one oversized directory, or the live total, according to kind;
+// dir names the oversized directory and is empty for the other two kinds,
+// which have no single directory to blame. count, dir and budget are the
+// values a caller can act on without parsing any of the sentences.
 type globBudgetError struct {
 	count     int
 	dir       string
@@ -235,6 +293,9 @@ func (e *globBudgetError) where() string {
 func (e *globBudgetError) Error() string {
 	if e.kind == budgetEntries {
 		return fmt.Sprintf("%s walk read %d entries from %s, past the per-directory budget of %d: %s", e.op, e.count, e.where(), e.budget, e.entryAdvice())
+	}
+	if e.kind == budgetLiveEntries {
+		return fmt.Sprintf("%s walk is holding %d directory entries live across the listings it has open, past the call-wide budget of %d: %s", e.op, e.count, e.budget, e.advice())
 	}
 	if !e.cycleSafe {
 		return fmt.Sprintf("%s walk made %d directory listings on a filesystem that reports no file identity, so a symlink cycle cannot be detected: refusing to keep walking past the budget of %d; %s", e.op, e.count, e.budget, e.advice())
@@ -388,6 +449,9 @@ func readDirChunked(ctx context.Context, rdf fs.ReadDirFile, dir string, budget 
 		return nil, cerr
 	}
 	slices.SortFunc(entries, func(x, y fs.DirEntry) int { return strings.Compare(x.Name(), y.Name()) })
+	if berr := budget.holdEntries(dir, len(entries)); berr != nil {
+		return nil, berr
+	}
 	return entries, nil
 }
 
@@ -522,7 +586,7 @@ func (w *globWalkFS) identity(dir string) (fs.FileInfo, bool) {
 func (w *globWalkFS) push(name string, info fs.FileInfo) {
 	kept := 0
 	for _, d := range w.chain {
-		if d.name != name && (d.name == "." || strings.HasPrefix(name, d.name+"/")) {
+		if isGlobWalkAncestor(d.name, name) {
 			w.chain[kept] = d
 			kept++
 		}
