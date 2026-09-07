@@ -3,105 +3,121 @@ import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
 import { groupTimeline, isInterruptedNotice, timelineGap } from "./timeline";
 
 const setup: MobileTimelineItem = {
-  kind: "notice",
-  id: "setup",
-  origin: "system",
-  family: "hidden-instruction",
-  tone: "system",
-  text: "instructions",
+	kind: "notice",
+	id: "setup",
+	origin: "system",
+	family: "hidden-instruction",
+	tone: "system",
+	text: "instructions",
 };
 const diagnostic: MobileTimelineItem = {
-  ...setup,
-  id: "diagnostic",
-  family: "diagnostic",
-  text: "details",
+	...setup,
+	id: "diagnostic",
+	family: "diagnostic",
+	text: "details",
 };
 const message: MobileTimelineItem = {
-  kind: "user",
-  id: "message",
-  text: "task",
+	kind: "user",
+	id: "message",
+	text: "task",
 };
 const warning: MobileTimelineItem = {
-  ...setup,
-  id: "warning",
-  family: "warning",
-  tone: "warning",
+	...setup,
+	id: "warning",
+	family: "warning",
+	tone: "warning",
 };
 
 it("uses tighter rhythm around routine details without compressing warnings or decisions", () => {
-  const ordinary = timelineGap(message, message);
-  const details = groupTimeline([setup])[0];
-  if (!details) throw new Error("missing details");
-  expect(timelineGap(message, details)).toBeLessThan(ordinary);
-  expect(timelineGap(details, message)).toBeLessThan(ordinary);
-  expect(timelineGap(details, warning)).toBe(ordinary);
-  expect(timelineGap(warning, details)).toBe(ordinary);
-  expect(
-    timelineGap(details, {
-      kind: "failure",
-      id: "failed",
-      title: "Failed",
-      detail: "reason",
-    }),
-  ).toBe(ordinary);
-  expect(timelineGap(details, undefined)).toBe(0);
+	const ordinary = timelineGap(message, message);
+	const details = groupTimeline([setup])[0];
+	if (!details) throw new Error("missing details");
+	expect(timelineGap(message, details)).toBeLessThan(ordinary);
+	expect(timelineGap(details, message)).toBeLessThan(ordinary);
+	expect(timelineGap(details, warning)).toBe(ordinary);
+	expect(timelineGap(warning, details)).toBe(ordinary);
+	expect(
+		timelineGap(details, {
+			kind: "failure",
+			id: "failed",
+			title: "Failed",
+			detail: "reason",
+		}),
+	).toBe(ordinary);
+	expect(timelineGap(details, undefined)).toBe(0);
 });
 
 it("collapses only typed non-warning interruption notices", () => {
-  const interrupted = {
-    ...setup,
-    origin: "steering" as const,
-    steeringKind: "interrupted",
-  };
-  expect(isInterruptedNotice(interrupted)).toBe(true);
-  expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
-  expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
-  expect(
-    isInterruptedNotice({
-      ...interrupted,
-      steeringKind: undefined,
-      text: "Interrupted",
-    }),
-  ).toBe(false);
-  expect(
-    isInterruptedNotice({ ...interrupted, steeringKind: "notification" }),
-  ).toBe(false);
+	const interrupted = {
+		...setup,
+		origin: "steering" as const,
+		steeringKind: "interrupted",
+	};
+	expect(isInterruptedNotice(interrupted)).toBe(true);
+	expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
+	expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
+	expect(
+		isInterruptedNotice({
+			...interrupted,
+			steeringKind: undefined,
+			text: "Interrupted",
+		}),
+	).toBe(false);
+	expect(
+		isInterruptedNotice({ ...interrupted, steeringKind: "notification" }),
+	).toBe(false);
 });
 
 it("groups consecutive internal entries without losing order or contents", () => {
-  const input = [setup, diagnostic, message, { ...setup, id: "later" }];
-  const rows = groupTimeline(input);
-  expect(rows).toHaveLength(3);
-  expect(rows[0]).toMatchObject({
-    kind: "details",
-    entries: [setup, diagnostic],
-  });
-  expect(rows[1]).toBe(message);
-  expect(
-    rows.flatMap((row) => (row.kind === "details" ? row.entries : [row])),
-  ).toEqual(input);
-  expect(input).toHaveLength(4);
+	const input = [setup, diagnostic, message, { ...setup, id: "later" }];
+	const rows = groupTimeline(input);
+	expect(rows).toHaveLength(3);
+	expect(rows[0]).toMatchObject({
+		kind: "details",
+		entries: [setup, diagnostic],
+	});
+	expect(rows[1]).toBe(message);
+	expect(
+		rows.flatMap((row) => (row.kind === "details" ? row.entries : [row])),
+	).toEqual(input);
+	expect(input).toHaveLength(4);
 });
 
 it("keeps warnings visible even when classified as internal details", () => {
-  const internalWarning = {
-    ...diagnostic,
-    id: "internal-warning",
-    tone: "warning" as const,
-  };
-  expect(
-    groupTimeline([setup, warning, internalWarning, diagnostic]),
-  ).toMatchObject([
-    { kind: "details", entries: [setup] },
-    warning,
-    internalWarning,
-    { kind: "details", entries: [diagnostic] },
-  ]);
+	const internalWarning = {
+		...diagnostic,
+		id: "internal-warning",
+		tone: "warning" as const,
+	};
+	expect(
+		groupTimeline([setup, warning, internalWarning, diagnostic]),
+	).toMatchObject([
+		{ kind: "details", entries: [setup] },
+		warning,
+		internalWarning,
+		{ kind: "details", entries: [diagnostic] },
+	]);
 });
 
 it("retains a disclosure identity as adjacent details arrive", () => {
-  expect(groupTimeline([setup])[0]?.id).toBe(
-    groupTimeline([setup, diagnostic])[0]?.id,
-  );
-  expect(groupTimeline([])).toEqual([]);
+	expect(groupTimeline([setup])[0]?.id).toBe(
+		groupTimeline([setup, diagnostic])[0]?.id,
+	);
+	expect(groupTimeline([])).toEqual([]);
 });
+
+it.each([
+	{ eventKind: "error" },
+	{ eventKind: "tool_repair" },
+	{ eventKind: "hook_completed", exitCode: 3 },
+	{ family: "warning" as const },
+])(
+	"keeps typed critical notices outside collapsed diagnostic groups: %j",
+	(metadata) => {
+		const critical = { ...diagnostic, ...metadata };
+		expect(groupTimeline([setup, critical])).toEqual([
+			{ kind: "details", id: "details:setup", entries: [setup] },
+			critical,
+		]);
+	},
+);

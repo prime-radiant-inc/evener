@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	captureReaderAnchor,
 	comparePosition,
+	isReaderAnchorLoaded,
 	ReaderPositionRepository,
 	type ReaderStorage,
 	readerKey,
@@ -294,4 +295,68 @@ describe("reader positions", () => {
 		expect(remounted.read("hub", "session")).toEqual(newer);
 		expect(remounted.read("other", "session")).toEqual(other);
 	});
+});
+
+it("recognizes filtered source members and grouped notices without paging or mutation", () => {
+	const notice = {
+		kind: "notice" as const,
+		id: "event",
+		transcriptKey: "event-key",
+		position: { entry: 8, item: 1 },
+		origin: "system" as const,
+		tone: "system" as const,
+		family: "diagnostic" as const,
+		text: "event",
+	};
+	const activity = {
+		kind: "activity" as const,
+		id: "cluster",
+		label: "tools",
+		family: "tool" as const,
+		state: "completed" as const,
+		detail: {},
+		members: [
+			{
+				id: "later",
+				transcriptKey: "later-key",
+				position: { entry: 9, item: 2 },
+				label: "tool",
+				family: "tool" as const,
+				state: "completed" as const,
+				detail: {},
+			},
+		],
+	};
+	const source = [notice, activity];
+	const before = structuredClone(source);
+	const anchor = {
+		hubId: "hub",
+		sessionRef: "session",
+		itemKey: "later-key",
+		withinItemOffset: 12,
+		touchedAt: 1,
+	};
+	expect(isReaderAnchorLoaded(anchor, source)).toBe(true);
+	expect(
+		isReaderAnchorLoaded({ ...anchor, itemKey: "details:event" }, source),
+	).toBe(true);
+	expect(
+		isReaderAnchorLoaded(
+			{ ...anchor, itemKey: "old", itemPosition: { entry: 9, item: 2 } },
+			source,
+		),
+	).toBe(true);
+	expect(
+		isReaderAnchorLoaded(
+			{ ...anchor, itemKey: "unloaded", itemPosition: { entry: 9, item: 3 } },
+			source,
+		),
+	).toBe(false);
+	expect(source).toEqual(before);
+	expect(resolveReaderAnchor(anchor, [notice])).toBeNull();
+	expect(
+		resolveReaderAnchor(anchor, [
+			{ ...activity, ...activity.members[0], kind: "activity" },
+		]),
+	).toBe(0);
 });

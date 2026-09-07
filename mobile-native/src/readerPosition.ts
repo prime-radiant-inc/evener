@@ -102,6 +102,29 @@ export function resolveReaderAnchor(
 	}
 	return best >= 0 ? best : null;
 }
+export function isReaderAnchorLoaded(
+	anchor: ReaderAnchor,
+	items: readonly import("../../mobile/src/conversation/model").MobileTimelineItem[],
+): boolean {
+	for (const item of items) {
+		if (resolveReaderAnchor(anchor, [item]) !== null) return true;
+		if (item.kind === "notice" && anchor.itemKey === `details:${item.id}`)
+			return true;
+		if (
+			item.kind === "activity" &&
+			item.members?.some(
+				(member) =>
+					(member.transcriptKey ?? member.id) === anchor.itemKey ||
+					(anchor.itemPosition !== undefined &&
+						member.position !== undefined &&
+						comparePosition(anchor.itemPosition, member.position) === 0),
+			)
+		)
+			return true;
+	}
+	return false;
+}
+
 export function captureReaderAnchor(
 	hubId: string,
 	sessionRef: string,
@@ -229,12 +252,12 @@ export class ReaderPositionRepository {
 				)
 					disk = Object.fromEntries(
 						Object.entries(value).filter(([, candidate]) => valid(candidate)),
-						);
-				} catch {
-					disk = {};
-				}
+					);
+			} catch {
+				disk = {};
+			}
 		}
-		let stored = mergeStored(disk, memory.get(this.storage) ?? {});
+		const stored = mergeStored(disk, memory.get(this.storage) ?? {});
 		stored[storageKey(anchor.hubId, anchor.sessionRef)] = anchor;
 		const entries = Object.entries(stored)
 			.sort(([, a], [, b]) => b.touchedAt - a.touchedAt)

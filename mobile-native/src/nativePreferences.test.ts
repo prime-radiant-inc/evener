@@ -571,3 +571,20 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 	await expect(f.model.saveTranscript()).rejects.toThrow();
 });
+
+it("a change notification cannot hide a local recovery error", async () => {
+	const storage = draftStorage().storage;
+	const f = persistedPreferences({
+		...storage,
+		load: () => {
+			throw new Error("storage unavailable");
+		},
+	});
+	const error = f.model.getSnapshot().transcriptMobile.error;
+	f.client.emit({
+		method: "evener/settings/transcriptDisplay/changed",
+		params: { layout: "mobile", revision: 9, config: toWireConfig(config) },
+	});
+	expect(f.model.getSnapshot().transcriptMobile.error).toBe(error);
+	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(true);
+});
