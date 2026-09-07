@@ -634,6 +634,7 @@ export function ConversationScreen({
 	navigation,
 }: NativeStackScreenProps<Routes, "Conversation">) {
 	const { activeProfile, client, state: connectionState } = useConnection();
+	const focused = useIsFocused();
 	const colors = useColors();
 	const { fontScale, height: windowHeight } = useWindowDimensions();
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
@@ -768,8 +769,10 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	// Thread reads replace the connection's subscription. Returning from a
+	// child or editor must reacquire this screen's stream and current snapshot.
 	useEffect(() => {
-		if (!service || !connected) return;
+		if (!service || !connected || !focused) return;
 		void store
 			.getState()
 			.openProjected(service, activitySink, route.params.ref);
@@ -777,7 +780,7 @@ export function ConversationScreen({
 			store.getState().close();
 			service.close();
 		};
-	}, [service, store, activitySink, connected, route.params.ref]);
+	}, [service, store, activitySink, connected, focused, route.params.ref]);
 	async function refresh() {
 		if (!service || !connected || refreshing) return;
 		setRefreshing(true);
@@ -793,7 +796,6 @@ export function ConversationScreen({
 			setRefreshing(false);
 		}
 	}
-	const focused = useIsFocused();
 	const connectionReady = useRef(connected);
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
