@@ -4,6 +4,7 @@ import {
 	comparePosition,
 	isReaderAnchorLoaded,
 	ReaderPositionRepository,
+	ReaderRestoreAttempts,
 	type ReaderStorage,
 	readerKey,
 	resolveReaderAnchor,
@@ -135,6 +136,56 @@ describe("reader positions", () => {
 			touchedAt: 1,
 		};
 		expect(resolveReaderAnchor(anchor, rows)).toBeNull();
+	});
+	it("recovers an anchor unmounted after a measured text-size restoration", () => {
+		const item = row("marker09", { entry: 9, item: 0 });
+		const measurement = { key: readerKey(item), y: 4827, height: 463 };
+		const anchor = captureReaderAnchor(
+			"hub",
+			"session",
+			item,
+			5159,
+			[measurement],
+			1,
+		);
+		if (!anchor) throw new Error("expected anchor");
+		const attempts = new ReaderRestoreAttempts();
+		const missing = restoreReaderCommand(anchor, [item], [], 96);
+		const measured = restoreReaderCommand(anchor, [item], [measurement], 96);
+		if (!missing || !measured) throw new Error("expected restoration commands");
+		expect(attempts.begin(missing)).toBe(true);
+		expect(attempts.begin(missing)).toBe(false);
+		for (let failure = 0; failure < 3; failure += 1) {
+			expect(attempts.retryUnmeasured()).toBe(true);
+			expect(attempts.begin(missing)).toBe(true);
+		}
+		expect(attempts.retryUnmeasured()).toBe(false);
+		expect(attempts.begin(measured)).toBe(true);
+		expect(shouldApplyExactRestore(measurement, measurement, 332, 332)).toBe(
+			false,
+		);
+		// Virtualization can remove the measured cell before the next effect.
+		expect(attempts.begin(missing)).toBe(true);
+		expect(attempts.begin(missing)).toBe(false);
+		for (let failure = 0; failure < 3; failure += 1) {
+			expect(attempts.retryUnmeasured()).toBe(true);
+			expect(attempts.begin(missing)).toBe(true);
+		}
+		expect(attempts.retryUnmeasured()).toBe(false);
+		expect(attempts.begin(missing)).toBe(false);
+	});
+	it("resets restore attempts for a new route or focus lifetime", () => {
+		const attempts = new ReaderRestoreAttempts();
+		const command = { kind: "approximate", offset: 1868 } as const;
+		expect(attempts.begin(command)).toBe(true);
+		for (let failure = 0; failure < 3; failure += 1) {
+			expect(attempts.retryUnmeasured()).toBe(true);
+			expect(attempts.begin(command)).toBe(true);
+		}
+		expect(attempts.retryUnmeasured()).toBe(false);
+		attempts.reset();
+		expect(attempts.begin(command)).toBe(true);
+		expect(attempts.retryUnmeasured()).toBe(true);
 	});
 	it("resolves an exact row or exact protocol position only", () => {
 		const anchor = {

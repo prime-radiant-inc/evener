@@ -77,6 +77,7 @@ import {
 	isReaderAnchorLoaded,
 	type ReaderAnchor,
 	type ReaderMeasurement,
+	ReaderRestoreAttempts,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -680,8 +681,7 @@ export function ConversationScreen({
 		height: number;
 		offset: number;
 	} | null>(null);
-	const approximateReaderRestore = useRef<number | null>(null);
-	const restoreRetries = useRef(0);
+	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
 	const readerLatest = useRef(false);
@@ -1076,8 +1076,7 @@ export function ConversationScreen({
 	);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
-		approximateReaderRestore.current = null;
-		restoreRetries.current = 0;
+		readerRestoreAttempts.current.reset();
 		if (restoreFrame.current !== null)
 			cancelAnimationFrame(restoreFrame.current);
 		restoreFrame.current = null;
@@ -1136,10 +1135,8 @@ export function ConversationScreen({
 			96,
 			!readerDragging.current && !readerMomentum.current,
 		);
-		if (!command) return;
+		if (!command || !readerRestoreAttempts.current.begin(command)) return;
 		if (command.kind === "approximate") {
-			if (approximateReaderRestore.current === command.offset) return;
-			approximateReaderRestore.current = command.offset;
 			captureSuppressed.current = true;
 			timeline.current?.scrollToIndex({
 				index: resolveReaderAnchor(anchor, timelineRows) ?? 0,
@@ -1195,8 +1192,7 @@ export function ConversationScreen({
 	useFocusEffect(
 		useCallback(() => {
 			appliedReaderRestore.current = null;
-			approximateReaderRestore.current = null;
-			restoreRetries.current = 0;
+			readerRestoreAttempts.current.reset();
 			setLayoutRevision((revision) => revision + 1);
 			return () => {
 				readerPositions.save(readerAnchor.current);
@@ -1834,10 +1830,8 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
-								if (restoreRetries.current >= 3) return;
-								restoreRetries.current += 1;
+								if (!readerRestoreAttempts.current.retryUnmeasured()) return;
 								appliedReaderRestore.current = null;
-								approximateReaderRestore.current = null;
 								restoreFrame.current = requestAnimationFrame(() => {
 									restoreFrame.current = null;
 									const anchor = readerAnchor.current;
