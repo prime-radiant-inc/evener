@@ -513,6 +513,59 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					}
 				}
 			}
+			t.Run("unreadable parent metadata blocks delegate mutations", func(t *testing.T) {
+				parentPath := filepath.Join(stateDir, "sessions", parentID+".meta.json")
+				original, err := os.ReadFile(parentPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.WriteFile(parentPath, original, 0600); err != nil {
+						t.Error(err)
+					}
+					if _, err := past.Rebuild(); err != nil {
+						t.Error(err)
+					}
+				})
+				if err := os.WriteFile(parentPath, []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := past.Rebuild(); err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := past.Find(parentID); ok {
+					t.Fatal("unreadable parent remained in past index")
+				}
+				before, err := schema.LoadSessionMeta(stateDir, childID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, method := range []string{appwire.MethodEvenerThreadNameSet, appwire.MethodTurnQueue} {
+					var response any
+					err := client.Request(t.Context(), method, map[string]any{"ref": ref, "name": "unsafe", "clientMutationId": "unreadable-parent", "expectedInstanceId": childID, "input": []appwire.InputItem{{Type: "text", Text: "sentinel"}}}, &response)
+					wire, ok := errors.AsType[appwire.WireError](err)
+					if !ok {
+						t.Errorf("%s bypassed unreadable ownership: %v", method, err)
+						continue
+					}
+					if method == appwire.MethodTurnQueue {
+						data, _ := wire.Data.(map[string]any)
+						if data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) || data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+							t.Errorf("receipt=%+v", data)
+						}
+					}
+				}
+				after, err := schema.LoadSessionMeta(stateDir, childID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if after.Name != before.Name {
+					t.Errorf("delegate renamed despite unreadable ownership: %q", after.Name)
+				}
+				if _, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now()); err == nil {
+					t.Error("navigation suppressed unreadable parent ownership")
+				}
+			})
 			t.Run("ownership read failure blocks mutations", func(t *testing.T) {
 				journal := filepath.Join(stateDir, "sessions", parentID, "delegates.jsonl")
 				if err := os.Remove(journal); err != nil {

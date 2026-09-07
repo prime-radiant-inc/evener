@@ -28,8 +28,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		return hubcore.LiveEntry{}, false, nil
 	}
 	type ownershipEdge struct {
-		parent  hubcore.PastEntry
-		childID string
+		stateDir, ownerID, childID string
 	}
 	var edges []ownershipEdge
 	verifyOwner := func(entry hubcore.LiveEntry) (hubcore.LiveEntry, bool, error) {
@@ -37,7 +36,7 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 			return entry, false, nil
 		}
 		for _, edge := range edges {
-			owned, err := agent.SessionOwnsDelegate(ctx, edge.parent.StateDir, edge.parent.Meta.ID, edge.childID)
+			owned, err := agent.SessionOwnsDelegate(ctx, edge.stateDir, edge.ownerID, edge.childID)
 			if err != nil {
 				return hubcore.LiveEntry{}, false, fmt.Errorf("read daemon ownership for %s: %w", edge.childID, err)
 			}
@@ -65,12 +64,16 @@ func restartRequiredDaemon(ctx context.Context, cfg hubcore.WebConfig, ref, thre
 		if !ok || child.Meta.ParentSessionID == "" {
 			break
 		}
-		parent, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: child.Meta.ParentSessionID})
-		if !ok {
-			break
+		parentID := child.Meta.ParentSessionID
+		stateDir := child.StateDir
+		if parent, ok := pastEntryForRead(cfg, appwire.ThreadReadParams{ThreadID: parentID}); ok {
+			stateDir = parent.StateDir
 		}
-		edges = append(edges, ownershipEdge{parent: parent, childID: threadID})
-		threadID = parent.Meta.ID
+		// Missing indexed metadata cannot hide a known live parent. The next
+		// iteration checks the roster first; verifying its descriptor then
+		// reports unreadable ownership instead of permitting a delegate write.
+		edges = append(edges, ownershipEdge{stateDir: stateDir, ownerID: parentID, childID: threadID})
+		threadID = parentID
 	}
 
 	return hubcore.LiveEntry{}, false, nil
