@@ -523,7 +523,9 @@ func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxM
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	matches, err = grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	// 64 KiB buffer (matching the scanner seed in store.go) cuts read
+	// iterations ~16x on MB-scale logs. Buffer size is not wire-visible.
+	matches, err = grepReaderLimit(bufio.NewReaderSize(f, 64*1024), re, limitBytes, maxMatches, maxLineBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -560,7 +562,7 @@ func grepFileLimitAtOpen(path string, re *regexp.Regexp, limitBytes int, maxMatc
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	matches, err = grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	matches, err = grepReaderLimit(bufio.NewReaderSize(f, 64*1024), re, limitBytes, maxMatches, maxLineBytes)
 	if err != nil {
 		return nil, err
 	}
