@@ -63,7 +63,7 @@ func TestGlobMatchesStopsOnContextCancellation(t *testing.T) {
 	tree := globCancelTree()
 
 	full := &countingFS{FS: cancelFS{ctx: t.Context(), fsys: tree}}
-	if _, err := globMatches(t.Context(), full, "**/needle.txt"); err != nil {
+	if _, err := globMatches(t.Context(), full, "**/needle.txt", newGlobBudget("glob")); err != nil {
 		t.Fatalf("uncancelled globMatches: %v", err)
 	}
 	if full.calls < 20 {
@@ -74,7 +74,7 @@ func TestGlobMatchesStopsOnContextCancellation(t *testing.T) {
 	defer cancel()
 	counter := &countingFS{FS: cancelFS{ctx: ctx, fsys: tree}, cancelOn: 3, cancel: cancel}
 
-	matches, err := globMatches(ctx, counter, "**/needle.txt")
+	matches, err := globMatches(ctx, counter, "**/needle.txt", newGlobBudget("glob"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("globMatches after mid-walk cancellation = (%v, %v), want context.Canceled", matches, err)
 	}
