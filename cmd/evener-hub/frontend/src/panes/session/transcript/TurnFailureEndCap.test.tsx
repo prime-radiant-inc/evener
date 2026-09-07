@@ -584,6 +584,45 @@ test("retry pairs markers by attachment name when the prose order diverges from 
   );
 });
 
+test("out-of-order unnamed markers refuse the images instead of misassigning bytes", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 2) then (attached image 1)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
+test("a blank input on the failed turn falls back to the earlier usable input", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", [
+    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },
+    { id: "turn_2", status: "failed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
+  ]);
+  const blankFailure: TurnModel = {
+    id: "turn_2",
+    status: "failed",
+    items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })],
+    error: { message: "boom" },
+  };
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={blankFailure} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "real work", undefined));
+});
+
 test("originatingInput skips a whitespace-only input rather than re-issuing nothing", () => {
   const turns: TurnModel[] = [
     { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },

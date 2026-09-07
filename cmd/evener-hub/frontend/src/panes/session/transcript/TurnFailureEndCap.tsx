@@ -137,10 +137,13 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 // while the attachment array is acceptance order, so positional pairing
 // corrupts identity when the user reordered markers in the text. Occurrences
 // without a name match fall back to positional pairing over the leftovers,
-// and images with no occurrence keep a 1-based positional marker. A named
-// occurrence that matches no image at all is foreign (user-typed prose, not a
-// translated marker) and is never consumed: pairing it would steal a real
-// image under a marker it was never staged with.
+// but only when their markers run in the same order as the images: an
+// out-of-order (or repeated) unnamed marker sequence means the true
+// marker-to-bytes identity was lost, and the pairing refuses rather than
+// misassigning bytes. Images with no occurrence keep a 1-based positional
+// marker. A named occurrence that matches no image at all is foreign
+// (user-typed prose, not a translated marker) and is never consumed: pairing
+// it would steal a real image under a marker it was never staged with.
 //
 // The returned text rewrites each resolvable occurrence back to its
 // "[image N]" composer anchor: send() re-translates anchors to prose on the
@@ -220,15 +223,37 @@ function planRetryImages(
   items.forEach((_, index) => {
     if (!claimedImage[index]) unpairedImages.push(index);
   });
-  pendingOccurrences.forEach((occurrenceIndex, position) => {
-    const imageIndex = unpairedImages[position];
-    if (imageIndex === undefined) return;
+  // Unnamed occurrences pair positionally with the leftover images in order:
+  // the nth unnamed mention takes the nth unclaimed image. That pairing is
+  // only sound when the markers run in the same order as the images — an
+  // out-of-order (or gapped) marker sequence means the true marker-to-bytes
+  // identity was lost, and guessing would attach the wrong bytes to a tile.
+  // Images left without an occurrence keep a fallback marker below, which is
+  // always safe (fresh numbers outside the used set).
+  let positionalAmbiguous = false;
+  const unnamedMarkers: number[] = [];
+  pendingOccurrences.forEach((occurrenceIndex) => {
     const occurrence = occurrences[occurrenceIndex];
-    if (occurrence === undefined) return;
-    claimedImage[imageIndex] = true;
-    markerForImage[imageIndex] = occurrence.marker;
-    if (decoded[imageIndex] !== undefined) rewriteOccurrence[occurrenceIndex] = true;
+    if (occurrence !== undefined && occurrence.name === undefined) unnamedMarkers.push(occurrence.marker);
   });
+  unnamedMarkers.forEach((marker, position) => {
+    if (position > 0 && unnamedMarkers[position - 1] !== undefined && marker <= (unnamedMarkers[position - 1] ?? 0)) {
+      positionalAmbiguous = true;
+    }
+  });
+  if (positionalAmbiguous) {
+    ambiguous = true;
+  } else {
+    pendingOccurrences.forEach((occurrenceIndex, position) => {
+      const imageIndex = unpairedImages[position];
+      if (imageIndex === undefined) return;
+      const occurrence = occurrences[occurrenceIndex];
+      if (occurrence === undefined) return;
+      claimedImage[imageIndex] = true;
+      markerForImage[imageIndex] = occurrence.marker;
+      if (decoded[imageIndex] !== undefined) rewriteOccurrence[occurrenceIndex] = true;
+    });
+  }
   const attachments: InputAttachment[] = [];
   // Fallback markers come from the unused set, never positional indexes: an
   // index+1 can collide with a real marker when earlier markers were removed
@@ -388,13 +413,18 @@ export function TurnFailureEndCap({
   );
   const priorOrigin = useMemo(() => (priorItem === undefined ? undefined : originFromItem(priorItem)), [priorItem]);
   const ownItem = retryItem(turn);
-  const origin = useMemo(
-    () => (ownItem === undefined ? priorOrigin : originFromItem(ownItem)),
+  const ownOrigin = useMemo(
+    () => (ownItem === undefined ? undefined : originFromItem(ownItem)),
     // ownItem is derived from the turn prop, not the store: its identity
     // already changes exactly when the failed turn re-renders with new items.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ownItem, priorOrigin],
+    [ownItem],
   );
+  // A blank item on the failed turn (whitespace text, no images) yields no
+  // origin: fall back to the lookback, exactly as originatingInput skips
+  // unusable inputs. An explicit images-unavailable on the failed turn still
+  // wins — it names the exchange's own lost bytes, not an older prompt.
+  const origin = ownOrigin === undefined ? priorOrigin : ownOrigin;
   const input = origin?.kind === "retry" ? origin.input : undefined;
   const canRetry = sessionRef !== undefined && input !== undefined;
   const unavailableCount = origin?.kind === "images-unavailable" ? origin.sourceImageCount : 0;
