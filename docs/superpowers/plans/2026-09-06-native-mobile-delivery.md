@@ -782,3 +782,34 @@ input rows, not only local persistence. Preserve the six pre-existing drafts,
 clean up the owned session/provider, and retain source/build provenance. Do not
 use forwarding/fault proxies or claim lost-acknowledgment acceptance from this
 process-restart journey.
+
+### SDK and ordinary-draft checkpoint — cd975b991
+
+The command and session-settings recipes are implemented, source-reviewed and
+qualified from an independent tarball. Four command and twelve settings
+contracts raise the packaged suite to 157. Actual owned-hub acceptance confirms
+seven settings mutations, stale-review rejection before dispatch, seven change
+notifications, exact settings restoration, and command counts 0/1/0 around an
+owned temporary file. The canonical frontend gate, all browser guards and
+outside-package qualification pass. See [SDK evidence](../../design/mobile/sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september).
+
+Actual native question acceptance now includes a nonempty ordinary composer
+draft, restored first answer/note after stop/launch, two native answer sends,
+provider ancestry checks and unchanged ordinary draft after a second launch.
+The hub contains exactly the initial prompt and two answers. Six pre-existing
+drafts, the new draft and the unrelated Apple patch are preserved. The owned
+sessions/provider and temporary command file are cleaned up. See [native draft evidence](../../design/mobile/real-question-harness-evidence.md#ordinary-composer-draft-and-native-answers--7-september).
+
+An independent review proposal would have reclassified an acknowledged setter
+as uncertain when later readback differed. Ruling: retain the known ACK and
+return actual readback; clamping and concurrent changes are valid outcomes,
+and neither proves failed delivery. A behavioral contract now checks unchanged
+readback explicitly. No asynchronous close change is needed: client.close is
+synchronous. Required thread identity remains required, with optional source
+metadata preserved separately.
+
+Next qualify reader continuity across live/persisted turn identity changes,
+then actual native uncertain-delivery/reconnect and multi-hub pending workflows.
+SDK creation, credentials, upgrades and full notification/outcome coverage remain
+open. iOS-only v1, physical/accessibility/performance and release gates remain
+unfinished; the full goal stays active.

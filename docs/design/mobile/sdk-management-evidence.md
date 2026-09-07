@@ -151,3 +151,44 @@ with multiple selections and a note. See [current question evidence](real-questi
 for native restart/keyboard evidence, the corrected diagnostic assertion and
 cleanup. The catalog names 13 recipes and still 42/91 methods, with three
 notification names: this is recipe presence, not complete support or acceptance.
+
+## Packaged session settings and command catalog — 7 September
+
+Source `cd975b991` adds reviewed model, reasoning-effort and vision-model setters
+and a read-only command catalog recipe. The outside-checkout tarball SHA256 is
+`3bed5ef3942c79a2915ac647ab632b95b517fd6065bdbe43447cbb7ce1e9cace`.
+Its independent consumer ran against the direct owned v4 hub, using the completed
+owned native question session. No provider turn or slash command was executed
+by these SDK checks.
+
+Seven setter requests were acknowledged exactly once each: reasoning high,
+reasoning none, reset to default, vision off, reset to the session model, switch
+to another configured provider and restore the original provider. Authoritative
+readback checked high/none/off values, omitted reset fields and full restoration.
+A stale reviewed settings object was rejected before another dispatch. The
+observer also received all seven matching setting-change notifications. These
+are observed by this acceptance driver; the recipes themselves do not own
+subscriptions, so the cookbook notification-presence count remains three.
+
+The command recipe read the hub's actual `commands: null` response as an empty
+catalog. An exclusively created command file in the owned hub's XDG config then
+produced one complete descriptor with source, description and argument hint.
+The file was removed after checking its unchanged contents, and a final read was
+empty again. The initial array-only proposal failed a regression for the real
+nil-slice response before correction. The command was never dispatched.
+
+[Structured proof](assets/sdk-settings-receipt.json) includes the package and
+[driver](assets/sdk-settings-driver.mjs.txt) hashes, mutation counts, notifications
+and cleanup assertions. Four command and twelve settings contracts pass, with
+157 packaged contracts total. Outside-checkout TypeScript/ESM/CommonJS package
+qualification, the canonical frontend gate, all five browser guards and the
+repository secret scan pass. The cookbook now contains twenty recipes covering
+54 of 91 catalog method names and three notification names; these counts measure
+recipe presence, not complete outcome coverage.
+
+The setters have no atomic revision or instance precondition. A valid RPC
+acknowledgment remains distinct from proof that an exact requested value is
+still current: the daemon can clamp it and concurrent writers can replace it.
+The recipe returns actual readback without replaying. Native lost replies,
+continuous reconnect, broader provider behavior and release acceptance remain
+open. All prior native drafts and the new ordinary draft remain unchanged.

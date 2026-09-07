@@ -525,6 +525,12 @@ gate; seventeen approval tests and the 620-test native suite pass. This does not
 close actual native uncertainty/reconnect, simultaneous decisions,
 ordinary-composer interaction or controller-lifetime recovery.
 
+[Ordinary-draft question acceptance](real-question-harness-evidence.md#ordinary-composer-draft-and-native-answers--7-september)
+now preserves a nonempty plain-text composer draft through two native answer
+rounds and stop/launch before dispatch and after completion. Provider ancestry
+and exact hub inputs prove that answers were delivered while the draft was not.
+Dispatch-time death, lost replies, storage faults and attachments remain open.
+
 ### MOB-009 · P1 · Complete rich transcript and attachment interaction · Open
 
 Finish authenticated image/gallery handling, multiple images, copy/link/code
@@ -599,6 +605,12 @@ fixtures, preserving ordered identities, reporting an honest one-page partial,
 rejecting the wrong thread ID, and reading the ANSI output bytes exactly. The
 packaged CLI prints only outcome and counts. All 141 SDK contracts pass; this
 does not establish live concurrent traversal or the remaining method outcomes.
+
+[Session-settings and command recipes](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september)
+add sixteen behavioral contracts (157 total), with actual outside-package
+settings mutation/restoration and command discovery/cleanup. The current cookbook
+lists twenty recipes and 54/91 method names. Continuous reconnect, credentials,
+upgrades and full notification/outcome coverage remain open.
 
 Acceptance: an independent client consumer can implement every supported flow
 from the guide and wire reference; the library and examples run outside this

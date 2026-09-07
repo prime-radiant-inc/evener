@@ -171,3 +171,47 @@ conversation; polished question recaps remain unfinished.
 ![First batch with a local answer note and keyboard](assets/question-recovery-before.jpg)
 ![Second batch replaces the answered questions and clears the old note](assets/question-recovery-replacement.jpg)
 ![Both actual question rounds completed](assets/question-recovery-completed.jpg)
+
+## Ordinary composer draft and native answers — 7 September
+
+A fresh owned session retained a 63-byte ordinary composer draft before the
+SDK started its first model turn. The actual scripted provider then issued two
+questions. In the native sheet, Apply now and a unique note were saved; stopping
+and launching the app retained that selection and note. Independent hub readback
+still contained only the initial prompt, proving the restart did not send an
+answer. The ordinary draft's exact hash also remained unchanged.
+
+The iPhone selected both review options and sent the first batch once. The
+provider validated its tool-call ancestry and answer data, then issued the next
+question. Its native note was empty. One further Send answers tap completed
+that round. Independent reads found exactly the initial prompt and two answer
+messages, no pending question and a completed third turn. The ordinary draft
+was never sent, cleared or replaced. It remained visible after a second
+stop/launch; the final response and draft are shown below.
+
+The [structured receipt](assets/question-draft-receipt.json) records exact native
+bundle, hub, setup SDK and provider identities, archived driver/readbacks,
+question-call IDs, screenshot hashes, and each draft hash check. Native source
+is `04dd97a46` with bundle
+`f126b96894e877b0042b83e94ac87875e016c7b2487c6c33f20def1c96d13e31`.
+No native source changed for this acceptance run. The initial setup started its
+question before entering the ordinary draft, when the composer is intentionally
+hidden; that session was completed through the SDK and shut down, and is excluded
+from the clean native proof. The clean session entered its draft while idle.
+
+The later packaged session-settings check reused the completed owned session,
+preserved all three input messages and restored its original settings. The
+persisted turn IDs in that subsequent read differed from the initial live IDs;
+this run does not qualify reader anchoring across that lifecycle boundary.
+Cleanup shut down both owned sessions, restored the provider registry, removed
+the SDK's temporary command file and stopped the provider. All six prior drafts,
+the new draft and the unrelated Apple project/plist patch remain intact.
+
+This qualifies plain-text ordinary-draft preservation through native question
+answers and process restart before dispatch/after completion. It does not cover
+death during dispatch, lost acknowledgments, storage faults, draft attachments,
+or the wider accessibility/device matrix. Settled question recaps remain
+unfinished; the missing-description fallback is still visible.
+
+![Answer selection and note restored before submission](assets/question-draft-restored.jpg)
+![Both native question rounds complete with the ordinary draft retained](assets/question-draft-completed.jpg)
