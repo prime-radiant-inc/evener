@@ -263,6 +263,94 @@ test("an image-only input is retryable even with empty text", async () => {
   );
 });
 
+test("duplicate attachment names refuse the images instead of guessing", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: dup.png) and (attached image 2: dup.png)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [
+          { src: "data:image/png;base64,Ynl0ZXMtMQ==", name: "dup.png" },
+          { src: "data:image/png;base64,Ynl0ZXMtMg==", name: "dup.png" },
+        ],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
+test("duplicate names with no prose mentions still retry - there are no markers to misassign", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "",
+          images: [
+            { src: "data:image/png;base64,Ynl0ZXMtMQ==", name: "dup.png" },
+            { src: "data:image/png;base64,Ynl0ZXMtMg==", name: "dup.png" },
+          ],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtMQ==", name: "dup.png" },
+      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtMg==", name: "dup.png" },
+    ]),
+  );
+});
+
+test("a filename containing a paren pairs by full name and round-trips", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1: plot).png) describe it";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,cGxvdA==", name: "plot).png" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
+      { marker: 1, mediaType: "image/png", data: "cGxvdA==", name: "plot).png" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
+test("prose naming an image that was never attached stays verbatim", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 9: ghost) hi";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,cmVhbA==", name: "real.png" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", text, [
+      { marker: 1, mediaType: "image/png", data: "cmVhbA==", name: "real.png" },
+    ]),
+  );
+});
+
 test("an image-only input with unavailable bytes stops the lookback instead of retrying an older prompt", () => {
   const turns: TurnModel[] = [
     { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "an older, unrelated prompt" })] },
