@@ -164,9 +164,10 @@ export function QuestionSheet({
         </View>
         <KeyboardAvoidingView
           style={styles.fill}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior={Platform.OS === "ios" ? undefined : "height"}
         >
           <ScrollView
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ padding: 20, gap: 24 }}
           >

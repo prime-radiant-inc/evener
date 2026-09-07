@@ -1,0 +1,85 @@
+{
+  "date": "2026-09-07",
+  "scope": "iOS-only v1",
+  "hub": "ws://127.0.0.1:54211/rpc",
+  "hubBinarySHA256": "606c8b19bbeb6139a1e1ecc1f2b70d70acd24634f286f940f5a365cd989cfbb7",
+  "nativeSourceBase": "94b063d2b",
+  "nativeQuestionSheetSHA256": "8b8f81a08c74ec11500e5547b64e900fa321bfed9d5920306fe9f784a702a626",
+  "nativeBundleSHA256": "93b60595d242149dd884167006dc38ba33aaf0183f6200adca263eb14bdec24c",
+  "sdkTarballSHA256": "c8a99dbf37e8c45cc1982294f2f11f48a527d2a4495da2eb11cf05810773c292",
+  "driverGit": "7a199fe173e1c9237377c4e518b8a72f782b2cc3",
+  "driverSHA256": "ae94b2daa78109a7970da20e7531514e434fa75daef99543dc32566b142a2488",
+  "providerBinarySHA256": "fac35e7915cefd3ffe1f27fe8b21af918347e7ac585dec15ee2aa85d0e71b3e8",
+  "sdk": {
+    "ref": "local:034Kipx5OOG7fYWmAzdhtZ",
+    "instanceId": "034Kipx5OOG7fYWmAzdhtZ",
+    "clientMutationId": "25f363cd-00cf-47e0-ae04-2b42e04da805",
+    "turnId": "turn_m2",
+    "answerRequests": 1,
+    "acknowledgment": "acknowledged",
+    "recipeExecution": "unverified",
+    "answerMessages": 1,
+    "questionCount": 2,
+    "multiselect": true,
+    "notePreserved": true,
+    "turnCompleted": true,
+    "status": "awaiting",
+    "pending": false
+  },
+  "native": {
+    "ref": "local:034KintfDXDCwVaWR3mk01",
+    "instanceId": "034KintfDXDCwVaWR3mk01",
+    "turnId": "turn_m2",
+    "clientMutationId": "cmid-1788790565142-1",
+    "questionCount": 2,
+    "answerMessages": 1,
+    "multiselect": true,
+    "notePreserved": true,
+    "noAnswerAfterRestart": true,
+    "turnCompleted": true,
+    "status": "awaiting",
+    "pending": false,
+    "send": true
+  },
+  "cleanup": {
+    "shutdownRefs": [
+      "local:034KintfDXDCwVaWR3mk01",
+      "local:034KinukxlU1ZPLej0Iqaz",
+      "local:034Kipx5OOG7fYWmAzdhtZ"
+    ],
+    "providerRegistryRestored": true
+  },
+  "preservedDrafts": [
+    {
+      "ref": "local:034Kc0VZckYNdqD7aAzlQq",
+      "sha256": "3e2de6b1dcfc5ed360443ec8f5b2e636127f6b44f7d6269d1c26905ef46263c0",
+      "characters": 513,
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kc9793pXlhHyCRXdeAk",
+      "sha256": "150a0f511e6cd5aeed960cd4a7a7300bfde11fbd811f1227be9484e74574a61f",
+      "characters": 513,
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034KcnEd7Bun7mmTCtTAOL",
+      "sha256": "b95d26151c621311fab3184126f81a077e273b1c48a90285356c194e9adf4246",
+      "characters": 37,
+      "unconfirmed": false
+    },
+    {
+      "ref": "local:034Kd12aed4Ah92lJZGUML",
+      "sha256": "6cda18a937464750cba904227a67cb384569776915773d0f70b47b34e105b14a",
+      "characters": 27,
+      "unconfirmed": false
+    }
+  ],
+  "keyboard": {
+    "beforeActionY": 537,
+    "afterActionY": 475,
+    "actionHeight": 44,
+    "maxScrollMeasured": true
+  },
+  "excludedDiagnosticSDKRef": "local:034KinukxlU1ZPLej0Iqaz"
+}

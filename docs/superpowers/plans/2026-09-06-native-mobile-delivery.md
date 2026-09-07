@@ -418,3 +418,26 @@ mobile tests, and mobile typecheck/boundary checks. Luna reviewed the source
 delta and evidence. A current native rebuild and real multi-question execution
 remain next, together with the guarded SDK question recipe. This checkpoint
 does not establish new simulator or release acceptance.
+
+## Direct v4 structured question checkpoint
+
+The packaged question recipe now performs a complete pending-batch review,
+explicit selection validation, one guarded answer request and receipt/readback
+recovery without replay. All 95 recipe contract tests, package qualification
+and canonical frontend gates pass. The recipe list contains 13 examples and
+42/91 method names; presence remains distinct from acceptance.
+
+Real native and external SDK cases delivered two structured answers, multiple
+selections and a note through the actual scripted-provider question flow.
+Native stop/launch preserved choices without sending. Manual testing exposed a
+page-sheet keyboard coordinate mismatch; native iOS ScrollView insets fixed
+the overlap, and the rebuilt Release's action was verified above the keyboard.
+Native TypeScript and all 583 tests pass after that change. See [current evidence](../../design/mobile/real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification)
+for exact hashes, diagnostic limits and cleanup. All fixture sessions are shut
+down, the provider registry restored and earlier drafts/Apple edits preserved.
+
+Next are remaining decision/queue/goal and SDK coverage, ordinary-draft and
+uncertain-answer native journeys, the whole conversation review and final iOS
+release qualification. Current question proof covers one two-question call,
+not the entire decision matrix. Physical devices, iPad/VoiceOver, multi-hub,
+reader/performance, signing/install/update and canonical merge gates remain open.

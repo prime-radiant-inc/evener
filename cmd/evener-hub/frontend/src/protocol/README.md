@@ -105,6 +105,76 @@ recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
 
+### Reviewing and answering structured questions
+
+The readonly default for `questions.mjs` requires a parameters file containing
+`{"ref":"local:OWNED_SESSION"}`. It prints counts only. To save the complete
+reviewed calls and question text, explicitly supply an absolute, unused output
+path; that file is created exclusively with mode 0600.
+
+```sh
+EVENER_QUESTION_PARAMS_FILE=/absolute/path/to/read-questions.json \
+EVENER_QUESTION_REVIEW_FILE=/absolute/path/to/question-review.json \
+node node_modules/@evener/appwire-client/examples/questions.mjs
+```
+
+The normal connection variables above still apply. Review the saved
+`questions` and retain its `ref`, `expectedInstanceId` and complete
+`reviewedCalls` without editing them. The answer parameters contain those
+three fields, a stable caller-authored `clientMutationId`, and an aligned
+`selections` array with exactly one explicit resolution and note per question:
+
+```json
+{
+  "resolution": { "kind": "option", "labels": ["Keep as draft"] },
+  "note": ""
+}
+```
+
+This illustrates one selection, not a complete parameters file. Other
+resolutions are `free` with a string `text`, `decide` with a string
+`leaning`, `fallback` when the question supplies `if_unanswered`, and
+`skip`. Notes are universal. Recommendations never fill missing SDK
+answers. Multiple labels require `multi_select: true`.
+
+```sh
+EVENER_QUESTION_MUTATION=1 \
+EVENER_QUESTION_OWNED_HUB=ws://127.0.0.1:9180/rpc \
+EVENER_QUESTION_ACTION=answer \
+EVENER_QUESTION_PARAMS_FILE=/absolute/path/to/question-answer.json \
+node node_modules/@evener/appwire-client/examples/questions.mjs
+```
+
+The separately authored owned URL must equal `EVENER_RPC_URL`. Programmatic
+consumers can import `runQuestions` from the packaged
+`examples/questions-logic.mjs`; list mode returns the thread, reviewed
+`calls` and flattened `questions` without writing a file.
+
+The recipe follows opaque v4 item cursors back through the latest user input,
+collecting every completed successful `ask_user` call in posting order. It
+rejects malformed questions, overlapping pages, stale cursors and a changing
+latest window. Stale or incomplete reviews require a new read and review.
+Answer mode rereads and compares the complete batch, requires the same session
+instance, server-confirmed pending questions and send capability, then issues
+one `turn/start`. These question checks are nonatomic preflight; the server
+has no expected-question-generation field.
+
+Receipt decoding checks the caller mutation ID, thread/instance/turn identity,
+disposition and pending projection state. A fresh metadata read follows both
+acknowledgments and failures. An acknowledgment means accepted input, not
+completed execution; `execution` remains `"unverified"`. Readback may already
+show a different question. A lost or malformed acknowledgment stays uncertain
+even if the previous question disappears: exit 2, no replay. Do not blindly
+rerun the answer command. Other failures exit 1; the review file preserves
+the original decision. If both mutation and readback fail, the programmatic
+helper retains both causes in an ordered `AggregateError`.
+
+`questions.contract.mjs` tests this request boundary without credentials,
+providers or network access. It is included in external tarball qualification;
+real provider completion and native question-sheet recovery need separate
+acceptance evidence.
+
+
 ### Streaming, paging, and rejoin
 
 `streaming-rejoin.mjs` is a read-only recipe for an existing session. It reads a

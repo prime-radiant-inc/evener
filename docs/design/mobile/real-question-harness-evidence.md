@@ -1,5 +1,7 @@
 # Real harness question acceptance
 
+For the current iOS-only v1 checkpoint, see [direct v4 qualification](#direct-v4-questions-restart-and-keyboard-qualification). The September 5 evidence below predates v4.
+
 Verified 5 September 2026 on native commit 8bd34913b, using the installed iOS Release app and the real isolated Evener hub/daemon. This supplements the controlled AppWire fixture tests in question-evidence.md.
 
 ## Boundary and successful run
@@ -27,3 +29,106 @@ The first run, local:034JxOVYtIHAXfjosUH1gY, proved delivery of a selected optio
 Android real-harness acceptance remains open. Before creating its session, emulator-5554 stopped responding to uiautomator, basic shell and screenshot commands. A host sample of the live QEMU process was captured at /tmp/evener-android-freeze.sample.txt. It shows the main loop waiting on its I/O-thread mutex for much of the sample but does not establish the root cause. An earlier restart restored service temporarily; repeated restarts are not proof of a fix. The stalled Android creation attempt is not question acceptance.
 
 Earlier both-platform controlled-fixture send checks and question-draft restoration checks remain separate evidence. Real Android completion, cross-device resolution with a real question, storage fault injection, largest text and screen-reader traversal remain required. No full-repository or release-ready claim is made.
+
+## Direct v4 questions, restart and keyboard qualification
+
+Verified 7 September 2026 with the direct owned hub at
+`ws://127.0.0.1:54211/rpc`, iPhone 17 Pro/iOS 26.5 Release, and an external
+installed SDK tarball. No AppWire injection, forwarding proxy or production
+session was used. This is the current iOS-only v1 checkpoint; the earlier
+September 5 evidence above is historical.
+
+The fixture executed one real `ask_user` call containing two questions, each
+with a recommended option; the second permitted multiple selections. SDK and
+native used separate fresh sessions. Both submitted the alternate first option,
+both second-question options and a unique note on the first question. The
+scripted provider checked the subsequent user message through the original
+tool-call ancestry and emitted the required `communicate` completion envelope.
+
+- Clean SDK: `local:034Kipx5OOG7fYWmAzdhtZ`. The packaged helper dispatched one
+  answer request, validated the v4 receipt, returned acknowledged with execution
+  still unverified, and performed fresh readback. An independent completed-turn
+  observation and transcript read verified one matching answer and a completed
+  assistant message.
+- Native: `local:034KintfDXDCwVaWR3mk01`. Saved selections, note and active
+  question survived rebuilding/relaunching; a further stop/launch retained both
+  checked second-question options. Before submission, an independent observer
+  still found exactly the original user input and pending questions: restoration
+  had not sent an answer. One Send answers tap produced exactly one matching
+  structured reply, a nonempty mutation ID and a completed follow-up turn. The
+  sheet closed and the final response rendered.
+- Both ended `awaiting` with no pending question. That generic status means
+  waiting for the next user message; it is not evidence that the question remains
+  unresolved. Actual provider receipt and completed-turn/readback evidence
+  establish the bounded outcome.
+
+### Keyboard overlap found and fixed
+
+On the initial current build, the question sheet's Next question button remained
+behind the keyboard at maximum scroll: y537, height44 in simulator points.
+`KeyboardAvoidingView` used its parent-relative layout against a screen-relative
+keyboard position. This misses the iOS page-sheet origin. The installed React
+Native 0.86 implementation confirms that calculation in
+`Libraries/Components/Keyboard/KeyboardAvoidingView.js`.
+
+The sheet now lets the iOS ScrollView adjust keyboard insets, while retaining
+the Android height behavior. The native Fabric implementation in
+`React/Fabric/Mounting/ComponentViews/ScrollView/RCTScrollViewComponentView.mm`
+converts the view origin to window coordinates before computing overlap.
+No fixed keyboard offset was added. The rebuilt Release moved the maximum-scroll
+action to y475, height44, fully above the keyboard; tapping it advanced to the
+second question without editing the note. See the
+[React Native keyboard-inset contract](https://reactnative.dev/docs/0.86/scrollview#automaticallyadjustkeyboardinsets-ios).
+
+![Keyboard overlap before correction](assets/questions-v4-keyboard-before.jpg)
+![Next question reachable with keyboard open](assets/questions-v4-keyboard-after.jpg)
+![Restored multiple selections](assets/questions-v4-restored.jpg)
+![Completed native question turn](assets/questions-v4-completed.jpg)
+
+Radio/checkbox controls expose their role and checked state in accessibility
+values; XcodeBuildMCP did not return them as tap targets. Their observed native
+accessibility frames were used for idb taps. Keyboard-covered controls can also
+appear in snapshots: screenshot and frame checks, rather than target presence
+alone, established reachability. This is not a VoiceOver traversal pass.
+
+### Artifact identity, tests and limits
+
+[Sanitized receipt](assets/questions-v4-receipt.json) records the hub, SDK,
+native source/bundle and scripted-provider hashes, mutation/turn identities,
+keyboard measurements, retained draft hashes and cleanup.
+
+- Native source: `94b063d2b` plus the two-property question-sheet keyboard fix;
+  final sheet SHA256 `8b8f81a08c74ec11500e5547b64e900fa321bfed9d5920306fe9f784a702a626`.
+- Installed native bundle SHA256:
+  `93b60595d242149dd884167006dc38ba33aaf0183f6200adca263eb14bdec24c`.
+- External SDK tarball SHA256:
+  `c8a99dbf37e8c45cc1982294f2f11f48a527d2a4495da2eb11cf05810773c292`.
+- Driver source Git commit: `7a199fe173e1c9237377c4e518b8a72f782b2cc3`.
+  Its source and receipts are retained under
+  `/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-questions.CJCR5KTbU7`.
+- SDK package and canonical frontend gates pass; 95 packaged contract tests
+  include 14 question cases. Native TypeScript and all 583 native tests pass
+  after the keyboard correction. The geometry regression was verified in the
+  real Release UI, not with a source-string assertion.
+
+The first SDK diagnostic session (`local:034KinukxlU1ZPLej0Iqaz`) delivered its
+answer and completed, but the acceptance script incorrectly expected
+`communicate` to appear as a commandExecution row. It renders as an agentMessage.
+That assertion was corrected and a fresh clean session qualified; the diagnostic
+session is excluded from the clean SDK proof. All three created sessions were
+shut down, the temporary provider removed, its complete original registry
+restored, and the provider process stopped cleanly. Four earlier retained drafts
+and the unrelated Apple project/plist patch remain unchanged.
+
+This covers two questions in one tool call, one single-selection answer, one
+multiple-selection answer, a universal note and native process restart. The
+ordinary composer draft was empty in this fresh native case; preserving the four
+other drafts does not qualify ordinary-draft/answer interaction. Multi-call
+paging and uncertain receipts are covered deterministically at the SDK request
+boundary, not by this live fixture. Native lost acknowledgments, concurrent
+cross-device answers, free-text/fallback/skip variants on v4, storage faults,
+largest text, VoiceOver, iPad and physical-device qualification remain open.
+The completed fixture also shows the intentional missing-description fallback
+for a settled tool; a polished settled-question recap remains part of the
+broader conversation review. No release readiness or Android qualification is
+claimed.
