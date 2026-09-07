@@ -18,7 +18,7 @@
 
 import { useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemImage, ItemModel, TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
@@ -40,6 +40,10 @@ const CLASS = {
 // is the honest thing to re-issue on retry. Absent (an empty or item-less
 // turn), there is nothing to retry.
 export interface RetryInput {
+  // Composer-style text with "[image N]" anchors, reconstructed from the
+  // stored translated prose (see planRetryImages): this is what send()
+  // expects as composer text, so a retry that itself fails into recovery
+  // rebuilds a composer whose tiles still have their anchors.
   text: string;
   attachments?: InputAttachment[];
   // How many images the originating item carried, including ones whose bytes
@@ -50,48 +54,152 @@ export interface RetryInput {
   sourceImageCount: number;
 }
 
-// retryImages recovers the originating input's image bytes from the model's
-// display-ready ItemImage shape (reducer.ts's imagesToItemImages resolves the
-// wire's inline mediaType+data bytes to a data: URI src, which is exactly what
-// a live userMessage item carries). Each image becomes an InputAttachment the
-// send path already knows how to wire (threads.ts's buildInput), with markers
-// recovered from the translated "(attached image N)" prose the submit
-// boundary wrote (attachmentMarkers.ts) - falling back to 1-based position
-// for prose that carries no marker (a reloaded transcript's text). Images
-// whose bytes are unavailable (a sha-routed src with no inline data) are
-// dropped: resending a name with no bytes would fabricate an attachment.
-function retryImages(item: ItemModel | undefined, text: string): InputAttachment[] | undefined {
-  const images = item?.images;
-  if (!images || images.length === 0) return undefined;
-  const markers = Array.from(text.matchAll(/\(attached image (\d+)(?::[^)]*)?\)/g), (match) => Number(match[1]));
-  const attachments: InputAttachment[] = [];
-  images.forEach((image, index) => {
+// OriginatingInput is what the lookback for a failed turn's originating input
+// found: either something re-issuable, or an image-only(ish) input whose bytes
+// did not survive (a sha-routed src with no inline data, e.g. a reloaded
+// turn). The latter STOPS the lookback rather than falling through to an
+// older, unrelated text prompt: re-issuing that would answer a question the
+// reader did not ask.
+export type OriginatingInput =
+  | { kind: "retry"; input: RetryInput }
+  | { kind: "images-unavailable"; sourceImageCount: number };
+
+interface ImageOccurrence {
+  marker: number;
+  name?: string;
+  start: number;
+  end: number;
+}
+
+function parseOccurrences(text: string): ImageOccurrence[] {
+  return Array.from(text.matchAll(/\(attached image (\d+)(?:: ([^)]*))?\)/g), (match) => ({
+    marker: Number(match[1]),
+    ...(match[2] === undefined ? {} : { name: match[2] }),
+    start: match.index ?? -1,
+    end: (match.index ?? -1) + match[0].length,
+  })).filter((occurrence) => occurrence.start >= 0);
+}
+
+// planRetryImages recovers the originating input's image bytes from the
+// model's display-ready ItemImage shape (reducer.ts's imagesToItemImages
+// resolves the wire's inline mediaType+data bytes to a data: URI src, which is
+// exactly what a live userMessage item carries). Each byte-carrying image
+// becomes an InputAttachment the send path already knows how to wire
+// (threads.ts's buildInput). Images whose bytes are unavailable (a sha-routed
+// src with no inline data) are dropped: resending a name with no bytes would
+// fabricate an attachment.
+//
+// Marker pairing is by attachment NAME first: markers are stable composer ids
+// while the attachment array is acceptance order, so positional pairing
+// corrupts identity when the user reordered markers in the text. Occurrences
+// without a name match fall back to positional pairing over the leftovers,
+// and images with no occurrence keep a 1-based positional marker.
+//
+// The returned text rewrites each resolvable occurrence back to its
+// "[image N]" composer anchor: send() re-translates anchors to prose on the
+// wire (an exact round-trip - see the tests), while the outbox record keeps
+// anchor text as composerText, so a failed retry recovers tiled images
+// instead of orphaned prose. An occurrence whose image has no bytes is left
+// verbatim: rewriting it would put a raw marker on the wire (kata 6nmz).
+function planRetryImages(
+  images: ItemImage[] | undefined,
+  text: string,
+): { attachments: InputAttachment[]; anchorText: string } {
+  const occurrences = parseOccurrences(text);
+  const items = images ?? [];
+  const decoded = items.map((image) => {
     const dataUri = /^data:([^;,]+)?;base64,(.*)$/s.exec(image.src);
-    if (!dataUri) return;
+    if (!dataUri) return undefined;
+    return { mediaType: dataUri[1] || "image/png", data: dataUri[2] ?? "", name: image.name };
+  });
+  const markerForImage: (number | undefined)[] = items.map(() => undefined);
+  const rewriteOccurrence: boolean[] = occurrences.map(() => false);
+  const claimedImage = items.map(() => false);
+  const byName = new Map<string, number[]>();
+  items.forEach((image, index) => {
+    if (image.name === undefined) return;
+    const list = byName.get(image.name) ?? [];
+    list.push(index);
+    byName.set(image.name, list);
+  });
+  const pendingOccurrences: number[] = [];
+  occurrences.forEach((occurrence, occurrenceIndex) => {
+    const candidate =
+      occurrence.name === undefined
+        ? undefined
+        : ((byName.get(occurrence.name) ?? []).find((index) => !claimedImage[index]) as number | undefined);
+    if (candidate === undefined) {
+      pendingOccurrences.push(occurrenceIndex);
+      return;
+    }
+    claimedImage[candidate] = true;
+    markerForImage[candidate] = occurrence.marker;
+    if (decoded[candidate] !== undefined) rewriteOccurrence[occurrenceIndex] = true;
+  });
+  const unpairedImages: number[] = [];
+  items.forEach((_, index) => {
+    if (!claimedImage[index]) unpairedImages.push(index);
+  });
+  pendingOccurrences.forEach((occurrenceIndex, position) => {
+    const imageIndex = unpairedImages[position];
+    if (imageIndex === undefined) return;
+    const occurrence = occurrences[occurrenceIndex];
+    if (occurrence === undefined) return;
+    claimedImage[imageIndex] = true;
+    markerForImage[imageIndex] = occurrence.marker;
+    if (decoded[imageIndex] !== undefined) rewriteOccurrence[occurrenceIndex] = true;
+  });
+  const attachments: InputAttachment[] = [];
+  items.forEach((_, index) => {
+    const bytes = decoded[index];
+    if (bytes === undefined) return;
     attachments.push({
-      marker: markers[index] ?? index + 1,
-      mediaType: dataUri[1] || "image/png",
-      data: dataUri[2] ?? "",
-      ...(image.name ? { name: image.name } : {}),
+      marker: markerForImage[index] ?? index + 1,
+      mediaType: bytes.mediaType,
+      data: bytes.data,
+      ...(bytes.name ? { name: bytes.name } : {}),
     });
   });
-  return attachments.length > 0 ? attachments : undefined;
+  let anchorText = "";
+  let cursor = 0;
+  occurrences.forEach((occurrence, occurrenceIndex) => {
+    anchorText += text.slice(cursor, occurrence.start);
+    anchorText += rewriteOccurrence[occurrenceIndex]
+      ? `[image ${occurrence.marker}]`
+      : text.slice(occurrence.start, occurrence.end);
+    cursor = occurrence.end;
+  });
+  anchorText += text.slice(cursor);
+  return { attachments, anchorText };
 }
 
 function retryItem(turn: TurnModel): ItemModel | undefined {
   return turn.items.find((it) => it.type === "userMessage");
 }
 
-function retryInput(turn: TurnModel): RetryInput | undefined {
-  const item = retryItem(turn);
-  const text = item?.text.trim() ?? "";
-  const attachments = retryImages(item, text);
+function originFromItem(item: ItemModel): OriginatingInput | undefined {
+  const storedText = item.text;
+  const text = storedText.trim();
+  const sourceImageCount = item.images?.length ?? 0;
+  const plan = planRetryImages(item.images, text);
   // An image-only input is retryable: buildInput and the server both accept
   // empty text with attachments (parity-m5-composer §B). Text is required
   // only when there is nothing else to send.
-  if (!text && !attachments) return undefined;
-  const sourceImageCount = item?.images?.length ?? 0;
-  return attachments ? { text, attachments, sourceImageCount } : { text, sourceImageCount };
+  if (text || plan.attachments.length > 0) {
+    return {
+      kind: "retry",
+      input: {
+        text: plan.anchorText || text,
+        ...(plan.attachments.length > 0 ? { attachments: plan.attachments } : {}),
+        sourceImageCount,
+      },
+    };
+  }
+  // Effectively empty text with images whose bytes are gone: the originating
+  // input exists but cannot be re-issued. Report it (stopping the lookback)
+  // rather than skipping on to an older prompt.
+  if (sourceImageCount > 0) return { kind: "images-unavailable", sourceImageCount };
+  return undefined;
 }
 
 /**
@@ -109,13 +217,20 @@ function retryInput(turn: TurnModel): RetryInput | undefined {
  * The search stops AT the failed turn: a later prompt is a different exchange,
  * and re-issuing it would answer a question the reader did not ask.
  */
-export function originatingInput(turns: TurnModel[], turnId: string): RetryInput | undefined {
+export function originatingInput(turns: TurnModel[], turnId: string): OriginatingInput | undefined {
   const found = turns.findIndex((t) => t.id === turnId);
   const from = found === -1 ? turns.length - 1 : found;
   for (let i = from; i >= 0; i--) {
     const turn = turns[i];
-    const input = turn && retryInput(turn);
-    if (input) return input;
+    const item = turn && retryItem(turn);
+    if (!item) continue;
+    // A turn carrying the user's input always decides the lookback: a
+    // retryable input returns, and an image-only input with lost bytes stops
+    // it (images-unavailable) rather than yielding to an older prompt. Only
+    // a turn with no usable input at all (whitespace-only text, no images)
+    // keeps looking backwards.
+    const origin = originFromItem(item);
+    if (origin) return origin;
   }
   return undefined;
 }
@@ -140,10 +255,13 @@ export function TurnFailureEndCap({
       ? undefined
       : JSON.stringify(originatingInput(s.threads.get(sessionRef)?.turns ?? [], turn.id) ?? null),
   );
-  const priorInput =
-    priorInputJson === undefined ? undefined : ((JSON.parse(priorInputJson) as RetryInput | null) ?? undefined);
-  const input = retryInput(turn) ?? priorInput;
+  const priorOrigin =
+    priorInputJson === undefined ? undefined : ((JSON.parse(priorInputJson) as OriginatingInput | null) ?? undefined);
+  const ownItem = retryItem(turn);
+  const origin = (ownItem && originFromItem(ownItem)) ?? priorOrigin;
+  const input = origin?.kind === "retry" ? origin.input : undefined;
   const canRetry = sessionRef !== undefined && input !== undefined;
+  const showReattachNote = origin?.kind === "images-unavailable";
 
   // Recovery re-issues the turn's originating input via the existing
   // threadsStore.send action (turn/start), images included: the originating
@@ -193,6 +311,9 @@ export function TurnFailureEndCap({
           <Button variant="primary" size="sm" onClick={() => void retry()}>
             {info.recoveryLabel}
           </Button>
+        )}
+        {showReattachNote && (
+          <span className={CLASS.hint}>Attached image unavailable — re-attach the image to retry.</span>
         )}
       </div>
     </div>
