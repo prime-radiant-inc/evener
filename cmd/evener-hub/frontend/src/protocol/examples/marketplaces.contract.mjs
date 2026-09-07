@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ownedHub, scriptedHub, withMutationEnv } from "./management-contract-fixtures.mjs";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 import { runMarketplaces } from "./marketplaces-logic.mjs";
 
 const list = "evener/marketplace/list";
@@ -144,7 +145,10 @@ test("marketplace read failures preserve the ACK error or both causes without re
         throw readError;
       },
     ]);
-    await assert.rejects(runMarketplaces(ack.hub, options), (e) => e === readError);
+    await assert.rejects(
+      runMarketplaces(ack.hub, options),
+      (e) => e instanceof AcknowledgedReadbackError && e.cause === readError,
+    );
     for (const cause of [new Error("private mutation"), undefined, null]) {
       const f = scriptedHub([
         () => catalog,

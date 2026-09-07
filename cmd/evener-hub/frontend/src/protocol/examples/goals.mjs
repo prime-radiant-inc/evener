@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { clientFromEnvironment } from "./connection.mjs";
 import { runGoals } from "./goals-logic.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 
 let hub;
 try {
@@ -30,8 +31,8 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
-  console.error("Goal operation failed.");
+} catch (error) {
+  console.error(managementErrorMessage(error, "Goal operation failed."));
   process.exitCode = 1;
 } finally {
   hub?.close();

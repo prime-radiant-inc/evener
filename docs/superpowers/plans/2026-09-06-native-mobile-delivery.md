@@ -539,3 +539,16 @@ tasks/jobs, remaining SDK methods, full transcript polish, multi-hub, accessibil
 physical-device and distribution qualification remain open. Luna medium review
 also identified acknowledgment information lost when an SDK mutation succeeds
 but its follow-up read fails; fix that error classification next.
+
+## SDK acknowledged-readback failure checkpoint
+
+The shared recipe helper now throws `AcknowledgedReadbackError` when a validated
+mutation reply is followed by a failed read. The error retains acknowledged
+outcome, unverified execution, method and original cause. All seven affected CLIs
+emit a bounded acknowledged/readback-unavailable diagnostic and still exit 1.
+Uncertain writes and ordered dual errors retain their existing behavior, with
+no replay. A regression reproduced the lost acknowledgment before the fix.
+All 116 contracts across eleven files, independent package qualification and
+the canonical web gate pass. Luna medium reviewed the fix; the coordinator ran
+the checks. The earlier real goal proof remains tied to its recorded `d48fe9471`
+bundle/package hashes rather than silently claiming this newer SDK source.

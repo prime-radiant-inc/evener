@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runApprovals } from "./approvals-logic.mjs";
 import { ownedHub, scriptedHub, withMutationEnv } from "./management-contract-fixtures.mjs";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 
 const card = {
   threadId: "thread-1",
@@ -144,7 +145,10 @@ test("approval readback failure preserves read cause or both ordered causes", as
         throw readError;
       },
     ]);
-    await assert.rejects(runApprovals(f.hub, options), (e) => e === readError);
+    await assert.rejects(
+      runApprovals(f.hub, options),
+      (e) => e instanceof AcknowledgedReadbackError && e.cause === readError,
+    );
     for (const cause of [new Error("private mutation"), undefined, null]) {
       const bad = scriptedHub([
         () => read(),

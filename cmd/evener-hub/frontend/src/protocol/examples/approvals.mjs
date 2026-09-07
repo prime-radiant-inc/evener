@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { runApprovals } from "./approvals-logic.mjs";
 import { clientFromEnvironment } from "./connection.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 
 let hub;
 try {
@@ -21,8 +22,8 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
-  console.error("Approval operation failed.");
+} catch (error) {
+  console.error(managementErrorMessage(error, "Approval operation failed."));
   process.exitCode = 1;
 } finally {
   hub?.close();

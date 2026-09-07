@@ -1,4 +1,5 @@
 import { clientFromEnvironment } from "./connection.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 import { runPluginManagement } from "./plugin-management-logic.mjs";
 
 let hub;
@@ -19,10 +20,13 @@ try {
   });
   console.log(JSON.stringify({ outcome: result.outcome, pluginCount: result.readback.plugins.length }));
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
+} catch (error) {
   // Errors and plugin paths can contain private hub details.
   console.error(
-    "Plugin operation could not be completed. Read current plugin state before deliberately issuing another mutation.",
+    managementErrorMessage(
+      error,
+      "Plugin operation could not be completed. Read current plugin state before deliberately issuing another mutation.",
+    ),
   );
   process.exitCode = 1;
 } finally {

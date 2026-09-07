@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 import { runPluginManagement } from "./plugin-management-logic.mjs";
 
 const url = "ws://127.0.0.1:1/rpc";
@@ -140,7 +141,10 @@ test("plugin readback failures preserve actual causes and never replay", async (
         throw readError;
       },
     });
-    await assert.rejects(runPluginManagement(acknowledged.hub, options), (error) => error === readError);
+    await assert.rejects(
+      runPluginManagement(acknowledged.hub, options),
+      (error) => error instanceof AcknowledgedReadbackError && error.cause === readError,
+    );
     for (const mutationError of [primary, undefined]) {
       const f = fixture({
         mutation: async () => {

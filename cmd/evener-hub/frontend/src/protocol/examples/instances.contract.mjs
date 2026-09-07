@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInstanceOperation } from "./instances-logic.mjs";
+import { AcknowledgedReadbackError } from "./management-recovery.mjs";
 
 const url = "ws://127.0.0.1:1/rpc";
 const entry = {
@@ -152,7 +153,10 @@ test("instance readback failures preserve causes and never replay", async () =>
         throw readError;
       },
     });
-    await assert.rejects(runInstanceOperation(acknowledged.hub, options), (error) => error === readError);
+    await assert.rejects(
+      runInstanceOperation(acknowledged.hub, options),
+      (error) => error instanceof AcknowledgedReadbackError && error.cause === readError,
+    );
     for (const mutationError of [new Error("private mutation details"), undefined]) {
       const f = fixture({
         mutation: async () => {

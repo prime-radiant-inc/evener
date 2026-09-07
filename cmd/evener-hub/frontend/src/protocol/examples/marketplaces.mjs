@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { clientFromEnvironment } from "./connection.mjs";
+import { managementErrorMessage } from "./management-recovery.mjs";
 import { runMarketplaces } from "./marketplaces-logic.mjs";
 
 let hub;
@@ -21,8 +22,8 @@ try {
     }),
   );
   if (result.outcome === "uncertain") process.exitCode = 2;
-} catch {
-  console.error("Marketplace operation failed.");
+} catch (error) {
+  console.error(managementErrorMessage(error, "Marketplace operation failed."));
   process.exitCode = 1;
 } finally {
   hub?.close();
