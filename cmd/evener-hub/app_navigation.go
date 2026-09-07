@@ -42,6 +42,9 @@ func navigationReadWithFields(ctx context.Context, server *appserver.Server, nav
 	if err != nil {
 		return appwire.NavigationReadResponse{}, navigationReadError(server, err)
 	}
+	if result.DeltaFallback != nil {
+		server.Logf("navigation delta fallback: %v", result.DeltaFallback)
+	}
 	return result.Response, nil
 }
 

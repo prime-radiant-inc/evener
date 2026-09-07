@@ -1,10 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"sort"
 
@@ -75,7 +75,7 @@ func diffNavigationSnapshots(key navigationResourceKey, baseVersion, currentVers
 	}
 	expected := current
 	hubapi.SortNavigationSnapshot(&expected)
-	if !reflect.DeepEqual(applied, expected) {
+	if !navigationSnapshotsEqual(applied, expected) {
 		return hubapi.NavigationDelta{}, errors.New("navigation delta does not reconstruct current snapshot")
 	}
 	return delta, nil
@@ -114,4 +114,17 @@ func applyNavigationDelta(base hubapi.NavigationSnapshot, delta hubapi.Navigatio
 	}
 	hubapi.SortNavigationSnapshot(&applied)
 	return applied, nil
+}
+
+// navigationSnapshotsEqual compares two sorted snapshots by the same record
+// identity the diff uses, so a resource whose projection has no entities (a
+// nil slice) still matches its reconstruction (an empty slice).
+func navigationSnapshotsEqual(left, right hubapi.NavigationSnapshot) bool {
+	return bytes.Equal(left.Metadata, right.Metadata) &&
+		slices.EqualFunc(left.Entities, right.Entities, func(a, b hubapi.NavigationEntityRecord) bool {
+			return a.Key == b.Key && a.Kind == b.Kind && bytes.Equal(a.Value, b.Value)
+		}) &&
+		slices.EqualFunc(left.Containers, right.Containers, func(a, b hubapi.NavigationOrderContainer) bool {
+			return a.Key == b.Key && a.Owner == b.Owner && slices.Equal(a.Children, b.Children)
+		})
 }

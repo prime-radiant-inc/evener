@@ -314,6 +314,10 @@ func (s *NavigationService) VersionedKey(ctx context.Context, key navigationReso
 
 type navigationReadResult struct {
 	Response appwire.NavigationReadResponse
+	// DeltaFallback is set when a retained base was found but the delta
+	// representation had to be abandoned, so the response is a full snapshot
+	// and the caller should log why.
+	DeltaFallback error
 }
 
 func (s *NavigationService) versionedCore(ctx context.Context, key navigationResourceKey) (*navigationBuildFlight, navigationResourceKey, navigationProjection, error) {
@@ -349,7 +353,9 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 
 // readV2 captures one authoritative projection and reconciles it against an
 // exact retained base. A history miss is deliberately a normal full snapshot;
-// it is never reported as a transport error.
+// it is never reported as a transport error. A delta the service cannot build
+// is served the same way, with the reason on DeltaFallback for the caller to
+// log, because the snapshot has already passed full validation.
 func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKey, base *appwire.NavigationReadBase) (navigationReadResult, error) {
 	_, versioned, projection, err := s.versionedCore(ctx, key)
 	if err != nil {
@@ -385,24 +391,14 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 		return navigationReadResult{}, err
 	}
 	currentBase := appwire.NavigationReadBase{GenerationID: generation, Revision: revision, ETag: etag}
+	var deltaFallback error
 	if base != nil {
 		if previous, ok := s.history.Lookup(view, *base); ok {
-			delta, diffErr := diffNavigationSnapshots(view, *base, currentBase, previous, snapshot)
-			if diffErr != nil {
-				return navigationReadResult{}, diffErr
-			}
-			deltaResponse := response
-			deltaResponse.Representation = appwire.NavigationRepresentationDelta
-			deltaResponse.Base = base
-			deltaResponse.Data, err = json.Marshal(delta)
-			if err != nil {
-				return navigationReadResult{}, err
-			}
-			fits, fitErr := navigationV2ResponseFits(deltaResponse, limit)
-			if fitErr != nil {
-				return navigationReadResult{}, fitErr
-			}
-			if fits {
+			deltaResponse, fits, deltaErr := navigationDeltaResponse(view, *base, currentBase, previous, snapshot, response, limit)
+			switch {
+			case deltaErr != nil:
+				deltaFallback = deltaErr
+			case fits:
 				_ = s.history.Remember(view, currentBase, &snapshot)
 				return navigationReadResult{Response: deltaResponse}, nil
 			}
@@ -411,7 +407,35 @@ func (s *NavigationService) readV2(ctx context.Context, key navigationResourceKe
 	response.Representation = appwire.NavigationRepresentationSnapshot
 	response.Data = snapshotData
 	_ = s.history.Remember(view, currentBase, &snapshot)
-	return navigationReadResult{Response: response}, nil
+	return navigationReadResult{Response: response, DeltaFallback: deltaFallback}, nil
+}
+
+// navigationDeltaResponse builds the delta representation of snapshot against
+// a retained base. It reports fits=false when the encoded delta exceeds the
+// response budget and an error when the delta machinery rejects its own
+// output; in both cases the caller still holds a validated snapshot to serve.
+func navigationDeltaResponse(
+	view navigationResourceKey,
+	base, currentBase appwire.NavigationReadBase,
+	previous, snapshot hubapi.NavigationSnapshot,
+	response appwire.NavigationReadResponse,
+	limit int,
+) (appwire.NavigationReadResponse, bool, error) {
+	delta, err := diffNavigationSnapshots(view, base, currentBase, previous, snapshot)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
+	}
+	response.Representation = appwire.NavigationRepresentationDelta
+	response.Base = &base
+	response.Data, err = json.Marshal(delta)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
+	}
+	fits, err := navigationV2ResponseFits(response, limit)
+	if err != nil {
+		return appwire.NavigationReadResponse{}, false, err
+	}
+	return response, fits, nil
 }
 
 // Refresh always requests a new source capture, but all concurrent callers join
