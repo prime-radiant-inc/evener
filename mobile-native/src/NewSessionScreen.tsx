@@ -160,209 +160,229 @@ export function NewSessionScreen({
                 : "Retry loading draft"}
             </Action>
           )}
-          <Copy>Project directory</Copy>
-          {ready && client ? (
-            <HubPathField
-              client={client}
-              kind="dir"
-              label="Project directory"
-              value={form.cwd}
-              disabled={form.submitting || !form.storageLoaded}
-              onChange={(value, selected) => {
-                void form.setCwd(value, selected === true);
-              }}
-              onBlur={() => {
-                void form.loadModels();
-              }}
-            />
-          ) : (
-            <TextInput
-              accessibilityLabel="Project directory"
-              value={form.cwd}
-              editable={!form.submitting && form.storageLoaded}
-              onChangeText={(value) => {
-                void form.setCwd(value, false);
-              }}
-              onBlur={() => {
-                void form.loadModels();
-              }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="/path/on/hub"
-              placeholderTextColor={colors.secondary}
-              style={inputStyle}
-            />
-          )}
-          {form.projects.length ? (
-            <ScrollView horizontal keyboardShouldPersistTaps="handled">
-              {form.projects.map((project) => (
-                <Action
-                  key={project}
-                  label={project}
-                  disabled={disabled}
-                  onPress={() => {
-                    void form.setCwd(project);
-                  }}
-                >
-                  {project.split("/").filter(Boolean).at(-1) || project}
-                </Action>
-              ))}
-            </ScrollView>
-          ) : null}
-          <Action
-            disabled={disabled || !form.cwd.trim()}
-            onPress={() => {
-              navigation.navigate("LaunchSettings", {
-                hubId,
-                projectCwd: form.cwd.trim(),
-              });
-            }}
-          >
-            Project launch settings
-          </Action>
-          <Action
-            disabled={disabled}
-            expanded={harnessOpen}
-            tone="quiet"
-            onPress={() => setHarnessOpen(!harnessOpen)}
-          >
-            {`Harness · ${form.harnesses.find((h) => h.id === form.harness)?.label || "Hub default"}`}
-          </Action>
-          {harnessOpen && (
-            <View>
-              <Choice
-                label="Hub default harness"
-                selected={!form.harness}
-                disabled={disabled}
-                onPress={() => {
-                  void form.setHarness("");
-                  setHarnessOpen(false);
+          <View style={{ gap: 4 }}>
+            <Copy>Project directory</Copy>
+            {ready && client ? (
+              <HubPathField
+                client={client}
+                kind="dir"
+                label="Project directory"
+                value={form.cwd}
+                disabled={form.submitting || !form.storageLoaded}
+                onChange={(value, selected) => {
+                  void form.setCwd(value, selected === true);
+                }}
+                onBlur={() => {
+                  void form.loadModels();
                 }}
               />
-              {form.harnesses.map((harness) => (
+            ) : (
+              <TextInput
+                accessibilityLabel="Project directory"
+                value={form.cwd}
+                editable={!form.submitting && form.storageLoaded}
+                onChangeText={(value) => {
+                  void form.setCwd(value, false);
+                }}
+                onBlur={() => {
+                  void form.loadModels();
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="/path/on/hub"
+                placeholderTextColor={colors.secondary}
+                style={inputStyle}
+              />
+            )}
+            {form.projects.length ? (
+              <ScrollView horizontal keyboardShouldPersistTaps="handled">
+                {form.projects.map((project) => (
+                  <Action
+                    key={project}
+                    label={project}
+                    disabled={disabled}
+                    onPress={() => {
+                      void form.setCwd(project);
+                    }}
+                  >
+                    {project.split("/").filter(Boolean).at(-1) || project}
+                  </Action>
+                ))}
+              </ScrollView>
+            ) : null}
+          </View>
+          <View style={{ gap: 0 }}>
+            <View
+              style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 8 }}
+            >
+              <Action
+                disabled={disabled || !form.cwd.trim()}
+                label="Project launch settings"
+                onPress={() => {
+                  navigation.navigate("LaunchSettings", {
+                    hubId,
+                    projectCwd: form.cwd.trim(),
+                  });
+                }}
+              >
+                Project settings
+              </Action>
+              <Action
+                disabled={disabled}
+                expanded={harnessOpen}
+                tone="quiet"
+                onPress={() => setHarnessOpen(!harnessOpen)}
+              >
+                {`Harness · ${form.harnesses.find((h) => h.id === form.harness)?.label || "Hub default"}`}
+              </Action>
+            </View>
+            {harnessOpen && (
+              <View>
                 <Choice
-                  key={harness.id}
-                  label={harness.label}
-                  selected={form.harness === harness.id}
+                  label="Hub default harness"
+                  selected={!form.harness}
                   disabled={disabled}
                   onPress={() => {
-                    void form.setHarness(harness.id);
+                    void form.setHarness("");
                     setHarnessOpen(false);
                   }}
                 />
-              ))}
-            </View>
-          )}
-          <ErrorMessage message={form.metadataError} />
-          <ErrorMessage message={form.modelError} />
-          {form.metadataError || form.modelError ? (
-            <Action
-              disabled={disabled}
-              onPress={() => {
-                void form.loadMetadata();
-                void form.loadModels();
-              }}
+                {form.harnesses.map((harness) => (
+                  <Choice
+                    key={harness.id}
+                    label={harness.label}
+                    selected={form.harness === harness.id}
+                    disabled={disabled}
+                    onPress={() => {
+                      void form.setHarness(harness.id);
+                      setHarnessOpen(false);
+                    }}
+                  />
+                ))}
+              </View>
+            )}
+            <ErrorMessage message={form.metadataError} />
+            <ErrorMessage message={form.modelError} />
+            {form.metadataError || form.modelError ? (
+              <Action
+                disabled={disabled}
+                onPress={() => {
+                  void form.loadMetadata();
+                  void form.loadModels();
+                }}
+              >
+                Retry options
+              </Action>
+            ) : null}
+            <View
+              style={{ flexDirection: "row", flexWrap: "wrap", columnGap: 8 }}
             >
-              Retry options
-            </Action>
-          ) : null}
-          {ready &&
-            client &&
-            harnessSupportsPluginSelection(form.harness, form.harnesses) && (
-              <CreationPlugins
-                key={JSON.stringify([hubId, form.cwd.trim(), form.harness])}
-                client={client}
+              {ready &&
+                client &&
+                harnessSupportsPluginSelection(
+                  form.harness,
+                  form.harnesses,
+                ) && (
+                  <CreationPlugins
+                    key={JSON.stringify([hubId, form.cwd.trim(), form.harness])}
+                    client={client}
+                    cwd={form.cwd.trim()}
+                    value={form.launchOverrides}
+                    onChange={form.setLaunchOverrides}
+                    disabled={disabled}
+                  />
+                )}
+              <LaunchOverrides
+                key={JSON.stringify([hubId, form.cwd.trim()])}
+                client={ready ? client : null}
                 cwd={form.cwd.trim()}
                 value={form.launchOverrides}
                 onChange={form.setLaunchOverrides}
-                disabled={disabled}
+                disabled={disabled || !form.cwd.trim()}
               />
-            )}
-          <LaunchOverrides
-            key={JSON.stringify([hubId, form.cwd.trim()])}
-            client={ready ? client : null}
-            cwd={form.cwd.trim()}
-            value={form.launchOverrides}
-            onChange={form.setLaunchOverrides}
-            disabled={disabled || !form.cwd.trim()}
-          />
-          <Copy>Opening prompt (optional)</Copy>
-          <View
-            style={{
-              borderWidth: 1,
-              borderColor: colors.border,
-              borderRadius: 16,
-              padding: 8,
-              backgroundColor: colors.surface,
-            }}
-          >
-            <TextInput
-              accessibilityLabel="Opening prompt"
-              onFocus={() => {
-                promptFocused.current = true;
-                formScroll.current?.scrollToEnd({ animated: false });
+            </View>
+          </View>
+          <View style={{ gap: 8 }}>
+            <Copy>Opening prompt (optional)</Copy>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: colors.border,
+                borderRadius: 16,
+                padding: 8,
+                backgroundColor: colors.surface,
               }}
-              onBlur={() => {
-                promptFocused.current = false;
-              }}
-              multiline
-              value={form.prompt}
-              editable={!form.submitting && form.storageLoaded}
-              onChangeText={form.setPrompt}
-              placeholder="What would you like to work on?"
-              placeholderTextColor={colors.secondary}
-              style={[
-                ...inputStyle,
-                { minHeight: 120, textAlignVertical: "top", borderWidth: 0 },
-              ]}
-            />
-            <ImageAttachments
-              document={imageDocument}
-              selection={imageSelection}
-              disabled={form.submitting || !form.storageLoaded}
-            />
-            <ErrorMessage message={imageState.error} />
-            {emptyPromptReason && !form.prompt.trim() && !form.images.length ? (
-              <Copy muted>{emptyPromptReason}</Copy>
-            ) : null}
-            <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
-              <Action
-                label="Attach images"
-                disabled={
-                  form.submitting || !form.storageLoaded || imageState.busy
-                }
-                onPress={() => {
-                  void imageSelection.choose();
+            >
+              <TextInput
+                accessibilityLabel="Opening prompt"
+                onFocus={() => {
+                  promptFocused.current = true;
+                  formScroll.current?.scrollToEnd({ animated: false });
                 }}
-              >
-                {imageState.busy ? "Processing…" : "+"}
-              </Action>
-              <CreationComposerSettings
-                key={hubId}
-                models={form.models}
-                model={form.model}
-                reasoning={form.reasoning}
-                overrides={form.launchOverrides}
-                disabled={disabled}
-                hubName={route.params.hubName}
-                selectModel={form.selectModel}
-                setReasoning={form.setReasoning}
+                onBlur={() => {
+                  promptFocused.current = false;
+                }}
+                multiline
+                value={form.prompt}
+                editable={!form.submitting && form.storageLoaded}
+                onChangeText={form.setPrompt}
+                placeholder="What would you like to work on?"
+                placeholderTextColor={colors.secondary}
+                style={[
+                  ...inputStyle,
+                  { minHeight: 120, textAlignVertical: "top", borderWidth: 0 },
+                ]}
               />
-              <Action
-                tone="primary"
-                disabled={
-                  disabled ||
-                  !form.cwd.trim() ||
-                  (!!emptyPromptReason &&
-                    !form.prompt.trim() &&
-                    !form.images.length)
-                }
-                onPress={() => {
-                  void submit();
-                }}
-              >
-                {form.submitting ? "Creating…" : "Create session"}
-              </Action>
+              <ImageAttachments
+                document={imageDocument}
+                selection={imageSelection}
+                disabled={form.submitting || !form.storageLoaded}
+              />
+              <ErrorMessage message={imageState.error} />
+              {emptyPromptReason &&
+              !form.prompt.trim() &&
+              !form.images.length ? (
+                <Copy muted>{emptyPromptReason}</Copy>
+              ) : null}
+              <View style={[styles.row, { flexWrap: "wrap", gap: 8 }]}>
+                <Action
+                  label="Attach images"
+                  disabled={
+                    form.submitting || !form.storageLoaded || imageState.busy
+                  }
+                  onPress={() => {
+                    void imageSelection.choose();
+                  }}
+                >
+                  {imageState.busy ? "Processing…" : "+"}
+                </Action>
+                <CreationComposerSettings
+                  key={hubId}
+                  models={form.models}
+                  model={form.model}
+                  reasoning={form.reasoning}
+                  overrides={form.launchOverrides}
+                  disabled={disabled}
+                  hubName={route.params.hubName}
+                  selectModel={form.selectModel}
+                  setReasoning={form.setReasoning}
+                />
+                <Action
+                  tone="primary"
+                  disabled={
+                    disabled ||
+                    !form.cwd.trim() ||
+                    (!!emptyPromptReason &&
+                      !form.prompt.trim() &&
+                      !form.images.length)
+                  }
+                  onPress={() => {
+                    void submit();
+                  }}
+                >
+                  {form.submitting ? "Creating…" : "Create session"}
+                </Action>
+              </View>
             </View>
           </View>
         </ScrollView>

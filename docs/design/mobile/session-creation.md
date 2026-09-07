@@ -353,3 +353,30 @@ corrupt-draft recovery/discard UX, explicit plugin/reasoning restoration through
 native controls, two-hub navigation and large image/text performance remain open.
 The creation screen still needs the planned density, keyboard and accessibility
 work; these screenshots are reliability evidence, not final visual acceptance.
+
+
+## Configuration density
+
+Group directory controls with 4-unit spacing and configuration controls without
+extra inter-row gaps. Project settings and harness selection share a wrapping
+row; plugins and session options share another. Expanded options take the full
+width, and harness choices remain directly below their control. The visible
+Project settings label retains Project launch settings as its accessible name.
+The prompt stays full-width with model/reasoning and Create in its footer.
+Touch targets retain the shared 44-point iOS / 48-dp Android minimums.
+
+Both final Release builds passed, as did TypeScript, touched Biome and all 349
+native tests. Manual iPhone 17 Pro and Pixel 7 checks show the four configuration
+controls in two rows at default text size, and the complete prompt/footer above
+the software keyboard. Session options expanded to full width on both platforms and
+collapsed back; Android also exercised this with its software keyboard open. No prompt was submitted during this
+layout check; the isolated-hub test drafts remain saved.
+
+Captures: [iOS default](assets/creation/density-ios.jpg),
+[iOS keyboard](assets/creation/density-ios-keyboard.jpg),
+[Android default](assets/creation/density-android.png), and
+[Android keyboard](assets/creation/density-android-keyboard.png).
+
+This is a spacing improvement. Long harness/plugin labels, large accessibility
+text, smaller screens, screen-reader traversal and expanded-option keyboard
+behavior still require qualification; it does not establish final visual quality.

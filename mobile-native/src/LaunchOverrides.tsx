@@ -85,7 +85,7 @@ export function LaunchOverrides({
         .includes(query.toLowerCase()),
   );
   return (
-    <View style={{ gap: 8 }}>
+    <View style={{ gap: 8, ...(open ? { width: "100%" } : {}) }}>
       <Action disabled={disabled} onPress={() => setOpen(!open)}>
         {open
           ? "Hide session options"

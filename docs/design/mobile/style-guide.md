@@ -148,3 +148,12 @@ can show directory names, retaining the full destination as the accessible label
 On prompt focus and keyboard layout changes, reveal the composer footer without
 requiring the user to dismiss the keyboard. Large text may wrap the footer into
 multiple control rows; no control consumes the input's horizontal space.
+
+
+### Creation configuration grouping
+
+Keep related directory controls close together. At ordinary text sizes, pair
+project settings with harness selection and plugins with session options in
+wrapping rows. Preserve native touch targets while removing redundant space
+between them. Expanded configuration uses the full content width. The opening
+prompt and composer controls remain a separate, full-width writing surface.
