@@ -3155,14 +3155,15 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
 		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
 	}
-	recs, err := jm.store.Load()
-	if err != nil {
-		return err
-	}
+	// One journal read for both consumers: LoadEvents returns the raw events
+	// and Fold derives the same job records Load would fold from them, so this
+	// path does one readAllLocked+fold instead of two. No cache is added — the
+	// events are a local of this call only.
 	stored, err := jm.store.LoadEvents()
 	if err != nil {
 		return err
 	}
+	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
