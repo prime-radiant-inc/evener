@@ -275,12 +275,19 @@ function planRetryImages(
       positionalAmbiguous = true;
     }
   });
-  // Positional pairing is one-to-one or nothing: every leftover image needs
-  // its own unnamed mention. A SUBSET (fewer mentions than images, e.g. an
-  // earlier marker removed) cannot be aligned — the nth mention is not
-  // necessarily the nth image — so refuse rather than assign marker 2's bytes
-  // to image A. (More mentions than images simply leave the extras verbatim.)
-  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length < unpairedImages.length) {
+  // Positional pairing is exact one-to-one or nothing: the unnamed mention
+  // count must EQUAL the leftover image count. A SUBSET (fewer mentions than
+  // images, e.g. an earlier marker removed) cannot be aligned — the nth
+  // mention is not necessarily the nth image — so refuse rather than assign
+  // marker 2's bytes to image A. A SUPERSET (more mentions than images, e.g.
+  // foreign "(attached image 1)" prose before real markers 2 and 3) is worse:
+  // pairing the first mentions positionally relabels the attachments as 1
+  // and 2, and the round-trip cannot see it — every "[image N]"
+  // re-translates to identical "(attached image N)" prose. Only provably
+  // repeated copies of an already-paired marker are harmless, and those never
+  // reach this path: the by-name claim above consumes the first copy, and a
+  // repeated UNNAMED marker trips the non-increasing check above.
+  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length !== unpairedImages.length) {
     positionalAmbiguous = true;
   }
   if (positionalAmbiguous) {

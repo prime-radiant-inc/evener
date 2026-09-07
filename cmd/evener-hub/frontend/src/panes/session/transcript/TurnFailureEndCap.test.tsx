@@ -584,6 +584,28 @@ test("retry pairs markers by attachment name when the prose order diverges from 
   );
 });
 
+test("extra unnamed mentions refuse the images instead of relabeling", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1) then (attached image 2) then (attached image 3)";
+  const turn = failedTurn({
+    items: [
+      item({
+        text,
+        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
+      }),
+    ],
+  });
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
+  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
+});
+
 test("prose that is only a translated marker counts as image-only for unavailable bytes", () => {
   seedThread("ref_a", [
     {
