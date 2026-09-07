@@ -2,8 +2,11 @@
 
 **Direction approved; implementation in progress · 5 September 2026**
 
-Use the [native mobile backlog](backlog.md) to track issues and new feedback.
-MOB-001, inefficient use of visual space, is the current first priority.
+Use the [delivery plan](../../superpowers/plans/2026-09-06-native-mobile-delivery.md)
+for sequencing, parallel ownership and completion gates, and the
+[native mobile backlog](backlog.md) to track issues and new feedback.
+Integration and lifecycle reliability precede whole-workflow visual acceptance;
+MOB-001 remains a requirement throughout, not a stream of isolated spacing fixes.
 MOB-011 records Jesse's composer correction: full-width text, Submit on the
 controls row. It supersedes the earlier draft/submit placement in the studies.
 

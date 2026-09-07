@@ -1,10 +1,14 @@
 # Evener native mobile
 
-A small Expo / React Native client for iOS and Android. The initial app saves
-multiple named hubs, lists recent sessions, creates sessions, reads a plain-text
-conversation, and exposes capability-gated send, steer, queue, and stop. The existing AppWire client and mobile
-services/state are reused directly. The Tauri app remains in `../mobile` as a
-reference; it is not loaded by the native bundle.
+A shared Expo / React Native client for iOS and Android, under active development.
+It uses the shared AppWire client and selected services/state modules. The native
+UI is in this directory; the old Tauri UI is not loaded or used as feature authority.
+Current web/server behavior defines scope.
+
+The [delivery plan](../docs/superpowers/plans/2026-09-06-native-mobile-delivery.md)
+defines sequencing, worker ownership and release acceptance. The
+[backlog](../docs/design/mobile/backlog.md) tracks remaining work. Implemented
+features below are not a claim of complete native or release qualification.
 
 ## Run on simulators
 
@@ -14,8 +18,9 @@ Install dependencies with `npm ci`. Start Metro with:
 NODE_OPTIONS=--dns-result-order=ipv4first npm start -- --localhost --port 8087
 ```
 
-Press `i` for iOS or `a` for Android. This runs the native UI in Expo Go, suitable
-for this first slice. Android tooling must be on PATH, or set ANDROID_HOME to
+The initial slice used Expo Go; the current app requires standalone development
+or Release builds for its native dependencies and qualification. Android tooling
+must be on PATH, or set ANDROID_HOME to
 your SDK directory. On this Mac it is `/opt/homebrew/share/android-commandlinetools`.
 The DNS option keeps localhost on IPv4 for the simulator and adb reverse.
 
@@ -50,10 +55,12 @@ No script in the default tests calls a real hub or LLM provider.
 
 ## Current scope
 
-- The roster requests 51 rows and shows at most 50 distinct session refs.
-  There is no search or expanded roster yet; the footer discloses the limit.
-- Conversation text is selectable plain text; tool/activity details expand.
-  Rich Markdown, attachments, QR pairing, and voice are later.
+- The recent-session roster is bounded and has server-side search. Project
+  navigation has paged catalogs, archived views, favorites and archive actions.
+  Complete organization/pinning and management acceptance remain open.
+- Conversations render native Markdown and expandable tool/activity details,
+  images and a gallery. Image selection and durable draft attachments exist.
+  Rich-content, authenticated-image and accessibility qualification remain open.
 - New session opens on the selected hub with recent project directories,
   harnesses, searchable models and compatible reasoning effort. Defaults defer
   to hub configuration. Opening text is preserved exactly; uncertain creation
@@ -61,11 +68,17 @@ No script in the default tests calls a real hub or LLM provider.
 - Backgrounding closes the socket; returning reconnects and reloads the open
   conversation. Pending text with uncertain delivery is shown separately for
   manual recovery, never automatically resent.
-- Ordinary drafts survive connection changes while the conversation is open.
-  Leaving the conversation or terminating the app does not persist drafts yet.
-- Production roster latency is currently high: observed requests take around
-  28 seconds and sometimes exceed the existing 30-second AppWire timeout.
-  Timeouts remain unchanged and failures offer retry.
+- Conversation and creation drafts persist in SQLite, scoped by hub and session
+  as applicable, including images and uncertain-delivery state. Saved navigation
+  restores supported destinations; reader-position restoration remains open.
+- Native screens cover questions/approvals, queue operations, goals/tasks/activity,
+  provider instances and sign-in, plugins/marketplaces, hub information and launch
+  configuration/trust. Full parity, upgrade/recovery and failure/lifecycle
+  acceptance are unfinished; see the delivery plan rather than historical claims
+  that these surfaces are absent.
+- Historical production roster reads were slow. Representative-data measurement
+  and normal deployment verification remain open; tiny fixtures do not establish
+  production responsiveness. Voice/barge-in is outside v1.
 
 Native screenshots and verification observations are recorded in the task's
 handoff report. Standalone Release builds were installed and launched on
