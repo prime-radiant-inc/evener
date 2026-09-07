@@ -48,9 +48,6 @@ jobs:
       - name: Vet (GOOS=windows — Unix-only sources must carry a build tag)
         run: GOOS=windows make vet
 
-      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
-        run: make fuzz-gap-check
-
   lint-golangci:
     runs-on: ubuntu-latest
     steps:
@@ -101,11 +98,36 @@ jobs:
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-fuzz-registry secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal secret-scan
+
+  # Both fuzz consistency checks are fast, static AST analyses over the same
+  # target manifest and registry inputs; running them in one lane pays a
+  # single checkout and toolchain setup instead of two. Each make target runs
+  # its own script directly and fails the lane on its own verdict, so both
+  # gates keep their teeth.
+  fuzz-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache: true
+          cache-dependency-path: |
+            go.work
+            go.work.sum
+            **/go.sum
+
+      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
+        run: make fuzz-gap-check
+
+      - name: Fuzz registry check (manifest matches AST-discovered targets)
+        run: make fuzz-registry-check
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-repository]
+    needs: [static-build, lint-golangci, lint-repository, fuzz-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Require every static lane
