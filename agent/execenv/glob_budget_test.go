@@ -598,7 +598,90 @@ func TestGlobStopsReadingAChunkedListingOnCancellation(t *testing.T) {
 	}
 }
 
-// retained reports how many directory identities this walk is holding, which
+// countingReadDirFS counts the directory listings a walk performs, so a test
+// can tell a walk that stopped promptly from one that traversed the whole
+// tree and only then reported the same capped result.
+type countingReadDirFS struct {
+	fs.FS
+	n *int
+}
+
+func (c countingReadDirFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	*c.n++
+	return fs.ReadDir(c.FS, name)
+}
+
+// TestGlobCapsASingleTermBraceWalkWhileWalking pins the High from the cdd6d21
+// review: doublestar buffers brace-alternative matches internally
+// (globAltsWalk) and only then invokes the walk callback, so a pattern like
+// {**}/f.txt that our expansion left untouched materialized the whole subtree
+// — 414 listings on the 200-directory fixture here — before budget.match()
+// ever ran. Unwrapping single-term braces in Expand puts the walk on the plain
+// ** shape, so the cap trips while walking: the brace walk must cost about
+// the same handful of listings as the equivalent ** walk, not the whole tree.
+func TestGlobCapsASingleTermBraceWalkWhileWalking(t *testing.T) {
+	root := t.TempDir()
+	for i := range 200 {
+		d := filepath.Join(root, "d", "s"+string(rune('a'+i%26))+string(rune('0'+i/26))+"/sub")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restore := SetMaxGlobMatchesForTesting(5)
+	defer restore()
+
+	var braceRDs, plainRDs int
+	which := &braceRDs
+	stubGlobBaseFS(t, func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+		return cancelFS{ctx: ctx, fsys: countingReadDirFS{FS: os.DirFS(dir), n: which}}
+	})
+	env := NewLocalExecutionEnvironment(root)
+
+	budget := newGlobBudget("glob")
+	m, _, err := env.GlobWithBudget(t.Context(), "{**}/f.txt", root, true, budget)
+	if err != nil {
+		t.Fatalf("GlobWithBudget({**}/f.txt): %v", err)
+	}
+	if len(m) != 5 || budget.TruncatedAt() != 5 {
+		t.Fatalf("GlobWithBudget({**}/f.txt) = %d matches truncatedAt %d, want 5 and 5", len(m), budget.TruncatedAt())
+	}
+
+	which = &plainRDs
+	m2, _, err := env.GlobWithBudget(t.Context(), "**/f.txt", root, true, newGlobBudget("glob"))
+	if err != nil || len(m2) != 5 {
+		t.Fatalf("GlobWithBudget(**/f.txt) = %d matches err %v, want 5", len(m2), err)
+	}
+	// Slack is generous (2x): the two walks take the same shape now, and the
+	// pre-fix brace walk took 414 listings against the plain walk's 23.
+	if braceRDs > 2*plainRDs {
+		t.Fatalf("{**}/f.txt cost %d listings against %d for **/f.txt: the cap fired only after the walk materialized", braceRDs, plainRDs)
+	}
+}
+
+// TestIgnoreScopeTreatsASingleTermBraceStarStarAsRecursive pins the Medium
+// from the cdd6d21 review: {**} and {foo/**} reach Expand unchanged but match
+// recursively in doublestar, so ignore discovery computed a bounded scope and
+// skipped nested .gitignore files while the walk honored them. Expand now
+// unwraps single-term braces, so the scope depth check sees the same **
+// doublestar walks and the scope is unbounded.
+func TestIgnoreScopeTreatsASingleTermBraceStarStarAsRecursive(t *testing.T) {
+	for _, pattern := range []string{"{**}/*.txt", "{foo/**}/*.txt", "prefix/{**}/sfx/*.txt"} {
+		expanded, err := expandSearchPattern(pattern)
+		if err != nil {
+			t.Fatalf("expandSearchPattern(%q): %v", pattern, err)
+		}
+		for _, scope := range ignoreScopeForPatterns(expanded) {
+			if scope.depth != -1 {
+				t.Fatalf("ignoreScopeForPatterns(%q) has bounded depth %d for scope %+v, want unbounded: the ** doublestar walks must widen discovery", pattern, scope.depth, scope)
+			}
+		}
+	}
+}
+
+// retained reports how many directory identities this walk is holding, which// retained reports how many directory identities this walk is holding, which
 // is the walk's own memory cost: the cycle check consults only the ancestors
 // of the directory it is admitting, so this must track the depth of the path
 // being walked, not the number of directories the walk has ever listed.
