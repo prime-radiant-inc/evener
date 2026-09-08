@@ -4,146 +4,44 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// testEnvRoot is the throwaway root TestMain builds and removes. Anything a
+// testEnv is the throwaway environment TestMain builds and removes. Anything a
 // test needs for the whole run rather than for one case — the live-stack
-// binaries, for one — belongs under it, so the removal below is the only
-// cleanup path that has to exist.
-var testEnvRoot string
-
-// testEnvRootVar hands an inherited throwaway root down to re-executed test
-// helpers. A child that inherits one uses it and leaves it for the parent to
-// remove.
-const testEnvRootVar = "EVENER_HUB_TEST_ENV_ROOT"
+// binaries, for one — belongs under testEnv.Root, so the Discard below is the
+// only cleanup path that has to exist.
+var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
-
-// retiredEvenerEnvVars are names the product no longer declares but that a
-// developer machine may still export from when it did. envvars cannot list them
-// (nothing reads them any more), so they are carried here.
-var retiredEvenerEnvVars = []string{"EVENER_API_TOKEN"}
-
-// productEvenerEnvVars is every EVENER_* variable Evener itself reads. TestMain
-// clears the lot; TestHostEvenerEnvNeverReachesTheTestEnvironment asserts it did.
-// Deriving the set from envvars rather than writing it out is the point: a
-// variable added to the product is isolated from these tests the day it exists,
-// which a hand-kept list does not manage (EVENER_PROVIDERS_CONFIG was missing from
-// one for as long as it took a developer to export it).
-//
-// The harness's own EVENER_-prefixed variables — testEnvRootVar,
-// evenerEnvScrubHelperVar, EVENER_LIVE_TESTS, EVENER_TEST_PROVIDER, and
-// EVENER_TEST_MODEL — name the test rig, not the product, so they are absent
-// from envvars and survive.
-func productEvenerEnvVars() []envvars.Var {
-	out := []envvars.Var{}
-	for _, v := range envvars.All() {
-		if strings.HasPrefix(v.Name, "EVENER_") {
-			out = append(out, v)
-		}
-	}
-	for _, name := range retiredEvenerEnvVars {
-		out = append(out, envvars.Var{Name: name})
-	}
-	return out
-}
 
 func TestMain(m *testing.M) {
 	if os.Getenv(detachHelperRunDirEnv) != "" {
 		runDetachFakeDaemon()
 		os.Exit(0)
 	}
-	root, inherited := os.LookupEnv(testEnvRootVar)
-	if inherited {
-		if _, err := os.Stat(root); err != nil {
-			inherited = false
-		}
-	}
-	if !inherited {
-		created, err := os.MkdirTemp("", "evener-hub-test-env-")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "evener-hub test env: %v\n", err)
-			os.Exit(1)
-		}
-		root = created
-	}
-	testEnvRoot = root
-	for _, dir := range []string{"home", "config", "state", "cache", "codex"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o700); err != nil {
-			fmt.Fprintf(os.Stderr, "evener-hub test env: %v\n", err)
-			_ = os.RemoveAll(root)
-			os.Exit(1)
-		}
-	}
-
-	// Pin the Go build/module caches to their real locations before redirecting
-	// HOME below, exactly as cmd/evener's TestMain does. All three default to
-	// paths under $HOME, and the live-stack `go build` inherits this env, so
-	// without the pin every run compiles from a cold cache into the throwaway
-	// root — and leaves it there, because the module cache is written read-only
-	// and the RemoveAll below discards its error.
-	// TestGoSubprocessesCacheOutsideTheTestRoot is the guard.
-	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
-		out, err := exec.Command("go", "env", key).Output()
-		if err != nil {
-			continue
-		}
-		if value := strings.TrimSpace(string(out)); value != "" {
-			_ = os.Setenv(key, value)
-		}
-	}
-
-	_ = os.Setenv("HOME", filepath.Join(root, "home"))
-	_ = os.Setenv("USERPROFILE", filepath.Join(root, "home")) // what os.UserHomeDir reads on Windows
-	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
-	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
-	_ = os.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
-	// Clear Evener's own configuration environment. HOME and the XDG roots above
-	// redirect where these tests look; this decides what configures them, and
-	// the two have to agree or the fixtures written into the throwaway root are
-	// not what the code under test reads. EVENER_PROVIDERS_CONFIG is the sharp
-	// edge — it names the providers.toml every evener process loads, so a value in
-	// the developer's shell reached the live-stack hub and its `evener
-	// launch-check` and enumerated that developer's real providers instead of
-	// the scripted "fake" instance the harness had just written.
-	// TestHostEvenerEnvNeverReachesTheTestEnvironment is the guard.
-	for _, v := range productEvenerEnvVars() {
-		_ = os.Unsetenv(v.Name)
-	}
+	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
 	// Refuse to start when a default root still resolves outside the throwaway
 	// env: every test from here on would otherwise read and write the
 	// developer's own ~/.config/evener and ~/.local/state/evener, and a failing
 	// guard test cannot stop the tests that run beside it.
 	// TestHubDefaultRootsStayInsideTheTestEnvironment re-checks this mid-run.
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
-		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", root, strings.Join(escaped, "\n  "))
-		if !inherited {
-			_ = os.RemoveAll(root)
-		}
+		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", testEnv.Root, strings.Join(escaped, "\n  "))
+		testEnv.Discard()
 		os.Exit(1)
 	}
 
 	code := m.Run()
-	// Say so when the root cannot be removed. Discarding this error is how a
-	// per-run module-cache leak grew to 15GB across hundreds of runs without
-	// anything reporting it: the cache is written read-only, RemoveAll failed on
-	// every run, and nobody heard.
-	if !inherited {
-		if err := os.RemoveAll(root); err != nil {
-			fmt.Fprintf(os.Stderr, "evener-hub test env: leaked %s: %v\n", root, err)
-		}
-	}
+	testEnv.Discard()
 	os.Exit(code)
 }
 
@@ -170,113 +68,35 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 		if got == "" {
 			t.Fatalf("go env %s resolved empty", key)
 		}
-		if strings.HasPrefix(got, testEnvRoot) {
-			t.Fatalf("go env %s = %q, inside the throwaway test root %q; the cache it writes there outlives the run", key, got, testEnvRoot)
+		if strings.HasPrefix(got, testEnv.Root) {
+			t.Fatalf("go env %s = %q, inside the throwaway test root %q; the cache it writes there outlives the run", key, got, testEnv.Root)
 		}
 	}
 }
-
-type namedPath struct{ name, path string }
 
 // hubDefaultRoots lists every filesystem root the hub falls back to when a
 // WebConfig field is left unset (the launch config root, the hub state root,
 // the plugin store root, the MCP config path), every path runMain opens when a
 // flag is unset (the config file, the state glob, the past-index DB, the
 // rendezvous run dir), plus the HOME and XDG bases they derive from.
-func hubDefaultRoots() []namedPath {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "(unresolved: " + err.Error() + ")"
-	}
-	return []namedPath{
-		{"os.UserHomeDir", home},
-		{envvars.XDGConfigHome.Name, envvars.XDGConfigHome.Getenv()},
-		{envvars.XDGStateHome.Name, envvars.XDGStateHome.Getenv()},
-		{envvars.XDGCacheHome.Name, envvars.XDGCacheHome.Getenv()},
-		{"hubLaunchConfigRoot with LaunchConfigRoot unset", hubLaunchConfigRoot(hubcore.WebConfig{})},
-		{"cmdutil.DefaultStateRoot", cmdutil.DefaultStateRoot()},
-		{"plugins.DefaultRoot", plugins.DefaultRoot()},
-		{"defaultMCPConfigPath", defaultMCPConfigPath()},
-		{"DefaultHubStateRoot", DefaultHubStateRoot()},
-		{"DefaultConfigPath", DefaultConfigPath()},
-		{"DefaultStateGlob", DefaultStateGlob()},
-		{"DefaultPastIndexDBPath", DefaultPastIndexDBPath()},
-		{"rendezvous.DefaultDir", rendezvous.DefaultDir()},
-	}
+func hubDefaultRoots() []hubtestenv.NamedPath {
+	return append(hubtestenv.BaseRoots(), []hubtestenv.NamedPath{
+		{Name: "hubLaunchConfigRoot with LaunchConfigRoot unset", Path: hubLaunchConfigRoot(hubcore.WebConfig{})},
+		{Name: "cmdutil.DefaultStateRoot", Path: cmdutil.DefaultStateRoot()},
+		{Name: "plugins.DefaultRoot", Path: plugins.DefaultRoot()},
+		{Name: "defaultMCPConfigPath", Path: defaultMCPConfigPath()},
+		{Name: "DefaultHubStateRoot", Path: DefaultHubStateRoot()},
+		{Name: "DefaultConfigPath", Path: DefaultConfigPath()},
+		{Name: "DefaultStateGlob", Path: DefaultStateGlob()},
+		{Name: "DefaultPastIndexDBPath", Path: DefaultPastIndexDBPath()},
+		{Name: "rendezvous.DefaultDir", Path: rendezvous.DefaultDir()},
+	}...)
 }
 
-// rootsOutside reports every entry of roots that does not lie inside root. An
-// entry that is a glob is judged on its own path and on each current match,
-// so a symlinked project directory under the state root cannot point outside.
-func rootsOutside(root string, roots []namedPath) []string {
-	var escaped []string
-	for _, r := range roots {
-		paths := []string{r.path}
-		if strings.ContainsAny(r.path, "*?[") {
-			if matches, err := filepath.Glob(r.path); err == nil {
-				paths = append(paths, matches...)
-			}
-		}
-		for _, path := range paths {
-			if !containedIn(root, path) {
-				escaped = append(escaped, fmt.Sprintf("%s = %q", r.name, path))
-			}
-		}
-	}
-	return escaped
-}
-
-// defaultRootsOutsideTestEnv is rootsOutside over the hub's defaults and the
-// throwaway root TestMain built. Empty means the env contains them all.
+// defaultRootsOutsideTestEnv is testEnv.PathsOutside over the hub's own default
+// roots. Empty means the throwaway env contains them all.
 func defaultRootsOutsideTestEnv() []string {
-	return rootsOutside(testEnvRoot, hubDefaultRoots())
-}
-
-// canonicalizeExisting resolves symlinks through the deepest ancestor of path
-// that exists and rejoins the rest, so a default nothing has created yet still
-// compares against the real location of the tree it would land in. It fails
-// closed on a symlink it cannot resolve: a dangling link is where a write
-// would create its target, and that target may be anywhere.
-func canonicalizeExisting(path string) (string, bool) {
-	path = filepath.Clean(path)
-	var rest []string
-	for {
-		if resolved, err := filepath.EvalSymlinks(path); err == nil {
-			return filepath.Join(append([]string{resolved}, rest...)...), true
-		}
-		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", false
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return filepath.Join(append([]string{path}, rest...)...), true
-		}
-		rest = append([]string{filepath.Base(path)}, rest...)
-		path = parent
-	}
-}
-
-// containedIn reports whether path lies strictly inside root once both are
-// resolved through canonicalizeExisting: a temp root reached through a symlink
-// (macOS /var is /private/var) compares equal to itself, and a link planted
-// under the root, dangling or not, cannot point a default outside it.
-func containedIn(root, path string) bool {
-	if !filepath.IsAbs(path) {
-		return false
-	}
-	realRoot, ok := canonicalizeExisting(root)
-	if !ok {
-		return false
-	}
-	realPath, ok := canonicalizeExisting(path)
-	if !ok {
-		return false
-	}
-	rel, err := filepath.Rel(realRoot, realPath)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+	return testEnv.PathsOutside(hubDefaultRoots())
 }
 
 // TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
@@ -295,84 +115,7 @@ func containedIn(root, path string) bool {
 // HOME/XDG redirect in TestMain is what keeps that out of ~/.config/evener.
 func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
-		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnvRoot, strings.Join(escaped, "\n  "))
-	}
-}
-
-// TestContainedInResolvesSymlinksAndTraversal pins the containment test the
-// guards above rely on: it must see through a symlinked root (a macOS temp
-// root lives under /var, which is /private/var), refuse a link planted under
-// the root that points outside it, refuse dot-dot traversal, and still accept
-// a default nothing has created yet.
-func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
-	base := t.TempDir()
-	realRoot := filepath.Join(base, "real")
-	outside := filepath.Join(base, "outside")
-	for _, dir := range []string{realRoot, outside} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	link := filepath.Join(base, "link")
-	if err := os.Symlink(realRoot, link); err != nil {
-		t.Fatal(err)
-	}
-	escape := filepath.Join(realRoot, "escape")
-	if err := os.Symlink(outside, escape); err != nil {
-		t.Fatal(err)
-	}
-	dangling := filepath.Join(realRoot, "dangling")
-	if err := os.Symlink(filepath.Join(outside, "not-yet-created"), dangling); err != nil {
-		t.Fatal(err)
-	}
-	sep := string(os.PathSeparator)
-	cases := []struct {
-		name, root, path string
-		want             bool
-	}{
-		{"descendant nothing has created yet", realRoot, filepath.Join(realRoot, "config", "evener", "AGENTS.md"), true},
-		{"root reached through a symlink", link, filepath.Join(realRoot, "home"), true},
-		{"path reached through a symlink", realRoot, filepath.Join(link, "home"), true},
-		{"symlink planted under the root", realRoot, filepath.Join(escape, "AGENTS.md"), false},
-		{"dangling symlink planted under the root", realRoot, filepath.Join(dangling, "AGENTS.md"), false},
-		{"dot-dot traversal", realRoot, realRoot + sep + ".." + sep + "outside" + sep + "x", false},
-		{"the root itself", realRoot, realRoot, false},
-		{"sibling sharing the root as a prefix", realRoot, realRoot + "-sibling", false},
-		{"relative path", realRoot, "config" + sep + "evener", false},
-		{"empty path", realRoot, "", false},
-	}
-	for _, tc := range cases {
-		if got := containedIn(tc.root, tc.path); got != tc.want {
-			t.Errorf("%s: containedIn(%q, %q) = %v, want %v", tc.name, tc.root, tc.path, got, tc.want)
-		}
-	}
-}
-
-// TestRootsOutsideExpandsGlobs pins that a glob among the default roots is
-// judged by what it matches, not by its literal prefix: a symlinked project
-// directory planted under the state root and pointing outside it is reported,
-// and a pattern with no matches is judged on its own path.
-func TestRootsOutsideExpandsGlobs(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	projects := filepath.Join(root, "state", "evener", "projects")
-	if err := os.MkdirAll(projects, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	escape := filepath.Join(projects, "escape")
-	if err := os.Symlink(outside, escape); err != nil {
-		t.Fatal(err)
-	}
-	roots := []namedPath{{"state glob", filepath.Join(projects, "*")}}
-	got := rootsOutside(root, roots)
-	if len(got) != 1 || !strings.Contains(got[0], escape) {
-		t.Fatalf("rootsOutside with an escaping match = %q, want exactly that match reported", got)
-	}
-	if err := os.Remove(escape); err != nil {
-		t.Fatal(err)
-	}
-	if got := rootsOutside(root, roots); len(got) != 0 {
-		t.Fatalf("rootsOutside with no matches = %q, want none", got)
+		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnv.Root, strings.Join(escaped, "\n  "))
 	}
 }
 
@@ -411,7 +154,7 @@ func (p fakeProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 
 // evenerEnvScrubHelperVar gates the helper below, which is only meaningful in a
 // re-executed copy of this binary whose parent seeded a developer-shaped
-// environment. Like testEnvRootVar it names the harness rather than the
+// environment. Like hubtestenv.RootVar it names the harness rather than the
 // product, so it is absent from envvars.All() and TestMain's scrub leaves it
 // alone -- the same property that keeps EVENER_LIVE_TESTS working.
 const evenerEnvScrubHelperVar = "EVENER_HUB_TEST_ENV_SCRUB_HELPER"
@@ -440,14 +183,14 @@ func TestHostEvenerEnvNeverReachesTheTestEnvironment(t *testing.T) {
 
 	env := append([]string{}, os.Environ()...)
 	seeded := 0
-	for _, v := range productEvenerEnvVars() {
+	for _, v := range hubtestenv.ProductEvenerEnvVars() {
 		env = append(env, v.Assignment("host-value-that-must-not-survive"))
 		seeded++
 	}
 	if seeded == 0 {
 		t.Fatal("envvars declares no EVENER_* variables, so this test asserts nothing")
 	}
-	env = append(env, testEnvRootVar+"="+testEnvRoot, evenerEnvScrubHelperVar+"=1")
+	env = append(env, hubtestenv.RootVar+"="+testEnv.Root, evenerEnvScrubHelperVar+"=1")
 
 	cmd := exec.Command(exe, "-test.run=^TestEvenerEnvScrubHelper$")
 	cmd.Env = env
@@ -464,7 +207,7 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 	if os.Getenv(evenerEnvScrubHelperVar) == "" {
 		t.Skip("re-executed helper for TestHostEvenerEnvNeverReachesTheTestEnvironment")
 	}
-	for _, v := range productEvenerEnvVars() {
+	for _, v := range hubtestenv.ProductEvenerEnvVars() {
 		if value, ok := os.LookupEnv(v.Name); ok {
 			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}
