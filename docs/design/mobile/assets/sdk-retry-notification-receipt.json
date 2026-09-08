@@ -1,0 +1,121 @@
+{
+  "status": "verified-transient-503-retry-completed",
+  "fixture": "/tmp/evener-streaming-special-strengthened-ZMgJX0",
+  "qualification": {
+    "providerResponses": [
+      {
+        "request": 1,
+        "qualification": false,
+        "status": 200
+      },
+      {
+        "request": 2,
+        "qualification": false,
+        "status": 200
+      },
+      {
+        "request": 3,
+        "qualification": true,
+        "status": 503
+      },
+      {
+        "request": 4,
+        "qualification": true,
+        "status": 200
+      }
+    ],
+    "retryEvent": {
+      "method": "evener/thread/modelRetry",
+      "attempt": 1,
+      "statusCode": 503,
+      "turnId": "turn_m2"
+    },
+    "observer": {
+      "outcome": "read",
+      "eventCount": 1,
+      "overflow": false,
+      "connectionInterrupted": false
+    },
+    "turn": {
+      "started": "turn_m2",
+      "completed": "turn_m2",
+      "finalStatus": "completed"
+    }
+  },
+  "privateArtifacts": {
+    "rawEvents": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/run/qualification/raw-events.json",
+      "sha256": "ddc40ac7668de3f1da01776ad6a8012618fa393a8fb2c357c5ee51aacbce5183",
+      "mode": "0o600"
+    },
+    "observerResult": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/run/qualification/observer-result.json",
+      "sha256": "62146421874c4314d6eb00b7206b182e15a4c45361da1c4d99ebfccbbc599e37",
+      "mode": "0o600"
+    },
+    "initialRead": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/run/qualification/initial-read.json",
+      "sha256": "99468da8a92eeafce6a140f29ab53a261ec94c8ef9eadd8a0fb909f4f5c6b87b",
+      "mode": "0o600"
+    },
+    "turnStart": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/run/qualification/turn-start.json",
+      "sha256": "b84cc5ca9033e59e02db5be6acbefd795cd7269b14ad5010c954b1144086d3f3",
+      "mode": "0o600"
+    },
+    "finalRead": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/run/qualification/final-read.json",
+      "sha256": "cdc08caa37ec7d64741ba37a9189caec45b92d2561f6e370e6f506355ebbc85b",
+      "mode": "0o600"
+    },
+    "providerRequests": {
+      "path": "/tmp/evener-streaming-special-strengthened-ZMgJX0/provider-requests.json",
+      "sha256": "35bae9367c0d85fd802662276a920845406f4bc319b89fd664165e9975815e13",
+      "mode": "0o600"
+    }
+  },
+  "package": {
+    "name": "@evener/appwire-client",
+    "version": "0.1.0",
+    "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "consumer": "/tmp/evener-notifications-consumer.yrcaOf",
+    "consumerFileChecks": {
+      "dist/index.js": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+      "examples/streaming-notifications-logic.mjs": "70b8e3336b45b6567f87514b275b5af546538e560bdbe4a68ea1b4559b6bbef6"
+    },
+    "consumerFilesMatchTarball": true
+  },
+  "binaries": {
+    "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+    "evenerDev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4"
+  },
+  "cleanup": {
+    "hubExit": 0,
+    "credentialRemoved": true,
+    "tokenPresentAfter": false,
+    "providerPidPresentAfter": false,
+    "hubPidPresentAfter": false,
+    "providerPortListeningAfter": false,
+    "hubPortListeningAfter": false,
+    "hubLogsRemoved": [
+      "/tmp/evener-streaming-special-run-W2Nhrj/hub.log",
+      "/tmp/evener-streaming-special-retry-CB38TM/hub.log",
+      "/tmp/evener-streaming-special-strengthened-ZMgJX0/hub.log"
+    ],
+    "tokensRemoved": [
+      "/tmp/evener-streaming-special-run-W2Nhrj/state/evener/auth-token",
+      "/tmp/evener-streaming-special-retry-CB38TM/state/evener/auth-token",
+      "/tmp/evener-streaming-special-strengthened-ZMgJX0/state/evener/auth-token"
+    ]
+  },
+  "classification": {
+    "CB38TM": "provisional: lacked retained HTTP response status and turn/final raw qualification artifacts",
+    "W2Nhrj": "invalid-marker-mismatch: retained failure receipt; no retry/reasoning/warning qualification"
+  },
+  "provenance": {
+    "hubBinaryBuild": "d2d5eedf9-dirty",
+    "sdkSourceHead": "58d1b079f6329aaee7e4584cc5c833adc3819bab",
+    "fixtureSource": "fixture-strengthened.py"
+  }
+}

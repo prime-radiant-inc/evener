@@ -238,3 +238,14 @@ Credential rotation, overlapping native pending RPCs, loss after dispatch,
 actionable version mismatch, LAN/pairing, full iPad/accessibility and
 physical-device/signing/update qualification remain open. Android evidence is
 preserved and its release qualification remains deferred for iOS-only v1.
+
+## Connected iPad follow-through — 7 September 2026
+
+The [iPad lifecycle journey](ipad-lifecycle-evidence.md) now qualifies native
+authentication to two direct owned hubs, separate drafts, switching while A's
+provider response is held, late A completion while B stays selected, B cold
+launch and same-process foreground, A offline/restart/reconnect, and scoped
+profile removal. This uses Release source `8afaeacba`, backend `d2d5eedf9` and
+packaged SDK `58d1b079f`, with independent transcript/storage readback. The
+receipt records distinct references in this run, preserved user state, cleanup
+and the remaining device, accessibility and uncertain-operation limits.

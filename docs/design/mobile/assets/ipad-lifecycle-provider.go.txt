@@ -1,0 +1,153 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"primeradiant.com/evener/test/e2e/fakellm"
+	"sync"
+	"syscall"
+)
+
+type gate struct {
+	mu                       sync.Mutex
+	holdNext, held, released bool
+	release                  chan struct{}
+	completed                int
+}
+
+func (g *gate) arm() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.holdNext || g.held {
+		return errors.New("hold already armed or active")
+	}
+	g.holdNext = true
+	return nil
+}
+func (g *gate) take() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.holdNext {
+		return nil
+	}
+	g.holdNext = false
+	g.held = true
+	g.released = false
+	g.release = make(chan struct{})
+	return g.release
+}
+func (g *gate) releaseHold() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.held || g.released {
+		return errors.New("no held call")
+	}
+	close(g.release)
+	g.released = true
+	return nil
+}
+func (g *gate) finish(ch <-chan struct{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.held && g.release == ch {
+		g.held = false
+		g.release = nil
+		g.released = false
+	}
+	g.completed++
+}
+func (g *gate) status() (bool, int) { g.mu.Lock(); defer g.mu.Unlock(); return g.held, g.completed }
+func writeJSON(w http.ResponseWriter, s int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(s)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func control(g *gate) http.Handler {
+	m := http.NewServeMux()
+	m.HandleFunc("/hold", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if e := g.arm(); e != nil {
+			writeJSON(w, 409, map[string]string{"error": e.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"armed": true})
+	})
+	m.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if e := g.releaseHold(); e != nil {
+			writeJSON(w, 409, map[string]string{"error": e.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"released": true})
+	})
+	m.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		h, c := g.status()
+		writeJSON(w, 200, map[string]any{"held": h, "completed": c})
+	})
+	return m
+}
+func serve(ctx context.Context, s *fakellm.Server, label string, g *gate) {
+	seq := 0
+	for {
+		c, e := s.Next(ctx.Done())
+		if e != nil {
+			return
+		}
+		seq++
+		ch := g.take()
+		if ch != nil {
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return
+			case <-c.Cancelled():
+				continue
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.Cancelled():
+			continue
+		default:
+		}
+		c.RespondToolCall("communicate", map[string]any{"message": fmt.Sprintf("fixture-%s-held-%d", label, seq), "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}})
+		g.finish(ch)
+	}
+}
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: provider LABEL PORT")
+		os.Exit(2)
+	}
+	label, port := os.Args[1], os.Args[2]
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	s, e := fakellm.NewOn("127.0.0.1:" + port)
+	if e != nil {
+		panic(e)
+	}
+	defer s.Close()
+	l, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		panic(e)
+	}
+	g := &gate{}
+	srv := &http.Server{Handler: control(g)}
+	defer srv.Close()
+	go srv.Serve(l)
+	fmt.Printf("{\"label\":%q,\"baseURL\":%q,\"controlURL\":%q}\n", label, s.BaseURL(), "http://"+l.Addr().String())
+	serve(ctx, s, label, g)
+}

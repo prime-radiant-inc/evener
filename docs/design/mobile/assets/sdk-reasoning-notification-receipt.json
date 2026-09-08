@@ -1,0 +1,128 @@
+{
+  "status": "verified-reasoning-and-retry-notification",
+  "fixtureRoot": "/tmp/evener-reasoning-notification-hSPMKD",
+  "source": {
+    "hubBinaryBuild": "d2d5eedf9-dirty",
+    "sdkSourceHead": "58d1b079f6329aaee7e4584cc5c833adc3819bab",
+    "helperHashes": {
+      "fixture.py": "1bede18b5a9122ecd8d667b44b605e9370e78cad912d3527cf119b496a6fdad6",
+      "setup.mjs": "8521658ee614557f7c9e96466a810a4374be43e2a68361809fd1e8e8730e90e1",
+      "run.mjs": "b52f08e3096343ddbc1a393a72ed09ae0ab5c68cef23a346e85676135ed204e0"
+    },
+    "binaryHashes": {
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4"
+    }
+  },
+  "provider": {
+    "requests": [
+      {
+        "index": 1,
+        "qualification": false,
+        "status": 200
+      },
+      {
+        "index": 2,
+        "qualification": false,
+        "status": 200
+      },
+      {
+        "index": 3,
+        "qualification": true,
+        "status": 503
+      },
+      {
+        "index": 4,
+        "qualification": true,
+        "status": 200
+      }
+    ],
+    "httpEvidence": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/provider-http-evidence.json",
+      "sha256": "73a0275485ddaefd49af0761c612f41f4e10ba0fd6ba0adcc88e218186343580",
+      "mode": "0o600"
+    }
+  },
+  "notifications": {
+    "retry": {
+      "method": "evener/thread/modelRetry",
+      "turnId": "turn_m2",
+      "attempt": 1,
+      "statusCode": 503
+    },
+    "reasoning": {
+      "method": "item/reasoning/summaryTextDelta",
+      "turnId": "turn_m2",
+      "itemId": "item_reasoning_28",
+      "summaryIndex": 0,
+      "delta": "REASONING_SENTINEL_C82F"
+    },
+    "observerOutcome": "read",
+    "observerEventCount": 2,
+    "overflow": false,
+    "connectionInterrupted": false
+  },
+  "turn": {
+    "startedId": "turn_m2",
+    "completedId": "turn_m2",
+    "finalStatus": "completed"
+  },
+  "privateEvidence": {
+    "prelaunch.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/prelaunch.json",
+      "sha256": "c10d72810b216a0fe627bd17877ddb818fbb91c359ff20bec47633b04d5891f8",
+      "mode": "0o600"
+    },
+    "provider-requests.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/provider-requests.json",
+      "sha256": "e06289c4a6168e3e96cc8da1535dd265038e2295a274c2ab06bc120536f6e410",
+      "mode": "0o600"
+    },
+    "run/qualification/provider-http-evidence.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/provider-http-evidence.json",
+      "sha256": "73a0275485ddaefd49af0761c612f41f4e10ba0fd6ba0adcc88e218186343580",
+      "mode": "0o600"
+    },
+    "run/qualification/raw-events.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/raw-events.json",
+      "sha256": "410c714aefed9d2a97b8d0cac397072477846151a84d7fc6fb4412ef5b8ed062",
+      "mode": "0o600"
+    },
+    "run/qualification/observer-result.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/observer-result.json",
+      "sha256": "52ee4e5d8eb592a4660100b8e3b9139b1beb934a05142fb0910a16d58a35c2f8",
+      "mode": "0o600"
+    },
+    "run/qualification/turn-start.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/turn-start.json",
+      "sha256": "a703862fa709c74d07cad67aed7e70a9a76d3b3fba240e508db1abfdbc70b6f4",
+      "mode": "0o600"
+    },
+    "run/qualification/final-read.json": {
+      "path": "/tmp/evener-reasoning-notification-hSPMKD/run/qualification/final-read.json",
+      "sha256": "eda96f04abbe87b5f30ed0c4fab4a44ee5836e75605da0c130ef8d2eb430d94a",
+      "mode": "0o600"
+    }
+  },
+  "package": {
+    "consumer": "/tmp/evener-notifications-consumer.yrcaOf",
+    "name": "@evener/appwire-client",
+    "version": "0.1.0",
+    "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "cleanup": {
+    "hubExit": 0,
+    "providerPidPresentAfter": false,
+    "hubPidPresentAfter": false,
+    "providerPortListeningAfter": false,
+    "hubPortListeningAfter": false,
+    "tokenPresentAfter": false,
+    "hubLogRemovedAfterVerification": true,
+    "removedPath": "/tmp/evener-reasoning-notification-hSPMKD/hub.log"
+  },
+  "limitations": [
+    "Reasoning and retry were qualified; no warning producer was exercised.",
+    "Raw private provider bodies, reads, events and session evidence remain private; the hub log was removed after cleanup verification."
+  ]
+}
