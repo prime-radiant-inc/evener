@@ -8,6 +8,11 @@ runs:
     - uses: actions/setup-go@v6
       with:
         go-version-file: go.work
+        cache: true
+        cache-dependency-path: |
+          go.work
+          go.work.sum
+          **/go.sum
 
     - uses: actions/setup-node@v6
       with:
