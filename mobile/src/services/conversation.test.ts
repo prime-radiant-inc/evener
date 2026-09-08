@@ -308,6 +308,28 @@ describe("ConversationService", () => {
   });
 
   describe("loadOlder", () => {
+    it("uses the caller-owned cursor after an ordinary completed projection", async () => {
+      const { client, service } = setup({ olderCursor: "head-cursor-57" });
+      await service.open("ref-1");
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [],
+            nextCursor: "caller-cursor-43",
+          }) as ThreadTurnsListResponse,
+      );
+      await service.readProjection("ref-1");
+      await service.loadOlder("caller-cursor-43");
+      const listCall = client.calls.find(
+        (call) => call.method === "thread/turns/list",
+      );
+      expect(listCall?.params).toMatchObject({
+        ref: "ref-1",
+        cursor: "caller-cursor-43",
+      });
+    });
+
     it("waits for a same-ref projection read before paging", async () => {
       const { client, service, thread } = setup({
         olderCursor: "fresh-cursor",
@@ -530,7 +552,7 @@ describe("ConversationService", () => {
       });
     });
 
-    it("clears the cached cursor when the page has no continuation", async () => {
+    it("honors each supplied cursor after a page has no continuation", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
       let calls = 0;
