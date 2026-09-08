@@ -189,8 +189,16 @@ func TestSideCallsAttributeToSessionAPILog(t *testing.T) {
 // sessionAttributionAdapter.Complete for the model-listing seam: it opens and
 // completes a real llm.APIAttempt against whatever ctx it is given, so the
 // resulting canonical API-log record's session attribution reflects only what
-// the caller's ctx carried in, never a mocked shortcut.
-func attemptRecordingLiveModels(providerInstance string) func(context.Context) ([]registry.Model, error) {
+// the caller's ctx carried in, never a mocked shortcut. The listing serves ids,
+// defaulting to the "gpt-5.2" a test session usually launches on.
+func attemptRecordingLiveModels(providerInstance string, ids ...string) func(context.Context) ([]registry.Model, error) {
+	if len(ids) == 0 {
+		ids = []string{"gpt-5.2"}
+	}
+	models := make([]registry.Model, len(ids))
+	for i, id := range ids {
+		models[i] = registry.Model{ID: id}
+	}
 	return func(ctx context.Context) ([]registry.Model, error) {
 		startedAt := time.Unix(1_700_000_000, 0).UTC()
 		attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
@@ -210,7 +218,7 @@ func attemptRecordingLiveModels(providerInstance string) func(context.Context) (
 			Outcome:      apilog.AttemptSuccess,
 			FinishedAt:   startedAt.Add(time.Millisecond),
 		})
-		return []registry.Model{{ID: "gpt-5.2"}}, nil
+		return append([]registry.Model(nil), models...), nil
 	}
 }
 
@@ -230,7 +238,7 @@ func assertSessionAPILogAttributed(t *testing.T, stateDir, sessionID string) {
 	unattributed := filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")
 	if _, err := os.Stat(unattributed); !os.IsNotExist(err) {
 		data, _ := os.ReadFile(unattributed)
-		t.Fatalf("pre-session live model listing landed in unattributed bucket (stat err=%v):\n%s", err, data)
+		t.Fatalf("live model listing landed in unattributed bucket (stat err=%v):\n%s", err, data)
 	}
 }
 
@@ -392,7 +400,7 @@ func sessionAPILogProviderInstances(t *testing.T, stateDir, sessionID string) ma
 func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T) {
 	stateDir := t.TempDir()
 	client := llm.NewClient()
-	// attemptRecordingLiveModels always lists "gpt-5.2"; requesting a
+	// attemptRecordingLiveModels lists only "gpt-5.2" here; requesting a
 	// different model below makes resolveLiveModelProfileValidated's
 	// membership check reject it right after the (successful, attributed)
 	// listing completes.
@@ -688,4 +696,56 @@ func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
 	if err := reopened.ReserveSession(s.ID()); err != nil {
 		t.Fatalf("session API-log route remained owned after Close: %v", err)
 	}
+}
+
+// TestPluginAgentModelListingAttribution pins issue #799: unlike the switch-path
+// listings TestModelSwitchLiveListingAttribution covers, resolvePluginAgentModel's
+// live listing (agent/subagent_model_selection.go) applies no attribution stamp
+// of its own. It is attributed only because it inherits the turn-level stamp
+// session_lifecycle.go puts on the turn ctx (llm.WithAPILogContext(ctx, s.id))
+// and every hop below it — execToolBatch, the tool handler, selectSubagentModel
+// — passes that ctx down untouched. A break anywhere along that chain would
+// silently route the listing to the shared unattributed bucket, so this drives
+// selectSubagentModel with exactly the ctx a turn hands it and holds the whole
+// chain below the stamp under test.
+func TestPluginAgentModelListingAttribution(t *testing.T) {
+	stateDir := t.TempDir()
+	adapter := &fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")}
+	client := registryClient(t, map[string]registry.Provider{
+		"openai": {Base: "openai", APIKey: "k", Models: modelRows("gpt-5.3")},
+	}, adapter)
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	client.Use(logger)
+
+	sess := newModelSwitchAttributionSession(t, client, stateDir)
+	sess.pluginAgents = map[string]plugin.Agent{
+		"reviewer": {
+			Name:       "reviewer",
+			Model:      "gpt-5.3",
+			PluginName: "test-plugin",
+		},
+	}
+
+	selected, err := sess.selectSubagentModel(llm.WithAPILogContext(context.Background(), sess.ID()), "", "reviewer")
+	if err != nil {
+		t.Fatalf("selectSubagentModel: %v", err)
+	}
+	// Landing on the plugin's own model with no fallback warning is reachable
+	// only through the listing under test: a candidate equal to the session's
+	// own profile returns before listing, and a listing that fails or omits
+	// the model yields a warning and the base model instead.
+	if selected.warning != nil {
+		t.Fatalf("unexpected plugin fallback warning: %#v", selected.warning)
+	}
+	if selected.profile.Model() != "gpt-5.3" {
+		t.Fatalf("selected model = %q, want the plugin agent's %q", selected.profile.Model(), "gpt-5.3")
+	}
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertSessionAPILogAttributed(t, stateDir, sess.ID())
 }
