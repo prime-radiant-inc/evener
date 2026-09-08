@@ -152,29 +152,35 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
 }
 
 // extendSpanEnd consumes a tight filename tail after a marker's closing
-// ")": while the next characters form ")X)" hops where X is filename-shaped
-// — empty, or holding a "." with no whitespace or parens (".png", "a)b" can
-// never match: a ")" inside X ends the hop first) — the span extends through
-// them. A hop whose middle is not filename-shaped ("explain (the plot)",
-// "ghost)more)") is user prose, and the span stops: consuming it would
-// swallow words into the marker and misclassify the input as image-only.
-// A ")" followed by anything else (a space, end of text, other punctuation)
-// ends the span too, so user prose after the marker ("(attached image 9:
-// ghost) hi") keeps its existing span.
+// ")": while the next characters form ")X)" hops where X holds no
+// whitespace or parens — empty, dotted (".png"), or glued runs like "draft"
+// or "-draft.png" — the span extends through them. This is deliberately
+// greedy over spaceless shapes: the filename is gone after reload, so any
+// glued tail MIGHT be its remainder, and guessing "user prose" would resend
+// marker text without the image bytes. A hop whose middle holds whitespace
+// ("explain (the plot)") or a paren is user prose, and the span stops:
+// consuming it would swallow words into the marker and misclassify the input
+// as image-only. A ")" followed by anything else (a space, end of text,
+// other punctuation) ends the span too, so user prose after the marker
+// ("(attached image 9: ghost) hi") keeps its existing span.
 function extendSpanEnd(text: string, closeParen: number): number {
   const continuesTail = (index: number): boolean => {
     const next = text[index] ?? "";
-    if (/[\w)]/.test(next)) return true;
-    if (next !== ".") return false;
-    return /[\w)]/.test(text[index + 1] ?? "");
+    // Any glued run continues the tail: word characters, parens, dots,
+    // dashes — the filename is gone after reload, so any spaceless shape
+    // MIGHT be its remainder. Only whitespace (or end of text) ends it.
+    return next !== "" && !/\s/.test(next);
   };
-  const isFilenameHop = (middle: string): boolean =>
-    middle === "" || (/^[^()\s]*\.[^()\s]*$/.test(middle) && middle !== ".");
+  const isFilenameHop = (middle: string): boolean => middle !== "" && !/[()\s]/.test(middle);
   let end = closeParen + 1;
   while (text[end - 1] === ")" && end < text.length && continuesTail(end)) {
     const next = text.indexOf(")", end);
     if (next === -1) break;
-    if (!isFilenameHop(text.slice(end, next))) break;
+    // An empty hop ("a))") is only a filename tail when another ")" follows
+    // it: otherwise the second paren may simply close user prose such as
+    // "(see (the plot))", and consuming it swallows their words.
+    const middle = text.slice(end, next);
+    if (middle === "" ? text[next + 1] !== ")" : !isFilenameHop(middle)) break;
     end = next + 1;
   }
   return end;

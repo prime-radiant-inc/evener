@@ -803,6 +803,31 @@ test("an image-only input whose filename holds a paren retries on a rebuilt anch
   expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
 });
 
+test("reloaded marker-only inputs with dotless or dashed tails show re-attach", () => {
+  for (const text of ["(attached image 1: plot)draft)", "(attached image 1: plot)-draft.png)"]) {
+    resetThreadsStoreForTests();
+    resetToastStoreForTests();
+    seedThread("ref_a", [
+      {
+        id: "turn_1",
+        status: "completed",
+        items: [
+          item({
+            turnId: "turn_1",
+            text,
+            images: [{ src: "/s/sess_1/images/abc" }],
+          }),
+        ],
+      },
+      RELOADED_FAILURE,
+    ]);
+    render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+    expect(screen.queryByRole("button", { name: "Retry" }), text).toBe(null);
+    expect(screen.getByText("Attached image unavailable — re-attach the image to retry."), text).toBeTruthy();
+    cleanup();
+  }
+});
+
 test("a shifted reloaded marker still retries its trailing prose as text", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   seedThread("ref_a", [
