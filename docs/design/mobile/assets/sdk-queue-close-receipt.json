@@ -65,7 +65,13 @@
           ]
         ],
         "daemonPort": 57812,
-        "reason": "No exact matching thread/closed arrived during the 30-second awaited wait after thread/shutdown; process then exited."
+        "reason": "No exact matching thread/closed arrived during the 30-second awaited wait after thread/shutdown; process then exited.",
+        "sourceRevision": "d2d5eedf9",
+        "binaryHashes": {
+          "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+          "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+          "scripted-provider": "d8386955440cc23ec3b8cd6e85da264f34e843c05a88fb93c854e985dc175a15"
+        }
       },
       {
         "fixtureRoot": "/tmp/evener-sdk-idle-close-current-OwRkNp",
@@ -101,10 +107,10 @@
         "instanceId": "034LDDYNYueRbYWOZqrRGr"
       }
     ],
-    "cleanupProof": "/tmp/evener-sdk-close-run-YFL38i/cleanup-proof.json",
+    "cleanupProof": "/tmp/evener-sdk-idle-close-current-OwRkNp/cleanup-proof.json",
     "binaryHashes": {
-      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
-      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+      "evener": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+      "evener-dev": "28267467f9758126d49e737795d685f7f2e15dc2e86d861cd3aa26c2ad57ad50",
       "scripted-provider": "d8386955440cc23ec3b8cd6e85da264f34e843c05a88fb93c854e985dc175a15"
     },
     "helperHashes": {
@@ -114,7 +120,8 @@
       "run-await-close.mjs": "3d9088dad761e89ddf5e02983e5be1a736f6397c6428603ea79032f2b674adfb"
     },
     "targetRef": "local:034LDDYNYueRbYWOZqrRGr",
-    "targetThreadId": "034LDDYNYueRbYWOZqrRGr"
+    "targetThreadId": "034LDDYNYueRbYWOZqrRGr",
+    "sourceRevision": "3284d6ac54e34409e8115f872fbe8479a3dc7006"
   },
   "limits": [
     "No native or live-model claim",
