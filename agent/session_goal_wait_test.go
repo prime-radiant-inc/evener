@@ -356,6 +356,127 @@ func TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop(t *testing.T) {
 	}
 }
 
+// TestGateSupersededThreeGateSequenceNoHang is the regression test for the
+// goalUpdateMu self-deadlock: a continuation-tail superseded no-op (wakeTail
+// path consuming via per-ID drain) left goalSupersededArmed set, and the next
+// empty-backlog continuation gate re-locked the non-reentrant serializer and
+// hung forever. The full old→register→claim→SetGoal→arm→arm→arm sequence must
+// complete (TRIPWIRE-guarded) and drive correctly at each step.
+func TestGateSupersededThreeGateSequenceNoHang(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	sess.SetKickFunc(func(string) {})
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("old objective", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: label", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	if _, err := sess.SetGoal(context.Background(), "new objective"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Gate 1 (non-continuation tail): drives the superseded no-op.
+		prompt, cont := sess.armGoalContinuation(false, false)
+		if !cont || !strings.Contains(prompt, "(superseded)") {
+			t.Errorf("gate 1 = (%q, %v), want the superseded no-op drive", prompt, cont)
+			return
+		}
+		// Gate 2 (continuation tail = the no-op turn itself): consumes the
+		// marked batch and re-arms the current objective with zero fold.
+		prompt, cont = sess.armGoalContinuation(false, true)
+		if !cont || !strings.Contains(prompt, "new objective") {
+			t.Errorf("gate 2 = (%q, %v), want the re-armed current objective", prompt, cont)
+			return
+		}
+		// Gate 3 (continuation tail, empty backlog): must NOT hang on a
+		// stale superseded flag - folds normally through the interim judge.
+		if _, cont = sess.armGoalContinuation(false, true); !cont {
+			t.Errorf("gate 3 must drive the active objective (stale flag must be consumed)")
+			return
+		}
+	}()
+	// TRIPWIRE: scripted in-process gate calls, no I/O; only fires on a genuine hang (e.g. the serializer self-deadlock).
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		t.Fatal("three-gate superseded sequence hung: goalUpdateMu self-deadlock")
+	}
+	if snap, _ := store.Snapshot(); snap.Iterations != 1 || snap.NoProgressStreak != 1 {
+		t.Fatalf("snapshot = %+v, want exactly the gate-3 interim fold (Iterations=1 streak=1)", snap)
+	}
+}
+
+// TestGateSupersededMixedBatchKeepsFreshClaim pins the mixed-batch drain
+// (spec section 3): a retarget-carried superseded batch plus a fresh claim
+// registered before the no-op runs must drive the stale excerpt once AND
+// still wake the fresh claim separately - the superseded tail drains ONLY
+// superseded IDs, never the fresh backlog.
+func TestGateSupersededMixedBatchKeepsFreshClaim(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	sess.SetKickFunc(func(string) {})
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("old objective", clk.Now())
+	stale, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "stale-timer", Timeout: time.Minute}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: stale registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(stale.Lease.WaitID, "wait expired: stale", clk.Now()); !ok {
+		t.Fatal("precondition: stale claim should consume the expired lease")
+	}
+	if _, err := sess.SetGoal(context.Background(), "new objective"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	// Fresh wait on the new objective, backdated so it is already expired:
+	// the next gate claims it alongside the carried superseded batch.
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "fresh-timer", Timeout: time.Minute}, clk.Now().Add(-time.Minute-time.Second)); !ok {
+		t.Fatal("precondition: fresh registration should succeed")
+	}
+	// Gate 1 drives the superseded no-op (stale excerpt only - fresh claims
+	// are not Superseded and never render in the no-op frame).
+	prompt, cont := sess.armGoalContinuation(false, false)
+	if !cont {
+		t.Fatal("gate 1 must drive the superseded no-op evaluation")
+	}
+	if !strings.Contains(prompt, stale.Lease.WaitID) || !strings.Contains(prompt, "(superseded)") {
+		t.Fatalf("gate-1 prompt must carry the stale excerpt marked superseded:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "fresh-timer") {
+		t.Fatalf("gate-1 no-op must not carry the fresh claim:\n%s", prompt)
+	}
+	// Gate 2 (the no-op turn's tail): consumes ONLY the superseded IDs; the
+	// fresh claim survives and drives its own wake turn now.
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if !cont {
+		t.Fatal("gate 2 must drive the fresh claim's wake turn")
+	}
+	if strings.Contains(prompt, "(superseded)") {
+		t.Fatalf("gate-2 wake must not carry the consumed stale batch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, goalWaitWakeTrailerPrefix) || !strings.Contains(prompt, "fresh-timer") {
+		t.Fatalf("gate-2 prompt must be the fresh claim's wake with its trigger:\n%s", prompt)
+	}
+}
+
 // TestGateClearDropsWake pins the clear half of superseded/drop (spec section
 // 3): with no goal current, a claimed wake is dropped - not driven, consuming
 // no budget and producing no notice.

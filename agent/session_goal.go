@@ -76,6 +76,7 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// objective, never the old one.
 	s.stopGoalWaitTimerLocked()
 	s.goalTerminalPending = false
+	s.goalSupersededArmed = false
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
@@ -105,6 +106,7 @@ func (s *Session) ClearGoal() {
 	s.stopGoalWaitTimerLocked()
 	s.goalTerminalPending = false
 	s.goalWakeDelivered = nil
+	s.goalSupersededArmed = false
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
@@ -530,18 +532,35 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
-	if wakeTail || s.takeGoalSupersededArmed() {
+	// Always consume the superseded flag - even when the wake-tail fold above
+	// already ran (a continuation-tail superseded no-op leaves the flag set
+	// while consuming its batch via the per-ID drain): a stale set flag must
+	// never strand a later empty-backlog gate on the superseded branch below.
+	supersededArmed := s.takeGoalSupersededArmed()
+	if wakeTail || supersededArmed {
 		// The just-finished turn was a wake turn (or the superseded no-op
-		// evaluation): its backlog is consumed above (superseded: consumed
-		// now, since the batch was marked at drive time) and the turn was
-		// wait-attributable, so bypass the stall fold and re-arm the plain
-		// objective. The follow-up turn's own tail folds normally.
+		// evaluation): its backlog is consumed above (wake-tail per-ID drain;
+		// superseded: consumed now by superseded ID only, since the batch was
+		// marked at drive time) and the turn was wait-attributable, so bypass
+		// the stall fold and re-arm the plain objective. The follow-up turn's
+		// own tail folds normally. No extra goalUpdateMu lock here: the gate
+		// already holds the serializer (store methods self-lock; cf. the
+		// wake-tail drain above), and goalUpdateMu is non-reentrant.
 		if !wakeTail {
-			s.goalUpdateMu.Lock()
-			store.DrainPendingWake(now)
-			s.goalUpdateMu.Unlock()
+			// Drain ONLY the superseded IDs (spec section 3): fresh claims
+			// that landed before the no-op ran keep their own backlog and
+			// drive their own wake - never silently dropped with the stale
+			// batch.
+			var supersededIDs []string
+			for _, p := range full.PendingWake {
+				if p.Superseded {
+					supersededIDs = append(supersededIDs, p.WaitID)
+				}
+			}
+			store.DrainPendingWakeIDs(supersededIDs, now)
 			full, ok = store.GoalSnapshot()
 			if !ok {
+				s.goalUpdateMu.Unlock()
 				return "", false
 			}
 		}
@@ -703,6 +722,7 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 	s.stopGoalWaitTimer()
 	s.mu.Lock()
 	s.goalTerminalPending = false
+	s.goalSupersededArmed = false
 	s.mu.Unlock()
 	var note string
 	switch verdict {
