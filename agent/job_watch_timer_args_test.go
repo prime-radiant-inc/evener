@@ -94,7 +94,6 @@ func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 	}{
 		{"repeat on delegate", watchArgs{Operation: "create", Source: "dlg_a", Target: "caller", RepeatSeconds: 300}, "timers apply to source self"},
 		{"after on job", watchArgs{Operation: "create", Source: "job_1", Target: "job_1", AfterSeconds: 600}, "timers apply to source self"},
-		{"note without timer", watchArgs{Operation: "create", Source: "self", Target: "caller", Events: []string{"assistant.tool"}, Note: "x"}, "note applies to timers"},
 		{"both time fields", watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 60, RepeatSeconds: 60}, "after_seconds and repeat_seconds"},
 		{"timer with output_match", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 60, OutputMatch: "x"}, "repeat_seconds and output_match"},
 		{"timer with send", watchArgs{Operation: "create", Source: "self", Target: "caller", RepeatSeconds: 300, Send: &watchSendArgs{To: "dlg_a"}}, "repeat_seconds and send are mutually exclusive"},
@@ -119,6 +118,9 @@ func TestValidateWatchTriggerShape_TimerRules(t *testing.T) {
 	}
 	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Source: "self", Target: "caller", AfterSeconds: 600}); err != nil {
 		t.Fatalf("valid one-shot self timer rejected: %v", err)
+	}
+	if err := validateWatchTriggerShape(watchArgs{Operation: "create", Source: "self", Target: "caller", Events: []string{"assistant.tool"}, Note: "x"}); err != nil {
+		t.Fatalf("note on a condition watch rejected: %v", err)
 	}
 }
 
