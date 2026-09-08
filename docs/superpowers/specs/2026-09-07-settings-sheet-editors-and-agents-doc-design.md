@@ -29,16 +29,24 @@ skills directories.
 
 ### Daemon: load it
 
-`agent.LoadUserDoc(configRoot string) (ProjectDoc, bool)` reads
-`<configRoot>/AGENTS.md`. Session init calls it with
-`userdirs.DefaultConfigRoot()` (hub-spawned daemons resolve the same root
-from their environment; nothing new is plumbed) and prepends the result to
-`s.projectDocs`, so it renders first inside the existing
+`agent.LoadUserDoc(path string) (ProjectDoc, bool)` reads the file at the
+given path, and `agent.LoadInstructionDocs(env, userDocPath, filenames...)`
+returns a session's whole instruction set: the personal doc first, then the
+repo's own project docs. Session init takes the path from
+`SessionConfig.AgentsDocPath`, falling back to
+`<userdirs.DefaultConfigRoot()>/AGENTS.md`, and stores the result in
+`s.projectDocs`, so the personal doc renders first inside the existing
 `prompts/sections/project-docs.md.tmpl` block, ahead of the repo's own docs.
-Its `Path` is the tilde-collapsed display path `~/.config/evener/AGENTS.md`.
-It applies to every provider profile. It shares `projectDocByteBudget` and
-counts first: the repo docs get whatever is left, and truncation behaves
-exactly as today. A missing or empty file changes nothing.
+The hub hands its own path to every spawned and resumed daemon as
+`--agents-doc`, the way it passes `--plugin-root`, so a per-launch
+`XDG_CONFIG_HOME` override cannot make Settings and sessions disagree
+(roborev finding on PR #979, Jesse's ruling 2026-09-07). Its `Path` is the
+tilde-collapsed display path `~/.config/evener/AGENTS.md`. It applies to
+every provider profile. It has its own byte budget, equal to the project
+docs' 32KB, so a long personal doc can never starve a repo's instructions and
+vice versa (Jesse's ruling, 2026-09-07, revising the shared-budget design);
+each side truncates with its own marker. A missing or empty file changes
+nothing.
 
 ### Hub: read and write it
 

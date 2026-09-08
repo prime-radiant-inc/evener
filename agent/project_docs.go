@@ -20,6 +20,7 @@ type ProjectDoc struct {
 const (
 	projectDocByteBudget = 32 * 1024
 	projectDocTruncMark  = "[Project instructions truncated at 32KB]"
+	userDocTruncMark     = "[Personal instructions truncated at 32KB]"
 )
 
 // UserDocFile is the personal instructions file evener loads from the user
@@ -34,23 +35,22 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 }
 
 // LoadInstructionDocs is a session's whole instruction set: the personal doc
-// at userDocPath first, then the repo's project docs, sharing one byte
-// budget. The personal doc is loaded first because it is the user's own
-// standing instructions for every session; the repo docs get whatever budget
-// remains, truncated exactly as LoadProjectDocs truncates them.
+// at userDocPath first, then the repo's project docs. The two byte budgets are
+// separate, each the size of projectDocByteBudget, so a long personal doc can
+// never silence a repo's instructions and a long repo doc can never silence
+// the user's own; each side truncates with its own marker.
 func LoadInstructionDocs(env execenv.ExecutionEnvironment, userDocPath string, filenames ...string) ([]ProjectDoc, bool) {
 	out := []ProjectDoc{}
-	used := 0
+	userTruncated := false
 	if user, ok := LoadUserDoc(userDocPath); ok {
 		if len(user.Content) > projectDocByteBudget {
-			user.Content = truncateDoc(user.Content, projectDocByteBudget)
-			return append(out, user), true
+			user.Content = truncateDoc(user.Content, projectDocByteBudget, userDocTruncMark)
+			userTruncated = true
 		}
-		used = len(user.Content)
 		out = append(out, user)
 	}
-	project, truncated := loadProjectDocs(env, used, filenames...)
-	return append(out, project...), truncated
+	project, truncated := loadProjectDocs(env, 0, filenames...)
+	return append(out, project...), truncated || userTruncated
 }
 
 // LoadUserDoc reads the personal instructions file at path. ok is false when
@@ -83,15 +83,16 @@ func tildeCollapse(path string) string {
 	return "~/" + filepath.ToSlash(rel)
 }
 
-// truncateDoc cuts content to remain bytes and appends the truncation marker.
-func truncateDoc(content string, remain int) string {
+// truncateDoc cuts content to remain bytes and appends mark, the truncation
+// marker naming the kind of doc that was cut.
+func truncateDoc(content string, remain int, mark string) string {
 	if remain < len(content) {
 		content = content[:remain]
 	}
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	return content + projectDocTruncMark + "\n"
+	return content + mark + "\n"
 }
 
 // loadProjectDocs is LoadProjectDocs with `used` bytes of the budget already
@@ -140,7 +141,7 @@ func loadProjectDocs(env execenv.ExecutionEnvironment, used int, filenames ...st
 
 			content := string(b)
 			if used+len(content) > projectDocByteBudget {
-				out = append(out, ProjectDoc{Path: key, Content: truncateDoc(content, projectDocByteBudget-used)})
+				out = append(out, ProjectDoc{Path: key, Content: truncateDoc(content, projectDocByteBudget-used, projectDocTruncMark)})
 				return out, true
 			}
 			used += len(content)

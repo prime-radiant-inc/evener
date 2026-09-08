@@ -220,12 +220,12 @@ func TestLoadInstructionDocs_MissingPersonalDocChangesNothing(t *testing.T) {
 	}
 }
 
-func TestLoadInstructionDocs_PersonalDocCountsAgainstTheSharedBudget(t *testing.T) {
+func TestLoadInstructionDocs_PersonalDocHasItsOwnBudget(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
-	half := strings.Repeat("r", projectDocByteBudget/2+1024)
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(half), 0o644); err != nil {
+	repo := strings.Repeat("r", projectDocByteBudget/2+1024)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(repo), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	configRoot := t.TempDir()
@@ -236,20 +236,17 @@ func TestLoadInstructionDocs_PersonalDocCountsAgainstTheSharedBudget(t *testing.
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
-	if !truncated {
-		t.Fatal("expected the repo doc to be truncated")
+	if truncated {
+		t.Fatal("neither doc exceeds its own budget; expected no truncation")
 	}
 	if len(docs) != 2 {
 		t.Fatalf("docs: got %d want 2", len(docs))
 	}
 	if docs[0].Content != personal {
-		t.Fatal("the personal doc must land intact; it is loaded first")
+		t.Fatal("the personal doc must land intact")
 	}
-	if !strings.Contains(docs[1].Content, projectDocTruncMark) {
-		t.Fatalf("the repo doc must carry the truncation marker, got:\n%s", docs[1].Content[len(docs[1].Content)-80:])
-	}
-	if len(docs[0].Content)+len(docs[1].Content) > projectDocByteBudget+len(projectDocTruncMark)+2 {
-		t.Fatalf("the two docs exceed the shared budget: %d", len(docs[0].Content)+len(docs[1].Content))
+	if docs[1].Content != repo {
+		t.Fatal("the repo doc must land intact; the personal doc does not spend the repo's budget")
 	}
 }
 
@@ -267,10 +264,47 @@ func TestLoadInstructionDocs_OversizedPersonalDocIsTruncatedAlone(t *testing.T) 
 	}
 	env := execenv.NewLocalExecutionEnvironment(root)
 	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
-	if !truncated || len(docs) != 1 {
-		t.Fatalf("docs = %d truncated = %v; an oversized personal doc consumes the whole budget", len(docs), truncated)
+	if !truncated {
+		t.Fatal("expected the personal doc to be truncated")
 	}
-	if !strings.Contains(docs[0].Content, projectDocTruncMark) {
-		t.Fatal("expected the truncation marker on the personal doc")
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2; the repo doc survives an oversized personal doc", len(docs))
+	}
+	if !strings.Contains(docs[0].Content, userDocTruncMark) {
+		t.Fatal("expected the personal truncation marker on the personal doc")
+	}
+	if len(docs[0].Content) > projectDocByteBudget+len(userDocTruncMark)+2 {
+		t.Fatalf("the personal doc exceeds its own budget: %d bytes", len(docs[0].Content))
+	}
+	if docs[1].Content != "ROOT\n" {
+		t.Fatalf("doc1 = %q, want the repo doc whole", docs[1].Content)
+	}
+}
+
+func TestLoadInstructionDocs_OversizedRepoDocLeavesThePersonalDocIntact(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	huge := strings.Repeat("r", projectDocByteBudget+4096)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(huge), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configRoot, "AGENTS.md"), []byte("PERSONAL\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(root)
+	docs, truncated := LoadInstructionDocs(env, filepath.Join(configRoot, "AGENTS.md"), "AGENTS.md")
+	if !truncated {
+		t.Fatal("expected the repo doc to be truncated")
+	}
+	if len(docs) != 2 {
+		t.Fatalf("docs: got %d want 2", len(docs))
+	}
+	if docs[0].Content != "PERSONAL\n" {
+		t.Fatalf("doc0 = %q, want the personal doc whole", docs[0].Content)
+	}
+	if !strings.Contains(docs[1].Content, projectDocTruncMark) {
+		t.Fatal("expected the project truncation marker on the repo doc")
 	}
 }
