@@ -9316,6 +9316,15 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
 	expectRelaySubscription(t, source.subscribed)
+	select {
+	case notification := <-client.Notifications():
+		var started appwire.ThreadStartedParams
+		if notification.Method != appwire.NotifyThreadStarted || json.Unmarshal(notification.Params, &started) != nil || started.Ref != resp.Thread.Evener.Ref || started.ThreadID != resp.Thread.ID {
+			t.Fatalf("startup announcement=%+v", notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for startup announcement")
+	}
 
 	source.notifications <- appwire.Notification{
 		Method: appwire.NotifyAgentMessageDelta,
