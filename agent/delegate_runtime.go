@@ -150,11 +150,10 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 }
 
 // delegateQuietWatchEntry is one lease registered on the shared quiet-watchdog
-// hub: the lease to tick plus a per-lease stop channel. Closing stop detaches
-// the lease from the fan-out so a later tick never touches a stopped lease
-// (no use-after-stop).
+// hub: the lease to tick plus a per-lease stop channel. Detach is best-effort:
+// closing stop keeps later ticks from being dispatched to the lease, but a tick
+// the hub loop already snapshotted may still run once for it.
 type delegateQuietWatchEntry struct {
-	owner *Session
 	lease delegateLease
 	stop  chan struct{}
 }
@@ -168,11 +167,10 @@ type delegateQuietWatchEntry struct {
 // leases.
 //
 // The hub is keyed to the session's injected clock (s.sclock()): the hub is
-// created lazily under delegateQuietWatchMu, so every lease on the same
-// session — and therefore the same s.clock — shares one ticker and stays on
-// the fake clock in tests.
+// created lazily under the delegateQuietWatchHubs registry lock, so every
+// lease on the same session — and therefore the same s.clock — shares one
+// ticker and stays on the fake clock in tests.
 type delegateQuietWatchHub struct {
-	owner  *Session
 	ticker interface {
 		C() <-chan time.Time
 		Stop()
@@ -211,7 +209,6 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 	hub := delegateQuietWatchHubs.hubs[s]
 	if hub == nil {
 		hub = &delegateQuietWatchHub{
-			owner:   s,
 			done:    make(chan struct{}),
 			entries: make(map[delegateQuietWatchEntry]struct{}),
 		}
@@ -219,7 +216,7 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 		delegateQuietWatchHubs.hubs[s] = hub
 		go s.serveDelegateQuietWatchHub(hub)
 	}
-	entry := delegateQuietWatchEntry{owner: s, lease: lease, stop: make(chan struct{})}
+	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{})}
 	hub.entries[entry] = struct{}{}
 	delegateQuietWatchHubs.Unlock()
 	var detachOnce sync.Once
