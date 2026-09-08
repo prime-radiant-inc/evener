@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mutateAndReadback, requireOwnedHub } from "./management-recovery.mjs";
 
 const methods = {
+  steer: "turn/steer",
   queue: "turn/queue",
   cancel: "turn/cancelQueued",
   promote: "turn/promoteQueuedAsSteer",
@@ -10,6 +11,20 @@ const methods = {
 const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.trim().length > 0;
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
+function assertTextInput(value, message, nonempty = true) {
+  assert.ok(
+    Array.isArray(value) &&
+      (nonempty ? value.length > 0 : true) &&
+      value.every(
+        (item) =>
+          record(item) &&
+          Object.keys(item).every((key) => ["type", "text"].includes(key)) &&
+          item.type === "text" &&
+          text(item.text),
+      ),
+    message,
+  );
+}
 
 function decodeRead(value, ref, expectedInstanceId, threadId) {
   assert.ok(record(value) && record(value.thread) && record(value.thread.evener), "Invalid thread read.");
@@ -45,16 +60,21 @@ function decodeReceipt(value, action, input, before) {
   assert.equal(receipt.instanceId, input.expectedInstanceId, "Receipt instance changed.");
   assert.ok(["applied", "replayed"].includes(receipt.disposition), "Invalid receipt disposition.");
   assert.equal(receipt.projectionState, action === "cancel" ? "removed" : "pending", "Invalid receipt projection.");
-  const ids = receipt.queueEntryIds;
-  assert.ok(
-    Array.isArray(ids) && ids.length > 0 && ids.every(text) && new Set(ids).size === ids.length,
-    "Invalid receipt queue identities.",
-  );
-  if (action === "drain") assert.deepEqual(ids, before.thread.evener.queue.ids, "Drained queue changed.");
-  else if (action === "queue") assert.equal(ids.length, 1, "Invalid queued receipt.");
-  else assert.deepEqual(ids, [input.expectedEntryId], "Receipt entry changed.");
-  if (action === "promote" || action === "drain") assert.ok(text(receipt.turnId), "Missing receipt turn.");
-  else assert.equal(receipt.turnId, undefined, "Unexpected receipt turn.");
+  if (action === "steer") {
+    assert.ok(text(receipt.turnId), "Missing receipt turn.");
+    assert.equal(receipt.queueEntryIds, undefined, "Unexpected receipt queue entries.");
+  } else {
+    const ids = receipt.queueEntryIds;
+    assert.ok(
+      Array.isArray(ids) && ids.length > 0 && ids.every(text) && new Set(ids).size === ids.length,
+      "Invalid receipt queue identities.",
+    );
+    if (action === "drain") assert.deepEqual(ids, before.thread.evener.queue.ids, "Drained queue changed.");
+    else if (action === "queue") assert.equal(ids.length, 1, "Invalid queued receipt.");
+    else assert.deepEqual(ids, [input.expectedEntryId], "Receipt entry changed.");
+    if (action === "promote" || action === "drain") assert.ok(text(receipt.turnId), "Missing receipt turn.");
+    else assert.equal(receipt.turnId, undefined, "Unexpected receipt turn.");
+  }
   if (action === "cancel") {
     assert.equal(typeof value.removedText, "string", "Invalid cancellation echo.");
     assert.ok(value.removedImages === undefined || integer(value.removedImages), "Invalid removed image count.");
@@ -75,10 +95,10 @@ export async function runQueue(hub, { action = "list", params = {}, ownedHub } =
           "ref",
           "expectedInstanceId",
           "clientMutationId",
-          ...(action === "queue"
+          ...(action === "queue" || action === "steer"
             ? ["input"]
             : action === "drain"
-              ? ["expectedQueueRevision"]
+              ? ["expectedQueueRevision", "input"]
               : ["index", "expectedEntryId"]),
         ];
   assert.ok(
@@ -92,21 +112,11 @@ export async function runQueue(hub, { action = "list", params = {}, ownedHub } =
       text(params.clientMutationId) && params.clientMutationId === params.clientMutationId.trim(),
       "Provide a stable caller-authored mutation ID.",
     );
-    if (action === "queue") {
-      assert.ok(
-        Array.isArray(params.input) &&
-          params.input.length > 0 &&
-          params.input.every(
-            (item) =>
-              record(item) &&
-              Object.keys(item).every((key) => ["type", "text"].includes(key)) &&
-              item.type === "text" &&
-              text(item.text),
-          ),
-        "This recipe requires nonempty text inputs.",
-      );
+    if (action === "queue" || action === "steer") {
+      assertTextInput(params.input, "This recipe requires nonempty text inputs.");
     } else if (action === "drain") {
       assert.ok(integer(params.expectedQueueRevision), "Provide the reviewed queue revision.");
+      if (params.input !== undefined) assertTextInput(params.input, "Drain input must contain text items.", false);
     } else {
       assert.ok(integer(params.index) && text(params.expectedEntryId), "Provide the reviewed queue entry.");
     }
@@ -125,6 +135,7 @@ export async function runQueue(hub, { action = "list", params = {}, ownedHub } =
   if (action === "list") return { outcome: "read", execution: "unverified", readback: before };
   threadId = before.thread.id;
   const { capabilities, queue } = before.thread.evener;
+  if (action === "steer") assert.equal(capabilities?.steer, true, "Session cannot steer input.");
   if (action === "queue") assert.equal(capabilities?.queue, true, "Session cannot queue input.");
   if (action === "promote" || action === "drain")
     assert.ok(capabilities?.steer === true || capabilities?.send === true, "Session cannot run queued input.");
