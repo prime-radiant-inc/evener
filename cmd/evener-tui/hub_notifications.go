@@ -606,10 +606,10 @@ func streamDeltaForMethod(method string) streamDeltaKind {
 // each with no per-kind typed struct, and one reducer build + apply total.
 type streamDeltaChunk struct {
 	Ref      string `json:"ref"`
-	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	CallID   string `json:"callId"`
+	ThreadID string `json:"threadId"` //nolint:tagliatelle // mirrors the camelCase appwire delta params on the wire
+	TurnID   string `json:"turnId"`   //nolint:tagliatelle // mirrors the camelCase appwire delta params on the wire
+	ItemID   string `json:"itemId"`   //nolint:tagliatelle // mirrors the camelCase appwire delta params on the wire
+	CallID   string `json:"callId"`   //nolint:tagliatelle // mirrors the camelCase appwire delta params on the wire
 	Delta    string `json:"delta"`
 }
 

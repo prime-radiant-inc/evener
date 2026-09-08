@@ -250,3 +250,66 @@ func requireTUIJobRun(t testing.TB, m *hubModel, jobID string) *transcript.Subag
 	t.Fatalf("messages = %+v, want job %q", m.session.messages, jobID)
 	return nil
 }
+
+// TestStreamDeltaChunkDecodesAppWireCamelCaseParams pins the wire contract the
+// shared delta envelope decodes: the hub's producer params are camelCase, so
+// streamDeltaChunk's json tags must be camelCase too. Renaming them to this
+// repo's snake_case default would leave every routing field empty, silently
+// dropping deltas at the current-session filter instead of failing loudly.
+func TestStreamDeltaChunkDecodesAppWireCamelCaseParams(t *testing.T) {
+	agent, err := json.Marshal(appwire.AgentMessageDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello",
+	})
+	if err != nil {
+		t.Fatalf("marshal agent params: %v", err)
+	}
+	reasoning, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking",
+	})
+	if err != nil {
+		t.Fatalf("marshal reasoning params: %v", err)
+	}
+	toolOutput, err := json.Marshal(appwire.ToolOutputDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal tool-output params: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want streamDeltaChunk
+	}{
+		{
+			name: "agentMessage",
+			raw:  agent,
+			want: streamDeltaChunk{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello"},
+		},
+		{
+			name: "reasoningSummary",
+			raw:  reasoning,
+			want: streamDeltaChunk{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking"},
+		},
+		{
+			name: "toolOutput",
+			raw:  toolOutput,
+			want: streamDeltaChunk{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
+		},
+		{
+			name: "wireKeySpelling",
+			raw:  json.RawMessage(`{"ref":"local:th_1","threadId":"th_1","turnId":"turn_1","itemId":"item_3","callId":"call_3","delta":"one\n"}`),
+			want: streamDeltaChunk{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := decodeStreamDeltaChunk(tc.raw)
+			if !ok {
+				t.Fatalf("decode %s failed: %s", tc.name, tc.raw)
+			}
+			if got != tc.want {
+				t.Fatalf("chunk=%+v want=%+v from %s", got, tc.want, tc.raw)
+			}
+		})
+	}
+}
