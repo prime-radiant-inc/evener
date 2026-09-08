@@ -12,7 +12,8 @@
 // deliberately NOT here - the command palette owns those.
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { Button, Dialog, Input, Menu, type MenuEntry } from "../../widgets";
+import { Button, Dialog, Input } from "../../widgets";
+import { Menu, type MenuEntry } from "../../widgets/menu";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import styles from "./sessionmenu.module.css";

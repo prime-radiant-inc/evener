@@ -17,7 +17,7 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "../../stores/navigation/types";
-import { Tree, type TreeRowInfo } from "../../widgets";
+import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";

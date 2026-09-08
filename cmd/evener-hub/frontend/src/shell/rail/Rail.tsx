@@ -46,13 +46,12 @@ import {
   EmptyState,
   IconButton,
   Input,
-  Menu,
   Skeleton,
   Tooltip,
-  Tree,
-  type TreeRowInfo,
   useToasts,
 } from "../../widgets";
+import { Menu } from "../../widgets/menu";
+import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";

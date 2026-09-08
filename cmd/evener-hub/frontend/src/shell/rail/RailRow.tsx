@@ -43,10 +43,9 @@ import {
   type CadenceState,
   Chevron,
   IconButton,
-  Menu,
-  type MenuItem,
-  type TreeRowInfo,
 } from "../../widgets";
+import { Menu, type MenuItem } from "../../widgets/menu";
+import type { TreeRowInfo } from "../../widgets/tree";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
