@@ -11170,14 +11170,6 @@ func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
 	}
 }
 
-// TestHubRPCTestServerRegistryReadsItsOwnCredentials pins the other half of
-// credential isolation: the store the auth handlers write has to be the store
-// the registry resolves from. A default registry loaded through
-// cmdutil.LoadRegistry reads the process-wide credentials.toml instead, so a
-// key set through evener/auth/apiKey/set lands in the server's own store while
-// the reload behind that same call resolves from the shared file: the caller
-// is told "none" for the key it just stored, and a parallel test's registry
-// answers from whatever the shared file happens to hold.
 // TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
 // server's auth controller and registry share that server's own state root:
 // an OAuth record under one server's root signs that server in and is
@@ -11225,6 +11217,14 @@ func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
 	}
 }
 
+// TestHubRPCTestServerRegistryReadsItsOwnCredentials pins the other half of
+// credential isolation: the store the auth handlers write has to be the store
+// the registry resolves from. A default registry loaded through
+// cmdutil.LoadRegistry reads the process-wide credentials.toml instead, so a
+// key set through evener/auth/apiKey/set lands in the server's own store while
+// the reload behind that same call resolves from the shared file: the caller
+// is told "none" for the key it just stored, and a parallel test's registry
+// answers from whatever the shared file happens to hold.
 func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
 	t.Parallel()
 	first := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
