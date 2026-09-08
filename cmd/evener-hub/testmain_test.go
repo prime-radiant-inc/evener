@@ -286,12 +286,13 @@ func containedIn(root, path string) bool {
 // an escape; this catches one that opens mid-run, such as a test that swaps
 // configUserHomeDir or the XDG env without restoring it.
 //
-// TestHubRPCRegistersExpectedHandlerSet is why this has to be pinned. It
-// dispatches every registered method with empty params, and for a handler
-// where an empty request is a valid write (evener/launch/setLayer today; any
-// "set this file's content" handler tomorrow) the write happens for real,
-// against whichever root the fixture left unset. The HOME/XDG redirect in
-// TestMain is what keeps that write out of ~/.config/evener.
+// Any hub test that dispatches a handler is why this has to be pinned. A
+// handler called with empty params reads and writes against whichever root
+// the fixture left unset — TestHubRPCRegistersExpectedHandlerSet's single
+// model/list round-trip is one such dispatch — and for a handler where an
+// empty request is a valid write (evener/launch/setLayer today; any "set
+// this file's content" handler tomorrow) the write happens for real. The
+// HOME/XDG redirect in TestMain is what keeps that out of ~/.config/evener.
 func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
 		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnvRoot, strings.Join(escaped, "\n  "))
