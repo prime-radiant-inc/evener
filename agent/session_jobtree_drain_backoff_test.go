@@ -318,6 +318,8 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 		select {
 		case <-done:
 			t.Fatalf("drain returned during quiescence poll with turns = %d, want the skipped-kick pass to run first", turns.Load())
+		// TRIPWIRE: same yield as above — the loop condition is the
+		// signal, this only avoids busy-spinning between polls.
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
