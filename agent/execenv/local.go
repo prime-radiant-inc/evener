@@ -1709,17 +1709,21 @@ func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, ba
 
 // globBaseFS opens the filesystem the off-sandbox glob walks, rooted at the
 // resolved base directory; a variable so tests can drive the exported entry
-// point over a filesystem they control.
-var globBaseFS = os.DirFS
+// point over a filesystem they control. budget is threaded through so a
+// bounded implementation can charge what it reads while listing, and ctx down
+// to boundedDirFS so its chunk loop can observe cancellation.
+var globBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs.FS {
+	return boundedDirFS{FS: os.DirFS(dir), budget: budget, ctx: ctx}
+}
 
-// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
-// reports how many candidate matches the default dotfile/gitignore exclusion
-// dropped, so a fully-filtered result can be told apart from a genuinely
-// empty one (see the "silent-empty is the enemy" global constraint). The
-// count never includes matches dropped by sandbox masking — that's a
-// separate security boundary, not something to describe to the caller as
-// "gitignored".
-func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+// GlobWithBudget implements GlobBudgeter: same matching as Glob, but the
+// caller supplies budget and reads what the call had to cut off it once the
+// call returns (see GlobBudget.TruncatedAt), rather than being refused a
+// truncated listing outright the way GlobWithExclusions is.
+func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern string, basePath string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
+	if budget == nil {
+		return nil, 0, errors.New("glob requires a budget: pass execenv.NewGlobBudget() or call GlobWithExclusions for an internally budgeted call")
+	}
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -1735,19 +1739,23 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		defer sfs.release()
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
+		return sfs.glob(ctx, "glob", base, pattern, includeIgnored, budget)
 	}
-	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
+	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(ctx, base, budget)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
-		ignores = loadIgnoreSet(fsys, nil)
+		var err error
+		ignores, err = loadIgnoreSet(ctx, fsys, nil, budget, ignoreScopeForPatterns(patterns))
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 	seen := make(map[string]struct{})
 	var abs []string
 	excluded := 0
 	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern)
+		matches, err := globMatches(ctx, fsys, pattern, budget)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -1774,6 +1782,31 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		return nil, 0, err
 	}
 	return abs, excluded, nil
+}
+
+// GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
+// reports how many candidate matches the default dotfile/gitignore exclusion
+// dropped, so a fully-filtered result can be told apart from a genuinely
+// empty one (see the "silent-empty is the enemy" global constraint). The
+// count never includes matches dropped by sandbox masking — that's a
+// separate security boundary, not something to describe to the caller as
+// "gitignored".
+//
+// The budget backing this call belongs to GlobWithExclusions alone, so a
+// caller here has no way to learn a listing was cut short: a truncation
+// comes back as an error rather than a plausible-looking short list. A
+// caller that wants the partial list uses GlobBudgeter.GlobWithBudget with
+// its own budget instead.
+func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, pattern string, basePath string, includeIgnored bool) ([]string, int, error) {
+	budget := NewGlobBudget()
+	matches, excluded, err := e.GlobWithBudget(ctx, pattern, basePath, includeIgnored, budget)
+	if err != nil {
+		return nil, 0, err
+	}
+	if truncatedAt := budget.TruncatedAt(); truncatedAt > 0 {
+		return nil, 0, fmt.Errorf("glob matched more than %d candidates, the cap for one call, so the result would have been incomplete: narrow the pattern or its base directory, or call GlobWithBudget with a budget to get the partial list", truncatedAt)
+	}
+	return matches, excluded, nil
 }
 
 // Grep searches for pattern under path (defaulting to RootDir), using ripgrep
@@ -1933,15 +1966,19 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	// fs.WalkDir does not descend through directory symlinks, matching the
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
-	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(path)}
+	budget := newGlobBudget("grep")
+	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
+		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
 	}
-	ignores := loadIgnoreSet(ignoreFS, nil)
+	ignores, err := loadIgnoreSet(ctx, ignoreFS, nil, budget, wholeBaseIgnoreScope())
+	if err != nil {
+		return "", err
+	}
 	excludedByIgnore := 0
 
 	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
@@ -1949,6 +1986,19 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 			return cancelErr
 		}
 		if err != nil {
+			// loadIgnoreSet's walk above already visits every directory this
+			// one would — its skip set (dot-prefixed directories only) is a
+			// strict subset of this walk's (which also skips gitignored
+			// ones) — so it always reaches an oversized directory first on
+			// any static tree and this guard cannot be reached that way. It
+			// is reachable only when a directory grows past the entry bound
+			// in the gap between the two passes, which
+			// TestGrepWalkCarriesTheEntriesRefusalWhenADirectoryGrowsAfterIgnoreDiscovery
+			// forces by stubbing grepWalk itself to grow the tree after
+			// ignore discovery has already listed it.
+			if _, refused := errors.AsType[*globBudgetError](err); refused {
+				return err
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
 		relPath := filepath.FromSlash(p)
@@ -1965,6 +2015,16 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+			}
+			// fs.WalkDir never follows a directory symlink, so this walk
+			// cannot cycle back into itself the way the glob pattern walk's
+			// ancestor check has to guard against — the same reason ignore
+			// discovery's own budget charge is always cycleSafe. Charged
+			// only here, once the dot/gitignore skips above have already
+			// passed, so a directory the walk is about to skip anyway costs
+			// nothing.
+			if berr := budget.listing(true); berr != nil {
+				return berr
 			}
 			return nil
 		}

@@ -15,6 +15,10 @@ func TestExpand(t *testing.T) {
 		{name: "alternatives", pattern: "*.{ts,tsx,css}", want: []string{"*.ts", "*.tsx", "*.css"}},
 		{name: "nested alternatives", pattern: "src/{a,{b,c}}/*.go", want: []string{"src/a/*.go", "src/b/*.go", "src/c/*.go"}},
 		{name: "empty alternative", pattern: "report{,.md}", want: []string{"report", "report.md"}},
+		{name: "single-term braces unwrap", pattern: "{**}", want: []string{"**"}},
+		{name: "single-term braces unwrap in path", pattern: "{foo/**}/f.txt", want: []string{"foo/**/f.txt"}},
+		{name: "single-term braces unwrap literal", pattern: "{a}", want: []string{"a"}},
+		{name: "nested single-term braces unwrap", pattern: "{a,{b}}", want: []string{"a", "b"}},
 		{name: "escaped braces", pattern: `literal\{name\}.go`, want: []string{`literal\{name\}.go`}},
 		{name: "braces in character class", pattern: "*.[{a,b}]", want: []string{"*.[{a,b}]"}},
 	}

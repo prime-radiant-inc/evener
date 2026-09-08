@@ -48,10 +48,18 @@ func TestLoadIgnoreSetSkipsMaskedSubtree(t *testing.T) {
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs}
-	set := loadIgnoreSet(fsys, func(relPath string) bool {
+	// One budget for both, as the production callers do: the filesystem charges
+	// entries and live holdings against the same budget discovery charges
+	// listings and rules to, so splitting them here would hide a regression in
+	// that sharing.
+	budget := newGlobBudget("glob")
+	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: sfs, budget: budget, ctx: t.Context()}
+	set, err := loadIgnoreSet(t.Context(), fsys, func(relPath string) bool {
 		return sfs.underMasked(filepath.Join(canonical, relPath))
-	})
+	}, budget, wholeBaseIgnoreScope())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, d := range set.dirs {
 		if d.rel == "vault" || strings.HasPrefix(d.rel, "vault/") {
