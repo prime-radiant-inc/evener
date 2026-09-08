@@ -14,14 +14,16 @@ import (
 // it: a hub passes its own concrete config root on resume exactly as it does
 // on spawn, while the snapshot carries whatever was true when the session was
 // created — nothing at all for a pre-feature session, a stale root for one
-// whose hub moved. An empty override leaves the persisted path alone, so a
-// plain `evener serve --resume` still reads the file it always did.
+// whose hub moved. An empty override is the restorer's own answer too, not a
+// request to keep the snapshot's: a hub with no resolvable config root reads no
+// personal doc on resume, matching what Settings reports and what its fresh
+// sessions do, and never a path a departed hub left behind.
 func TestRestoreSessionAppliesTheAgentsDocOverride(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	persisted := SessionConfig{AgentsDocPath: "/old/AGENTS.md"}.toSnapshot()
 	for _, tc := range []struct{ override, want string }{
-		{override: "", want: "/old/AGENTS.md"},
+		{override: "", want: ""},
 		{override: "/new/AGENTS.md", want: "/new/AGENTS.md"},
 	} {
 		meta := schema.SessionMeta{ID: "agents-doc-resume", ProfileID: "openai", Model: "gpt-5.2", Config: persisted}

@@ -622,7 +622,12 @@ type RestoreSessionConfig struct {
 	// to whoever is restoring it — a hub hands over its own concrete config
 	// root, the same one Settings edits — not to the session on disk, whose
 	// snapshot predates the flag or names a root the hub has since left. Empty
-	// keeps the persisted path.
+	// is the restorer's own answer as much as a path is, and means the one thing
+	// it means everywhere: no personal doc resolves in this environment. A hub
+	// whose config root is unresolvable and a plain `evener serve --resume` both
+	// read the file their own environment names and never one a departed hub
+	// persisted. The persisted field exists so a CHILD built from its parent's
+	// snapshot inherits the parent's answer; it does not outlive the run.
 	AgentsDocPath string
 
 	// ForceRealIO carries through to the restored Session's SessionConfig.
@@ -724,9 +729,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
 		return nil, err
 	}
-	if v := strings.TrimSpace(restoreCfg.AgentsDocPath); v != "" {
-		cfg.AgentsDocPath = v
-	}
+	cfg.AgentsDocPath = strings.TrimSpace(restoreCfg.AgentsDocPath)
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
