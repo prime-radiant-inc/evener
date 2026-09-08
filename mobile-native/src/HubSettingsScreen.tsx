@@ -1,5 +1,6 @@
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import * as Crypto from "expo-crypto";
 import {
 	type ReactNode,
 	useCallback,
@@ -10,6 +11,7 @@ import {
 } from "react";
 import {
 	ActivityIndicator,
+	Alert,
 	RefreshControl,
 	ScrollView,
 	View,
@@ -118,7 +120,13 @@ function HubSettings({
 	const model = useMemo(() => new HubOverview(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
 	const upgrade = useMemo(
-		() => createHubUpgradeController(hubId, client, nativeHubUpgradeStorage),
+		() =>
+			createHubUpgradeController(
+				hubId,
+				client,
+				nativeHubUpgradeStorage,
+				Crypto.randomUUID,
+			),
 		[hubId, client],
 	);
 	const upgradeState = useSyncExternalStore(
@@ -169,6 +177,22 @@ function HubSettings({
 						}}
 						onRefresh={() => {
 							void upgrade.reconcileAfterReconnect();
+						}}
+						onReviewAnother={() => {
+							void upgrade.reviewAnotherUpdate().then((reviewed) => {
+								if (!reviewed) return;
+								Alert.alert(
+									"Review another update?",
+									"The running hub version was refreshed. Confirm to enable another upgrade attempt.",
+									[
+										{ text: "Cancel", style: "cancel" },
+										{
+											text: "Continue",
+											onPress: () => upgrade.rearm(reviewed),
+										},
+									],
+								);
+							});
 						}}
 					/>
 				</Section>

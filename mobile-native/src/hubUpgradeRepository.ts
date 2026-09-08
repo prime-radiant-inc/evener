@@ -1,30 +1,12 @@
 import type { UpgradeCheckpoint, UpgradeStorage } from "./hubUpgrade";
+import { isValidUpgradeResponse } from "./hubUpgradeValidation";
 
 const prefix = "evener:hub-upgrade:";
 export interface SyncUpgradeStorage {
 	getItemSync(key: string): string | null;
 	setItemSync(key: string, value: string): void;
+	removeItemSync(key: string): void;
 }
-const requiredResponse = [
-	"release",
-	"channel",
-	"url",
-	"archive",
-	"prefix",
-	"binDir",
-	"shareBinDir",
-	"restartMessage",
-] as const;
-const text = (value: unknown): value is string => typeof value === "string";
-const validResponse = (value: unknown) => {
-	if (!value || typeof value !== "object") return false;
-	const candidate = value as Record<string, unknown>;
-	return (
-		requiredResponse.every((key) => text(candidate[key])) &&
-		Array.isArray(candidate.installed) &&
-		candidate.installed.every(text)
-	);
-};
 const parse = (hubId: string, raw: string): UpgradeCheckpoint => {
 	const value: unknown = JSON.parse(raw);
 	if (!value || typeof value !== "object")
@@ -33,12 +15,15 @@ const parse = (hubId: string, raw: string): UpgradeCheckpoint => {
 	if (
 		candidate.hubId !== hubId ||
 		candidate.pending !== true ||
+		typeof candidate.attemptId !== "string" ||
+		candidate.attemptId.trim() === "" ||
 		typeof candidate.startedAt !== "number" ||
 		!Number.isFinite(candidate.startedAt) ||
-		(candidate.response !== undefined && !validResponse(candidate.response))
+		(candidate.response !== undefined &&
+			!isValidUpgradeResponse(candidate.response))
 	)
 		throw new Error("Invalid upgrade checkpoint");
-	return value as UpgradeCheckpoint;
+	return JSON.parse(JSON.stringify(value)) as UpgradeCheckpoint;
 };
 
 export class HubUpgradeRepository implements UpgradeStorage {
@@ -52,5 +37,10 @@ export class HubUpgradeRepository implements UpgradeStorage {
 			prefix + checkpoint.hubId,
 			JSON.stringify(checkpoint),
 		);
+	}
+	remove(hubId: string, attemptId: string) {
+		const checkpoint = this.read(hubId);
+		if (checkpoint?.attemptId === attemptId)
+			this.storage.removeItemSync(prefix + hubId);
 	}
 }
