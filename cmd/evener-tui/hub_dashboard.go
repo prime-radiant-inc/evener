@@ -442,10 +442,12 @@ func filterHubRows(rows []hubRow, query string) []hubRow {
 	if query == "" {
 		return rows
 	}
+	matched := make([]bool, len(rows))
 	projectMatches := map[string]bool{}
 	childMatches := map[string]bool{}
-	for _, row := range rows {
-		if rowMatchesFilter(row, query) {
+	for i, row := range rows {
+		if strings.Contains(rowFilterHaystack(row), query) {
+			matched[i] = true
 			groupKey := dashboardGroupKey(row)
 			if row.kind == hubRowProject {
 				projectMatches[groupKey] = true
@@ -455,7 +457,7 @@ func filterHubRows(rows []hubRow, query string) []hubRow {
 		}
 	}
 	filtered := make([]hubRow, 0, len(rows))
-	for _, row := range rows {
+	for i, row := range rows {
 		groupKey := dashboardGroupKey(row)
 		if row.kind == hubRowProject {
 			if projectMatches[groupKey] || childMatches[groupKey] {
@@ -463,7 +465,7 @@ func filterHubRows(rows []hubRow, query string) []hubRow {
 			}
 			continue
 		}
-		if projectMatches[groupKey] || rowMatchesFilter(row, query) {
+		if projectMatches[groupKey] || matched[i] {
 			filtered = append(filtered, row)
 		}
 	}
@@ -488,8 +490,8 @@ func dashboardGroupKey(row hubRow) string {
 	return row.projectKey
 }
 
-func rowMatchesFilter(row hubRow, query string) bool {
-	haystack := strings.ToLower(strings.Join([]string{
+func rowFilterHaystack(row hubRow) string {
+	return strings.ToLower(strings.Join([]string{
 		row.title,
 		row.project,
 		row.projectKey,
@@ -498,7 +500,6 @@ func rowMatchesFilter(row hubRow, query string) bool {
 		row.state,
 		row.age,
 	}, " "))
-	return strings.Contains(haystack, query)
 }
 
 func (m *hubModel) clampSelection() {
