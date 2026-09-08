@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -369,4 +370,107 @@ func TestPersistPendingWatchSendWithoutBatchSeamCommitsDurablePrefix(t *testing.
 	if !evictedHeld {
 		t.Fatal("evicted oldest key missing from runtime pending map although its eviction never landed")
 	}
+}
+
+// TestRecordWatchSendsWakesOwnerOnDurablePrefix pins the roborev fix on head
+// 3541703: recordWatchSend returns ok=true alongside the failure when a
+// durable prefix already landed (persisted=true), and recordWatchSends must
+// treat that as recorded — token for caller-targeted sends, kick otherwise —
+// instead of dropping it as "already handled". Without the fix the journaled
+// pending frame stalls until unrelated activity wakes the owner.
+//
+// The fault injection reuses the nil-seam prefix-commit shape: without the
+// AppendBatch seam the pending event lands, the eviction write fails, and the
+// return carries persisted=true + the eviction failure.
+func TestRecordWatchSendsWakesOwnerOnDurablePrefix(t *testing.T) {
+	t.Parallel()
+	buildJM := func(t *testing.T, sendTo string) (*jobManager, *watchConfig, func(string) watchSendDelivery) {
+		t.Helper()
+		jm := newTestJM(t)
+		installWatchBelowValidation(t, jm, watchArgs{
+			Target: "caller",
+			Events: []string{"assistant.message"},
+			Send:   &watchSendArgs{To: sendTo},
+		})
+		cfg := onlyWatchConfigForTest(t, jm)
+		build := func(target string) watchSendDelivery {
+			jm.mu.Lock()
+			defer jm.mu.Unlock()
+			return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+		}
+		for i := range defaultWatchSendPendingCap {
+			if _, _, ok, err := jm.recordWatchSend(build(fmt.Sprintf("target_%d", i))); err != nil || !ok {
+				t.Fatalf("fill send %d: ok=%v err=%v", i, ok, err)
+			}
+		}
+		return jm, cfg, build
+	}
+	failEvictionWrite := func(t *testing.T, jm *jobManager) {
+		t.Helper()
+		jm.appendEvents = nil
+		failAppendN(jm, jobstore.EventWatchSendEvicted, 1)
+	}
+
+	// Caller-targeted send: the durable prefix must surface as a wake token.
+	t.Run("caller token", func(t *testing.T) {
+		t.Parallel()
+		jm, cfg, build := buildJM(t, "caller")
+		failEvictionWrite(t, jm)
+		var queued []jobNotification
+		jm.enqueue = func(n jobNotification) { queued = append(queued, n) }
+		tokens, recorded := jm.recordWatchSends([]watchSendDelivery{build("target_overflow")})
+		if !recorded {
+			t.Fatal("recordWatchSends on a durable prefix: recorded=false, want true (the pending frame is journaled and owes the owner a wake)")
+		}
+		if len(tokens) != 1 {
+			t.Fatalf("recordWatchSends on a durable caller prefix: %d tokens, want 1 caller wake token", len(tokens))
+		}
+		if tokens[0].WatchSend == nil {
+			t.Fatal("caller wake token carries no watch-send token")
+		}
+		if got := tokens[0].WatchSend.Key; cfg.pending[got] == nil {
+			t.Fatal("caller wake token keys a send missing from the runtime pending map")
+		}
+		if folded := loadWatchSendRecord(t, jm).Pending; folded[tokens[0].WatchSend.Key] == nil {
+			t.Fatal("caller wake token keys a send missing from the durable pending fold")
+		}
+		// The wake token returns to the caller unqueued; the eviction failure
+		// itself already queued exactly one diagnostic at the persist site —
+		// the two coexist, which is the point of the fix.
+		if len(queued) != 1 {
+			t.Fatalf("recordWatchSends queued %d notifications itself, want 1 (the persist-site failure diagnostic)", len(queued))
+		}
+		if queued[0].WatchSend != nil {
+			t.Fatal("persist-site queue carried the wake token; tokens must return to the caller for one wake")
+		}
+		if !strings.Contains(queued[0].Reason, "pending state failed") {
+			t.Fatalf("queued diagnostic reason = %q, want the persist-site failure", queued[0].Reason)
+		}
+	})
+
+	// Delegate-targeted send: no caller token exists, so recorded=true is what
+	// still owes the owner a kick via recordWatchSendsAndKick.
+	t.Run("delegate kick", func(t *testing.T) {
+		t.Parallel()
+		jm, cfg, build := buildJM(t, "dlg_obs")
+		failEvictionWrite(t, jm)
+		var kicks int
+		jm.wake = func() { kicks++ }
+		// newTestJM leaves jm.enqueue nil, so the batch helper's token queue
+		// reports nothing queued: a recorded delegate send with no caller
+		// token must wake the owner via kick.
+		jm.recordWatchSendsAndKick([]watchSendDelivery{build("target_overflow")})
+		if kicks != 1 {
+			t.Fatalf("durable delegate prefix produced %d kicks, want 1 (recorded with no tokens must wake the owner)", kicks)
+		}
+		// And the frame the kick covers is really there: journaled and in
+		// the runtime map.
+		folded := loadWatchSendRecord(t, jm).Pending
+		if len(folded) != defaultWatchSendPendingCap+1 {
+			t.Fatalf("durable pending entries = %d, want %d (newcomer journaled, evicted key retained)", len(folded), defaultWatchSendPendingCap+1)
+		}
+		if len(cfg.pending) != defaultWatchSendPendingCap+1 {
+			t.Fatalf("runtime pending entries = %d, want %d (matches the journal)", len(cfg.pending), defaultWatchSendPendingCap+1)
+		}
+	})
 }
