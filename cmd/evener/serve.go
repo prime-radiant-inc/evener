@@ -316,6 +316,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	var pluginDirs cmdutil.StringSliceFlag
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
+	agentsDoc := fs.String("agents-doc", "", "personal AGENTS.md loaded ahead of project docs (default: <user config root>/AGENTS.md)")
 	var enabledPlugins pluginSelectionFlag
 	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
@@ -514,6 +515,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SystemPromptFile:            *systemPrompt,
 		SystemPromptAppend:          []string(systemPromptAppend),
 		NoProjectPrompts:            *noProjectPrompts,
+		AgentsDocPath:               *agentsDoc,
 		AgentName:                   *agentName,
 		SkillsDirs:                  []string(skillsDirs),
 		MCPConfigFiles:              []string(mcpConfigs),
@@ -576,6 +578,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 			ProviderIdleTimeout:         *providerIdleTimeout,
+			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
 			// A resume provisions this environment's sandbox from the

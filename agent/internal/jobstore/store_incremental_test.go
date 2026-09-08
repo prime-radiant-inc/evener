@@ -1001,3 +1001,97 @@ func BenchmarkStoreRepeatLoad(b *testing.B) {
 		})
 	}
 }
+
+// TestStoreFoldCacheSeesForeignAppendAfterStaleStat pins the hole closed in
+// foldCurrentLocked: a cache hit requires the cursor to have consumed through
+// the reported file size, not just to trust its recorded size and mtime. A
+// filesystem whose stat lags can otherwise leave cursor.offset ahead of
+// cursor.size while still reporting the old size; without the consumed-offset
+// check the stale stat keeps matching and repeated folded loads would serve
+// the old cached fold, hiding an out-of-band append that readAllLocked would
+// rescan for (info.Size() != cursor.offset).
+func TestStoreFoldCacheSeesForeignAppendAfterStaleStat(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	base := afero.NewMemMapFs()
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	first, err := s.Load()
+	if err != nil {
+		t.Fatalf("prime load: %v", err)
+	}
+	nFirst := len(first)
+	// Repeat the folded load so the fold cache is populated and served.
+	second, err := s.Load()
+	if err != nil {
+		t.Fatalf("repeat load: %v", err)
+	}
+	if len(second) != nFirst {
+		t.Fatalf("repeat load returned %d jobs, want %d", len(second), nFirst)
+	}
+	// Freeze the stat, then append through the store: noteAppendedLocked sees
+	// the stale size, drops the cursor, and the next load rescans to the real
+	// EOF while the recorded size and mtime stay frozen — leaving
+	// cursor.offset ahead of cursor.size with a stat that still matches both
+	// recorded values, exactly what readAllLocked's rescan guard
+	// (info.Size() != cursor.offset) is written to catch.
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("append under stale stat: %v", err)
+	}
+	afterStale, err := s.Load()
+	if err != nil {
+		t.Fatalf("load under stale stat: %v", err)
+	}
+	if _, ok := afterStale["job_0"]; !ok {
+		t.Fatalf("load under stale stat lost job_0: got %d jobs", len(afterStale))
+	}
+	// The load above rescanned to the real EOF while the stat still reports
+	// the frozen size, so the cursor has consumed past its recorded size.
+	if s.cursor.offset <= s.cursor.size {
+		t.Fatalf("fixture did not diverge: offset=%d size=%d, want offset ahead of size",
+			s.cursor.offset, s.cursor.size)
+	}
+	// Repeat the folded load so the (stale-based) fold is cached and served.
+	if _, err := s.Load(); err != nil {
+		t.Fatalf("repeat load under stale stat: %v", err)
+	}
+	// An out-of-band writer appends past both the stale size and the consumed
+	// offset. The bytes are current on read; only the stat lies.
+	// A job_started event folds into Load()'s job records (a watch event would
+	// not), so the hidden-append assertion below is meaningful.
+	foreign := Event{Kind: EventJobStarted, Seq: 3, JobID: "job_foreign_stale_stat", Type: JobShell}
+	line, err := json.Marshal(foreign)
+	if err != nil {
+		t.Fatalf("marshal foreign event: %v", err)
+	}
+	raw, err := afero.ReadFile(base, path)
+	if err != nil {
+		t.Fatalf("read log for foreign append: %v", err)
+	}
+	raw = append(raw, append(line, '\n')...)
+	if err := afero.WriteFile(base, path, raw, 0o644); err != nil {
+		t.Fatalf("write foreign event: %v", err)
+	}
+
+	got, err := s.Load()
+	if err != nil {
+		t.Fatalf("load after foreign append: %v", err)
+	}
+	if _, ok := got["job_foreign_stale_stat"]; !ok {
+		t.Fatalf("load hid the foreign append: got %d jobs without job_foreign_stale_stat", len(got))
+	}
+}

@@ -43,6 +43,5 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		_ = evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": 1})
 		webNil := NewWebServer(hubcore.WebConfig{})
 		_ = webNil.apiStateGlob()
-		_ = warningMessage([]byte(`{"warning":{}}`))
 	})
 }

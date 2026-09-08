@@ -19,8 +19,9 @@ in a running job's output → `job_watch` with `output_match` on that job; an
 event from a delegate → `job_watch` on that `dlg_...` source. State Evener
 cannot tell you about, such as an external service → a `job_watch` timer:
 `after_seconds` for "in about N minutes", `repeat_seconds` for "every N
-minutes", with a `note` saying why and, for a loop, where you are; to advance
-the note, clear and create.
+minutes". Any `job_watch` create takes a `note` saying why you armed it and,
+for a loop, where you are; it rides every fire of that watch, and to advance it
+you clear and create.
 Stable delegates are watch sources identified by `dlg_...`; shell work uses `job_...`.
 "Tell me when it finishes" → the terminal notification is automatic.
 

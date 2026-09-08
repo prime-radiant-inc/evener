@@ -65,12 +65,13 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 		for _, layer := range opt.DefaultableLayers {
 			wire.DefaultableLayers = append(wire.DefaultableLayers, string(layer))
 		}
+		// Copied whole, not field by field: both are the appwire types, and the
+		// schema slice is shared and must not be mutated through the response.
 		if opt.EnvFallback != nil {
-			wire.EnvFallback = &appwire.LaunchOptionEnvFallback{Name: opt.EnvFallback.Name}
+			envFallback := *opt.EnvFallback
+			wire.EnvFallback = &envFallback
 		}
-		for _, choice := range opt.Choices {
-			wire.Choices = append(wire.Choices, appwire.LaunchOptionChoice{Value: choice.Value, Label: choice.Label, Disabled: choice.Disabled, Hint: choice.Hint})
-		}
+		wire.Choices = append(wire.Choices, opt.Choices...)
 		out.Options = append(out.Options, wire)
 	}
 	return out, nil

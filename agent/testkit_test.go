@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,6 +107,13 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	cfg := o.cfg
 	if !o.cfgSet {
 		cfg = SessionConfig{MaxSubagentDepth: 1}
+		// No ambient personal doc: the default fixture points AgentsDocPath
+		// at an isolated path that does not exist, so a <config
+		// root>/AGENTS.md in the test environment can never leak into the
+		// session's cached instruction docs. LoadUserDoc treats a missing
+		// file as absent, so the path itself never needs creating. An
+		// explicit cfg is the caller's own answer and is left untouched.
+		cfg.AgentsDocPath = filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
 	}
 	if o.skipGitSnapshot {
 		cfg.testOnly.skipGitSnapshot = true
