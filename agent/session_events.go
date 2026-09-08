@@ -239,6 +239,10 @@ func goalSeedData(goal *schema.GoalSnapshot) *events.GoalStateData {
 		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
 		out.NearestLabel = nearest.Label
 	}
+	// Graduation stage (spec §§6-7) for the /goal status line.
+	if goal.LedgerSummary != nil {
+		out.Stage = goal.LedgerSummary.Stage
+	}
 	return out
 }
 

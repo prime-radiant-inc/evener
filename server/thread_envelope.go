@@ -495,5 +495,10 @@ func goalStateFromMeta(g *schema.GoalSnapshot) *appwire.GoalState {
 		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
 		out.NearestLabel = nearest.Label
 	}
+	// Graduation stage (spec §§6-7: "", "nudged", "auto-parked") for the
+	// /goal status line. Empty means no stall trip.
+	if g.LedgerSummary != nil {
+		out.Stage = g.LedgerSummary.Stage
+	}
 	return out
 }

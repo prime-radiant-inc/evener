@@ -1584,6 +1584,24 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.GoalSetResponse{}, err
 	}
+	if params.Resume {
+		// Resume path (spec §7): a blocked goal's /goal resume never becomes
+		// the literal objective "resume". It routes to the resume callback
+		// (Session.GoalResume: ledger reset, waits cleared, budgets kept,
+		// renewal check) instead of goalFunc/Session.SetGoal, whose retarget
+		// semantics would destroy the waits/timers/ledger it should recover.
+		s.mu.RLock()
+		fn := s.goalResumeFunc
+		s.mu.RUnlock()
+		if fn == nil {
+			return appwire.GoalSetResponse{}, appwire.Unavailable("goal resume not available")
+		}
+		started, err := fn(params.Objective, params.ExtendBudget, params.ExtendValue)
+		if err != nil {
+			return appwire.GoalSetResponse{}, err
+		}
+		return appwire.GoalSetResponse{Started: started}, nil
+	}
 	s.mu.RLock()
 	fn := s.goalFunc
 	s.mu.RUnlock()

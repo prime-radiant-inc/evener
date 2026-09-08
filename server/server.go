@@ -365,6 +365,12 @@ type Server struct {
 	queueFunc                       func(string) error
 	queueWithImagesFunc             func(string, []ImageAttachment) error
 	goalFunc                        func(objective string) (bool, error)
+	// goalResumeFunc handles goal/set with Resume=true (spec §7): it receives
+	// the resume objective text plus the parsed --extend budget token/value
+	// (plain types — the server package must not import agent internals) and
+	// routes to Session.GoalResume via the daemon wiring. Separate from
+	// goalFunc so a resume never flows through SetGoal's retarget semantics.
+	goalResumeFunc func(objective, extendBudget string, extendValue int64) (bool, error)
 	drainSteerFunc                  func() error
 	drainSteerInputFunc             func(string, []ImageAttachment) error
 	promoteSteerFunc                func(int, string) error
@@ -613,6 +619,15 @@ func (s *Server) SetQueueFunc(fn func(string) error) {
 func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 	s.mu.Lock()
 	s.goalFunc = fn
+	s.mu.Unlock()
+}
+
+// SetGoalResumeFunc sets the function called by the appwire goal/set method
+// when Resume=true (spec §7): a blocked goal's /goal resume routes here
+// (Session.GoalResume), never through SetGoalFunc's retarget semantics.
+func (s *Server) SetGoalResumeFunc(fn func(objective, extendBudget string, extendValue int64) (bool, error)) {
+	s.mu.Lock()
+	s.goalResumeFunc = fn
 	s.mu.Unlock()
 }
 

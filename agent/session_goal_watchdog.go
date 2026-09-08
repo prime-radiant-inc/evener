@@ -34,6 +34,12 @@ type goalWatchdogState struct {
 	// waiting goals, last activity for active goals). Zero means no
 	// stretch is tracked.
 	stretchStart time.Time
+	// anchored marks an explicitly anchored start (first-track backdate to
+	// registration/creation, or an activity reset): later checks in the
+	// same stretch keep it. Without this, an activity reset followed by a
+	// kind/anchor change would backdate past the reset and un-notify
+	// quiet the reset had cleared.
+	anchored bool
 	// stretchKind is "park" or "active" for the tracked stretch.
 	stretchKind string
 	// stretchNotices counts watchdog notices emitted in this stretch (cap 2:
@@ -115,20 +121,43 @@ func (s *Session) checkGoalWatchdog(now time.Time) {
 	} else if created := goalCreatedAt(full); !created.IsZero() && created.Before(anchorStart) {
 		anchorStart = created
 	}
-	if ws.stretchStart.IsZero() {
+	// An explicit activity reset (anchored with a non-zero start) survives
+	// kind changes (park→active or active→park): the quiet clock restarts at
+	// the last activity, never backdates past it. A new park anchor (a
+	// re-registration with a new deadline after the old stretch ended)
+	// starts a FRESH stretch anchored at the new registration: the old
+	// stretch ended (cancel/expiry/drive), and its notices must not leak
+	// into the new one. Only an unanchored (fresh) stretch backdates to
+	// registration/creation.
+	if ws.stretchStart.IsZero() || !ws.anchored {
 		ws.stretchStart = anchorStart
 		ws.stretchKind = kind
 		ws.stretchNotices = 0
 		ws.halfReminderDone = false
 		ws.anchorDeadline = anchor
 		ws.anchorWaitID = anchorID
-	} else if ws.stretchKind != kind || (kind == "park" && (anchorID != ws.anchorWaitID || !anchor.Equal(ws.anchorDeadline))) {
+		ws.anchored = true
+	} else if ws.stretchKind != kind {
+		// Kind change after an explicit anchor: refresh the kind bookkeeping
+		// but keep the post-activity start — the half-reminder re-anchors to
+		// the new deadline against the surviving start.
+		ws.stretchKind = kind
+		ws.stretchNotices = 0
+		ws.halfReminderDone = false
+		ws.anchorDeadline = anchor
+		ws.anchorWaitID = anchorID
+	} else if kind == "park" && (anchorID != ws.anchorWaitID || !anchor.Equal(ws.anchorDeadline)) {
+		// New park anchor (re-registration): the old stretch ended, so start
+		// fresh at the new registration. Notices reset — the per-24h
+		// sentTimes ceiling (not the per-stretch count) is what silences
+		// repeat stretches.
 		ws.stretchStart = anchorStart
 		ws.stretchKind = kind
 		ws.stretchNotices = 0
 		ws.halfReminderDone = false
 		ws.anchorDeadline = anchor
 		ws.anchorWaitID = anchorID
+		ws.anchored = true
 	}
 	// Prune the rolling 24h window. Disclosure (fix-1/4 I3): the 24h
 	// ceiling lives in session-local state and is NOT persisted — a restart
@@ -214,8 +243,60 @@ func (s *Session) noteGoalWatchdogActivity(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goalWatchdog.stretchStart = now
+	s.goalWatchdog.anchored = true
 	s.goalWatchdog.stretchNotices = 0
 	s.goalWatchdog.halfReminderDone = false
+}
+
+// noteGoalWatchdogOwnerOutput resets the watchdog stretch on owner-visible
+// output (spec §6 activity signal 3): a goal that keeps reporting to its
+// owner is not quiet, so the quiet clock restarts. Same reset as any other
+// activity; split out so the owner-output call site reads as its own
+// signal. Call with no locks held.
+func (s *Session) noteGoalWatchdogOwnerOutput(now time.Time) {
+	s.noteGoalWatchdogActivity(now)
+}
+
+// noteGoalWatchdogFold records ledger-fold activity (spec §6 activity signal
+// 1): a committed fold whose entry advanced (novelty, digest delta, or
+// waits-predicate evidence) resets the quiet stretch, so arming never
+// false-positives active-quiet on advancing goals. A non-advancing fold
+// leaves the stretch running — stalled quiet is exactly what the watchdog
+// must observe. Advancement keys off the folded snapshot's trailing entry
+// (the fold just committed it), not off the pre-fold outcome alone, so the
+// signal and the persisted ledger agree. Call with no locks held.
+func (s *Session) noteGoalWatchdogFold(full goal.GoalSnapshot, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) {
+	_ = outcome
+	_ = waitAdvanced
+	if n := len(full.LedgerSummary.Entries); n > 0 && full.LedgerSummary.Entries[n-1].Advancement {
+		s.noteGoalWatchdogActivity(now)
+	}
+}
+
+// evalGoalWatchdogForTimer is the coalesced wait timer's watchdog piggyback
+// (spec §6 Task-8 residual): parked stretches evaluate through the same
+// coalesced timer that owns the wait deadlines — never a second timer. The
+// timer callback invokes this after the claim path; threshold-crossing
+// re-arms (the four-way min in goalWaitNextFire already includes the goal
+// deadline, parked-total projection, and poll cadence — the watchdog reads
+// the same sclock instant, so a stretch crossing the quiet threshold
+// between fires is observed at the next fire, never missed). Pure
+// delegation to checkGoalWatchdog; call with no locks held.
+func (s *Session) evalGoalWatchdogForTimer(now time.Time) {
+	s.checkGoalWatchdog(now)
+}
+
+// evalGoalWatchdogAtTurnTail evaluates the watchdog at the turn tail for
+// active goals (spec §6 Task-8 residual): active goals arm no coalesced
+// timer, so the gate tail is their only evaluation. The gate calls this on
+// every committed drive tail with the gate's sclock instant; parked goals
+// skip it (their stretch evaluates through the timer piggyback). Call with
+// no locks held.
+func (s *Session) evalGoalWatchdogAtTurnTail(full goal.GoalSnapshot, now time.Time) {
+	if full.Status != goal.StatusActive {
+		return
+	}
+	s.checkGoalWatchdog(now)
 }
 
 // resetGoalWatchdog clears the watchdog stretch (no goal, terminal goal, or

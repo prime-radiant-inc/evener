@@ -804,6 +804,9 @@ type GoalStateData struct {
 	// (spec §7: progress{usedContinuations, maxContinuations}).
 	UsedContinuations int `json:"used_continuations,omitempty"`
 	MaxContinuations  int `json:"max_continuations,omitempty"`
+	// Stage is the persisted graduation stage (spec §§6-7: "", "nudged",
+	// "auto-parked") for the /goal status line. Empty means no stall trip.
+	Stage string `json:"stage,omitempty"`
 }
 
 // GoalWaitData is one wire-projected live wait: identity + chip label +

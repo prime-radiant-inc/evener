@@ -66,6 +66,7 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
+	SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
@@ -928,6 +929,21 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return false, nil
 		}
 		return getSession().SetGoal(ctx, objective)
+	})
+	srv.SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error) {
+		// Resume path (spec §7): Session.GoalResume with the parsed --extend
+		// renewal. Optional replacement objective text ("/goal resume <text>")
+		// retargets via SetGoal AFTER the resume recovers budgets/ledger —
+		// never as the literal "resume".
+		sess := getSession()
+		started, err := sess.GoalResumeFromWire(objective, extendBudget, extendValue)
+		if err != nil {
+			return false, err
+		}
+		if text := strings.TrimSpace(objective); text != "" {
+			return sess.SetGoal(ctx, text)
+		}
+		return started, nil
 	})
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {

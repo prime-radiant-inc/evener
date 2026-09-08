@@ -394,6 +394,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.cleared:
 			m.addSessionSystem("Goal cleared.")
+		case msg.resumed:
+			if msg.started {
+				m.addSessionSystem("Goal resumed; pursuing now.")
+			} else {
+				m.addSessionSystem("Goal resumed; starts after the current turn.")
+			}
 		case msg.started:
 			m.addSessionSystem("Goal set; pursuing now.")
 		default:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,6 +113,93 @@ func (s *Session) ClearGoal() {
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
+}
+
+// parseGoalResumeArgs splits a /goal resume argument tail into its --extend
+// renewal (or nil) plus the remaining objective text (spec §5 two-token
+// grammar: "--extend <budget> <value>", R6 K arity pin). The --extend clause,
+// when present, must lead the tail; anything after its two tokens is
+// objective text ("/goal resume --extend deadline 3600 finish the deploy").
+// Unknown budgets, missing values, and non-numeric values are errors naming
+// the fault. Pure: no locks.
+func parseGoalResumeArgs(tail string) (*goal.ExtendRequest, string, error) {
+	tokens := strings.Fields(tail)
+	if len(tokens) == 0 || tokens[0] != "--extend" {
+		return nil, strings.TrimSpace(tail), nil
+	}
+	if len(tokens) < 3 {
+		return nil, "", errors.New(`usage: /goal resume [--extend <budget> <value>] [objective text]; --extend needs exactly two tokens: <budget> (continuations, deadline, or parked-total) and <value>`)
+	}
+	var budget goal.ExtendBudget
+	switch strings.ToLower(tokens[1]) {
+	case "continuations":
+		budget = goal.ExtendContinuations
+	case "deadline":
+		budget = goal.ExtendDeadline
+	case "parked-total", "parked_total", "parkedtotal":
+		budget = goal.ExtendParkedTotal
+	default:
+		return nil, "", fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", tokens[1])
+	}
+	value, err := strconv.ParseInt(tokens[2], 10, 64)
+	if err != nil || value <= 0 {
+		return nil, "", fmt.Errorf("invalid --extend value %q: want a positive integer (turns for continuations, seconds for deadline/parked-total)", tokens[2])
+	}
+	return &goal.ExtendRequest{Budget: budget, Value: value}, strings.Join(tokens[3:], " "), nil
+}
+
+// GoalResume re-drives a terminal-blocked goal (spec §5): the store Resume
+// commits ledger-reset/waits-cleared/budgets-kept/autoReparks-reset plus the
+// renewal check (reject naming the exhausted budget without --extend; drive
+// with --extend). From "waiting lost" the same path applies with the cause
+// cleared and re-arm-or-proceed guidance appended. Resume never re-blocks
+// without first consuming an explanatory turn or an explicit renewal: the
+// resumed goal is active, so the next gate drives an evaluation turn.
+//
+// Like SetGoal it coordinates on s.mu (goalInTurn read) so a resume racing
+// the gate's "clear flag + go idle" step is kicked exactly once: in-turn (or
+// pending-ask) resumes return started=false for the drain-loop gate to pick
+// up; idle resumes kick the first continuation prompt immediately (outside
+// the lock) and return started=true. A resume error (no blocked goal, or a
+// renewal rejection) drives nothing and returns started=false.
+func (s *Session) GoalResume(req goal.ResumeRequest, now time.Time) (started bool, err error) {
+	store := s.getOrCreateGoalStore()
+	s.goalUpdateMu.Lock()
+	_, rerr := store.Resume(req, now)
+	if rerr != nil {
+		s.goalUpdateMu.Unlock()
+		return false, rerr
+	}
+	// The resumed goal drives fresh: void any stale dependents hold, disarm
+	// any stale wait timer (waits were cleared), drop the delivered set and
+	// the terminal latch with the block they belonged to.
+	s.mu.Lock()
+	inTurn := s.goalInTurn
+	kick := s.kickFunc
+	pendingAsk := len(s.askPending) > 0
+	s.goalDependentsHeld = false
+	s.stopGoalWaitTimerLocked()
+	s.goalTerminalPending = false
+	s.goalWakeDelivered = nil
+	s.goalSupersededArmed = false
+	s.mu.Unlock()
+	s.emitCurrentGoalState()
+	s.goalUpdateMu.Unlock()
+
+	if inTurn || kick == nil || pendingAsk {
+		return false, nil
+	}
+	kick(goal.Render(s.resumedObjective()))
+	return true, nil
+}
+
+// resumedObjective re-reads the current (just-resumed, active) objective for
+// the idle-kick render. Call with no locks held (store methods self-lock).
+func (s *Session) resumedObjective() string {
+	if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok {
+		return full.Objective
+	}
+	return ""
 }
 
 // GoalStatus reports the session's current /goal lifecycle state. The objective
@@ -646,6 +734,9 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			// §7: no double-turn accounting): announce the resume on the kick
 			// itself, after the store locks are released.
 			s.emitGoalResumed(ids)
+			// Wake delivery is watchdog activity (spec §6 signal 2): the
+			// wake itself resets the stretch.
+			s.noteGoalWatchdogActivity(now)
 			// A non-continuation turn completed while wakes stood
 			// undelivered (e.g. a notification turn landing between claim
 			// and kick): the wake turn is due - drive it rather than the
@@ -774,6 +865,14 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 		// coalesced timer (Task-7 Minor-6 parity).
 		return s.finishStallBlock()
 	}
+	// Turn-tail watchdog eval + activity signals (spec §6 Task-8 residual):
+	// the committed fold is ledger activity (signal 1 — the fold's own
+	// advancement resets the quiet stretch inside noteGoalWatchdogFold), and
+	// the active-goal tail evaluates the watchdog (active goals arm no
+	// timer — this tail is their only evaluation). Parked goals skip the
+	// eval (their stretch evaluates through the timer piggyback).
+	s.noteGoalWatchdogFold(driveFull, foldOutcome, waitAdvanced, now)
+	s.evalGoalWatchdogAtTurnTail(driveFull, now)
 	return s.goalContinuationWithDelta(snap.Objective, driveFull.Conditions), true
 }
 
@@ -1167,6 +1266,13 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	s.mu.Unlock()
 	now := s.sclock().Now()
 	claimed, objective := s.claimGoalWaitExpiredWaits(now)
+	// Watchdog piggyback (spec §6 Task-8 residual): the parked stretch
+	// evaluates on the same coalesced fire — never a second timer. On a
+	// no-claim fire the watchdog may itself re-arm the timer: a stretch that
+	// crossed the quiet threshold between fires must still notify, and the
+	// next fire instant (four-way min) keeps the evaluation live until the
+	// stretch ends. kickClaimedGoalWake re-arms on the claim path below.
+	s.evalGoalWatchdogForTimer(now)
 	if len(claimed) == 0 {
 		s.armGoalWaitTimer()
 		return
@@ -1254,6 +1360,10 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 	// The notifying turn for a waited target IS the wake turn (spec §7: no
 	// double-turn accounting): announce the resume on the kick itself.
 	s.emitGoalResumed(ids)
+	// Wake delivery is watchdog activity (spec §6 signal 2): the wake
+	// itself resets the stretch, even when the wake's own fold carries no
+	// advancement.
+	s.noteGoalWatchdogActivity(s.sclock().Now())
 	kick(prompt)
 }
 
@@ -1535,6 +1645,9 @@ func (s *Session) settleGoalOnIdle() bool {
 		// wake and announces nothing.
 		if len(wakeIDs) > 0 {
 			s.emitGoalResumed(wakeIDs)
+			// Wake delivery is watchdog activity (spec §6 signal 2): the
+			// wake itself resets the stretch.
+			s.noteGoalWatchdogActivity(s.sclock().Now())
 		}
 		kick(prompt)
 		return true
@@ -1628,6 +1741,7 @@ func goalStateDataFromFull(full goal.GoalSnapshot) events.GoalStateData {
 		Iterations:        full.Iterations,
 		UsedContinuations: full.Budgets.UsedContinuations,
 		MaxContinuations:  full.Budgets.MaxContinuations,
+		Stage:             string(full.LedgerSummary.Stage),
 	}
 	var nearestID string
 	var nearestDeadline time.Time

@@ -1036,6 +1036,45 @@ func TestDefGoalWaitShape(t *testing.T) {
 	}
 }
 
+// TestDefGoalWaitPerKindShapes pins the Task-9 prompt-diff appendix (spec
+// §7): the goal_wait description documents per-kind predicate shapes in the
+// tool description — the stage-1 nudge is the backstop, not the
+// introduction.
+func TestDefGoalWaitPerKindShapes(t *testing.T) {
+	desc := DefGoalWait().Description
+	for _, shape := range []string{
+		"until_time: no target",
+		"until_job: target = the supervised job id",
+		"until_delegate: target = the delegate id",
+		"until_approval: target = the approval content key",
+		"until_event file_modified: target = the file path",
+		"until_event http_match: target = the absolute http(s) URL",
+		"until_event external_label: target = the harness label",
+		"until_child: target = the known descendant session id",
+	} {
+		if !strings.Contains(desc, shape) {
+			t.Fatalf("goal_wait description missing per-kind shape %q:\n%s", shape, desc)
+		}
+	}
+}
+
+// TestDefGoalExpectPerKindShapes pins the Task-9 prompt-diff appendix for
+// goal_expect: registrable v1 condition shapes plus the check-on-claim
+// timing note.
+func TestDefGoalExpectPerKindShapes(t *testing.T) {
+	desc := DefGoalExpect().Description
+	for _, shape := range []string{
+		"file check: target = the file path",
+		"until_job: target = the supervised job id",
+		"until_delegate: target = the delegate id",
+		"check-on-claim only",
+	} {
+		if !strings.Contains(desc, shape) {
+			t.Fatalf("goal_expect description missing per-kind shape %q:\n%s", shape, desc)
+		}
+	}
+}
+
 func TestDefGoalCancelWaitShape(t *testing.T) {
 	def := DefGoalCancelWait()
 	if def.Name != "goal_cancel_wait" {

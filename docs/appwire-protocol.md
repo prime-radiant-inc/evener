@@ -619,6 +619,9 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `objective` | `string` | yes |  |
+| `resume` | `bool` | yes |  |
+| `extendBudget` | `string` | yes |  |
+| `extendValue` | `int64` | yes |  |
 
 
 ### `GoalSetResponse`

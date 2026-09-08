@@ -726,6 +726,9 @@ type GoalState struct {
 	// (spec §7: progress{usedContinuations, maxContinuations}).
 	UsedContinuations int `json:"usedContinuations,omitempty"`
 	MaxContinuations  int `json:"maxContinuations,omitempty"`
+	// Stage is the persisted graduation stage (spec §§6-7: "", "nudged",
+	// "auto-parked") for the /goal status line. Empty means no stall trip.
+	Stage string `json:"stage,omitempty"`
 }
 
 // GoalWaitState is one wire-projected live wait: identity + chip label +
@@ -1604,6 +1607,19 @@ type TurnQueueResponse struct {
 type GoalSetParams struct {
 	Ref       string `json:"ref"`
 	Objective string `json:"objective,omitempty"`
+	// Resume re-drives a terminal-blocked goal (spec §7: wire via a GoalSet
+	// resume flag — no separate GoalResume RPC). The daemon routes Resume
+	// to Session.GoalResume (ledger reset, waits cleared, budgets kept,
+	// renewal check) instead of Session.SetGoal, so /goal resume never
+	// becomes the literal objective "resume". Objective carries optional
+	// replacement text ("/goal resume <text>"); ExtendBudget/ExtendValue
+	// carry the parsed --extend renewal (two-token grammar).
+	Resume bool `json:"resume,omitempty"`
+	// ExtendBudget names the --extend budget (continuations, deadline,
+	// parked-total); ExtendValue is its raw value (turns for continuations,
+	// seconds for deadline/parked-total). Both set together, or neither.
+	ExtendBudget string `json:"extendBudget,omitempty"`
+	ExtendValue  int64  `json:"extendValue,omitempty"`
 }
 
 // GoalSetResponse reports whether the goal loop started immediately. Started is

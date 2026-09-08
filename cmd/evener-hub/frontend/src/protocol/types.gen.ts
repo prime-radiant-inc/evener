@@ -453,6 +453,9 @@ export interface GitInfo {
 export interface GoalSetParams {
   ref: string;
   objective?: string;
+  resume?: boolean;
+  extendBudget?: string;
+  extendValue?: number;
 }
 
 export interface GoalSetResponse {
@@ -468,6 +471,7 @@ export interface GoalState {
   nearestLabel?: string;
   usedContinuations?: number;
   maxContinuations?: number;
+  stage?: string;
 }
 
 export interface GoalUpdatedParams {
@@ -2286,6 +2290,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "goal_ended",
   "goal_waiting",
   "goal_resumed",
+  "goal_watchdog",
   "fork_summary",
   "round_timings",
   "tool_repair",

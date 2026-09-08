@@ -91,6 +91,9 @@ type hubClearMsg struct {
 type hubGoalMsg struct {
 	cleared bool
 	started bool
+	// resumed marks the /goal resume path (goal/set with Resume=true): the
+	// daemon ran Session.GoalResume, never Session.SetGoal("resume").
+	resumed bool
 	err     error
 }
 
@@ -1082,20 +1085,94 @@ func sendHubGoal(client *appwire.Client, ref appwire.Ref, objective string) tea.
 	}
 }
 
-// runHubGoal dispatches the /goal command: `clear` clears the goal, `status`
-// reports the cached goal snapshot, and anything else sets it as the objective.
+// sendHubGoalResume issues goal/set with Resume=true (spec §7): a blocked
+// goal's /goal resume routes to Session.GoalResume on the daemon, never to
+// Session.SetGoal("resume"). objective carries optional replacement text
+// ("/goal resume <text>"); extendBudget/extendValue carry the parsed --extend
+// renewal ("" and 0 when absent).
+func sendHubGoalResume(client *appwire.Client, ref appwire.Ref, objective, extendBudget string, extendValue int64) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{
+			Ref:          ref.String(),
+			Objective:    objective,
+			Resume:       true,
+			ExtendBudget: extendBudget,
+			ExtendValue:  extendValue,
+		})
+		return hubGoalMsg{resumed: true, started: resp.Started, err: err}
+	}
+}
+
+// splitGoalResumeArgs splits a /goal tail whose first word is the resume
+// subcommand into its --extend renewal ("" and 0 when absent) plus the
+// remaining objective text (spec §5 two-token grammar: "--extend <budget>
+// <value>"; R6 K arity pin). The --extend clause, when present, must lead
+// the tail; anything after its two tokens is objective text. Unknown
+// budgets, missing values, and non-numeric values are errors naming the
+// fault. Pure: no locks.
+func splitGoalResumeArgs(tail string) (extendBudget string, extendValue int64, objective string, err error) {
+	tokens := strings.Fields(tail)
+	if len(tokens) == 0 || tokens[0] != "--extend" {
+		return "", 0, strings.TrimSpace(tail), nil
+	}
+	if len(tokens) < 3 {
+		return "", 0, "", fmt.Errorf("usage: /goal resume [--extend <budget> <value>] [objective text]; --extend needs exactly two tokens: <budget> (continuations, deadline, or parked-total) and <value>")
+	}
+	switch strings.ToLower(tokens[1]) {
+	case "continuations", "deadline", "parked-total", "parked_total", "parkedtotal":
+		extendBudget = strings.ToLower(tokens[1])
+	default:
+		return "", 0, "", fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", tokens[1])
+	}
+	value, perr := strconv.ParseInt(tokens[2], 10, 64)
+	if perr != nil || value <= 0 {
+		return "", 0, "", fmt.Errorf("invalid --extend value %q: want a positive integer (turns for continuations, seconds for deadline/parked-total)", tokens[2])
+	}
+	return extendBudget, value, strings.Join(tokens[3:], " "), nil
+}
+
+// isGoalSubcommand reports whether word is a bare /goal subcommand (spec §7
+// literal-collision rule, R5 J-I1): bare resume/status/clear are subcommands,
+// never objectives. Case-insensitive; only the exact word matches ("resumed"
+// or "please resume" stay objectives).
+func isGoalSubcommand(word, sub string) bool {
+	return strings.EqualFold(strings.TrimSpace(word), sub)
+}
+
+// runHubGoal dispatches the /goal command (spec §7 precedence): `resume
+// [--extend <budget> <value>]` parses BEFORE objective-setting (a blocked
+// goal's `/goal resume` never becomes the literal objective `"resume"`),
+// `clear` clears the goal, `status` reports the cached goal snapshot, and
+// anything else sets it as the objective.
 func (m *hubModel) runHubGoal(args string) tea.Cmd {
 	arg := strings.TrimSpace(args)
-	if strings.EqualFold(arg, "status") {
+	if isGoalSubcommand(arg, "status") {
 		m.addSessionSystem(hubGoalStatusText(m.detail.Goal))
 		return nil
+	}
+	if fields := strings.Fields(arg); len(fields) > 0 && isGoalSubcommand(fields[0], "resume") {
+		// Resume path: parse the --extend renewal + replacement text BEFORE
+		// any objective-setting, and wire via the GoalSet resume flag.
+		// The tail is everything after the leading "resume" word
+		// (fields[1:] rejoined — exact spacing is irrelevant past parsing).
+		extendBudget, extendValue, objective, perr := splitGoalResumeArgs(strings.Join(fields[1:], " "))
+		if perr != nil {
+			m.addSessionSystem("Goal resume failed: " + perr.Error())
+			return nil
+		}
+		ref, ok := m.currentRef()
+		if !ok {
+			m.addSessionSystem("Session ref is invalid.")
+			return nil
+		}
+		return sendHubGoalResume(m.client, ref, objective, extendBudget, extendValue)
 	}
 	ref, ok := m.currentRef()
 	if !ok {
 		m.addSessionSystem("Session ref is invalid.")
 		return nil
 	}
-	if strings.EqualFold(arg, "clear") {
+	if isGoalSubcommand(arg, "clear") {
 		return sendHubGoal(m.client, ref, "")
 	}
 	return sendHubGoal(m.client, ref, arg)
@@ -1104,18 +1181,22 @@ func (m *hubModel) runHubGoal(args string) tea.Cmd {
 // hubGoalStatusText renders the `/goal status` line from the cached goal
 // snapshot (spec §7: "Goal: <status> <used/max> · waiting on <labels> ·
 // <nearest deadline> · <stage>"). With no goal set it prints a minimal usage
-// hint. Stage stays deferred to slice 3 (no graduation stages exist yet —
-// Task 8 owns the nudge/park/block stage machine and will extend this line);
-// used/max renders now because the wire already carries it.
+// hint. The waiting and stage segments render only when they carry content:
+// non-waiting goals omit the waiting half; goals with no stall trip (empty
+// stage) omit the stage.
 func hubGoalStatusText(goal *appwire.GoalState) string {
 	if goal == nil {
 		return "No goal set. Use /goal <objective> to set one."
 	}
 	progress := hubGoalProgressText(goal)
+	out := fmt.Sprintf("Goal: %s %s", goal.Status, progress)
 	if goal.Status == "waiting" {
-		return fmt.Sprintf("Goal: %s %s · waiting on %s", goal.Status, progress, hubGoalWaitingSummary(goal))
+		out += fmt.Sprintf(" · waiting on %s", hubGoalWaitingSummary(goal))
 	}
-	return fmt.Sprintf("Goal: %s %s", goal.Status, progress)
+	if strings.TrimSpace(goal.Stage) != "" {
+		out += " · " + strings.TrimSpace(goal.Stage)
+	}
+	return out
 }
 
 // hubGoalProgressText renders the spend progress half of `/goal status` as

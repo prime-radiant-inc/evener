@@ -949,6 +949,228 @@ func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	return true
 }
 
+// ExtendBudget names the spend budget a /goal resume --extend renews (spec
+// §5): continuations, deadline, or parked-total. The CLI grammar is the
+// two-token "--extend <budget> <value>" (R6 K arity pin).
+type ExtendBudget string
+
+const (
+	// ExtendContinuations renews maxContinuations by Value turns.
+	ExtendContinuations ExtendBudget = "continuations"
+	// ExtendDeadline renews the wall-clock deadline by Value seconds from now.
+	ExtendDeadline ExtendBudget = "deadline"
+	// ExtendParkedTotal renews maxParkedTotal by Value seconds.
+	ExtendParkedTotal ExtendBudget = "parked-total"
+)
+
+// ExtendRequest is one parsed --extend renewal: the budget plus its raw
+// value (turns for continuations, seconds for deadline/parked-total).
+// Values clamp to the §5 caps at apply time (1000 / 24h / 24h).
+type ExtendRequest struct {
+	Budget ExtendBudget
+	Value  int64
+}
+
+// ResumeRequest is a /goal resume invocation: an optional --extend renewal.
+// A nil Extend means "resume without renewal" — the renewal check still
+// runs and rejects when any budget is exhausted at resume time.
+type ResumeRequest struct {
+	Extend *ExtendRequest
+}
+
+// NoBlockedGoalError names the resume-with-no-goal failure (spec §7 L-I1):
+// resume with no goal at all (never set, or cleared) errors naming "no
+// blocked goal to resume" — never a literal objective.
+const NoBlockedGoalError = "no blocked goal to resume"
+
+// exhaustedBudget names the first spend bound exceeded at now (spec §5
+// renewal): "maxContinuations", "maxParkedTotal", or "deadline". Empty
+// means no budget is exhausted. Parked-total precedes the deadline so an
+// exact 24h/24h tie names the continuation-spend lever (the §5 layering).
+func exhaustedBudget(full GoalSnapshot, now time.Time) string {
+	if full.Budgets.MaxContinuations > 0 && full.Budgets.UsedContinuations >= full.Budgets.MaxContinuations {
+		return "maxContinuations"
+	}
+	if full.Budgets.MaxParkedTotal > 0 && full.Budgets.ParkedTotal >= full.Budgets.MaxParkedTotal {
+		return "maxParkedTotal"
+	}
+	if !full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline) {
+		return "deadline"
+	}
+	return ""
+}
+
+// ApplyExtend renews one spend budget on a blocked-goal snapshot read (spec
+// §5): continuations add Value turns (clamped to MaxContinuationsCap total),
+// deadline moves to now+Value seconds (clamped to now+GoalDeadlineCap), and
+// parked-total adds Value seconds of headroom (clamped to MaxParkedTotalCap
+// total). A deadline extend resets DeadlineFinalDelivered=false keyed to the
+// new deadline value (R7 M-I2), so a second expiry gets its mandated final
+// turn. Pure on the value: callers persist via RestoreSnapshot. Reports the
+// applied snapshot, or an error naming the bad budget/value.
+func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnapshot, error) {
+	out := full
+	switch ext.Budget {
+	case ExtendContinuations:
+		if ext.Value <= 0 {
+			return GoalSnapshot{}, fmt.Errorf("invalid --extend continuations value %d: want a positive turn count", ext.Value)
+		}
+		out.Budgets.MaxContinuations += int(ext.Value)
+		if out.Budgets.MaxContinuations > MaxContinuationsCap {
+			out.Budgets.MaxContinuations = MaxContinuationsCap
+		}
+	case ExtendDeadline:
+		if ext.Value <= 0 {
+			return GoalSnapshot{}, fmt.Errorf("invalid --extend deadline value %d: want a positive second count", ext.Value)
+		}
+		out.Budgets.Deadline = now.Add(time.Duration(ext.Value) * time.Second)
+		if cap := now.Add(GoalDeadlineCap); out.Budgets.Deadline.After(cap) {
+			out.Budgets.Deadline = cap
+		}
+		out.DeadlineFinalDelivered = false
+	case ExtendParkedTotal:
+		if ext.Value <= 0 {
+			return GoalSnapshot{}, fmt.Errorf("invalid --extend parked-total value %d: want a positive second count", ext.Value)
+		}
+		out.Budgets.MaxParkedTotal += time.Duration(ext.Value) * time.Second
+		if out.Budgets.MaxParkedTotal > MaxParkedTotalCap {
+			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
+		}
+	default:
+		return GoalSnapshot{}, fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", string(ext.Budget))
+	}
+	return out, nil
+}
+
+// CheckRenewal runs the §5 renewal check at resume time (before driving): it
+// inspects EVERY budget regardless of the recorded block reason (a
+// stall-block coinciding with a spent budget renews the same way). A provided
+// --extend always applies first (clamped); the check then runs on the renewed
+// snapshot, so an extend that leaves another budget exhausted still rejects
+// naming it. Without --extend an exhausted budget rejects naming it.
+// Returns the (possibly renewed) snapshot, or an error of the form
+// "cannot resume: <budget> exhausted; retry with --extend <cli-budget>
+// <value>" (the hint names the parseable CLI token: continuations,
+// parked-total, deadline).
+func CheckRenewal(full GoalSnapshot, ext *ExtendRequest, now time.Time) (GoalSnapshot, error) {
+	if ext != nil {
+		applied, err := ApplyExtend(full, *ext, now)
+		if err != nil {
+			return GoalSnapshot{}, err
+		}
+		full = applied
+	}
+	if name := exhaustedBudget(full, now); name != "" {
+		return GoalSnapshot{}, fmt.Errorf("cannot resume: %s exhausted; retry with --extend %s <value>", name, extendCLIToken(name))
+	}
+	return full, nil
+}
+
+// extendCLIToken maps the internal exhausted-budget name to the parseable
+// --extend CLI token.
+func extendCLIToken(name string) string {
+	switch name {
+	case "maxContinuations":
+		return "continuations"
+	case "maxParkedTotal":
+		return "parked-total"
+	default:
+		return name
+	}
+}
+
+// Resume re-drives a terminal-blocked goal (spec §5): from "no progress" (or
+// "waiting lost", which follows the same path) → ledger reset, waits
+// cleared, budgets kept, autoReparks reset, persisted cause cleared; the
+// renewal check runs first whenever ANY budget is exhausted, regardless of
+// the recorded block reason. Resume with no goal at all, or with a
+// non-blocked (active/waiting/complete) goal, is an error naming
+// NoBlockedGoalError. The resumed goal is active with the same objective;
+// the reported once-gate resets so the resumed goal's own terminal reports
+// exactly once. Returns the resumed snapshot.
+func (s *Store) Resume(req ResumeRequest, now time.Time) (GoalSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil || s.goal.Status != StatusBlocked {
+		return GoalSnapshot{}, fmt.Errorf("%s", NoBlockedGoalError)
+	}
+	full := s.fullLocked()
+	renewed, err := CheckRenewal(full, req.Extend, now)
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	g := s.goal
+	g.Budgets = renewed.Budgets
+	g.DeadlineFinalDelivered = renewed.DeadlineFinalDelivered
+	g.Waits = nil
+	g.PendingWake = nil
+	g.LedgerSummary = LedgerSummary{}
+	g.NoProgressStreak = 0
+	g.madeProgressOnce = false
+	g.AutoReparks = 0
+	g.LossCause = ""
+	g.AdvancementSinceLoss = false
+	g.TerminalPending = false
+	g.Status = StatusActive
+	g.StopReason = ""
+	g.reported = false
+	g.UpdatedAt = now
+	return s.fullLocked(), nil
+}
+
+// fullLocked returns the full persisted-shape read. Caller must hold s.mu.
+func (s *Store) fullLocked() GoalSnapshot {
+	g := s.goal
+	return GoalSnapshot{
+		Objective:              g.Objective,
+		Status:                 g.Status,
+		Iterations:             g.Iterations,
+		NoProgressStreak:       g.NoProgressStreak,
+		StopReason:             g.StopReason,
+		Waits:                  append([]Wait(nil), g.Waits...),
+		PendingWake:            append([]PendingWake(nil), g.PendingWake...),
+		Budgets:                g.Budgets,
+		LedgerSummary:          cloneLedgerSummary(g.LedgerSummary),
+		AutoReparks:            g.AutoReparks,
+		Conditions:             append([]Condition(nil), g.Conditions...),
+		CreatedAt:              g.CreatedAt,
+		UpdatedAt:              g.UpdatedAt,
+		TerminalPending:        g.TerminalPending,
+		LossCause:              g.LossCause,
+		AdvancementSinceLoss:   g.AdvancementSinceLoss,
+		DeadlineFinalDelivered: g.DeadlineFinalDelivered,
+	}
+}
+
+// PersistedFromSnapshot converts a live full-snapshot read back into the
+// persisted image (round-trips through PersistSnapshot's field set) so tests
+// can set budget/loss fields the narrow mutators do not expose. ok is false
+// for the zero snapshot.
+func PersistedFromSnapshot(full GoalSnapshot) (PersistedGoal, bool) {
+	if full.Objective == "" && full.Status == "" {
+		return PersistedGoal{}, false
+	}
+	return PersistedGoal{
+		Objective:              full.Objective,
+		Status:                 full.Status,
+		Iterations:             full.Iterations,
+		NoProgressStreak:       full.NoProgressStreak,
+		StopReason:             full.StopReason,
+		CreatedAt:              full.CreatedAt,
+		UpdatedAt:              full.UpdatedAt,
+		Waits:                  append([]Wait(nil), full.Waits...),
+		PendingWake:            append([]PendingWake(nil), full.PendingWake...),
+		Budgets:                full.Budgets,
+		LedgerSummary:          cloneLedgerSummary(full.LedgerSummary),
+		AutoReparks:            full.AutoReparks,
+		Conditions:             append([]Condition(nil), full.Conditions...),
+		TerminalPending:        full.TerminalPending,
+		LossCause:              full.LossCause,
+		AdvancementSinceLoss:   full.AdvancementSinceLoss,
+		DeadlineFinalDelivered: full.DeadlineFinalDelivered,
+	}, true
+}
+
 // DrainPendingWake removes and returns the persisted consumed-but-undelivered
 // fire backlog (spec §1): the wake turn's tail fold calls this in the same
 // commit that folds the turn, so a crash between kick and fold re-drives a

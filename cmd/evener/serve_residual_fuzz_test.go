@@ -71,6 +71,9 @@ func (s *residualServeServer) SetQueueWithImagesFunc(f func(string, []server.Ima
 	s.queueImages = f
 }
 func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error)) { s.goal = f }
+func (s *residualServeServer) SetGoalResumeFunc(f func(string, string, int64) (bool, error)) {
+	_ = f
+}
 func (s *residualServeServer) SetDrainAsSteerFunc(f func() error)       { s.drain = f }
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f

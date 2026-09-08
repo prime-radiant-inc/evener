@@ -1044,6 +1044,15 @@ func DefGoalWait() llm.ToolDefinition {
 			`until_approval to wait on a live ask_user question you asked (with its ask-call ID); ` +
 			`until_event file_modified to wait on a file inside the session sandbox changing, http_match to wait on a URL matching, ` +
 			`external_label for a harness-signalled label; until_child to wait on a known descendant session's terminal report. ` +
+			`Per-kind predicate shapes (target carries the kind's identity): ` +
+			`until_time: no target (timeout_seconds alone sets the deadline). ` +
+			`until_job: target = the supervised job id (must be running, or retained-terminal inside the record window for immediate catch-up). ` +
+			`until_delegate: target = the delegate id (must be running/settling/stopping, or retained-terminal for catch-up). ` +
+			`until_approval: target = the approval content key (header + question) plus ask_generation = the stable turn/ask-call ID of the ask_user call (root session only). ` +
+			`until_event file_modified: target = the file path inside the session sandbox (must exist and stat), event_subtype = "file_modified". ` +
+			`until_event http_match: target = the absolute http(s) URL, event_subtype = "http_match", matcher = the match expression (polled, 60s floor). ` +
+			`until_event external_label: target = the harness label, event_subtype = "external_label". ` +
+			`until_child: target = the known descendant session id (fires only on the child's terminal report). ` +
 			`Hallucinated targets are rejected with the reason named; a retained-terminal job/delegate fires immediately with its terminal outcome.`,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1109,6 +1118,11 @@ func DefGoalExpect() llm.ToolDefinition {
 			`goals without conditions complete by self-declare. ` +
 			`Registrable conditions in v1 (fix-1/4 I1): file checks (until_event/file_modified; empty kind means a file check on target), ` +
 			`until_job, and until_delegate only. until_approval, until_child, http_match, and external_label are rejected with the reason named. ` +
+			`Per-kind predicate shapes (target carries the kind's identity): ` +
+			`file check: target = the file path inside the session sandbox (empty kind means this). ` +
+			`until_job: target = the supervised job id. ` +
+			`until_delegate: target = the delegate id. ` +
+			`Conditions evaluate check-on-claim only (no continuous ticks — waits' predicates are the continuous subgoal-evidence source). ` +
 			`Hallucinated targets are rejected with the reason named; conditions never feed the progress ledger.`,
 		Parameters: map[string]any{
 			"type":                 "object",

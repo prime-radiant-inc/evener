@@ -1783,6 +1783,14 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
+	// Owner-visible output is watchdog activity (spec §6 signal 3): an
+	// assistant turn with user-facing text restarts the quiet clock, so a
+	// goal that keeps reporting never notifies. Tool-only turns (no text)
+	// and non-assistant kinds leave the stretch running. Outside the locks
+	// (the reset takes s.mu itself).
+	if live.Kind == schema.TurnAssistant && len(persisted.Message.Text()) > 0 {
+		s.noteGoalWatchdogOwnerOutput(s.sclock().Now())
+	}
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
@@ -1898,6 +1906,11 @@ func (s *Session) sclock() clock.Clock {
 	}
 	return s.clock
 }
+
+// SclockNow reports the session clock's current instant (the same sclock the
+// goal gate reads). Exported for daemon glue (the goal resume path) that
+// cannot reach the unexported accessor.
+func (s *Session) SclockNow() time.Time { return s.sclock().Now() }
 
 // assistantHistoryMessage makes malformed tool arguments replayable in semantic
 // history without changing the provider response used for tool validation.
