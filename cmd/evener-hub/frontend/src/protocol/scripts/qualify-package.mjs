@@ -106,6 +106,8 @@ run(
   process.execPath,
   [
     "--test",
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-setup.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/saved-items.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-lineage.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/maintenance-checks.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/discovery.contract.mjs"),
