@@ -3543,6 +3543,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 
 // recordWatchSend persists a fired send as pending and returns its state.
 // ok=false means the send was superseded or unresolvable (already handled).
+// A persist failure after a durable prefix landed (persisted=true) still
+// returns ok=true with the persisted state, so the journal and the runtime
+// map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
@@ -3568,7 +3571,14 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
-		return jobstore.WatchSendState{}, nil, false, perr
+		if !persisted {
+			return jobstore.WatchSendState{}, nil, false, perr
+		}
+		// The pending event (and any durable prefix of its co-generated
+		// group) is already journaled and committed to the runtime map:
+		// surface the persisted state with ok=true alongside the failure
+		// instead of a ghost ok=false that hides the durable prefix.
+		return persistedState, d.cfg, true, perr
 	}
 	if !persisted {
 		return jobstore.WatchSendState{}, nil, false, nil
