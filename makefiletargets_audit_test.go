@@ -783,11 +783,11 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":        "go run ./cmd/evener-dev/bin tomlcheck",
+	"lint-naming":        "./evener-dev tomlcheck",
 	"lint-gofmt":         "/bin/gofmt\" -l",
 	"lint-evenerfuzz":    "-tags evenerfuzz",
 	"lint-eval":          "-tags eval ",
-	"lint-internal":      "go run ./cmd/evener-dev/bin internalcheck",
+	"lint-internal":      "./evener-dev internalcheck",
 	"lint-golangci":      "module-lint",
 	"lint-generated":     "docs/appwire-protocol.md",
 	"lint-fuzz-registry": "scripts/fuzz/fuzz-registry-check.sh",
