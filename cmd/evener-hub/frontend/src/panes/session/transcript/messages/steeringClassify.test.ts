@@ -693,3 +693,52 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.type).toBe("watch");
   expect(n.tone).toBe("neutral");
 });
+
+// --- RoboRev combined review (6e38dea): delivery-failure classification ----
+// Send-rail diagnostics ("watch send failed:", "watch send dropped state
+// failed:", "watch send pending state failed:", "watch send evicted:",
+// "output dropped:" — agent/job_watch.go) are failed deliveries, not
+// successful triggers. They must title as failures with a warning tone, not
+// "Watch fired on <job>" with forced neutral.
+
+for (const reason of [
+  "watch send failed: delivery_id=wd_1: child unreachable: done",
+  "watch send dropped state failed: boom",
+  "watch send pending state failed: boom",
+  "watch send evicted: output_match: ready",
+  "output dropped: feed offset regressed from 10 to 5",
+]) {
+  test(`a delivery failure titles Watch delivery failed with warning tone (${reason.split(":")[0]})`, () => {
+    const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="${reason}" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+    const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+    expect(n.type).toBe("watch");
+    expect(n.title).toBe("Watch delivery failed");
+    expect(n.tone).toBe("warning");
+    expect(n.secondary).toContain(reason.split(":")[0]!);
+  });
+}
+
+test("a job-targeted fire parses its watch_id attr", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0" watch_id="watch_09QmWzRtNvxK">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.watchId).toBe("watch_09QmWzRtNvxK");
+  expect(n.title).toBe("Output matched on job_a1b2");
+});
+
+test("a runtime fallback drop titles Watch delivery failed with warning tone", () => {
+  // renderUnreachableChildPendingsWithLoaders emits the DiagnosticReason
+  // directly ("child unreachable: ..."), outside the "watch send " family —
+  // still a failed delivery, never a firing.
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="child unreachable: output_match: ready" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch delivery failed");
+  expect(n.tone).toBe("warning");
+});

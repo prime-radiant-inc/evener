@@ -391,10 +391,11 @@ test("a timer's prose renders decoded with no echo metadata and no tone chip", (
   );
   // At activity level the card auto-expands (expandByDefault=true).
   expect(screen.getByTestId("notification-prose").textContent).toContain("Note: hello <x>");
-  // Mockups 23-job-watch §E: no echo fields on a watch card (the watch id
-  // retreats to the raw disclosure) and no tone chip — a fired watch is the
-  // expected outcome.
-  expect(screen.queryByTestId("notification-field-watch-id")).toBeNull();
+  // Mockups 23-job-watch §E: no echo fields on a watch card and no tone chip
+  // — a fired watch is the expected outcome. The originating watch id is
+  // identity, not echo: it names which watch to inspect or clear (combined
+  // RoboRev review).
+  expect(screen.getByTestId("notification-field-watch-id").textContent).toContain("w1");
   expect(screen.queryByTestId("notification-field-status")).toBeNull();
   expect(screen.queryByTestId("notification-field-job-type")).toBeNull();
   expect(screen.queryByTestId("notification-field-output")).toBeNull();
@@ -469,7 +470,7 @@ test("a job-targeted watch card names the watched job id and nothing else (RoboR
   expect(screen.queryByTestId("notification-field-reason")).toBeNull();
 });
 
-test("a job-less watch card still shows no identity fields", () => {
+test("a job-less watch card names the watch but no job", () => {
   render(
     <NotificationCard
       notification={notif({
@@ -485,8 +486,8 @@ test("a job-less watch card still shows no identity fields", () => {
       })}
     />,
   );
+  expect(screen.getByTestId("notification-field-watch-id").textContent).toContain("w1");
   expect(screen.queryByTestId("notification-field-job-id")).toBeNull();
-  expect(screen.queryByTestId("notification-field-watch-id")).toBeNull();
 });
 
 test("a watch card never labels the session source as a job id (RoboRev PR #954, finding M4)", () => {
@@ -525,4 +526,47 @@ test("synthesized watch prose with a literal entity renders single-decoded (comb
   );
   expect(screen.getByTestId("notification-prose").textContent).toContain("a &lt; b");
   expect(screen.getByTestId("notification-prose").textContent).not.toContain("a < b");
+});
+
+test("a job-targeted watch card names both the watch and the watched job", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: "Output matched on job_a1b2",
+        tone: "neutral",
+        secondary: "output_match: ready",
+        jobId: "job_a1b2",
+        watchId: "watch_09QmWzRtNvxK",
+        prose: "Matched output_match: ready on job_a1b2.",
+        rawText:
+          '<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0" watch_id="watch_09QmWzRtNvxK">Matched output_match: ready on job_a1b2.</job-notification>',
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-field-watch-id").textContent).toContain("watch_09QmWzRtNvxK");
+  expect(screen.getByTestId("notification-field-job-id").textContent).toContain("job_a1b2");
+  expect(screen.queryByTestId("notification-field-status")).toBeNull();
+  expect(screen.queryByTestId("notification-field-reason")).toBeNull();
+});
+
+test("a delivery-failure card earns a warning chip and failure title", () => {
+  render(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: "Watch delivery failed",
+        tone: "warning",
+        secondary: "watch send failed: delivery_id=wd_1: child unreachable",
+        jobId: "job_a1b2",
+        watchId: "watch_09QmWzRtNvxK",
+        prose: "watch send failed: delivery_id=wd_1: child unreachable",
+        rawText:
+          '<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="watch send failed: delivery_id=wd_1: child unreachable" output_bytes="0" watch_id="watch_09QmWzRtNvxK">watch send failed</job-notification>',
+      })}
+    />,
+  );
+  expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("warning");
+  expect(screen.getByTestId("notification-card").textContent).toContain("warning");
+  expect(screen.getByTestId("notification-card").textContent).toContain("Watch delivery failed");
 });

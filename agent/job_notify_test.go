@@ -1129,3 +1129,58 @@ func TestFormatWatchSendNotificationBlock(t *testing.T) {
 		}
 	}
 }
+
+// A job-targeted watch fire carries no timer WatchID, but its originating
+// watch rides the display-only OriginWatchID — emitted as the watch_id frame
+// attribute so a reader can identify which watch to inspect or clear
+// (RoboRev PR #954). Empty origins emit nothing (no regression for old or
+// hand-built shapes), and a timer's own WatchID path never doubles the attr.
+func TestFormatJobNotificationEmitsOriginWatchID(t *testing.T) {
+	t.Parallel()
+	fired := formatJobNotificationBlock(jobNotification{
+		JobID: "job_a1b2", JobType: "watch", Status: "watch",
+		Reason:        "output_match: ready",
+		OriginWatchID: "watch_09QmWzRtNvxK",
+	}, notificationExcerpt{}, true)
+	if !strings.Contains(fired, `watch_id="watch_09QmWzRtNvxK"`) {
+		t.Errorf("job-targeted fire must carry its originating watch id:\n%s", fired)
+	}
+	if !strings.Contains(fired, "Job job_a1b2 watch.") {
+		t.Errorf("job-targeted fire keeps the generic producer body:\n%s", fired)
+	}
+
+	bare := formatJobNotificationBlock(jobNotification{
+		JobID: "job_a1b2", JobType: "watch", Status: "watch",
+		Reason: "output_match: ready",
+	}, notificationExcerpt{}, true)
+	if strings.Contains(bare, "watch_id=") {
+		t.Errorf("empty origin must not emit a watch_id attribute:\n%s", bare)
+	}
+
+	timer := formatJobNotificationBlock(jobNotification{
+		JobType: "watch", Status: "watch", Reason: "repeat",
+		WatchID: "w1", IntervalSeconds: 300,
+		OriginWatchID: "w1",
+	}, notificationExcerpt{}, true)
+	if got := strings.Count(timer, "watch_id="); got != 1 {
+		t.Errorf("timer must emit watch_id exactly once, got %d:\n%s", got, timer)
+	}
+}
+
+// watchNotificationFromWatch stamps the producing config's id on the
+// display-only origin field — and never on the timer-identity WatchID, which
+// would subject the notice to the orphan-tick drop once its watch detaches.
+func TestWatchNotificationFromWatchStampsOriginWatchID(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	n := jm.watchNotificationFromWatch(&watchConfig{watchID: "watch_origin1"}, "job_x", "output_match: ready", nil)
+	if n.OriginWatchID != "watch_origin1" {
+		t.Errorf("OriginWatchID = %q, want watch_origin1", n.OriginWatchID)
+	}
+	if n.WatchID != "" {
+		t.Errorf("WatchID = %q, want empty (timer-identity field must stay unset)", n.WatchID)
+	}
+	if n.JobID != "job_x" || n.Reason != "output_match: ready" {
+		t.Errorf("notification identity/reason = %q/%q, want job_x/output_match: ready", n.JobID, n.Reason)
+	}
+}

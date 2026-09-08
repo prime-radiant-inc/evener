@@ -268,6 +268,14 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   ) {
     return "error";
   }
+  // A failed delivery earns attention even on paths that short-circuit
+  // watch frames below: the watcher missed something. Defense in depth —
+  // watch diagnostics normally arrive as job notifications (which check
+  // this in jobNotificationTone), but no watch-shaped failure must ever
+  // read as an expected outcome (combined RoboRev review).
+  if (isWatchDeliveryFailure(decodeNotificationEntities(attrs.reason ?? "").trim())) {
+    return "warning";
+  }
   // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
   // something needing a human — no watch notification earns a tone chip,
   // ever (not the timer, not a match, not even the budget auto-clear: the
@@ -284,12 +292,35 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   return "neutral";
 }
 
+// isWatchDeliveryFailure reports whether a (decoded) watch reason names a
+// failed delivery rather than a trigger: the send-rail diagnostics
+// ("watch send failed:", "watch send dropped/pending/stable-enqueue state
+// failed:", "watch send evicted:" — agent/job_watch.go's
+// watchSendDiagnosticNotification sites), the feed guard
+// ("output dropped:"), and the runtime fallback drop ("child unreachable:"
+// — renderUnreachableChildPendingsWithLoaders emits the DiagnosticReason
+// directly, outside the "watch send " family). The "watch send " prefix
+// with its trailing space covers the send-rail family present and future. A
+// failed delivery is not a firing — it titles and tones as a failure so it
+// cannot present as a successful trigger (combined RoboRev review).
+function isWatchDeliveryFailure(reason: string): boolean {
+  return (
+    reason.startsWith("watch send ") || reason.startsWith("output dropped:") || reason.startsWith("child unreachable:")
+  );
+}
+
 function jobNotificationTone(
   attrs: Record<string, string>,
   communicate: CommunicateEnvelope | null,
   analysis: JobNotificationAnalysis,
 ): NotificationTone {
   if (analysis.disposition === "failure") return "error";
+  // A failed delivery earns attention even though it rides a watch frame:
+  // the watcher missed something. Checked before the watch short-circuit
+  // below, which is for expected outcomes (fires, teardowns).
+  if (isWatchDeliveryFailure(decodeNotificationEntities(attrs.reason ?? "").trim())) {
+    return "warning";
+  }
   // Same §E rule as notificationTone above: watch and watch-send deliveries
   // are expected outcomes. The budget auto-clear notice carries the same
   // watch event as a fire (agent/job_watch.go's watchNotification), so this
@@ -326,6 +357,10 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
     // prose/reason carries which watch and why, so the title stays short.
     if (reason.startsWith("watch ended:")) return "Watch ended";
     if (reason.startsWith("watch cleared:")) return "Watch auto-cleared";
+    // A failed delivery is not a firing — it titles as what it is, never
+    // "Watch fired on <job>" (combined RoboRev review). Checked before the
+    // trigger fallthroughs below.
+    if (isWatchDeliveryFailure(reason)) return "Watch delivery failed";
     const jobId = (attrs.job_id ?? "").trim();
     const outputMatch = /^output_match:\s*(.+)$/.exec(reason)?.[1]?.trim();
     if (outputMatch && jobId) return `Output matched on ${jobId}`;

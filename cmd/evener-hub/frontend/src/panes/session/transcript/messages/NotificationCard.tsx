@@ -132,27 +132,31 @@ function Field({ label, value, testId }: { label: string; value: string | number
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
   // Mockups 23-job-watch §E: a watch notification's title names what happened
-  // and its note is the payload — the producer's echo attrs (watch id,
-  // status, job type, output count, reason) are metadata soup that says
-  // nothing, so the card shows none of them. The watch id stays reachable
-  // in the raw disclosure. Job, delegate, watch-send, and observer-callback
-  // paths are untouched.
-  // A job-targeted watch fire carries NO watch_id attr at all
-  // (formatJobNotificationBlock emits watch_id only when JobID == ""), so
-  // the watched job id is the only recoverable identity — it renders as the
-  // card's one identity line, labelled as what it is (never a watch id),
-  // with every echo field still suppressed. A job-less watch names nothing.
+  // and its note is the payload — the producer's echo attrs (status, job
+  // type, output count, reason) are metadata soup that says nothing, so the
+  // card shows none of them. Identity is the exception: the originating
+  // watch id (the producer stamps every watch frame — timers, job-targeted
+  // fires, teardown notices, send-rail diagnostics) names which watch to
+  // inspect or clear, and a job-targeted fire additionally names its watched
+  // job. Both render as what they are; the raw disclosure keeps the full
+  // frame. Job, delegate, watch-send, and observer-callback paths are
+  // untouched.
+  // A job-targeted watch fire carries NO watch_id attr on older frames
+  // (formatJobNotificationBlock emitted watch_id only when JobID == ""), so
+  // the watched job id is the only recoverable identity there — it renders
+  // as the card's one identity line, labelled as what it is (never a watch
+  // id). A job-less watch names nothing.
   if (notification.type === "watch") {
-    // "self" is the watch SOURCE vocabulary (watchPublicSource), never a job
-    // id — a job-targeted fire carries a concrete job_* id. If a sentinel
-    // ever lands in the job id slot, it names the session, not a job, so it
-    // must not render as "Job id: self" (RoboRev PR #954 combined review).
-    if (!notification.jobId || notification.jobId === "self") return null;
-    return (
-      <div className={CLASS.metadata}>
+    const fields = [
+      notification.watchId && (
+        <Field key="watch-id" label="Watch id" value={notification.watchId} testId="notification-field-watch-id" />
+      ),
+      notification.jobId && notification.jobId !== "self" && (
         <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
-      </div>
-    );
+      ),
+    ].filter(Boolean);
+    if (fields.length === 0) return null;
+    return <div className={CLASS.metadata}>{fields}</div>;
   }
   const fields = [
     notification.delegateId && (
