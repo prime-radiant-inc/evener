@@ -676,6 +676,17 @@ type Session struct {
 	// drive time (batch marked delivered), consumed at the turn's tail.
 	// Guarded by s.mu.
 	goalSupersededArmed bool
+	// goalWatchdog carries the quiet-goal watchdog's per-goal state (spec §6):
+	// the current park/active stretch anchor, the per-stretch notice count,
+	// and the rolling 24h notice timestamps for the per-goal ceiling. Parked
+	// goals run zero turns, so the watchdog evaluates on a poll seam
+	// (checkGoalWatchdog) with sclock time — never on a model turn. Guarded
+	// by s.mu.
+	goalWatchdog goalWatchdogState
+	// goalDelta tracks the last-driven condition truth + terminal markers for
+	// the spec §6 direction-4 delta frame (condition flips + new terminal
+	// events/output since last evaluation, not full state). Guarded by s.mu.
+	goalDeltaLastConds []goal.ConditionCheck
 	// goalTurnEvidence is the per-turn accumulator for the slice-2 ledger fold
 	// (spec §4): every tool round appends its per-call (fingerprint, class,
 	// hash) evidence here. The gate's plain-drive branch commits it under

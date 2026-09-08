@@ -846,6 +846,23 @@ type GoalResumedData struct {
 	WaitIDs []string `json:"wait_ids,omitempty"`
 }
 
+// GoalWatchdogData is the payload for an EventGoalWatchdog event (spec §6):
+// the quiet-goal watchdog's owner notice. Kind is park-start (the stretch
+// crossed the quiet threshold), half-deadline (the single reminder anchored
+// to the earliest live wait deadline, tie → smallest wait_id), or
+// active-quiet (active-but-quiet past the threshold). NearestLabel names the
+// earliest-deadline wait for the chip rule; the event never implies more
+// than the waiting_on[] list it summarizes.
+type GoalWatchdogData struct {
+	Kind string `json:"kind"`
+	// NearestLabel is the chip-rendered label of the earliest-deadline wait
+	// (empty for active-quiet goals with no waits).
+	NearestLabel string `json:"nearest_label,omitempty"`
+	// NearestDeadlineUnixMilli is that wait's deadline as Unix epoch millis
+	// (0 when no live wait stands).
+	NearestDeadlineUnixMilli int64 `json:"nearest_deadline_unix_milli,omitempty"`
+}
+
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`

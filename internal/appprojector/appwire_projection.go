@@ -408,12 +408,20 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventGoalWaiting:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalWaitingData](event.Data)
-		// Task-8 forward-pin (spec §7 emit-vs-project): stage-2 bounded
-		// auto-parks will set GoalWaitingData.AnnounceSilently and Task 8
-		// will project those silently (no announcement) while keeping the
-		// emit for the audit trail. Slice 1 never sets the flag, so every
-		// park announces.
+		// Emit-vs-project (spec §7): stage-2 bounded auto-parks set
+		// AnnounceSilently — the emit stays for the audit trail (replay
+		// consumers), but no announcement projects (coalesced into the
+		// stall episode's single notice). systemAnnouncement with empty
+		// text already projects silently (nil), so route silent parks
+		// through the same helper with "" text.
+		if data.AnnounceSilently {
+			return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWaiting, "Goal", "")
+		}
 		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWaiting, "Goal", goalWaitingText(data))
+	case events.EventGoalWatchdog:
+		p.clearSkillCandidate()
+		data := eventData[events.GoalWatchdogData](event.Data)
+		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWatchdog, "Goal", goalWatchdogText(data))
 	case events.EventGoalResumed:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalResumedData](event.Data)
@@ -1372,6 +1380,30 @@ func goalWaitingText(data events.GoalWaitingData) string {
 		return fmt.Sprintf("Goal waiting on %d", data.Count)
 	}
 	return fmt.Sprintf("Goal waiting on %d · %s", data.Count, data.NearestLabel)
+}
+
+// goalWatchdogText renders the EventGoalWatchdog announcement: the quiet
+// stretch kind plus the nearest wait label when one stands.
+func goalWatchdogText(data events.GoalWatchdogData) string {
+	switch data.Kind {
+	case "park-start":
+		if data.NearestLabel == "" {
+			return "Goal still waiting (quiet)"
+		}
+		return "Goal still waiting on " + data.NearestLabel
+	case "half-deadline":
+		if data.NearestLabel == "" {
+			return "Goal still waiting (halfway to deadline)"
+		}
+		return "Goal still waiting on " + data.NearestLabel + " (halfway to deadline)"
+	case "active-quiet":
+		return "Goal quiet with no recent progress"
+	default:
+		if data.NearestLabel == "" {
+			return "Goal watchdog: " + data.Kind
+		}
+		return "Goal watchdog (" + data.Kind + ") on " + data.NearestLabel
+	}
 }
 
 // goalResumedText renders the EventGoalResumed announcement: the fired

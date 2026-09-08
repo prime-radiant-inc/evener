@@ -1047,3 +1047,30 @@ func TestDefGoalCancelWaitShape(t *testing.T) {
 		t.Fatalf("goal_cancel_wait missing wait_id property")
 	}
 }
+
+func TestDefGoalExpectShape(t *testing.T) {
+	def := DefGoalExpect()
+	if def.Name != "goal_expect" {
+		t.Fatalf("name = %q, want goal_expect", def.Name)
+	}
+	required(t, def, "goal_expect", []string{"desc"})
+	props := def.Parameters["properties"].(map[string]any)
+	for _, prop := range []string{"desc", "kind", "target", "event_subtype", "matcher", "ask_generation", "timeout_seconds"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("goal_expect missing property %q", prop)
+		}
+	}
+	kind, ok := props["kind"].(map[string]any)
+	if !ok {
+		t.Fatal("goal_expect missing kind property")
+	}
+	enum, ok := kind["enum"].([]string)
+	if !ok {
+		t.Fatalf("kind enum = %T, want []string", kind["enum"])
+	}
+	for _, want := range []string{"until_job", "until_delegate", "until_approval", "until_event", "until_child"} {
+		if !slices.Contains(enum, want) {
+			t.Fatalf("kind enum = %v, want %q (no until_time: timers are waits, not claim conditions)", enum, want)
+		}
+	}
+}

@@ -86,11 +86,15 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 
 // LookupApproval reports whether the (content key, ask generation) pair
 // matches a live ask. Consumed answers never match (no catch-up by design).
-// The content key is (header, question); askQuestion carries no stable
-// generation in this slice, so a non-empty generation never matches (fail
-// closed — a dangling wait from an earlier same-text ask cannot validate
-// against a later generation). An empty generation matches the live content
-// key with the ambiguous-by-construction note carried at wake time.
+// The content key is the (header, question) pair: targets encoding
+// "header\x00question" match only an ask with both halves equal (no
+// cross-generation aliasing); bare single-half text matches only an ask
+// whose other half is empty, and the wake excerpt notes it as
+// ambiguous-by-construction. askQuestion carries no stable ask-call ID in
+// this slice, so a non-empty generation never matches (fail closed — a
+// dangling wait from an earlier same-text ask cannot validate against a
+// later generation). Tightened per Task-7 Minor-1: the pre-Tast-8 loose OR
+// (header==key || question==key) is replaced by this pair contract.
 func (g *goalSessionSubstrate) LookupApproval(contentKey, generation string) bool {
 	s := g.sess
 	if s == nil || contentKey == "" {
@@ -102,11 +106,44 @@ func (g *goalSessionSubstrate) LookupApproval(contentKey, generation string) boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, ask := range s.askPending {
-		if ask.Header == contentKey || ask.Question == contentKey {
+		if approvalKeyMatches(ask.Header, ask.Question, contentKey) {
 			return true
 		}
 	}
 	return false
+}
+
+// approvalKeyMatches implements the (header, question) pair contract: a
+// two-half key ("header\x00question") matches only on both halves; a bare
+// key matches a lone half (the other half empty) as ambiguous-by-construction.
+func approvalKeyMatches(header, question, key string) bool {
+	if h, q, ok := splitApprovalKey(key); ok {
+		return header == h && question == q
+	}
+	if header != "" && question != "" {
+		return false
+	}
+	return header == key || question == key
+}
+
+// splitApprovalKey splits a two-half approval key. Reports false for bare
+// single-half keys.
+func splitApprovalKey(key string) (header, question string, ok bool) {
+	h, q, found := splitNul(key)
+	if !found {
+		return "", "", false
+	}
+	return h, q, true
+}
+
+// splitNul splits on the first NUL byte.
+func splitNul(s string) (a, b string, ok bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0 {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return "", "", false
 }
 
 // LookupChild reports whether id is a known descendant session (tracked

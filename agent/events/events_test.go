@@ -332,3 +332,13 @@ func TestTurnEnded_KindAndPayload(t *testing.T) {
 		t.Errorf("marshaled event missing turn_duration_ms: %s", b)
 	}
 }
+
+func TestGoalWatchdogEventKind(t *testing.T) {
+	ev := events.New(events.GoalWatchdogData{Kind: "park-start", NearestLabel: "alpha"})
+	if ev.Kind != events.EventGoalWatchdog {
+		t.Fatalf("New(GoalWatchdogData).Kind = %q, want %q", ev.Kind, events.EventGoalWatchdog)
+	}
+	if ev.Kind != "GOAL_WATCHDOG" {
+		t.Fatalf("wire string = %q, want GOAL_WATCHDOG", ev.Kind)
+	}
+}

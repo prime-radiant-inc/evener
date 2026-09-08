@@ -33,6 +33,22 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 				return nil, fmt.Errorf("update_goal: invalid status %q (must be \"complete\" or \"blocked\")", statusStr)
 			}
 
+			// Conditional verification (spec §6): update_goal("complete")
+			// verifies iff the goal carries registered conditions. The
+			// verifier evaluates the named conditions check-on-claim and
+			// rejects with the failing condition named; the goal stays
+			// active. Goals without conditions keep the v1 self-declare
+			// path. "blocked" never verifies (a stuck claim needs no
+			// proof).
+			if st == goal.StatusComplete {
+				if conds, ok := deps.goalGuard.Conditions(); ok && len(conds) > 0 {
+					checks := deps.goalGuard.EvaluateExpectations(conds)
+					if _, failing := goal.VerifyConditions(conds, checks); failing != "" {
+						return nil, fmt.Errorf("update_goal: condition %q is not satisfied; the goal stays active — satisfy it or keep working", failing)
+					}
+				}
+			}
+
 			snap, changed := deps.goalGuard.SetTerminal(st, "", deps.now())
 			if !changed {
 				return tool.StateResult{Output: "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."}, nil
@@ -59,6 +75,15 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 			return goalCancelWaitTool(deps, args)
+		},
+	})
+	_ = reg.Register(tool.RegisteredTool{
+		Definition:  tool.DefGoalExpect(),
+		PreValidate: validateGoalExpectArgs,
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return goalExpectTool(deps, args)
 		},
 	})
 }
@@ -355,4 +380,143 @@ func goalStateView(snap goal.Snapshot) map[string]any {
 		"iterations": snap.Iterations,
 		"stopReason": snap.StopReason,
 	}
+}
+
+// validateGoalExpectArgs rejects a goal_expect shape before the generic JSON
+// schema validator renders its diagnostic, so direct handler callers get the
+// same contract. desc is required; kind defaults to a file check when empty
+// (the minimal v1 condition-query shape); the timeout range mirrors
+// goal_wait.
+func validateGoalExpectArgs(args map[string]any) error {
+	desc, err := goalWaitStringArg(args, "desc")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(desc) == "" {
+		return fmt.Errorf("invalid_request: desc is required")
+	}
+	kind, err := goalWaitStringArg(args, "kind")
+	if err != nil {
+		return err
+	}
+	if kind != "" {
+		switch goal.Kind(kind) {
+		case goal.WaitUntilJob, goal.WaitUntilDelegate, goal.WaitUntilApproval, goal.WaitUntilEvent, goal.WaitUntilChild:
+		default:
+			return fmt.Errorf("invalid_request: unknown condition kind %q (must be until_job | until_delegate | until_approval | until_event | until_child)", kind)
+		}
+	}
+	target, err := goalWaitStringArg(args, "target")
+	if err != nil {
+		return err
+	}
+	subtype, err := goalWaitStringArg(args, "event_subtype")
+	if err != nil {
+		return err
+	}
+	effKind := kind
+	if effKind == "" {
+		effKind = string(goal.WaitUntilEvent)
+	}
+	effSubtype := subtype
+	if goal.Kind(effKind) == goal.WaitUntilEvent && effSubtype == "" {
+		effSubtype = string(goal.EventFileModified)
+	}
+	if goal.Kind(effKind) == goal.WaitUntilEvent && goal.EventSubtype(effSubtype) == goal.EventExternalLabel {
+		// External labels carry no durable target; desc alone names them.
+	} else if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("invalid_request: target is required for condition kind %q", effKind)
+	}
+	if _, err := goalWaitTimeoutArg(args); err != nil {
+		return err
+	}
+	matcher, err := goalWaitStringArg(args, "matcher")
+	if err != nil {
+		return err
+	}
+	generation, err := goalWaitStringArg(args, "ask_generation")
+	if err != nil {
+		return err
+	}
+	_ = generation
+	if len(matcher) > goal.MaxMatcherBytes {
+		return fmt.Errorf("invalid_request: matcher exceeds %d bytes (cap 1KB)", goal.MaxMatcherBytes)
+	}
+	if len(target) > goal.MaxURLBytes {
+		return fmt.Errorf("invalid_request: target exceeds %d bytes (cap 2KB)", goal.MaxURLBytes)
+	}
+	if utf8.RuneCountInString(desc) > goal.MaxLabelRunes {
+		return fmt.Errorf("invalid_request: desc exceeds %d chars", goal.MaxLabelRunes)
+	}
+	for _, r := range desc {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("invalid_request: desc must be printable text")
+		}
+	}
+	return nil
+}
+
+// decodeGoalExpectArgs converts a goal_expect call into an ExpectRequest.
+// Empty kind defaults to a file_modified check on target (the minimal v1
+// condition-query shape: desc + file path).
+func decodeGoalExpectArgs(args map[string]any) (goal.ExpectRequest, error) {
+	if err := validateGoalExpectArgs(args); err != nil {
+		return goal.ExpectRequest{}, err
+	}
+	desc, _ := goalWaitStringArg(args, "desc")
+	kind, _ := goalWaitStringArg(args, "kind")
+	target, _ := goalWaitStringArg(args, "target")
+	subtype, _ := goalWaitStringArg(args, "event_subtype")
+	matcher, _ := goalWaitStringArg(args, "matcher")
+	generation, _ := goalWaitStringArg(args, "ask_generation")
+	label, _ := goalWaitStringArg(args, "label")
+	timeout, _ := goalWaitTimeoutArg(args)
+	_ = label
+	if kind == "" {
+		kind = string(goal.WaitUntilEvent)
+	}
+	if goal.Kind(kind) == goal.WaitUntilEvent && subtype == "" {
+		subtype = string(goal.EventFileModified)
+	}
+	return goal.ExpectRequest{
+		Desc: desc,
+		Predicate: goal.WaitKind{
+			Kind:          goal.Kind(kind),
+			Target:        target,
+			Timeout:       timeout,
+			Matcher:       matcher,
+			EventSubtype:  goal.EventSubtype(subtype),
+			AskGeneration: generation,
+		},
+	}, nil
+}
+
+// goalExpectTool executes the goal_expect tool: validate (identical §2
+// registration validation + attach-scan snapshot at registration —
+// hallucinated conditions rejected immediately with the reason named) and
+// register the stop-claim condition. Registration never feeds the ledger
+// (check-on-claim only).
+func goalExpectTool(deps *toolDeps, args map[string]any) (any, error) {
+	req, err := decodeGoalExpectArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if snap, ok := deps.goalGuard.Snapshot(); !ok {
+		return nil, fmt.Errorf("goal_expect: no active goal is set for this session; set one with /goal before registering conditions")
+	} else if snap.Status == goal.StatusComplete || snap.Status == goal.StatusBlocked {
+		return nil, fmt.Errorf("goal_expect: goal is %q; conditions register on active goals only", string(snap.Status))
+	}
+	cond, ok := deps.goalGuard.RegisterExpect(req, deps.now())
+	if !ok {
+		reason := deps.goalGuard.RejectReason()
+		if reason == "" {
+			reason = describeGoalWaitState(deps)
+		}
+		return nil, fmt.Errorf("goal_expect: %s", reason)
+	}
+	snap, _ := deps.goalGuard.Snapshot()
+	return tool.StateResult{
+		Output: "Condition " + cond.Desc + " registered; update_goal(\"complete\") will verify it.",
+		State:  goalStateView(snap),
+	}, nil
 }

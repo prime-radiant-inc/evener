@@ -108,12 +108,16 @@ func (w Wait) Live() bool { return w.Lease.FiredEpoch == 0 }
 // PendingWake is one consumed-but-undelivered fire (spec §1): the claim step
 // moves leases out of waits[] into this persisted list, which the wake turn
 // consumes. Superseded marks a wake whose goal was retargeted between claim
-// and kick (spec §3).
+// and kick (spec §3). Kind records the fired lease's kind at claim time so
+// consumers key on structure, never on trigger-prefix sniffing (Task-7
+// Minor-5: the "child … terminal" prefix heuristic is replaced by this
+// field; triggers stay human-readable excerpts).
 type PendingWake struct {
 	WaitID     string
 	Trigger    string
 	FiredAt    time.Time
 	Superseded bool
+	Kind       Kind
 }
 
 // Substrate is the session-owned predicate substrate that registration

@@ -1089,6 +1089,43 @@ func DefGoalCancelWait() llm.ToolDefinition {
 	}
 }
 
+// DefGoalExpect returns the tool definition for goal_expect (spec section
+// 6): register one stop-claim condition (desc + predicate) for conditional
+// verification. Registration runs the identical section-2 validation +
+// attach-scan snapshot at registration (hallucinated conditions rejected
+// immediately with the reason named); the verifier evaluates the named
+// conditions check-on-claim only (update_goal("complete") rejects with the
+// failing condition named). Expect-conditions never feed the ledger
+// mid-episode. Empty kind defaults to a file_modified check on target (the
+// minimal v1 condition-query shape).
+func DefGoalExpect() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_expect",
+		Description: `Register one stop-claim condition for the active session goal. ` +
+			`update_goal("complete") verifies every registered condition and rejects with the failing condition named; ` +
+			`goals without conditions complete by self-declare. ` +
+			`The predicate mirrors goal_wait kinds (until_job | until_delegate | until_approval | until_event | until_child; ` +
+			`empty kind means a file check on target). ` +
+			`Hallucinated targets are rejected with the reason named; conditions never feed the progress ledger.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"desc":           map[string]any{"type": "string", "description": "Condition name; the verifier names it on rejection."},
+				"kind":           map[string]any{"type": "string", "description": "Condition kind: until_job | until_delegate | until_approval | until_event | until_child. Empty means a file check on target.", "enum": []string{"until_job", "until_delegate", "until_approval", "until_event", "until_child"}},
+				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, URL, or approval content key."},
+				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor: file_modified | http_match | external_label.", "enum": []string{"file_modified", "http_match", "external_label"}},
+				"matcher":        map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
+				"ask_generation": map[string]any{"type": "string", "description": "Stable turn/ask-call ID of the ask_user call an until_approval condition binds to."},
+				"label":          map[string]any{"type": "string", "description": "Unused alias for desc (accepted, ignored)."},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400,
+					"description": "Per-fetch timeout bound for http_match URL checks (default 600, max 86400)."},
+			},
+			"required": []string{"desc"},
+		},
+	}
+}
+
 // DefUpdateGoal returns the tool definition for update_goal.
 // The model calls this to declare the active goal complete or blocked.
 func DefUpdateGoal() llm.ToolDefinition {

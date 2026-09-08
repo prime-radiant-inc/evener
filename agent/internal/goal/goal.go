@@ -57,6 +57,47 @@ const (
 	StageAutoPark GraduationStage = "auto-parked"
 )
 
+// Stall looks-like-waiting observation classes (spec §6 stage 2): a
+// post-nudge stall whose trailing entry carries one of these classes parks
+// on a bounded auto-wait; any other class blocks.
+var stallWaitingClasses = map[string]bool{
+	"external-unchanged": true,
+	"approval-pending":   true,
+	"timeout":            true,
+}
+
+// StallLooksLikeWaiting reports whether a post-nudge stall trip should route
+// to the bounded stage-2 auto-park (spec §6): the trailing ledger entry's
+// observation class names a waiting-shaped stall. Pure: no locks.
+func StallLooksLikeWaiting(s LedgerSummary) bool {
+	if n := len(s.Entries); n > 0 {
+		return stallWaitingClasses[s.Entries[n-1].Class]
+	}
+	return false
+}
+
+// Condition is one registered stop-claim condition (spec §6): goal_expect
+// registers the (desc, predicate) pair with the identical §2 registration
+// validation + attach-scan snapshot at registration; the verifier evaluates
+// the named conditions check-on-claim only (no continuous ticks — waits'
+// predicates are the continuous subgoal-evidence source).
+type Condition struct {
+	// Desc is the human-rendered condition name; the verifier names it on
+	// rejection.
+	Desc string
+	// Predicate is the full condition predicate (same shape as a wait
+	// predicate: kind + target identity + matcher + subtype + generation).
+	Predicate WaitKind
+	// Baseline snapshots the attach-scan state at registration (file baseline
+	// for file_modified; empty otherwise).
+	Baseline string
+	// Satisfied snapshots the attach-scan truth at registration (informational
+	// only — the verifier re-evaluates at claim time).
+	Satisfied bool
+	// RegisteredAt is the sclock instant of registration.
+	RegisteredAt time.Time
+}
+
 // LedgerEntry is one bounded ledger-summary entry (spec §7). Slice 1 seeds
 // migration entries only; the Task-6 ledger owns live folding.
 type LedgerEntry struct {
@@ -74,6 +115,26 @@ type LedgerSummary struct {
 	Tier       int
 	Stage      GraduationStage
 }
+
+// Watchdog bounds (spec §6): quiet threshold 30m (configurable at the session
+// layer), at most 2 notices per park stretch (park-start + one half-deadline
+// reminder), at most 4 watchdog notices per goal per 24h across stretches.
+const (
+	// DefaultWatchdogQuietThreshold is the quiet floor: no watchdog notice
+	// emits before the stretch crosses it (a 60s wait costs zero notices).
+	DefaultWatchdogQuietThreshold = 30 * time.Minute
+	// MaxWatchdogNoticesPerStretch caps owner notices per park stretch.
+	MaxWatchdogNoticesPerStretch = 2
+	// MaxWatchdogNoticesPer24h caps watchdog notices per goal per 24h across
+	// stretches; repeat-digest stretches past the ceiling emit nothing.
+	MaxWatchdogNoticesPer24h = 4
+	// WatchdogWindow is the rolling window for the per-24h ceiling.
+	WatchdogWindow = 24 * time.Hour
+)
+
+// MaxConsecutiveAutoReparks bounds consecutive stage-2 auto-re-parks (spec
+// §5): at most 3, then the 4th consecutive stall graduates to block.
+const MaxConsecutiveAutoReparks = 3
 
 // Spend budgets (spec §5). Every park, wake, re-park, and resume path accrues
 // against a budget or a bound — no goal is unbounded.
@@ -181,9 +242,9 @@ const (
 // (continuations/parked-total spent → block "budget exhausted"), 3 (deadline
 // passed → block "deadline exceeded"), 4 (any live wait → park), 5 (lost this
 // turn ∧ no live waits ∧ no advancement since loss → block "waiting lost:
-// <cause>"), 6 (stall-K reached → nudge on first reaching, else block — the
-// stage-2 park arrives with the Task-8 stage machine, so the second trip
-// blocks), 7 (total backstop reached → same graduation as 6), 8 (else
+// <cause>"), 6 (stall-K reached → nudge on first reaching (stage 1), park
+// with a bounded auto-wait when the stall looks like waiting (stage 2),
+// else block), 7 (total backstop reached → same graduation as 6), 8 (else
 // drive). The stall read keys off the folded snapshot ledger: TurnOutcome is
 // the gate's pre-decide fold input (the gate folds first, decides on the
 // post-fold summary), so rules 6-7 and the caller never double-fold. The
@@ -230,15 +291,22 @@ func DecideGoalStep(snap GoalSnapshot, outcome TurnOutcome, predicateTruth []boo
 		return StepBlock, WaitingLostVerdict(markers.LossCause)
 	}
 	// Rules 6-7: stall-K (repetition) and the total non-advancement backstop,
-	// read off the folded snapshot ledger (spec §§1, 4). The first trip nudges
-	// (stage none → nudged); a further breach after the nudge blocks. The
-	// pre-fold TurnOutcome is consumed by the gate's own fold and ignored
-	// here, so rules 6-7 and the caller never double-fold.
+	// read off the folded snapshot ledger (spec §§1, 4, 6). Graduation: the
+	// first trip nudges (stage none → nudged); a post-nudge breach whose
+	// trailing entry looks like waiting parks on the bounded stage-2
+	// auto-wait (stage nudged → auto-parked, while AutoReparks <
+	// MaxConsecutiveAutoReparks); any other post-nudge breach — including a
+	// re-park-exhausted wait-shaped stall — blocks. The pre-fold TurnOutcome
+	// is consumed by the gate's own fold and ignored here, so rules 6-7 and
+	// the caller never double-fold.
 	folded := snap.LedgerSummary
 	if len(folded.Entries) > 0 || folded.Repetition > 0 {
 		if RepetitionStalled(folded) || BackstopStalled(folded) {
 			if folded.Stage == StageNone {
 				return StepNudge, VerdictNoProgress
+			}
+			if (folded.Stage == StageNudged || folded.Stage == StageAutoPark) && StallLooksLikeWaiting(folded) && snap.AutoReparks < MaxConsecutiveAutoReparks {
+				return StepPark, VerdictNoProgress
 			}
 			return StepBlock, VerdictNoProgress
 		}
@@ -298,6 +366,11 @@ type Goal struct {
 	// deadline-expiry synthetic wake (spec §1): set at claim time so rule 3
 	// cannot loop final turns; reset by resume --extend deadline.
 	DeadlineFinalDelivered bool
+	// Conditions carries the registered stop-claim conditions (spec section 6):
+	// goal_expect pairs evaluated check-on-claim only. Empty means the v1
+	// self-declare path. Cleared on retarget/clear with the waits; never
+	// feeds the ledger mid-episode.
+	Conditions []Condition
 }
 
 // Snapshot is an immutable value copy of the goal for read surfaces (the status
@@ -327,10 +400,13 @@ type GoalSnapshot struct {
 	Budgets                Budgets
 	LedgerSummary          LedgerSummary
 	AutoReparks            int
+	Conditions             []Condition
 	TerminalPending        bool
 	LossCause              string
 	AdvancementSinceLoss   bool
 	DeadlineFinalDelivered bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // Store holds one goal per session behind its own mutex (mirrors agent TaskStore).
@@ -437,6 +513,9 @@ func (s *Store) GoalSnapshot() (GoalSnapshot, bool) {
 		Budgets:                g.Budgets,
 		LedgerSummary:          cloneLedgerSummary(g.LedgerSummary),
 		AutoReparks:            g.AutoReparks,
+		Conditions:             append([]Condition(nil), g.Conditions...),
+		CreatedAt:              g.CreatedAt,
+		UpdatedAt:              g.UpdatedAt,
 		TerminalPending:        g.TerminalPending,
 		LossCause:              g.LossCause,
 		AdvancementSinceLoss:   g.AdvancementSinceLoss,
@@ -651,11 +730,78 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		// drives exactly one evaluation turn via rule 1; no live lease
 		// remains and the goal stays active.
 		g.Waits = kept
-		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: catchUp, FiredAt: now})
+		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: catchUp, FiredAt: now, Kind: w.Lease.Kind})
 		g.UpdatedAt = now
 		s.lastRejectReason = ""
 		return w, true
 	}
+	g.Waits = append(kept, w)
+	g.Status = StatusWaiting
+	g.UpdatedAt = now
+	s.lastRejectReason = ""
+	return w, true
+}
+
+// AutoWaitLabel is the chip label for the bounded stage-2 auto-wait lease
+// (spec §6): a parked stall waits on its own re-evaluation bound.
+const AutoWaitLabel = "stall re-check"
+
+// ParkAutoWait installs the bounded stage-2 auto-wait lease: an until_time
+// lease with the given timeout that parks the goal (status → waiting) so the
+// coalesced timer re-arms to it and expiry re-drives exactly one evaluation
+// turn. A live auto-wait lease re-registers in place (same target identity
+// replaces — no lease pile-up across consecutive parks). Reports the lease.
+func (s *Store) ParkAutoWait(timeout time.Duration, now time.Time) (Wait, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil {
+		return Wait{}, false
+	}
+	if g.Status == StatusComplete || g.Status == StatusBlocked {
+		return Wait{}, false
+	}
+	if timeout <= 0 {
+		timeout = DefaultWaitTimeout
+	}
+	if timeout > MaxWaitTimeoutCap {
+		timeout = MaxWaitTimeoutCap
+	}
+	norm := WaitKind{Kind: WaitUntilTime, Target: "auto", Timeout: timeout, Label: AutoWaitLabel}
+	deadline := now.Add(timeout)
+	key := idempotencyKey(norm, deadline)
+	for _, w := range g.Waits {
+		if w.Live() && w.Lease.IdempotencyKey == key {
+			g.Status = StatusWaiting
+			g.UpdatedAt = now
+			return w, true
+		}
+	}
+	kept := make([]Wait, 0, len(g.Waits))
+	live := 0
+	for _, w := range g.Waits {
+		if w.Live() && w.Lease.Kind == WaitUntilTime && w.Lease.Predicate.Target == "auto" {
+			continue
+		}
+		kept = append(kept, w)
+		if w.Live() {
+			live++
+		}
+	}
+	if live >= MaxLiveWaitsPerGoal {
+		s.lastRejectReason = "wait registry full: max 8 live waits per goal"
+		return Wait{}, false
+	}
+	s.nextWaitID++
+	w := Wait{Lease: Lease{
+		WaitID:         fmt.Sprintf("wait_%d", s.nextWaitID),
+		Kind:           WaitUntilTime,
+		Predicate:      norm,
+		Label:          AutoWaitLabel,
+		Deadline:       deadline,
+		RegisteredAt:   now,
+		IdempotencyKey: key,
+	}}
 	g.Waits = append(kept, w)
 	g.Status = StatusWaiting
 	g.UpdatedAt = now
@@ -768,11 +914,12 @@ func (s *Store) ClaimFire(waitID, trigger string, now time.Time) (PendingWake, b
 		if w.Lease.WaitID != waitID || !w.Live() {
 			continue
 		}
+		kind := w.Lease.Kind
 		kept := make([]Wait, 0, len(g.Waits)-1)
 		kept = append(kept, g.Waits[:i]...)
 		kept = append(kept, g.Waits[i+1:]...)
 		g.Waits = kept
-		entry := PendingWake{WaitID: waitID, Trigger: trigger, FiredAt: now}
+		entry := PendingWake{WaitID: waitID, Trigger: trigger, FiredAt: now, Kind: kind}
 		g.PendingWake = append(g.PendingWake, entry)
 		if !hasLiveWait(kept) && g.Status == StatusWaiting {
 			g.Status = StatusActive
@@ -886,9 +1033,11 @@ func (s *Store) TakeTerminalReport() (Snapshot, bool) {
 // accrue zero stall signal). An active goal folds the outcome via FoldLedger
 // (observation-novelty, digest delta, waits-predicate evidence; junk writes
 // accrue), accrues one continuation, and consults the two-tier stall bound:
-// repetition-K or the B=12 backstop graduates nudge-then-block through the
-// persisted stage (stage none → nudged → blocked), exactly like the pure
-// table's rules 6-7. The Iterations counter keeps accruing for
+// repetition-K or the B=12 backstop graduates nudge → auto-park → block
+// through the persisted stage (stage none → nudged → auto-parked → blocked),
+// exactly like the pure table's rules 6-7. A waiting goal whose stage is
+// auto-parked still folds: the gate consumes the auto lease first, so the
+// fold is the bounded evaluation turn, not parked accrual. The Iterations counter keeps accruing for
 // display and migration compatibility, but they no longer decide the stop.
 func (s *Store) RecordContinuation(outcome TurnOutcome, waitAdvanced bool, now time.Time) (Snapshot, bool) {
 	s.mu.Lock()
@@ -897,10 +1046,10 @@ func (s *Store) RecordContinuation(outcome TurnOutcome, waitAdvanced bool, now t
 		return Snapshot{}, false
 	}
 	g := s.goal
-	if g.Status == StatusWaiting {
+	if g.Status == StatusWaiting && g.LedgerSummary.Stage != StageAutoPark {
 		return s.snapLocked(), false
 	}
-	if g.Status != StatusActive {
+	if g.Status != StatusActive && g.Status != StatusWaiting {
 		return s.snapLocked(), false
 	}
 	g.Iterations++
@@ -915,14 +1064,21 @@ func (s *Store) RecordContinuation(outcome TurnOutcome, waitAdvanced bool, now t
 	} else {
 		g.NoProgressStreak++
 	}
-	// Two-tier stall bound (spec §§1, 4 rules 6-7): repetition-K or the total
-	// backstop. The first trip nudges (stage none → nudged, goal stays
-	// active); a further breach after the nudge blocks with "no progress".
-	// Seeded summaries with <12 entries cannot backstop-stall until the
-	// window refills (BackstopStalled's consecutive definition).
+	// Two-tier stall bound (spec §§1, 4, 6 rules 6-7): repetition-K or the
+	// total backstop. The first trip nudges (stage none → nudged, goal stays
+	// active); a post-nudge wait-shaped breach parks on the bounded stage-2
+	// auto-wait (stage → auto-parked, AutoReparks++); any other post-nudge
+	// breach blocks with "no progress". Seeded summaries with <12 entries
+	// cannot backstop-stall until the window refills (BackstopStalled's
+	// consecutive definition).
 	if LedgerStalled(g.LedgerSummary) {
 		if g.LedgerSummary.Stage == StageNone {
 			g.LedgerSummary.Stage = StageNudged
+			return s.snapLocked(), true
+		}
+		if (g.LedgerSummary.Stage == StageNudged || g.LedgerSummary.Stage == StageAutoPark) && StallLooksLikeWaiting(g.LedgerSummary) && g.AutoReparks < MaxConsecutiveAutoReparks {
+			g.LedgerSummary.Stage = StageAutoPark
+			g.AutoReparks++
 			return s.snapLocked(), true
 		}
 		g.Status = StatusBlocked
@@ -949,6 +1105,7 @@ type PersistedGoal struct {
 	Budgets                Budgets
 	LedgerSummary          LedgerSummary
 	AutoReparks            int
+	Conditions             []Condition
 	TerminalPending        bool
 	LossCause              string
 	AdvancementSinceLoss   bool
@@ -984,6 +1141,7 @@ func (s *Store) PersistSnapshot() (PersistedGoal, bool) {
 		Budgets:                g.Budgets,
 		LedgerSummary:          cloneLedgerSummary(g.LedgerSummary),
 		AutoReparks:            g.AutoReparks,
+		Conditions:             append([]Condition(nil), g.Conditions...),
 		TerminalPending:        g.TerminalPending,
 		LossCause:              g.LossCause,
 		AdvancementSinceLoss:   g.AdvancementSinceLoss,
@@ -1021,6 +1179,7 @@ func (s *Store) RestoreSnapshot(p PersistedGoal) {
 		Budgets:                p.Budgets,
 		LedgerSummary:          cloneLedgerSummary(p.LedgerSummary),
 		AutoReparks:            p.AutoReparks,
+		Conditions:             append([]Condition(nil), p.Conditions...),
 		TerminalPending:        p.TerminalPending,
 		LossCause:              p.LossCause,
 		AdvancementSinceLoss:   p.AdvancementSinceLoss,

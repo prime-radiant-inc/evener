@@ -25,6 +25,7 @@ func goalPersistFromStore(p goal.PersistedGoal) *schema.GoalSnapshot {
 		CreatedAt:              p.CreatedAt,
 		UpdatedAt:              p.UpdatedAt,
 		AutoReparks:            p.AutoReparks,
+		Conditions:             goalConditionsToSchema(p.Conditions),
 		TerminalPending:        p.TerminalPending,
 		LossCause:              p.LossCause,
 		AdvancementSinceLoss:   p.AdvancementSinceLoss,
@@ -60,6 +61,7 @@ func goalPersistFromStore(p goal.PersistedGoal) *schema.GoalSnapshot {
 			Trigger:    p.Trigger,
 			FiredAt:    p.FiredAt,
 			Superseded: p.Superseded,
+			Kind:       string(p.Kind),
 		})
 	}
 	if len(p.LedgerSummary.Entries) > 0 || p.LedgerSummary.Repetition != 0 || p.LedgerSummary.Tier != 0 || p.LedgerSummary.Stage != "" {
@@ -111,6 +113,7 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 			MaxParkedTotal:    time.Duration(g.Budgets.MaxParkedTotalNanos),
 		},
 		AutoReparks:            g.AutoReparks,
+		Conditions:             goalConditionsFromSchema(g.Conditions),
 		TerminalPending:        g.TerminalPending,
 		LossCause:              g.LossCause,
 		AdvancementSinceLoss:   g.AdvancementSinceLoss,
@@ -143,6 +146,7 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 			Trigger:    p.Trigger,
 			FiredAt:    p.FiredAt,
 			Superseded: p.Superseded,
+			Kind:       goal.Kind(p.Kind),
 		})
 	}
 	if g.LedgerSummary != nil {
@@ -161,6 +165,54 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 			})
 		}
 		out.LedgerSummary = summary
+	}
+	return out
+}
+
+// goalConditionsToSchema maps store conditions to the persisted wire form
+// (full predicate payloads, like waits).
+func goalConditionsToSchema(in []goal.Condition) []schema.GoalConditionSnapshot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]schema.GoalConditionSnapshot, 0, len(in))
+	for _, c := range in {
+		out = append(out, schema.GoalConditionSnapshot{
+			Desc:          c.Desc,
+			Kind:          string(c.Predicate.Kind),
+			Target:        c.Predicate.Target,
+			TimeoutNanos:  int64(c.Predicate.Timeout),
+			Matcher:       c.Predicate.Matcher,
+			EventSubtype:  string(c.Predicate.EventSubtype),
+			AskGeneration: c.Predicate.AskGeneration,
+			Baseline:      c.Baseline,
+			Satisfied:     c.Satisfied,
+			RegisteredAt:  c.RegisteredAt,
+		})
+	}
+	return out
+}
+
+// goalConditionsFromSchema maps persisted conditions back to store form.
+func goalConditionsFromSchema(in []schema.GoalConditionSnapshot) []goal.Condition {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]goal.Condition, 0, len(in))
+	for _, c := range in {
+		out = append(out, goal.Condition{
+			Desc: c.Desc,
+			Predicate: goal.WaitKind{
+				Kind:          goal.Kind(c.Kind),
+				Target:        c.Target,
+				Matcher:       c.Matcher,
+				EventSubtype:  goal.EventSubtype(c.EventSubtype),
+				AskGeneration: c.AskGeneration,
+			},
+			Baseline:     c.Baseline,
+			Satisfied:    c.Satisfied,
+			RegisteredAt: c.RegisteredAt,
+		})
 	}
 	return out
 }

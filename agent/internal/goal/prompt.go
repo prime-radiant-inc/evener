@@ -1,6 +1,7 @@
 package goal
 
 import (
+	"fmt"
 	"html"
 	"strings"
 )
@@ -67,4 +68,50 @@ goal to status "blocked" and stops the loop.`
 // for the {{objective}} placeholder.
 func Render(objective string) string {
 	return strings.ReplaceAll(continuationTemplate, "{{objective}}", html.EscapeString(objective))
+}
+
+// ConditionFlip is one condition truth change since the last evaluation
+// (spec §6 direction 4: continuations carry deltas, not full state).
+type ConditionFlip struct {
+	Desc string
+	// From/To are the previous and current truth values.
+	From bool
+	To   bool
+}
+
+// RenderDeltaFrame renders the delta frame appended to a continuation prompt
+// when there is delta to carry: condition flips plus the new terminal
+// events/output excerpts since last evaluation (bounded: at most 8 flips and
+// 8 excerpts, each excerpt capped at 512 chars). Empty delta renders "" (no
+// frame — the prompt stays byte-identical to Render).
+func RenderDeltaFrame(flips []ConditionFlip, newEvents []string) string {
+	if len(flips) == 0 && len(newEvents) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n[goal-delta] Since the last evaluation:")
+	capped := flips
+	if len(capped) > 8 {
+		capped = capped[:8]
+	}
+	for _, f := range capped {
+		fmt.Fprintf(&b, "\n- condition %q flipped %v → %v", f.Desc, f.From, f.To)
+	}
+	evs := newEvents
+	if len(evs) > 8 {
+		evs = evs[:8]
+	}
+	for _, e := range evs {
+		if len(e) > 512 {
+			e = e[:512]
+		}
+		fmt.Fprintf(&b, "\n- %s", e)
+	}
+	return b.String()
+}
+
+// RenderWithDelta returns Render(objective) plus the delta frame ("" when the
+// delta is empty — byte-identical to Render).
+func RenderWithDelta(objective string, flips []ConditionFlip, newEvents []string) string {
+	return Render(objective) + RenderDeltaFrame(flips, newEvents)
 }

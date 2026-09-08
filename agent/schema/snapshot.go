@@ -267,6 +267,22 @@ type GoalWaitSnapshot struct {
 	FiredEpoch     uint64    `json:"fired_epoch,omitzero"`
 }
 
+// GoalConditionSnapshot is one persisted stop-claim condition (spec §6):
+// the goal_expect (desc, predicate) pair plus its registration attach-scan
+// snapshot. The verifier re-evaluates at claim time.
+type GoalConditionSnapshot struct {
+	Desc          string    `json:"desc"`
+	Kind          string    `json:"kind"`
+	Target        string    `json:"target,omitempty"`
+	TimeoutNanos  int64     `json:"timeout_nanos,omitempty"`
+	Matcher       string    `json:"matcher,omitempty"`
+	EventSubtype  string    `json:"event_subtype,omitempty"`
+	AskGeneration string    `json:"ask_generation,omitempty"`
+	Baseline      string    `json:"baseline,omitempty"`
+	Satisfied     bool      `json:"satisfied,omitempty"`
+	RegisteredAt  time.Time `json:"registered_at,omitzero"`
+}
+
 // GoalPendingWakeSnapshot is one persisted consumed-but-undelivered fire
 // (spec section 1): the claim micro-state (fired_epoch + pendingWake) is
 // written atomically with the snapshot, and a restored non-empty backlog
@@ -276,6 +292,7 @@ type GoalPendingWakeSnapshot struct {
 	Trigger    string    `json:"trigger,omitempty"`
 	FiredAt    time.Time `json:"fired_at,omitzero"`
 	Superseded bool      `json:"superseded,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
 }
 
 // LiveWaits returns the live (unfired, FiredEpoch == 0) leases in waits, in
@@ -387,6 +404,9 @@ type GoalSnapshot struct {
 	// synthetic wake (spec section 1): set at claim time so rule 3 cannot
 	// loop final turns; reset by resume --extend deadline.
 	DeadlineFinalDelivered bool `json:"deadline_final_delivered,omitempty"`
+	// Conditions carries the registered stop-claim conditions (spec §6).
+	// Empty means the v1 self-declare path.
+	Conditions []GoalConditionSnapshot `json:"conditions,omitempty"`
 }
 
 // SessionDisplayName returns the best available human-readable title for a

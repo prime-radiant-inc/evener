@@ -192,6 +192,7 @@ type goalGuard struct {
 	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
 	registerWait         func(goal.WaitKind, time.Time) (goal.Wait, bool)
 	cancelWait           func(string, time.Time) bool
+	registerExpect       func(goal.ExpectRequest, time.Time) (goal.Condition, bool)
 	isChildSession       func() bool
 }
 
@@ -237,6 +238,32 @@ func (g goalGuard) CancelWait(waitID string, now time.Time) bool {
 // last RegisterWait succeeded. The Task-3 tool surface propagates it as the
 // validation error.
 func (g goalGuard) RejectReason() string { return g.Store().LastRejectReason() }
+
+// RegisterExpect validates and installs one stop-claim condition through the
+// owning Session when available; direct test constructions fall back to the
+// store-only behavior.
+func (g goalGuard) RegisterExpect(req goal.ExpectRequest, now time.Time) (goal.Condition, bool) {
+	if g.registerExpect != nil {
+		return g.registerExpect(req, now)
+	}
+	return g.Store().RegisterExpect(req, now)
+}
+
+// Conditions returns the goal's registered stop-claim conditions (empty =
+// the v1 self-declare path). ok is false when no goal is set.
+func (g goalGuard) Conditions() ([]goal.Condition, bool) {
+	full, ok := g.Store().GoalSnapshot()
+	if !ok {
+		return nil, false
+	}
+	return append([]goal.Condition(nil), full.Conditions...), true
+}
+
+// EvaluateExpectations re-evaluates conditions against the live substrate at
+// claim time (spec §6 check-on-claim).
+func (g goalGuard) EvaluateExpectations(conds []goal.Condition) []goal.ConditionCheck {
+	return g.Store().EvaluateExpectations(conds)
+}
 
 // Snapshot returns a value copy of the current goal, or (zero, false) if no
 // goal is set.
@@ -293,6 +320,7 @@ func newToolDeps(s *Session) *toolDeps {
 			setTerminal:          s.setGoalTerminal,
 			registerWait:         s.registerGoalWait,
 			cancelWait:           func(waitID string, _ time.Time) bool { return s.CancelGoalWait(waitID) },
+			registerExpect:       s.registerGoalExpect,
 			isChildSession:       s.isSubagentSession,
 		},
 		worktreeGuard: worktreeGuard{

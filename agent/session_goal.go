@@ -459,6 +459,10 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 		foldOutcome = *outcome
 		foldOutcome.Mutated = foldOutcome.Mutated || progressed
 	}
+	// waitAdvanced is waits-predicate evidence (spec §4): only until_child
+	// terminal claims flip the ledger (Task-7 Minor-2 confirmed — expiry and
+	// other claims accrue as ordinary non-advancing turns, so the re-park
+	// counter cannot be laundered through timer refires).
 	waitAdvanced := len(claimed) > 0 && claimedChildTerminal(claimed, full)
 	// Terminal-pending latch (spec section 1 R7 M-I1): while latched, rules
 	// 2/3 (plus the section-5 re-park graduation - a later task) evaluate
@@ -497,9 +501,70 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	// per gate, never two.
 	folded := full
 	folded.LedgerSummary = goal.FoldLedger(full.LedgerSummary, foldOutcome, waitAdvanced)
+	// Auto-parked re-drive (spec §6 stage 2): the auto-wait lease is a
+	// bounded re-check timer, not a parked predicate. A continuation gate
+	// landing while auto-parked with no fresh claim consumes the lease and
+	// drives the bounded evaluation turn (the fold commits below through the
+	// plain-drive path): consecutive stall evaluations accrue AutoReparks
+	// toward the bound, and the wake-tail bypass never applies (no backlog
+	// was ever marked delivered).
+	if full.Status == goal.StatusWaiting && full.LedgerSummary.Stage == goal.StageAutoPark && len(claimed) == 0 && len(full.PendingWake) == 0 && wasContinuation {
+		consumedAuto := false
+		for _, w := range full.Waits {
+			if w.Live() && w.Lease.Label == goal.AutoWaitLabel {
+				store.ClaimFire(w.Lease.WaitID, "auto re-check due", now)
+				consumedAuto = true
+			}
+		}
+		if consumedAuto {
+			drained := store.DrainPendingWake(now)
+			_ = drained
+			full, ok = store.GoalSnapshot()
+			if !ok {
+				s.goalUpdateMu.Unlock()
+				return "", false
+			}
+			// Fall through to the plain-drive fold below with the lease
+			// consumed: this evaluation turn counts (spec §5: no free
+			// turns), and the next stall trip re-parks or blocks on the
+			// committed AutoReparks.
+			snap, stillActive := s.foldGoalLedgerTurn(store, foldOutcome, waitAdvanced, now)
+			s.emitGoalUpdated(snap)
+			s.goalUpdateMu.Unlock()
+			if !stillActive {
+				return s.finishStallBlock()
+			}
+			// Still stalled but bound remains: re-park the auto-wait for the
+			// next evaluation. The fold above already released goalUpdateMu
+			// (the commit path unlocks before the stillActive check, like
+			// the plain-drive site) — re-acquire for the park mutation.
+			// The pure table below would drive (no live waits, below-K on
+			// the committed summary is impossible here — the committed fold
+			// just tripped) — re-park explicitly.
+			if goal.LedgerStalled(snapLedger(store)) {
+				s.goalUpdateMu.Lock()
+				auto := s.parkGoalOnAutoWait(store, now)
+				s.emitGoalUpdated(autoSnapshot(store))
+				s.emitGoalWaitingSilent(auto)
+				s.goalUpdateMu.Unlock()
+				s.armGoalWaitTimer()
+				s.maybeAutoSave()
+				return "", false
+			}
+			return goal.Render(snap.Objective), true
+		}
+	}
 	step, verdict := goal.DecideGoalStep(folded, foldOutcome, truth, decidePending, markers, now)
+	// The pure table's stage-2 park verdict carries VerdictNoProgress; the
+	// live-wait rule-4 park carries none. Split them here: the former routes
+	// to the bounded auto-park below (fold commits with the AutoReparks
+	// increment), the latter keeps the zero-fold waiting branch.
+	autoPark := step == goal.StepPark && verdict == goal.VerdictNoProgress
 	switch step {
 	case goal.StepPark:
+		if autoPark {
+			break
+		}
 		// Waiting branch: skip every fold, arm nothing (spec section 1 -
 		// only the coalesced wait timer). Preserve the wake-pending
 		// hold's settle flag so the settle does not re-kick past the same
@@ -595,6 +660,33 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 		s.goalUpdateMu.Unlock()
 		return s.blockGoalFromGate(verdict)
 	}
+	if autoPark {
+		// Stage-2 bounded auto-park (spec §§1, 5, 6): the post-nudge stall
+		// looks like waiting, so park until the bounded auto-wait instead of
+		// blocking — up to MaxConsecutiveAutoReparks consecutive parks, then
+		// the commit graduates to block. The commit keys on the COMMITTED
+		// summary (foldGoalLedgerTurn: RecordContinuation owns the stage trip
+		// + AutoReparks++), not the pre-fold read: a re-park-exhausted stall
+		// blocks here with "no progress" and the single terminal note, while
+		// a bounded one parks on the persisted auto lease (timer re-arms to
+		// it) with the silent EventGoalWaiting (AnnounceSilently — audit
+		// trail preserved for replay consumers, coalesced into the stall
+		// episode's single notice per §6).
+		snap, stillActive := s.foldGoalLedgerTurn(store, foldOutcome, waitAdvanced, now)
+		s.emitGoalUpdated(snap)
+		s.goalUpdateMu.Unlock()
+		if !stillActive {
+			return s.finishStallBlock()
+		}
+		s.goalUpdateMu.Lock()
+		auto := s.parkGoalOnAutoWait(store, now)
+		s.emitGoalUpdated(autoSnapshot(store))
+		s.emitGoalWaitingSilent(auto)
+		s.goalUpdateMu.Unlock()
+		s.armGoalWaitTimer()
+		s.maybeAutoSave()
+		return "", false
+	}
 	if !wasContinuation {
 		s.goalUpdateMu.Unlock()
 		// A user (or other non-continuation) turn completed while a goal is active:
@@ -672,23 +764,34 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	// so the block and the persisted stage agree on the same trip.
 	snap, stillActive := s.foldGoalLedgerTurn(store, foldOutcome, waitAdvanced, now)
 	s.emitGoalUpdated(snap)
+	driveFull, _ := store.GoalSnapshot()
 	s.goalUpdateMu.Unlock()
 	if !stillActive {
-		// The ledger stall bound fired this turn. Record it as a steering turn
-		// (user-role, the channel the goal engine already speaks on): durable in
-		// the transcript and projected on reload, without becoming a mid-history
-		// system-role message provider adapters would fold into persistent
-		// instructions. Then persist the terminal transition: it happens after
-		// processOneInput's defer-save, so without the save a blocked goal would
-		// be saved as still-active and resume on restart (/par A4).
-		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
-			"[goal-no-progress] Goal blocked: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
-			stallBlockText(store))))
-		s.reportGoalEnded()
-		s.maybeAutoSave()
-		return "", false
+		// The ledger stall bound fired this turn: the single transcript
+		// note (user-role, durable in the transcript and projected on
+		// reload) plus persist-after (a blocked goal saved as still-active
+		// would resume on restart). finishStallBlock also disarms the
+		// coalesced timer (Task-7 Minor-6 parity).
+		return s.finishStallBlock()
 	}
-	return goal.Render(snap.Objective), true
+	return s.goalContinuationWithDelta(snap.Objective, driveFull.Conditions), true
+}
+
+// finishStallBlock completes a ledger stall block (spec §§1, 6): the commit
+// (RecordContinuation) already transitioned the goal to blocked with "no
+// progress" and cleared the waits per the every-terminal rule. This finishes
+// the stop discipline shared with every other gate stop path: disarm the
+// coalesced timer (no post-block stale fire — the Task-7 Minor-6 parity),
+// the single transcript note, the exactly-once terminal report, persist.
+// Call with no locks held; kicks never apply to a stop path.
+func (s *Session) finishStallBlock() (string, bool) {
+	s.stopGoalWaitTimer()
+	s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
+		"[goal-no-progress] Goal blocked: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
+		stallBlockText(s.getOrCreateGoalStore()))))
+	s.reportGoalEnded()
+	s.maybeAutoSave()
+	return "", false
 }
 
 // commitGoalLedgerFold persists the pre-decide ledger fold for the nudge arm:
@@ -706,6 +809,33 @@ func (s *Session) commitGoalLedgerFold(store *goal.Store, full goal.GoalSnapshot
 // store methods self-lock.
 func (s *Session) foldGoalLedgerTurn(store *goal.Store, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) (goal.Snapshot, bool) {
 	return store.RecordContinuation(outcome, waitAdvanced, now)
+}
+
+// goalContinuationWithDelta renders the drive prompt with the spec §6
+// direction-4 delta frame: condition flips since the last evaluation (not
+// full state). The wake trailer already carries fired triggers; the delta
+// covers condition truth changes. Updates the last-driven snapshot. Pure
+// except the substrate read (EvaluateExpectations) and the s.mu section.
+func (s *Session) goalContinuationWithDelta(objective string, conds []goal.Condition) string {
+	if len(conds) == 0 {
+		return goal.Render(objective)
+	}
+	checks := s.getOrCreateGoalStore().EvaluateExpectations(conds)
+	s.mu.Lock()
+	last := s.goalDeltaLastConds
+	s.goalDeltaLastConds = append([]goal.ConditionCheck(nil), checks...)
+	s.mu.Unlock()
+	byLast := make(map[string]bool, len(last))
+	for _, c := range last {
+		byLast[c.Desc] = c.Satisfied
+	}
+	var flips []goal.ConditionFlip
+	for _, c := range checks {
+		if prev, ok := byLast[c.Desc]; ok && prev != c.Satisfied {
+			flips = append(flips, goal.ConditionFlip{Desc: c.Desc, From: prev, To: c.Satisfied})
+		}
+	}
+	return goal.RenderWithDelta(objective, flips, nil)
 }
 
 // stallNudgeText names the repetition evidence for the stage-1 nudge note
@@ -776,11 +906,18 @@ func (s *Session) childTerminalTrigger(childID string) (string, bool) {
 	return "", false
 }
 
-// claimedChildTerminal reports whether any claim in the batch carries a child
-// terminal trigger (waits-predicate evidence for the ledger fold). Pure.
+// claimedChildTerminal reports whether any claim in the batch carries
+// until_child waits-predicate evidence for the ledger fold (spec §4:
+// waits' predicate flips are the only subgoal evidence). Structural: keys on
+// the claim-time Kind recorded in the pending entry (Task-7 Minor-5), with
+// the legacy trigger-prefix check as fallback for entries claimed before
+// the Kind field existed (zero Kind on restored pre-Task-8 backlogs). Pure.
 func claimedChildTerminal(claimed []goal.PendingWake, _ goal.GoalSnapshot) bool {
 	for _, c := range claimed {
-		if strings.HasPrefix(c.Trigger, "child ") && strings.Contains(c.Trigger, "terminal") {
+		if c.Kind == goal.WaitUntilChild {
+			return true
+		}
+		if c.Kind == "" && strings.HasPrefix(c.Trigger, "child ") && strings.Contains(c.Trigger, "terminal") {
 			return true
 		}
 	}
@@ -1142,6 +1279,24 @@ func (s *Session) registerGoalWait(req goal.WaitKind, now time.Time) (goal.Wait,
 	return w, true
 }
 
+// registerGoalExpect validates and installs one stop-claim condition (spec
+// section 6), keeping the mutation and its GOAL_UPDATED event ordered under
+// goalUpdateMu like registerGoalWait. Registration never feeds the ledger
+// (check-on-claim only). On success the condition list grows; the verifier
+// at update_goal("complete") evaluates it.
+func (s *Session) registerGoalExpect(req goal.ExpectRequest, now time.Time) (goal.Condition, bool) {
+	s.goalUpdateMu.Lock()
+	cond, ok := s.getOrCreateGoalStore().RegisterExpect(req, now)
+	if !ok {
+		s.goalUpdateMu.Unlock()
+		return goal.Condition{}, false
+	}
+	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	s.goalUpdateMu.Unlock()
+	s.emitGoalUpdated(snap)
+	return cond, true
+}
+
 // CancelGoalWait removes one live lease by wait_id (spec section 7): the live
 // lease leaves the registry; an already-claimed pendingWake entry still
 // drives once with the cancellation noted - cancel never swallows a consumed
@@ -1193,6 +1348,54 @@ func (s *Session) emitGoalWaiting(full goal.GoalSnapshot) {
 		Count:                    len(state.WaitingOn),
 		NearestLabel:             state.NearestLabel,
 		NearestDeadlineUnixMilli: state.NearestDeadlineUnixMilli,
+	})
+}
+
+// parkGoalOnAutoWait installs the bounded stage-2 auto-wait lease (spec §6):
+// an until_time lease whose expiry re-drives exactly one evaluation turn
+// (never auto-blocks). The lease persists so the park survives restart and
+// the coalesced timer re-arms to it; the wake turn's own gate decides the
+// next step (re-park while the bound holds, block on exhaustion). Call with
+// goalUpdateMu held; store methods self-lock. Returns the post-park
+// full-shape read for the silent emit.
+func (s *Session) parkGoalOnAutoWait(store *goal.Store, now time.Time) goal.GoalSnapshot {
+	store.ParkAutoWait(goal.DefaultWaitTimeout, now)
+	full, _ := store.GoalSnapshot()
+	return full
+}
+
+// autoSnapshot reads the narrow snapshot after a park commit for the
+// updated emit. Call with goalUpdateMu held; store methods self-lock.
+func autoSnapshot(store *goal.Store) goal.Snapshot {
+	snap, _ := store.Snapshot()
+	return snap
+}
+
+// snapLedger reads the committed ledger summary. Call with goalUpdateMu held;
+// store methods self-lock.
+func snapLedger(store *goal.Store) goal.LedgerSummary {
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		return goal.LedgerSummary{}
+	}
+	return full.LedgerSummary
+}
+
+// emitGoalWaitingSilent publishes the stage-2 auto-park EventGoalWaiting with
+// AnnounceSilently set (spec §7 emit-vs-project): replay consumers keep the
+// audit trail while the projector suppresses the announcement (coalesced
+// into the stall episode's single notice). Must be called without session
+// locks held.
+func (s *Session) emitGoalWaitingSilent(full goal.GoalSnapshot) {
+	state := goalStateDataFromFull(full)
+	if len(state.WaitingOn) == 0 {
+		return
+	}
+	s.emit(events.EventGoalWaiting, events.GoalWaitingData{
+		Count:                    len(state.WaitingOn),
+		NearestLabel:             state.NearestLabel,
+		NearestDeadlineUnixMilli: state.NearestDeadlineUnixMilli,
+		AnnounceSilently:         true,
 	})
 }
 

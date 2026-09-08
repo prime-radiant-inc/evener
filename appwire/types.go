@@ -1186,7 +1186,10 @@ const (
 	ThreadItemEventKindGoalWaiting ThreadItemEventKind = "goal_waiting"
 	// ThreadItemEventKindGoalResumed marks the systemMessage item a wake
 	// turn's EventGoalResumed projects to (spec §7).
-	ThreadItemEventKindGoalResumed  ThreadItemEventKind = "goal_resumed"
+	ThreadItemEventKindGoalResumed ThreadItemEventKind = "goal_resumed"
+	// ThreadItemEventKindGoalWatchdog marks the systemMessage item a
+	// quiet-goal watchdog EventGoalWatchdog projects to (spec §6).
+	ThreadItemEventKindGoalWatchdog ThreadItemEventKind = "goal_watchdog"
 	ThreadItemEventKindForkSummary  ThreadItemEventKind = "fork_summary"
 	ThreadItemEventKindRoundTimings ThreadItemEventKind = "round_timings"
 	ThreadItemEventKindToolRepair   ThreadItemEventKind = "tool_repair"
@@ -1218,6 +1221,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindGoalEnded),
 	string(ThreadItemEventKindGoalWaiting),
 	string(ThreadItemEventKindGoalResumed),
+	string(ThreadItemEventKindGoalWatchdog),
 	string(ThreadItemEventKindForkSummary),
 	string(ThreadItemEventKindRoundTimings),
 	string(ThreadItemEventKindToolRepair),
