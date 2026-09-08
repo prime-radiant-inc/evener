@@ -23,6 +23,28 @@
 #   scripts/coverage/coverage-floor.sh --go-only | --web-only
 #   scripts/coverage/coverage-floor.sh --tolerance 0.5     # wobble band (default 0.5pp)
 #
+# DESIGN NOTE (perf/w2-coverfloor, 2026-09-07): single-run dual-profile
+# collection was prototyped in analysis only and REJECTED — the two-run shape
+# stands. The candidate was one tagged run per module, e.g.
+#   go test -tags evenerfuzz -coverprofile=union.cov -run '^(Test|Example|Fuzz)'
+# halving suite executions. It cannot preserve what the ratchet measures:
+#  1. Mutually exclusive builds. ~100 test files carry `//go:build evenerfuzz`
+#     while invariant/invariant_test.go:1 and
+#     appwire/registered_coverage_default_test.go:1 carry `//go:build
+#     !evenerfuzz`. No single `go test` invocation compiles both sides, so any
+#     one run drops a whole track's sources outright.
+#  2. Behavioural, not just coverage. invariant.Hold is a compiled-out no-op
+#     without the tag (invariant/invariant.go:32) and a panicking call with it
+#     (invariant/invariant_evenerfuzz.go); TestProductionBuildIsInert
+#     (invariant/invariant_test.go:10-22) asserts the no-op side while the
+#     evenerfuzz tests assert the live side. A merged tagged run would FAIL
+#     tests, not merely undercount them.
+#  3. Split block basis. The two builds instrument different statement sets
+#     (see the boundary-variant check below), so one profile on one basis can
+#     never equal the union of both. Static analysis only; no suite was run to
+#     confirm (lane forbids test runs). Revisit only if the tag split is
+#     reunified.
+#
 # Floors live in scripts/coverage/coverage-floors.txt ("<module|web> <pct>" per
 # line), raised upward only. A partial --bless preserves every other row's
 # floor, and the comment header is carried through so a hand-written note
