@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -208,6 +209,10 @@ func TestDrainIdleBackoffWakeResetsToFullRate(t *testing.T) {
 // exactly one notification turn for it.
 func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, testDrainBackoffFinalKickDeliversUnreachableChildPending)
+}
+
+func testDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	sess := newSession(t)
 	seedWatchSendResidue(t, sess)
 	jm := sess.jobManager
@@ -248,7 +253,7 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 		_, _ = sess.drainJobTreeWith(ctx, recheck, kick, process)
 	}()
 
-	// Phase 1: drive passes 0..drainIdleBackoffFullRatePasses (17 sends).
+	// Phase 1: finish the full-rate prefix and one skipped-kick pass.
 	// The drain runs its first pass (pass 0) before parking, so 17 sends
 	// release passes 1..17: passes 0..16 kick at full rate (17 kicks) and
 	// pass 17 (quietPasses=17, 17%4!=0) is the first pass that SKIPS its
@@ -262,19 +267,19 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 			t.Fatal("drain returned before reaching a skipped-kick pass")
 		}
 	}
-	// Await the 17 full-rate kicks before seeding: this proves passes 0..16
-	// all ran their kick gates, so the loop is parked awaiting pass 17 (or
-	// running it) and Phase 2's seeding cannot land in an earlier pass's
-	// scan. Without the fix this wait still terminates — the prefix always
-	// kicks — and the turn assertion below still fails.
-	waitDrainBackoffKicks(t, done, &kicks, int32(drainIdleBackoffFullRatePasses)+1, "full-rate prefix")
-	// Phase 2: while the loop is parked awaiting pass 17, seed a forwarded
+	// The last recheck send only releases the pass. Wait until that pass has
+	// parked so it cannot inspect the fixture halfway through seeding.
+	synctest.Wait()
+	if got, want := kicks.Load(), int32(drainIdleBackoffFullRatePasses)+1; got != want {
+		t.Fatalf("full-rate prefix kicks = %d, want %d", got, want)
+	}
+	// Phase 2: while the loop is parked awaiting pass 18, seed a forwarded
 	// terminal pending owned by a child that is nowhere in the live tree —
 	// not a live direct subagent, no delegate descriptor, so childResumable
 	// is false and the next kick renders it onto this session's rail — and
 	// clear the residue. Both are pure store/flag writes (appendEvent is
 	// store.Append: no enqueue, no wake), so the wake edge stays clear and
-	// pass 17 still skips its kick deterministically.
+	// pass 18 still skips its kick deterministically.
 	const childID = "child-gone"
 	now := jm.now()
 	gen := "gen-job_unreachable_tail"
@@ -294,34 +299,12 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	jm.mu.Lock()
 	jm.stableWatchSettlementRetrying = false
 	jm.mu.Unlock()
-	// The scan excludes the forwarded copy by design, so the tree now reads
-	// quiescent apart from the kick-only render — the hole under test. Poll
-	// read-only (no recheck ticks: every tick releases another parked pass
-	// and disturbs the kick count asserted at the tail) until the quiet scan
-	// is observable. A quiet scan here cannot be a stale read racing pass
-	// 17's own verdict: the loop is parked awaiting it, and the seeding
-	// above raised no wake, so the next pass still skips its kick.
-	quietDeadline := time.Now().Add(30 * time.Second)
-	for {
-		outstanding, err := sess.treeHasOutstandingWork()
-		if err != nil {
-			t.Fatalf("quiescence poll: %v", err)
-		}
-		if !outstanding {
-			break
-		}
-		if time.Now().After(quietDeadline) {
-			t.Fatalf("precondition: tree must read quiescent after residue clear, got outstanding=true after 30s")
-		}
-		select {
-		case <-done:
-			t.Fatalf("drain returned during quiescence poll with turns = %d, want the skipped-kick pass to run first", turns.Load())
-		// TRIPWIRE: not a completion-signal wait — a quiet scan above is
-		// the signal; 10ms only yields instead of busy-spinning.
-		case <-time.After(10 * time.Millisecond):
-		}
+	// The parked drain cannot change the fixture. Clearing the residue is
+	// synchronous, and the scan excludes the forwarded copy by design.
+	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
+		t.Fatalf("precondition: tree must read quiescent after residue clear, got outstanding=%v err=%v", outstanding, err)
 	}
-	// Phase 3: release pass 17. Without the fix it returns quiescent with
+	// Phase 3: release pass 18. Without the fix it returns quiescent with
 	// the pending undelivered (turns stays 0 and done closes); with the fix
 	// the final kick renders it onto the rail and the loop runs exactly one
 	// notification turn for it.

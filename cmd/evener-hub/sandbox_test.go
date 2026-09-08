@@ -131,6 +131,9 @@ api_key = "sk-sandbox"
 		tb.Fatal(err)
 	}
 
+	if err := os.Mkdir(filepath.Join(root, "roster"), 0700); err != nil {
+		tb.Fatal(err)
+	}
 	spawner := &recordingSpawner{}
 	cfg := hubcore.WebConfig{
 		HubAddr:             "127.0.0.1:9180",

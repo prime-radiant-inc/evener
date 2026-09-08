@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -233,6 +235,50 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	ds.TurnSlots = turnSlotOccupancyOf(s)
 
 	return ds
+}
+
+// SessionOwnsDelegate verifies a direct parent-child edge in the root-owned
+// delegate journal without projecting transcript attention.
+func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSessionID string) (bool, error) {
+	if err := schema.ValidateSessionID(parentSessionID); err != nil {
+		return false, err
+	}
+	if err := schema.ValidateSessionID(childSessionID); err != nil {
+		return false, err
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, parentSessionID)
+	if err != nil {
+		return false, err
+	}
+	rootID := activityRootIDFromMeta(parentSessionID, meta)
+	if err := schema.ValidateSessionID(rootID); err != nil {
+		return false, err
+	}
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
+	if err != nil {
+		return false, err
+	}
+	parentDelegateID := ""
+	parentFound := parentSessionID == rootID
+	if !parentFound {
+		for delegateID, aggregate := range result.Value.state {
+			if aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID && aggregate.Descriptor.ChildSessionID == parentSessionID {
+				parentDelegateID, parentFound = delegateID, true
+				break
+			}
+		}
+	}
+	for _, aggregate := range result.Value.state {
+		if parentFound && aggregate != nil && aggregate.Descriptor.OwnerSessionID == rootID &&
+			aggregate.Descriptor.ChildSessionID == childSessionID && aggregate.Descriptor.ParentDelegateID == parentDelegateID {
+			return true, nil
+		}
+	}
+	if result.Value.tornTail {
+		return false, fmt.Errorf("delegate ownership journal has an incomplete trailing batch: %s", path)
+	}
+	return false, nil
 }
 
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows

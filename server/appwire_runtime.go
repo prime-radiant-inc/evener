@@ -518,6 +518,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			s.mu.Unlock()
 			return nil
 		}
+		parentRef := s.appRef
+		if parentRef == "" {
+			parentRef = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: ownerThreadID}.String()
+		}
 		projection := s.appDescendants[threadID]
 		if projection == nil {
 			sourceID := s.appSourceID
@@ -532,7 +536,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					ID:        threadID,
 					SessionID: threadID,
 					Source:    sourceID,
-					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent"},
+					Evener:    appwire.EvenerThread{Ref: ref, Kind: "subagent", ParentRef: parentRef},
 				},
 			}
 			s.installCostLookup(projection.projector)
@@ -567,6 +571,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					startSeed = currentWorkSeedWithoutTasks(startSeed)
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, cachedTasks, projection.thread.Evener.Goal, startSeed)
+				params.Thread.Evener.ParentRef = parentRef
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
@@ -1148,6 +1153,9 @@ func (s *Server) appThreadReadSnapshotForTarget(params appwire.ThreadReadParams,
 			return appwire.ThreadReadResponse{}, err
 		}
 	}
+	// Descendant projections carry events and transcript windows, but not the
+	// addressed child's durable queue and mutation receipts.
+	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
 	response := appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}
 	if err := appwire.ValidateThreadReadItemResponse(response); err != nil {
 		return appwire.ThreadReadResponse{}, err
@@ -1810,6 +1818,7 @@ func (s *Server) clearBlockedReasonLocked() string {
 
 func (s *Server) threadClearResponse(clientMutationID string, disposition appwire.MutationDisposition) appwire.ThreadClearResponse {
 	thread := s.appThread()
+	thread.Evener.MutationStateAuthoritative = true
 	return appwire.ThreadClearResponse{
 		Thread: thread,
 		Ref:    thread.Evener.Ref,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -865,5 +867,72 @@ func TestLoadSessionDelegateStatus_OversizedDelegateJournalLineDegradesWithDiagn
 	}
 	if !found {
 		t.Fatalf("diagnostics = %v, want one identifying the oversized delegates.jsonl line (file + line info), visible rather than silently dropped", diagnostics)
+	}
+}
+
+func TestSessionOwnsDelegateCancellationDuringJournalFold(t *testing.T) {
+	stateDir := t.TempDir()
+	ownerID := "02wMz5Txv1C3Hut0M8GCeC"
+	childID := "02wMz5Txv1C3Hut0M8GCeD"
+	writePastStableDelegates(t, stateDir, ownerID, pastStableDescriptor(ownerID, childID, "inspect ownership"))
+	savePastActivityMeta(t, stateDir, ownerID, "Owner")
+	synctest.Test(t, func(t *testing.T) {
+		started, release := make(chan struct{}), make(chan struct{})
+		original := scanDelegateJournal
+		scanDelegateJournal = func(ctx context.Context, path string, fromOffset int64, limits delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+			close(started)
+			<-release
+			return original(ctx, path, fromOffset, limits)
+		}
+		defer func() { scanDelegateJournal = original }()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, err := SessionOwnsDelegate(ctx, stateDir, ownerID, childID); done <- err }()
+		<-started
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("ownership error=%v, want cancellation", err)
+			}
+		default:
+			t.Error("ownership caller still waits for the journal fold after cancellation")
+		}
+		close(release)
+		synctest.Wait()
+		owned, err := SessionOwnsDelegate(context.Background(), stateDir, ownerID, childID)
+		if err != nil || !owned {
+			t.Errorf("shared fold lost healthy caller's result: owned=%v, err=%v", owned, err)
+		}
+	})
+}
+
+func TestSessionOwnsDelegateVerifiesRootOwnerAndImmediateParent(t *testing.T) {
+	const rootID = "02wMz5Txv1C3Hut0M8GCeC"
+	const parentID = "02wMz5Txv1C3Hut0M8GCeD"
+	const childID = "02wMz5Txv1C3Hut0M8GCeE"
+	const siblingID = "02wMz5Txv1C3Hut0M8GCeF"
+	stateDir := t.TempDir()
+	parent := pastStableDescriptor(rootID, parentID, "parent task")
+	child := pastStableDescriptor(rootID, childID, "nested task")
+	child.ParentDelegateID = "dlg_" + parentID
+	sibling := pastStableDescriptor(rootID, siblingID, "sibling task")
+	writePastStableDelegates(t, stateDir, rootID, parent, child, sibling)
+	savePastActivityMeta(t, stateDir, rootID, "root")
+	savePastActivityMetaWithTreeRevision(t, stateDir, parentID, "parent", rootID, 1)
+	savePastActivityMetaWithTreeRevision(t, stateDir, siblingID, "sibling", rootID, 1)
+	for _, tc := range []struct {
+		parent, child string
+		want          bool
+	}{
+		{rootID, parentID, true}, {parentID, childID, true}, {rootID, childID, false}, {siblingID, childID, false},
+	} {
+		t.Run(tc.parent+"/"+tc.child, func(t *testing.T) {
+			got, err := SessionOwnsDelegate(t.Context(), stateDir, tc.parent, tc.child)
+			if err != nil || got != tc.want {
+				t.Fatalf("owned=%v error=%v, want %v", got, err, tc.want)
+			}
+		})
 	}
 }

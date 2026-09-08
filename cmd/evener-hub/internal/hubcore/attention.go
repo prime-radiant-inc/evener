@@ -10,7 +10,7 @@ func attentionLevel(normalized string) string {
 	switch normalized {
 	case "active":
 		return "working"
-	case "awaiting", "warning":
+	case "awaiting", "warning", appwire.ThreadStatusRestartRequired:
 		return "needs_you"
 	case "errored":
 		return "error"

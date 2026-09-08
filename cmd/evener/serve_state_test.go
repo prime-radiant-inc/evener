@@ -128,6 +128,14 @@ type sessionControlIdentityServer struct {
 	userInputOnce        sync.Once
 	interruptOnce        sync.Once
 	releaseOnce          sync.Once
+
+	terminalProjectionEntered chan struct{}
+	releaseTerminalProjection chan struct{}
+	terminalProjected         chan struct{}
+	holdTerminalProjection    bool
+	terminalEnteredOnce       sync.Once
+	terminalProjectedOnce     sync.Once
+	terminalReleaseOnce       sync.Once
 }
 
 func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIdentityServer {
@@ -138,6 +146,10 @@ func newSessionControlIdentityServer(cfg server.ServerConfig) *sessionControlIde
 		processingFinished: make(chan struct{}),
 		userInputProjected: make(chan struct{}),
 		interruptEntered:   make(chan struct{}),
+
+		terminalProjectionEntered: make(chan struct{}),
+		releaseTerminalProjection: make(chan struct{}),
+		terminalProjected:         make(chan struct{}),
 	}
 }
 
@@ -187,14 +199,14 @@ type sessionControlLifecycle struct {
 	ref    string
 }
 
-func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
+func startSessionControlLifecycle(t *testing.T, adapter llm.ProviderAdapter) *sessionControlLifecycle {
 	t.Helper()
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func(context.Context) error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
 		client := llm.NewClient()
-		client.Register(&closedStreamAdapter{})
+		client.Register(adapter)
 		return client, func() error { return nil }, nil
 	}
 	deps.newSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
@@ -208,7 +220,18 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	}
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		session.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			terminal := ev.Kind == events.EventSessionEnd || ev.Kind == events.EventError
+			observedServer.mu.Lock()
+			holdTerminal := observedServer.holdTerminalProjection
+			observedServer.mu.Unlock()
+			if terminal && holdTerminal {
+				observedServer.terminalEnteredOnce.Do(func() { close(observedServer.terminalProjectionEntered) })
+				<-observedServer.releaseTerminalProjection
+			}
 			server.BridgeEvent(observedServer.Server, ev, observer)
+			if ev.Kind == events.EventSessionEnd {
+				observedServer.terminalProjectedOnce.Do(func() { close(observedServer.terminalProjected) })
+			}
 			if ev.Kind == events.EventUserInput {
 				observedServer.userInputOnce.Do(func() { close(observedServer.userInputProjected) })
 			}
@@ -255,6 +278,7 @@ func startSessionControlLifecycle(t *testing.T) *sessionControlLifecycle {
 	}
 	t.Cleanup(func() {
 		observedServer.release()
+		observedServer.terminalReleaseOnce.Do(func() { close(observedServer.releaseTerminalProjection) })
 		client.Close()
 		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
 			return
@@ -310,7 +334,7 @@ func readSessionControlThread(t *testing.T, lifecycle *sessionControlLifecycle, 
 
 func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) {
 	t.Run("steer and incorporate", func(t *testing.T) {
-		lifecycle := startSessionControlLifecycle(t)
+		lifecycle := startSessionControlLifecycle(t, &closedStreamAdapter{})
 		lifecycle.server.RecordAppEvent(events.SessionEvent{
 			Kind:      events.EventUserInput,
 			SessionID: strings.TrimPrefix(lifecycle.ref, "local:"),
@@ -362,11 +386,22 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	})
 
 	t.Run("stop", func(t *testing.T) {
-		lifecycle := startSessionControlLifecycle(t)
+		adapter := newStopParkAdapter()
+		lifecycle := startSessionControlLifecycle(t, adapter)
+		lifecycle.server.mu.Lock()
+		lifecycle.server.holdTerminalProjection = true
+		lifecycle.server.mu.Unlock()
 		start := startHeldClientMutationTurn(t, lifecycle, "stop-start", "stop this turn")
 		activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID
 		if activeTurnID == "" {
 			t.Fatal("thread/read published no active turn while processing")
+		}
+		lifecycle.server.release()
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.userInputProjected, "user input projection")
+		select {
+		case <-adapter.modelCalls:
+		case <-lifecycle.ctx.Done():
+			t.Fatalf("provider start: %v", lifecycle.ctx.Err())
 		}
 		stopDone := make(chan error, 1)
 		go func() {
@@ -377,7 +412,6 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 			})
 		}()
 		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.interruptEntered, "interrupt handler entry")
-		lifecycle.server.release()
 		select {
 		case err := <-stopDone:
 			if err != nil {
@@ -393,6 +427,13 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 		if status := readSessionControlThread(t, lifecycle, false).Status.Type; status != appwire.ThreadStatusIdle {
 			t.Fatalf("thread status after Stop = %q, want idle", status)
 		}
+		// Runner completion does not drain the asynchronous event bridge.
+		// Hold terminal projection until Stop returns, then await the actual
+		// session-end commit before asserting the projected turn is closed.
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.terminalProjectionEntered, "terminal projection entry")
+		lifecycle.server.terminalReleaseOnce.Do(func() { close(lifecycle.server.releaseTerminalProjection) })
+		awaitSessionControlLifecycle(t, lifecycle, lifecycle.server.terminalProjected, "session end projection")
+
 		if activeTurnID := readSessionControlThread(t, lifecycle, false).Evener.ActiveTurnID; activeTurnID != "" {
 			t.Fatalf("active turn after Stop = %q, want empty", activeTurnID)
 		}

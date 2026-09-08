@@ -177,8 +177,8 @@ func TestServeWebSocketTraceSeparatesConnections(t *testing.T) {
 	first := dialTraceWebSocket(ctx, t, url, httpServer.Client())
 	second := dialTraceWebSocket(ctx, t, url, httpServer.Client())
 	requests := []string{
-		`{"id":41,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`,
-		`{"id":42,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`,
+		`{"id":41,"method":"initialize","params":{"protocolVersion":"evener-appwire-v5"}}`,
+		`{"id":42,"method":"initialize","params":{"protocolVersion":"evener-appwire-v5"}}`,
 	}
 	for i, conn := range []*websocket.Conn{first, second} {
 		if err := conn.Write(ctx, websocket.MessageText, []byte(requests[i])); err != nil {
@@ -324,7 +324,7 @@ func TestServerShutdownWithFullWebSocketRequestQueue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(`{"id":1,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`)
+	write(`{"id":1,"method":"initialize","params":{"protocolVersion":"` + appwire.ProtocolVersion + `"}}`)
 	if _, _, err := conn.Read(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive boo
 	ctx := context.Background()
 	conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
 	defer conn.CloseNow()
-	request := []byte(`{"id":51,"method":"initialize","params":{"protocolVersion":"evener-appwire-v4"}}`)
+	request := []byte(`{"id":51,"method":"initialize","params":{"protocolVersion":"evener-appwire-v5"}}`)
 	if err := conn.Write(ctx, websocket.MessageText, request); err != nil {
 		t.Fatalf("write initialize: %v", err)
 	}

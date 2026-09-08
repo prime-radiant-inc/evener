@@ -1046,6 +1046,9 @@ func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
 	if !ok {
 		t.Fatal("running subagent not found in past index")
 	}
+	if thread.Evener.MutationStateAuthoritative {
+		t.Fatal("saved delegate data cannot prove mutation absence")
+	}
 	if thread.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
 	}

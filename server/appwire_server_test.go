@@ -2767,3 +2767,22 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 		t.Fatalf("second item text missing, want the seeded tail in the same logical turn")
 	}
 }
+
+// A cancelled input that never reached the projector has no SessionEnd event.
+func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.SetProcessingTurn("durable-turn")
+	before := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if before.Thread.Evener.ActiveTurnID != "durable-turn" {
+		t.Fatalf("reserved active turn = %q", before.Thread.Evener.ActiveTurnID)
+	}
+	srv.SetProcessing(false)
+	after := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
+	if after.Thread.Evener.ActiveTurnID != "" {
+		t.Fatalf("unincorporated active turn = %q", after.Thread.Evener.ActiveTurnID)
+	}
+	if after.Thread.Status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("unincorporated status = %q", after.Thread.Status.Type)
+	}
+}

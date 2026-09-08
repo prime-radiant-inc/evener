@@ -684,6 +684,12 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	for _, cleared := range []bool{false, true} {
+		t.Run(fmt.Sprint("cleared=", cleared), func(t *testing.T) { testHubSteersSurvivingDaemon(t, cleared) })
+	}
+}
+
+func testHubSteersSurvivingDaemon(t *testing.T, cleared bool) {
 	const (
 		daemonProtocol = appwire.ProtocolVersion
 		threadID       = "th_compatible"
@@ -705,6 +711,18 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	})
 	defer daemonHTTP.Close()
 
+	resumeID := threadID
+	if cleared {
+		resumeID = "workspace_before_clear"
+		entries, err := rendezvous.List(runDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("rendezvous entries=%+v error=%v", entries, err)
+		}
+		entry := entries[0]
+		entry.WorkspaceRef = "local:" + resumeID
+		writeRendezvous(t, runDir, entry)
+	}
+
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
 
@@ -725,11 +743,11 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Ref: "local:" + resumeID})
 	if err != nil {
 		t.Fatalf("ThreadResume: %v", err)
 	}
-	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+	if resumed.Thread.ID != threadID || resumed.Thread.Evener.Ref != "local:"+threadID || resumeCalls != 0 {
 		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
 	}
 
@@ -8493,7 +8511,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+	  printf '{"protocol":"evener-appwire-v5","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -8571,78 +8589,147 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 }
 
 func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
-	const sessionID = "033snFBSHFr78ZbQQMAeBD"
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:        sessionID,
-			SessionID: sessionID,
-			Source:    "local",
-			Evener: appwire.EvenerThread{
-				Ref:          params.Ref,
-				Capabilities: appwire.ThreadCapabilities{Send: true},
-			},
-		}}, nil
-	})
-	var gotPrompt string
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = inputTextForTest(params.Input)
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
-	})
-	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
-	dropper := &dropFirstConnectionListener{
-		Listener: daemonHTTP.Listener,
-		dropped:  make(chan struct{}),
-	}
-	daemonHTTP.Listener = dropper
-	daemonHTTP.Start()
-	defer daemonHTTP.Close()
+	for _, fault := range []string{"probe", "listing", "status", "stale-instance"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "033snFBSHFr78ZbQQMAeBD"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          params.Ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+						Diagnostics: &appwire.EvenerDiagnostics{Delegates: []appwire.EvenerDelegateInfo{
+							{ChildSessionID: "active-child", Lifecycle: "running", Status: "running"},
+							{ChildSessionID: "idle-child", Lifecycle: "idle", Status: "completed", Resumable: true},
+							{ChildSessionID: "closed-child", Lifecycle: "closed", Status: "completed", Terminal: true},
+						}},
+					},
+				}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "status" {
+					return appwire.ThreadListResponse{}, appwire.Unavailable("status temporarily unavailable")
+				}
+				return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+			})
+			var gotPrompt string
+			var turns int
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				gotPrompt = inputTextForTest(params.Input)
+				turns++
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+			})
+			daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+			dropper := &dropFirstConnectionListener{
+				Listener: daemonHTTP.Listener,
+				dropped:  make(chan struct{}),
+			}
+			if fault == "probe" {
+				daemonHTTP.Listener = dropper
+			}
+			daemonHTTP.Start()
+			defer daemonHTTP.Close()
 
-	runDir := t.TempDir()
-	entry := rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-	}
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
-	roster := hubcore.NewRoster(runDir, failedRPCProber{})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:  runDir,
-		Roster:  roster,
-		Spawner: spawner,
-		Past:    hubcore.NewPastIndex(""),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			runDir := t.TempDir()
+			entry := rendezvous.Entry{
+				PID:       os.Getpid(),
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			if fault == "stale-instance" {
+				entry.InstanceID = "fresh-instance"
+			}
+			var spawns int
+			spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "listing" || fault == "stale-instance" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if fault == "stale-instance" {
+				old := entry
+				old.InstanceID = "previous-instance"
+				writeRendezvous(t, runDir, old)
+				roster.Refresh()
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:  runDir,
+				Roster:  roster,
+				Spawner: spawner,
+				Past:    hubcore.NewPastIndex(""),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
-		Model: "openai/gpt-5",
-		CWD:   "/tmp",
-		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
-	})
-	if err != nil {
-		t.Fatalf("ThreadStart: %v", err)
-	}
-	select {
-	case <-dropper.dropped:
-	default:
-		t.Fatal("startup test did not drop the first daemon connection")
-	}
-	if gotPrompt != "review the open PRs" {
-		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
-	}
-	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
-		t.Fatalf("response=%+v", resp)
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+				Model: "openai/gpt-5",
+				CWD:   "/tmp",
+				Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+			})
+			if err != nil {
+				t.Fatalf("ThreadStart: %v", err)
+			}
+			if fault == "probe" {
+				select {
+				case <-dropper.dropped:
+				default:
+					t.Fatal("startup test did not drop the first daemon connection")
+				}
+			}
+			if gotPrompt != "review the open PRs" {
+				t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+			}
+			if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+				t.Fatalf("response=%+v", resp)
+			}
+
+			if spawns != 1 || turns != 1 {
+				t.Fatalf("spawns=%d turns=%d", spawns, turns)
+			}
+			if live, ok := roster.Find(sessionID); !ok || live.PID != entry.PID || live.Crashed {
+				t.Errorf("spawned daemon is not registered: %+v, present=%v", live, ok)
+			}
+			if live, _ := roster.Find(sessionID); live.InstanceID != entry.InstanceID {
+				t.Errorf("registered instance=%q, want %q", live.InstanceID, entry.InstanceID)
+			}
+			if state, ok := roster.SubagentState("active-child"); !ok || state != appwire.ThreadStatusActive {
+				t.Errorf("active child projection: state=%q live=%v", state, ok)
+			}
+			if state, ok := roster.SubagentState("idle-child"); !ok || state != appwire.ThreadStatusIdle {
+				t.Errorf("idle child projection: state=%q live=%v", state, ok)
+			}
+			if roster.IsSubagentActive("closed-child") {
+				t.Error("closed child published as live")
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: resp.Thread.Evener.Ref}); err != nil {
+				t.Fatalf("subsequent ThreadRead: %v", err)
+			}
+			if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
+				Ref: resp.Thread.Evener.Ref, ClientMutationID: "follow-up", ExpectedInstanceID: sessionID,
+				Input: []appwire.InputItem{{Type: "text", Text: "continue review"}},
+			}); err != nil {
+				t.Fatalf("subsequent TurnStart: %v", err)
+			}
+			if spawns != 1 || turns != 2 || gotPrompt != "continue review" {
+				t.Fatalf("follow-up delivery: spawns=%d turns=%d prompt=%q", spawns, turns, gotPrompt)
+			}
+
+		})
 	}
 }
 
@@ -9312,6 +9399,259 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 	}
 	if resp.Thread.ID != "th_resumed" || resp.Thread.Evener.Ref != "local:th_resumed" {
 		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeConfirmsSpawnAfterDiscoveryFailure(t *testing.T) {
+	for _, fault := range []string{"status", "listing", "confirmed", "read", "identity"} {
+		t.Run(fault, func(t *testing.T) {
+			const sessionID = "resumed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				if fault == "confirmed" {
+					return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+				}
+				return appwire.ThreadListResponse{}, appwire.Unavailable("inventory unavailable")
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				if fault == "read" {
+					return appwire.ThreadReadResponse{}, appwire.Unavailable("read unavailable")
+				}
+				id := sessionID
+				if fault == "identity" {
+					id = "different-owner"
+				}
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: id, SessionID: id, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "delivered"}}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+			spawns := 0
+			spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawns++
+				writeRendezvous(t, runDir, entry)
+				if fault == "confirmed" {
+					roster.Refresh()
+				}
+				if fault == "listing" || fault == "confirmed" {
+					if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return entry, nil
+			}}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, ResumeLocks: hubcore.NewResumeLocks()})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawns != 1 {
+				t.Fatalf("spawns=%d", spawns)
+			}
+			if fault == "read" || fault == "identity" {
+				if err == nil || roster.HasConfirmedEntry(entry) {
+					t.Fatalf("unverified owner admitted: error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.ID != sessionID || !roster.HasConfirmedEntry(entry) {
+				t.Fatalf("resume did not publish owner: %+v", response.Thread)
+			}
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID}); err != nil {
+				t.Fatal(err)
+			}
+			turn, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, ClientMutationID: "resume-followup", ExpectedInstanceID: sessionID, Input: []appwire.InputItem{{Type: "text", Text: "continue"}}})
+			if err != nil || turn.Turn.ID != "delivered" {
+				t.Fatalf("followup=%+v error=%v", turn, err)
+			}
+		})
+	}
+}
+
+func TestHubRPCSubscribedReadRefreshesReplacedDaemonOwnership(t *testing.T) {
+	for _, sameEndpoint := range []bool{false, true} {
+		t.Run(fmt.Sprint("same endpoint=", sameEndpoint), func(t *testing.T) {
+			testHubSubscribedReadReplacedOwner(t, sameEndpoint, appwire.MethodThreadRead, serveProtocolMismatch)
+		})
+	}
+}
+
+func TestHubRPCSessionActionsRefreshReplacedDaemonOwnership(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadShutdown, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet, appwire.MethodThreadCompactStart, appwire.MethodGoalSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveProtocolMismatch) })
+	}
+}
+
+func TestHubRPCTurnStartRefreshesReplacedDaemonBeforeRelay(t *testing.T) {
+	testHubSubscribedReadReplacedOwner(t, true, appwire.MethodTurnStart, serveProtocolMismatch)
+}
+
+func TestHubRPCCachedRouteRefreshesTypedProtocolMismatch(t *testing.T) {
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodTurnStart, appwire.MethodThreadModelSet} {
+		t.Run(method, func(t *testing.T) { testHubSubscribedReadReplacedOwner(t, true, method, serveTypedProtocolMismatch) })
+	}
+}
+
+func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method string, replacement http.HandlerFunc) {
+	root := t.TempDir()
+	sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	var handlerMu sync.RWMutex
+	serve := http.HandlerFunc(daemon.ServeWebSocket)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerMu.RLock()
+		handler := serve
+		handlerMu.RUnlock()
+		handler(w, r)
+	}))
+	defer peer.Close()
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	if !roster.HasConfirmedEntry(entry) {
+		t.Fatal("owner not confirmed")
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	entry.Protocol = "evener-appwire-v4"
+	if sameEndpoint {
+		handlerMu.Lock()
+		serve = replacement
+		handlerMu.Unlock()
+	} else {
+		peer.Close()
+		entry.Endpoint = protocolMismatchPeer(t)
+	}
+	writeRendezvous(t, runDir, entry)
+	if method != appwire.MethodThreadRead {
+		params := map[string]any{"ref": "local:" + sessionID}
+		switch method {
+		case appwire.MethodTurnStart:
+			params["clientMutationId"] = "replacement-send"
+			params["expectedInstanceId"] = sessionID
+			params["input"] = []appwire.InputItem{{Type: "text", Text: "keep this message"}}
+		case appwire.MethodThreadModelSet:
+			params["modelProvider"], params["model"] = "test", "test-model"
+		case appwire.MethodThreadVisionModelSet:
+			params["visionModel"] = "test/vision"
+		case appwire.MethodGoalSet:
+			params["objective"] = "test goal"
+		}
+		var response any
+		err := client.Request(context.Background(), method, params, &response)
+		if !isDaemonRestartRequiredError(err) {
+			t.Fatalf("error=%v", err)
+		}
+		if method == appwire.MethodTurnStart {
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatal(err)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok || data["clientMutationId"] != "replacement-send" || data["mutationOutcome"] != "unknown" || data["retryDisposition"] != "blocked" {
+				t.Fatalf("mutation outcome=%+v", wire.Data)
+			}
+		}
+		return
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
+		t.Fatalf("status=%s", response.Thread.Status.Type)
+	}
+	if response.Thread.Evener.Capabilities.Send || len(response.Thread.Turns) != 2 {
+		t.Fatalf("thread=%+v", response.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeVerifiesExistingOwnerWhenDiscoveryFails(t *testing.T) {
+	for _, state := range []string{"healthy", "unreachable", "absent"} {
+		t.Run(state, func(t *testing.T) {
+			const sessionID = "confirmed-owner"
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+				return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: thread}, nil
+			})
+			peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer peer.Close()
+			runDir := t.TempDir()
+			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			if state != "absent" {
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID})
+				roster.Refresh()
+				if _, ok := roster.Find(sessionID); !ok {
+					t.Fatal("owner was not confirmed")
+				}
+			}
+			if state == "unreachable" {
+				peer.Close()
+			}
+			if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			spawned := false
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				spawned = true
+				return rendezvous.Entry{}, errors.New("unexpected replacement")
+			}}})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if spawned {
+				t.Fatal("spawned despite incomplete ownership discovery")
+			}
+			if state == "healthy" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.Thread.ID != sessionID {
+					t.Fatalf("thread=%+v", response.Thread)
+				}
+			} else if err == nil {
+				t.Fatal("resume succeeded without a verified owner")
+			}
+			if roster.OwnershipError() == nil {
+				t.Fatal("partial confirmation cleared the discovery failure")
+			}
+		})
 	}
 }
 
@@ -10031,100 +10371,111 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 }
 
 func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
-	root := t.TempDir()
-	workingDir := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	staleAddress := ln.Addr().String()
-	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, sessionID)
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
-	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer daemonHTTP.Close()
-
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       -1,
-		Address:   staleAddress,
-		Protocol:  appwire.ProtocolVersion,
-		Endpoint:  staleEndpoint,
-		SourceID:  "local",
-		ThreadID:  sessionID,
-		SessionID: sessionID,
-		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
-	})
-	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
-	roster := hubcore.NewRoster(runDir, prober)
-	roster.Refresh()
-	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
-		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
-	}
-	resumeCalled := false
-	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			if req.WorkingDir != workingDir {
-				t.Fatalf("resume request=%+v", req)
+	for _, refreshFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint("refresh failure=", refreshFailure), func(t *testing.T) {
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
 			}
-			resumeCalled = true
-			entry := rendezvous.Entry{
-				PID:        110,
-				Address:    daemonHTTP.Listener.Addr().String(),
-				Protocol:   appwire.ProtocolVersion,
-				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
-				SourceID:   "local",
-				ThreadID:   sessionID,
-				SessionID:  sessionID,
-				WorkingDir: workingDir,
-				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
-			writeRendezvous(t, runDir, entry)
+			staleAddress := ln.Addr().String()
+			staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
+			if err := ln.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				appserver.Subscribe(ctx, sessionID)
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+			})
+			appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+			})
+			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+			defer daemonHTTP.Close()
+
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID:       -1,
+				Address:   staleAddress,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  staleEndpoint,
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+				StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
+			})
+			prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+			roster := hubcore.NewRoster(runDir, prober)
 			roster.Refresh()
-			return entry, nil
-		},
-	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{
-		RunDir:      runDir,
-		Roster:      roster,
-		Spawner:     spawner,
-		Past:        past,
-		ResumeLocks: hubcore.NewResumeLocks(),
-	})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
+			if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+				t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
+			}
+			resumeCalled := false
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					if req.WorkingDir != workingDir {
+						t.Fatalf("resume request=%+v", req)
+					}
+					resumeCalled = true
+					entry := rendezvous.Entry{
+						PID:        110,
+						Address:    daemonHTTP.Listener.Addr().String(),
+						Protocol:   appwire.ProtocolVersion,
+						Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+						SourceID:   "local",
+						ThreadID:   sessionID,
+						SessionID:  sessionID,
+						WorkingDir: workingDir,
+						StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+					}
+					prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
+					writeRendezvous(t, runDir, entry)
+					if refreshFailure {
+						if err := os.WriteFile(filepath.Join(runDir, "1.json"), []byte("{"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
 
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
-	if err != nil {
-		t.Fatalf("TurnStart: %v", err)
-	}
-	if !resumeCalled {
-		t.Fatal("resume was not called after local transport error")
-	}
-	if resp.Turn.ID != "turn_recovered" {
-		t.Fatalf("turn=%+v", resp.Turn)
+					roster.Refresh()
+					return entry, nil
+				},
+			}
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        past,
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+			if err != nil {
+				t.Fatalf("TurnStart: %v", err)
+			}
+			if !resumeCalled {
+				t.Fatal("resume was not called after local transport error")
+			}
+			if resp.Turn.ID != "turn_recovered" {
+				t.Fatalf("turn=%+v", resp.Turn)
+			}
+
+		})
 	}
 }
 
@@ -11301,5 +11652,37 @@ func TestHubRPCThreadStartEmptyModelRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model is required") {
 		t.Fatalf("error = %v, want error containing \"model is required\"", err)
+	}
+}
+
+func TestHubRPCSavedDelegateReadDoesNotClaimMutationAuthority(t *testing.T) {
+	for _, status := range []string{appwire.ThreadStatusActive, appwire.ThreadStatusIdle} {
+		t.Run(status, func(t *testing.T) {
+			cfg, childID := runningSubagentProjectionConfigWithState(t, status)
+			entries := cfg.Roster.List()
+			entries[0].Protocol = appwire.ProtocolVersion
+			entries[0].Endpoint = "ws://unused.invalid/appwire"
+			cfg.Roster = hubcore.NewRosterWithEntries(entries...)
+			sources := appsource.NewRegistry()
+			sources.Add(&pastFallbackRelaySource{
+				thread:  appwire.Thread{ID: childID, Evener: appwire.EvenerThread{Ref: "local:" + childID}},
+				readErr: errors.New("delegate transport failed"),
+			})
+			app := newHubAppServer(cfg, sources)
+			hub := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+			if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + childID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Thread.Status.Type != status || response.Thread.Evener.MutationStateAuthoritative {
+				t.Fatalf("saved delegate status=%q mutation authority=%v", response.Thread.Status.Type, response.Thread.Evener.MutationStateAuthoritative)
+			}
+		})
 	}
 }

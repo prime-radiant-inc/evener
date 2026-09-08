@@ -17,6 +17,7 @@ import (
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -65,6 +66,35 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 	// One combined scan answers both figures; two separate ones would read and
 	// decode the same immutable bytes twice.
 	return stampDerivedTotals(cfg, entry, thread), true, nil
+}
+
+// unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
+// owner remains readable from roster metadata even before it has a past entry.
+func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
+	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
+		return response, ok, err
+	}
+	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
+		return appwire.ThreadReadResponse{}, false, err
+	}
+	source, ok := sources.Source("local")
+	if !ok {
+		return appwire.ThreadReadResponse{}, false, nil
+	}
+	listed, err := source.ListThreads(ctx, appwire.ThreadListParams{})
+	if err != nil {
+		return appwire.ThreadReadResponse{}, false, err
+	}
+	for _, thread := range listed.Data {
+		matches := thread.ID == params.ThreadID || thread.Evener.Ref == localAppRef(params.ThreadID)
+		if params.Ref != "" {
+			matches = thread.Evener.Ref == params.Ref || localAppRef(thread.ID) == params.Ref
+		}
+		if matches && thread.Status.Type == appwire.ThreadStatusRestartRequired {
+			return appwire.ThreadReadResponse{Thread: thread}, true, nil
+		}
+	}
+	return appwire.ThreadReadResponse{}, false, nil
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -490,6 +520,15 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},
+	}
+	if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, ref, entry.Meta.ID); ownershipErr != nil {
+		if !isDaemonDiscoveryError(ownershipErr) {
+			return appwire.Thread{}, ownershipErr
+		}
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+	} else if required {
+		thread.Status.Type = appwire.ThreadStatusRestartRequired
+		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)

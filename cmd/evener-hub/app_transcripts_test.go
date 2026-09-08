@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
@@ -62,6 +63,34 @@ func TestHubRPCTranscriptTargetsUseEvenerParentRefs(t *testing.T) {
 	}
 	if resp.Data[1].Kind != "subagent" || resp.Data[1].Ref != "local:"+subID || resp.Data[1].TurnsUsed != 1 {
 		t.Fatalf("subagent target=%+v", resp.Data[1])
+	}
+}
+
+func TestHubTranscriptTargetsIncludeRestartRequiredChildOfStableWorkspace(t *testing.T) {
+	root := t.TempDir()
+	stableID := buildRPCParentSession(t, filepath.Join(root, "projects", "project-repo-0000000000"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry := rendezvous.Entry{Protocol: "evener-appwire-v4", Endpoint: "ws://unused.test/rpc", ThreadID: stableID, SessionID: "current", WorkspaceRef: "local:" + stableID}
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{
+			{Entry: entry, Status: appwire.ThreadStatusRestartRequired},
+			{Entry: entry, SessionID: "child", OwnerSessionID: "current", ReadOnlyAlias: true, Status: appwire.ThreadStatusRestartRequired},
+		}
+	}, nil))
+	response, err := hubThreadTranscriptList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadTranscriptListParams{Ref: entry.WorkspaceRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data) != 2 {
+		t.Fatalf("want main and child transcript targets: %+v", response.Data)
+	}
+	child := response.Data[1]
+	if child.Ref != "local:child" || child.ThreadID != "child" || child.Kind != "subagent" || child.Status != appwire.ThreadStatusRestartRequired {
+		t.Fatalf("child transcript target = %+v", child)
 	}
 }
 

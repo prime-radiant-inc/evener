@@ -47,6 +47,7 @@ type outputSnapshotObservation struct {
 	outputObserved  bool
 	outputExists    bool
 	retainedBytes   int64
+	outputInfo      os.FileInfo
 	pendingObserved bool
 	pendingExists   bool
 	pending         string
@@ -287,6 +288,7 @@ func observeOutputSnapshot(fs afero.Fs, path string) (outputSnapshotObservation,
 	observation.outputObserved = true
 	observation.outputExists = true
 	observation.retainedBytes = info.Size()
+	observation.outputInfo = info
 
 	metaPath := outputMetaPath(path)
 	// OutputStore publishes pending metadata before rewriting a capped file and
@@ -307,6 +309,18 @@ func observeOutputSnapshot(fs afero.Fs, path string) (outputSnapshotObservation,
 }
 
 func (after outputSnapshotObservation) changedFrom(before outputSnapshotObservation) bool {
+	// A prune can return to the same retained size while the reader still holds
+	// a hash of the expanded file. Metadata publication need not advance during
+	// that interval, so also fence the file generation and in-place appends.
+	if before.outputInfo != nil && after.outputInfo != nil {
+		if !before.outputInfo.ModTime().Equal(after.outputInfo.ModTime()) {
+			return true
+		}
+		if before.outputInfo.Sys() != nil && after.outputInfo.Sys() != nil && !os.SameFile(before.outputInfo, after.outputInfo) {
+			return true
+		}
+	}
+
 	if after.outputObserved && (after.outputExists != before.outputExists || after.retainedBytes != before.retainedBytes) {
 		return true
 	}

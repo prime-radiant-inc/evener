@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -394,5 +395,42 @@ func assertRenameTargets(t *testing.T, events []appwire.NavigationInvalidatedPay
 		if got.Kind == appwire.NavigationTargetAllLoadedProjects && got.Revision != 0 {
 			t.Fatalf("rename wildcard target[%d] revision=%d, want 0", i, got.Revision)
 		}
+	}
+}
+
+func TestRenameLiveWorkspaceAliasReachesDaemon(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-0123456789")
+	const savedID = "02wMz5Txv1C3Hut0M8GCeB"
+	const instanceID = "02wMz5Txv1C3Hut0M8GCeC"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: savedID, Name: "saved name"}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := past.Find(savedID); !ok {
+		t.Fatal("saved session missing from index")
+	}
+	live := &renameNavigationSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: instanceID, Evener: appwire.EvenerThread{Ref: "local:" + savedID, Capabilities: appwire.ThreadCapabilities{Rename: true}}}}}
+	sources := appsource.NewRegistry()
+	sources.Add(live)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, ThreadID: instanceID, SessionID: instanceID, WorkspaceRef: "local:" + savedID})
+	cfg := hubcore.WebConfig{Past: past, Roster: hubcore.NewRoster(runDir, nil)}
+	server := newHubAppServerWithNavigation(cfg, sources, nil, nil)
+	if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + savedID, Name: "new name"}); err != nil {
+		t.Fatal(err)
+	}
+	if live.got.Name != "new name" || live.got.Ref != "local:"+savedID {
+		t.Fatalf("daemon rename=%+v", live.got)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, savedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "saved name" {
+		t.Fatalf("hub bypassed daemon and wrote metadata: %q", meta.Name)
 	}
 }
