@@ -1788,6 +1788,15 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	// goal that keeps reporting never notifies. Tool-only turns (no text)
 	// and non-assistant kinds leave the stretch running. Outside the locks
 	// (the reset takes s.mu itself).
+	//
+	// Loose hook by design (fix-9 M7): this fires on ANY assistant turn
+	// with text — including continuation-turn text the projector may not
+	// surface to the owner — not on strictly owner-projected output. Any
+	// model text production counts as not-quiet, which errs toward fewer
+	// notices (a spurious reset only delays a notice; a missed reset would
+	// false-positive on an advancing goal). If watchdog notices go missing
+	// on reporting goals, the follow-up is to move this hook to the
+	// projector — until then the loose hook stands.
 	if live.Kind == schema.TurnAssistant && len(persisted.Message.Text()) > 0 {
 		s.noteGoalWatchdogOwnerOutput(s.sclock().Now())
 	}
@@ -1906,11 +1915,6 @@ func (s *Session) sclock() clock.Clock {
 	}
 	return s.clock
 }
-
-// SclockNow reports the session clock's current instant (the same sclock the
-// goal gate reads). Exported for daemon glue (the goal resume path) that
-// cannot reach the unexported accessor.
-func (s *Session) SclockNow() time.Time { return s.sclock().Now() }
 
 // assistantHistoryMessage makes malformed tool arguments replayable in semantic
 // history without changing the provider response used for tool validation.

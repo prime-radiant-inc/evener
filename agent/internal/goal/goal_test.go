@@ -24,6 +24,36 @@ func TestStoreSetGetClear(t *testing.T) {
 	}
 }
 
+// TestResumeNonBlockedErrors pins the Resume domain guard (fix-9 M4): resume
+// with no goal, or with an active/waiting/complete goal, errors naming
+// NoBlockedGoalError — only a blocked goal resumes.
+func TestResumeNonBlockedErrors(t *testing.T) {
+	s := NewStore()
+	if _, err := s.Resume(ResumeRequest{}, clock()); err == nil || err.Error() != NoBlockedGoalError {
+		t.Fatalf("Resume with no goal = %v, want %q", err, NoBlockedGoalError)
+	}
+	s.Set("live work", clock())
+	if _, err := s.Resume(ResumeRequest{}, clock()); err == nil || err.Error() != NoBlockedGoalError {
+		t.Fatalf("Resume on active = %v, want %q", err, NoBlockedGoalError)
+	}
+	full, _ := s.GoalSnapshot()
+	if full.Status != StatusActive || full.Objective != "live work" {
+		t.Fatalf("failed resume mutated the goal: %+v", full)
+	}
+	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Hour}, clock()); !ok {
+		t.Fatal("precondition: until_time registration should succeed")
+	}
+	if _, err := s.Resume(ResumeRequest{}, clock()); err == nil || err.Error() != NoBlockedGoalError {
+		t.Fatalf("Resume on waiting = %v, want %q", err, NoBlockedGoalError)
+	}
+	if !s.SetTerminal(StatusComplete, "", clock()) {
+		t.Fatal("precondition: SetTerminal should complete the waiting goal")
+	}
+	if _, err := s.Resume(ResumeRequest{}, clock()); err == nil || err.Error() != NoBlockedGoalError {
+		t.Fatalf("Resume on complete = %v, want %q", err, NoBlockedGoalError)
+	}
+}
+
 // foldStallOutcome builds the identical non-advancing outcome the stall tests
 // fold: same fingerprint + class, no digest delta.
 func foldStallOutcome() TurnOutcome {

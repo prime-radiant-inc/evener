@@ -1107,9 +1107,12 @@ func sendHubGoalResume(client *appwire.Client, ref appwire.Ref, objective, exten
 // subcommand into its --extend renewal ("" and 0 when absent) plus the
 // remaining objective text (spec §5 two-token grammar: "--extend <budget>
 // <value>"; R6 K arity pin). The --extend clause, when present, must lead
-// the tail; anything after its two tokens is objective text. Unknown
-// budgets, missing values, and non-numeric values are errors naming the
-// fault. Pure: no locks.
+// the tail; anything after its two tokens is objective text. The TUI checks
+// arity + integer shape only and forwards the budget token for daemon-side
+// validation through the single budget-name grammar
+// (goal.ParseExtendBudget): an unknown budget fails at the daemon with the
+// reason named, not silently. Missing values and non-numeric values are
+// errors naming the fault. Pure: no locks.
 func splitGoalResumeArgs(tail string) (extendBudget string, extendValue int64, objective string, err error) {
 	tokens := strings.Fields(tail)
 	if len(tokens) == 0 || tokens[0] != "--extend" {
@@ -1118,10 +1121,8 @@ func splitGoalResumeArgs(tail string) (extendBudget string, extendValue int64, o
 	if len(tokens) < 3 {
 		return "", 0, "", fmt.Errorf("usage: /goal resume [--extend <budget> <value>] [objective text]; --extend needs exactly two tokens: <budget> (continuations, deadline, or parked-total) and <value>")
 	}
-	switch strings.ToLower(tokens[1]) {
-	case "continuations", "deadline", "parked-total", "parked_total", "parkedtotal":
-		extendBudget = strings.ToLower(tokens[1])
-	default:
+	extendBudget = strings.ToLower(strings.TrimSpace(tokens[1]))
+	if extendBudget == "" {
 		return "", 0, "", fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", tokens[1])
 	}
 	value, perr := strconv.ParseInt(tokens[2], 10, 64)

@@ -186,3 +186,106 @@ func TestGoalWatchdogOwnerOutputResetsStretch(t *testing.T) {
 	default:
 	}
 }
+
+// TestGoalWatchdogKindChangeKeepsActivityReset pins the anchored
+// state-machine branch (fix-9 M5): after an explicit activity reset, a
+// park→active kind change keeps the post-activity start instead of
+// backdating to goal creation. The scenario: a park stretch notifies, the
+// wait is cancelled (goal back to active), activity resets the stretch, and
+// 20m later (under threshold from the reset, over threshold from creation)
+// nothing notifies.
+func TestGoalWatchdogKindChangeKeepsActivityReset(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	sess.getOrCreateGoalStore().Set("park then work", clk.Now())
+	w, ok := sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: 2 * time.Hour}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	drainGoalEvents(sess)
+
+	clk.Advance(31 * time.Minute)
+	sess.checkGoalWatchdog(clk.Now())
+	ev := nextGoalEventOfKind(t, sess, events.EventGoalWatchdog)
+	if d, ok := ev.Data.(events.GoalWatchdogData); !ok || d.Kind != "park-start" {
+		t.Fatalf("first watchdog = %+v, want park-start", ev.Data)
+	}
+	// End the park (cancel → active) and reset via activity: the kind flips
+	// park→active with an anchored start.
+	if !sess.CancelGoalWait(w.Lease.WaitID) {
+		t.Fatal("precondition: cancel should end the stretch")
+	}
+	drainGoalEvents(sess)
+	sess.noteGoalWatchdogActivity(clk.Now())
+	// 20m after the reset (51m after creation): quiet-from-reset is under
+	// threshold, quiet-from-creation is over. Silence proves the reset
+	// survived the kind change.
+	clk.Advance(20 * time.Minute)
+	sess.checkGoalWatchdog(clk.Now())
+	select {
+	case ev := <-sess.Events():
+		if ev.Kind == events.EventGoalWatchdog {
+			t.Fatalf("post-reset kind change notified: %+v (reset must survive)", ev.Data)
+		}
+	default:
+	}
+}
+
+// TestGoalWatchdogReregistrationStartsFreshStretch pins the re-registration
+// branch (fix-9 M5): a new park anchor after the old stretch ended starts a
+// fresh stretch at the new registration — the old stretch's notices do not
+// leak (per-stretch count resets; only the per-24h ceiling carries over).
+func TestGoalWatchdogReregistrationStartsFreshStretch(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	sess.getOrCreateGoalStore().Set("wait twice", clk.Now())
+	w, ok := sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: 2 * time.Hour}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	drainGoalEvents(sess)
+
+	clk.Advance(31 * time.Minute)
+	sess.checkGoalWatchdog(clk.Now())
+	ev := nextGoalEventOfKind(t, sess, events.EventGoalWatchdog)
+	if d, ok := ev.Data.(events.GoalWatchdogData); !ok || d.Kind != "park-start" {
+		t.Fatalf("first watchdog = %+v, want park-start", ev.Data)
+	}
+	// End the stretch and re-register on a new deadline: the new stretch
+	// anchors at the new registration, so 20m later (under threshold)
+	// nothing notifies even though 51m elapsed since goal creation.
+	if !sess.CancelGoalWait(w.Lease.WaitID) {
+		t.Fatal("precondition: cancel should end the stretch")
+	}
+	drainGoalEvents(sess)
+	if _, ok := sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: 2 * time.Hour}, clk.Now()); !ok {
+		t.Fatal("precondition: re-registration should succeed")
+	}
+	drainGoalEvents(sess)
+	clk.Advance(20 * time.Minute)
+	sess.checkGoalWatchdog(clk.Now())
+	select {
+	case ev := <-sess.Events():
+		if ev.Kind == events.EventGoalWatchdog {
+			t.Fatalf("fresh stretch notified early: %+v (must anchor at re-registration)", ev.Data)
+		}
+	default:
+	}
+	// And the fresh stretch still notifies once it genuinely crosses: 31m
+	// after the re-registration the park-start fires (per-stretch count
+	// reset — the old stretch's notice did not leak).
+	clk.Advance(11 * time.Minute)
+	sess.checkGoalWatchdog(clk.Now())
+	ev = nextGoalEventOfKind(t, sess, events.EventGoalWatchdog)
+	if d, ok := ev.Data.(events.GoalWatchdogData); !ok || d.Kind != "park-start" {
+		t.Fatalf("fresh stretch watchdog = %+v, want park-start after crossing", ev.Data)
+	}
+}

@@ -265,9 +265,7 @@ func (s *Session) noteGoalWatchdogOwnerOutput(now time.Time) {
 // must observe. Advancement keys off the folded snapshot's trailing entry
 // (the fold just committed it), not off the pre-fold outcome alone, so the
 // signal and the persisted ledger agree. Call with no locks held.
-func (s *Session) noteGoalWatchdogFold(full goal.GoalSnapshot, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) {
-	_ = outcome
-	_ = waitAdvanced
+func (s *Session) noteGoalWatchdogFold(full goal.GoalSnapshot, now time.Time) {
 	if n := len(full.LedgerSummary.Entries); n > 0 && full.LedgerSummary.Entries[n-1].Advancement {
 		s.noteGoalWatchdogActivity(now)
 	}

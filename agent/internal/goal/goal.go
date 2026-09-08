@@ -971,6 +971,26 @@ type ExtendRequest struct {
 	Value  int64
 }
 
+// ParseExtendBudget maps a --extend budget token to its ExtendBudget (spec
+// §5 two-token grammar: "--extend <budget> <value>", R6 K arity pin). This
+// is the single budget-name grammar: the daemon resume path validates
+// through it, and the TUI forwards its parsed token for daemon-side
+// validation (the TUI checks arity + integer shape only). Accepts the
+// canonical tokens plus the underscore/joined parked-total spellings. Pure:
+// no locks.
+func ParseExtendBudget(token string) (ExtendBudget, error) {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "continuations":
+		return ExtendContinuations, nil
+	case "deadline":
+		return ExtendDeadline, nil
+	case "parked-total", "parked_total", "parkedtotal":
+		return ExtendParkedTotal, nil
+	default:
+		return "", fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", token)
+	}
+}
+
 // ResumeRequest is a /goal resume invocation: an optional --extend renewal.
 // A nil Extend means "resume without renewal" — the renewal check still
 // runs and rejects when any budget is exhausted at resume time.

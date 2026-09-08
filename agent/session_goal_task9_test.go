@@ -140,8 +140,8 @@ func TestGoalResumeBudgetBlockWithExtendDrives(t *testing.T) {
 	}
 }
 
-// TestGoalResumeExtendClampsToCaps pins the §5 clamps: an --extend beyond
-// 1000 continuations clamps, and a deadline extend beyond 24h clamps to now+24h.
+// TestGoalResumeExtendClampsToCaps pins the §5 clamps: continuations clamp to
+// 1000 total, deadline clamps to now+24h, parked-total clamps to 24h total.
 func TestGoalResumeExtendClampsToCaps(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -163,6 +163,71 @@ func TestGoalResumeExtendClampsToCaps(t *testing.T) {
 	after, _ := store.GoalSnapshot()
 	if after.Budgets.MaxContinuations != goal.MaxContinuationsCap {
 		t.Fatalf("maxContinuations = %d, want clamped to %d", after.Budgets.MaxContinuations, goal.MaxContinuationsCap)
+	}
+}
+
+// TestGoalResumeExtendDeadlineClampsTo24h pins the §5 deadline clamp: an
+// --extend deadline beyond the 24h cap lands exactly at now+24h (and resets
+// the final-delivered one-shot so the second expiry gets its final turn).
+func TestGoalResumeExtendDeadlineClampsTo24h(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("deadline objective", clk.Now())
+	full, _ := store.GoalSnapshot()
+	full.DeadlineFinalDelivered = true
+	store.RestoreSnapshot(restorePersistedFromFull(t, full))
+	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictDeadlineExceeded, clk.Now()) {
+		t.Fatal("precondition: SetTerminal should block")
+	}
+	// 7 days of seconds: must clamp to the 24h cap, not apply verbatim.
+	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendDeadline, Value: 7 * 24 * 3600}}, clk.Now()); err != nil {
+		t.Fatalf("clamped deadline extend = %v, want nil", err)
+	}
+	after, _ := store.GoalSnapshot()
+	if want := clk.Now().Add(goal.GoalDeadlineCap); !after.Budgets.Deadline.Equal(want) {
+		t.Fatalf("deadline = %s, want clamped to now+24h (%s)", after.Budgets.Deadline, want)
+	}
+	if after.DeadlineFinalDelivered {
+		t.Fatal("deadlineFinalDelivered = true, want false after a clamped --extend deadline")
+	}
+}
+
+// TestGoalResumeExtendParkedTotalClampsTo24h pins the §5 parked-total clamp:
+// an --extend parked-total past the 24h total cap lands exactly at the cap.
+func TestGoalResumeExtendParkedTotalClampsTo24h(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("parked objective", clk.Now())
+	full, _ := store.GoalSnapshot()
+	// A sub-cap parked-total budget (1h), fully consumed: the extend must
+	// both renew (usage 1h < clamped 24h max) and clamp (1h+48h → 24h cap).
+	// (At the 24h default cap an exhausted parked-total cannot renew — no
+	// extend fits under the cap — so the clamp is only observable sub-cap.)
+	full.Budgets.MaxParkedTotal = time.Hour
+	full.Budgets.ParkedTotal = time.Hour
+	store.RestoreSnapshot(restorePersistedFromFull(t, full))
+	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictBudgetExhausted, clk.Now()) {
+		t.Fatal("precondition: SetTerminal should block")
+	}
+	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendParkedTotal, Value: int64((48 * time.Hour).Seconds())}}, clk.Now()); err != nil {
+		t.Fatalf("clamped parked-total extend = %v, want nil", err)
+	}
+	after, _ := store.GoalSnapshot()
+	if after.Budgets.MaxParkedTotal != goal.MaxParkedTotalCap {
+		t.Fatalf("maxParkedTotal = %s, want clamped to %s", after.Budgets.MaxParkedTotal, goal.MaxParkedTotalCap)
+	}
+	if after.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active after the renewing extend", after.Status)
 	}
 }
 
@@ -226,6 +291,11 @@ func TestGoalResumeWaitingLostFollowsNoProgressPath(t *testing.T) {
 	if len(after.LedgerSummary.Entries) != 0 {
 		t.Fatalf("ledger = %+v, want reset on waiting-lost resume", after.LedgerSummary)
 	}
+	// Spec §5 requires re-arm-or-proceed guidance on the waiting-lost resume
+	// path (the lost wait will not refire).
+	if got := countTask7SteeringNotes(sess, "re-arm it with goal_wait or proceed without the wait"); got != 1 {
+		t.Fatalf("waiting-lost guidance notes = %d, want exactly 1", got)
+	}
 }
 
 // TestGoalResumeNoGoalErrors pins L-I1: resume with no goal at all (never set,
@@ -266,22 +336,34 @@ func TestGoalResumeStallBlockWithSpentBudgetRenews(t *testing.T) {
 	}
 }
 
-// TestParseGoalExtendGrammar pins the two-token --extend grammar helper.
+// TestParseGoalExtendGrammar pins the single budget-name grammar
+// (goal.ParseExtendBudget, spec §5 two-token "--extend <budget> <value>"):
+// canonical tokens plus the parked-total spellings map; unknown budgets
+// error naming the fault. The two-token arity (missing value, non-numeric
+// value, trailing objective text) is pinned at its production site — the
+// TUI splitter — by TestHubGoalResumeExtendParsesTwoTokenGrammar; the
+// daemon-side value shape is pinned by TestGoalResumeFromWirePinsDaemonGlue.
 func TestParseGoalExtendGrammar(t *testing.T) {
 	t.Parallel()
-	ext, rest, err := parseGoalResumeArgs("--extend continuations 50")
-	if err != nil || ext == nil || ext.Budget != goal.ExtendContinuations || ext.Value != 50 || rest != "" {
-		t.Fatalf("parse = (%+v, %q, %v), want continuations/50/empty", ext, rest, err)
+	cases := []struct {
+		token string
+		want  goal.ExtendBudget
+	}{
+		{"continuations", goal.ExtendContinuations},
+		{"deadline", goal.ExtendDeadline},
+		{"parked-total", goal.ExtendParkedTotal},
+		{"parked_total", goal.ExtendParkedTotal},
+		{"parkedtotal", goal.ExtendParkedTotal},
+		{"Deadline", goal.ExtendDeadline},
 	}
-	ext, rest, err = parseGoalResumeArgs("--extend deadline 3600 extra words here")
-	if err != nil || ext == nil || ext.Budget != goal.ExtendDeadline || ext.Value != 3600 || rest != "extra words here" {
-		t.Fatalf("parse = (%+v, %q, %v), want deadline/3600/rest", ext, rest, err)
+	for _, tc := range cases {
+		got, err := goal.ParseExtendBudget(tc.token)
+		if err != nil || got != tc.want {
+			t.Fatalf("ParseExtendBudget(%q) = (%q, %v), want (%q, nil)", tc.token, got, err, tc.want)
+		}
 	}
-	if _, _, err := parseGoalResumeArgs("--extend continuations"); err == nil {
-		t.Fatal("parse with a missing value should error (two-token grammar)")
-	}
-	if _, _, err := parseGoalResumeArgs("--extend bogus 10"); err == nil {
-		t.Fatal("parse with an unknown budget should error")
+	if _, err := goal.ParseExtendBudget("bogus"); err == nil {
+		t.Fatal("ParseExtendBudget(bogus) should error naming the fault")
 	}
 }
 

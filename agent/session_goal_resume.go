@@ -19,16 +19,11 @@ func (s *Session) GoalResumeFromWire(objective, extendBudget string, extendValue
 	_ = objective
 	req := goal.ResumeRequest{}
 	if strings.TrimSpace(extendBudget) != "" || extendValue != 0 {
-		var budget goal.ExtendBudget
-		switch strings.ToLower(strings.TrimSpace(extendBudget)) {
-		case "continuations":
-			budget = goal.ExtendContinuations
-		case "deadline":
-			budget = goal.ExtendDeadline
-		case "parked-total", "parked_total", "parkedtotal":
-			budget = goal.ExtendParkedTotal
-		default:
-			return false, fmt.Errorf("unknown --extend budget %q: want continuations, deadline, or parked-total", extendBudget)
+		// Single budget-name grammar (goal.ParseExtendBudget): the TUI
+		// forwards its parsed token for validation here.
+		budget, err := goal.ParseExtendBudget(extendBudget)
+		if err != nil {
+			return false, err
 		}
 		if extendValue <= 0 {
 			return false, fmt.Errorf("invalid --extend value %d: want a positive integer (turns for continuations, seconds for deadline/parked-total)", extendValue)
