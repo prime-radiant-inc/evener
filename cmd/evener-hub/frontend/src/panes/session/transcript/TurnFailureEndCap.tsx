@@ -151,13 +151,16 @@ function parseOccurrences(text: string, knownNames: (string | undefined)[]): Ima
   return occurrences;
 }
 
-// extendSpanEnd consumes a tight filename tail after a nameless ")"
-// occurrence: while the next characters are ")<name-char>" (a ")" glued to a
-// word character, another ")", or a "." that itself continues into a word
-// character — the shape of a filename tail such as ").png)" — the span
-// extends through them. A ")" followed by anything else (a space, end of
-// text, other punctuation) ends the span, so user prose after the marker
-// ("(attached image 9: ghost) hi") keeps its existing span.
+// extendSpanEnd consumes a tight filename tail after a marker's closing
+// ")": while the next characters form ")X)" hops where X is filename-shaped
+// — empty, or holding a "." with no whitespace or parens (".png", "a)b" can
+// never match: a ")" inside X ends the hop first) — the span extends through
+// them. A hop whose middle is not filename-shaped ("explain (the plot)",
+// "ghost)more)") is user prose, and the span stops: consuming it would
+// swallow words into the marker and misclassify the input as image-only.
+// A ")" followed by anything else (a space, end of text, other punctuation)
+// ends the span too, so user prose after the marker ("(attached image 9:
+// ghost) hi") keeps its existing span.
 function extendSpanEnd(text: string, closeParen: number): number {
   const continuesTail = (index: number): boolean => {
     const next = text[index] ?? "";
@@ -165,10 +168,13 @@ function extendSpanEnd(text: string, closeParen: number): number {
     if (next !== ".") return false;
     return /[\w)]/.test(text[index + 1] ?? "");
   };
+  const isFilenameHop = (middle: string): boolean =>
+    middle === "" || (/^[^()\s]*\.[^()\s]*$/.test(middle) && middle !== ".");
   let end = closeParen + 1;
   while (text[end - 1] === ")" && end < text.length && continuesTail(end)) {
     const next = text.indexOf(")", end);
     if (next === -1) break;
+    if (!isFilenameHop(text.slice(end, next))) break;
     end = next + 1;
   }
   return end;

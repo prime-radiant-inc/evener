@@ -803,6 +803,35 @@ test("an image-only input whose filename holds a paren retries on a rebuilt anch
   expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
 });
 
+test("a shifted reloaded marker still retries its trailing prose as text", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 9: ghost.png)explain (the plot)",
+          images: [{ src: "/s/sess_1/images/abc" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(
+    <>
+      <TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />
+      <Toast />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 9: ghost.png)explain (the plot)", undefined),
+  );
+  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
+});
+
 test("glued user text after an unnamed marker is preserved, not swallowed", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1)foo) describe it";
