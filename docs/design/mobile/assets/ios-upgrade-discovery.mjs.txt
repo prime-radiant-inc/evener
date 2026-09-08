@@ -1,0 +1,29 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { runDiscovery, summarizeDiscovery } from '/tmp/evener-sdk-discovery-tXwGOj/client/node_modules/@evener/appwire-client/examples/discovery-logic.mjs';
+const require = createRequire('/tmp/evener-sdk-discovery-tXwGOj/client/package.json');
+const { AppwireClient } = require('@evener/appwire-client');
+const { WebSocket } = require('ws');
+const root = '/tmp/evener-native-upgrade-kdghstx8';
+const runtime = JSON.parse(readFileSync(`${root}/installed-runtime.json`, 'utf8'));
+const token = readFileSync(runtime.token_path, 'utf8').trim();
+const hub = new AppwireClient({url:'ws://127.0.0.1:64665/rpc',clientInfo:{name:'upgrade-discovery-proof',version:'1'},socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+const cases = [
+  ['paths',{prefix:`${root}/installed-runtime/`,limit:10}],
+  ['projects',{limit:5}],
+  ['validatePath',{path:`${root}/installed-runtime`,kind:'directory'}],
+  ['gitHead',{cwd:`${root}/installed-runtime`}],
+  ['search',{query:'upgrade-absent-session'}],
+  ['harnesses',{}],
+  ['settings',{}],
+];
+const summaries = [];
+try {
+  for (const [action,params] of cases) {
+    const result = await runDiscovery(hub,{action,params});
+    writeFileSync(`${root}/discovery-${action}.json`,JSON.stringify(result,null,2),{mode:0o600,flag:'wx'});
+    summaries.push({...summarizeDiscovery(result),params});
+  }
+  writeFileSync(`${root}/discovery-results.json`,JSON.stringify(summaries,null,2),{mode:0o600,flag:'wx'});
+  console.log(JSON.stringify(summaries));
+} finally {hub.close();}

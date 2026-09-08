@@ -1,0 +1,237 @@
+{
+  "datePacific": "2026-09-07",
+  "source": {
+    "nativeCommit": "4f630af16",
+    "nativeBundleSha256": "89622d2b735740a41310267a1420a12c872aed8ada3c8a4ae065911082b65a55",
+    "nativeBuild": "Release iphonesimulator",
+    "fixtureSourceSha256": "81ed347fd23af123e788581491485be65d6972ff837c261f328e1b70f6755fbf",
+    "installerInputs": {
+      "evener": {
+        "sha256": "f497756aad98bfb430640043970ac76328aba2b7fa69c129728fd5fd22801d38",
+        "build": [
+          "build\t-ldflags=\"-X primeradiant.com/evener/buildinfo.GitSHA=bb044658d -X primeradiant.com/evener/buildinfo.GitDirty=true -X primeradiant.com/evener/buildinfo.BuildTime=2026-09-08T01:35:55Z -X primeradiant.com/evener/buildinfo.Channel=\"",
+          "build\tvcs.revision=bb044658d6ff28ab9d79d63a715d0663a7bdd659"
+        ]
+      },
+      "evener-dev": {
+        "sha256": "69fee03c86d8fc285684f6bd4455995049d5c8c257355f804b98490df98bb880",
+        "build": [
+          "build\t-ldflags=\"-X primeradiant.com/evener/buildinfo.GitSHA=bb044658d -X primeradiant.com/evener/buildinfo.GitDirty=true -X primeradiant.com/evener/buildinfo.BuildTime=2026-09-08T01:35:55Z -X primeradiant.com/evener/buildinfo.Channel=\"",
+          "build\tvcs.revision=bb044658d6ff28ab9d79d63a715d0663a7bdd659"
+        ]
+      }
+    }
+  },
+  "device": {
+    "model": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0"
+  },
+  "runtime": {
+    "harnessPid": 90834,
+    "installedHubPid": 57174,
+    "rpcPort": 64665,
+    "controlPort": 64666,
+    "nativePids": [
+      77357,
+      61640,
+      56710
+    ]
+  },
+  "journey": {
+    "profile": "Upgrade acceptance",
+    "failure": "Native confirmed upgrade; download failed; generic uncertain outcome retained. Refresh issued no additional download.",
+    "review": "Native review refreshed running version, explicit Continue enabled a new attempt, followed by a distinct Upgrade confirmation.",
+    "interruption": "Held second download; actual background closed native socket (only fixture listener remained). Released after disconnection, then cold launched with new PID. No installation or replay occurred.",
+    "success": "Third deliberate attempt installed two executables; both hashes and symlink destinations matched immutable inputs.",
+    "restart": "Cold-launched app retained installed response. Closed fixture RPC and started installed evener hub on same port with isolated XDG roots, no inherited provider credentials and plugin auto-upgrade disabled. Native Reconnect and settings displayed bb044658d.",
+    "readback": "Separate installed SDK consumer verified running commit bb044658d.",
+    "counterMeaning": "downloads counts HTTP archive requests; installs is the number of files in the last successful result, not a cumulative attempt count."
+  },
+  "status": {
+    "before": {
+      "downloads": 0,
+      "installs": 0,
+      "mode": "fail"
+    },
+    "failed": {
+      "downloads": 1,
+      "installs": 0,
+      "mode": "fail"
+    },
+    "after-refresh": {
+      "downloads": 1,
+      "installs": 0,
+      "mode": "fail"
+    },
+    "held": {
+      "downloads": 2,
+      "installs": 0,
+      "mode": "hold"
+    },
+    "released-disconnected": {
+      "downloads": 2,
+      "installs": 0,
+      "mode": "hold"
+    },
+    "cold-recovery": {
+      "downloads": 2,
+      "installs": 0,
+      "mode": "hold"
+    },
+    "final": {
+      "downloads": 3,
+      "installs": 2,
+      "mode": "success"
+    }
+  },
+  "installedFiles": {
+    "downloads": 3,
+    "installs": 2,
+    "error_class": "",
+    "files": {
+      "evener": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness1975569158/001/prefix/bin/evener",
+        "resolved": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness1975569158/001/prefix/share/evener/bin/evener",
+        "symlink": true,
+        "sha256": "f497756aad98bfb430640043970ac76328aba2b7fa69c129728fd5fd22801d38",
+        "expected_match": true
+      },
+      "evener-dev": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness1975569158/001/prefix/bin/evener-dev",
+        "resolved": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness1975569158/001/prefix/share/evener/bin/evener-dev",
+        "symlink": true,
+        "sha256": "69fee03c86d8fc285684f6bd4455995049d5c8c257355f804b98490df98bb880",
+        "expected_match": true
+      }
+    }
+  },
+  "runningIdentity": {
+    "version": "0.1.0",
+    "commit": "bb044658d",
+    "listenAddr": "127.0.0.1:64665",
+    "runDir": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime/state/evener/run",
+    "spawnTimeout": "30s",
+    "bearerTokenAge": "just now",
+    "pastIndex": {
+      "path": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime/state/evener/index.db",
+      "size": "60 KB",
+      "perPage": 50
+    }
+  },
+  "cleanup": {
+    "57174_stopped": true,
+    "90834_stopped": true,
+    "64665_not_listening": true,
+    "64666_not_listening": true,
+    "fixture_token_removed": true,
+    "runtime_token_removed": true,
+    "private_hub_log_removed": true
+  },
+  "preservation": {
+    "originalHubPid": 67518,
+    "originalHubPort": 54211,
+    "originalConversationRestored": true,
+    "allSevenDraftsVerified": true,
+    "ordinaryDraftBytes": 63,
+    "ordinaryDraftSha256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+    "unrelatedAppleDiffIdentical": true,
+    "temporaryNativeProfileRemoved": true
+  },
+  "limitations": [
+    "Scripted loopback release download; not a public release-service test.",
+    "Background caused cancellation before installation; no lost-success-reply claim.",
+    "Source binary metadata is bb044658d-dirty; native source is 4f630af16.",
+    "Simulator only; physical-device, iPad, VoiceOver, large-text, signing/update and broader release acceptance remain open.",
+    "Installed release reports latest; running commit was verified independently, not inferred from that label."
+  ],
+  "screenshots": {
+    "failure": {
+      "path": "hub-upgrade/ios-failure-recovery.jpg",
+      "sha256": "4d7cfccd748114f52243e02d221680edfc50264d348e36b6350dc523876bf8b1"
+    },
+    "installed": {
+      "path": "hub-upgrade/ios-installed-recovery.jpg",
+      "sha256": "fcc0e563e2519d39bc9ab6537ca75a592e16b7c2087a8af54801f686548f805c"
+    },
+    "running": {
+      "path": "hub-upgrade/ios-running-recovery.jpg",
+      "sha256": "afb4f6dd061af5d41e909d107042353e81d9463e1a8e5560926e6bd9d959a9bd"
+    }
+  },
+  "reproduction": {
+    "ios-upgrade-start-installed.py.txt": "2ee4572b06c571df754154f79a8cc9712c7f1fc9fc9611535c67320826416861",
+    "ios-upgrade-read-running.mjs.txt": "227e49dc1b90b3ec188860d750baee9ef051a0d73a383dcc2da3214e6926894e",
+    "ios-upgrade-discovery.mjs.txt": "8bde2ade51e14bbd6c8d50b9557f794df5b1511d136080c58da1c2843fd331ed"
+  },
+  "discovery": {
+    "summaries": [
+      {
+        "outcome": "read",
+        "action": "paths",
+        "count": 5,
+        "params": {
+          "prefix": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime/",
+          "limit": 10
+        }
+      },
+      {
+        "outcome": "read",
+        "action": "projects",
+        "count": 0,
+        "params": {
+          "limit": 5
+        }
+      },
+      {
+        "outcome": "read",
+        "action": "validatePath",
+        "params": {
+          "path": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime",
+          "kind": "directory"
+        }
+      },
+      {
+        "outcome": "read",
+        "action": "gitHead",
+        "params": {
+          "cwd": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime"
+        }
+      },
+      {
+        "outcome": "read",
+        "action": "search",
+        "count": 0,
+        "params": {
+          "query": "upgrade-absent-session"
+        }
+      },
+      {
+        "outcome": "read",
+        "action": "harnesses",
+        "count": 1,
+        "params": {}
+      },
+      {
+        "outcome": "read",
+        "action": "settings",
+        "count": 4,
+        "params": {}
+      }
+    ],
+    "validDirectoryCheck": {
+      "path": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime",
+      "valid": true
+    },
+    "invalidKindCheck": {
+      "path": "/tmp/evener-native-upgrade-kdghstx8/installed-runtime",
+      "valid": false,
+      "error": "unknown path kind: directory"
+    },
+    "gitNonRepositoryCheck": {
+      "head": ""
+    },
+    "consumerTarballSha256": "87040c69db1f8e18ac69968862b32d69334306feb12fc9ec694971e090e55189",
+    "scope": "Read-only empty owned hub; directory kind=directory rejected, subsequent exact kind=dir accepted; empty non-git HEAD preserved; no management mutations or live provider requests."
+  }
+}

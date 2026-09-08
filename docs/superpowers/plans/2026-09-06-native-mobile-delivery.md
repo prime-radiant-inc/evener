@@ -1056,3 +1056,38 @@ as `5429db421`, including all Go modules, web, 663 native tests/73 files,
 native TypeScript and external package qualification. Only acceptance
 documentation changed after this code checkpoint. Runtime fixtures are stopped
 and their owned credential files removed. No push, merge or publication.
+
+## Native upgrade and SDK lineage checkpoint — 7 September 2026
+
+Root qualified actual native installation and recovery on iPhone Release source
+`4f630af16`. The disposable fixture ran real self-update with a scripted download
+boundary and isolated install prefix: failure, read-only refresh, deliberate
+review/rearm, canceled held download, cold-launch recovery, successful third
+attempt, installed byte/symlink verification, then a real hub started from the
+installed binary on the same address. Native Reconnect and independent SDK
+readback agreed on running commit `bb044658d`. Source/bundle/backend identities
+and limits are in assets/ios-upgrade-receipt.json. Fixture exited zero, both owned
+processes/listeners and tokens were removed, original hub/conversation restored,
+seven drafts verified and Apple patch preserved.
+
+Commit `ccdde59b9` adds session-lineage and maintenance-check recipes: resume,
+fork, transcript targets, preview, ping, credential testing and plugin checks.
+Root repaired worker implementation defects with behavioral regressions for
+unknown fork children, acknowledged child readback failure, omitted ended-session
+instances, captured inputs and deliberate external probes. The server now emits
+an empty preview array according to its generated contract; a wire JSON test
+reproduced the prior null and passes after the fix. Twenty-five SDK contracts
+and focused Go preview tests pass. The canonical integration gate and separate
+vet exited zero at `ccdde59b9`: lint, build, all Go modules and web, 671 native
+tests/73 files, native TypeScript and external SDK package qualification.
+Cookbook presence is 83/91 methods in 26 recipes, notifications 3/36.
+
+Root's decoded API-log audit rejected the prior SDK compaction completion
+claim. Its zero-tool request generated the session name (response schema name),
+followed by two tool-capable rounds; no compaction summary was proved. The
+corrected receipt documents acknowledgment only. Next bounded work: qualify
+actual compaction completion on a fresh owned session and real scripted provider;
+then actual resume/fork/preview/maintenance recipes, remaining seven supported
+method recipes, notification/streaming recovery, and the outstanding native
+workflow/iPad/physical/accessibility/performance/signing release matrix.
+Android release qualification remains deferred beyond the approved iOS-only v1.

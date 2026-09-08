@@ -1,0 +1,27 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { AppwireClient } from "@evener/appwire-client";
+import { WebSocket } from "ws";
+
+const root = process.env.EVENER_FIXTURE_ROOT ?? "/tmp/evener-sdk-discovery-fixture";
+const url = `ws://127.0.0.1:${readFileSync(`${root}/run/hub.port`, "utf8").trim()}/rpc`;
+const token = readFileSync(`${root}/run/token`, "utf8").trim();
+const hub = new AppwireClient({
+  url,
+  clientInfo: { name: "sdk-qualification", version: "0.1.0" },
+  socketFactory: (endpoint) => new WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } }),
+});
+try {
+  await hub.connect();
+  const result = await hub.request("thread/start", {
+    cwd: `${root}/workspace`,
+    modelProvider: "fake",
+    model: "fake-test-model",
+    nonInteractive: false,
+    launchOverrides: { noProjectPrompts: true, maxRounds: 8 },
+  });
+  const { thread } = result;
+  writeFileSync(`${root}/run/session.json`, JSON.stringify({ ref: thread.evener.ref, threadId: thread.id, instanceId: thread.evener.instanceId }, null, 2) + "\n", { mode: 0o600 });
+  console.log(JSON.stringify({ ref: thread.evener.ref, threadId: thread.id, instanceId: thread.evener.instanceId }));
+} finally {
+  hub.close();
+}

@@ -1,0 +1,50 @@
+{
+  "source": {
+    "recipeCommit": "bb044658d6ff28ab9d79d63a715d0663a7bdd659",
+    "packageTarballSha256": "87040c69db1f8e18ac69968862b32d69334306feb12fc9ec694971e090e55189",
+    "binarySha256": {
+      "evener": "e9be7727a57cf626d5df1e6e41626d89484687097a98c07305efbc28c2e3852e",
+      "evener-dev": "6bba94ff16e4542f90971c993a7bf2be1a3b2591df05fec509c16fa291afff4e",
+      "fakellm": "56002c555bdcc4e99d67e4466c246ad3fe962424ae508caa20c62ba58164226a"
+    },
+    "hubBuildMetadata": "evener 759e7b10f-dirty (2026-09-08T00:41:37Z)",
+    "driverSha256": {
+      "startSession": "6f8c3741fcbe8b45f69d240f7baf28e94bd170c6430d2a1c4e1bdc6ecb2bd470",
+      "readback": "413a2e84b34c421d06d7e24f428fcf77670e52f7db906baaaf97a03c63d8c5f7"
+    }
+  },
+  "fixture": "/tmp/evener-sdk-discovery-tXwGOj",
+  "session": "local:034KzUMW5oT2a9A19XfZl1",
+  "discovery": {
+    "paths": "read, exit 0, one owned workspace path",
+    "projects": "read, exit 0, zero projects",
+    "validatePathEmpty": "read, exit 0, valid=false, error=path is required",
+    "gitHead": "read, exit 0, head=main on owned temp Git path",
+    "search": "read, exit 0, one past session result",
+    "harnesses": "read, exit 0, one evener harness",
+    "settings": "read, exit 0, four sections; private output mode 0600"
+  },
+  "sessionMutations": {
+    "rename": "acknowledged, exit 0, readback present",
+    "compact": "acknowledged, exit 0, readback present",
+    "clear": "acknowledged, exit 0, validated replacement receipt/readback present",
+    "shutdown": "acknowledged, exit 0, readback unavailable as documented"
+  },
+  "independentSdkReadback": {
+    "exit": 0,
+    "ref": "local:034KzUMW5oT2a9A19XfZl1",
+    "name": "SDK Qualified Rename",
+    "instanceId": "omitted after shutdown/readback"
+  },
+  "limitations": [
+    "The supplied binary identifies as 759e7b10f-dirty; it is the pre-bb044658 SDK-only build and is not claimed as latest backend.",
+    "The session ended immediately after thread/start because no turn was started; compact therefore required no provider model round. The fake provider received zero requests.",
+    "The first rename succeeded; a stale duplicate review was separately rejected before mutation and is not counted as the qualification outcome."
+  ],
+  "cleanup": {
+    "hubAndProviderStopped": true,
+    "ownedPortsAbsent": true,
+    "repoModified": false,
+    "secretsOrPromptBodiesLogged": false
+  }
+}

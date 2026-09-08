@@ -1,0 +1,39 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { AppwireClient } from "./client/node_modules/@evener/appwire-client/dist/index.js";
+import ws from "./client/node_modules/ws/index.js";
+const { WebSocket } = ws;
+
+const root = process.env.EVENER_FIXTURE_ROOT ?? "/tmp/evener-sdk-compaction-fixture";
+const token = readFileSync(`${root}/state/evener/auth-token`, "utf8").trim();
+const hub = new AppwireClient({
+  url: "ws://127.0.0.1:54269/rpc",
+  clientInfo: { name: "sdk-compaction-qualification", version: "0.1.0" },
+  socketFactory: (endpoint) => new WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } }),
+});
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+try {
+  await hub.connect();
+  const started = await hub.request("thread/start", {
+    cwd: `${root}/workspace`, modelProvider: "fake", model: "fake-test-model", nonInteractive: false,
+    launchOverrides: { noProjectPrompts: true, maxRounds: 8 },
+  });
+  const { thread } = started;
+  const ref = thread.evener.ref, instanceId = thread.evener.instanceId;
+  await hub.request("turn/start", { ref, expectedInstanceId: instanceId, clientMutationId: randomUUID(), input: [{ type: "text", text: process.env.EVENER_FIXTURE_INPUT ?? "[fixture input]" }] });
+  let last;
+  for (let i = 0; i < 100; i++) {
+    last = await hub.request("thread/read", { ref, includeTurns: true, subscribe: false });
+    const state = last.thread?.evener?.state;
+    if (["idle", "ended", "stopped", "completed"].includes(state)) break;
+    await wait(100);
+  }
+  const before = await hub.request("thread/read", { ref, includeTurns: true, subscribe: false });
+  const beforeTurns = before.thread.turns ?? before.thread.evener.turns ?? [];
+  await hub.request("thread/compact/start", { ref });
+  const after = await hub.request("thread/read", { ref, includeTurns: true, subscribe: false });
+  const afterTurns = after.thread.turns ?? after.thread.evener.turns ?? [];
+  const result = { ref, instanceId, beforeState: before.thread.evener.state, beforeTurnCount: beforeTurns.length, afterState: after.thread.evener.state, afterTurnCount: afterTurns.length, afterKinds: afterTurns.map((turn) => turn.kind ?? turn.items?.[0]?.type ?? "unknown") };
+  writeFileSync(`${root}/run/compaction-result.json`, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
+  console.log(JSON.stringify(result));
+} finally { hub.close(); }
