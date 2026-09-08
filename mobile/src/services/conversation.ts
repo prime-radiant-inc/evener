@@ -462,6 +462,12 @@ export function createConversationService(
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
   let recoveredOlderCursor: string | null = null;
+  type PendingProjection = {
+    ref: string;
+    instanceId: string | null;
+    read: Promise<ThreadReadResponse>;
+  };
+  let pendingProjection: PendingProjection | null = null;
 
   // Monotonic service/open epoch. Every open/readProjection/close increments
   // it; an in-flight read captures its epoch and only installs ref+caps if
@@ -580,6 +586,7 @@ export function createConversationService(
 
   return {
     async open(threadRef, _cursor) {
+      pendingProjection = null;
       // The compatibility cursor is intentionally ignored: open() must send
       // exactly the canonical unbounded subscribed open request. Bounded
       // live projection lives exclusively in readProjection; cursor paging
@@ -617,8 +624,14 @@ export function createConversationService(
     },
 
     async readProjection(threadRef) {
+      const pagingInstance =
+        ref === threadRef
+          ? instanceId
+          : pendingProjection?.ref === threadRef
+            ? pendingProjection.instanceId
+            : null;
       const epoch = beginOpen(threadRef);
-      const response: ThreadReadResponse = await client.request("thread/read", {
+      const read = client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
@@ -626,6 +639,8 @@ export function createConversationService(
         itemsView: "fragment",
         itemLimit: READ_ITEM_LIMIT,
       });
+      pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
+      const response: ThreadReadResponse = await read;
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw in projectThread or activity projection (or a malformed
       // response) leaves ref+capabilities null/fail-closed. Only commit the
@@ -662,6 +677,29 @@ export function createConversationService(
     },
 
     async loadOlder(cursor) {
+      const pending = pendingProjection;
+      if (ref === null && pending !== null && pending.instanceId !== null) {
+        // A same-session refresh closes mutation gates while validating its
+        // snapshot. Paging waits for that validation and the refreshed cursor.
+        const expected = pending;
+        let projection: PendingProjection = pending;
+        for (;;) {
+          await projection.read;
+          if (pendingProjection === projection) break;
+          const next: PendingProjection | null = pendingProjection;
+          if (
+            next === null ||
+            next.ref !== expected.ref ||
+            next.instanceId !== expected.instanceId
+          ) {
+            throw new Error("ConversationService: thread changed while paging");
+          }
+          projection = next;
+        }
+        if (ref !== expected.ref || instanceId !== expected.instanceId) {
+          throw new Error("ConversationService: thread changed while paging");
+        }
+      }
       const threadRef = requireRef();
       const requestedCursor = recoveredOlderCursor ?? cursor;
       let response: ThreadTurnsListResponse;
@@ -1082,6 +1120,7 @@ export function createConversationService(
     },
 
     close() {
+      pendingProjection = null;
       if (notificationUnsub !== null) {
         notificationUnsub();
         notificationUnsub = null;

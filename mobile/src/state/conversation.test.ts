@@ -4711,6 +4711,7 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
+      await yieldMicrotask();
       await ctrl.started(1);
       await yieldMicrotask();
       // While R is in-flight, a loadOlder (L) succeeds — prepends items,
@@ -4748,6 +4749,7 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
+      await yieldMicrotask();
       await ctrl.started(1);
       await yieldMicrotask();
       // While R is in-flight, L fails — sets a page error.
@@ -5501,6 +5503,205 @@ describe("ConversationStore", () => {
       expect(items.some((i) => i.id === "old-page-item")).toBe(true);
       // Cursor from L is preserved.
       expect(store.getState().olderCursor).toBe("cursor-2");
+    });
+
+    it("preserves page-owned history when wire id differs from transcript key", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ items: [userMessageItem("base", "base")] })],
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [userMessageItem("base", "base")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      service.olderItems = {
+        items: [
+          {
+            kind: "user",
+            id: "wire-page",
+            transcriptKey: "stable-page",
+            text: "older page",
+          },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.filter((item) => item.transcriptKey === "stable-page"),
+      ).toHaveLength(1);
+      expect(
+        items.find((item) => item.transcriptKey === "stable-page")?.id,
+      ).toBe("wire-page");
+      expect(store.getState().olderCursor).toBe("cursor-2");
+    });
+
+    it("dedupes page and reread items by transcript key when wire ids differ", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  ...userMessageItem("wire-reread", "canonical"),
+                  transcriptKey: "stable-page",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      service.olderItems = {
+        items: [
+          {
+            kind: "user",
+            id: "wire-page",
+            transcriptKey: "stable-page",
+            text: "older",
+          },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const matches = (store.getState().conversation?.items ?? []).filter(
+        (item) => item.transcriptKey === "stable-page",
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({
+        id: "wire-reread",
+        text: "canonical",
+      });
+    });
+
+    it("dedupes a live tail against a reread item by transcript key", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            ...userMessageItem("wire-live", "live"),
+            transcriptKey: "stable-live",
+          },
+        },
+      } as AnyNotification);
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  ...userMessageItem("wire-reread", "canonical"),
+                  transcriptKey: "stable-live",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      const reread = store.getState().rehydrate(service, createFakeSink());
+      await ctrl.started(1);
+      ctrl.release();
+      await reread;
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const matches = (store.getState().conversation?.items ?? []).filter(
+        (item) => item.transcriptKey === "stable-live",
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({
+        id: "wire-reread",
+        text: "canonical",
+      });
+    });
+
+    it("preserves a newer live version across a wire-id change during reread", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  ...userMessageItem("wire-reread", "canonical"),
+                  transcriptKey: "stable-live",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      const reread = store.getState().rehydrate(service, createFakeSink());
+      await ctrl.started(1);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            ...userMessageItem("wire-live-new", "newer-live"),
+            transcriptKey: "stable-live",
+          },
+        },
+      } as AnyNotification);
+      ctrl.release();
+      await reread;
+      const matches = (store.getState().conversation?.items ?? []).filter(
+        (item) => item.transcriptKey === "stable-live",
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({
+        id: "wire-live-new",
+        text: "newer-live",
+      });
     });
 
     it("activity reread racing page failure: authoritative activity appears, page error preserved", async () => {
@@ -10134,6 +10335,50 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       return { store, service };
     }
+
+    it("retains live ownership when transcriptKey differs from wire id during cap pruning", async () => {
+      const items: ThreadItem[] = [];
+      for (let i = 0; i < 499; i++) items.push(userMessageItem(`u-${i}`, ""));
+      items.push({
+        ...agentMessageItem("wire-x", "live", "inProgress"),
+        transcriptKey: "stable-x",
+      });
+      const { store, service } = await openProjectedWithItems(items);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            ...agentMessageItem("wire-x", "live", "completed"),
+            transcriptKey: "stable-x",
+          },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: userMessageItem("u-new", "new"),
+        },
+      } as AnyNotification);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t0", items: items.slice(0, 499) })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      const retained = store
+        .getState()
+        .conversation?.items.filter(
+          (item) => item.transcriptKey === "stable-x",
+        );
+      expect(retained).toHaveLength(1);
+      expect(retained?.[0]).toMatchObject({ id: "wire-x" });
+    });
 
     // M1 omission: oversized X frozen → authoritative reread omits X (removes
     // freeze via reconciliation) → raw SHORT assistant X arrives via page
