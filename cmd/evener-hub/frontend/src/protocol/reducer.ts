@@ -295,12 +295,13 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // just src. src keeps preferring url — the field the legacy web client
 // (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
 // treats as the <img src> — then a sha-addressed /s/{route}/images/{sha}
-// route rebuilt from metadata["sha"] when the serving session is known
-// (imageSessionRoute undefined keeps that branch dark), then the inline
-// data-URI bytes, then path or name, exactly as before; name/path/source
-// ride alongside src unresolved so a renderer can caption the image instead
-// of losing everything but whichever field happened to win that fallback
-// (kata byq2).
+// route rebuilt from metadata["sha"] when the serving session is known (the
+// wire Thread.sessionId, mirroring stampThreadImageURLs' sessionID-over-ID
+// preference in output_images.go; imageSessionRoute undefined keeps that
+// branch dark), then the inline data-URI bytes, then path or name, exactly as
+// before; name/path/source ride alongside src unresolved so a renderer can
+// caption the image instead of losing everything but whichever field happened
+// to win that fallback (kata byq2).
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -329,10 +330,10 @@ function imagesToItemImagesForSession(
 // ~33%-inflated base64 copy in the model heap and the DOM. Strict lowercase-
 // hex only (imageShaRegexp): a non-sha metadata value is never URL-shaped,
 // so it falls through to the inline-bytes fallback below rather than
-// producing a src the hub would 400 on. imageSessionRoute is undefined on the
-// paths that cannot name the serving session (a bare local route id needs
-// the caller's ref — see imagesToItemImagesForSession); without it there is
-// nothing fetchable to prefer and the data-URI fallback stands.
+// producing a src the hub would 400 on. imageSessionRoute is undefined
+// wherever the wire named no serving session (absent/blank sessionId — the
+// same gap stampThreadImageURLs patches with the thread id); without it there
+// is nothing fetchable to prefer and the data-URI fallback stands.
 function metadataShaImageSrc(img: InputItem, imageSessionRoute?: string): string | undefined {
   const sha = img.metadata?.sha;
   if (sha === undefined || sha === "" || imageSessionRoute === undefined || imageSessionRoute === "") {
@@ -385,12 +386,14 @@ function itemTextPresence(item: ItemModel): ItemTextPresence {
 }
 
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
-// callers that can name the serving session (hydrateThread's ref,
-// mergeOlderItemPage's model.ref, live notifications' params.ref) so a
-// sha-bearing input image that arrived WITHOUT its stamped url still folds
-// to the short /s/{route}/images/{sha} src instead of a base64 data-URI.
-// Undefined on the paths that cannot name it — the sha branch then stays
-// dark and every image resolves exactly as before.
+// callers that can name the serving session — hydrateThread's wire
+// thread.sessionId (falling back to the thread id, mirroring
+// stampThreadImageURLs in output_images.go), item pages and live
+// notifications' model.imageSessionId, carried on the model from hydrate —
+// so a sha-bearing input image that arrived WITHOUT its stamped url still
+// folds to the short /s/{route}/images/{sha} src instead of a base64
+// data-URI. Undefined on the paths that cannot name it — the sha branch then
+// stays dark and every image resolves exactly as before.
 function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemModel {
   const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,
@@ -718,17 +721,18 @@ function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
 }
 
 // The escaped /s/{route} fragment the hub serves sha-addressed image bytes
-// under for one client-known ref. The hub's own stamp (sessionImageURL,
-// output_images.go) escapes the SESSION id with url.PathEscape; the route id
-// handleSession canonicalizes to is the bare local id for a local ref
-// (canonicalRouteID, web.go), otherwise the ref itself — and the browser
-// reaches the image route through the same /s/{route} form the session page
-// itself uses (paneToURL: `/s/${encodeURIComponent(ref)}`). encodeURIComponent
-// is the matching client-side escape; a ref that is empty or carries a slash
-// names no fetchable route, so the sha branch stays dark for it.
-export function imageSessionRouteForRef(ref: string): string | undefined {
-  if (ref === "" || ref.includes("/")) return undefined;
-  return encodeURIComponent(ref);
+// under. The hub's own stamp (sessionImageURL, output_images.go) escapes the
+// wire Thread.sessionId with url.PathEscape — never the stable workspace ref
+// (handleSessionImage looks the id up in Past.Find, where a ref like
+// local:stable finds nothing, and a stable ref can name a different session
+// than the one that served the bytes). encodeURIComponent is the matching
+// client-side escape. An empty id names no fetchable route, so the sha branch
+// stays dark for it. A session id never carries a slash (identifier's
+// base62 UUIDv7), and any foreign ref form the page route cannot serve keeps
+// the branch dark too.
+export function imageSessionRouteForSession(sessionId: string): string | undefined {
+  if (sessionId === "" || sessionId.includes("/")) return undefined;
+  return encodeURIComponent(sessionId);
 }
 
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
@@ -737,10 +741,14 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   // precedence); the route only matters for sha-bearing images that arrived
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
-  const imageSessionRoute = imageSessionRouteForRef(ref);
+  // stampThreadImageURLs (output_images.go) prefers the wire session id and
+  // falls back to the thread id; the client-side rebuild matches it exactly.
+  const imageSessionId = thread.sessionId || thread.id;
+  const imageSessionRoute = imageSessionRouteForSession(imageSessionId);
   return {
     ref,
     threadId: thread.id,
+    imageSessionId,
     ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",
     status: thread.status,
@@ -814,8 +822,9 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
-  // so its own ref names the sha route — same derivation hydrateThread uses.
-  const imageSessionRoute = imageSessionRouteForRef(model.ref);
+  // carried from hydrate on model.imageSessionId. A legacy model hydrated
+  // before that field existed re-derives it from its own thread id.
+  const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
   const turns: TurnModel[] = [];
 
@@ -1029,7 +1038,13 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // same reason.
 function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
   const existing = model.turns.find((t) => t.id === turnId);
-  const settled = mergeTurnCompletionStamp(existing, turnId, stamp, now, imageSessionRouteForRef(model.ref));
+  const settled = mergeTurnCompletionStamp(
+    existing,
+    turnId,
+    stamp,
+    now,
+    imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+  );
   return {
     ...model,
     turns: existing ? settleFirstMatchingTurn(model.turns, turnId, settled) : placeNewTurn(model.turns, settled),
@@ -1127,12 +1142,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turn } = n.params;
-      // Live frames name their own serving session in params.ref
-      // (EvenerSteeringInjectedParams/ItemLifecycleParams carry ref alongside
-      // threadId); the model's own ref is the same route once routing has
-      // matched, and is the one that survives when a frame routes by
-      // threadId alone.
-      const imageSessionRoute = imageSessionRouteForRef(model.ref);
+      // The serving session is the model's own hydrate-carried imageSessionId
+      // (the wire thread.sessionId the image bytes belong to) — never
+      // params.ref or model.ref, which can be a stable workspace alias for a
+      // different session than the one serving /s/{id}/images/{sha}.
+      const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
       // turns is presented everywhere else (mapTurn, findItemTurnId) as if
       // ids are unique. A duplicate here should never happen — the two known
       // ways it could (eptj, bz2z) are both fixed server-side — but blindly
@@ -1169,7 +1183,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const stamp = params.turn;
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
-        settledTurn = wireToTurnModel(stamp, imageSessionRouteForRef(model.ref));
+        settledTurn = wireToTurnModel(
+          stamp,
+          imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+        );
         // Same helper composition as item/completed's existing-item branch
         // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
         // read/write disjoint fields off the same `old` reference, so
@@ -1221,7 +1238,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: upsertTurnItems(turn.items, [item], now, imageSessionRouteForRef(model.ref)),
+          items: upsertTurnItems(
+            turn.items,
+            [item],
+            now,
+            imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -1230,7 +1252,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
-      const incoming = wireItemToModel(item, imageSessionRouteForRef(model.ref));
+      const incoming = wireItemToModel(item, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
       // A live watcher on a long turn sees nothing move on thread/status/
       // changed until the turn ends, however many tool calls fail inside it
       // (kata 895d) — item/completed is the finer-grained carrier, stamped
@@ -1579,7 +1601,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             type: "steering",
             ...(params.startedAt !== undefined ? { startedAt: epochMsToISO(params.startedAt) } : {}),
             text: params.text ?? "",
-            images: imagesToItemImagesForSession(params.images, imageSessionRouteForRef(model.ref)),
+            images: imagesToItemImagesForSession(
+              params.images,
+              imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+            ),
             status: "completed",
             source: params.source,
             steeringKind: params.kind,
