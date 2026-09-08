@@ -46,6 +46,11 @@ interface RailChunkBoundaryProps {
   // clears its own failure state alongside it - both halves are needed, and
   // neither is any use without the other.
   onRetry: () => void;
+  // True once a cache-busted retry has already failed: a deploy that replaced
+  // the hashed chunk filename 404s forever under a new query param, so the
+  // second strike offers a page reload instead of another same-file fetch
+  // (the DockRegion chunk-boundary pattern).
+  reloadAvailable: boolean;
   children: ReactNode;
 }
 
@@ -74,7 +79,9 @@ class RailChunkBoundary extends Component<RailChunkBoundaryProps, RailChunkBound
 
   render(): ReactNode {
     if (this.state.failure === null) return this.props.children;
-    return <RailFailureShell retry={this.retry} failure={this.state.failure} />;
+    return (
+      <RailFailureShell retry={this.retry} reloadAvailable={this.props.reloadAvailable} failure={this.state.failure} />
+    );
   }
 }
 
@@ -84,7 +91,15 @@ class RailChunkBoundary extends Component<RailChunkBoundaryProps, RailChunkBound
 // desktop content row keeps its width and styling and the workspace beside
 // it never stretches into the gap. A bare EmptyState here would leave the
 // row's only other child - the flex:1 workspace - to fill the window.
-function RailFailureShell({ retry, failure }: { retry: () => void; failure: string }): JSX.Element {
+function RailFailureShell({
+  retry,
+  reloadAvailable,
+  failure,
+}: {
+  retry: () => void;
+  reloadAvailable: boolean;
+  failure: string;
+}): JSX.Element {
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   return (
     <div
@@ -96,9 +111,19 @@ function RailFailureShell({ retry, failure }: { retry: () => void; failure: stri
         title="Couldn't load the sidebar"
         hint={failure}
         action={
-          <Button size="sm" onClick={retry}>
-            Retry
-          </Button>
+          <span>
+            <Button size="sm" onClick={retry}>
+              Retry
+            </Button>
+            {reloadAvailable && (
+              <>
+                {" "}
+                <Button size="sm" variant="quiet" onClick={() => window.location.reload()}>
+                  Reload page
+                </Button>
+              </>
+            )}
+          </span>
         }
       />
     </div>
@@ -135,6 +160,11 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
   const [Host, setHost] = useState<RailHostChunk>(railHost);
+  // A retry re-fetches the same hashed filename over a cache-busted URL:
+  // enough for a transient failure, useless once a deploy has removed the
+  // file. Counting retries lets the boundary offer a page reload on the
+  // second strike (the DockRegion chunk-boundary pattern).
+  const [retryCount, setRetryCount] = useState(0);
   // The wrapper's mount lifetime is the controller's only signal that a
   // handler is on its way: a reveal fired while this wrapper is mounted but
   // the chunk (and with it RailHost's handler registration) has not arrived
@@ -145,6 +175,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     return () => noteRailWrapperUnmounted();
   }, []);
   const retry = () => {
+    setRetryCount((count) => count + 1);
     const nextHost = lazyRailHost(true);
     // Publish the new payload before it resolves so an unmount/remount during
     // the retry shares the in-flight request instead of restoring the rejected
@@ -154,7 +185,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   };
 
   return (
-    <RailChunkBoundary onRetry={retry}>
+    <RailChunkBoundary onRetry={retry} reloadAvailable={retryCount > 0}>
       <Suspense fallback={null}>
         <Host />
       </Suspense>

@@ -131,3 +131,23 @@ test("a successful retry is reused after the wrapper unmounts and remounts", asy
   expect(await screen.findByText("rail host mounted")).toBeTruthy();
   expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
 });
+
+test("a retry that fails again offers a page reload instead of stranding the sidebar", async () => {
+  vi.mocked(loadRailHost).mockRejectedValue(new Error(CHUNK_ERROR));
+  const reload = vi.fn();
+  vi.stubGlobal("location", { ...window.location, reload });
+  const user = userEvent.setup();
+
+  render(<RailHost />);
+  await screen.findByText("Couldn't load the sidebar");
+  // The first failure offers only the cache-busted retry: a deploy that
+  // removed the hashed chunk is still only one hypothesis among transient
+  // ones, so the reload is the second-strike path, not the first.
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await user.click(await screen.findByRole("button", { name: "Reload page" }));
+
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
+});

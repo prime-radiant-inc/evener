@@ -116,6 +116,11 @@ interface ConnectProviderDialogBoundaryProps {
   // clears its own failure state alongside it - both halves are needed, and
   // neither is any use without the other.
   onRetry: () => void;
+  // True once a cache-busted retry has already failed: a deploy that replaced
+  // the hashed chunk filename 404s forever under a new query param, so the
+  // second strike offers a page reload instead of another same-file fetch
+  // (the DockRegion chunk-boundary pattern).
+  reloadAvailable: boolean;
   onClose: () => void;
   children: ReactNode;
 }
@@ -157,6 +162,11 @@ class ConnectProviderDialogBoundary extends Component<
             <Button variant="primary" onClick={this.retry}>
               Retry
             </Button>
+            {this.props.reloadAvailable && (
+              <Button variant="quiet" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
+            )}
           </>
         }
       >
@@ -288,7 +298,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
   const [ProviderDialog, setProviderDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
+  // A retry re-fetches the same hashed filename over a cache-busted URL:
+  // enough for a transient failure, useless once a deploy has removed the
+  // file. Counting retries lets the boundary offer a page reload on the
+  // second strike (the DockRegion chunk-boundary pattern).
+  const [dialogRetryCount, setDialogRetryCount] = useState(0);
   const retryProviderDialog = useCallback(() => {
+    setDialogRetryCount((count) => count + 1);
     const nextDialog = lazyConnectProviderDialog(true);
     // Publish the new payload before it resolves so a remount during the
     // retry shares the in-flight request instead of restoring the rejected
@@ -1204,7 +1220,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
         {connectingProvider && (
-          <ConnectProviderDialogBoundary onRetry={retryProviderDialog} onClose={closeProviderSetup}>
+          <ConnectProviderDialogBoundary
+            onRetry={retryProviderDialog}
+            reloadAvailable={dialogRetryCount > 0}
+            onClose={closeProviderSetup}
+          >
             <Suspense
               fallback={
                 <Dialog open onClose={closeProviderSetup} title="Connect provider">

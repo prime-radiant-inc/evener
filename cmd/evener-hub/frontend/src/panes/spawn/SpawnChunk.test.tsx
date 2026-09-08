@@ -187,3 +187,26 @@ test("Retry fetches the chunk again and mounts the dialog on the second attempt"
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
   expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
 });
+
+test("a retry that fails again offers a page reload instead of stranding the provider flow", async () => {
+  vi.mocked(loadConnectDialog).mockRejectedValue(new Error(CHUNK_ERROR));
+  const reload = vi.fn();
+  vi.stubGlobal("location", { ...window.location, reload });
+  const user = userEvent.setup();
+  const client = missingCredentialsClient();
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+
+  await openConnectDialog(user);
+  await screen.findByText("Couldn't load the connect dialog");
+  // The first failure offers only the cache-busted retry: a deploy that
+  // removed the hashed chunk is still only one hypothesis among transient
+  // ones, so the reload is the second-strike path, not the first.
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await user.click(await screen.findByRole("button", { name: "Reload page" }));
+
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
+});
