@@ -70,14 +70,100 @@
     "rich-candidate-settled-storage.json": "9c5cdd57efd64f04603e963d50b49a446cc83c575ccc26b8a48d7bdabb726e1c"
   },
   "limits": [
-    "Cold launch at largest text restores to turn_m8 despite saved turn_m12 anchor; unresolved regression, not acceptance.",
-    "First two-line candidate leaves the same failure; no fix claim.",
+    "The initial517f70 artifact failed largest-text cold-launch restoration; follow-up7944778e0 passed the bounded repeated-launch case recorded in readerRecovery.",
+    "Earlier offset-only and monotonic-progress-only candidates did not resolve repeated cold launch; exclude them from the fix claim.",
     "Code custom Copy action exists in native accessibility dump; VoiceOver speech and invocation are not qualified.",
     "Multiline links use accessibilityPath; zero rectangular AX frame alone is not a defect.",
-    "Current device has a subsequent investigation build; these hashes identify the qualified upgrade and clipboard journey."
+    "The initial artifact hashes identify the upgrade and clipboard journey; readerRecovery separately identifies the final7944778e0 native artifact."
   ],
   "screenshots": {
     "iphone-reader-rich.jpg": "199e53d448fb04499a8a715f95e4d866092b5f89d87a316124d681d50e3f3a01",
-    "iphone-reader-latest.jpg": "56a151331686cf8be785a88fc0681fca5e9bf85c6920cce959c4026983e08f28"
+    "iphone-reader-latest.jpg": "56a151331686cf8be785a88fc0681fca5e9bf85c6920cce959c4026983e08f28",
+    "iphone-reader-restored-largest.png": "f383ace0aba82828646c6b7971832e09a2ead50dc1558064fcc92e8994bf92c9"
+  },
+  "readerRecovery": {
+    "status": "qualified-scoped",
+    "sourceCommit": "7944778e0",
+    "baseline": "rich-cold-largest-settled",
+    "anchor": {
+      "hubId": "1e80aee2-78bc-4f30-ba6a-eb5d783d4ed5",
+      "sessionRef": "local:034LBrshAbM01wZVdNC1l4",
+      "conversationInstance": "034LBrshAbM01wZVdNC1l4",
+      "itemKey": "apptranscript-item-v1:turn_m12:13:1",
+      "itemPosition": {
+        "entry": 13,
+        "item": 1
+      },
+      "withinItemOffset": 1143.666015625,
+      "touchedAt": 1788861568095
+    },
+    "launches": [
+      48881,
+      55359,
+      65124
+    ],
+    "artifact": {
+      "main.jsbundle": "af754632eef5f34e9b231e3cd9c30282d5aeb038003479e921993c42629d7c48",
+      "Evener": "964c2bb36433c222362ad6ebc923229b441d613d9475abd8abe92e2930a8ab95"
+    },
+    "checks": [
+      {
+        "checkpoint": "rich-budget-settled",
+        "visible": {
+          "scope": "Fork from message: reader removal hub b turn 12 READER-REMOVE-B-12",
+          "frame": {
+            "x": 16,
+            "y": 174.00065104166788,
+            "width": 446,
+            "height": 140
+          }
+        },
+        "axSha256": "c4ecbf14c7aa4e04a391e52362c2bb3515a7c1ee03258ab0937c56ac02f30cac",
+        "storageSha256": "b9810c18631631b355b038e02a30e9ca16f60adb09a9c2fb2b5d6b68935faba4"
+      },
+      {
+        "checkpoint": "rich-budget-cold1",
+        "visible": {
+          "scope": "Fork from message: reader removal hub b turn 12 READER-REMOVE-B-12",
+          "frame": {
+            "width": 446,
+            "height": 140,
+            "x": 16,
+            "y": 174.00065104166788
+          }
+        },
+        "axSha256": "4640b7cfa772841a8dddf417989c2090b9405c958357b5b2a8d882f15abd37bd",
+        "storageSha256": "b9810c18631631b355b038e02a30e9ca16f60adb09a9c2fb2b5d6b68935faba4"
+      },
+      {
+        "checkpoint": "rich-budget-cold2",
+        "visible": {
+          "scope": "Fork from message: reader removal hub b turn 12 READER-REMOVE-B-12",
+          "frame": {
+            "x": 16,
+            "y": 174.00065104166788,
+            "width": 446,
+            "height": 140
+          }
+        },
+        "axSha256": "f536d12dff77a72f0ee78cc63994e0d0811115884250c0815040a594c66b819e",
+        "storageSha256": "b9810c18631631b355b038e02a30e9ca16f60adb09a9c2fb2b5d6b68935faba4"
+      }
+    ],
+    "nativeTests": 685,
+    "nativeTestFiles": 74,
+    "limits": [
+      "Bounded largest-text cold-launch restoration on iPhone simulator; broader release qualification remains open."
+    ]
+  },
+  "cleanup": {
+    "allSevenDraftTablesExactlyEqual": true,
+    "originalRefRestored": true,
+    "readerTraceKeysAbsent": true,
+    "ownedReaderAnchorAbsent": true,
+    "sixFixturePortsClosed": true,
+    "tokensRemoved": true,
+    "otherReaderEntries": 6,
+    "cleanupReceiptSha256": "f0f784ff0805800d082461bec04cc25c4a6a3e6b70ca4bcc17c4df9dcd97af52"
   }
 }
