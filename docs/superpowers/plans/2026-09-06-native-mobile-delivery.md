@@ -131,7 +131,7 @@ These can run in parallel after lifecycle contracts stabilize, with disjoint fil
 
 **Issue:** MOB-018. **Files:** `docs/appwire-client.md`, `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/{README.md,package.json,examples/coverage.mjs}` and neighboring examples/tests.
 
-Run this lane alongside packages 1–5, not after them. The current report names 14/88 methods and 3/35 notifications across five recipes; it measures declared recipe presence, not verified execution or failure coverage.
+Run this lane alongside packages 1–5, not after them. The current inventory records 90/91 catalog methods across 34 recipes and handles all 36 notification names as catalog entries; [15/36 notification names have scoped producer/readback evidence](../../design/mobile/sdk-notifications-evidence.md#actual-content-filter-warning). These are catalog and bounded evidence counts, not complete execution, failure, or outcome coverage.
 
 - [ ] Map every supported/reserved method and notification from the generated catalog. Link each workflow to executable cases; account for reserved-method rejection separately from usable capabilities.
 - [ ] Add streaming/reset/paging/rejoin recipes first, then mutation recovery and decisions, then management, credentials/plugins, trust and upgrade with their native packages.
@@ -1091,3 +1091,35 @@ then actual resume/fork/preview/maintenance recipes, remaining seven supported
 method recipes, notification/streaming recovery, and the outstanding native
 workflow/iPad/physical/accessibility/performance/signing release matrix.
 Android release qualification remains deferred beyond the approved iOS-only v1.
+
+
+## iPad settings, branding and SDK warning checkpoint — 8 September
+
+Three Luna medium lanes prepared settings fixtures, SDK producer qualification
+and branding/release reconciliation; Bot reviewed the implementation, operated
+the native iPad and independently checked raw receipts and cleanup.
+
+- `2952b7ff6` qualifies a real content-filter `warning` through the packaged SDK,
+  raising distinct actual notification producer/readback coverage to 15/36.
+- `2e37bca74` fixes a duplicate settings conflict notice discovered during the
+  real second-client stale-save journey. Project paths, MCP configuration,
+  environment, fallback selection, explicit empty and inheritance were saved
+  and independently read back; scope is in the iPad settings evidence.
+- `4bf389d58` adds the production Evener icon and launch mark, with actual iPad
+  SpringBoard/cold-launch evidence. Native tests (678/74 plus TypeScript), the
+  final Release build and secret scanning passed.
+- The corrected encoded-image limit rejected a source JPEG below 8 MiB after
+  conversion, retained the later valid image, and restored that draft after
+  process restart. The independent expanded PNG is a reference only; the
+  actual native encoded byte count is not asserted.
+
+Owned fixtures, profiles and drafts were cleaned; two photos imported for this
+case were moved to Recently Deleted, preserving all baseline images. Bot
+rechecked the original seven iPhone draft records, original hub and unrelated
+Apple patch. Android remains preserved and deferred beyond iOS-only v1.
+
+Next: remaining native recovery/reader and workflow cases on current iPhone and
+iPad artifacts, global/settings and accessibility matrices, independent SDK
+outcome coverage, measured performance, then physical-device/signing/update and
+final repository/release qualification. These scoped passes do not close those
+release requirements.

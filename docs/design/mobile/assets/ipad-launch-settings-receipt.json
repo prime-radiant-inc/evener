@@ -1,0 +1,241 @@
+{
+  "scope": "iPad simulator project launch settings and second-client conflict acceptance",
+  "firstArtifact": {
+    "source": "d20229b75",
+    "jsBundleSha256": "d47fe4d8f7976ef7c2b7600e3f4cd70171292876d00c3f177891e6facf62db26",
+    "pid": 42478
+  },
+  "conflictFixArtifact": {
+    "baseSource": "2952b7ff6",
+    "uncommittedNativeFiles": [
+      "mobile-native/app.json",
+      "mobile-native/package.json",
+      "mobile-native/package-lock.json",
+      "mobile-native/src/LaunchSettingsScreen.tsx",
+      "mobile-native/assets/evener-icon.png"
+    ],
+    "bundleSha256": "e68e035436fb7012e6d6f957546036293487bd5a9c97bea428b3cdd1d5b34654",
+    "binarySha256": "a7934c815b0f81c374fb648dad8563ca0437b31eff9a36af5ce26c697013b7f5",
+    "sourceFiles": {
+      "mobile-native/src/LaunchSettingsScreen.tsx": "16547acf185f1e1e696847b94584897cd7576abe81ffec4b670040b9386f0810"
+    }
+  },
+  "uiFixCommit": "2e37bca74",
+  "device": "iPad Pro 11-inch (M5), iOS26.5 simulator",
+  "fixtureRoot": "/tmp/evener-native-settings-fixture-01",
+  "backendSource": "d2d5eedf9",
+  "binaryHashes": {
+    "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+    "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+    "scripted-provider": "d8386955440cc23ec3b8cd6e85da264f34e843c05a88fb93c854e985dc175a15"
+  },
+  "savedProject": {
+    "env": {
+      "EVENER_SETTINGS_NATIVE": "native=ipad"
+    },
+    "mcpConfigs": [
+      "/tmp/evener-native-settings-fixture-01/workspace/native-paths/mcp-config.json"
+    ],
+    "mcps": [
+      {
+        "name": "fixture-settings",
+        "command": "/tmp/evener-native-settings-fixture-01/workspace/native-paths/bin/fixture-mcp-noop",
+        "args": [
+          "--fixture-argument"
+        ]
+      }
+    ],
+    "modelFallbacks": [
+      "fixture/fake-test-model"
+    ],
+    "pluginDirs": [
+      "/tmp/evener-native-settings-fixture-01/workspace/native-paths/valid-plugin"
+    ]
+  },
+  "checks": {
+    "invalidPathRejected": true,
+    "stagedFieldsDidNotWriteBeforeSave": true,
+    "allFiveFieldsMatchedLayerAndResolveReadbacks": true,
+    "externalEditSurvivedTwoNativeStaleSaveAttempts": true,
+    "successfulNativeSetLayerRequests": [
+      49,
+      69,
+      75
+    ],
+    "successfulNativeConnection": "conn-10",
+    "nativeSetLayerCount": 3,
+    "explicitNonePersistedAsEmptyArray": true,
+    "inheritanceRemovedFallbackFieldOnly": true,
+    "fixedArtifactConflictNoticeCount": 1,
+    "fixedArtifactPID": 53818
+  },
+  "cleanup": {
+    "processes": {
+      "43703": "absent",
+      "43760": "absent",
+      "43762": "absent",
+      "46182": "absent"
+    },
+    "ownedExecutableScan": [],
+    "ports": {
+      "58131": "no listener",
+      "58231": "no listener"
+    },
+    "tokenCredentialsAndPrivateHubLogsAbsent": true,
+    "nativeProfileAndAllDraftTablesEmptyAfterColdLaunch": true,
+    "cleanupColdLaunchPID": 94994,
+    "nativeRemovalFirstAttempt": "Installation interrupted removal before completion; profile and creation draft remained. Repeated ordinary removal completed; cold-launch verified absent. No product fix was needed."
+  },
+  "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-settings-root-2ld63dog",
+  "rawArtifacts": {
+    "native-artifact.json": {
+      "sha256": "c7a4b3769c0384655ff9b788b625960be3fe46a7eb715f56be10dab899918b0f",
+      "bytes": 315
+    },
+    "encoded-rejection.json": {
+      "sha256": "e92dea3f40bed9c14ee3ac190ef6bb1199002c593a1f2ba58d79dc2905b8fe01",
+      "bytes": 8277
+    },
+    "image-restart-reopened.json": {
+      "sha256": "b77185851059dd92860172c5ede9ec99dadc9ea613bb2943c5a675fb05103ab2",
+      "bytes": 7854
+    },
+    "settings-first-journey-trace.jsonl": {
+      "sha256": "81220010a651ecfa9d374141cbd531454ffe78a4193b7db389ec02d102382b84",
+      "bytes": 444822
+    },
+    "settings-final-trace.jsonl": {
+      "sha256": "0a2334fdc2a1f01ac59f85607ad7c7dca66dc6bf6363cbfe35d75f50604406f1",
+      "bytes": 523677
+    },
+    "settings-write-audit.json": {
+      "sha256": "b7653c945c920ebc87d3fdeea293923b31819f7658b8025331b2af09c3cb0b93",
+      "bytes": 5025
+    },
+    "plugin-invalid.json": {
+      "sha256": "c5211591ed09c9450c383689602fef59749f9baaf9adf57242b2e69715faecc6",
+      "bytes": 4619
+    },
+    "plugin-added.json": {
+      "sha256": "cbe8ff63bb586a16d8db34e3e1453e3354454cf75c8c31d4f793e2c436b5bb85",
+      "bytes": 4999
+    },
+    "mcp-config-editor.json": {
+      "sha256": "b865e42b4c40995a06d36ed949bdef14d63fd4aebd048956ff6454cf13815484",
+      "bytes": 4047
+    },
+    "mcp-server-added.json": {
+      "sha256": "79ccf886ac5ffd8dae71299eae4d432afcc0038dd392e543adc35282b5d2df49",
+      "bytes": 4523
+    },
+    "fallback-selected.json": {
+      "sha256": "41ece49a6cfd0ff2350298621e82c8791a141c90150f12dd6a5bd04c4a80fd80",
+      "bytes": 4517
+    },
+    "all-settings-staged.json": {
+      "sha256": "4f8f6cca2ae56756d1762ea76b635da4dc7c78fc6341e29ebd4919ae092f735b",
+      "bytes": 23692
+    },
+    "all-settings-saved.json": {
+      "sha256": "feacde9e152fd11161b0d9b3e476509ebc3cca807de8ef02e682505e0a86a23a",
+      "bytes": 24118
+    },
+    "conflict-save-rejected.json": {
+      "sha256": "6b27edfa98fd61aa0f8ed18f600e22c05b1e6aacfa6c7bc158f99b67e985443a",
+      "bytes": 24617
+    },
+    "conflict-reload-confirmed.json": {
+      "sha256": "d9ca6895ba4842bdf3660148f49f431ee52e7699d94d46054041ee92cf305422",
+      "bytes": 23707
+    },
+    "explicit-none-saved.json": {
+      "sha256": "b859013093fbd52d6b82c0a5b3f6833c3623969cc19c7271d22dfc0b41a87446",
+      "bytes": 24118
+    },
+    "none-persisted.json": {
+      "sha256": "6e86dd6fab1741fd8ad56591dfa941b11ffd0a92c6a869b582a32df4aa453aed",
+      "bytes": 3662
+    },
+    "inheritance-persisted.json": {
+      "sha256": "3087819594c8cb9c362b93374f45211430a749680d5fe9b0e3d2413510277bc5",
+      "bytes": 3662
+    },
+    "conflict-fix-artifact.json": {
+      "sha256": "051ece75dc24907abe8bc1b9037104bfdc60217d19000a57ecfff0a42990d4b5",
+      "bytes": 575
+    },
+    "conflict-fix-rejected.json": {
+      "sha256": "531ddfbf5107dc99c4108b03e3ed19aae56e6ef93721fb52a55d270e2539ec23",
+      "bytes": 24168
+    },
+    "photos-cleanup.json": {
+      "sha256": "870eebbe26edbffec61e3a40a3b9ebc406d08144fb69689fd10bfcbf02ca4bca",
+      "bytes": 1906
+    },
+    "root-cleanup-verification.json": {
+      "sha256": "b176db009c24608639d7acbbc6cd2661cfa7d298b589b1038e2f9a4f6606df2c",
+      "bytes": 579
+    },
+    "cleanup-cold-launch.json": {
+      "sha256": "78c933f9c0845a833d38b5a9e4dc64b07daaca8cfbbb9ad7f71deff6bba5bb29",
+      "bytes": 5175
+    },
+    "cleanup-cold-launch-storage.json": {
+      "sha256": "b1be5dc62610ba7892924b3c5f4ec97d3e6fb211ca20c549c60cc445b0c83716",
+      "bytes": 488
+    }
+  },
+  "fixtureArtifacts": {
+    "read-settings-before-native-edits.json": {
+      "sha256": "1a09e2057aa81133eb9e901ded6b5dd979a278413a197327fc9e172d1a62d863",
+      "bytes": 2885
+    },
+    "read-settings-staged-before-save.json": {
+      "sha256": "f166efcf57bb711e7848aac092033aa1eea397ed4fb1bddf4dc60a7ee9d1317f",
+      "bytes": 2884
+    },
+    "read-settings-after-native-save.json": {
+      "sha256": "6515129adbaf188d1b7edf2d975798dc23e1a8d13915d77c0c197f5cb245e88c",
+      "bytes": 4954
+    },
+    "settings-conflict-remote-env.json": {
+      "sha256": "38c576cf4806d042172243dc9779dde6e0322caa637ea7bdcdd3960f0981d09f",
+      "bytes": 2481
+    },
+    "read-settings-after-conflict-rejection.json": {
+      "sha256": "0d0e525dce9c71d164aa20ebabd77b1f40f9609187f7b8dbcf26a7493b7b6436",
+      "bytes": 5099
+    },
+    "read-settings-explicit-none-saved.json": {
+      "sha256": "b1dc42c13642aea9ee8710ad3cab0b9e385221fdcf8ce8debdddba5d2808bef8",
+      "bytes": 4971
+    },
+    "read-settings-inheritance-saved.json": {
+      "sha256": "87f89b799549ed9ff602c4579dc214b4fae079c46e143b968ed6c3a745ffd8b1",
+      "bytes": 4849
+    },
+    "settings-conflict-recheck.json": {
+      "sha256": "884fc5ea304a1ca9e66ff5387596ad5f872e11d4c9a35d3cd666a4592fa3dd52",
+      "bytes": 2352
+    },
+    "read-settings-conflict-fix-rejected.json": {
+      "sha256": "a39dc73f13eec6ce594e5af0e14b48b686a83b250fbc27b1d65c02ab5fc3ce90",
+      "bytes": 4877
+    },
+    "cleanup-receipt.json": {
+      "sha256": "65766cf3be626d0be43df169d7602d196886aad6da3b1c8374f3a838d15e2424",
+      "bytes": 4722
+    }
+  },
+  "helperHashes": {
+    "read-settings.mjs": "4f51462942182ef30f1901c1b11040f8091823991e04610a98c3e92f2dd121c1",
+    "settings-conflict.mjs": "2ffc1ce871f8dc447798e6116064ab2ab112edc7e510ef4a2cbb7c5f8aba2a92",
+    "settings-conflict-recheck.mjs": "2caf1ef23773809ebfb676abe1100f0ab5e94f22f679bdad1640db1b4a8b1092"
+  },
+  "limits": [
+    "Project-layer settings on one iPad simulator; global editing, two-hub drafts, disconnect/lost-reply replay and physical-device matrix remain open.",
+    "MCP command/name/args were validated and serialized in launch settings; no MCP server was executed.",
+    "Only the first artifact exercised the whole settings journey. The newer artifact repeated stale-save rejection and the single-notice display.",
+    "Fixture uses real hub/AppWire/validation/storage and an external scripted model provider; no raw provider HTTP claim is made for this settings journey."
+  ]
+}
