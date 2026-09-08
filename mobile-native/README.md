@@ -9,7 +9,7 @@ AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
 web/server behavior defines scope.
 
-The [delivery plan](../docs/superpowers/plans/2026-09-06-native-mobile-delivery.md)
+The [delivery plan](../docs/superpowers/plans/2026-09-08-iphone-usable-useful-good.md)
 defines sequencing, worker ownership and release acceptance. The
 [backlog](../docs/design/mobile/backlog.md) tracks remaining work. Implemented
 features below are not a claim of complete native or release qualification. See
@@ -64,6 +64,8 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 ```
 
 No script in the default tests calls a real hub or LLM provider.
+
+The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md) records the newer vision-control iPhone artifact `bc519b1c1`, 692 native tests plus TypeScript, shared checks and host-executed real-hub controller qualification. Native vision interaction and the integrated Usable journey remain pending; the reader-specific evidence below retains its earlier artifact identity.
 
 ## Current scope
 

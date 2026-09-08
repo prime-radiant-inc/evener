@@ -10,6 +10,10 @@
 
 **Spec:** [Native capability scope](../specs/2026-09-05-native-mobile-coverage.md), [current iPhone scope](../../design/mobile/ios-v1-remaining.md), [product philosophy](../../design/mobile/philosophy.md), [acceptance ledger](../../design/mobile/acceptance.md), and Jesse's 8 September instruction to order delivery as usable, useful, then good.
 
+## Execution checkpoint — 8 September
+
+`bc519b1c1` implements Task 8 and passes the recorded deterministic and host/controller real-hub checks. Its iPhone simulator build is installed and preserves the original drafts. Native vision interaction and the integrated Tasks 1–4 journey remain open; physical installation awaits device unlock. Parallel controller reviews did not close the corresponding native workflow gates. See the [detailed execution checkpoint](../../design/mobile/2026-09-08-iphone-execution-checkpoint.md) for receipts, corrected worker findings and remaining inputs.
+
 ## Global constraints
 
 - iPhone is active. iPad and dedicated accessibility work are paused. Android qualification is deferred. Preserve their sources and evidence; none is a gate for these milestones.

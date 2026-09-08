@@ -1,7 +1,7 @@
 # Packaged SDK notification observations — 7 September 2026
 
 For current native implementation and release status, see the [project status](status.md)
-and [acceptance ledger](acceptance.md). The audited union below includes **27 of
+and [acceptance ledger](acceptance.md). The audited union below includes **28 of
 36 notification names** across separately identified packages and fixtures.
 The dated observations remain scoped evidence rather than a release decision.
 
@@ -220,7 +220,7 @@ real `turn/queue` acknowledgment and canonical queued-entry readback, and the
 current-source run observed the exact target `thread/closed` after shutdown.
 The close run used backend source `3284d6ac5`, retained 28 raw events, and
 confirmed the final canonical thread status was `awaiting`; the earlier failed
-close attempts remain historical and are not counted. The resulting union is
+close attempts remain historical and are not counted. That run brought the union to
 27 of 36 notification names with scoped producer/readback evidence. This
 reconciles the earlier 21-name summary with the separate real navigation
 invalidation receipt, the two model-setting producer/readback names, and the
@@ -230,15 +230,17 @@ The [navigation receipt](assets/sdk-navigation-receipt.json),
 [settings receipt](assets/sdk-settings-receipt.json) and
 [credential receipt](assets/sdk-credentials-receipt.json) supply those additional
 names. Each records real mutations, observed notifications and authoritative
-readback; their package and backend identities remain distinct. The nine names
-outside this audited union need consolidated producer evidence or fresh
+readback; their package and backend identities remain distinct. The eight names
+outside the current audited union need consolidated producer evidence or fresh
 qualification; this is not a claim that every historical source was retested.
+
+The [8 September launch-layer receipt](assets/2026-09-08-sdk-launch-producer.json) adds `evener/launch/updated`: two real project-layer events, authoritative `maxRounds: 7` readback and restoration. Its provider failed before a successful turn; the scope is this producer only. No `thread/started` notification was captured. The updated union is **28 of 36** distinct names.
 
 The audited receipt union is:
 
 `evener/delegate/updated`, `evener/goal/updated`,
 `evener/job/finished`, `evener/job/started`,
-`evener/jobs/treeUpdated`, `evener/navigation/invalidated`,
+`evener/jobs/treeUpdated`, `evener/navigation/invalidated`, `evener/launch/updated`,
 `evener/settings/keybindings/changed`,
 `evener/settings/transcriptDisplay/changed`, `evener/steering/injected`,
 `evener/task/updated`, `evener/thread/modelRetry`, `evener/auth/updated`,
@@ -250,8 +252,8 @@ The audited receipt union is:
 `thread/closed`, and `warning`.
 
 This union is producer/readback evidence for the cited bounded fixtures. It does
-not include producer/readback qualification for the other nine catalog names: `thread/started`, `item/agentMessage/reset`,
-`evener/thread/resync`, `evener/launch/updated`, `evener/attention/changed`,
+not include producer/readback qualification for the other eight catalog names: `thread/started`, `item/agentMessage/reset`,
+`evener/thread/resync`, `evener/attention/changed`,
 `evener/marketplace/updated`,
 `evener/plugin/updated`, `evener/sandbox/escalation/requested`, and
 `evener/sandbox/escalation/resolved`. It also does not qualify every outcome or ordering path, continuous
