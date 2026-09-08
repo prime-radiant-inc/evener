@@ -872,6 +872,9 @@ func TestGoalCancelWaitToolKeepsClaimedWake(t *testing.T) {
 	if !cont || !strings.Contains(prompt, w.Lease.WaitID) {
 		t.Fatalf("gate after tool cancel = (%q, %v), want the claimed wake to still drive once", prompt, cont)
 	}
+	if !strings.Contains(prompt, goal.CancelledWakeNote) {
+		t.Fatalf("driven wake prompt must carry the cancellation note %q:\n%s", goal.CancelledWakeNote, prompt)
+	}
 }
 
 // TestGoalWaitToolSizeCapsRejectNamesCheck pins the spec section 2 size caps
