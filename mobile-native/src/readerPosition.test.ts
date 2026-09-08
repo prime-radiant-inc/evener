@@ -217,6 +217,24 @@ describe("reader positions", () => {
 		expect(attempts.begin(command)).toBe(true);
 		expect(attempts.retryUnmeasured()).toBe(true);
 	});
+	it("retries an unchanged approximate target after monotonic layout progress", () => {
+		const attempts = new ReaderRestoreAttempts();
+		const command = { kind: "approximate", offset: 1868 } as const;
+		expect(attempts.begin(command, 4)).toBe(true);
+		expect(attempts.begin(command, 4)).toBe(false);
+		expect(attempts.begin(command, 5)).toBe(true);
+		expect(attempts.begin(command, 5)).toBe(false);
+		expect(attempts.begin(command, 6)).toBe(true);
+		expect(attempts.begin(command, 7)).toBe(true);
+		expect(attempts.begin(command, 6)).toBe(false);
+		expect(attempts.begin(command, 7)).toBe(false);
+		expect(attempts.begin(command, 8)).toBe(true);
+		expect(attempts.begin(command, 8)).toBe(false);
+		expect(attempts.begin({ kind: "exact", index: 4, viewOffset: -2 }, 8)).toBe(
+			true,
+		);
+		expect(attempts.begin(command, 0)).toBe(true);
+	});
 	it("resolves an exact row or exact protocol position only", () => {
 		const anchor = {
 			hubId: "hub",

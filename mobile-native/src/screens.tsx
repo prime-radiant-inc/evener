@@ -1225,7 +1225,24 @@ export function ConversationScreen({
 			96,
 			!readerDragging.current && !readerMomentum.current,
 		);
-		if (!command || !readerRestoreAttempts.current.begin(command)) return;
+		const targetIndex = resolveReaderAnchor(anchor, timelineRows);
+		const measurementProgress =
+			targetIndex === null
+				? -1
+				: timelineRows
+						.slice(0, targetIndex)
+						.reduce(
+							(furthest, row, index) =>
+								readerMeasurements.current.has(readerKey(row))
+									? index
+									: furthest,
+							-1,
+						);
+		if (
+			!command ||
+			!readerRestoreAttempts.current.begin(command, measurementProgress)
+		)
+			return;
 		if (command.kind === "approximate") {
 			captureSuppressed.current = true;
 			timeline.current?.scrollToIndex({
