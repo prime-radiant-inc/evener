@@ -1862,7 +1862,9 @@ export function ConversationScreen({
 							contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
 							onContentSizeChange={() => {
 								if (readerLatest.current)
-									timeline.current?.scrollToEnd({ animated: false });
+									(
+										timeline.current?.getScrollResponder() as ScrollView | null
+									)?.scrollToEnd({ animated: false });
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
@@ -2044,7 +2046,9 @@ export function ConversationScreen({
 										readerAnchor.current = null;
 										readerLatest.current = true;
 										captureSuppressed.current = false;
-										timeline.current?.scrollToEnd({ animated: true });
+										(
+											timeline.current?.getScrollResponder() as ScrollView | null
+										)?.scrollToEnd({ animated: true });
 									}}
 									style={({ pressed }) => ({
 										minWidth: Platform.OS === "ios" ? 44 : 48,
