@@ -665,10 +665,17 @@ type Session struct {
 	// (spec §2 fired_epoch dedupe in session form): a timer callback or
 	// notification that finds its wait already delivered drops without
 	// re-claiming, so a refire collapses to one wake. Entries accumulate until
-	// the wake turn's tail fold consumes them... (slice-1: cleared on
-	// Set/Clear, the only fold sites that can retire a batch; Task 4 clears at
-	// tail-fold commit). Guarded by s.mu.
+	// the wake turn's tail fold consumes them (DrainPendingWakeIDs per kicked
+	// batch; superseded batches drain at their no-op turn's tail). Cleared on
+	// Clear; on retarget (Set) only unclaimed live state resets — claimed
+	// entries survive marked Superseded. Guarded by s.mu.
 	goalWakeDelivered map[string]bool
+	// goalSupersededArmed flags that the gate just drove the superseded no-op
+	// evaluation turn (spec §3): its tail consumes the marked batch and
+	// re-arms the current objective without folding stall signal. Set at
+	// drive time (batch marked delivered), consumed at the turn's tail.
+	// Guarded by s.mu.
+	goalSupersededArmed bool
 	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
 	// loop immediately by feeding the first continuation prompt back into the
 	// serve loop's input channel. It is a callback because the agent module must

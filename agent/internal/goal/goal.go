@@ -287,21 +287,31 @@ func (s *Store) LastRejectReason() string {
 }
 
 // Set creates a new active goal, replacing any previous goal. Retarget
-// semantics (spec §1): waits cleared, ledger reset, budgets kept (a fresh
-// objective must not launder spend — the deadline is not re-anchored).
+// semantics (spec §§1, 3): live waits cleared, ledger reset, budgets kept (a
+// fresh objective must not launder spend — the deadline is not re-anchored).
+// Already-claimed pendingWake entries survive, marked Superseded: a retarget
+// that wins between claim and kick routes the stale fire to a single no-op
+// evaluation on the current objective (spec §3 superseded), never the old
+// objective's wake and never a silent drop.
 func (s *Store) Set(objective string, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	budgets := DefaultBudgets(now)
+	var carried []PendingWake
 	if s.goal != nil {
 		budgets = s.goal.Budgets
+		for _, p := range s.goal.PendingWake {
+			p.Superseded = true
+			carried = append(carried, p)
+		}
 	}
 	s.goal = &Goal{
-		Objective: objective,
-		Status:    StatusActive,
-		Budgets:   budgets,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Objective:   objective,
+		Status:      StatusActive,
+		Budgets:     budgets,
+		PendingWake: carried,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 

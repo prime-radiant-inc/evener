@@ -68,12 +68,14 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	s.goalDependentsHeld = false
 	// Retarget voids waits (the store just cleared them) and disarms their
 	// timer (spec section 3): no expired wait may re-trigger after the
-	// retarget. The terminal latch and delivered set belong to the old
-	// objective — a superseded claimed wake drives a single no-op evaluation
-	// on the current objective, never the old one.
+	// retarget. The terminal latch belongs to the old objective and resets;
+	// the delivered set is kept: the carried superseded batch was marked at
+	// drive time (or is about to drive), and wiping it would let a racing
+	// timer re-claim the same wait_ids. Claimed entries survive in the store
+	// marked Superseded and drive a single no-op evaluation on the current
+	// objective, never the old one.
 	s.stopGoalWaitTimerLocked()
 	s.goalTerminalPending = false
-	s.goalWakeDelivered = nil
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
@@ -457,6 +459,31 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		s.armGoalWaitTimer()
 		return "", false
 	case goal.StepDrive:
+		if hasSupersededWake(full) {
+			// Superseded path (spec section 3): the goal was retargeted
+			// between claim and kick. Drive a single no-op evaluation on
+			// the CURRENT objective with the stale excerpt marked
+			// superseded - never the old objective's wake. The turn is
+			// wait-attributable: bypass the stall fold, consume the marked
+			// batch at this tail, and re-arm the current objective.
+			prompt := s.renderGoalSupersededPrompt(full)
+			var ids []string
+			for _, p := range full.PendingWake {
+				if p.Superseded {
+					ids = append(ids, p.WaitID)
+				}
+			}
+			s.markGoalWakesDelivered(ids)
+			// The no-op turn runs next; its own tail consumes the marked
+			// batch via the wake-tail fold (entries are marked delivered
+			// here). Flag it so the tail below re-arms without folding even
+			// though the backlog still stands at this instant.
+			s.mu.Lock()
+			s.goalSupersededArmed = true
+			s.mu.Unlock()
+			s.goalUpdateMu.Unlock()
+			return prompt, true
+		}
 		if len(full.PendingWake) > 0 || len(claimed) > 0 {
 			// Fired/expiry path: an undelivered wake batch drives exactly
 			// one resume turn carrying all coalesced triggers (spec section
@@ -503,11 +530,21 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
-	if wakeTail {
-		// The just-finished turn was the wake turn itself: its backlog is
-		// consumed above and the turn was wait-attributable, so bypass the
-		// stall fold and re-arm the plain objective. The follow-up turn's
-		// own tail folds normally.
+	if wakeTail || s.takeGoalSupersededArmed() {
+		// The just-finished turn was a wake turn (or the superseded no-op
+		// evaluation): its backlog is consumed above (superseded: consumed
+		// now, since the batch was marked at drive time) and the turn was
+		// wait-attributable, so bypass the stall fold and re-arm the plain
+		// objective. The follow-up turn's own tail folds normally.
+		if !wakeTail {
+			s.goalUpdateMu.Lock()
+			store.DrainPendingWake(now)
+			s.goalUpdateMu.Unlock()
+			full, ok = store.GoalSnapshot()
+			if !ok {
+				return "", false
+			}
+		}
 		s.goalUpdateMu.Unlock()
 		return goal.Render(full.Objective), true
 	}
@@ -590,6 +627,45 @@ func (s *Session) markGoalWakesDelivered(ids []string) {
 	for _, id := range ids {
 		s.goalWakeDelivered[id] = true
 	}
+}
+
+// hasSupersededWake reports whether the backlog carries entries marked
+// Superseded by a retarget-after-claim (spec section 3). Pure: no locks.
+func hasSupersededWake(full goal.GoalSnapshot) bool {
+	for _, p := range full.PendingWake {
+		if p.Superseded {
+			return true
+		}
+	}
+	return false
+}
+
+// renderGoalSupersededPrompt renders the single no-op evaluation turn for a
+// superseded claim batch (spec section 3): the CURRENT objective plus a frame
+// carrying each stale trigger marked superseded, so the model evaluates once
+// against current state and never pursues the old objective. Pure: no locks.
+func (s *Session) renderGoalSupersededPrompt(full goal.GoalSnapshot) string {
+	base := goal.Render(full.Objective)
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n" + goalWaitWakeTrailerPrefix + " A waited event fired for a previous objective (superseded by retarget); treat the stale trigger(s) below as dropped context, evaluate the CURRENT objective once against current state, then continue:")
+	for _, p := range full.PendingWake {
+		if !p.Superseded {
+			continue
+		}
+		fmt.Fprintf(&b, "\n- %s (superseded): %s (fired %s)", p.WaitID, p.Trigger, p.FiredAt.UTC().Format(time.RFC3339))
+	}
+	return b.String()
+}
+
+// takeGoalSupersededArmed consumes the superseded no-op flag set when the
+// gate drives the marked evaluation turn. Self-locking.
+func (s *Session) takeGoalSupersededArmed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	armed := s.goalSupersededArmed
+	s.goalSupersededArmed = false
+	return armed
 }
 
 // dropLatchedWakes consumes a terminal-latched turn's fresh wakes (spec
@@ -789,15 +865,35 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 		return
 	}
 	if full.Objective != objective {
-		// Retarget won between claim and kick (spec section 3
-		// superseded/drop): the store already wiped the stale leases and
-		// the retarget cleared the backlog path - drop the stale trigger
-		// excerpts (never drive the old objective) and leave the honest
-		// loss notice on the current objective.
-		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
-			"%s The waited event fired but the goal was retargeted before the wake ran; the stale trigger was dropped. Re-arm the wait or proceed without it.",
-			goalWaitNoticePrefix)))
+		// Retarget won between claim and kick (spec section 3 superseded):
+		// Set carried the claim marked Superseded, so re-read the current
+		// goal (which now owns the marked batch) and drive the single no-op
+		// evaluation on it - never the old objective's wake, never a drop.
+		// The no-op turn's own gate drives via the superseded branch (the
+		// batch is already marked here).
+		s.goalUpdateMu.Lock()
+		current, ok := s.getOrCreateGoalStore().GoalSnapshot()
+		s.goalUpdateMu.Unlock()
+		if !ok {
+			s.armGoalWaitTimer()
+			return
+		}
+		var ids []string
+		for _, p := range current.PendingWake {
+			if p.Superseded {
+				ids = append(ids, p.WaitID)
+			}
+		}
+		s.markGoalWakesDelivered(ids)
+		s.mu.Lock()
+		s.goalSupersededArmed = true
+		s.mu.Unlock()
+		prompt := s.renderGoalSupersededPrompt(current)
 		s.armGoalWaitTimer()
+		if kick == nil {
+			return
+		}
+		kick(prompt)
 		return
 	}
 	var ids []string

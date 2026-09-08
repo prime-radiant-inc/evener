@@ -24,13 +24,14 @@ import (
 // Iterations/NoProgressStreak unfolded and no breaker steering note.
 func TestGateParkSkipsFold(t *testing.T) {
 	t.Parallel()
-	sess := newGoalMethodSession(t)
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
 	wireKickAndNotify(sess)
 
 	store := sess.getOrCreateGoalStore()
-	store.Set("park on the timer", time.Now())
-	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Hour}, time.Now()); !ok {
+	store.Set("park on the timer", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Hour}, clk.Now()); !ok {
 		t.Fatal("precondition: until_time registration should succeed")
 	}
 
@@ -170,10 +171,6 @@ func TestGateDoubleClaimCollapses(t *testing.T) {
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
-	var mu struct {
-		kicks int
-	}
-	_ = mu
 	kicks := wireKickAndNotify(sess)
 
 	store := sess.getOrCreateGoalStore()
@@ -248,9 +245,9 @@ func TestGateCoalescedTimerKicksOnce(t *testing.T) {
 }
 
 // TestGateRetargetVoidsWaitsAndDisarms pins retarget semantics (spec sections
-// 1, 3): /goal <new> clears waits, cancels their timers (no stale fire
-// re-triggers after the retarget), and a superseded claim between claim and
-// kick routes the honest loss notice - never the old objective's wake.
+// 1, 3): /goal <new> clears live waits and disarms their timers (no stale
+// fire re-triggers after the retarget). Nothing claimed stands here, so no
+// superseded batch survives and no no-op turn drives.
 func TestGateRetargetVoidsWaitsAndDisarms(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -280,8 +277,8 @@ func TestGateRetargetVoidsWaitsAndDisarms(t *testing.T) {
 		t.Fatal("wait timer must disarm on retarget (no post-retarget stale fire)")
 	}
 
-	// A superseded claim racing the retarget must not drive the old wake: the
-	// stale fire resolves to the honest loss notice on the current objective.
+	// A fire after the retarget cannot reuse the old lease (same-target
+	// re-register replaces): the old wait stays gone.
 	clk.Advance(2 * time.Minute)
 	clk.Drain()
 	for _, p := range prompts {
@@ -297,11 +294,13 @@ func TestGateRetargetVoidsWaitsAndDisarms(t *testing.T) {
 	}
 }
 
-// TestGateRetargetBetweenClaimAndKickNotices pins the claim-vs-kick race
-// (spec section 3 superseded/drop): a claim that lands before a retarget
-// drops its stale trigger with the honest loss notice on the current
-// objective - never a wake for the old one.
-func TestGateRetargetBetweenClaimAndKickNotices(t *testing.T) {
+// TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop pins the
+// claim-vs-kick race (spec section 3 superseded): a claim that lands before a
+// retarget survives marked Superseded and drives a single no-op evaluation on
+// the CURRENT objective with the stale excerpt marked superseded - never the
+// old objective's wake, never a silent drop. The no-op turn consumes the
+// batch and re-arms the current objective without folding stall signal.
+func TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
@@ -322,14 +321,38 @@ func TestGateRetargetBetweenClaimAndKickNotices(t *testing.T) {
 	if _, err := sess.SetGoal(context.Background(), "new objective"); err != nil {
 		t.Fatalf("SetGoal: %v", err)
 	}
-	// The gate sees the retarget's fresh active goal (Set wiped the backlog
-	// path): it must drive the current objective, never the stale wake.
+	// The retarget carries the claim marked Superseded.
+	if gsnap, _ := store.GoalSnapshot(); len(gsnap.PendingWake) != 1 || !gsnap.PendingWake[0].Superseded {
+		t.Fatalf("pendingWake after retarget = %+v, want one Superseded entry", gsnap.PendingWake)
+	}
+	// The gate drives the no-op evaluation on the current objective.
 	prompt, cont := sess.armGoalContinuation(false, false)
 	if !cont {
-		t.Fatal("gate after claim-then-retarget must drive the current objective")
+		t.Fatal("gate after claim-then-retarget must drive the superseded no-op evaluation")
 	}
-	if strings.Contains(prompt, goalWaitWakeTrailerPrefix) {
-		t.Fatalf("stale wake trailer survived the retarget:\n%s", prompt)
+	if !strings.Contains(prompt, "new objective") {
+		t.Fatalf("no-op prompt must evaluate the CURRENT objective:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "(superseded)") || !strings.Contains(prompt, w.Lease.WaitID) {
+		t.Fatalf("no-op prompt must mark the stale trigger superseded with its wait_id:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "old objective") {
+		t.Fatalf("no-op prompt must never pursue the old objective:\n%s", prompt)
+	}
+	// The no-op turn's own tail consumes the batch and re-arms the current
+	// objective with zero stall fold.
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, "new objective") {
+		t.Fatalf("no-op tail = (%q, %v), want the current objective re-armed", prompt, cont)
+	}
+	if strings.Contains(prompt, "(superseded)") {
+		t.Fatalf("re-armed prompt must not carry the consumed superseded batch:\n%s", prompt)
+	}
+	if gsnap, _ := store.GoalSnapshot(); len(gsnap.PendingWake) != 0 {
+		t.Fatalf("pendingWake after no-op tail = %+v, want drained", gsnap.PendingWake)
+	}
+	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
+		t.Fatalf("snapshot = %+v, want zero fold across the no-op turn", snap)
 	}
 }
 
