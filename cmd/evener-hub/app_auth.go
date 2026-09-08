@@ -121,10 +121,10 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 }
 
 // newHubAuthControllerWithStore creates a controller backed by an explicit credentials store,
-// storing its OpenAI OAuth records under stateRoot — the hub-level machine state root
-// (WebConfig.HubStateRoot), which is what holds auth/<instance>.json. An empty stateRoot
-// resolves the directory from the process environment (XDG_STATE_HOME / HOME), matching the
-// default constructor but without launch-env overrides.
+// storing its OpenAI OAuth records under stateRoot — the state root whose auth/<instance>.json
+// the registry resolves credentials from (the hub passes its registry's state root, see
+// hubAuthStateRoot). An empty stateRoot resolves the directory from the process environment
+// (XDG_STATE_HOME / HOME), matching the default constructor but without launch-env overrides.
 func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *hubAuthController {
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}

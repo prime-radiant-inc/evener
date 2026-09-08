@@ -180,14 +180,29 @@ func allowsPastFallbackAfterLiveReadFailure(source appsource.Source, params appw
 }
 
 // hubLaunchConfigRoot resolves cfg.LaunchConfigRoot, falling back to
-// cmdutil.DefaultConfigRoot() when unset — the same defensive fallback
-// hubStateRoot below uses, for the same reason (a zero-value WebConfig built
+// cmdutil.DefaultConfigRoot() when unset (a zero-value WebConfig built
 // directly, as some tests do).
 func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 	if cfg.LaunchConfigRoot != "" {
 		return cfg.LaunchConfigRoot
 	}
 	return cmdutil.DefaultConfigRoot()
+}
+
+// hubAuthStateRoot is where the auth controller keeps OAuth records: the
+// registry's state root, because registry credential resolution reads
+// auth/<instance>.json from there. The hub loads its registry at
+// cmdutil.DefaultStateRoot() whatever hub_state_root says, so a record kept
+// under HubStateRoot would be a login the registry, the credential probe and
+// every spawned child never see. Before the first successful load, or with no
+// registry wired (a bare test config), that same default is the answer.
+func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
+	if reg != nil {
+		if r := reg.Get(); r != nil {
+			return r.StateRoot()
+		}
+	}
+	return cmdutil.DefaultStateRoot()
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
@@ -299,14 +314,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			KeybindingsSettings:       true,
 		},
 	})
-	hubStateRoot := cfg.HubStateRoot
-	if hubStateRoot == "" {
-		// Defensive only: LoadConfig's applyConfigDefaults always populates
-		// HubStateRoot, so a zero-value Config built directly (as in some
-		// tests) is the only way this branch runs.
-		hubStateRoot = cmdutil.DefaultStateRoot()
-	}
-	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
+	authController := newHubAuthControllerWithStore(hubAuthStateRoot(cfg.Registry), cfg.CredsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
@@ -327,7 +335,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
 	// launch.toml is user-editable configuration, so its root is the config
-	// root, not hubStateRoot (machine-generated state).
+	// root, not HubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg))
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
