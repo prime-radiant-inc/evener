@@ -97,8 +97,8 @@ and verified identical lock and resolved Core specification hashes across both
 directories. The Release simulator build and signature verification passed with
 arm64 and x86_64 slices and iPhone device family 1. The [portability and build
 receipt](assets/2026-09-08-ios-pod-lock-portability.json) retains exact logs,
-configuration and artifact hashes. The installed native app
-and draft database are backed up and have not been replaced by this build.
+configuration and artifact hashes. The prior native app and draft database remain backed up. This simulator build
+was subsequently installed and launched; its [native journey receipt](assets/2026-09-08-native-joined-journey.json) records scoped reasoning, approval and question outcomes.
 The local Xcode version is 26.6; the workflow's pinned 26.4 runner still requires
 an actual CI run. The native gate passed 692 tests across 74 files plus TypeScript,
 and distribution behavior checks passed again with the external boundary faked.
@@ -110,3 +110,16 @@ app; the existing Apple account may have suitable App Store Connect access,
 which has not been verified. No signed distribution archive, upload, processed
 TestFlight build, or TestFlight install/update has been verified. The setup is
 complete only after the physical iPhone completes the delivery sequence above.
+
+## Authenticated setup follow-up
+
+Safari now reaches App Store Connect using Jesse’s authorized Apple account.
+The developer portal reports individual team `87WJ58S66M`, matching the earlier
+development profile. No Evener app was found in the visible app listing or a
+bundle-ID search. Apple requires Account Holder acceptance of an updated program
+agreement before app submissions; the coordinator opened the agreement review
+page and left Agree untouched. App/group creation, distribution signing assets
+and API-key setup remain open. The [current checklist](testflight-setup.md)
+records the exact inputs and first delivery gates. The earlier signed device
+artifact path is now absent after project regeneration; its receipt is historical
+build evidence, while the current installed simulator artifact is retained.

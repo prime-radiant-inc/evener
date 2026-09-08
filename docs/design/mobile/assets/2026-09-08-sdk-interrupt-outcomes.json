@@ -1,6 +1,6 @@
 {
   "schema": "evener.sdk.interrupt.outcomes.v1",
-  "status": "qualified",
+  "status": "scoped-outcomes-observed",
   "date": "2026-09-08",
   "fixtureRoot": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d",
   "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
@@ -13,7 +13,8 @@
   "binaries": {
     "evenerSha256": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
     "evenerDevSha256": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65",
-    "providerSha256": "a7793bc0f4db4e3bbcad21e8a8b540991003f456ab8ab77a22993f8a7d396ba8"
+    "providerSha256": "a7793bc0f4db4e3bbcad21e8a8b540991003f456ab8ab77a22993f8a7d396ba8",
+    "evenerVersion": "evener 6a0278e36-dirty (2026-09-08T22:24:43Z)"
   },
   "identity": {
     "ref": "local:034LVFDe3EgtHk5W3rs4Da",
@@ -75,7 +76,7 @@
     }
   },
   "provider": {
-    "requestCount": 4,
+    "requestCount": 2,
     "interruptedRequest": {
       "callId": "call_fakellm_1",
       "previous": "",
@@ -100,7 +101,9 @@
         "survivor": false,
         "unused": false
       }
-    }
+    },
+    "observationRecordCount": 4,
+    "countExplanation": "Two provider requests; the other observation records are startup metadata and first-request cancellation."
   },
   "notifications": {
     "eventCount": 19,
@@ -123,6 +126,24 @@
       "fixture": "2d97366229c18eec94a45612cdff7a582eef4f8879e781a1dfdde9852e3b4a4e",
       "providerSource": "b08b340cf89659b83d00256e37666d32c048b77ac465b7fcc7d844014048bfc5",
       "driver": "11b22e0fff451c6f45a961e44eeeea5f846b8cb33e371c4ec163bbc6a16daa50"
+    },
+    "rawFiles": {
+      "provider-observation.json": {
+        "path": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d/capture/provider-observation.json",
+        "sha256": "ed2e332c9b321b7d51c555a9776157b1abdeb702b15e67bc15565024f7587244"
+      },
+      "notifications.json": {
+        "path": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d/capture/notifications.json",
+        "sha256": "2530c0054842251c49c9ad940b5844671182216d41bc74f1bd24232ab377ee76"
+      },
+      "final-read.json": {
+        "path": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d/capture/final-read.json",
+        "sha256": "45a7e66a96a382a7cec58fd7c51d057894e763f94e14341e308bd8ee58a07d7f"
+      },
+      "candidate.json": {
+        "path": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d/capture/candidate.json",
+        "sha256": "4002a07c30b7e35b50fb496ffd8b92ff37d769bb7eb253e38ac4fa053138273e"
+      }
     }
   },
   "scope": [
@@ -130,5 +151,15 @@
     "Success includes exact interrupted turn/readback and one later positive turn completed once.",
     "Malformed params and literal stale expectedInstanceId rejections are qualified; stale value does not prove a replaced instance.",
     "No warning-producer, lost-reply, reconnect, restart, concurrent mutation, native UI, or live-provider behavior claim."
-  ]
+  ],
+  "sourceHeadMeaning": "Checkout head recorded by the driver; immutable backend binary source is separately reported by evenerVersion.",
+  "review": {
+    "reviewedAt": "2026-09-08T23:29:17.800789+00:00",
+    "independentLunaReview": true,
+    "coordinatorHashAndOutcomeAudit": true,
+    "authTokenZeroBytes": true,
+    "noOwnedBinaryProcessesRemain": true,
+    "privateDriverUnchanged": true,
+    "fullSDKQualification": false
+  }
 }
