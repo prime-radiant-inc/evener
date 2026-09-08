@@ -3617,10 +3617,16 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, err := jm.recordWatchSend(d)
-		if err != nil || !ok {
+		state, _, ok, _ := jm.recordWatchSend(d)
+		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
+		// A partial-persist failure still returns ok=true with the persisted
+		// state: the pending frame is already journaled and committed to the
+		// runtime map, so it owes the owner a wake like any recorded send —
+		// otherwise the frame stalls until unrelated activity. The failure
+		// itself is already queued as a diagnostic at the persist site, so it
+		// coexists with the token/kick below.
 		recorded = true
 		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
 			tokens = append(tokens, watchSendTokenNotification("", state))
@@ -3938,20 +3944,10 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 		}
 		if enqueueReceipt != nil {
-			jm.observeWatchReceiptBoundary()
-			deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
-			if err != nil {
-				return record.persisted, true, err
-			}
-			enqueueCompleted = true
-			jm.rememberStableWatchReceipt(deliveryReceipt)
-			folded, err := jm.store.LoadWatchSends()
-			if err != nil {
-				return record.persisted, true, err
-			}
-			pending := folded.Pending[record.persisted.Key]
-			if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
-				return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
+			completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+			enqueueCompleted = completed
+			if verr != nil {
+				return record.persisted, true, verr
 			}
 		}
 		return record.persisted, true, nil
@@ -3982,23 +3978,51 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
 	if enqueueReceipt != nil {
-		jm.observeWatchReceiptBoundary()
-		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
-		if err != nil {
-			return record.persisted, true, err
-		}
-		enqueueCompleted = true
-		jm.rememberStableWatchReceipt(deliveryReceipt)
-		folded, err := jm.store.LoadWatchSends()
-		if err != nil {
-			return record.persisted, true, err
-		}
-		pending := folded.Pending[record.persisted.Key]
-		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
-			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
+		completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+		enqueueCompleted = completed
+		if verr != nil {
+			return record.persisted, true, verr
 		}
 	}
 	return record.persisted, true, nil
+}
+
+// verifyStableWatchEnqueue completes an admitted stable enqueue and checks the
+// persisted pending frame survives a durable refold. Both persist branches
+// (the nil-seam sequential protocol and the batch group write) share it so
+// their verification cannot diverge. completed reports whether
+// CompleteWatchEnqueue consumed the receipt: the caller must still skip the
+// deferred abort when a later refold check fails. A nil receipt is a
+// non-stable send: nothing to verify.
+func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchReceipt, persisted jobstore.WatchSendState) (completed bool, err error) {
+	if enqueueReceipt == nil {
+		return false, nil
+	}
+	jm.observeWatchReceiptBoundary()
+	deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return false, err
+	}
+	jm.rememberStableWatchReceipt(deliveryReceipt)
+	folded, err := jm.store.LoadWatchSends()
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return true, err
+	}
+	pending := folded.Pending[persisted.Key]
+	if pending == nil || pending.DeliveryID != persisted.DeliveryID || pending.UpdateSeq != persisted.UpdateSeq {
+		verr := errors.New("stable watch pending frame did not survive durable refold")
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(verr.Error(), watchReadErrorMaxChars)),
+		})
+		return true, verr
+	}
+	return true, nil
 }
 
 func (jm *jobManager) beginWatchPersistence() func() {
