@@ -322,3 +322,70 @@ No proxy or live model service was used. This closes the bounded SDK steering
 recipe qualification; native steering UI, live model behavior, broader recovery,
 the remaining 26 catalog method names without recipes (including one reserved
 unsupported entry), notification coverage and publication remain separate work.
+
+## SDK discovery and compaction command receipts — 7 September
+
+Two disposable authenticated loopback runs exercised the packaged SDK against
+the pre-`bb044658` SDK-only hub build (`759e7b10f-dirty`). The shared
+`@evener/appwire-client` tarball was `87040c69db1f8e18ac69968862b32d69334306feb12fc9ec694971e090e55189`.
+The source recipe commit recorded by both receipts was `bb044658d6ff28ab9d79d63a715d0663a7bdd659`.
+The discovery receipt records binary SHA-256 values for `evener`
+(`e9be7727a57cf626d5df1e6e41626d89484687097a98c07305efbc28c2e3852e`),
+`evener-dev`
+(`6bba94ff16e4542f90971c993a7bf2be1a3b2591df05fec509c16fa291afff4e`),
+and `fakellm`
+(`56002c555bdcc4e99d67e4466c246ad3fe962424ae508caa20c62ba58164226a`).
+The [discovery receipt](assets/sdk-runtime-discovery-receipt.json) records SDK
+connect, thread start, discovery reads, session rename/clear/compact/shutdown
+calls, and independent post-shutdown rename readback. Its archived
+[driver](assets/sdk-runtime-discovery-driver.mjs.txt) only reproduces connect
+and `thread/start`; the operation driver for the recorded discovery calls was
+not present in the disposable fixture and is therefore not archived. The fake
+provider received zero requests: this session ended immediately after
+`thread/start`, so its compact acknowledgment was an empty no-op and is not
+compaction qualification.
+
+The [compaction command receipt](assets/sdk-runtime-compaction-receipt.json)
+records a follow-up run with scripted-provider activity before the compact
+command. The direct and shared session-management recipes returned exit 0 and
+an acknowledged result, with recorded `thread/read` projection counts changing
+from three to four. Those counts do not establish completed compaction.
+
+Root's independent audit decoded the exact API request bodies. The three
+successful fake-provider calls comprised a structured session-name request
+(response schema property `name`) followed by two tool-capable turn rounds,
+with tool counts 0, 26 and 26. The previous worker attributed the first request
+to summarization incorrectly. The persisted transcript contains environment,
+user, assistant and tool-result entries; no completed-compaction result is
+established by these artifacts. This receipt qualifies command acknowledgment
+only. Actual compaction completion remains open and needs a new observed run.
+
+The archived receipt records the original operation driver hash
+`72f6f4de03e4ac34cf655ea1025e5d81449d02b88ec6f7566f25a5089463f7cc`, recipe
+driver hash `2661ec87d5917f8bf115ab1ad2419038f22c1b3fccc2e7ccecd1385caa9cac0c`,
+and fake-provider source hashes
+`7703e61e6f0b29c94dc65ad2498fe38b2fc999ac76d6112e1ffa31c61ac5d310` and
+`fdd8bb8822f42330e018676ab549d99ee55ce86e193f070500e0ad4e4acee408`.
+The archived drivers replace fixture-specific prompt text with an environment
+input placeholder; the receipt hashes identify the exact original repros.
+
+For independent verification of the recorded compaction semantics, the
+original run retained the API-attempt summary at
+`/tmp/evener-sdk-compaction-9rqir8/run/api-summary.json`, the direct result at
+`/tmp/evener-sdk-compaction-9rqir8/run/compaction-result.json`, and the recipe
+result at `/tmp/evener-sdk-compaction-9rqir8/run/recipe-compaction-result.json`.
+The direct session's API log and transcript were
+`/tmp/evener-sdk-compaction-9rqir8/state/evener/projects/private-tmp-evener-sdk-compaction-9rqir8-workspace-paq7aBVPPc/sessions/034KzccqZf2GgCxfFTUffi.api.jsonl`
+and the corresponding `.transcript.jsonl`; the recipe session used ref
+`local:034Kzif1lYCp6Uvb1Smbsn` and its corresponding `.api.jsonl` and
+`.transcript.jsonl`. These paths are source evidence only and their bodies are
+not reproduced here.
+
+Cleanup was verified for both runs: every reported hub, daemon and fake-provider
+process stopped; every owned port was absent afterward; the compaction run
+removed `state/evener/auth-token`, `prior-run/state/evener/auth-token`, and
+`prior-run/run/token`; and the receipts report no repository modification and
+no original-hub touch. No auth token, provider prompt, or private result body
+is included in the archived assets. The evidence is limited to this packaged
+SDK-only build and scripted provider; it does not qualify the latest backend,
+live provider behavior, or native/mobile release acceptance.

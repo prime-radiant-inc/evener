@@ -1,0 +1,150 @@
+{
+  "source": {
+    "recipeCommit": "bb044658d6ff28ab9d79d63a715d0663a7bdd659",
+    "packageTarballSha256": "87040c69db1f8e18ac69968862b32d69334306feb12fc9ec694971e090e55189",
+    "hubBuildMetadata": "evener 759e7b10f-dirty (2026-09-08T00:41:37Z)",
+    "operationDriverSha256": "72f6f4de03e4ac34cf655ea1025e5d81449d02b88ec6f7566f25a5089463f7cc",
+    "recipeCompactionDriverSha256": "2661ec87d5917f8bf115ab1ad2419038f22c1b3fccc2e7ccecd1385caa9cac0c",
+    "providerSourcesSha256": {
+      "fakellm-main.go": "7703e61e6f0b29c94dc65ad2498fe38b2fc999ac76d6112e1ffa31c61ac5d310",
+      "fakellm.go": "fdd8bb8822f42330e018676ab549d99ee55ce86e193f070500e0ad4e4acee408"
+    }
+  },
+  "fixture": "/tmp/evener-sdk-compaction-9rqir8",
+  "processes": {
+    "priorRun": {
+      "fakeProviderPid": 16059,
+      "hubPid": 17270,
+      "daemonPid": 24264,
+      "fakeProviderPort": 54025,
+      "hubPort": 54269,
+      "daemonPort": 55278
+    },
+    "recipeRun": {
+      "fakeProviderPid": 44995,
+      "hubPid": 46088,
+      "daemonPids": [
+        50117,
+        53012,
+        56013,
+        58743,
+        62341
+      ],
+      "fakeProviderPort": 59309,
+      "hubPort": 59707
+    },
+    "allStopped": true,
+    "allOwnedPortsAbsent": true
+  },
+  "compaction": {
+    "driverExit": 0,
+    "sessionRef": "local:034KzccqZf2GgCxfFTUffi",
+    "turnCompletedBeforeCompact": true,
+    "beforeState": "idle",
+    "beforeTurnCount": 3,
+    "compactRecipeOutcome": "acknowledged",
+    "afterTurnCount": 4,
+    "afterKinds": [
+      "systemMessage",
+      "systemMessage",
+      "userMessage",
+      "systemMessage"
+    ],
+    "providerRequestsObserved": 3,
+    "providerRequestsMeaning": "One structured session-name request (response schema property name), then two tool-capable turn rounds; no compaction summarization request is identified.",
+    "providerWire": "Root decoded exact request bodies: tool counts 0, 26, 26; the zero-tool response schema contains name.",
+    "qualification": "Acknowledgment and projection counts only; completed compaction unverified.",
+    "compactionEffectVerified": false
+  },
+  "recipeCompaction": {
+    "driverExit": 0,
+    "sessionRef": "local:034Kzif1lYCp6Uvb1Smbsn",
+    "beforeTurnCount": 3,
+    "recipeOutcome": "acknowledged",
+    "recipeReadback": "present",
+    "afterTurnCount": 4,
+    "afterKinds": [
+      "systemMessage",
+      "systemMessage",
+      "userMessage",
+      "systemMessage"
+    ],
+    "apiAttempts": [
+      "ollama transport_failure (ambient, unrelated)",
+      "fake success",
+      "fake success",
+      "fake success"
+    ],
+    "qualification": "Acknowledgment and projection counts only; completed compaction unverified.",
+    "requestSummary": {
+      "sha256": "33d41ef633a17cdb463d216b32a9ab39672c7051c99e44284eeb0d109b6c7811"
+    },
+    "compactionEffectVerified": false
+  },
+  "independentReadback": {
+    "performed": true,
+    "method": "thread/read through SDK",
+    "verified": "Recorded projection count only; an added system-message projection is insufficient evidence of completed compaction."
+  },
+  "reproduction": {
+    "driver": [
+      "repro/driver-all-operations.mjs",
+      "repro/recipe-driver-compact.mjs"
+    ],
+    "config": "repro/providers.toml",
+    "provider": [
+      "repro/fakellm-main.go",
+      "repro/fakellm.go"
+    ],
+    "hashes": "repro/SHA256SUMS",
+    "configContainsSecrets": false
+  },
+  "cleanup": {
+    "stoppedPids": [
+      16059,
+      17270,
+      24264
+    ],
+    "portsAbsentAfterStop": [
+      54025,
+      54269
+    ],
+    "daemonPortAbsentAfterStop": true,
+    "authTokenRemoved": true,
+    "credentialFilesRemoved": [
+      "state/evener/auth-token",
+      "prior-run/state/evener/auth-token",
+      "prior-run/run/token"
+    ],
+    "repoModified": false,
+    "originalHubTouched": false
+  },
+  "limitations": [
+    "The supplied hub binary is the pre-bb044658 SDK-only build and is not claimed as latest backend.",
+    "One unrelated ambient ollama transport-failure attempt appears in the session API log before the three successful fake-provider attempts; no real credential was supplied.",
+    "Root audit disproved the prior attribution of the no-tools request to compaction. Completed compaction remains unqualified."
+  ],
+  "rootAudit": {
+    "requestToolCounts": [
+      0,
+      26,
+      26
+    ],
+    "firstRequestResponseSchemaProperties": [
+      "name"
+    ],
+    "transcriptEntryKinds": [
+      "ENVIRONMENT",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "ASSISTANT",
+      "TOOL_RESULTS"
+    ],
+    "recipeTranscriptSha256": "a9f7f5ef9c47aec51610746414bc3660a4e1a6aeff1782e126dae1bbe5c2a490",
+    "shortHistoryGuard": "contextmgr.Manager defaults PreserveRecentTurns to 6; checkpoint and summarization return unchanged at or below that count. The recorded transcript has six entries. A replacement fixture must exceed the preserved tail and prove a new summary/checkpoint.",
+    "requestLog": {
+      "sha256": "5dbcd5c991311b47492cbbf2dac91cb9994191ea1675c716c457c53558dd1737"
+    }
+  }
+}

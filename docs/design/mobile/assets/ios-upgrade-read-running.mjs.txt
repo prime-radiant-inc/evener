@@ -1,0 +1,16 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+const require = createRequire('/tmp/evener-sdk-discovery-tXwGOj/client/package.json');
+const { AppwireClient } = require('@evener/appwire-client');
+const { WebSocket } = require('ws');
+const root = '/tmp/evener-native-upgrade-kdghstx8';
+const runtime = JSON.parse(readFileSync(`${root}/installed-runtime.json`, 'utf8'));
+const token = readFileSync(runtime.token_path, 'utf8').trim();
+const hub = new AppwireClient({url:'ws://127.0.0.1:64665/rpc', clientInfo:{name:'native-upgrade-readback',version:'1'}, socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+try {
+  await hub.connect();
+  const overview = await hub.request('evener/settings/overview', {});
+  const result = {hub: overview.hub};
+  writeFileSync(`${root}/running-readback.json`, JSON.stringify(result,null,2), {flag:'wx',mode:0o600});
+  console.log(JSON.stringify(result));
+} finally {hub.close();}

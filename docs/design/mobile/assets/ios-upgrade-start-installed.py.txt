@@ -1,0 +1,39 @@
+import json
+import os
+import pathlib
+import subprocess
+import urllib.request
+
+root = pathlib.Path('/tmp/evener-native-upgrade-kdghstx8')
+status = json.loads((root / 'status-installed.json').read_text())
+runtime = root / 'installed-runtime'
+runtime.mkdir(mode=0o700)
+for name in ['config/evener', 'state/evener/projects', 'cache', 'data', 'run']:
+    (runtime / name).mkdir(parents=True, mode=0o700)
+token = runtime / 'state/evener/auth-token'
+with token.open('x') as f:
+    os.chmod(token, 0o600)
+    f.write(pathlib.Path(status['owned_paths']['token']).read_text())
+config = runtime / 'config/evener/hub.toml'
+config.write_text('addr = "127.0.0.1:64665"\nplugin_auto_upgrade = false\n')
+env = {
+    'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    'USER': 'jesse', 'LANG': 'en_US.UTF-8',
+    'TMPDIR': str(runtime),
+    'XDG_CONFIG_HOME': str(runtime / 'config'),
+    'XDG_STATE_HOME': str(runtime / 'state'),
+    'XDG_CACHE_HOME': str(runtime / 'cache'),
+    'XDG_DATA_HOME': str(runtime / 'data'),
+    'XDG_RUNTIME_DIR': str(runtime / 'run'),
+    'EVENER_PROVIDERS_CONFIG': '',
+    'EVENER_CREDENTIALS_CONFIG': str(runtime / 'config/evener/credentials.toml'),
+}
+binary = str(pathlib.Path(status['owned_paths']['bin']) / 'evener')
+with urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:64666/close-rpc', method='POST'), timeout=8) as response:
+    assert response.status == 204
+with (runtime / 'hub.log').open('xb') as log:
+    os.chmod(runtime / 'hub.log', 0o600)
+    process = subprocess.Popen([binary, 'hub', '--config', str(config), '--evener', binary], cwd=runtime, env=env, stdout=log, stderr=log, start_new_session=True)
+record = {'pid': process.pid, 'binary': binary, 'config': str(config), 'environment': env, 'token_path': str(token)}
+(root / 'installed-runtime.json').write_text(json.dumps(record, indent=2))
+print(json.dumps({'installed_hub_pid': process.pid, 'port': 64665}))
