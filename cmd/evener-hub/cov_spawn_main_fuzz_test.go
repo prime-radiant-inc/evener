@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -25,8 +26,7 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 		data string
 	}{
 		{0, ""}, {0, "addr = 'localhost:1'\nplugin_auto_upgrade_interval = '1s'\n"},
-		{0, "["}, {1, "xdg"}, {1, "windows-profile"}, {1, "windows-drive"},
-		{1, "windows-temp"}, {1, "home"}, {1, "temp"}, {2, "body"},
+		{0, "["}, {1, "xdg"}, {1, "home"}, {1, "temp"}, {2, "body"},
 		{2, strings.Repeat("x", httpRecorderMaxBodyBytes+1)}, {3, "dev"}, {3, "embed"},
 		{4, "args"}, {4, "empty"}, {5, "tail"}, {5, "token"},
 	} {
@@ -65,25 +65,14 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			}
 		case 1:
 			env := map[string]string{}
-			goos := "linux"
-			switch data {
-			case "xdg":
-				env["XDG_STATE_HOME"] = " /state "
-			case "windows-profile":
-				goos, env["USERPROFILE"] = "windows", " C:\\Users\\u "
-			case "windows-drive":
-				goos, env["HOMEDRIVE"], env["HOMEPATH"] = "windows", "C:", "\\Users\\u"
-			case "windows-temp":
-				goos = "windows"
-			case "home":
-				env["HOME"] = " /home/u "
+			want := cmdutil.DefaultStateRoot()
+			if data == "xdg" {
+				env[envvars.XDGStateHome.Name] = " /state "
+				want = filepath.Join("/state", "evener")
 			}
-			got := openAIStateDirFromLookup(goos, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
-			if got == "" {
-				t.Fatal("empty state dir")
+			if got := openAIStateDirFromEnvMap(env); got != want {
+				t.Fatalf("openAIStateDirFromEnvMap(%v) = %q, want %q", env, got, want)
 			}
-			_ = openAIStateDirFromEnvMap(env)
-			_ = openAIStateDirFromEnvList([]string{"HOME=/home/u", "HOME=/last"})
 		case 2:
 			root := t.TempDir()
 			t.Setenv(envvars.EVENERRecordHTTP.Name, "1")

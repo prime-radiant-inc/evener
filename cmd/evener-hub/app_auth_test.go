@@ -17,6 +17,8 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -212,59 +214,41 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 	}
 }
 
-func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME":        `C:\msys\home\jesse`,
-			"USERPROFILE": `C:\Users\Jesse`,
-		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
-	if got != want {
+// TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome pins the one thing the hub
+// auth controller still resolves for itself: XDG_STATE_HOME out of the launch
+// env it is handed, which is not the process env cmdutil.DefaultStateRoot reads.
+func TestOpenAIStateDirFromEnvUsesLaunchEnvStateHome(t *testing.T) {
+	t.Setenv(envvars.XDGStateHome.Name, t.TempDir())
+	launchStateHome := t.TempDir()
+
+	got := openAIStateDirFromEnv(map[string]string{envvars.XDGStateHome.Name: launchStateHome})
+	if want := filepath.Join(launchStateHome, "evener"); got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
 }
 
-func TestOpenAIStateDirFromEnvUsesWindowsHomeDrivePath(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME":      `C:\msys\home\jesse`,
-			"HOMEDRIVE": `D:`,
-			"HOMEPATH":  `\Users\Jesse`,
-		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "evener") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
-	if got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
-	}
-}
-
-func TestOpenAIStateDirFromEnvWindowsIgnoresHomeFallback(t *testing.T) {
-	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
-		env := map[string]string{
-			"HOME": `C:\msys\home\jesse`,
-		}
-		value, ok := env[key]
-		return value, ok
-	})
-	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
-	if got != want {
-		t.Fatalf("stateDir=%q, want %q", got, want)
-	}
-}
-
-func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
-	processStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", processStateHome)
+// TestOpenAIStateDirFromEnvFallsBackToDefaultStateRoot pins the fallback on
+// cmdutil.DefaultStateRoot rather than on a second resolution of evener's state
+// root. The two used to disagree on Windows, where this one read
+// USERPROFILE/HOMEDRIVE+HOMEPATH out of the supplied env instead of letting
+// os.UserHomeDir find the home directory, and with no home resolvable at all,
+// where it landed in os.TempDir() instead of "." (#1012).
+func TestOpenAIStateDirFromEnvFallsBackToDefaultStateRoot(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 
 	got := openAIStateDirFromEnv(map[string]string{})
-	want := filepath.Join(os.TempDir(), ".local", "state", "evener")
-	if got != want {
+	if want := filepath.Join(stateHome, "evener"); got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+	if want := cmdutil.DefaultStateRoot(); got != want {
+		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
+	}
+
+	// And the home arm below XDG_STATE_HOME, the one that diverged.
+	t.Setenv(envvars.XDGStateHome.Name, "")
+	if got, want := openAIStateDirFromEnv(map[string]string{}), cmdutil.DefaultStateRoot(); got != want {
+		t.Fatalf("stateDir=%q, want cmdutil.DefaultStateRoot() %q", got, want)
 	}
 }
 
