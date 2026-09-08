@@ -241,8 +241,17 @@ func TestE2E_IdleShutdownClosedReachesASeparateHubSubscriber(t *testing.T) {
 		t.Fatalf("waiting for queued model request: %v", err)
 	}
 	queuedRound.RespondToolCall("communicate", communicateArgs("queued turn done"))
-	awaitThread(ctx, t, actor, ref, "opening turn to finish", func(thread appwire.Thread) bool {
-		return thread.Evener.ActiveTurnID == ""
+	awaitThread(ctx, t, actor, ref, "both turns to complete and thread to become awaiting", func(thread appwire.Thread) bool {
+		if thread.Status.Type != appwire.ThreadStatusAwaiting || thread.Evener.ActiveTurnID != "" {
+			return false
+		}
+		completed := 0
+		for _, turn := range thread.Turns {
+			if turn.Status == appwire.TurnStatusCompleted {
+				completed++
+			}
+		}
+		return completed >= 2
 	})
 	if _, err := clientRequest[appwire.EmptyResponse](ctx, actor, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatalf("thread/shutdown: %v", err)

@@ -908,18 +908,25 @@ func TestRunServeShutdownSubprocessHelper(t *testing.T) {
 	enteredPath := os.Getenv("EVENER_SERVE_SUBPROCESS_ENTERED")
 	cancelledPath := os.Getenv("EVENER_SERVE_SUBPROCESS_CANCELLED")
 	releasePath := os.Getenv("EVENER_SERVE_SUBPROCESS_RELEASE")
-	oldLoadClient := serveLoadClient
 	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
 		client.Register(&subprocessShutdownAdapter{enteredPath: enteredPath, cancelledPath: cancelledPath, releasePath: releasePath})
 		return client, nil
 	}
-	defer func() { serveLoadClient = oldLoadClient }()
 	done := make(chan error, 1)
+	fixtureRoot := filepath.Dir(runDir)
+	workDir := filepath.Join(fixtureRoot, "workspace")
+	stateDir := filepath.Join(fixtureRoot, "state")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	go func() {
 		done <- runServe([]string{
 			"--model", "openai/gpt-5.2", "--addr", "127.0.0.1:0",
-			"--dir", t.TempDir(), "--state-dir", t.TempDir(), "--run-dir", runDir,
+			"--dir", workDir, "--state-dir", stateDir, "--run-dir", runDir,
 		})
 	}()
 	entry := waitForServeTestRendezvous(t, runDir)
@@ -1021,18 +1028,31 @@ func runSubprocessShutdownCase(t *testing.T, idle bool) {
 			}
 		}
 	}()
-	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{ClientMutationID: "subprocess-shutdown", ExpectedInstanceID: entry.SessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "hold"}}}); err != nil {
+	started, err := client.TurnStart(ctx, appwire.TurnStartParams{ClientMutationID: "subprocess-shutdown", ExpectedInstanceID: entry.SessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "hold"}}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	waitFile(enteredPath)
 	if idle {
 		deadline := time.Now().Add(10 * time.Second)
+		completed := false
 		for time.Now().Before(deadline) {
 			read, readErr := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, Subscribe: false})
-			if readErr == nil && read.Thread.Status.Type != appwire.ThreadStatusActive {
-				break
+			if readErr == nil && read.Thread.Status.Type == appwire.ThreadStatusAwaiting {
+				for _, turn := range read.Thread.Turns {
+					if turn.ID == started.Turn.ID && turn.Status == appwire.TurnStatusCompleted {
+						completed = true
+						break
+					}
+				}
+				if completed {
+					break
+				}
 			}
 			time.Sleep(10 * time.Millisecond)
+		}
+		if !completed {
+			t.Fatal("idle shutdown test never observed the started turn completed with awaiting thread status")
 		}
 	}
 	if err := client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
