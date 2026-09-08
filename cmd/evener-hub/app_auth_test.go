@@ -333,6 +333,62 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	}
 }
 
+// TestAuth_LoginComplete_WritesUnderTheConfiguredStateRoot pins the hub state
+// root the controller is handed (WebConfig.HubStateRoot, "root of hub-level
+// machine state") as the root its OAuth records land in. A fixture with a
+// private root must not read or write the shared auth/*.json under the
+// ambient XDG_STATE_HOME, or parallel fixtures overwrite each other.
+func TestAuth_LoginComplete_WritesUnderTheConfiguredStateRoot(t *testing.T) {
+	envStateDir := oaitest.IsolateOpenAIAuth(t)
+	configuredRoot := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(configuredRoot, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	c := newHubAuthControllerWithStore(configuredRoot, store)
+	attachTestRegistry(t, c)
+	c.cfg = authopenai.Config{IssuerBaseURL: "https://auth.example.test"}
+	c.client = &http.Client{}
+	c.exchangeCode = func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			IDToken:      hubAuthTestJWT(t, map[string]any{"email": "oauth@example.com"}),
+			TokenType:    "Bearer",
+			Scope:        "openid profile email",
+			Expiry:       time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	start, err := c.LoginStart(appwire.AuthLoginStartParams{Provider: "openai-codex"})
+	if err != nil {
+		t.Fatalf("LoginStart: %v", err)
+	}
+	authorizeURL, err := url.Parse(start.URL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	state := authorizeURL.Query().Get("state")
+	if _, err := c.LoginComplete(context.Background(), appwire.AuthLoginCompleteParams{
+		Provider:    "openai-codex",
+		FlowID:      start.FlowID,
+		RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
+	}); err != nil {
+		t.Fatalf("LoginComplete: %v", err)
+	}
+
+	record, err := authopenai.LoadAuth(configuredRoot, "openai-codex")
+	if err != nil {
+		t.Fatalf("LoadAuth(%s): %v; the record must land under the configured hub state root", configuredRoot, err)
+	}
+	if record.AccessToken != "access-token" {
+		t.Fatalf("record=%+v, want the saved access token", record)
+	}
+	if _, err := authopenai.LoadAuth(envStateDir, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(%s) err=%v, want ErrAuthNotFound: nothing may land under the env state root", envStateDir, err)
+	}
+}
+
 func hubAuthTestJWT(t *testing.T, payload map[string]any) string {
 	t.Helper()
 	headerBytes, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})

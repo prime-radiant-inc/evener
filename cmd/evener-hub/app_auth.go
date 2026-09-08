@@ -120,14 +120,18 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	return c
 }
 
-// newHubAuthControllerWithStore creates a controller backed by an explicit credentials store.
-// The OpenAI OAuth state directory is resolved from the process environment (XDG_STATE_HOME / HOME),
-// matching the behaviour of the default constructor but without launch-env overrides.
-func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthController {
-	authEnv := effectiveHubAuthEnv(nil)
+// newHubAuthControllerWithStore creates a controller backed by an explicit credentials store,
+// storing its OpenAI OAuth records under stateRoot — the hub-level machine state root
+// (WebConfig.HubStateRoot), which is what holds auth/<instance>.json. An empty stateRoot
+// resolves the directory from the process environment (XDG_STATE_HOME / HOME), matching the
+// default constructor but without launch-env overrides.
+func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *hubAuthController {
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
-	stateDir := openAIStateDirFromEnv(authEnv)
+	stateDir := strings.TrimSpace(stateRoot)
+	if stateDir == "" {
+		stateDir = openAIStateDirFromEnv(effectiveHubAuthEnv(nil))
+	}
 	// A nil store should never happen in production (main.go always supplies
 	// one). Fall back to the on-disk default store — the same path
 	// newHubAuthController uses — rather than a path-less store whose writes
