@@ -13,25 +13,19 @@ hashes for the raw event stream, queue acknowledgment/readback, final read,
 and provider evidence. The packaged SDK comparison covered all 139 tarball
 regular files byte-for-byte against the installed consumer.
 
-The separate fresh fixture `/tmp/evener-sdk-producers-final-SqGtdW` tested
-`thread/closed` with the observer subscribed through a bounded 30-second wait
-after an empty `thread/shutdown` acknowledgment. No matching event arrived,
-so that producer remains unqualified. Its retained pre-shutdown records are
-listed in the receipt. This is an evidence gap; it does not establish that the
-producer is unsupported or identify a backend defect. No `thread/closed` count
-has been added.
+The current-source run `/tmp/evener-sdk-idle-close-current-OwRkNp` is the
+first verified `thread/closed` qualification. It used a completed setup turn
+and canonical `awaiting` state before the observer subscribed; the actor then
+used `subscribe:false` reads while the observer received notifications. Both
+active and queued turns completed before shutdown, and the exact target
+`thread/closed` arrived once among 28 raw events.
 
-Before the current-source rerun, the backend fix at `4f3e824ac` was rebuilt and exercised in a second fresh
-real-process fixture, `/tmp/evener-sdk-close-run-YFL38i`. The same actor and
-observer remained subscribed while an active scripted-provider turn was held;
-`thread/queueChanged`, the queued readback, release, and both turn completions
-were observed. After `thread/shutdown` returned its empty acknowledgment, the
-observer waited 30 seconds for the exact target ref and thread ID. No matching
-`thread/closed` arrived before the daemon exited. Every notification was
-written immediately to mode-0600 JSONL and retained in the final event file,
-so that pre-fix-binary run remains a concrete failed qualification rather than
-a teardown-only observation. The fixture and process cleanup hashes are
-recorded in the receipt.
+Earlier retained attempts remain historical limitations. The fixture
+`/tmp/evener-sdk-producers-final-SqGtdW` did not observe a matching event. The
+later `/tmp/evener-sdk-close-run-YFL38i` also failed, but its `go version -m`
+metadata identifies pre-fix source `d2d5eedf9`, despite its intended use for the
+`4f3e824ac` fix. Those records are preserved in the receipt and do not support
+an SDK or backend defect claim.
 
 The earlier close failure was traced to binary provenance rather than an SDK
 lifecycle defect. Its `go version -m` metadata identified source revision
