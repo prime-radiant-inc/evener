@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -174,5 +175,199 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 	}
 	if len(cfg.pending) != runtimeBefore {
 		t.Fatalf("failed batch changed runtime pending %d -> %d, want unchanged", runtimeBefore, len(cfg.pending))
+	}
+}
+
+// TestPersistPendingWatchSendEvictsBeforeStableVerification pins the
+// eviction/runtime ordering fixed for roborev on head 68a473c: the
+// cap-overflow eviction events land in the same batch as the pending event,
+// so the evicted keys must leave the runtime map BEFORE the fallible
+// CompleteWatchEnqueue/refold verification — not after it. A verification
+// failure still returns persisted=true with the batch already durable, and
+// the journal and the runtime map must agree on that path too.
+//
+// The fault injection fails CompleteWatchEnqueue deterministically: the
+// overflow send begins a real stable enqueue, then the test steals the live
+// enqueue receipt out of the controller (the stop-capture path in
+// TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses proves
+// receipts stay completable once admitted) so completion reports a stale
+// lease. The batch (pending + eviction) is already durable at that point,
+// and the return carries persisted=true + the completion failure. The
+// evicted key must already be gone from the runtime map.
+func TestPersistPendingWatchSendEvictsBeforeStableVerification(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	jm := fixture.sourceJM
+	cfg := fixture.onlyWatchConfig(t)
+
+	build := func(target string) watchSendDelivery {
+		jm.mu.Lock()
+		defer jm.mu.Unlock()
+		return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+	}
+
+	// Fill the pending map to the cap through the durable path. Distinct
+	// watched identities build distinct pending keys (ResolvedWatchedIdentity
+	// is part of the key), so the map actually grows to the cap instead of
+	// coalescing onto one entry.
+	for i := range defaultWatchSendPendingCap {
+		if _, _, ok, err := jm.recordWatchSend(build(fmt.Sprintf("target_%d", i))); err != nil || !ok {
+			t.Fatalf("fill send %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	if len(cfg.pending) != defaultWatchSendPendingCap {
+		t.Fatalf("pending entries = %d, want %d", len(cfg.pending), defaultWatchSendPendingCap)
+	}
+	oldestKey := cfg.pendingOrder[0]
+
+	// Gate the overflow send's completion: once its batch has landed (seen
+	// via the batch seam), steal the live enqueue receipt so
+	// CompleteWatchEnqueue reports a stale lease. Every boundary hook fires
+	// in order (enqueue admission, then completion), so the completion gate
+	// waits for the batch to land first.
+	origBoundary := jm.watchReceiptBoundary
+	var boundaries int
+	batchLanded := make(chan struct{})
+	releaseCompletion := make(chan struct{})
+	jm.watchReceiptBoundary = func() {
+		boundaries++
+		if origBoundary != nil {
+			origBoundary()
+		}
+		// The completion boundary is the second hook call (admission is the
+		// first). Wait until the batch is durable, then steal the live
+		// enqueue receipt so CompleteWatchEnqueue reports a stale lease.
+		if boundaries == 2 {
+			<-batchLanded
+			fixture.controller.mu.Lock()
+			for token := range fixture.controller.watchEnqueues {
+				delete(fixture.controller.watchEnqueues, token)
+			}
+			fixture.controller.mu.Unlock()
+			<-releaseCompletion
+		}
+	}
+	origBatch := jm.appendEvents
+	jm.appendEvents = func(evts []jobstore.Event) error {
+		err := origBatch(evts)
+		// The overflow group is the only multi-event append in this test:
+		// one pending event plus one cap-overflow eviction event.
+		if err == nil && len(evts) == 2 {
+			close(batchLanded)
+		}
+		return err
+	}
+	type overflowResult struct {
+		state   jobstore.WatchSendState
+		persist bool
+		err     error
+	}
+	done := make(chan overflowResult, 1)
+	go func() {
+		state, _, ok, err := jm.recordWatchSend(build("target_overflow"))
+		done <- overflowResult{state: state, persist: ok, err: err}
+	}()
+	// Wait for the batch to land, then release the gated completion.
+	<-batchLanded
+	close(releaseCompletion)
+	res := <-done
+	jm.appendEvents = origBatch
+	jm.watchReceiptBoundary = origBoundary
+	if res.err == nil || !res.persist {
+		t.Fatalf("overflow with failed verification: ok=%v err=%v, want persisted=true + the completion failure", res.persist, res.err)
+	}
+
+	// The batch is durable (pending + eviction landed)...
+	folded := loadWatchSendRecord(t, jm).Pending
+	if folded[res.state.Key] == nil {
+		t.Fatal("overflow send missing from durable pending fold")
+	}
+	if folded[oldestKey] != nil {
+		t.Fatal("evicted oldest key still in durable pending fold")
+	}
+	// ...and the runtime map agrees: the evicted key is gone even though the
+	// verification failed.
+	jm.mu.Lock()
+	_, evictedStillHeld := cfg.pending[oldestKey]
+	_, newcomerHeld := cfg.pending[res.state.Key]
+	jm.mu.Unlock()
+	if evictedStillHeld {
+		t.Fatal("evicted oldest key still in runtime pending map after failed verification")
+	}
+	if !newcomerHeld {
+		t.Fatal("overflow send missing from runtime pending map after failed verification")
+	}
+}
+
+// TestPersistPendingWatchSendWithoutBatchSeamCommitsDurablePrefix pins the
+// fallback fixed for roborev on head 68a473c: without the AppendBatch seam
+// (jm.appendEvents == nil) a co-generated pending + eviction group has no
+// atomic write, so persistPendingWatchSend keeps the pre-batch sequential
+// protocol — pending write then commit, per-eviction applied-prefix commit.
+// When the eviction write fails after the pending event is already durable,
+// the return carries persisted=true (not a ghost ok=false that never commits
+// the durable prefix): the newcomer is in both the journal and the runtime
+// map, and the evicted key — whose terminal event never landed — stays put.
+func TestPersistPendingWatchSendWithoutBatchSeamCommitsDurablePrefix(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: "caller",
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	build := func(target string) watchSendDelivery {
+		jm.mu.Lock()
+		defer jm.mu.Unlock()
+		return jm.watchSendSnapshot(cfg, target, "test", events.SessionEvent{SessionID: jm.sessionID})
+	}
+
+	// Fill the pending map to the cap through the durable path.
+	for i := range defaultWatchSendPendingCap {
+		if _, _, ok, err := jm.recordWatchSend(build(fmt.Sprintf("target_%d", i))); err != nil || !ok {
+			t.Fatalf("fill send %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	if len(cfg.pending) != defaultWatchSendPendingCap {
+		t.Fatalf("pending entries = %d, want %d", len(cfg.pending), defaultWatchSendPendingCap)
+	}
+	oldestKey := cfg.pendingOrder[0]
+
+	// Drop to the singular seam (the registry fallback test
+	// TestS1Cov_configureWatch_RegisterAppendFailure uses the same shape so
+	// failAppendN can inject the failure), then fail the eviction terminal
+	// write: the pending event lands, the eviction does not.
+	jm.appendEvents = nil
+	failAppendN(jm, jobstore.EventWatchSendEvicted, 1)
+	before := len(loadJobStoreEvents(t, jm))
+
+	state, _, ok, err := jm.recordWatchSend(build("target_overflow"))
+	if err == nil || !ok {
+		t.Fatalf("overflow with failed eviction write: ok=%v err=%v, want persisted=true + the eviction failure", ok, err)
+	}
+
+	// The pending event is durable and committed to the runtime map...
+	folded := loadWatchSendRecord(t, jm).Pending
+	if folded[state.Key] == nil {
+		t.Fatal("overflow send missing from durable pending fold after failed eviction write")
+	}
+	if got := len(loadJobStoreEvents(t, jm)); got != before+1 {
+		t.Fatalf("journal events after failed eviction write = %d, want %d (pending only, no eviction terminal)", got, before+1)
+	}
+	jm.mu.Lock()
+	_, newcomerHeld := cfg.pending[state.Key]
+	_, evictedHeld := cfg.pending[oldestKey]
+	jm.mu.Unlock()
+	if !newcomerHeld {
+		t.Fatal("overflow send missing from runtime pending map after failed eviction write")
+	}
+	// ...and the evicted key — whose terminal event never landed — is still
+	// held in both, so the journal and the runtime map agree.
+	if folded[oldestKey] == nil {
+		t.Fatal("evicted oldest key missing from durable pending fold although its eviction never landed")
+	}
+	if !evictedHeld {
+		t.Fatal("evicted oldest key missing from runtime pending map although its eviction never landed")
 	}
 }
