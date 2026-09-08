@@ -46,8 +46,8 @@ The retained detail below includes paused iPad/accessibility gaps. Only the func
 
 - The source audit finds the listed goal/task/activity, plugin/marketplace and hub-setting operations wired. Their remaining work is current-artifact workflow qualification, including nested delegate/output paging, marketplace lifecycle and two-hub settings conflicts. Native output line selection is implemented; its on-device behavior still needs verification. Recheck any newly discovered advertised-operation gap against current generated contracts.
 - The SDK cookbook has 90 of 91 catalog methods. Method 91 is the reserved, intentionally unsupported method; it is not an omitted supported feature. The cookbook count is recipe presence, not complete method outcome acceptance, and local package publication is separate.
-- SDK notification producer coverage is tracked separately: the audited receipt union covers 28 of 36 distinct notification names, including settings, credentials, navigation, queue change, current-source terminal close and launch-layer updates. The remaining eight names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
-- No whole-SDK readiness conclusion follows from the 90/91 recipe and 28/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
+- SDK notification producer coverage is tracked separately: the audited receipt union covers 32 of 36 distinct notification names, including settings, credentials, navigation, queue change, current-source terminal close, launch-layer updates, marketplace/plugin changes and sandbox decisions. The remaining four names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
+- No whole-SDK readiness conclusion follows from the 90/91 recipe and 32/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
 
 ## Paused work and later release qualification
 
@@ -55,6 +55,7 @@ The retained detail below includes paused iPad/accessibility gaps. Only the func
 - **Later release qualification:** iPhone appearance, landscape and hardware keyboard behavior beyond the ordinary keyboard/navigation checks needed for usable workflows.
 - Representative large transcripts and live streaming/image reflow with measured scroll/input latency and memory/leak observations.
 - Physical iPhone networking and pairing, including signed install, update/relaunch and credential/keychain behavior. Simulator screenshots do not close these gates.
+- Development build/signature preparation now passes; physical install and TestFlight remain open. Follow the [organization build/distribution path](ios-build-distribution.md), including iPhone-only release configuration and a verified second-build update.
 - Final current-head iPhone Release artifact identity, installation receipts, cold-launch/restart evidence and preservation checks for unrelated Apple files.
 
 ## Exit record

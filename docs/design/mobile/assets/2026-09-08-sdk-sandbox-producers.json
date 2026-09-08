@@ -1,0 +1,163 @@
+{
+  "schema": "evener.sdk.sandbox.producer.v1",
+  "status": "scoped-passed",
+  "claims": [
+    "evener/sandbox/escalation/requested",
+    "evener/sandbox/escalation/resolved"
+  ],
+  "scope": "independent installed SDK against a private v4 hub and scripted external provider; no native UI or device claim",
+  "sourceHead": "5307e8515104be9a038b7ab6689137d6131af7a3",
+  "backendSourceRevision": "3284d6ac5",
+  "backendBinary": {
+    "path": "/tmp/evener-sdk-sandbox-producers.puP74C/bin/evener",
+    "sha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46"
+  },
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+  },
+  "fixture": {
+    "root": "/private/tmp/evener-sdk-sandbox-producers.puP74C",
+    "hubPort": 60975,
+    "providerPort": 60974,
+    "externalProvider": "loopback scripted OpenAI-compatible; no credential",
+    "target": "new private outside-workspace file per case"
+  },
+  "cases": [
+    {
+      "approve": true,
+      "ref": "local:034LRFkbeDWBaEIpvuRJUg",
+      "threadId": "034LRFkbeDWBaEIpvuRJUg",
+      "escalationId": "esc_1_b04810606ff2529e8735dd5c",
+      "mutationId": "1bd2ae14-1a4a-4ac0-aa71-1dcba2357b61",
+      "requested": {
+        "method": "evener/sandbox/escalation/requested",
+        "threadId": "034LRFkbeDWBaEIpvuRJUg",
+        "ref": "local:034LRFkbeDWBaEIpvuRJUg",
+        "tool": "write_file",
+        "mode": "restricted",
+        "kind": "file_tool",
+        "deniedPath": "/private/tmp/evener-sdk-sandbox-producers.puP74C/outside-effect-allow.txt"
+      },
+      "resolve": {
+        "method": "evener/sandbox/escalation/resolve",
+        "params": {
+          "ref": "local:034LRFkbeDWBaEIpvuRJUg",
+          "escalationId": "esc_1_b04810606ff2529e8735dd5c",
+          "approve": true
+        },
+        "acknowledged": true
+      },
+      "resolved": {
+        "method": "evener/sandbox/escalation/resolved",
+        "threadId": "034LRFkbeDWBaEIpvuRJUg",
+        "ref": "local:034LRFkbeDWBaEIpvuRJUg",
+        "escalationId": "esc_1_b04810606ff2529e8735dd5c"
+      },
+      "effectExists": true,
+      "sentinelSeen": true,
+      "failed": false,
+      "pendingCount": 0,
+      "authoritativeState": "resolved",
+      "finalTurnStatuses": [
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "preexistingTargetAbsent": "not established; the same private root had an earlier Allow run before this final driver run",
+      "transcriptToolResult": {
+        "tool": "write_file",
+        "is_error": false,
+        "content": "wrote 23 bytes (content withheld)"
+      },
+      "failureEvidence": "persisted transcript tool result and independent target-file content",
+      "resolveClientInvocationCount": 1,
+      "dispatchCountScope": "One request() invocation in retained driver; wire dispatch count was not instrumented."
+    },
+    {
+      "approve": false,
+      "ref": "local:034LRFrlZOLxYGUprtLVcf",
+      "threadId": "034LRFrlZOLxYGUprtLVcf",
+      "escalationId": "esc_1_c4f9b2de912c83c14dadf03e",
+      "mutationId": "5edc558e-5f9c-4891-8c3b-049db1f20bda",
+      "requested": {
+        "method": "evener/sandbox/escalation/requested",
+        "threadId": "034LRFrlZOLxYGUprtLVcf",
+        "ref": "local:034LRFrlZOLxYGUprtLVcf",
+        "tool": "write_file",
+        "mode": "restricted",
+        "kind": "file_tool",
+        "deniedPath": "/private/tmp/evener-sdk-sandbox-producers.puP74C/outside-effect-deny.txt"
+      },
+      "resolve": {
+        "method": "evener/sandbox/escalation/resolve",
+        "params": {
+          "ref": "local:034LRFrlZOLxYGUprtLVcf",
+          "escalationId": "esc_1_c4f9b2de912c83c14dadf03e",
+          "approve": false
+        },
+        "acknowledged": true
+      },
+      "resolved": {
+        "method": "evener/sandbox/escalation/resolved",
+        "threadId": "034LRFrlZOLxYGUprtLVcf",
+        "ref": "local:034LRFrlZOLxYGUprtLVcf",
+        "escalationId": "esc_1_c4f9b2de912c83c14dadf03e"
+      },
+      "effectExists": false,
+      "sentinelSeen": false,
+      "failed": true,
+      "pendingCount": 0,
+      "authoritativeState": "resolved",
+      "finalTurnStatuses": [
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "preexistingTargetAbsent": true,
+      "transcriptToolResult": {
+        "tool": "write_file",
+        "is_error": true,
+        "content": "sandbox denial (path and content withheld)"
+      },
+      "failureEvidence": "persisted transcript tool result and independent target-file absence",
+      "resolveClientInvocationCount": 1,
+      "dispatchCountScope": "One request() invocation in retained driver; wire dispatch count was not instrumented."
+    }
+  ],
+  "excluded": [
+    "thread/started",
+    "turn/started",
+    "native UI/device acceptance",
+    "whole-SDK coverage",
+    "failed real provider"
+  ],
+  "rawEvidence": {
+    "driverLog": "/private/tmp/evener-sdk-sandbox-producers.puP74C/driver3.log",
+    "privateReceipt": "/private/tmp/evener-sdk-sandbox-producers.puP74C/receipt-private.json",
+    "hubLog": "/private/tmp/evener-sdk-sandbox-producers.puP74C/hub.log",
+    "allowTranscript": "/private/tmp/evener-sdk-sandbox-producers.puP74C/state/evener/projects/private-tmp-evener-sdk-sandbox-producers-puP74C-workspace-qIbFUZHvpV/sessions/034LRFkbeDWBaEIpvuRJUg.transcript.jsonl",
+    "denyTranscript": "/private/tmp/evener-sdk-sandbox-producers.puP74C/state/evener/projects/private-tmp-evener-sdk-sandbox-producers-puP74C-workspace-qIbFUZHvpV/sessions/034LRFrlZOLxYGUprtLVcf.transcript.jsonl"
+  },
+  "evidenceLimits": [
+    "Allow target absence immediately before the final accepted case was not established because an earlier attempt in this same private root had already created it.",
+    "Deny failure is verified by the persisted transcript write_file result with is_error=true; the driver receipt also records target-file absence."
+  ],
+  "rawEvidenceHashesSHA256": {
+    "fixture.py": "aaf82a61f33bf06611b05643ade49ab53cd94de97ae359c84e4f1bcbe7c65ec7",
+    "driver.mjs": "eee6a7fe6ae43fc12f042b3fe97f392c6d2a6a30ec9e0e841e738e90cd5dee4a",
+    "driver3.log": "d4bb42e8f7a23f52c6553b5fcbfb11680479e1b97901c65c90ac79c75d1c2245",
+    "hub.log": "6e061db01a361f6133ad7b1a793d88b12cb33e9fa08ccc4c1c577e0748454c61",
+    "receipt-private.json": "519fc18238e764264baf7e413561fc93e8a27d74c4beebbc6ff63a20fc0e8e69"
+  },
+  "coordinatorReview": {
+    "exactThreadAndEscalationIdentityVerified": true,
+    "persistedToolResultsVerified": true,
+    "finalCapturedTurnStatusesVerified": true,
+    "allowContentVerified": true,
+    "denyTargetAbsent": true,
+    "freshAllowCreationProven": false,
+    "cleanup": "Coordinator scanned all seven owned sandbox fixture roots and both plugin producer roots; no matching executables or auth-token files remained."
+  }
+}

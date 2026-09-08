@@ -49,6 +49,8 @@ The audit found the advertised goal/task/activity, plugin and settings operation
 
 ## Current artifact and device evidence
 
+The [signed physical-iPhone development build](assets/2026-09-08-iphone-device-build.json) now passes compilation and signature verification at source `5307e8515`. Physical install remains blocked by the locked paired phone. The [build and TestFlight path](ios-build-distribution.md) records reuse of the existing organization runner/credential conventions and the remaining distribution gates.
+
 | Artifact | Identity and scope |
 | --- | --- |
 | iPhone Release simulator app | Source `bc519b1c1`; installed and launched on iPhone 17 Pro, iOS 26.5; vision UI acceptance pending |
@@ -66,7 +68,7 @@ The prior reader campaign restored the original iPhone conversation and normal t
 
 The SDK has an independently installable package with ESM/CommonJS entry points and declaration checking. The cookbook covers 90 of 91 cataloged methods; the remaining method is reserved and intentionally unsupported. All 36 notification names have recipes. These are documentation-presence counts, separate from executed producer/outcome coverage.
 
-The audited receipt union establishes scoped producer/readback evidence for **28 of 36 notification names**. It combines the dedicated notification series with separately recorded settings, credential, navigation and launch-layer runs, counting each name once. Queue change, terminal close and the new launch-layer update have coordinator-verified scoped outcomes. The eight names outside this union need consolidated producer evidence or fresh qualification; `thread/started` remains excluded because a start response is not its notification. No all-outcome or single-artifact claim follows from the count. Complete method success/failure/disconnect coverage, remaining producer names, continuous reconnect/replay and broad lifecycle outcomes remain open. Package publication is separate from successful local build/pack/install tests. See [protocol inventory](protocol-coverage.md), [notification evidence](sdk-notifications-evidence.md) and [management evidence](sdk-management-evidence.md).
+The audited receipt union establishes scoped producer/readback evidence for **32 of 36 notification names**. It combines the dedicated notification series with separately recorded settings, credential, navigation, launch-layer, marketplace/plugin and sandbox runs, counting each name once. Queue change, terminal close, launch-layer updates and the subsequent marketplace/plugin and sandbox producers have coordinator-verified scoped outcomes. The four names outside this union need consolidated producer evidence or fresh qualification; `thread/started` remains excluded because a start response is not its notification. No all-outcome or single-artifact claim follows from the count. Complete method success/failure/disconnect coverage, remaining producer names, continuous reconnect/replay and broad lifecycle outcomes remain open. Package publication is separate from successful local build/pack/install tests. See [protocol inventory](protocol-coverage.md), [notification evidence](sdk-notifications-evidence.md) and [management evidence](sdk-management-evidence.md). The [method outcome index](sdk-outcome-matrix.md) enumerates all 91 names with partially reviewed outcome cells; it is not a completed qualification matrix.
 
 ## Verification record
 
