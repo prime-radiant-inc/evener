@@ -149,27 +149,147 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 	return errors.Join(appendErr, completionErr)
 }
 
-func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegateLease) context.CancelFunc {
+// delegateQuietWatchEntry is one lease registered on the shared quiet-watchdog
+// hub: the lease to tick plus a per-lease stop channel. Closing stop detaches
+// the lease from the fan-out so a later tick never touches a stopped lease
+// (no use-after-stop).
+type delegateQuietWatchEntry struct {
+	owner *Session
+	lease delegateLease
+	stop  chan struct{}
+}
+
+// delegateQuietWatchHub multiplexes one ticker across every live
+// delegate-quiet watchdog registered on one Session. Previously each lease
+// armed its own NewTicker(delegateQuietCheckInterval) plus its own goroutine;
+// with K live leases that was K tickers and K goroutines all firing on the
+// same cadence. The hub keeps a single clock.Ticker (one goroutine, one clock
+// waiter per Session) and fans each tick out to the currently registered
+// leases.
+//
+// The hub is keyed to the session's injected clock (s.sclock()): the hub is
+// created lazily under delegateQuietWatchMu, so every lease on the same
+// session — and therefore the same s.clock — shares one ticker and stays on
+// the fake clock in tests.
+type delegateQuietWatchHub struct {
+	owner  *Session
+	ticker interface {
+		C() <-chan time.Time
+		Stop()
+	}
+	done    chan struct{}
+	close   sync.Once
+	entries map[delegateQuietWatchEntry]struct{}
+}
+
+// delegateQuietWatchHubs is the process-wide registry mapping each *Session to
+// its live hub. It lives in this file (rather than on Session) so the change
+// stays within agent/delegate_runtime.go; entries are removed when the hub's
+// last lease detaches, and Session pointers are map keys only (never
+// dereferenced after removal).
+var delegateQuietWatchHubs = struct {
+	sync.Mutex
+	hubs map[*Session]*delegateQuietWatchHub
+}{
+	hubs: make(map[*Session]*delegateQuietWatchHub),
+}
+
+// delegateQuietWatchNext arms (or reuses) the shared hub for s and registers
+// lease on it. The returned CancelFunc detaches exactly this registration:
+// the hub's single ticker keeps serving the remaining leases, and the hub
+// goroutine exits (stopping the shared ticker) only when the last
+// registration leaves, so no ticker leaks after a lease ends.
+func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLease) context.CancelFunc {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case now := <-ticker.C():
-				_ = s.runDelegateQuietWatchdogTick(lease, now)
-			case <-watchCtx.Done():
-				return
+	delegateQuietWatchHubs.Lock()
+	hub := delegateQuietWatchHubs.hubs[s]
+	if hub == nil {
+		hub = &delegateQuietWatchHub{
+			owner:   s,
+			done:    make(chan struct{}),
+			entries: make(map[delegateQuietWatchEntry]struct{}),
+		}
+		hub.ticker = s.sclock().NewTicker(delegateQuietCheckInterval)
+		delegateQuietWatchHubs.hubs[s] = hub
+		go s.serveDelegateQuietWatchHub(hub)
+	}
+	entry := delegateQuietWatchEntry{owner: s, lease: lease, stop: make(chan struct{})}
+	hub.entries[entry] = struct{}{}
+	delegateQuietWatchHubs.Unlock()
+	var detachOnce sync.Once
+	stopped := make(chan struct{})
+	detach := func() {
+		detachOnce.Do(func() {
+			delegateQuietWatchHubs.Lock()
+			delete(hub.entries, entry)
+			empty := len(hub.entries) == 0
+			if empty {
+				delete(delegateQuietWatchHubs.hubs, s)
 			}
+			delegateQuietWatchHubs.Unlock()
+			close(entry.stop)
+			close(stopped)
+			if empty {
+				hub.close.Do(func() {
+					close(hub.done)
+					hub.ticker.Stop()
+				})
+			}
+		})
+	}
+	go func() {
+		select {
+		case <-watchCtx.Done():
+			detach()
+		case <-entry.stop:
+		case <-hub.done:
 		}
 	}()
 	return func() {
-		ticker.Stop()
+		detach()
 		cancel()
+		<-stopped
 	}
+}
+
+// serveDelegateQuietWatchHub is the hub's single goroutine: each shared tick
+// fans out to every registered lease whose stop channel is still open.
+func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
+	for {
+		select {
+		case now := <-hub.ticker.C():
+			delegateQuietWatchHubs.Lock()
+			if delegateQuietWatchHubs.hubs[s] != hub {
+				delegateQuietWatchHubs.Unlock()
+				return
+			}
+			live := make([]delegateQuietWatchEntry, 0, len(hub.entries))
+			for entry := range hub.entries {
+				live = append(live, entry)
+			}
+			delegateQuietWatchHubs.Unlock()
+			for _, entry := range live {
+				select {
+				case <-entry.stop:
+					continue
+				default:
+				}
+				_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
+			}
+		case <-hub.done:
+			return
+		}
+	}
+}
+
+func (s *Session) startDelegateQuietWatchdog(ctx context.Context, lease delegateLease) context.CancelFunc {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.delegateQuietWatchNext(ctx, lease)
 }
 
 func delegateQuietAttentionID(lease delegateLease) string {
