@@ -1,0 +1,34 @@
+{
+  "schema": "evener.sdk.queue-close.v1",
+  "status": "queueChanged-qualified-threadClosed-unqualified",
+  "fixtureRoot": "/tmp/evener-sdk-producers-retry2-5qFnjm",
+  "backendSource": "d2d5eedf9",
+  "sdk": {
+    "tarRegularFiles": 139,
+    "tarFilesByteEqual": true
+  },
+  "queueChanged": {
+    "status": "qualified-scoped",
+    "rawEventsSha256": "36e4001d2d98bd013767958326487a7645083bdcd77944a4fcad4057ee5319a4",
+    "queueAckSha256": "648247cabaa8f24797b171d26dd159278c574c5fb8a43692b67a740c9f7ac029",
+    "queueReadSha256": "26476def569565694c02d50947c42121555df833b2ca9e4eaa9ba6d528486735",
+    "finalReadSha256": "746a653c921a4b903db989b8adb6dc6e25f195bd7125572ff943ffc3d49f05cc",
+    "providerEvidenceSha256": "c6fc1c5353e59e5a0ddd2fd4d1324c140944de99f7eb5f1bab691e6eaa011e1b",
+    "assertions": [
+      "observer subscribed before active held turn",
+      "turn/queue acknowledged and canonical readback showed queued entry",
+      "raw observer included thread/queueChanged",
+      "provider boundary was scripted and the turn completed after release"
+    ]
+  },
+  "threadClosed": {
+    "status": "unqualified",
+    "reason": "matching thread/closed was not observed before the bounded 30-second tripwire after an empty thread/shutdown acknowledgment",
+    "evidenceRoot": "/tmp/evener-sdk-producers-final-SqGtdW/run/qualification"
+  },
+  "limits": [
+    "No thread/closed producer claim",
+    "No native or live-model claim",
+    "The failed awaited runner did not write its in-memory event list before the tripwire; pre-shutdown records are retained"
+  ]
+}
