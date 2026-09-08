@@ -354,7 +354,9 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 
 // Remove deletes an authored instance, its stored key and its OAuth record.
 // An instance that exists from the environment has no entry to delete, so the
-// refusal says what to unset instead (spec §5.1).
+// refusal says what to unset instead (spec §5.1). A name that resolves to no
+// instance follows Create and Edit's convention (#717/#748): the caller sent
+// it, so it comes back as appwire.InvalidParams.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -368,7 +370,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	}
 	inst, ok := c.reg.Get().Instance(name)
 	if !ok {
-		return fmt.Errorf("instance %q not found", name)
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if inst.Implicit {
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
@@ -416,14 +418,16 @@ func describeImplicit(inst registry.Instance) string {
 	}
 }
 
-// SetDefault records which instance a bare model reference resolves on.
+// SetDefault records which instance a bare model reference resolves on. A
+// name that resolves to no instance follows Create and Edit's convention
+// (#717/#748): the caller sent it, so it comes back as appwire.InvalidParams.
 func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
 	if _, ok := c.reg.Get().Instance(name); !ok {
-		return fmt.Errorf("instance %q not found", name)
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 
 	c.mu.Lock()
