@@ -270,20 +270,34 @@ function tokensContainDef(tokens: Token[]): boolean {
   return false;
 }
 
-// The head-side lexer check cached per exact head text: re-lexing the head
-// on every live render would reintroduce the O(n^2) the head HTML cache
-// exists to avoid, so a head that lexes clean stays clean-keyed until its
-// text changes. (The tail is window-bounded, so it lexes per render with no
-// cache.)
-function headHasLinkDefinition(
-  head: string,
-  cache: { current: { headSource: string; headHasDef: boolean } | null },
-): boolean {
+// The head-side gate verdicts cached per exact head text: every one of them
+// (balance scan, hazard patterns, shared-lexer definition check) is a pure
+// function of the head string, so a verdict computed for a head stays valid
+// until the head text itself changes. Re-running them on every live render
+// would reintroduce the O(n^2) the head HTML cache exists to avoid. (The
+// tail is window-bounded, so it lexes/scans per render with no cache.)
+interface HeadGateVerdict {
+  headSource: string;
+  balanced: boolean;
+  hazard: boolean;
+  htmlStart: boolean;
+  hasDef: boolean;
+}
+
+function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null }): HeadGateVerdict {
   const hit = cache.current;
-  if (hit !== null && hit.headSource === head) return hit.headHasDef;
-  const headHasDef = containsLinkDefinition(head);
-  cache.current = { headSource: head, headHasDef };
-  return headHasDef;
+  if (hit !== null && hit.headSource === head) return hit;
+  // The regex gates below carry no /g flag, so .test is stateless and the
+  // cached verdict cannot depend on lastIndex carryover.
+  const verdict: HeadGateVerdict = {
+    headSource: head,
+    balanced: closeOpenMarkdown(head) === head,
+    hazard: HEAD_SPLIT_HAZARD.test(head),
+    htmlStart: HTML_BLOCK_START.test(head),
+    hasDef: containsLinkDefinition(head),
+  };
+  cache.current = verdict;
+  return verdict;
 }
 
 // The tail's first non-blank line, when indented, could still belong to a
@@ -321,9 +335,9 @@ export function Markdown({ source, live = false }: MarkdownProps) {
   // always take the settled full-parse path unchanged, so the final HTML is
   // byte-identical with or without this throttle.
   const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
-  // Backs headHasLinkDefinition below - same cache discipline as headCacheRef:
-  // keyed on the head's own exact text, never stale, misses re-lex once.
-  const headDefCacheRef = useRef<{ headSource: string; headHasDef: boolean } | null>(null);
+  // Backs headGateVerdict below - same cache discipline as headCacheRef:
+  // keyed on the head's own exact text, never stale, misses evaluate once.
+  const headGateCacheRef = useRef<HeadGateVerdict | null>(null);
   const html = useMemo(() => {
     if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
@@ -343,15 +357,22 @@ export function Markdown({ source, live = false }: MarkdownProps) {
     // the tail must be paragraphs-only on fresh content (TAIL_BLOCK_MARKER,
     // tailStartsIndented). Anything else takes the full-parse fallback, which
     // is exactly the pre-throttle behavior for every input. The tail keeps
-    // the full block parse - never an inline-only one.
+    // the full block parse - never an inline-only one. Head-side verdicts come
+    // from the per-head cache above, so a settled head pays its scans once per
+    // distinct head text; the residual per-render cost is the whole-source
+    // balance scan, the window-bounded tail scans/lexes (TAIL_BLOCK_MARKER,
+    // tailStartsIndented, tail lexer, HTML_BLOCK_END), and the tail re-parse -
+    // all O(tail), plus the whole-source re-parse on fallback.
     const split = splitLiveSource(source);
+    const headVerdict = split === null ? null : headGateVerdict(split.head, headGateCacheRef);
     if (
       split === null ||
-      closeOpenMarkdown(split.head) !== split.head ||
-      HEAD_SPLIT_HAZARD.test(split.head) ||
-      headHasLinkDefinition(split.head, headDefCacheRef) ||
+      headVerdict === null ||
+      !headVerdict.balanced ||
+      headVerdict.hazard ||
+      headVerdict.hasDef ||
       containsLinkDefinition(split.tail) ||
-      HTML_BLOCK_START.test(split.head) ||
+      headVerdict.htmlStart ||
       HTML_BLOCK_END.test(split.tail) ||
       TAIL_BLOCK_MARKER.test(split.tail) ||
       tailStartsIndented(split.tail) ||
