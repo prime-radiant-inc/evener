@@ -217,6 +217,14 @@ func TestE2E_IdleShutdownClosedReachesASeparateHubSubscriber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("waiting for opening model request: %v", err)
 	}
+	openingRead, err := clientRequest[appwire.ThreadReadResponse](ctx, actor, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("thread/read opening turn: %v", err)
+	}
+	openingTurnID := openingRead.Thread.Evener.ActiveTurnID
+	if openingTurnID == "" || openingTurnID != started.Turn.ID {
+		t.Fatalf("opening turn active id = %q, want started turn %q", openingTurnID, started.Turn.ID)
+	}
 	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, observer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("observer thread/read subscribe: %v", err)
 	}
@@ -240,18 +248,30 @@ func TestE2E_IdleShutdownClosedReachesASeparateHubSubscriber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("waiting for queued model request: %v", err)
 	}
+	queuedRead, err := clientRequest[appwire.ThreadReadResponse](ctx, actor, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("thread/read queued turn: %v", err)
+	}
+	queuedTurnID := queuedRead.Thread.Evener.ActiveTurnID
+	if queuedTurnID == "" || queuedTurnID == openingTurnID {
+		t.Fatalf("queued turn active id = %q, want distinct non-empty id from opening turn %q", queuedTurnID, openingTurnID)
+	}
 	queuedRound.RespondToolCall("communicate", communicateArgs("queued turn done"))
 	awaitThread(ctx, t, actor, ref, "both turns to complete and thread to become awaiting", func(thread appwire.Thread) bool {
 		if thread.Status.Type != appwire.ThreadStatusAwaiting || thread.Evener.ActiveTurnID != "" {
 			return false
 		}
-		completed := 0
+		openingCompleted := false
+		queuedCompleted := false
 		for _, turn := range thread.Turns {
-			if turn.Status == appwire.TurnStatusCompleted {
-				completed++
+			if turn.ID == openingTurnID && turn.Status == appwire.TurnStatusCompleted {
+				openingCompleted = true
+			}
+			if turn.ID == queuedTurnID && turn.Status == appwire.TurnStatusCompleted {
+				queuedCompleted = true
 			}
 		}
-		return completed >= 2
+		return openingCompleted && queuedCompleted
 	})
 	if _, err := clientRequest[appwire.EmptyResponse](ctx, actor, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatalf("thread/shutdown: %v", err)
