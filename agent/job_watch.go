@@ -3893,7 +3893,17 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			enqueueReceipt.controller.AbortWatchEnqueue(enqueueReceipt)
 		}
 	}()
-	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+	// Persist the pending event and any cap-overflow eviction terminal events
+	// as one group: AppendBatch writes them with a single fsync and rolls the
+	// whole group back on failure (all-or-nothing). A lone pending event stays
+	// on the appendEvent seam inside appendWatchSendEvents.
+	group := append([]jobstore.Event(nil), record.pendingEvents...)
+	var evictionSnapshots []watchSendTerminalSnapshot
+	for _, eviction := range record.evictions {
+		evictionSnapshots = append(evictionSnapshots, eviction.terminal)
+		group = append(group, eviction.terminal.events...)
+	}
+	if err := jm.appendWatchSendEvents(group); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
@@ -3917,17 +3927,11 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
 		}
 	}
+	// The eviction events landed with the pending event above; now drop the
+	// evicted keys from the runtime map and surface their diagnostics.
+	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
-		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
-		if err != nil {
-			jm.removeWatchSendTerminalSnapshots(applied)
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return record.persisted, true, err
-		}
-		jm.removeWatchSendTerminalSnapshots(applied)
 		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
 	}
 	for _, diagnostic := range evictionDiagnostics {
