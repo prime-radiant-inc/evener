@@ -159,9 +159,13 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   // state also stands exactly where the workspace stood - a sibling of the
   // rail inside the workspace row - so the rail keeps its own width instead
   // of being that row's only child and stretching across the window.
+  //
+  // The rail is itself a lazy chunk behind a null-fallback Suspense
+  // (rail/index.tsx), so it paints a tick after the dock failure state -
+  // await its arrival rather than asserting it is already there.
   const failure = screen.getByText("Couldn't load the workspace").closest("[data-testid='empty-state']");
   const workspaceRow = failure?.parentElement;
-  expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  expect(workspaceRow?.contains(await screen.findByTestId("rail-search"))).toBe(true);
 });
 
 test("mounts the host when its chunk arrives", async () => {
@@ -238,7 +242,7 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
 });
 
-test("a chunk still in flight leaves a visible workspace placeholder beside the rail", () => {
+test("a chunk still in flight leaves a visible workspace placeholder beside the rail", async () => {
   // Never settles: a request the hub never answers, with no wall clock in it.
   vi.mocked(loadDockHost).mockReturnValue(new Promise(() => {}));
 
@@ -246,7 +250,9 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
 
   const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
   const workspaceRow = loading?.parentElement;
-  expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
+  // Same lazy-rail race as the rejected-chunk test above: the rail chunk
+  // arrives on its own tick, so await it instead of requiring it synchronously.
+  expect(workspaceRow?.contains(await screen.findByTestId("rail-search"))).toBe(true);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
   // An unanswered request is not a failure and must not retry on its own.
