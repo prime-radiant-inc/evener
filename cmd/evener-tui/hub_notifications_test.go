@@ -250,3 +250,140 @@ func requireTUIJobRun(t testing.TB, m *hubModel, jobID string) *transcript.Subag
 	t.Fatalf("messages = %+v, want job %q", m.session.messages, jobID)
 	return nil
 }
+
+// TestStreamDeltaChunkDecodesAppWireCamelCaseParams pins the wire contract
+// decodeStreamDeltaChunk decodes: the three delta notifications' params are
+// camelCase on the wire, so appwire.ToolOutputDeltaParams's json tags must be
+// camelCase too. Renaming them to this repo's snake_case default would leave
+// every routing field empty, silently dropping deltas at the current-session
+// filter instead of failing loudly.
+func TestStreamDeltaChunkDecodesAppWireCamelCaseParams(t *testing.T) {
+	agent, err := json.Marshal(appwire.AgentMessageDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello",
+	})
+	if err != nil {
+		t.Fatalf("marshal agent params: %v", err)
+	}
+	reasoning, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking",
+	})
+	if err != nil {
+		t.Fatalf("marshal reasoning params: %v", err)
+	}
+	toolOutput, err := json.Marshal(appwire.ToolOutputDeltaParams{
+		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal tool-output params: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want appwire.ToolOutputDeltaParams
+	}{
+		{
+			name: "agentMessage",
+			raw:  agent,
+			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello"},
+		},
+		{
+			name: "reasoningSummary",
+			raw:  reasoning,
+			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking"},
+		},
+		{
+			name: "toolOutput",
+			raw:  toolOutput,
+			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
+		},
+		{
+			name: "wireKeySpelling",
+			raw:  json.RawMessage(`{"ref":"local:th_1","threadId":"th_1","turnId":"turn_1","itemId":"item_3","callId":"call_3","delta":"one\n"}`),
+			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := decodeStreamDeltaChunk(tc.raw)
+			if !ok {
+				t.Fatalf("decode %s failed: %s", tc.name, tc.raw)
+			}
+			if got != tc.want {
+				t.Fatalf("chunk=%+v want=%+v from %s", got, tc.want, tc.raw)
+			}
+		})
+	}
+}
+
+// TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField drives
+// the real dispatcher over the shapes appwire.WarningParams permits: the hint
+// has to reach the rendered line, and the message can arrive as `message`, as a
+// bare-string `warning`, or as an object `warning`. A frame carrying one field
+// the contract cannot type still has to render what it did carry, and a frame
+// carrying no message anywhere has to render itself rather than a bare title.
+func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *testing.T) {
+	// A frame the reader could not read at all is rendered verbatim, and every
+	// frame here contains the text its case is looking for, so a substring
+	// assertion alone would pass on that dump. rawFrame says which case wants
+	// it: the others additionally require the line to carry no JSON punctuation,
+	// so recovering the message is the only way to satisfy them.
+	tests := []struct {
+		name     string
+		params   string
+		want     []string
+		rawFrame bool
+	}{
+		{
+			name:   "object form with hint",
+			params: `{"message":"disk almost full","source":"evener","title":"Low disk","hint":"free some space"}`,
+			want:   []string{"disk almost full", "free some space"},
+		},
+		{
+			name:   "bare-string warning",
+			params: `{"warning":"provider hiccup"}`,
+			want:   []string{"provider hiccup"},
+		},
+		{
+			name:   "object-form warning with no top-level message",
+			params: `{"warning":{"message":"nested"}}`,
+			want:   []string{"nested"},
+		},
+		{
+			name:   "recovered message and hint despite a cause that fails to decode",
+			params: `{"message":"real message","cause":"bogus-not-an-object","hint":"retry"}`,
+			want:   []string{"real message", "retry"},
+		},
+		{
+			name:     "no message anywhere renders the frame itself, not a bare title",
+			params:   `{"warning":42}`,
+			want:     []string{`{"warning":42}`},
+			rawFrame: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newHubModel(nil, "http://hub.test")
+			m.mode = hubModeSession
+			m.detail.Ref = "local:01SESSION"
+
+			m.applyHubNotification(appwire.Notification{Method: appwire.NotifyWarning, Params: json.RawMessage(tc.params)})
+
+			if len(m.session.messages) == 0 {
+				t.Fatalf("session.messages is empty, want a rendered warning line")
+			}
+			last := m.session.messages[len(m.session.messages)-1]
+			if last.Kind != transcript.MsgSystem {
+				t.Fatalf("last session message kind = %v, want MsgSystem", last.Kind)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(last.Text, want) {
+					t.Fatalf("rendered warning line = %q, want substring %q", last.Text, want)
+				}
+			}
+			if !tc.rawFrame && strings.ContainsAny(last.Text, "{}") {
+				t.Fatalf("rendered warning line = %q, want the recovered message, not the raw frame", last.Text)
+			}
+		})
+	}
+}

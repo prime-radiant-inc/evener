@@ -299,6 +299,9 @@ func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 	if req.PluginRoot != "" {
 		args = append(args, "--plugin-root", req.PluginRoot)
 	}
+	if req.AgentsDocPath != "" {
+		args = append(args, "--agents-doc", req.AgentsDocPath)
+	}
 	if req.AppReplaySize > 0 {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
@@ -316,6 +319,9 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	}
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
+	}
+	if req.AgentsDocPath != "" {
+		args = append(args, "--agents-doc", req.AgentsDocPath)
 	}
 	if req.AppReplaySize > 0 {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))

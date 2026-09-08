@@ -774,6 +774,9 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.ExportATIFPath = parentCfg.ExportATIFPath
 	subCfg.ExportATIFProviderHandles = parentCfg.ExportATIFProviderHandles
 	subCfg.ResolveProfile = parentCfg.ResolveProfile
+	// The personal doc belongs to whoever is running the tree now — the hub's
+	// root — so a delegate reads the same file its live parent does.
+	subCfg.AgentsDocPath = parentCfg.AgentsDocPath
 	subCfg.testOnly = parentCfg.testOnly
 	subCfg.TurnEndsProcess = parentCfg.TurnEndsProcess
 	subCfg.ForceRealIO = parentCfg.ForceRealIO

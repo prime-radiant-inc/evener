@@ -354,7 +354,6 @@ test("the turn ending puts the controls back to a plain send", async () => {
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId: "turn_5",
         turn: { id: "turn_5", status: "completed", itemsView: "" },
       },
     });
@@ -413,7 +412,6 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId: "turn_5",
         turn: { id: "turn_5", status: "interrupted", itemsView: "" },
       },
     });

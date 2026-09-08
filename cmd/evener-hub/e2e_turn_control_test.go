@@ -565,8 +565,8 @@ var liveStackBuild struct {
 func liveStackBinaries(t *testing.T, repoRoot string) string {
 	t.Helper()
 	liveStackBuild.once.Do(func() {
-		// Under TestMain's root, so its RemoveAll is the only cleanup path.
-		dir := filepath.Join(testEnvRoot, "live-stack-bin")
+		// Under TestMain's root, so its Discard is the only cleanup path.
+		dir := filepath.Join(testEnv.Root, "live-stack-bin")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			liveStackBuild.err = err
 			return

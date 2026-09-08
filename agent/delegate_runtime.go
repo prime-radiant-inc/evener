@@ -1765,6 +1765,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		LLMSleep:                s.cfg.LLMSleep,
 		clock:                   s.clock,
 		testOnly:                s.cfg.testOnly,
+		// The personal doc belongs to whoever runs the tree now, not to the run that froze this delegate.
+		AgentsDocPath:           s.cfg.AgentsDocPath,
 		TurnEndsProcess:         s.cfg.TurnEndsProcess,
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
