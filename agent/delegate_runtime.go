@@ -273,6 +273,7 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 			delegateQuietWatchHubs.Unlock()
 			ticker.Stop()
 			hub = existing
+			delegateQuietWatchHubs.Lock()
 		} else {
 			delegateQuietWatchHubs.hubs[s] = hub
 			delegateQuietWatchHubs.Unlock()
