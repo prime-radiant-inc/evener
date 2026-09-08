@@ -2,19 +2,21 @@
 
 Updated 8 September 2026. Owner: Bot; product direction: Jesse.
 
-**The native app has substantial implementation and verified end-to-end slices. iOS v1 is not release-ready.** The main remaining work is completing workflow, lifecycle, accessibility, performance and physical-device qualification against identified artifacts, fixing defects those checks expose, and finishing the SDK outcome matrix. Passing a build or finding a screen in source does not close a workflow.
+**The native app has substantial implementation and verified end-to-end slices. iOS v1 is not release-ready.** The immediate milestone is full iPhone functionality: complete the remaining supported actions and verify usable workflows, lifecycle recovery and data preservation. Jesse paused iPad and accessibility work on 8 September; those items are retained for later resumption. Performance, physical-device and distribution qualification remain separate from feature coverage, and the complete SDK outcome matrix remains project work. Passing a build or finding a screen in source does not close a workflow.
 
 ## Scope and architecture
 
-- **V1 is iOS-only: iPhone and iPad.** Android source, build instructions and historical evidence are preserved; Android qualification and its unresolved ANR investigation are deferred beyond v1. Voice/barge-in is outside v1.
+- **V1 is iOS-only; active work now targets iPhone.** iPad and accessibility work are paused at Jesse's request, not completed or removed. Android source, build instructions and historical evidence are preserved; Android qualification and its unresolved ANR investigation are deferred beyond v1. Voice/barge-in is outside v1.
 - The app remains Expo SDK 57 / React Native in `mobile-native/`, with React Navigation, SecureStore and SQLite. It reuses the framework-independent TypeScript AppWire client and selected shared services/state. The old Tauri UI is not the product reference.
 - Current web behavior, server contracts and Jesse's explicit requests define capabilities. The AppWire v4 migration is implemented, including item-based transcript paging, navigation representation v2 and current provider/settings contracts.
 - The authoritative worktree is `live-concepts-plan2-integrate` under the external Evener worktree directory named in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md). The default checkout is not the implementation workspace.
-- Routine choices and parallel Luna-medium implementation/testing are authorized. A coordinator owns integration and artifact identity; separate workers can test iPhone/iPad or independent fixtures without sharing mutations.
+- Routine choices and parallel Luna-medium implementation/testing are authorized. A coordinator owns integration and artifact identity; separate workers can own functional areas, independent fixtures and SDK checks without sharing mutations. Do not assign new iPad or accessibility work while paused.
 
 This page is the current summary. The [acceptance ledger](acceptance.md) defines each workflow's evidence boundary; the [remaining-work checklist](ios-v1-remaining.md) defines execution order. The [backlog](backlog.md) retains issue IDs and feedback. Dated feature receipts and the original coverage spec remain historical evidence, not a competing current status.
 
 ## Implementation and acceptance by area
+
+This table retains all outstanding delivery work. iPad and accessibility entries are paused and do not block the current iPhone functionality milestone. Historical device evidence remains valid within its recorded scope.
 
 | Area | Implemented and recorded evidence | Remaining for iOS v1 |
 | --- | --- | --- |
@@ -74,10 +76,10 @@ Browser geometry and race checks have separate ownership and were not repeated f
 ## Remaining delivery order
 
 1. Keep the verified integration baseline intact; repeat affected gates when source changes and retain native/backend/SDK artifact identities separately.
-2. Run the remaining iPhone/iPad workflows using isolated authenticated v4 hubs and scripted providers, preserving authoritative API/state readback. Fix reproduced defects before closing each workflow.
+2. Run the remaining iPhone workflows using isolated authenticated v4 hubs and scripted providers, preserving authoritative API/state readback. Fix reproduced defects before closing each workflow.
 3. Complete the SDK's catalog-derived success/failure/disconnect and notification producer matrix through the installed package.
-4. Qualify cross-cutting native behavior: simultaneous hubs, pending operations, cold/background recovery, live/paged/image reflow, stale decisions, gestures, keyboard, large text, appearance and accessibility.
-5. Measure representative data performance and memory, then verify physical iPhone/iPad networking/pairing, signed installation and update/relaunch.
-6. Assemble one final release record with every required workflow and artifact identified. Release acceptance stays open until that record is complete.
+4. Qualify cross-cutting native behavior: simultaneous hubs, pending operations, cold/background recovery, live/paged/image reflow, stale decisions, gestures, keyboard and usable content presentation. Dedicated accessibility and iPad qualification are paused.
+5. Measure representative data performance and memory, then verify physical iPhone networking/pairing, signed installation and update/relaunch.
+6. Record iPhone functional completion when every supported workflow is usable through the native app with correct backend results and recovery. Keep the broader release record, paused iPad/accessibility work and independent SDK completion visible as separate milestones.
 
 No percentage-complete or ship-date estimate is supported by the remaining acceptance work. The [full to-do list](ios-v1-remaining.md) and [workflow ledger](acceptance.md) define completion.

@@ -1,5 +1,7 @@
 # Native mobile backlog
 
+**Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
+
 Owner: Bot, with Jesse setting product direction. Updated 8 September 2026.
 
 This is the working issue backlog for the shared iOS/Android app. Add feedback
