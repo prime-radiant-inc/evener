@@ -1,9 +1,39 @@
 import { describe, expect, it } from "vitest";
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
-import { connectionTarget, createHubClient, HubProfiles } from "./connection";
+import {
+	connectionTarget,
+	createHubClient,
+	HubProfiles,
+	parsePairingURL,
+} from "./connection";
 import { connectionFailure } from "./connectionRecovery";
 
 describe("hub connections", () => {
+	it("parses escaped pairing tokens and rejects unsafe links without exposing input", () => {
+		expect(
+			parsePairingURL("https://hub.example:9443/auth/a%26b%23c%25ile"),
+		).toEqual({
+			origin: "https://hub.example:9443",
+			token: "a&b#c%ile",
+		});
+		for (const input of [
+			"https://user:pass@hub.example/auth/token",
+			"ftp://hub.example/auth/token",
+			"https://hub.example/auth/token?",
+			"https://hub.example/auth/token#",
+			"https://hub.example/auth/token/extra",
+			"https://hub.example/a/../auth/token",
+			"https://hub.example/auth/%ZZ",
+			"https://hub.example/auth/.",
+			"https://hub.example/auth/..",
+			"https://hub.example/auth/%2e%2e",
+			"http://hub\\@evil/auth/token",
+			"http://hub\\evil/auth/token",
+			"https://hub.example/auth/to\nken",
+		]) {
+			expect(() => parsePairingURL(input)).toThrow("Invalid pairing URL.");
+		}
+	});
 	it("normalizes origins and rejects credentials and URL tokens", () => {
 		expect(connectionTarget(" https://example.com:443/ ")).toBe(
 			"wss://example.com/rpc",

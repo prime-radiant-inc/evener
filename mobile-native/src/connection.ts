@@ -15,6 +15,53 @@ export interface HubUpdate {
 	name: string;
 	token?: string;
 }
+
+const hasPairingControl = (value: string) =>
+	[...value].some((character) => {
+		const code = character.codePointAt(0) ?? 0;
+		return code <= 0x1f || code === 0x7f;
+	});
+const invalidPairingURL = () => new Error("Invalid pairing URL.");
+
+/** Parses the hub's /auth/<PathEscape(token)> QR/paste format without I/O. */
+export function parsePairingURL(input: string): {
+	origin: string;
+	token: string;
+} {
+	if (
+		typeof input !== "string" ||
+		input.length === 0 ||
+		hasPairingControl(input) ||
+		input.includes("\\")
+	)
+		throw invalidPairingURL();
+	const match = /^(https?):\/\/([^/?#]+)(\/[^?#]*)$/.exec(input);
+	if (!match || match[2].includes("@")) throw invalidPairingURL();
+	let url: URL;
+	try {
+		url = new URL(input);
+	} catch {
+		throw invalidPairingURL();
+	}
+	if (!url.hostname || url.username || url.password || url.search || url.hash)
+		throw invalidPairingURL();
+	const path = match[3];
+	if (url.pathname !== path) throw invalidPairingURL();
+	if (
+		!path.startsWith("/auth/") ||
+		path.slice(6).length === 0 ||
+		path.slice(6).includes("/")
+	)
+		throw invalidPairingURL();
+	let token: string;
+	try {
+		token = decodeURIComponent(path.slice(6));
+	} catch {
+		throw invalidPairingURL();
+	}
+	if (!token || hasPairingControl(token)) throw invalidPairingURL();
+	return { origin: url.origin, token };
+}
 export interface SecureStorage {
 	getItemAsync(key: string): Promise<string | null>;
 	setItemAsync(key: string, value: string): Promise<void>;
