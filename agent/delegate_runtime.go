@@ -171,6 +171,10 @@ type delegateQuietWatchEntry struct {
 // lease on the same session — and therefore the same s.clock — shares one
 // ticker and stays on the fake clock in tests.
 type delegateQuietWatchHub struct {
+	// mu guards entries alone, so ticks and detaches on one session never
+	// contend with other sessions' hubs (or the registry lock) while running
+	// tick work. Lock order is always registry -> mu, never the reverse.
+	mu     sync.Mutex
 	ticker interface {
 		C() <-chan time.Time
 		Stop()
@@ -181,15 +185,44 @@ type delegateQuietWatchHub struct {
 }
 
 // delegateQuietWatchHubs is the process-wide registry mapping each *Session to
-// its live hub. It lives in this file (rather than on Session) so the change
-// stays within agent/delegate_runtime.go; entries are removed when the hub's
-// last lease detaches, and Session pointers are map keys only (never
-// dereferenced after removal).
+// its live hub. It lives in this file (rather than on Session) so Session's
+// struct stays untouched; the entry for a session is removed when its hub's
+// last lease detaches, so the registry never pins an idle session, and
+// Session pointers are map keys only (never dereferenced after removal).
 var delegateQuietWatchHubs = struct {
 	sync.Mutex
 	hubs map[*Session]*delegateQuietWatchHub
 }{
 	hubs: make(map[*Session]*delegateQuietWatchHub),
+}
+
+// delegateQuietWatchHubForSession returns the live hub for s, creating it on
+// first use. The ticker is created outside the registry lock so arming one
+// session's hub never blocks another session's attach/detach; a lost creation
+// race stops the spare ticker and reuses the winner.
+func delegateQuietWatchHubForSession(s *Session) *delegateQuietWatchHub {
+	delegateQuietWatchHubs.Lock()
+	if hub := delegateQuietWatchHubs.hubs[s]; hub != nil {
+		delegateQuietWatchHubs.Unlock()
+		return hub
+	}
+	delegateQuietWatchHubs.Unlock()
+	ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
+	hub := &delegateQuietWatchHub{
+		ticker:  ticker,
+		done:    make(chan struct{}),
+		entries: make(map[delegateQuietWatchEntry]struct{}),
+	}
+	delegateQuietWatchHubs.Lock()
+	if existing := delegateQuietWatchHubs.hubs[s]; existing != nil {
+		delegateQuietWatchHubs.Unlock()
+		ticker.Stop()
+		return existing
+	}
+	delegateQuietWatchHubs.hubs[s] = hub
+	delegateQuietWatchHubs.Unlock()
+	go s.serveDelegateQuietWatchHub(hub)
+	return hub
 }
 
 // delegateQuietWatchNext arms (or reuses) the shared hub for s and registers
@@ -205,30 +238,23 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 		ctx = context.Background()
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	delegateQuietWatchHubs.Lock()
-	hub := delegateQuietWatchHubs.hubs[s]
-	if hub == nil {
-		hub = &delegateQuietWatchHub{
-			done:    make(chan struct{}),
-			entries: make(map[delegateQuietWatchEntry]struct{}),
-		}
-		hub.ticker = s.sclock().NewTicker(delegateQuietCheckInterval)
-		delegateQuietWatchHubs.hubs[s] = hub
-		go s.serveDelegateQuietWatchHub(hub)
-	}
 	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{})}
+	hub := delegateQuietWatchHubForSession(s)
+	hub.mu.Lock()
 	hub.entries[entry] = struct{}{}
-	delegateQuietWatchHubs.Unlock()
+	hub.mu.Unlock()
 	var detachOnce sync.Once
 	stopped := make(chan struct{})
 	detach := func() {
 		detachOnce.Do(func() {
 			delegateQuietWatchHubs.Lock()
+			hub.mu.Lock()
 			delete(hub.entries, entry)
 			empty := len(hub.entries) == 0
 			if empty {
 				delete(delegateQuietWatchHubs.hubs, s)
 			}
+			hub.mu.Unlock()
 			delegateQuietWatchHubs.Unlock()
 			close(entry.stop)
 			close(stopped)
@@ -260,15 +286,17 @@ func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 		select {
 		case now := <-hub.ticker.C():
 			delegateQuietWatchHubs.Lock()
-			if delegateQuietWatchHubs.hubs[s] != hub {
-				delegateQuietWatchHubs.Unlock()
+			current := delegateQuietWatchHubs.hubs[s]
+			delegateQuietWatchHubs.Unlock()
+			if current != hub {
 				return
 			}
+			hub.mu.Lock()
 			live := make([]delegateQuietWatchEntry, 0, len(hub.entries))
 			for entry := range hub.entries {
 				live = append(live, entry)
 			}
-			delegateQuietWatchHubs.Unlock()
+			hub.mu.Unlock()
 			for _, entry := range live {
 				go func(entry delegateQuietWatchEntry) {
 					select {
