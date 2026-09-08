@@ -421,6 +421,16 @@ export function useAskDockStore<T>(selector?: (state: AskDockState) => T): T | A
   return selector ? useStore(askDockStore, selector) : useStore(askDockStore);
 }
 
+// useAskDockPending is the seam a composer-surface owner (Composer.tsx,
+// Session.tsx) reads to decide whether to hide/inert the plain composer for
+// `ref`. Defined here, next to the store it selects from, so the predicate
+// exists exactly once: askDockPending.ts (the composer's lean chunk seam)
+// and askDock/index.ts both re-export it rather than each carrying their
+// own verbatim copy.
+export function useAskDockPending(ref: string): boolean {
+  return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
+}
+
 // resetAskDockStoreForTests resets this module's singleton state between
 // tests - same rationale as threads.ts's resetThreadsStoreForTests (one
 // Map shared by the whole app). No production code should call this.

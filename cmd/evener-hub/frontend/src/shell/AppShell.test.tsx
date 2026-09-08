@@ -1049,7 +1049,7 @@ test("clicking the rail's own Search button opens the command palette", async ()
   // icon-only Search button is the app's one clickable way into the palette,
   // so the wiring between it and the global listener is worth an end-to-end
   // assertion of its own.
-  await user.click(screen.getByTestId("rail-search"));
+  await user.click(await screen.findByTestId("rail-search"));
 
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
@@ -2181,7 +2181,7 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   expect(document.querySelector("[data-single-pane]")).toBeNull();
   // Desktop rail renders (default auto mode, jsdom's wide no-matchMedia
   // viewport) - the contrast that proves the /thread case actually suppressed it.
-  expect(screen.getByTestId("rail-search")).toBeTruthy();
+  expect(await screen.findByTestId("rail-search")).toBeTruthy();
 });
 
 // --- settings routing (this task) -------------------------------------

@@ -163,6 +163,15 @@ linters:
         linters:
           - tagliatelle
 
+      # modernize's embedlit fires on retainedSearchOptions' nested
+      # jobstore.SearchOptions literal, but flattening it does not compile:
+      # promoted fields of an embedded struct cannot be keyed in the outer
+      # composite literal. The nested form stays.
+      - path: agent/retained_output_size_acc_test\.go
+        text: 'embedlit: embedded field type can be removed'
+        linters:
+          - modernize
+
       # revive's exported rule gates only the published library packages
       # (the old cmd/evener-docscheck scope); everywhere else its findings
       # are excluded. The text pattern matches the message as golangci
