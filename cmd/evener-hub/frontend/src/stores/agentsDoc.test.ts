@@ -301,6 +301,34 @@ describe("save", () => {
     await expect(writing).resolves.toEqual(written);
     expect(agentsDocStore.getState().doc).toEqual(DOC);
   });
+
+  // A broadcast that lands mid-save carries a write that reached the file
+  // after this one, so the save's own response is stale by the time it
+  // arrives: committing it would put the older content back under the editor,
+  // and the next Save would then push it over what is actually on disk.
+  test("a save response older than a broadcast is not committed and the broadcast's document is returned", async () => {
+    const fake = connectFakeClient();
+    let finishWriting!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/set",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishWriting = resolve;
+        }),
+    );
+    const writing = agentsDocStore.getState().save("mine");
+    await Promise.resolve();
+
+    fake.emitNotification({
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "newer" },
+    } as AnyNotification);
+
+    finishWriting({ ...DOC, content: "mine" });
+    const resolved = await writing;
+    expect(resolved.content).toBe("newer");
+    expect(agentsDocStore.getState().doc?.content).toBe("newer");
+  });
 });
 
 describe("changed notification", () => {
@@ -332,6 +360,9 @@ describe("changed notification", () => {
       method: "evener/settings/agentsDoc/changed",
       params: { ...DOC, content: "pushed" },
     } as AnyNotification);
+    // The bump just dropped the read, so nothing is left to turn `loading`
+    // off - the handler does it, as the save and the connection subscriber do.
+    expect(agentsDocStore.getState().loading).toBe(false);
 
     finishReading({ ...DOC, content: "old" });
     await reading;

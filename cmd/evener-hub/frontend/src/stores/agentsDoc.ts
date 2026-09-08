@@ -35,7 +35,10 @@ export interface AgentsDocStoreState {
   error: string | null;
   fetch(): Promise<void>;
   /** Replaces the file whole. Resolves with the hub's view of the saved file,
-   * which is also what `doc` becomes while this client is still the store's.
+   * which is also what `doc` becomes while this client is still the store's
+   * and no newer view of the file landed behind the write. When one did - a
+   * `changed` broadcast, or a read started after the write - that newer
+   * document stands and is resolved in this response's place.
    * Rejections propagate: the section owns the inline error and the toast. */
   save(content: string): Promise<AgentsDocResponse>;
 }
@@ -48,7 +51,7 @@ export interface AgentsDocStoreState {
 let requestVersion = 0;
 let requestedDoc = false;
 
-export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
+export const agentsDocStore = createStore<AgentsDocStoreState>((set, get) => ({
   doc: null,
   loading: false,
   error: null,
@@ -72,20 +75,27 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
     const client = requireClient();
     // Bumped before the request, not after it: a read already in flight can
     // only land holding the pre-save file, so the write fences it out the way
-    // a newer read does. A read started after this one may land first, and the
-    // commit below then lands over it - which is right: the write's response
-    // is the hub's own view of the file after the write, never staler than a
-    // read that raced it. The bump leaves nothing to turn `loading` off, so
+    // a newer read does. The bump leaves nothing to turn `loading` off, so
     // the save does it, as the connection subscriber does for its own bump.
-    ++requestVersion;
+    const version = ++requestVersion;
     set({ loading: false });
     const doc = await client.request("evener/settings/agentsDoc/set", { content });
+    // A response from a client the store has since replaced speaks for a
+    // socket that is gone, so it goes back to the caller without landing.
+    if (connectionStore.getState().client !== client) return doc;
+    // Anything that bumped the version behind this write speaks for the file
+    // later than this response does: a `changed` broadcast carrying someone
+    // else's write, or a read started after this one. Committing the response
+    // would put the older content back under the editor and the next Save
+    // would push it over what is on disk, so the newer document stands and
+    // goes back to the caller, whose content-keyed sync then shows it against
+    // the draft. The `??` is honesty about the type: a bump the store did not
+    // give a document to cannot happen behind a landed write.
+    if (version !== requestVersion) return get().doc ?? doc;
     // A write that landed is the freshest view of the file there is, so an
     // earlier read's error is moot - and the section's notice for one
     // ("saving would overwrite anything changed on disk since") is now false.
-    // A response from a client the store has since replaced speaks for a
-    // socket that is gone, so it goes back to the caller without landing.
-    if (connectionStore.getState().client === client) set({ doc, error: null });
+    set({ doc, error: null });
     return doc;
   },
 }));
@@ -108,9 +118,10 @@ function handleNotification(n: AnyNotification): void {
   if (n.method !== "evener/settings/agentsDoc/changed") return;
   // A broadcast is the hub's own authoritative view of the file, so a read
   // that started before it is stale by definition and any earlier reload
-  // failure is moot.
+  // failure is moot. The bump leaves nothing to turn `loading` off, so the
+  // broadcast does it, as the save and the connection subscriber do for theirs.
   ++requestVersion;
-  agentsDocStore.setState({ doc: n.params, error: null });
+  agentsDocStore.setState({ doc: n.params, error: null, loading: false });
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {
