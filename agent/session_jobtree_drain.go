@@ -1048,8 +1048,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// forwarded terminal/watch records for unreachable children — those
 		// surface only via renderUnreachableChildPendings inside the kick — so
 		// a pass that would return quiescent re-kicks once before trusting the
-		// verdict. Skipping otherwise only delays drive-down of already-known
-		// stranded work.
+		// verdict. The abandonment returns below (terminal residue,
+		// double-declined background jobs, stall give-up) carry the same guard:
+		// each re-kicks once when its pass skipped, then re-evaluates, so no
+		// return trusts a verdict assembled without this pass's kick. Skipping
+		// otherwise only delays drive-down of already-known stranded work.
 		skipKick := false
 		if !woke && quietPasses >= drainIdleBackoffFullRatePasses {
 			every := drainIdleBackoffSlowEvery
@@ -1154,6 +1157,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				if takeDrainWake(wake) {
 					// A wake landed mid-pass: the tree moved, so the next pass
 					// re-scans at full kick rate.
+					quietPasses = 0
+					continue
+				}
+				// A skipped kick leaves the abandonment verdict below assembled
+				// on pre-flush state (pending delegate deliveries, durable pendings,
+				// watch sends): run one unthrottled kick and re-evaluate on the next
+				// pass instead of abandoning work the kick would have made
+				// deliverable. Fires at most once per abandonment — the confirming
+				// pass kicks at full rate, then returns or runs a turn.
+				if skipKick {
+					if err := kick(ctx); err != nil {
+						return lastResult, err
+					}
 					quietPasses = 0
 					continue
 				}
@@ -1280,6 +1296,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 						quietPasses = 0
 						continue
 					}
+					// A skipped kick leaves the abandonment verdict below assembled
+					// on pre-flush state (pending delegate deliveries, durable pendings,
+					// watch sends): run one unthrottled kick and re-evaluate on the next
+					// pass instead of abandoning work the kick would have made
+					// deliverable. Fires at most once per abandonment — the confirming
+					// pass kicks at full rate, then returns or runs a turn.
+					if skipKick {
+						if err := kick(ctx); err != nil {
+							return lastResult, err
+						}
+						quietPasses = 0
+						continue
+					}
 					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
 						"exiting with %d undisposed background job(s) after two declined announcements; they die with the process: %s",
 						len(undisposed), s.jobManager.describeUndisposedJobs(undisposed))})
@@ -1322,6 +1351,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				// abandoned as undisposable) and return the last result with nil error
 				// so cmd/evener/run.go prints the coordinator's last answer and
 				// proceeds to Close(), rather than aborting the run.
+				// A skipped kick leaves the abandonment verdict below assembled
+				// on pre-flush state (pending delegate deliveries, durable pendings,
+				// watch sends): run one unthrottled kick and re-evaluate on the next
+				// pass instead of abandoning work the kick would have made
+				// deliverable. Fires at most once per abandonment — the confirming
+				// pass kicks at full rate, then returns or runs a turn.
+				if skipKick {
+					if err := kick(ctx); err != nil {
+						return lastResult, err
+					}
+					quietPasses = 0
+					continue
+				}
 				s.emit(events.EventWarning, events.WarningData{Message: drainStallGiveUpMessage(
 					s.subtreeOutstandingDrainJobIDs(), s.subtreeUndisposableStoppedDelegates())})
 				return lastResult, nil
