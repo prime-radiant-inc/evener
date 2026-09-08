@@ -1,16 +1,18 @@
 # iOS v1 remaining work
 
+Updated 8 September 2026. See the [current project status](status.md) for implemented behavior, artifact identities and verified checks.
+
 This checklist narrows native-mobile delivery to Jesse's selected iOS-only v1 scope. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
 
 ## Dependency order
 
 1. Freeze the intended source head and build both iPhone and iPad Release artifacts from that same head. Record source, bundle, binary and SDK hashes.
-2. Run current deterministic checks and canonical repository gates. Keep unrelated generated Apple changes intact.
+2. Preserve the [verified 8 September integration baseline](assets/2026-09-08-status-verification.json); rerun affected checks and canonical gates after source changes. Keep unrelated generated Apple changes intact.
 3. Re-run real-daemon workflows against isolated authenticated v4 hubs with a scripted provider at the LLM boundary. Capture direct API readback and persisted state before native claims.
 4. Qualify the current Release artifact on iPhone and iPad: lifecycle, hubs, workflows, reader, accessibility, typography, gestures, rotation and failure recovery. iPhone and iPad journeys can run in parallel when they use separate profiles and fixtures; shared artifact installation, hub mutations and final evidence identity remain coordinator-owned gates. Repeat required cases after cold launch where persistence is part of the contract.
 5. Complete physical-device, signing, install/update and performance checks, then make the final release decision from one identity-matched record.
 
-Source and deterministic gates can run in parallel with independent SDK recipe work and isolated fixture preparation. Device journeys, shared hubs, artifact installation and final integration remain serialized. Up to three bounded Luna workers can own disjoint lanes; one coordinator must own artifact identity, shared-device lifecycle and final gates.
+Source and deterministic gates can run in parallel with independent SDK recipe work and isolated fixture preparation. Interactions on the same device, shared-hub mutations, artifact installation and final integration remain serialized; separate devices and isolated fixtures can run in parallel. Up to three bounded Luna workers can own disjoint lanes; one coordinator must own artifact identity, shared-device lifecycle and final gates.
 
 ## Implemented but not yet qualified on the current iOS Release artifact
 
@@ -23,10 +25,10 @@ Source and deterministic gates can run in parallel with independent SDK recipe w
 
 ## Confirmed source or coverage gaps
 
-- Goals/tasks/activity, plugins/marketplaces and hub settings are still marked partial in the acceptance ledger. Resolve any missing advertised operation against current generated contracts before treating their iOS journeys as complete.
+- The source audit finds the listed goal/task/activity, plugin/marketplace and hub-setting operations wired. Their remaining work is current-artifact workflow qualification, including nested delegate/output paging, marketplace lifecycle and two-hub settings conflicts. Native output line selection is implemented; its on-device behavior still needs verification. Recheck any newly discovered advertised-operation gap against current generated contracts.
 - The SDK cookbook has 90 of 91 catalog methods. Method 91 is the reserved, intentionally unsupported method; it is not an omitted supported feature. The cookbook count is recipe presence, not complete method outcome acceptance, and local package publication is separate.
-- SDK notification producer coverage is tracked separately: the current scoped series reports 22 of 36 producers pending coordinator review, with the queue subset now verified by root. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
-- No whole-SDK readiness conclusion follows from the 90/91 and 22/36 counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
+- SDK notification producer coverage is tracked separately: the audited receipt union covers 27 of 36 distinct notification names, including settings, credentials, navigation, queue change and current-source terminal close. The remaining nine names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
+- No whole-SDK readiness conclusion follows from the 90/91 recipe and 27/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
 
 ## External qualification inputs still required
 
