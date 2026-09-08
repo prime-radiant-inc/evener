@@ -233,6 +233,46 @@ test("a changed broadcast echoing this client's own save leaves later keystrokes
   expect(screen.queryByRole("status")).toBeNull();
 });
 
+// The hub takes last write wins, so a save a broadcast superseded did land -
+// and someone else's write went over it a moment later. The store resolves
+// such a save with that newer document, which is the section's only sign that
+// what it just wrote is already gone.
+test("a save superseded by a broadcast keeps the changed-on-disk note", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+
+  let finishWriting!: (doc: AgentsDocResponse) => void;
+  fake.on(
+    "evener/settings/agentsDoc/set",
+    () =>
+      new Promise<AgentsDocResponse>((resolve) => {
+        finishWriting = resolve;
+      }),
+  );
+  await user.click(saveButton());
+
+  act(() => {
+    fake.emitNotification({
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "# theirs\n" },
+    } as AnyNotification);
+  });
+  await act(async () => {
+    finishWriting({ ...DOC, content: "# hi\nmore" });
+  });
+
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "warning" && t.text.startsWith("Saved AGENTS.md, but"))).toBe(true),
+  );
+  expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(false);
+  expect(screen.getByRole("status").textContent).toContain("changed on disk");
+  expect(screen.getByRole("button", { name: "Load current" })).toBeTruthy();
+  expect(editor().value).toBe("# hi\nmore");
+});
+
 // An automatic reconnect keeps the same client - only a banner retry brings
 // a fresh one - and the editor heard no `changed` broadcast while the socket
 // was down. A one-shot mount fetch would leave it holding pre-drop content,

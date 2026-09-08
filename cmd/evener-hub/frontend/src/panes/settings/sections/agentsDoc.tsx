@@ -66,13 +66,26 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
   const dirty = baseline !== null && draft !== baseline;
 
   async function handleSave(): Promise<void> {
+    const sent = draft;
     setSaving(true);
     setSaveError(null);
     try {
-      const saved = await agentsDocStore.getState().save(draft);
+      const saved = await agentsDocStore.getState().save(sent);
+      // The store resolves a save with whatever document is newer than the
+      // write when one landed behind it, so a save that comes back holding
+      // something other than what it sent was overwritten on its way in -
+      // the file moved under the user and the notice has to stay up.
       setBaseline(saved.content);
-      setStale(false);
-      toast.push("success", "Saved AGENTS.md");
+      if (saved.content === sent) {
+        setStale(false);
+        toast.push("success", "Saved AGENTS.md");
+      } else {
+        setStale(true);
+        toast.push(
+          "warning",
+          "Saved AGENTS.md, but it changed on disk since. Review the current copy before saving again.",
+        );
+      }
     } catch (err) {
       setSaveError(friendlyErrorMessage(err));
     } finally {

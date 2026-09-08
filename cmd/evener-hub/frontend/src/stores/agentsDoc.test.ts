@@ -219,9 +219,9 @@ describe("save", () => {
   });
 
   // A reconnect refetch that started before a save can only land after it
-  // holding the pre-save file, so a save fences older reads out the way a
-  // newer read does. A read started after it may land, but the save's own
-  // response - the hub's view of the file after the write - lands over it.
+  // holding the pre-save file, so the save's own bump fences it out the way a
+  // newer read does. A read that bumps the version after the save runs the
+  // other way round: it fences the save's own response out instead.
   test("a save invalidates an older in-flight fetch", async () => {
     const fake = connectFakeClient();
     let finishReading!: (doc: AgentsDocResponse) => void;

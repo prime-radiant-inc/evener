@@ -83,14 +83,14 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set, get) => ({
     // A response from a client the store has since replaced speaks for a
     // socket that is gone, so it goes back to the caller without landing.
     if (connectionStore.getState().client !== client) return doc;
-    // Anything that bumped the version behind this write speaks for the file
-    // later than this response does: a `changed` broadcast carrying someone
-    // else's write, or a read started after this one. Committing the response
-    // would put the older content back under the editor and the next Save
-    // would push it over what is on disk, so the newer document stands and
-    // goes back to the caller, whose content-keyed sync then shows it against
-    // the draft. The `??` is honesty about the type: a bump the store did not
-    // give a document to cannot happen behind a landed write.
+    // Something bumped the version behind this write - a `changed` broadcast
+    // carrying someone else's write, or a read started after this one - so
+    // this branch commits nothing and defers to whatever that newer read or
+    // broadcast lands, which is what keeps the store only ever moving
+    // forward. The caller gets the newest document the store has, whose
+    // content its content-keyed sync then shows against the draft, and this
+    // response itself when the store has none: the `??` is honesty about the
+    // type, since a bump that landed no document cannot follow a landed write.
     if (version !== requestVersion) return get().doc ?? doc;
     // A write that landed is the freshest view of the file there is, so an
     // earlier read's error is moot - and the section's notice for one
