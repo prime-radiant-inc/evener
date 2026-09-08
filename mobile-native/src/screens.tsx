@@ -1160,7 +1160,7 @@ export function ConversationScreen({
 		readerLatest.current = false;
 		readerHeader.current = false;
 		captureSuppressed.current = false;
-		readerPageAttempts.current.clear();
+		readerPageAttempts.current = new Set<string>();
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(
 			route.params.hubId,
@@ -1193,15 +1193,28 @@ export function ConversationScreen({
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
 			if (isReaderAnchorLoaded(anchor, conversation?.items ?? [])) return;
 			const cursor = snapshot.olderCursor;
+			const pageAttempts = readerPageAttempts.current;
 			if (
 				service &&
 				connected &&
 				cursor &&
 				!snapshot.loadingOlder &&
-				!readerPageAttempts.current.has(cursor)
+				!pageAttempts.has(cursor)
 			) {
-				readerPageAttempts.current.add(cursor);
-				void store.getState().loadOlder(service);
+				pageAttempts.add(cursor);
+				void store
+					.getState()
+					.loadOlder(service)
+					.then((result) => {
+						if (
+							result.status === "ignored" ||
+							(result.status === "loaded" && result.itemKeys.length > 0)
+						)
+							pageAttempts.delete(cursor);
+					})
+					.catch(() => {
+						// Keep failed page attempts guarded until a binding or route reset.
+					});
 			}
 			return;
 		}

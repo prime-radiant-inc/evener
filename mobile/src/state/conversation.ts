@@ -1088,8 +1088,9 @@ export function createConversationStore() {
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
     }
+    const retainedWireIds = new Set(items.map((item) => item.id));
     for (const id of [...liveOwnedRevs.keys()]) {
-      if (!retainedIds.has(id)) liveOwnedRevs.delete(id);
+      if (!retainedWireIds.has(id)) liveOwnedRevs.delete(id);
     }
   }
 
@@ -1458,6 +1459,7 @@ export function createConversationStore() {
           // appended as the live tail. Page-owned items prepend. Unowned old
           // history drops.
           const rereadIds = new Set(conversation.items.map((i) => i.id));
+          const rereadKeys = new Set(conversation.items.map(timelineIdentity));
           const currentConvForMerge = currentSnapshot.conversation;
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
@@ -1465,11 +1467,11 @@ export function createConversationStore() {
           const supersededVersions = new Map<string, MobileTimelineItem>();
           if (currentConvForMerge !== null) {
             for (const item of conversation.items) {
-              const rev = liveOwnedRevs.get(item.id);
+              const current = currentConvForMerge.items.find(
+                (i) => timelineIdentity(i) === timelineIdentity(item),
+              );
+              const rev = current && liveOwnedRevs.get(current.id);
               if (rev !== undefined && rev > entryLiveRev) {
-                const current = currentConvForMerge.items.find(
-                  (i) => i.id === item.id,
-                );
                 if (current !== undefined) {
                   supersededIds.add(item.id);
                   supersededVersions.set(item.id, current);
@@ -1513,12 +1515,14 @@ export function createConversationStore() {
               // 4. Drop current-only items owned by NEITHER (not pageOwned,
               //    not liveOwned, not in reread) as omitted old history.
               const pageOnlyItems = currentConvForMerge.items.filter(
-                (i) => !rereadIds.has(i.id) && pageOwnedIds.has(i.id),
+                (i) =>
+                  !rereadKeys.has(timelineIdentity(i)) &&
+                  pageOwnedIds.has(timelineIdentity(i)),
               );
               const liveTailItems = currentConvForMerge.items.filter(
                 (i) =>
-                  !rereadIds.has(i.id) &&
-                  !pageOwnedIds.has(i.id) &&
+                  !rereadKeys.has(timelineIdentity(i)) &&
+                  !pageOwnedIds.has(timelineIdentity(i)) &&
                   liveOwnedRevs.has(i.id),
               );
               // Page history first (oldest), then reread items, then live tail.
@@ -1537,8 +1541,8 @@ export function createConversationStore() {
             // reread (live notifications that arrived during the await).
             const liveTailItems = currentConvForMerge.items.filter(
               (i) =>
-                !rereadIds.has(i.id) &&
-                !pageOwnedIds.has(i.id) &&
+                !rereadKeys.has(timelineIdentity(i)) &&
+                !pageOwnedIds.has(timelineIdentity(i)) &&
                 liveOwnedRevs.has(i.id),
             );
             if (liveTailItems.length > 0) {

@@ -308,6 +308,138 @@ describe("ConversationService", () => {
   });
 
   describe("loadOlder", () => {
+    it("waits for a same-ref projection read before paging", async () => {
+      const { client, service, thread } = setup({
+        olderCursor: "fresh-cursor",
+      });
+      await service.open("ref-1");
+      let releaseRead!: (value: ThreadReadResponse) => void;
+      const pendingRead = new Promise<ThreadReadResponse>((resolve) => {
+        releaseRead = resolve;
+      });
+      client.on("thread/read", () => {
+        return pendingRead;
+      });
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-from-before-refresh");
+      await Promise.resolve();
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+      releaseRead(makeReadResponse(thread, "fresh-cursor"));
+      await refresh;
+      await expect(page).resolves.toMatchObject({ items: [] });
+      const listCall = client.calls.find(
+        (call) => call.method === "thread/turns/list",
+      );
+      expect(listCall?.params).toMatchObject({
+        ref: "ref-1",
+        cursor: "fresh-cursor",
+      });
+    });
+
+    it("does not page after the pending read is closed", async () => {
+      const { client, service, thread } = setup({ olderCursor: "cursor-a" });
+      await service.open("ref-1");
+      let releaseRead!: (value: ThreadReadResponse) => void;
+      const pendingRead = new Promise<ThreadReadResponse>((resolve) => {
+        releaseRead = resolve;
+      });
+      client.on("thread/read", () => pendingRead);
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [] }) as ThreadTurnsListResponse,
+      );
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-a");
+      service.close();
+      releaseRead(makeReadResponse(thread, "cursor-a"));
+      await refresh;
+      await expect(page).rejects.toThrow("thread changed while paging");
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+    });
+
+    it("waits for the latest overlapping same-ref projection", async () => {
+      const { client, service, thread } = setup({ olderCursor: "cursor-a" });
+      await service.open("ref-1");
+      let releaseFirst!: (value: ThreadReadResponse) => void;
+      let releaseLatest!: (value: ThreadReadResponse) => void;
+      const first = new Promise<ThreadReadResponse>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const latest = new Promise<ThreadReadResponse>((resolve) => {
+        releaseLatest = resolve;
+      });
+      let reads = 0;
+      client.on("thread/read", () => (++reads === 1 ? first : latest));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [] }) as ThreadTurnsListResponse,
+      );
+      const refresh1 = service.readProjection("ref-1");
+      const page = service.loadOlder("caller-cursor");
+      const refresh2 = service.readProjection("ref-1");
+      releaseFirst(makeReadResponse(thread, "stale-cursor"));
+      await refresh1;
+      await Promise.resolve();
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+      releaseLatest(makeReadResponse(thread, "latest-cursor"));
+      await refresh2;
+      await expect(page).resolves.toMatchObject({ items: [] });
+      expect(
+        client.calls.find((call) => call.method === "thread/turns/list")
+          ?.params,
+      ).toMatchObject({ cursor: "latest-cursor", ref: "ref-1" });
+    });
+
+    it("does not page when a pending read changes ref", async () => {
+      const { client, service, thread } = setup({ olderCursor: "cursor-a" });
+      await service.open("ref-1");
+      let release!: (value: ThreadReadResponse) => void;
+      const pending = new Promise<ThreadReadResponse>((resolve) => {
+        release = resolve;
+      });
+      client.on("thread/read", (params) =>
+        params.ref === "ref-1"
+          ? pending
+          : makeReadResponse(
+              {
+                ...thread,
+                id: "thread-b",
+                evener: {
+                  ...thread.evener,
+                  ref: "ref-2",
+                  instanceId: "instance-b",
+                },
+              },
+              "cursor-b",
+            ),
+      );
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [] }) as ThreadTurnsListResponse,
+      );
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-a");
+      const replacement = service.readProjection("ref-2");
+      release(makeReadResponse(thread, "cursor-a"));
+      await refresh;
+      await replacement;
+      await expect(page).rejects.toThrow("thread changed while paging");
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+    });
+
     it("passes cursor to thread/turns/list", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
