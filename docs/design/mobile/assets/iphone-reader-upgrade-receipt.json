@@ -1,0 +1,83 @@
+{
+  "sourceCommit": "517f70ae3",
+  "repositoryCheckpoint": "e4c37955e89a0fbc2c491bd478d3c9b638495e55",
+  "simulator": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+  "device": "iPhone17Pro iOS26.5 Simulator",
+  "launchPid": 1052,
+  "beforeAppHashes": {
+    "main.jsbundle": "e68e035436fb7012e6d6f957546036293487bd5a9c97bea428b3cdd1d5b34654",
+    "Evener": "eed8483c1053a62c46485285d54a6996d08ab7c513cbda5b37e4662382da13d3"
+  },
+  "afterAppHashes": {
+    "main.jsbundle": "664a548672bccb9b102b1628fd4b9d8b3b2b333c13ce9a36c94f6ef36d41bd11",
+    "Evener": "e2386bcca4d94cec2d78b2f3190eb6287009b9a14382b6ee30142f3482d6072e"
+  },
+  "draftTablesExactlyEqual": true,
+  "tableCounts": {
+    "drafts": 9,
+    "question_drafts": 8,
+    "question_positions": 3,
+    "draft_images": 0,
+    "draft_image_sets": 0,
+    "creation_drafts": 1,
+    "creation_draft_images": 0
+  },
+  "sourceHashes": {
+    "mobile-native/src/screens.tsx": "62aa85392318ed8186dd39b010279397cdb2f83f37a68ffee08e5e19e4fff14c",
+    "mobile-native/src/ConnectionProvider.tsx": "6f792684714446ac56b280a05ff2d38b58315d163eca1bf31aa2a501da78ae2f",
+    "mobile-native/src/readerPosition.ts": "dc3973bc911aafea074fb18b6f80db0adf6bd5462f57616374bba4c3c4f928b3",
+    "mobile-native/src/LaunchSettingsScreen.tsx": "6f02719d998bd31a084dd4b4a5c0c96fed1ff5a4da92f064c53d07ed4509802b",
+    "mobile/src/services/conversation.ts": "98be142801492ab10a2780794d077992ed77777484adab60fa578fb857e192ae",
+    "mobile/src/state/conversation.ts": "75d303d1371176ff5e830ddb5df2ce77c1a8a41879ee838b1b3c0dcf22cdb80a"
+  },
+  "evidence": {
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-reader-upgrade-_c81iym4/before-install.json": "7d7ea64729db50ac15abc516c4f57c55aff220ac964fb31ee33b039fbb976c6f",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-reader-upgrade-_c81iym4/before-install-ax.json": "d6e15db12e687f6dd2895e7868524496f3ab27384a75de022d966f499077d892",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-reader-upgrade-_c81iym4/after-install.json": "f630ac2257e8d76c1846a18d12480eb87a5c49e053cbaafa333200bdfef8bd29",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-reader-upgrade-_c81iym4/after-install-ax.json": "2f8f0826f947b2c0a4e90fbe27463c774782475046a1915fd05edce80340b826"
+  },
+  "scope": "In-place simulator upgrade, existing connection and durable draft preservation; further native workflows separately qualified.",
+  "readerFixture": {
+    "root": "/tmp/evener-native-reader-removal-fixture-20260908",
+    "ref": "local:034LBrshAbM01wZVdNC1l4",
+    "profileId": "1e80aee2-78bc-4f30-ba6a-eb5d783d4ed5",
+    "targetTurns": 12,
+    "provider": "external scripted OpenAI-compatible boundary"
+  },
+  "clipboard": {
+    "code": {
+      "exact": true,
+      "bytes": 52,
+      "sha256": "f2c8b4198f01b0cfe2b8342af24812627c316e6a18d6081ea2f470ad54a95707"
+    },
+    "linkDestination": {
+      "exact": true,
+      "bytes": 41,
+      "sha256": "921e75cd75d1dff3058bc5bb5d07009288485c6446ca164157d09e6e0bef97fb"
+    },
+    "priorClipboardRestored": true
+  },
+  "readerEvidence": {
+    "rich-settled.json": "308558f644397b37da97fc2d4b8fecdc76792c072c6e8b649af1e80169793c9f",
+    "rich-settled-storage.json": "6c27c808cd5994939ce1a947f3c1428c44ac173a0b0f63cd3a6418aa79b4e348",
+    "rich-latest.json": "c5f33b81ae9080e1fcf5884b0079f9d8f4388d2ebdc3d3e50e85a4e1d26ae70b",
+    "rich-latest-storage.json": "abd9f480937d64642869f5fe502c563f3b643715c0d8feec34be24b03cd6412e",
+    "rich-largest.json": "62ee4bda3f7099cd4435a9d6675c109a441d3c34c13b1af7f9e684bd12d9954f",
+    "rich-largest-storage.json": "d2435b6995981c2e0ba6423d945713524657f633b4120a1c9beb25e60d3ed221",
+    "rich-cold-largest-settled.json": "56a1415c4286c2dceffcf2b1777795818c1ed58f6f127fcae90ab244787daef9",
+    "rich-cold-largest-settled-storage.json": "50fac4f56e1e992fa94bdac7496553e428c754c80575aad5e9b39d105168f92d",
+    "rich-candidate-settled.json": "0a1f3c5d1191da8361e1a5e3788d62aa96577fd88dcba0444c35c5e6d069a194",
+    "rich-candidate-settled-storage.json": "9c5cdd57efd64f04603e963d50b49a446cc83c575ccc26b8a48d7bdabb726e1c"
+  },
+  "limits": [
+    "Cold launch at largest text restores to turn_m8 despite saved turn_m12 anchor; unresolved regression, not acceptance.",
+    "First two-line candidate leaves the same failure; no fix claim.",
+    "Code custom Copy action exists in native accessibility dump; VoiceOver speech and invocation are not qualified.",
+    "Multiline links use accessibilityPath; zero rectangular AX frame alone is not a defect.",
+    "Current device has a subsequent investigation build; these hashes identify the qualified upgrade and clipboard journey."
+  ],
+  "screenshots": {
+    "iphone-reader-rich.jpg": "199e53d448fb04499a8a715f95e4d866092b5f89d87a316124d681d50e3f3a01",
+    "iphone-reader-latest.jpg": "56a151331686cf8be785a88fc0681fca5e9bf85c6920cce959c4026983e08f28"
+  }
+}
