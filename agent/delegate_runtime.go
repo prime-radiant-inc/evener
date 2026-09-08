@@ -257,28 +257,43 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 	// Lookup-plus-insert is atomic under the registry lock: a lookup that ran
 	// before detach's delete would otherwise strand this entry on a stopped,
 	// unregistered hub that never ticks again. Lock order stays registry -> hub
-	// mu here and in detach, never the reverse.
+	// mu here and in detach, never the reverse. A creation loser that finds a
+	// hub after stopping its spare ticker re-verifies the registry still points
+	// at that hub before landing on it: a detach-plus-replace in the gap means
+	// retrying the lookup instead of registering on the stale hub.
 	delegateQuietWatchHubs.Lock()
-	hub := delegateQuietWatchHubs.hubs[s]
-	if hub == nil {
+	var hub *delegateQuietWatchHub
+	for {
+		hub = delegateQuietWatchHubs.hubs[s]
+		if hub != nil {
+			break
+		}
 		delegateQuietWatchHubs.Unlock()
 		ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
-		hub = &delegateQuietWatchHub{
+		fresh := &delegateQuietWatchHub{
 			ticker:  ticker,
 			done:    make(chan struct{}),
 			entries: make(map[delegateQuietWatchEntry]struct{}),
 		}
 		delegateQuietWatchHubs.Lock()
-		if existing := delegateQuietWatchHubs.hubs[s]; existing != nil {
+		existing := delegateQuietWatchHubs.hubs[s]
+		if existing == nil {
+			delegateQuietWatchHubs.hubs[s] = fresh
 			delegateQuietWatchHubs.Unlock()
-			ticker.Stop()
+			go s.serveDelegateQuietWatchHub(fresh)
+			delegateQuietWatchHubs.Lock()
+			hub = fresh
+			break
+		}
+		delegateQuietWatchHubs.Unlock()
+		ticker.Stop()
+		delegateQuietWatchHubs.Lock()
+		// The loser-observed hub may have been detached and replaced while the
+		// lock was released to stop the spare ticker: only land on it while the
+		// registry still points at it, otherwise loop back and retry the lookup.
+		if delegateQuietWatchHubs.hubs[s] == existing {
 			hub = existing
-			delegateQuietWatchHubs.Lock()
-		} else {
-			delegateQuietWatchHubs.hubs[s] = hub
-			delegateQuietWatchHubs.Unlock()
-			go s.serveDelegateQuietWatchHub(hub)
-			delegateQuietWatchHubs.Lock()
+			break
 		}
 	}
 	hub.mu.Lock()
