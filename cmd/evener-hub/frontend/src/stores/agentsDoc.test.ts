@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "vitest";
+import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { AgentsDocResponse, AnyNotification } from "../protocol/types.gen";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "./agentsDoc";
@@ -198,6 +199,23 @@ describe("save", () => {
     });
     await expect(agentsDocStore.getState().save("x")).rejects.toThrow("read-only");
     expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
+
+  // A reload can fail while the socket stays up, and the section's notice for
+  // that ("saving would overwrite anything changed on disk since") is false
+  // the moment a write lands, so a save has to take the error with it.
+  test("a successful save clears a stale fetch error", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/settings/agentsDoc/get", () => {
+      throw new WireError("hub unreachable", -1);
+    });
+    await agentsDocStore.getState().fetch();
+    expect(agentsDocStore.getState().error).toContain("hub unreachable");
+
+    fake.on("evener/settings/agentsDoc/set", (params) => ({ ...DOC, content: params.content }));
+    await agentsDocStore.getState().save("x");
+    expect(agentsDocStore.getState().error).toBeNull();
+    expect(agentsDocStore.getState().doc?.content).toBe("x");
   });
 });
 

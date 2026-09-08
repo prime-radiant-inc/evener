@@ -71,7 +71,10 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
   async save(content) {
     const client = requireClient();
     const doc = await client.request("evener/settings/agentsDoc/set", { content });
-    set({ doc });
+    // A write that landed is the freshest view of the file there is, so an
+    // earlier read's error is moot - and the section's notice for one
+    // ("saving would overwrite anything changed on disk since") is now false.
+    set({ doc, error: null });
     return doc;
   },
 }));
