@@ -1,0 +1,223 @@
+{
+  "schema": "evener.ipad.reader-recovery.v1",
+  "status": "qualified-scoped-simulator",
+  "date": "2026-09-08",
+  "sourceHead": "66e55d8875233deff44030b15f86b84c021d9eb4",
+  "buildDurationMs": 12364,
+  "launchPid": 64518,
+  "fixtureRoot": "/tmp/evener-ipad-reader-reflow-fixture-20260908",
+  "evidenceRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9",
+  "anchor": {
+    "itemKey": "apptranscript-item-v1:turn_m4:5:0",
+    "withinItemOffset": 106,
+    "frameKeys": [
+      "turn 04 READER-TURN-04",
+      "turn 05 READER-TURN-05"
+    ]
+  },
+  "checkpoints": [
+    {
+      "name": "before",
+      "snapshot": "reader-opaque-before.json",
+      "storage": "reader-opaque-before-storage.json",
+      "sha256": "c15634874e9ae903511dd9d595a75d9bddb471129043cc6885233a467f7bac90",
+      "storageSha256": "1c71111e1d226924be578fbb1f57e2784a04f145b90276a926843c82fdf85293"
+    },
+    {
+      "name": "held",
+      "snapshot": "reader-opaque-held.json",
+      "storage": "reader-opaque-held-storage.json",
+      "sha256": "2cc4605a1847fe472c86c3736cfcf297f37c8c1ae396fbfefd55ae90947fb5ba",
+      "storageSha256": "1c71111e1d226924be578fbb1f57e2784a04f145b90276a926843c82fdf85293",
+      "stopVisible": true
+    },
+    {
+      "name": "settled",
+      "snapshot": "reader-opaque-settled.json",
+      "storage": "reader-opaque-settled-storage.json",
+      "sha256": "109d7d02a3a6116c6d1ab691f245665bd044fa6ee164dc5c47b31b3cb72b6f01",
+      "storageSha256": "1c71111e1d226924be578fbb1f57e2784a04f145b90276a926843c82fdf85293",
+      "stopVisible": false
+    },
+    {
+      "name": "cold-largest-settled",
+      "snapshot": "reader-opaque-cold-largest-settled.json",
+      "storage": "reader-opaque-cold-largest-settled-storage.json",
+      "sha256": "1611745ba236b63a7d2c217a850ecc85343a78508da746d6f6864490ae540289",
+      "storageSha256": "1c71111e1d226924be578fbb1f57e2784a04f145b90276a926843c82fdf85293",
+      "stopVisible": false
+    }
+  ],
+  "verifier": {
+    "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/verify-native-reader.json",
+    "sha256": "af810c4fcf34e39765d008abb14e54f10417be31532af5b3d2e8507d663ca456",
+    "status": "passed",
+    "assertedCheckpoints": [
+      "before",
+      "held",
+      "settled"
+    ],
+    "coldLargestCheckpoint": "retained separately; same anchor, no additional claim",
+    "directFourCheckpointCheck": {
+      "status": "passed",
+      "assertions": [
+        "same storage anchor and offset across all four snapshots",
+        "Stop absent before, present while held, absent settled and cold-largest",
+        "anchor frames equal before/settled/cold-largest for both retained frame keys"
+      ],
+      "method": "independent direct raw JSON assertion; no transformed verifier output used"
+    }
+  },
+  "providerRetry": {
+    "verification": "/tmp/evener-ipad-reader-reflow-fixture-20260908/artifacts/retry-verification.json",
+    "sha256": "0a0af48af6665a84a79a190bc56a4f5f0810befea95ec9e6ad653ba6323fb9ca",
+    "status": "verified",
+    "turnId": "turn_m70",
+    "providerStatuses": [
+      503,
+      200
+    ],
+    "sseMarker": "READER-RETRY-SSE-RECOVERED"
+  },
+  "artifacts": {
+    "sourceFiles": {
+      "mobile-native/src/screens.tsx": "e921e7328caa04015f438b28175dda6782e85e45c48a69b5ad2362313eb39992",
+      "mobile/src/state/conversation.ts": "75d303d1371176ff5e830ddb5df2ce77c1a8a41879ee838b1b3c0dcf22cdb80a",
+      "mobile/src/services/conversation.ts": "98be142801492ab10a2780794d077992ed77777484adab60fa578fb857e192ae"
+    },
+    "mainJsBundleSha256": "e9594384588059567f401f30a9061376115a402ae9ace5359c61f5d20752381d",
+    "binarySha256": "617e9dc4dfa60d0edbde791b3a1f74b6c55edfcd7cdc9e874b31f18c240f8779"
+  },
+  "scope": {
+    "claims": [
+      "real iPad reader anchor survives held retry and settled reflow",
+      "Stop is present while turn held and absent after settlement",
+      "cold largest text checkpoint retains anchor and settled layout",
+      "provider retry is real 503 then SSE 200",
+      "Latest returns from historical turn m54, follows latest through largest-text resize, preserves manual drag at 354y, and tapping Latest leaves settled body above composer"
+    ],
+    "notClaimed": [
+      "continuous stability",
+      "duplicate observer evidence (m66 unqualified)",
+      "cursor substitution runs (m67-m69 exposed defect)",
+      "rich media",
+      "active-tail in-view",
+      "rotation",
+      "VoiceOver",
+      "device matrix",
+      "signing/distribution/release gates",
+      "live-in-viewport streaming after the 7b954fe90 build"
+    ]
+  },
+  "executionEnvironment": {
+    "platform": "iPad Pro 11-inch (M5) Simulator",
+    "os": "iOS 26.5 Simulator",
+    "simulatorUDID": "6462A0FC-A190-4F08-A0CC-9B7E6C792AEC",
+    "physicalDevice": false,
+    "backendSource": "d2d5eedf9"
+  },
+  "provenance": {
+    "backendSource": "d2d5eedf9",
+    "sourceHashes": {
+      "mobile-native/src/screens.tsx": "e921e7328caa04015f438b28175dda6782e85e45c48a69b5ad2362313eb39992",
+      "mobile/src/state/conversation.ts": "75d303d1371176ff5e830ddb5df2ce77c1a8a41879ee838b1b3c0dcf22cdb80a",
+      "mobile/src/services/conversation.ts": "98be142801492ab10a2780794d077992ed77777484adab60fa578fb857e192ae"
+    },
+    "binarySha256": {
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+      "scripted-provider": "d8386955440cc23ec3b8cd6e85da264f34e843c05a88fb93c854e985dc175a15"
+    },
+    "computedHashes": {
+      "readerOpaqueArtifactJson": "3dfbe876470b56351892bbbfd65e10316c79fc04d56aeaaa4c3909936bf2b832",
+      "verifyNativeReaderPy": "56dc464dd9716cc2a47a64298488614e7ad5b861f4545c9f8eede9c3913ac73f",
+      "verifyRetryPy": "e46c70ebd019790003c832364d3a431949a1c089487dba3b6d120e62886fd39e",
+      "retryObserverRaw": "afd0d9ef4efa1136dfd7601db28a1ceb63d96cf5f983278f921f4d856ca75585",
+      "retryObserverFinalRead": "4204e2a4d7b89caba4829cdf1c0f980c0637cb642bc98b7d7dabfc6fd4c763ca",
+      "retryObserverReady": "c6d0305f143df36aaf94985819da65be73a18f0d3827e67207ea22cd630a7250",
+      "retryStart": "a4aed4355264e552c2d29dc3237c93f49006da746e2c4c494698cf26effd8606",
+      "providerSseEvidence": "ef2daba9df948cdb99f7592318302aeac9cd4785a0728493be0d71404edd7223",
+      "fullPagesRead": "b5152994429f2bb179055b63f418eecf29fc67cb4c68d233b8fef2cb5c91355c",
+      "cursorOwnerReadback": "10dae23d44a9016288547c6478980c795e988d51d5279ed5a3e8aaa195256e51"
+    },
+    "sdk": {
+      "tarPath": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+      "tarSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+      "tarRegularFiles": 139,
+      "installedConsumerPath": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+      "installedConsumerRegularFiles": 283,
+      "tarFilesByteEqual": true
+    }
+  },
+  "latestQualification": {
+    "sourceCommit": "7b954fe90",
+    "sourceBase": "66e55d8875233deff44030b15f86b84c021d9eb4",
+    "screensSourceSha256": "62aa85392318ed8186dd39b010279397cdb2f83f37a68ffee08e5e19e4fff14c",
+    "simulatorUDID": "6462A0FC-A190-4F08-A0CC-9B7E6C792AEC",
+    "buildDurationMs": 9420,
+    "launchPid": 32996,
+    "mainJsbundleSha256": "4dc0429e399ac99c7ae220f8a4dccfb111d7907b7985669379741a334017b380",
+    "EvenerBinarySha256": "ae2964fe0c36b80f558da8dec5e6738f3ad2c1bf75627cb04d89443c230b4743",
+    "screenshots": {
+      "ipad-reader-latest-before.jpg": {
+        "source": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_24291e1f-f017-43ef-a0a4-e54dfd486776.jpg",
+        "sha256": "cbc686943b88fdd3c51913580f7ba2b5f742585150b7a9d95d63efb85f4c28ac"
+      },
+      "ipad-reader-latest-after.jpg": {
+        "source": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_7d13c4f4-9d1e-4ab4-bbc1-2d37ff96212e.jpg",
+        "sha256": "bbdd725632a2c44d47b03a58a976a0ecd3e04f9a4150012971cb632d86344005"
+      },
+      "ipad-reader-latest-largest.jpg": {
+        "source": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/screenshot_optimized_f050543d-6cfa-47ee-856c-35c65e75221c.jpg",
+        "sha256": "8c6f718682eb1cc6af169b0fae68b03fba39db362189153cd1714286d55955e0"
+      }
+    },
+    "artifactEvidence": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/latest-final-artifact.json",
+      "sha256": "3c4a5862216527f407b2fb085addd2b0b82812644e6da82023d245fcfa55d53d"
+    },
+    "checkpointEvidence": {
+      "latest-final-cold.json": "5090229ccc451765cbd61cbf32c1838c8e8cdeec5423fe371211521a7d5686f2",
+      "latest-final-history.json": "4aaa66ae94c7498bfde4018d0c7037eeda1edeed8ff3be8a5e5847c30222e3de",
+      "latest-final-from-history.json": "73dd9282185a0d71a2abe0f780ca87f5c039eea48619cde8560ca5c0de4dc5f4",
+      "latest-final-from-history-storage.json": "4b94f5d3f9dc306977ebb875db9b06d3d230a38fa1f41640d6e17b95440acc2b",
+      "latest-final-largest-drag.json": "9c2536b84e3731dd28b9f6f7b5c7a890072b9a8916b4e0396b9105a943fac063",
+      "latest-final-largest-drag-settled.json": "75cfa9c2624733250a90412666ba6555de79acbe7bd04c10361989421c3e1754",
+      "latest-final-largest-after-tap.json": "ff4b84f1824bcd1f763f5e116efd57512fc48d18c272bdae36e058898bfe7a9a"
+    }
+  },
+  "cleanup": {
+    "status": "closed",
+    "rootReceipt": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/root-reader-cleanup.json",
+      "sha256": "f0a413dfbb2930992ebf63c4fd92b8e7edc7635dcdb8d6801e11120a81a789f1"
+    },
+    "nativeOrphanTeardownWasManual": true,
+    "nativeRemovalFixQualified": false,
+    "originalIphoneDraftsVerified": 7,
+    "originalApplePatchByteEqual": true
+  },
+  "readerRemovalFix": {
+    "sourceCommit": "517f70ae3875ef1cd459dc51c7307c0816e06452",
+    "sourceFiles": {
+      "mobile-native/src/readerPosition.ts": "dc3973bc911aafea074fb18b6f80db0adf6bd5462f57616374bba4c3c4f928b3",
+      "mobile-native/src/readerPosition.test.ts": "7e38280eb4d221ea94a48b00d7cd45f5d273141748ca67d58259270ab0edabd9",
+      "mobile-native/src/ConnectionProvider.tsx": "6f792684714446ac56b280a05ff2d38b58315d163eca1bf31aa2a501da78ae2f",
+      "mobile-native/src/screens.tsx": "62aa85392318ed8186dd39b010279397cdb2f83f37a68ffee08e5e19e4fff14c"
+    },
+    "installedAndBuiltHashes": {
+      "main.jsbundle": "664a548672bccb9b102b1628fd4b9d8b3b2b333c13ce9a36c94f6ef36d41bd11",
+      "Evener": "e2386bcca4d94cec2d78b2f3190eb6287009b9a14382b6ee30142f3482d6072e"
+    },
+    "buildDurationMs": 11565,
+    "launchPid": 24459,
+    "qualification": "startup smoke only; reader hub-removal behavior has deterministic coverage, fresh native removal journey open",
+    "nativeTests": 682,
+    "testFiles": 74,
+    "typescript": "passed",
+    "checkpoints": {
+      "reader-removal-build-smoke.json": "8019d020cfe10d9156b0ba6192c7afd038a1b7649ee8bafa106346e6177cb2a9",
+      "reader-removal-build-smoke-storage.json": "f3ce945136da9ff48442c208f050e1160357c6c54a4a75c83329ad062e106fc0"
+    }
+  }
+}
