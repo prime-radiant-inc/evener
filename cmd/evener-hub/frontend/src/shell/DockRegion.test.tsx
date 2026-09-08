@@ -258,7 +258,9 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
   // "Couldn't load sessions" with a Retry beside the dock's own loading
   // placeholder), so scope the dock Retry to the loading empty-state rather
   // than querying the whole shell.
-  expect(loading?.querySelector("button")).toHaveTextContent("Retry");
+  // No jest-dom matchers in this tree (vite.config.ts setupFiles is empty),
+  // so read the scoped button's text directly.
+  expect(loading?.querySelector("button")?.textContent).toBe("Retry");
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
   // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
