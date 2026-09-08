@@ -14,15 +14,27 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// allocationsDuring counts the heap allocations one projection makes and the
-// bytes they total. The runtime's counters are process-global, so the window
-// stays tight around the call under measurement.
-func allocationsDuring(fn func()) (allocs, bytes uint64) {
+// projectionRuns is how many times each form is replayed under
+// testing.AllocsPerRun once it is warm.
+const projectionRuns = 3
+
+// allocsPerProjection counts the heap allocations one projection form makes
+// per run. The runtime's counters are process-global, so the form is run once
+// first: whatever a first call allocates and a later one does not — lazily
+// built package state, buffers growing to their steady size — lands outside
+// the measured window. testing.AllocsPerRun then pins GOMAXPROCS to 1 and
+// averages over projectionRuns runs, so an allocation from somewhere else in
+// the process moves the average by a fraction of one run rather than by all of
+// itself. Elapsed time and allocated bytes come from the warm-up run and are
+// for the log only.
+func allocsPerProjection(fn func()) (allocs float64, elapsed time.Duration, bytes uint64) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
+	start := time.Now()
 	fn()
+	elapsed = time.Since(start)
 	runtime.ReadMemStats(&after)
-	return after.Mallocs - before.Mallocs, after.TotalAlloc - before.TotalAlloc
+	return testing.AllocsPerRun(projectionRuns, fn), elapsed, after.TotalAlloc - before.TotalAlloc
 }
 
 // TestItemTurnsFromEntriesAvoidsFileScanAndDecode pins the entries
@@ -74,11 +86,9 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 	// File form.
 	var fileTurns []appwire.Turn
 	var fileErr error
-	fileStart := time.Now()
-	fileAllocs, fileBytes := allocationsDuring(func() {
+	fileAllocs, fileElapsed, fileBytes := allocsPerProjection(func() {
 		fileTurns, fileErr = ItemTurnsFromFile(path, 1<<30, project)
 	})
-	fileElapsed := time.Since(fileStart)
 	if fileErr != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", fileErr)
 	}
@@ -91,23 +101,21 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 	_ = rw.Close() //nolint:errcheck // measurement fixture
 	var entryTurns []appwire.Turn
 	var entriesErr error
-	entriesStart := time.Now()
-	entriesAllocs, entriesBytes := allocationsDuring(func() {
+	entriesAllocs, entriesElapsed, entriesBytes := allocsPerProjection(func() {
 		entryTurns, entriesErr = ItemTurnsFromEntries(rw.Header(), entries, project)
 	})
-	entriesElapsed := time.Since(entriesStart)
 	if entriesErr != nil {
 		t.Fatalf("ItemTurnsFromEntries: %v", entriesErr)
 	}
 
 	t.Logf("fixture: %d entries, %d bytes (%.1f MB)", entryCount, info.Size(), float64(info.Size())/1024/1024)
-	t.Logf("file form (scan+decode+project): %d allocs, %d bytes, %v, turns=%d", fileAllocs, fileBytes, fileElapsed, len(fileTurns))
-	t.Logf("entries form (project only):     %d allocs, %d bytes, %v, turns=%d", entriesAllocs, entriesBytes, entriesElapsed, len(entryTurns))
+	t.Logf("file form (scan+decode+project): %.0f allocs/run over %d runs, warm-up %d bytes in %v, turns=%d", fileAllocs, projectionRuns, fileBytes, fileElapsed, len(fileTurns))
+	t.Logf("entries form (project only):     %.0f allocs/run over %d runs, warm-up %d bytes in %v, turns=%d", entriesAllocs, projectionRuns, entriesBytes, entriesElapsed, len(entryTurns))
 
-	ratio := float64(fileAllocs) / float64(entriesAllocs)
+	ratio := fileAllocs / entriesAllocs
 	t.Logf("allocation ratio: %.2fx", ratio)
 	if ratio < 2 {
-		t.Fatalf("the file form made only %.2fx the allocations of the entries form (file=%d, entries=%d, over %d entries); the entries projection's skip of the file scan + decode pass is its entire reason to exist", ratio, fileAllocs, entriesAllocs, entryCount)
+		t.Fatalf("the file form made only %.2fx the allocations of the entries form (file=%.0f, entries=%.0f, over %d entries); the entries projection's skip of the file scan + decode pass is its entire reason to exist", ratio, fileAllocs, entriesAllocs, entryCount)
 	}
 	if len(fileTurns) != len(entryTurns) {
 		t.Fatalf("turn counts diverge: file=%d entries=%d", len(fileTurns), len(entryTurns))
