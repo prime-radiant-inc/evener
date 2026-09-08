@@ -207,6 +207,86 @@ func TestDelegateQuietHub_StopsAfterLastDetach(t *testing.T) {
 	}
 }
 
+func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
+	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
+	root, controller := quietHubTestSession(t, clk)
+	lease := seedQuietHubLease(t, controller, clk, "dlg_hub_parent")
+	ageHubLeasesPastQuietWindow(clk)
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	stop := root.startDelegateQuietWatchdog(parent, lease)
+	defer stop()
+	if _, n := quietHubEntryCount(root); n != 1 {
+		t.Fatalf("hub entry count = %d, want 1", n)
+	}
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers = %d, want 1", got)
+	}
+
+	// Cancelling the parent runs detach on the AfterFunc goroutine; the
+	// returned CancelFunc joins it (detach is sync.Once-guarded and closes its
+	// stopped channel), so everything below is a direct assertion, not a poll.
+	cancelParent()
+	stop()
+
+	delegateQuietWatchHubs.Lock()
+	_, registered := delegateQuietWatchHubs.hubs[root]
+	delegateQuietWatchHubs.Unlock()
+	if registered {
+		t.Fatal("hub still registered after parent cancel")
+	}
+	if _, n := quietHubEntryCount(root); n != -1 {
+		t.Fatalf("hub entry count after parent cancel = %d, want unregistered", n)
+	}
+	if got := clk.BlockedCount(); got != 0 {
+		t.Fatalf("quiet hub tickers after parent cancel = %d, want 0 (ticker stopped)", got)
+	}
+}
+
+func TestDelegateQuietHub_RearmAfterLastDetachFiresNewTicker(t *testing.T) {
+	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
+	root, controller := quietHubTestSession(t, clk)
+	leaseFirst := seedQuietHubLease(t, controller, clk, "dlg_hub_rearm_first")
+	leaseSecond := seedQuietHubLease(t, controller, clk, "dlg_hub_rearm_second")
+	ageHubLeasesPastQuietWindow(clk)
+
+	cancelFirst := root.startDelegateQuietWatchdog(context.Background(), leaseFirst)
+	defer cancelFirst()
+	oldHub := quietHubFor(t, root)
+	cancelFirst()
+
+	delegateQuietWatchHubs.Lock()
+	_, registered := delegateQuietWatchHubs.hubs[root]
+	delegateQuietWatchHubs.Unlock()
+	if registered {
+		t.Fatal("hub still registered after last detach")
+	}
+	if got := clk.BlockedCount(); got != 0 {
+		t.Fatalf("quiet hub tickers after last detach = %d, want 0 (ticker stopped)", got)
+	}
+
+	// Re-arming the same session after the last detach must build a fresh hub
+	// and ticker: the old hub's ticker is stopped and its loop has exited.
+	cancelSecond := root.startDelegateQuietWatchdog(context.Background(), leaseSecond)
+	defer cancelSecond()
+	newHub := quietHubFor(t, root)
+	if newHub == oldHub {
+		t.Fatal("re-arm reused the stopped hub after last detach")
+	}
+	if got := clk.BlockedCount(); got != 1 {
+		t.Fatalf("quiet hub tickers after re-arm = %d, want 1 shared ticker", got)
+	}
+
+	wait := armQuietTicks(t, map[delegateLease]int{leaseSecond: 1})
+	clk.Advance(delegateQuietCheckInterval)
+	if got := wait(); len(got) != 1 || got[0] != leaseSecond {
+		t.Fatalf("re-armed lease ticks = %+v, want [%+v]", got, leaseSecond)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != delegateQuietAttentionID(leaseSecond) {
+		t.Fatalf("re-armed lease attention = %#v, want [%q]", got, delegateQuietAttentionID(leaseSecond))
+	}
+}
+
 func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.T) {
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
