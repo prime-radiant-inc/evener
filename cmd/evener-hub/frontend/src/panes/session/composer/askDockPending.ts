@@ -3,8 +3,8 @@
 // composer's initial chunk. Session.tsx keeps importing the full barrel -
 // it mounts AskDock itself - so this changes only what the composer pays
 // for, not what any other surface loads.
-import { useAskDockStore } from "./askDock/askDockStore";
-
-export function useAskDockPending(ref: string): boolean {
-  return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
-}
+//
+// The predicate lives in askDock/askDockStore.ts, next to the store it
+// selects from; this module re-exports it so the composer's chunk stays lean
+// without carrying its own verbatim copy.
+export { useAskDockPending } from "./askDock/askDockStore";
