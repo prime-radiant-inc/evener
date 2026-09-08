@@ -1,7 +1,7 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
-import { type JSX, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
   HarnessDescriptor,
@@ -45,7 +45,6 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
-import { ConnectProviderDialog } from "../settings/sections/credentials/ConnectProviderDialog";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
@@ -74,6 +73,18 @@ import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
+
+// Below-the-fold dialog: mounted only after the user clicks "Connect
+// provider" (connectingProvider state), never on first paint. The chunk -
+// the dialog plus its instance-credential editors (instanceDialogs,
+// oauthDialogs, oauthFlow) - stays out of the spawn pane's initial bundle
+// and loads on first open; the fallback is null because the dialog owns
+// its own loading affordance once mounted.
+const ConnectProviderDialog = lazy(() =>
+  import("../settings/sections/credentials/ConnectProviderDialog").then((m) => ({
+    default: m.ConnectProviderDialog,
+  })),
+);
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -1075,7 +1086,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             </Button>
           </div>
         )}
-        {connectingProvider && <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />}
+        {connectingProvider && (
+          <Suspense fallback={null}>
+            <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
+          </Suspense>
+        )}
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         {/* The same AttachmentTile the session composer draws (kata kbg7):
