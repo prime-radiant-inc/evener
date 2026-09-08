@@ -843,7 +843,7 @@ func TestGlobIgnoreDiscoveryRefusesRatherThanUnderExcluding(t *testing.T) {
 
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(fsys, nil, budget, wholeBaseIgnoreScope())
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-directory tree with a listing budget of %d = (%d rules, %v), want a *globBudgetError; a set that gave up partway would be reported as complete and would silently stop excluding", dirCount, listingBudget, len(set.dirs), err)
@@ -979,7 +979,7 @@ func TestGlobIgnoreDiscoveryStopsOnADirectoryWithTooManyEntries(t *testing.T) {
 
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	_, err := loadIgnoreSet(fsys, nil, budget, wholeBaseIgnoreScope())
+	_, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-entry directory with an entry budget of %d = %v, want a *globBudgetError; the refusal is being swallowed as if it were an unreadable entry", fileCount, entryCap, err)
@@ -1187,7 +1187,7 @@ func TestGlobIgnoreDiscoveryPropagatesTheLiveEntryRefusal(t *testing.T) {
 
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	_, err := loadIgnoreSet(fsys, nil, budget, wholeBaseIgnoreScope())
+	_, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-level tree holding %d entries per level against a ceiling of %d = %v, want a *globBudgetError; the refusal is being absorbed by discovery's best-effort arm", depth, perDir, ceiling, err)
@@ -1399,7 +1399,7 @@ func TestLoadIgnoreSetConsultsSkipForTheScopePrefixItself(t *testing.T) {
 		return relPath == "vault"
 	}
 
-	set, err := loadIgnoreSet(fsys, skip, newGlobBudget("glob"), []ignoreScope{{prefix: "vault", depth: -1, walk: true}})
+	set, err := loadIgnoreSet(t.Context(), fsys, skip, newGlobBudget("glob"), []ignoreScope{{prefix: "vault", depth: -1, walk: true}})
 	if err != nil {
 		t.Fatalf("loadIgnoreSet scoped to a masked prefix: %v", err)
 	}
@@ -1440,7 +1440,7 @@ func TestLoadIgnoreSetSkipsAMaskedAncestorGitignoreFile(t *testing.T) {
 		return relPath == "sub/.gitignore"
 	}
 
-	set, err := loadIgnoreSet(fsys, skip, newGlobBudget("glob"), []ignoreScope{{prefix: "sub/deep", depth: -1, walk: true}})
+	set, err := loadIgnoreSet(t.Context(), fsys, skip, newGlobBudget("glob"), []ignoreScope{{prefix: "sub/deep", depth: -1, walk: true}})
 	if err != nil {
 		t.Fatalf("loadIgnoreSet with a masked ancestor .gitignore: %v", err)
 	}
@@ -1573,7 +1573,7 @@ func TestLoadIgnoreSetStartsEachScopeWalkWithACleanLiveSet(t *testing.T) {
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
 	scope := []ignoreScope{{prefix: ".", depth: 0, walk: true}, {prefix: "sub", depth: 0, walk: true}}
-	if _, err := loadIgnoreSet(fsys, nil, budget, scope); err != nil {
+	if _, err := loadIgnoreSet(t.Context(), fsys, nil, budget, scope); err != nil {
 		t.Fatalf("loadIgnoreSet over a base of %d entries and a nested prefix of %d against a ceiling of %d = %v, want no refusal: the base walk's listing is no longer held once its traversal ends", rootFiles+1, subFiles, ceiling, err)
 	}
 }
@@ -1599,7 +1599,7 @@ func TestLoadIgnoreSetRefusesAnOversizedRulesFile(t *testing.T) {
 
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	_, err := loadIgnoreSet(fsys, nil, budget, wholeBaseIgnoreScope())
+	_, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over a %d-byte .gitignore with a per-file cap of %d = %v, want a *globBudgetError", fileBytes, fileCap, err)
@@ -1639,7 +1639,7 @@ func TestLoadIgnoreSetRefusesTooManyRetainedRules(t *testing.T) {
 
 	budget := newGlobBudget("glob")
 	fsys := boundedDirFS{FS: os.DirFS(root), budget: budget, ctx: t.Context()}
-	set, err := loadIgnoreSet(fsys, nil, budget, wholeBaseIgnoreScope())
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, wholeBaseIgnoreScope())
 	budgetErr, refused := errors.AsType[*globBudgetError](err)
 	if !refused {
 		t.Fatalf("loadIgnoreSet over %d directories each carrying a %d-byte .gitignore, against a retention budget of %d = %v, want a *globBudgetError", dirs, perFile, total, err)
@@ -1838,7 +1838,7 @@ func TestLoadIgnoreSetReadsEachRulesFileOnce(t *testing.T) {
 		{prefix: ".", depth: 1, walk: true},
 		{prefix: "a", depth: 1, walk: true},
 	}
-	set, err := loadIgnoreSet(fsys, nil, budget, scope)
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, scope)
 	if err != nil {
 		t.Fatalf("loadIgnoreSet over two overlapping scopes: %v", err)
 	}
@@ -1895,7 +1895,7 @@ func TestLoadIgnoreSetSkipsADotDirectoryAncestor(t *testing.T) {
 		".gitignore":           &fstest.MapFile{Data: []byte("root.log\n")},
 	}
 
-	set, err := loadIgnoreSet(fsys, nil, newGlobBudget("glob"), []ignoreScope{{prefix: ".config/sub", depth: 0, walk: true}})
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, newGlobBudget("glob"), []ignoreScope{{prefix: ".config/sub", depth: 0, walk: true}})
 	if err != nil {
 		t.Fatalf("loadIgnoreSet scoped under a dot-directory: %v", err)
 	}

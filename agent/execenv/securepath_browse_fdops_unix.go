@@ -119,7 +119,7 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 		// .gitignore rules — secureDirFS enforces symlink-refusal and root
 		// confinement but not masking, so the skip must be supplied here.
 		var err error
-		ignores, err = loadIgnoreSet(fsys, func(relPath string) bool {
+		ignores, err = loadIgnoreSet(ctx, fsys, func(relPath string) bool {
 			return s.underMasked(filepath.Join(canonical, relPath))
 		}, budget, ignoreScopeForPatterns(patterns))
 		if err != nil {
@@ -190,7 +190,7 @@ func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter st
 	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s, budget: budget, ctx: ctx}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
-	ignores, err := loadIgnoreSet(fsys, func(relPath string) bool {
+	ignores, err := loadIgnoreSet(ctx, fsys, func(relPath string) bool {
 		return s.underMasked(filepath.Join(canonical, relPath))
 	}, budget, wholeBaseIgnoreScope())
 	if err != nil {

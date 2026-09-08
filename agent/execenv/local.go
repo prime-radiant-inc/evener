@@ -1721,6 +1721,9 @@ var globBaseFS = func(ctx context.Context, dir string, budget *GlobBudget) fs.FS
 // call returns (see GlobBudget.TruncatedAt), rather than being refused a
 // truncated listing outright the way GlobWithExclusions is.
 func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern string, basePath string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
+	if budget == nil {
+		return nil, 0, errors.New("glob requires a budget: pass execenv.NewGlobBudget() or call GlobWithExclusions for an internally budgeted call")
+	}
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -1743,7 +1746,7 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
 		var err error
-		ignores, err = loadIgnoreSet(fsys, nil, budget, ignoreScopeForPatterns(patterns))
+		ignores, err = loadIgnoreSet(ctx, fsys, nil, budget, ignoreScopeForPatterns(patterns))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -1972,7 +1975,7 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 		// file argument, which cannot contain a .gitignore tree of its own.
 		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
 	}
-	ignores, err := loadIgnoreSet(ignoreFS, nil, budget, wholeBaseIgnoreScope())
+	ignores, err := loadIgnoreSet(ctx, ignoreFS, nil, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}

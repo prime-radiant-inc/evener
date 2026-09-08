@@ -166,6 +166,61 @@ func TestGlobWithExclusionsStopsMidWalk(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoreSetReportsCancellation pins the discovery half of the
+// cancellation contract: a discovery walk over an already-cancelled context
+// reports the cancellation rather than a partial (here empty) rule set with a
+// nil error. Without it a default glob or grep keeps traversing after
+// cancellation and only surfaces the cancellation once discovery finishes —
+// or never, if the walk completes while cancelled.
+func TestLoadIgnoreSetReportsCancellation(t *testing.T) {
+	tree := fstest.MapFS{
+		"a/b/.gitignore": &fstest.MapFile{Data: []byte("*.log\n")},
+		"a/b/keep.txt":   &fstest.MapFile{Data: []byte("x")},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	set, err := loadIgnoreSet(ctx, cancelFS{ctx: ctx, fsys: tree}, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loadIgnoreSet with a cancelled context = (%v, %v), want context.Canceled", set, err)
+	}
+}
+
+// TestLoadIgnoreSetStopsMidWalkCancels is the promptness half: a cancellation
+// landing once discovery is already under way must unwind the walk, not grind
+// through the rest of the tree. The counter cancels on the second listing, so
+// a walk that ignores the cancellation visits every directory while one that
+// propagates it stops within about one more call.
+func TestLoadIgnoreSetStopsMidWalkCancels(t *testing.T) {
+	tree := globCancelTree()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	counter := &countingFS{FS: tree, cancelOn: 2, cancel: cancel}
+	_, err := loadIgnoreSet(ctx, cancelFS{ctx: ctx, fsys: counter}, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loadIgnoreSet cancelled mid-walk = %v, want context.Canceled", err)
+	}
+	if counter.calls > counter.cancelOn+2 {
+		t.Fatalf("discovery kept walking after cancellation: %d ReadDir calls", counter.calls)
+	}
+}
+
+// TestGlobWithBudgetRefusesANilBudget pins the entry-point half of the nil
+// budget finding: a caller that omits the budget gets an error, not a panic
+// via budget.full(), budget.listing() or budget.match() deeper in the walk.
+func TestGlobWithBudgetRefusesANilBudget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "needle.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, excluded, err := NewLocalExecutionEnvironment(root).GlobWithBudget(t.Context(), "**/needle.txt", root, true, nil)
+	if err == nil {
+		t.Fatalf("GlobWithBudget with a nil budget = (%v, %d, nil), want an error", matches, excluded)
+	}
+}
+
 // TestSandboxedGlobReportsCancellation covers the arm the off-sandbox tests
 // never reach: sandboxed sessions run the same walk over a secureDirFS, and a
 // cancellation there must surface as an error too rather than as a

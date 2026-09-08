@@ -234,14 +234,23 @@ func ignoreScopeForPatterns(patterns []string) []ignoreScope {
 // It answers three ways: a refusal, which the caller propagates; nil data
 // with no error for a file that is missing or unreadable, which the caller
 // skips as it always has; and the bytes otherwise.
-func readIgnoreFile(fsys fs.FS, path string, budget *GlobBudget) ([]byte, error) {
+func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget) ([]byte, error) {
 	f, err := fsys.Open(path)
 	if err != nil {
+		// A cancelled open is not an unreadable .gitignore: swallowing it
+		// here would let the discovery walk keep traversing after
+		// cancellation and report whatever partial rule set it assembled.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		return nil, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, int64(maxGlobIgnoreFileBytes)+1))
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, cerr
+		}
 		return nil, nil //nolint:nilerr // best-effort: skip an unreadable .gitignore
 	}
 	if berr := budget.tooManyRuleBytes(path, len(data)); berr != nil {
@@ -287,7 +296,7 @@ func readIgnoreFile(fsys fs.FS, path string, budget *GlobBudget) ([]byte, error)
 // ignore discovery and pattern matching together are bounded as one call's
 // worth of work rather than each getting its own unbounded pass over the
 // tree.
-func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *GlobBudget, scope []ignoreScope) (*ignoreSet, error) {
+func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bool, budget *GlobBudget, scope []ignoreScope) (*ignoreSet, error) {
 	set := &ignoreSet{}
 	scopes := narrowIgnoreScopes(scope)
 
@@ -333,7 +342,10 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *GlobBudge
 			if skip != nil && skip(p) {
 				continue
 			}
-			data, berr := readIgnoreFile(fsys, p, budget)
+			if cerr := ctx.Err(); cerr != nil {
+				return set, cerr
+			}
+			data, berr := readIgnoreFile(ctx, fsys, p, budget)
 			if berr != nil {
 				return set, berr
 			}
@@ -359,6 +371,15 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *GlobBudge
 		budget.resetLive()
 		_ = fs.WalkDir(fsys, sc.prefix, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
+				// A cancellation is not an unreadable entry either: skipping
+				// it would let the walk keep traversing after cancellation
+				// and report whatever partial rule set it assembled. The
+				// ctx check comes first so a cancelled walk that also hit
+				// the budget reports the cancellation the caller asked for.
+				if cerr := ctx.Err(); cerr != nil {
+					budgetErr = cerr
+					return cerr
+				}
 				// A budget refusal is not an unreadable entry: skipping it would
 				// let the directory that tripped the bound be read again by
 				// whatever walks next, and would leave this set reported as
@@ -416,7 +437,7 @@ func loadIgnoreSet(fsys fs.FS, skip func(relPath string) bool, budget *GlobBudge
 				return nil
 			}
 			loadedRules[p] = true
-			data, berr := readIgnoreFile(fsys, p, budget)
+			data, berr := readIgnoreFile(ctx, fsys, p, budget)
 			if berr != nil {
 				budgetErr = berr
 				return berr
