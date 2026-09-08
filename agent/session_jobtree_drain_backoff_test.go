@@ -264,6 +264,11 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 		select {
 		case recheck <- time.Now():
 		case <-done:
+		// TRIPWIRE: not a completion-signal wait -- this is the poll tick inside
+		// a loop whose real completion signal is turns==1 (the 30s deadline
+		// above is the hang guard). 10ms only yields while the recheck send
+		// is unconsumed instead of busy-spinning; it is not a budget for
+		// work to finish.
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
