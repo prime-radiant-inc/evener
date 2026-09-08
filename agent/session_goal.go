@@ -958,11 +958,23 @@ func (s *Session) CancelGoalWait(waitID string) bool {
 	now := s.sclock().Now()
 	s.goalUpdateMu.Lock()
 	removed := s.getOrCreateGoalStore().CancelWait(waitID, now)
-	s.goalUpdateMu.Unlock()
-	if removed {
-		s.armGoalWaitTimer()
+	if !removed {
+		// Live-lease miss: a claimed pendingWake entry may still stand. It
+		// drives once with the cancellation noted (spec §7) - annotate it
+		// under the same serializer hold. The miss itself still reports
+		// false; the wake (not the cancel) carries the note.
+		s.getOrCreateGoalStore().AnnotateCancelledWake(waitID, now)
+		s.goalUpdateMu.Unlock()
+		return false
 	}
-	return removed
+	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	s.goalUpdateMu.Unlock()
+	// Emission parity with registerGoalWait/setGoalTerminal: cancelling the
+	// last live lease flips waiting->active, which observers must see. No
+	// emit on a miss (nothing changed).
+	s.emitGoalUpdated(snap)
+	s.armGoalWaitTimer()
+	return true
 }
 
 // reportGoalEnded emits the terminal EventGoalEnded report exactly once, via the

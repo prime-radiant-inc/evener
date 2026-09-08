@@ -192,6 +192,7 @@ type goalGuard struct {
 	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
 	registerWait         func(goal.WaitKind, time.Time) (goal.Wait, bool)
 	cancelWait           func(string, time.Time) bool
+	isChildSession       func() bool
 }
 
 // Store returns the session's goal store, initializing it if needed.
@@ -241,6 +242,10 @@ func (g goalGuard) RejectReason() string { return g.Store().LastRejectReason() }
 // goal is set.
 func (g goalGuard) Snapshot() (goal.Snapshot, bool) { return g.Store().Snapshot() }
 
+// IsChildSession reports whether the owning session is a child session (a
+// subagent/delegate). Direct test constructions default to root (false).
+func (g goalGuard) IsChildSession() bool { return g.isChildSession != nil && g.isChildSession() }
+
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
 type webDeps struct {
@@ -288,6 +293,7 @@ func newToolDeps(s *Session) *toolDeps {
 			setTerminal:          s.setGoalTerminal,
 			registerWait:         s.registerGoalWait,
 			cancelWait:           func(waitID string, _ time.Time) bool { return s.CancelGoalWait(waitID) },
+			isChildSession:       s.isSubagentSession,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

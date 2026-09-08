@@ -3,6 +3,7 @@ package goal
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -366,10 +367,12 @@ func (s *Store) GoalSnapshot() (GoalSnapshot, bool) {
 //
 // Slice-1 validation: kind must be known, timeout defaults to 10m when zero
 // and rejects above the 24h cap, model-controlled fields are size-capped; the
-// UntilTime kind needs no substrate and registers. All substrate kinds
-// (job/delegate/approval/event/child) reject fail-closed until Wave B wires
-// the Substrate consultation with retained-terminal catch-up routing — never
-// parked on an unvalidated target.
+// UntilTime kind and external-label events need no substrate and register.
+// All other substrate kinds (job/delegate/approval/event/child) consult the
+// session substrate fail-closed, with retained-terminal catch-up routing for
+// job/delegate — never parked on an unvalidated target. (Production
+// SetSubstrate wiring is a later task's job; nil substrate rejects every
+// substrate kind fail-closed.)
 func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -560,11 +563,13 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	return w, true
 }
 
-// CancelWait removes one live lease by wait_id and disarms it (spec §7). A
-// claimed pendingWake entry still drives once with the cancellation noted —
-// cancel removes the live lease only and never swallows a consumed fire, so it
-// returns false when the id names no live lease. Clearing the last live lease
-// returns the goal to active; otherwise it stays waiting.
+// CancelWait removes one live lease by wait_id and disarms it (spec §7).
+// Cancel removes the live lease only and never swallows a consumed fire: an
+// already-claimed pendingWake entry still drives once, annotated with the
+// cancellation note via AnnotateCancelledWake (called by the session cancel
+// path after a live-lease miss). Returns false when the id names no live
+// lease. Clearing the last live lease returns the goal to active; otherwise
+// it stays waiting.
 func (s *Store) CancelWait(waitID string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -590,6 +595,35 @@ func (s *Store) CancelWait(waitID string, now time.Time) bool {
 	}
 	g.UpdatedAt = now
 	return true
+}
+
+// CancelledWakeNote marks a pendingWake trigger annotated at cancel time
+// (spec §7 "with the cancellation noted"): the wake turn's prompt carries
+// the note alongside the stale trigger.
+const CancelledWakeNote = "[wait cancelled after claim]"
+
+// AnnotateCancelledWake appends CancelledWakeNote to the claimed pendingWake
+// entry naming waitID, so the wake turn that still drives once carries the
+// cancellation note (spec §7). Idempotent: a repeated cancel does not stack
+// the note. Reports whether an entry was annotated.
+func (s *Store) AnnotateCancelledWake(waitID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil {
+		return false
+	}
+	for i, p := range g.PendingWake {
+		if p.WaitID != waitID {
+			continue
+		}
+		if !strings.Contains(p.Trigger, CancelledWakeNote) {
+			g.PendingWake[i].Trigger = p.Trigger + " " + CancelledWakeNote
+		}
+		g.UpdatedAt = now
+		return true
+	}
+	return false
 }
 
 // ClaimFire atomically consumes one live lease's fire (spec §§2-3: the

@@ -875,19 +875,22 @@ func TestGoalCancelWaitToolKeepsClaimedWake(t *testing.T) {
 }
 
 // TestGoalWaitToolSizeCapsRejectNamesCheck pins the spec section 2 size caps
-// through the tool: an over-cap matcher and an over-cap label each reject
-// with the failed check named - never parked.
+// through the tool: an over-cap matcher, target, and label each reject with
+// the failed check named - never parked.
 func TestGoalWaitToolSizeCapsRejectNamesCheck(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
+		kind    string
+		target  string
 		label   string
 		matcher string
 		want    string
 	}{
-		{"matcher cap", "", strings.Repeat("m", goal.MaxMatcherBytes+1), "matcher"},
-		{"label cap", strings.Repeat("l", goal.MaxLabelRunes+1), "", "label"},
-		{"label charset", "bad\x07label", "", "label"},
+		{"matcher cap", "until_time", "", "", strings.Repeat("m", goal.MaxMatcherBytes+1), "matcher"},
+		{"label cap", "until_time", "", strings.Repeat("l", goal.MaxLabelRunes+1), "", "label"},
+		{"label charset", "until_time", "", "bad\x07label", "", "label"},
+		{"target cap", "until_job", strings.Repeat("j", goal.MaxURLBytes+1), "", "", "target"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -898,7 +901,7 @@ func TestGoalWaitToolSizeCapsRejectNamesCheck(t *testing.T) {
 
 			store := sess.getOrCreateGoalStore()
 			store.Set("tool caps", clk.Now())
-			res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, tc.label, tc.matcher))
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", tc.kind, tc.target, 60, tc.label, tc.matcher))
 			if !res.IsError {
 				t.Fatalf("over-cap %s should be IsError, got output: %s", tc.name, res.Output)
 			}
@@ -1069,3 +1072,159 @@ func (f *goalWaitToolSubstrate) LookupApproval(contentKey, generation string) bo
 func (f *goalWaitToolSubstrate) LookupChild(id string) bool { return false }
 
 func (f *goalWaitToolSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
+
+// TestGoalWaitToolChildFromChildScopedOut pins the slice-1 honest boundary
+// (spec section 8): a child session registering until_child is rejected with
+// the scoped-out reason named - never parked on an unwired forward path.
+func TestGoalWaitToolChildFromChildScopedOut(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, spawn: spawnConfig{parentSessionID: "parent-root"}}))
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("child wait", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_child", "child_1", 60, "", ""))
+	if !res.IsError {
+		t.Fatalf("until_child from a child session should be IsError, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "child waits scoped out in this slice") {
+		t.Fatalf("rejection %q must carry the scoped-out boundary reason", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (a scoped-out registration must not park)", snap.Status)
+	}
+}
+
+// TestGoalWaitToolEventEmptyTargetRequiresTarget pins the tool-level
+// target-required check for until_event subtypes with a durable target (spec
+// section 2): file_modified / http_match with an empty target reject with
+// `target is required` - never falling through to a substrate error.
+func TestGoalWaitToolEventEmptyTargetRequiresTarget(t *testing.T) {
+	t.Parallel()
+	for _, subtype := range []string{"file_modified", "http_match"} {
+		t.Run(subtype, func(t *testing.T) {
+			t.Parallel()
+			clk := agenttest.NewFakeClock()
+			sess := newWaitGateSession(t, clk)
+			defer sess.Close()
+			wireKickAndNotify(sess)
+
+			store := sess.getOrCreateGoalStore()
+			store.Set("tool event target", clk.Now())
+			args, _ := json.Marshal(map[string]any{"kind": "until_event", "event_subtype": subtype, "timeout_seconds": 60})
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gw1", Name: "goal_wait", Arguments: args, Type: "function"})
+			if !res.IsError {
+				t.Fatalf("until_event %s with empty target should be IsError, got output: %s", subtype, res.Output)
+			}
+			if !strings.Contains(res.Output, "target is required") {
+				t.Fatalf("rejection %q must name the required target", res.Output)
+			}
+			if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+				t.Fatalf("status = %q, want active (a target-less registration must not park)", snap.Status)
+			}
+		})
+	}
+}
+
+// TestGoalWaitToolTimeoutRangeRejects pins the tool-level timeout range
+// (spec section 2: required deadline, cap 24h): a zero/non-positive or
+// over-cap timeout_seconds rejects with the range named - never parked.
+func TestGoalWaitToolTimeoutRangeRejects(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		timeout int64
+	}{
+		{"zero", 0},
+		{"negative", -5},
+		{"over cap", 86401},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clk := agenttest.NewFakeClock()
+			sess := newWaitGateSession(t, clk)
+			defer sess.Close()
+			wireKickAndNotify(sess)
+
+			store := sess.getOrCreateGoalStore()
+			store.Set("tool timeout", clk.Now())
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", tc.timeout, "", ""))
+			if !res.IsError {
+				t.Fatalf("timeout %d should be IsError, got output: %s", tc.timeout, res.Output)
+			}
+			if !strings.Contains(res.Output, "timeout_seconds") {
+				t.Fatalf("rejection %q must name timeout_seconds", res.Output)
+			}
+			if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+				t.Fatalf("status = %q, want active (a range-violating registration must not park)", snap.Status)
+			}
+		})
+	}
+}
+
+// TestGoalCancelWaitToolLiveCancelEmitsGoalUpdated pins the emission parity
+// (spec section 7): a successful goal_cancel_wait publishes GOAL_UPDATED
+// carrying the store state - cancelling the last live lease flips
+// waiting->active visibly.
+func TestGoalCancelWaitToolLiveCancelEmitsGoalUpdated(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool cancel emit", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, "", ""))
+	if res.IsError {
+		t.Fatalf("precondition goal_wait: %s", res.Output)
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+	gsnap, _ := store.GoalSnapshot()
+	args, _ := json.Marshal(map[string]any{"wait_id": gsnap.Waits[0].Lease.WaitID})
+	cres := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gc1", Name: "goal_cancel_wait", Arguments: args, Type: "function"})
+	if cres.IsError {
+		t.Fatalf("goal_cancel_wait should succeed, got error: %s", cres.Output)
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+}
+
+// TestGoalWaitToolsRegisteredRegistryOnlyNonReadOnly pins the registration
+// shape (mirroring TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly):
+// goal_wait and goal_cancel_wait are registered directly on the registry (not
+// part of the provider profile's own tool definitions, like
+// update_goal/task_list), they are non-read-only (they mutate the wait
+// registry), and they are advertised to the model via ToolDefinitions().
+func TestGoalWaitToolsRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
+	t.Parallel()
+	s := newSession(t)
+
+	for _, name := range []string{"goal_wait", "goal_cancel_wait"} {
+		rt := s.reg.Get(name)
+		if rt == nil {
+			t.Fatalf("registry is missing %s", name)
+		}
+		if rt.ReadOnly {
+			t.Errorf("%s.ReadOnly = true, want false (wait registration/cancel mutates the registry)", name)
+		}
+		for _, td := range s.profile.ToolDefinitions() {
+			if td.Name == name {
+				t.Errorf("%s must not be part of the provider profile's tool definitions (registry-only, like update_goal)", name)
+			}
+		}
+		found := false
+		for _, td := range s.ToolDefinitions() {
+			if td.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s not advertised in ToolDefinitions()", name)
+		}
+	}
+}

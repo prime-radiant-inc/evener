@@ -105,6 +105,9 @@ func goalWaitTimeoutArg(args map[string]any) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("invalid_request: timeout_seconds must be an integer")
 	}
+	if seconds < 1 || seconds > 86400 {
+		return 0, fmt.Errorf("invalid_request: timeout_seconds must be between 1 and 86400")
+	}
 	return time.Duration(seconds) * time.Second, nil
 }
 
@@ -112,8 +115,9 @@ func goalWaitTimeoutArg(args map[string]any) (time.Duration, error) {
 // schema validator renders its diagnostic, so a direct handler caller (tests,
 // internal callers) that bypasses registry PreValidate gets the same
 // contract. The schema enforces the kind/event_subtype enums and the timeout
-// range; this validates only what the schema cannot: kind-specific required
-// targets.
+// range for registry callers; this re-validates the timeout range (1..86400s)
+// plus what the schema cannot - kind-specific required targets - so direct
+// handler callers that bypass PreValidate get the same named errors.
 func validateGoalWaitArgs(args map[string]any) error {
 	kind, err := goalWaitStringArg(args, "kind")
 	if err != nil {
@@ -139,8 +143,14 @@ func validateGoalWaitArgs(args map[string]any) error {
 	if kind == string(goal.WaitUntilEvent) && subtype == "" {
 		return fmt.Errorf("invalid_request: event_subtype is required for kind \"until_event\"")
 	}
-	if kind != string(goal.WaitUntilTime) && kind != string(goal.WaitUntilEvent) && strings.TrimSpace(target) == "" {
+	// M2: file_modified/http_match need their target at tool level (a file
+	// path / URL); only external_label fires via notification/expiry with no
+	// durable target to name, and only until_time is target-free by kind.
+	if kind != string(goal.WaitUntilTime) && !(kind == string(goal.WaitUntilEvent) && subtype == string(goal.EventExternalLabel)) && strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for kind %q", kind)
+	}
+	if _, err := goalWaitTimeoutArg(args); err != nil {
+		return err
 	}
 	matcher, err := goalWaitStringArg(args, "matcher")
 	if err != nil {
@@ -255,6 +265,12 @@ func goalWaitTool(deps *toolDeps, args map[string]any) (any, error) {
 	req, err := decodeGoalWaitArgs(args)
 	if err != nil {
 		return nil, err
+	}
+	// Spec section 8 slice-1 boundary: the parent->child forward path lands
+	// in a later slice, so until_child from a child is rejected here with
+	// the honest boundary reason - never parked on an unwired path.
+	if req.Kind == goal.WaitUntilChild && deps.goalGuard.IsChildSession() {
+		return nil, fmt.Errorf("goal_wait: child waits scoped out in this slice: until_child from a child session has no forward path yet")
 	}
 	if err := checkGoalWaitRegistrable(deps); err != nil {
 		return nil, err
