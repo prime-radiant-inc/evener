@@ -32,7 +32,7 @@ The [verification receipt](assets/2026-09-08-iphone-execution.json) retains arti
 
 One new producer is accepted: `evener/launch/updated`. The independently installed SDK observed two project-layer notifications, authoritative `maxRounds: 7` readback and restoration of the original layer. The [receipt](assets/2026-09-08-sdk-launch-producer.json) records exact artifact/capture identities and the failed-provider limitation. The capture contains no `thread/started`; a `thread/start` response and `turn/started` notification do not qualify that producer.
 
-Adding this distinct name to the previous audited union gives 28 of 36 scoped notification producers. All method outcomes, remaining producers and broad reconnect/replay qualification remain open. See the [complete union and exclusions](sdk-notifications-evidence.md#queue-and-thread-close-producer-evidence).
+Adding this distinct name to the previous audited union gave 28 of 36 scoped notification producers. The next parallel batch qualified marketplace/plugin updates and sandbox escalation requested/resolved notifications through the installed SDK, bringing the audited union to 32 of 36. Their receipts retain catalog state and actual successful/denied tool results, with no native acceptance claim. Complete method outcomes, remaining producers and broad reconnect/replay qualification remain open. See the [complete union and exclusions](sdk-notifications-evidence.md#queue-and-thread-close-producer-evidence).
 
 ## What remains open
 
@@ -41,5 +41,7 @@ The integrated Usable journey remains the critical path: connect to the owned hu
 Computer Use can read the simulator and use exposed controls, but coordinate actions needed to reach the navigation header fail with `windowNotFoundAtPosition` or `noWindowsAvailable`. The updated app visibly restores its saved draft; this tooling failure is not evidence of an app navigation defect or a successful interaction check.
 
 The paired physical iPhone 16 Pro is available, but Apple's developer tools report `kAMDMobileImageMounterDeviceLocked`. Jesse was asked to unlock it; no physical install or keychain/network qualification is claimed. A valid existing Apple Development identity and wildcard provisioning profile were discovered without changing signing access.
+
+The subsequent Release build for `generic/platform=iOS` succeeded at source `5307e8515`, with the existing team identity and cached provisioning profile. The coordinator verified the arm64 bundle's signature, embedded profile and application entitlement. The [device-build receipt](assets/2026-09-08-iphone-device-build.json) records its distinct artifact hashes. This closes development build/signature preparation, not physical install or TestFlight acceptance. The [distribution path](ios-build-distribution.md) reuses the organization's existing Mac runner and shared-credential conventions; iOS distribution credentials and App Store Connect access still need verification.
 
 Tasks 1–4 therefore remain open as one integrated device journey. Task 8 has implementation, deterministic and host/controller real-hub evidence, with native selection/reconnect acceptance pending. Useful administration, actual nested work, performance, stress and physical update/distribution retain the gates in the plan. Neither iPhone functional completion nor release readiness is claimed.

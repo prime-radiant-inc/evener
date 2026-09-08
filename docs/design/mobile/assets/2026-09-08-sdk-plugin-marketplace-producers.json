@@ -1,0 +1,85 @@
+{
+  "schema": "evener.sdk.plugin-marketplace-producers.receipt.v1",
+  "status": "scoped-passed",
+  "date": "2026-09-08",
+  "qualification": {
+    "fixtureRoot": "/tmp/evener-task9-10-sdk-producers-p85bYk",
+    "hubPort": 62436,
+    "hubPID": 87617,
+    "provider": "none; no model turn was requested",
+    "marketplace": "owned-sdk-producer-marketplace",
+    "plugin": "native-tools",
+    "initialMarketplaces": [
+      "claude-plugins-official",
+      "superpowers-marketplace"
+    ],
+    "finalMarketplacesRestored": true,
+    "finalInstalledPlugins": []
+  },
+  "notifications": {
+    "marketplaceUpdated": {
+      "method": "evener/marketplace/updated",
+      "payload": {},
+      "observed": 2,
+      "operations": [
+        "add",
+        "remove"
+      ]
+    },
+    "pluginUpdated": {
+      "method": "evener/plugin/updated",
+      "payload": {},
+      "observed": 5,
+      "operations": [
+        "install",
+        "disable",
+        "enable",
+        "setAutoUpgrade",
+        "remove"
+      ]
+    }
+  },
+  "authoritativeReadback": {
+    "browse": "owned-sdk-producer-marketplace returned native-tools; asserted in driver before retained later operations",
+    "install": "native-tools@1.0.0 enabled=true autoUpgrade=false",
+    "disable": "enabled=false",
+    "enable": "enabled=true",
+    "setAutoUpgrade": "autoUpgrade=true",
+    "remove": "plugin list empty",
+    "marketplaceRemove": "original marketplace names restored; full initial records were not retained"
+  },
+  "artifacts": {
+    "backendBinary": {
+      "path": "/tmp/evener-sdk-idle-close-current-OwRkNp/bin/evener",
+      "sha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+      "sourceCommit": "3284d6ac5"
+    },
+    "devBinary": {
+      "path": "/tmp/evener-sdk-idle-close-current-OwRkNp/bin/evener-dev",
+      "sha256": "28267467f9758126d49e737795d685f7f2e15dc2e86d861cd3aa26c2ad57ad50"
+    },
+    "installedSdk": {
+      "path": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+      "clientIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+    },
+    "rawResult": {
+      "path": "/tmp/evener-task9-10-sdk-producers-p85bYk/sdk-result.json",
+      "sha256": "ed1272ec54439634b73cedf6f06ba6b1c38f1d1ea8d2691437f3812e563e9fc4"
+    }
+  },
+  "method": "A separate observer and writer imported the installed @evener/appwire-client AppwireClient and used its connect(), request(), onNotification(), and close() APIs. Each mutation awaited the exact decoded notification, then read the authoritative list. The fixture contained manifest-only local directory content and no executable plugin code.",
+  "limitations": [
+    "This qualifies hub producers and SDK wire behavior; no native UI or device acceptance is claimed.",
+    "No plugin executable effect was invoked; lifecycle state and catalog effect were read back.",
+    "The supplied standalone evener serve binary returned an empty serverInfo.version and was unsuitable for the installed SDK handshake; the hub binary path returned the complete v4 handshake."
+  ],
+  "coordinatorReview": {
+    "recordedMutations": 7,
+    "rawPayloadsIndependentlyAssertedEmpty": true,
+    "acknowledgmentsMatchReadbacks": true,
+    "scope": "Notification and catalog state only; no executable plugin effect or native UI.",
+    "scriptPath": "/tmp/evener-task9-10-sdk-producers-p85bYk/sdk-producer.mjs",
+    "scriptSha256": "4c2c2c7b32e2efd6b74846e089318675342a446b1876ce94246a673c54d3b3db",
+    "oldAttemptCleanup": "Coordinator found and stopped original raw-wire serve PID83826 on62433 and removed its token; fresh installed-SDK attempt was separate."
+  }
+}
