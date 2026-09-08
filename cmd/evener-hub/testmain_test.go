@@ -178,9 +178,11 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 
 // defaultRootsOutsideTestEnv lists every filesystem root the hub falls back to
 // when a WebConfig field is left unset (the launch config root, the hub state
-// root, the plugin store root, the MCP config path), plus the HOME and XDG
-// bases they derive from, that resolves outside testEnvRoot. Empty means the
-// throwaway env contains them all.
+// root, the plugin store root, the MCP config path), every path runMain opens
+// when a flag is unset (the config file, the state glob, the past-index DB,
+// the rendezvous run dir), plus the HOME and XDG bases they derive from, that
+// resolves outside testEnvRoot. Empty means the throwaway env contains them
+// all.
 func defaultRootsOutsideTestEnv() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -195,6 +197,11 @@ func defaultRootsOutsideTestEnv() []string {
 		{"cmdutil.DefaultStateRoot", cmdutil.DefaultStateRoot()},
 		{"plugins.DefaultRoot", plugins.DefaultRoot()},
 		{"defaultMCPConfigPath", defaultMCPConfigPath()},
+		{"DefaultHubStateRoot", DefaultHubStateRoot()},
+		{"DefaultConfigPath", DefaultConfigPath()},
+		{"DefaultStateGlob", DefaultStateGlob()},
+		{"DefaultPastIndexDBPath", DefaultPastIndexDBPath()},
+		{"rendezvous.DefaultDir", rendezvous.DefaultDir()},
 	}
 	var escaped []string
 	for _, root := range roots {
