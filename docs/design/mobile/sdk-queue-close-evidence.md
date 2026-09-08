@@ -20,3 +20,15 @@ so that producer remains unqualified. Its retained pre-shutdown records are
 listed in the receipt. This is an evidence gap; it does not establish that the
 producer is unsupported or identify a backend defect. No `thread/closed` count
 has been added.
+
+The backend fix at `4f3e824ac` was rebuilt and exercised in a second fresh
+real-process fixture, `/tmp/evener-sdk-close-run-YFL38i`. The same actor and
+observer remained subscribed while an active scripted-provider turn was held;
+`thread/queueChanged`, the queued readback, release, and both turn completions
+were observed. After `thread/shutdown` returned its empty acknowledgment, the
+observer waited 30 seconds for the exact target ref and thread ID. No matching
+`thread/closed` arrived before the daemon exited. Every notification was
+written immediately to mode-0600 JSONL and retained in the final event file,
+so this remains a concrete failed qualification rather than a teardown-only
+observation. The new fixture and process cleanup hashes are recorded in the
+receipt; `thread/closed` remains unqualified.
