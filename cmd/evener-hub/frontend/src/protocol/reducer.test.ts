@@ -4040,6 +4040,71 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
   });
 });
 
+test("warning with object-form `warning.message` and no top-level message renders that nested message", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: { message: "nested warning text" } } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("nested warning text");
+});
+
+test("warning with bare-string `warning` and no top-level message renders that string", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: "provider hiccup" } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("provider hiccup");
+});
+
+test.each([
+  ["blank string warning", ""],
+  ["object warning with no message field", { source: "x" }],
+  ["object warning with non-string message", { message: 42 }],
+  ["number warning", 42],
+])("warning with no message anywhere (%s) falls back to the raw frame", (_case, warning) => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe(JSON.stringify(params));
+});
+
 // Settled tool calls keep their arguments: the live projector's
 // EventToolCallEnd (internal/appprojector/appwire_projection.go:414-442)
 // resolves argsJSON at :424-427 but uses it only to derive Description —

@@ -1922,10 +1922,10 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 // failed turn clears.
 //
 // The turn/completed payload is deliberately still map[string]any, not
-// appwire.TurnCompletedParams (kcb5): the declared type now matches what every
-// producer here sends ({threadId,ref,turn}), but switching the payload to the
-// typed struct changes the Params type every projector test asserts on -- a
-// test-fixture change of its own, left to a separate decision.
+// appwire.TurnCompletedParams (kcb5): the two carry the same fields
+// ({threadId,ref,turn}), so the only thing a switch to the typed struct changes
+// is the Params type every projector test asserts on -- a test-fixture change
+// of its own, left to a separate decision.
 func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 	if p.activeTurnID == "" {
 		return nil

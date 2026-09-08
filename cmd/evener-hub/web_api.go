@@ -108,19 +108,16 @@ func (s *WebServer) apiStateGlob() string {
 }
 
 func warningPayload(raw json.RawMessage) map[string]any {
-	message := warningMessage(raw)
+	params, message := appwire.DecodeWarningParams(raw)
 	payload := map[string]any{"message": message}
-	var params appwire.WarningParams
-	if json.Unmarshal(raw, &params) == nil {
-		if params.Source != "" {
-			payload["source"] = params.Source
-		}
-		if params.Title != "" {
-			payload["title"] = params.Title
-		}
-		if params.Hint != "" {
-			payload["hint"] = params.Hint
-		}
+	if params.Source != "" {
+		payload["source"] = params.Source
+	}
+	if params.Title != "" {
+		payload["title"] = params.Title
+	}
+	if params.Hint != "" {
+		payload["hint"] = params.Hint
 	}
 	addDiagnosticDefaults(payload, message)
 	return payload
@@ -140,12 +137,6 @@ func addDiagnosticDefaults(payload map[string]any, message string) {
 }
 
 func warningMessage(raw json.RawMessage) string {
-	var params appwire.WarningParams
-	if err := json.Unmarshal(raw, &params); err != nil {
-		return string(raw)
-	}
-	if message := params.EffectiveMessage(); message != "" {
-		return message
-	}
-	return string(raw)
+	_, message := appwire.DecodeWarningParams(raw)
+	return message
 }

@@ -266,20 +266,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		// classifyWarningCategory uses the typed Cause; otherwise it falls
 		// back to the message-substring path so legacy NotifyWarning
 		// payloads still classify correctly.
-		var params appwire.WarningParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			message := params.EffectiveMessage()
-			title := params.Title
-			source := params.Source
-			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" && classifyWarningCategory(message, params.Cause) == "provider" {
-				source = "provider"
-			}
-			line := hubdiagnostics.FormatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause)
-			if hint := strings.TrimSpace(params.Hint); hint != "" {
-				line += " (" + hint + ")"
-			}
-			m.addSessionSystemOnce(line)
+		params, message := appwire.DecodeWarningParams(notification.Params)
+		title := params.Title
+		source := params.Source
+		if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" && classifyWarningCategory(message, params.Cause) == "provider" {
+			source = "provider"
 		}
+		line := hubdiagnostics.FormatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause)
+		if hint := strings.TrimSpace(params.Hint); hint != "" {
+			line += " (" + hint + ")"
+		}
+		m.addSessionSystemOnce(line)
 	}
 	m.session.refreshViewport()
 	// After the authoritative reducer update has applied, reconcile

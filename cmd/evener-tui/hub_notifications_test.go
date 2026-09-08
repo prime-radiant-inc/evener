@@ -342,6 +342,16 @@ func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *te
 			params: `{"warning":{"message":"nested"}}`,
 			want:   []string{"nested"},
 		},
+		{
+			name:   "recovered message and hint despite a cause that fails to decode",
+			params: `{"message":"real message","cause":"bogus-not-an-object","hint":"retry"}`,
+			want:   []string{"real message", "retry"},
+		},
+		{
+			name:   "no message anywhere renders the frame itself, not a bare title",
+			params: `{"warning":42}`,
+			want:   []string{`{"warning":42}`},
+		},
 	}
 
 	for _, tc := range tests {

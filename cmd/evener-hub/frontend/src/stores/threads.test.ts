@@ -241,7 +241,6 @@ function sameEpochReconnectFixture() {
     params: {
       threadId: "thr_ref_a",
       ref: "ref_a",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "" },
     },
   };
@@ -3349,7 +3348,6 @@ describe("notification routing differential (randomized: index vs scan reference
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turnId: pick(turnIds),
           turn: { id: pick(turnIds), status: "completed", itemsView: "" },
         },
       }),

@@ -417,7 +417,6 @@ func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
 		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": "th_1",
 			"ref":      "local:th_1",
-			"turnId":   "turn_1",
 			"turn": appwire.Turn{
 				ID:     "turn_1",
 				Status: appwire.TurnStatusFailed,
