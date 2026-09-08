@@ -40,7 +40,11 @@ func readAgentsDoc(path string) (appwire.AgentsDocResponse, error) {
 // (Jesse's ruling, 2026-09-07; providers.toml follows in its own PR).
 // Content is written byte for byte: this is the user's own prose, and
 // trimming or appending a newline would make the editor disagree with the
-// file it just saved.
+// file it just saved. The temp file is created exclusively, under a name
+// nothing else holds, and chmodded outright: a stale temp file - a symlink
+// into someone else's file, or a leftover whose own mode a plain write would
+// have kept - then has no say in where the save goes or what it lands as,
+// and neither does the umask the hub happens to run under.
 func writeAgentsDoc(path, content string) error {
 	// EvalSymlinks fails on a file that is not there yet, leaving target at
 	// path: a first save creates the file where the config root says it is.
@@ -48,29 +52,53 @@ func writeAgentsDoc(path, content string) error {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		target = resolved
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("AGENTS.md: mkdir: %w", err)
 	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		// A write that dies partway (ENOSPC, EIO) has already created the
-		// temp file, so clear it too: the real file is untouched either way,
-		// and a half-written AGENTS.md.tmp has no business outliving the
-		// failure in the user's config root.
-		_ = os.Remove(tmp)
+	tmp, err := os.CreateTemp(dir, ".AGENTS.md-*.tmp")
+	if err != nil {
 		return fmt.Errorf("AGENTS.md: write: %w", err)
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	// A save that dies partway (ENOSPC, EIO) has already created the temp
+	// file, so clear it too: the real file is untouched either way, and a
+	// half-written temp file has no business outliving the failure in the
+	// user's config root. The rename takes the name with it, so this is a
+	// no-op once the save has landed.
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := writeTempAgentsDoc(tmp, content); err != nil {
+		return fmt.Errorf("AGENTS.md: write: %w", err)
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
 		return fmt.Errorf("AGENTS.md: rename: %w", err)
 	}
 	return nil
 }
 
+// writeTempAgentsDoc lands the content in the open temp file and closes it,
+// whichever step fails.
+func writeTempAgentsDoc(tmp *os.File, content string) (err error) {
+	defer func() {
+		if closeErr := tmp.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		return err
+	}
+	return tmp.Sync()
+}
+
 // registerAgentsDocHandlers serves evener/settings/agentsDoc/{get,set}. Writes
-// serialize on one mutex so two clients saving at once cannot interleave on
-// the shared temp path; there is no revision check by design (spec
-// 2026-09-07 §1) - the last write wins, and every client hears about it.
+// serialize on one mutex so a save's rename, read back and broadcast land as
+// one unit: two clients saving at once could otherwise rename in one order
+// and broadcast in the other, leaving every client on content the file does
+// not hold. There is no revision check by design (spec 2026-09-07 §1) - the
+// last write wins, and every client hears about it.
 func registerAgentsDocHandlers(server *appserver.Server, configRoot string) {
 	path := agentsDocPath(configRoot)
 	var mu sync.Mutex

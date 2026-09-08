@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -126,9 +127,7 @@ func TestHubRPCAgentsDocSetWritesVerbatimAndBroadcasts(t *testing.T) {
 			t.Fatalf("mode = %o, want 0644", info.Mode().Perm())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, "AGENTS.md.tmp")); !os.IsNotExist(err) {
-		t.Fatal("the temp file survived the rename")
-	}
+	requireNoAgentsDocTempFiles(t, root)
 
 	for _, client := range []*appwire.Client{clientA, clientB} {
 		notification := receiveAgentsDocChanged(t, client)
@@ -167,18 +166,28 @@ func TestHubRPCAgentsDocSetReplacesThePreviousContent(t *testing.T) {
 // save. The rename already landed, so telling the requester its write failed
 // would show an error over content that is on disk and leave every other
 // client stale; the byte-for-byte contract means the content just written is
-// what the file holds. A leftover write-only AGENTS.md.tmp makes that happen
-// for real: os.WriteFile keeps the mode of a file it did not create, so the
-// write and the rename both succeed and the file that lands cannot be read.
+// what the file holds. A long symlink chain makes that happen for real: the
+// save resolves the chain through filepath.EvalSymlinks and lands on the file
+// at the end of it, and the read back walks the same chain through the kernel,
+// which gives up long before EvalSymlinks does (see linkChainBeyondTheKernel).
 func TestHubRPCAgentsDocSetReportsTheSaveWhenTheReadBackFails(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Getuid() == 0 {
-		t.Skip("relies on a file the process cannot read")
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
 	}
-	root := t.TempDir()
-	path := agentsDocPath(root)
-	if err := os.WriteFile(path+".tmp", nil, 0o200); err != nil {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	realDir := filepath.Join(base, "real")
+	for _, dir := range []string{root, realDir} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	realFile := filepath.Join(realDir, "AGENTS.md")
+	if err := os.WriteFile(realFile, []byte("old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	path := agentsDocPath(root)
+	linkChainBeyondTheKernel(t, path, realFile)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{LaunchConfigRoot: root})
 	defer hub.Close()
 	clientA := dialHubRPC(t, hub)
@@ -207,23 +216,36 @@ func TestHubRPCAgentsDocSetReportsTheSaveWhenTheReadBackFails(t *testing.T) {
 	}
 
 	// Guards the premise: both branches return the same response, so unless
-	// the file that landed is genuinely unreadable this test proves nothing.
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	// the read back is genuinely denied this test proves nothing.
+	if _, err := os.ReadFile(path); err == nil {
+		t.Fatal("the read back was never actually denied")
 	}
-	if info.Mode().Perm() != 0o200 {
-		t.Fatalf("mode = %o, want 0200 - the read back was never actually denied", info.Mode().Perm())
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	onDisk, err := os.ReadFile(path)
+	onDisk, err := os.ReadFile(realFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(onDisk) != content {
 		t.Fatalf("on disk = %q, want the content the save reported", onDisk)
+	}
+}
+
+// linkChainBeyondTheKernel points head at target through more symlinks than
+// the kernel will follow - Linux stops at 40 hops and macOS at 32, while
+// filepath.EvalSymlinks walks up to 255 of them in userspace. A path built
+// this way is one writeAgentsDoc can resolve and os.ReadFile cannot.
+func linkChainBeyondTheKernel(t *testing.T, head, target string) {
+	t.Helper()
+	hops := t.TempDir()
+	next := target
+	for i := range 44 {
+		hop := filepath.Join(hops, fmt.Sprintf("hop%02d", i))
+		if err := os.Symlink(next, hop); err != nil {
+			t.Fatal(err)
+		}
+		next = hop
+	}
+	if err := os.Symlink(next, head); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -253,37 +275,87 @@ func TestWriteAgentsDocFailureLeavesThePreviousFile(t *testing.T) {
 	}
 }
 
-// A write that dies partway must not leave AGENTS.md.tmp sitting in the user's
-// config root. A directory at the temp path is the portable way to fail the
-// write itself - the open cannot succeed, and whatever is at that path is what
-// the cleanup has to clear.
+// A save that dies partway must not leave a temp file sitting in the user's
+// config root. Nothing can occupy the temp path itself any more, so the
+// portable way to fail after the temp file exists is a directory where
+// AGENTS.md goes: the content lands, the rename cannot.
 func TestWriteAgentsDocFailureRemovesTheTempFile(t *testing.T) {
 	root := t.TempDir()
 	path := agentsDocPath(root)
-	if err := os.WriteFile(path, []byte("keep me\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	tmp := path + ".tmp"
-	if err := os.Mkdir(tmp, 0o755); err != nil {
+	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	err := writeAgentsDoc(path, "new")
 	if err == nil {
-		t.Fatal("expected the write to fail with a directory at the temp path")
+		t.Fatal("expected the save to fail with a directory where AGENTS.md goes")
 	}
-	if !strings.Contains(err.Error(), "AGENTS.md: write:") {
-		t.Fatalf("err = %v, want the failure to come from the write step", err)
+	if !strings.Contains(err.Error(), "AGENTS.md: rename:") {
+		t.Fatalf("err = %v, want the failure to come from the rename step", err)
 	}
-	if _, statErr := os.Stat(tmp); !os.IsNotExist(statErr) {
-		t.Fatalf("the temp path survived a failed write: stat = %v", statErr)
+	requireNoAgentsDocTempFiles(t, root)
+}
+
+// A stale AGENTS.md.tmp - an older evener's leftover, or a symlink planted
+// where one used to sit - is no longer part of a save at all: the temp file
+// is created exclusively under a name of its own, so the link is neither
+// written through nor renamed into place.
+func TestWriteAgentsDocIgnoresAStaleTempSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
 	}
-	onDisk, readErr := os.ReadFile(path)
-	if readErr != nil {
-		t.Fatal(readErr)
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if string(onDisk) != "keep me\n" {
-		t.Fatalf("a failed write changed the file: %q", onDisk)
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.WriteFile(elsewhere, []byte("not yours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := agentsDocPath(root)
+	stale := path + ".tmp"
+	if err := os.Symlink(elsewhere, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeAgentsDoc(path, "mine\n"); err != nil {
+		t.Fatalf("writeAgentsDoc: %v", err)
+	}
+
+	untouched, err := os.ReadFile(elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(untouched) != "not yours\n" {
+		t.Fatalf("the save wrote through the stale link: %q", untouched)
+	}
+	info, err := os.Lstat(stale)
+	if err != nil {
+		t.Fatalf("the stale link did not survive the save: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("mode = %v, want the stale link left as it was", info.Mode())
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != "mine\n" {
+		t.Fatalf("on disk = %q, want the saved content", onDisk)
+	}
+}
+
+// requireNoAgentsDocTempFiles asserts that no temp file writeAgentsDoc could
+// have created survives in dir.
+func requireNoAgentsDocTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".AGENTS.md-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files survived: %v", leftovers)
 	}
 }
 
@@ -329,11 +401,8 @@ func TestWriteAgentsDocFollowsASymlink(t *testing.T) {
 	if string(onDisk) != "new" {
 		t.Fatalf("linked file = %q, want the saved content", onDisk)
 	}
-	for _, tmp := range []string{link + ".tmp", realFile + ".tmp"} {
-		if _, statErr := os.Lstat(tmp); !os.IsNotExist(statErr) {
-			t.Fatalf("%s survived the rename: stat = %v", tmp, statErr)
-		}
-	}
+	requireNoAgentsDocTempFiles(t, root)
+	requireNoAgentsDocTempFiles(t, realDir)
 }
 
 // A link with no target has nothing to follow: EvalSymlinks fails and the
