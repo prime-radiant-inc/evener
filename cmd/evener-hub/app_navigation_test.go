@@ -406,7 +406,8 @@ func TestHubNavigationInternalErrorsAreLoggedAndRedacted(t *testing.T) {
 }
 
 func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
-	service := newNavigationReadTestService(t)
+	source := newNavigationReadTestSource()
+	service := newTestNavigationService(t, source)
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "test"})
 	registerNavigationReadHandler(server, service)
 
@@ -454,13 +455,23 @@ func TestHubNavigationReadConditionalResponseAndErrorMapping(t *testing.T) {
 	_, err = dispatchNavigationReadResult(t, failingServer, v2(appwire.NavigationReadParams{Resource: "manifest"}))
 	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
 
-	changed := dispatchNavigationRead(t, server, v2(appwire.NavigationReadParams{Resource: "manifest"}))
-	var snapshot hubapi.NavigationSnapshot
-	if err := json.Unmarshal(changed.Data, &snapshot); err != nil {
-		t.Fatalf("decode v2 snapshot: %v", err)
+	source.mu.Lock()
+	source.inputs.Tree.Live = nil
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{}); err != nil {
+		t.Fatal(err)
 	}
-	if changed.Representation != appwire.NavigationRepresentationSnapshot || len(snapshot.Entities) == 0 && len(snapshot.Containers) == 0 {
-		t.Fatalf("response = %+v, want v2 snapshot with entities/containers", changed)
+	changed := dispatchNavigationRead(t, server, conditional)
+	if changed.Status != "ok" || changed.Representation != appwire.NavigationRepresentationDelta || changed.Base == nil || *changed.Base != *conditional.Base || changed.Revision == first.Revision {
+		t.Fatalf("changed conditional response = %+v, want delta against base %+v at a new revision", changed, *conditional.Base)
+	}
+	var delta hubapi.NavigationDelta
+	if err := json.Unmarshal(changed.Data, &delta); err != nil {
+		t.Fatalf("decode v2 delta: %v", err)
+	}
+	if delta.Metadata == nil {
+		t.Fatalf("delta = %+v, want changed manifest metadata", delta)
 	}
 }
 
@@ -528,15 +539,19 @@ func TestHubNavigationReadOverAppWireWebSocket(t *testing.T) {
 	}
 }
 
-func newNavigationReadTestService(t *testing.T) *NavigationService {
-	t.Helper()
+func newNavigationReadTestSource() *testNavigationSource {
 	source := newTestNavigationSource(testNavigationNow())
 	source.inputs.Tree.Live = append([]hubcore.TreeNode(nil), source.inputs.Tree.Projects[0].Current...)
 	source.inputs.PinSections = []hubcore.PinSection{{ID: "pin-a", Name: "Pinned"}}
 	source.inputs.PinAssignments = map[string]hubcore.SessionPin{
 		navigationTestSessionID: {SessionID: navigationTestSessionID, SectionID: "pin-a"},
 	}
-	return newTestNavigationService(t, source)
+	return source
+}
+
+func newNavigationReadTestService(t *testing.T) *NavigationService {
+	t.Helper()
+	return newTestNavigationService(t, newNavigationReadTestSource())
 }
 
 func testNavigationNow() time.Time {
