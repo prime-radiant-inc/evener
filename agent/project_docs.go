@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars/userdirs"
@@ -159,6 +160,11 @@ func tildeCollapse(path string) string {
 // marker naming the kind of doc that was cut.
 func truncateDoc(content string, remain int, mark string) string {
 	if remain < len(content) {
+		// The budget is bytes but the prompt must stay valid UTF-8, so the cut
+		// lands on the last whole rune that fits.
+		for remain > 0 && !utf8.RuneStart(content[remain]) {
+			remain--
+		}
 		content = content[:remain]
 	}
 	if !strings.HasSuffix(content, "\n") {

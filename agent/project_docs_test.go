@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars/userdirs"
@@ -355,5 +356,23 @@ func TestPersonalDocPath_RefusesARelativeConfiguredPath(t *testing.T) {
 	t.Parallel()
 	if got := personalDocPath("./AGENTS.md"); got != "" {
 		t.Fatalf("personalDocPath = %q, want no path when the configured path is relative", got)
+	}
+}
+
+// The budget is counted in bytes, so it can land inside a multi-byte rune: a
+// doc of two-byte runes cut at an odd byte would put half a rune into the
+// system prompt. The cut keeps whole runes and never invalid UTF-8.
+func TestTruncateDocKeepsRuneBoundaries(t *testing.T) {
+	t.Parallel()
+	content := strings.Repeat("é", 8)
+	for _, remain := range []int{7, 6} {
+		got := truncateDoc(content, remain, userDocTruncMark)
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncateDoc(remain=%d) = %q, want valid UTF-8", remain, got)
+		}
+		want := content[:6] + "\n" + userDocTruncMark + "\n"
+		if got != want {
+			t.Fatalf("truncateDoc(remain=%d) = %q, want %q (three whole runes plus the marker)", remain, got, want)
+		}
 	}
 }
