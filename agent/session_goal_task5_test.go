@@ -265,7 +265,7 @@ func TestGoalResumedNotEmittedOnSupersededNoop(t *testing.T) {
 		t.Fatal("precondition: registration should succeed")
 	}
 	clk.Advance(2 * time.Minute)
-	claimed, objective := sess.claimGoalWaitExpiredWaits(clk.Now())
+	claimed, objective, _ := sess.claimGoalWaitExpiredWaits(clk.Now())
 	if len(claimed) == 0 {
 		t.Fatal("precondition: claim should consume the expired lease")
 	}

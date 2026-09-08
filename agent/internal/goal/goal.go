@@ -1204,7 +1204,11 @@ func (s *Store) DropLostWait(waitID, cause string, now time.Time) bool {
 	}
 	g.Waits = kept
 	g.LossCause = cause
-	g.AdvancementSinceLoss = false
+	// Check-before-reset (spec §1 rule 5): the drop must NOT clear
+	// AdvancementSinceLoss — the gate's rule-5 read observes the pre-reset
+	// window (advancement followed by this loss still notifies + re-drives).
+	// The flag clears when the loss is consumed: the non-rule-5 notice path
+	// via the gate's TakeLossCause consume loop, the resume path via Resume.
 	if !hasLiveWait(kept) && g.Status == StatusWaiting {
 		g.Status = StatusActive
 	}
@@ -1215,11 +1219,13 @@ func (s *Store) DropLostWait(waitID, cause string, now time.Time) bool {
 
 // RecordLoss records a same-turn loss notice (spec §2 non-rule-5 path): the
 // cause persists for the terminal verdict while the gate re-drives with the
-// honest notice this turn. Check-before-reset ordering (spec §1 rule 5): the
-// decider reads markers BEFORE this reset — recording a loss clears the
-// persisted AdvancementSinceLoss after the check, so a loss with advancement
-// in the pre-reset window notifies + re-drives once, while a lone loss with
-// no advancement blocks. Reports whether a goal was present.
+// honest notice this turn. It does NOT reset AdvancementSinceLoss: the
+// check-before-reset ordering (spec §1 rule 5) belongs to the gate's rule-5
+// read — clearing it here would erase the pre-reset window a same-gate loss
+// must observe (advancement followed by a loss in one pass still notifies +
+// re-drives). The flag clears when the loss is consumed (gate consume loop,
+// resume).
+// Reports whether a goal was present.
 func (s *Store) RecordLoss(cause string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1228,14 +1234,15 @@ func (s *Store) RecordLoss(cause string, now time.Time) bool {
 		return false
 	}
 	g.LossCause = cause
-	g.AdvancementSinceLoss = false
 	g.UpdatedAt = now
 	return true
 }
 
 // MarkAdvanced records subgoal advancement evidence (spec §1 rule 5 window):
 // a waits-predicate flip since the last loss. The next loss check reads this
-// pre-reset flag; RecordLoss clears it after the check.
+// pre-reset flag; the flag clears when the loss is consumed (gate consume
+// loop, resume) — never on the record path, so a same-gate advancement+loss
+// still observes the window.
 func (s *Store) MarkAdvanced(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -152,6 +152,13 @@ func TestGateStaleParkKicksOnce(t *testing.T) {
 	if prompt, ok := sess.armGoalContinuation(false, true); ok || prompt != "" {
 		t.Fatalf("live park gate = (%q, %v), want held", prompt, ok)
 	}
+	// Determinism: the park gate armed the coalesced wait timer, and Advance
+	// dispatches its callback on a clock goroutine (Advance returns before the
+	// callback runs). Disarm before advancing so the settle below is the only
+	// claimant — otherwise the timer and the settle race on the same expiry
+	// (both claim paths are exactly-once, but the winner is unscheduled: the
+	// settle may return false when the callback's kick lands first).
+	sess.stopGoalWaitTimer()
 
 	clk.Advance(2 * time.Minute)
 	if sess.settleGoalOnIdle() != true {
@@ -1640,5 +1647,211 @@ func TestFixWaveI5AttachScanAndCooldown(t *testing.T) {
 	clk.Advance(31 * time.Second)
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour}, clk.Now()); !ok {
 		t.Fatalf("re-park after the cooldown should succeed: %q", store.LastRejectReason())
+	}
+}
+
+// TestFixWaveLiveLossNoticesOnce pins the non-rule-5 exactly-once notice
+// (spec §2 + Goal 4): a loss with live waits remaining notifies + re-drives
+// on the first gate — and later gates must NOT re-notice the same consumed
+// cause.
+func TestFixWaveLiveLossNoticesOnce(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("live plus lost", clk.Now())
+	liveSub := &fixStubSubstrate{jobs: map[string]fixStubTarget{
+		"job_live": {live: true},
+		"job_gone": {live: true},
+	}}
+	store.SetSubstrate(liveSub)
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_live", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: live job must park: %q", store.LastRejectReason())
+	}
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_gone", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: second job must park: %q", store.LastRejectReason())
+	}
+	// Only job_gone's substrate vanishes; job_live keeps the goal parked.
+	store.SetSubstrate(&fixStubSubstrate{jobs: map[string]fixStubTarget{
+		"job_live": {live: true},
+	}})
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if cont || prompt != "" {
+		t.Fatalf("loss-with-live gate = (%q, %v), want a park (notice + re-drive owns the turn)", prompt, cont)
+	}
+	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
+		t.Fatalf("loss notices after gate 1 = %d, want exactly 1", n)
+	}
+	// Later gates (user message, notification turn) must not re-notice the
+	// same consumed cause.
+	sess.armGoalContinuation(false, true)
+	sess.armGoalContinuation(false, false)
+	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
+		t.Fatalf("loss notices after gates 2-3 = %d, want still exactly 1", n)
+	}
+}
+
+// TestFixWaveRetargetCarriesDeadlineWake pins the retarget/deadline one-shot
+// alignment (spec §§1, 3): store.Set carries the undelivered synthetic
+// backlog (marked Superseded) alongside the reset DeadlineFinalDelivered
+// marker — so the retargeted goal drives the carried batch as one superseded
+// no-op on the CURRENT objective (never the old objective's wake, never an
+// immediate block), its tail claims and drives the new objective's own final
+// turn against the reset marker, the following gate blocks with the distinct
+// verdict, and the one-shot holds after (no second synthetic drive).
+func TestFixWaveRetargetDeadlineFinalTurn(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("goal A", clk.Now())
+	clk.Advance(5 * time.Hour) // past the 4h default deadline
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, goal.DeadlineExpiryTrigger) {
+		t.Fatalf("gate 1 = (%v, %.80q...), want A's final turn", cont, prompt)
+	}
+	// Retarget before the wake tail consumes the backlog: Set carries the
+	// synthetic entry marked Superseded onto B (budgets, incl. the past
+	// deadline, carry over by design).
+	if _, err := sess.SetGoal(context.Background(), "goal B"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if full, _ := store.GoalSnapshot(); len(full.PendingWake) != 1 || !full.PendingWake[0].Superseded {
+		t.Fatalf("pendingWake after retarget = %+v, want the carried Superseded synthetic entry", full.PendingWake)
+	}
+	// The carried batch drives once on the current objective as the
+	// superseded no-op evaluation (spec §3: stale trigger as dropped
+	// context, never the old objective's wake).
+	prompt, cont = sess.armGoalContinuation(false, false)
+	if !cont || !strings.Contains(prompt, "(superseded)") {
+		t.Fatalf("retarget gate = (%v, %.80q...), want B's superseded no-op carrying the stale deadline excerpt", cont, prompt)
+	}
+	if !strings.Contains(prompt, "goal B") {
+		t.Fatalf("no-op prompt must evaluate the CURRENT objective:\n%.120q...", prompt)
+	}
+	if strings.Contains(prompt, "goal A") {
+		t.Fatalf("no-op prompt must never pursue the old objective:\n%.120q...", prompt)
+	}
+	// The no-op turn's own tail consumes the carried batch; the deadline is
+	// still past with the one-shot unspent for B, so the tail claims the
+	// fresh synthetic entry and drives B's own final evaluation turn
+	// carrying the live deadline verdict (spec §1 rule 3 — B never had its
+	// final turn; the carried no-op was dropped context, not a verdict).
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, goal.DeadlineExpiryTrigger) {
+		t.Fatalf("no-op tail = (%v, %.80q...), want B's final turn carrying %q", cont, prompt, goal.DeadlineExpiryTrigger)
+	}
+	if strings.Contains(prompt, "(superseded)") {
+		t.Fatalf("final-turn prompt must carry the live verdict, not the consumed stale batch:\n%.120q...", prompt)
+	}
+	// The following gate blocks with the distinct verdict and the one-shot
+	// holds after: no second final turn.
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if cont || prompt != "" {
+		t.Fatalf("post-final gate = (%q, %v), want the rule-3 block", prompt, cont)
+	}
+	snap, _ := store.Snapshot()
+	if snap.Status != goal.StatusBlocked || snap.StopReason != goal.VerdictDeadlineExceeded {
+		t.Fatalf("snapshot = %+v, want blocked/deadline-exceeded", snap)
+	}
+	if full, _ := store.GoalSnapshot(); len(full.PendingWake) != 0 {
+		t.Fatalf("pendingWake after the block = %+v, want drained", full.PendingWake)
+	}
+	if prompt, cont := sess.armGoalContinuation(false, true); cont && strings.Contains(prompt, goal.DeadlineExpiryTrigger) {
+		t.Fatalf("second post-final gate = (%q, %v), want no second synthetic drive (one-shot)", prompt, cont)
+	}
+}
+
+// TestFixWaveAdvancementSoftensLaterLoss pins the rule-5 advancement window
+// (spec §1 rule 5 check-before-reset): a waits-predicate fire persists
+// advancement evidence, so a LATER loss with nothing live left notifies +
+// re-drives instead of blocking immediately.
+func TestFixWaveAdvancementSoftensLaterLoss(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("advance then lose", clk.Now())
+	sub := &fixStubSubstrate{jobs: map[string]fixStubTarget{
+		"job_a": {live: true},
+		"job_b": {live: true},
+	}}
+	store.SetSubstrate(sub)
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_a", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: job_a must park: %q", store.LastRejectReason())
+	}
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_b", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: job_b must park: %q", store.LastRejectReason())
+	}
+	// job_a reaches retained-terminal: the gate claims the predicate fire
+	// (persisting advancement) and drives the wake.
+	sub.jobs["job_a"] = fixStubTarget{retained: true, excerpt: "job job_a exited 0"}
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, "exited 0") {
+		t.Fatalf("wake gate = (%q, %v), want job_a's wake drive", prompt, cont)
+	}
+	// job_b's substrate vanishes with nothing live left: advancement stands
+	// in the pre-reset window, so the gate notifies + re-drives (drives the
+	// objective — not a block).
+	sub.jobs["job_b"] = fixStubTarget{}
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if !cont || strings.Contains(prompt, goalWaitWakeTrailerPrefix) {
+		t.Fatalf("post-advancement loss gate = (%q, %v), want the objective re-drive (notice + re-drive, not a block)", prompt, cont)
+	}
+	if snap, _ := store.Snapshot(); snap.Status == goal.StatusBlocked {
+		t.Fatalf("snapshot = %+v, want no block while advancement stands", snap)
+	}
+	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
+		t.Fatalf("loss notices = %d, want exactly 1", n)
+	}
+}
+
+// TestFixWaveTimerLossesKickNotice pins the timer-path losses strand (spec
+// §2: never a silent strand): a parked lease whose substrate vanishes is
+// dropped at the coalesced timer's fire with the cause persisted — and the
+// timer kicks the honest notice + re-drive promptly instead of re-arming
+// into an idle goal with nothing scheduled.
+func TestFixWaveTimerLossesKickNotice(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	var prompts []string
+	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("timer loss", clk.Now())
+	sub := &fixStubSubstrate{jobs: map[string]fixStubTarget{"job_gone": {live: true}}}
+	store.SetSubstrate(sub)
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_gone", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: live job must park: %q", store.LastRejectReason())
+	}
+	// Park through the gate so production state (holds, timer) is real.
+	if prompt, cont := sess.armGoalContinuation(false, true); cont || prompt != "" {
+		t.Fatalf("park gate = (%q, %v), want a park", prompt, cont)
+	}
+	// Restart-away substrate: the job record the lease validated against is
+	// gone before the timer's poll-leg fire.
+	store.SetSubstrate(&fixStubSubstrate{})
+	clk.Advance(61 * time.Second)
+	clk.Drain()
+	if len(prompts) != 1 {
+		t.Fatalf("timer loss kicks = %d, want exactly 1 (honest notice + re-drive)", len(prompts))
+	}
+	if full, _ := store.GoalSnapshot(); full.LossCause == "" {
+		t.Fatalf("LossCause empty after the timer loss, want the cause persisted: %+v", full)
+	}
+	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
+		t.Fatalf("loss notices = %d, want exactly 1", n)
 	}
 }

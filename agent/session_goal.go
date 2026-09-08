@@ -73,7 +73,12 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// drive time (or is about to drive), and wiping it would let a racing
 	// timer re-claim the same wait_ids. Claimed entries survive in the store
 	// marked Superseded and drive a single no-op evaluation on the current
-	// objective, never the old one.
+	// objective, never the old one. The session-level synthetic deadline id
+	// is kept with them: a carried synthetic entry drives via the superseded
+	// no-op (dropped context), and the new objective's own final turn claims
+	// fresh against the reset store marker — the kept mark suppresses only
+	// same-id lease re-claims, never the synthetic path (which keys on the
+	// marker and the standing backlog).
 	s.stopGoalWaitTimerLocked()
 	s.getOrCreateGoalStore().SetTerminalPending(false, s.sclock().Now())
 	s.goalTerminalPending = false
@@ -510,8 +515,16 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	}
 	if len(gateLosses) > 0 {
 		if goal.HasLiveWait(full.Waits) || full.AdvancementSinceLoss {
-			for _, cause := range gateLosses {
-				store.RecordLoss(cause, now)
+			// Non-rule-5 loss: notice + re-drive, then CONSUME the
+			// persisted cause without re-arming it. The drop persisted it
+			// (DropLostWait at claim time) so TakeLossCause could join it
+			// to this batch — but delivering the notice consumes it: a
+			// re-persist (or leaving it stood) would let every later gate
+			// re-consume it into a duplicate notice — one loss, unbounded
+			// transcript notes. A later terminal loss arrives with its own
+			// fresh cause via its own drop.
+			for range gateLosses {
+				store.TakeLossCause()
 			}
 			full, ok = store.GoalSnapshot()
 			if !ok {
@@ -582,6 +595,14 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 		foldOutcome.Mutated = foldOutcome.Mutated || progressed
 	}
 	waitAdvanced := claimedPredicateFire(claimed)
+	if waitAdvanced {
+		// Waits-predicate flips are the only subgoal evidence (spec §4):
+		// persist the advancement window the NEXT loss's rule-5 read checks
+		// (spec §1 rule 5 check-before-reset). Expiry-only batches skip it —
+		// timer refires must not launder the re-park counter or soften a
+		// later genuine loss into a re-drive.
+		store.MarkAdvanced(now)
+	}
 	// Terminal-pending latch (spec section 1 R7 M-I1): while latched, rules
 	// 2/3 (plus the section-5 re-park graduation - a later task) evaluate
 	// before rule 1. The latch stays hidden from the pure table: a
@@ -823,18 +844,18 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	supersededArmed := s.takeGoalSupersededArmed()
 	if wakeTail || supersededArmed {
 		// The just-finished turn was a wake turn (or the superseded no-op
-		// evaluation): its backlog is consumed above (wake-tail per-ID drain;
-		// superseded: consumed now by superseded ID only, since the batch was
-		// marked at drive time) and the turn was wait-attributable, so bypass
-		// the stall fold and re-arm the plain objective. The follow-up turn's
-		// own tail folds normally. No extra goalUpdateMu lock here: the gate
+		// evaluation): its backlog is consumed above (wake-tail per-ID drain
+		// of delivered ids) or now (superseded: drained by Superseded flag
+		// below) and the turn was wait-attributable, so bypass the stall
+		// fold and re-arm the plain objective. The follow-up turn's own
+		// tail folds normally. No extra goalUpdateMu lock here: the gate
 		// already holds the serializer (store methods self-lock; cf. the
 		// wake-tail drain above), and goalUpdateMu is non-reentrant.
 		if !wakeTail {
 			// Drain ONLY the superseded IDs (spec section 3): fresh claims
-			// that landed before the no-op ran keep their own backlog and
-			// drive their own wake - never silently dropped with the stale
-			// batch.
+			// that landed before the no-op ran were never Superseded-marked
+			// and keep their own backlog and their own wake - never
+			// silently dropped with the stale batch.
 			var supersededIDs []string
 			for _, p := range full.PendingWake {
 				if p.Superseded {
@@ -1188,7 +1209,9 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 
 // claimGoalWaitExpiredWaits classifies every live lease and converts fires
 // into persisted pendingWake claims (the claimWaitFireLocked analogue at
-// session scope) and reports the claims with the owning objective. It
+// session scope) and reports the claims with the owning objective, plus the
+// loss causes dropped this pass (persisted via DropLostWait + RecordLoss for
+// the gate's TakeLossCause/rule-5 read). It
 // sequences s.mu and goalUpdateMu sections without nesting either (the
 // established SetGoal order is goalUpdateMu-then-s.mu; this helper never
 // holds one while taking the other). ClaimFire's atomicity is the
@@ -1196,7 +1219,7 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 // one wins. Covers ALL kinds (spec §§1-2: predicate truth plus expiry for
 // every kind), not timer expiry alone: the coalesced timer's poll leg is the
 // evaluation tick for file/HTTP predicates.
-func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, string) {
+func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, string, []string) {
 	s.mu.Lock()
 	delivered := make(map[string]bool, len(s.goalWakeDelivered))
 	for id := range s.goalWakeDelivered {
@@ -1208,7 +1231,7 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 	store := s.getOrCreateGoalStore()
 	full, ok := store.GoalSnapshot()
 	if !ok {
-		return nil, ""
+		return nil, "", nil
 	}
 	var live []goal.Wait
 	for _, w := range full.Waits {
@@ -1221,7 +1244,7 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 	for _, cause := range losses {
 		store.RecordLoss(cause, now)
 	}
-	return claimed, full.Objective
+	return claimed, full.Objective, losses
 }
 
 // armGoalWaitTimer arms the single coalesced wait timer (spec section 2) to
@@ -1298,7 +1321,7 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	s.goalWaitTimer = nil
 	s.mu.Unlock()
 	now := s.sclock().Now()
-	claimed, objective := s.claimGoalWaitExpiredWaits(now)
+	claimed, objective, losses := s.claimGoalWaitExpiredWaits(now)
 	// Watchdog piggyback (spec §6 Task-8 residual): the parked stretch
 	// evaluates on the same coalesced fire — never a second timer. On a
 	// no-claim fire the watchdog may itself re-arm the timer: a stretch that
@@ -1307,6 +1330,15 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	// stretch ends. kickClaimedGoalWake re-arms on the claim path below.
 	s.evalGoalWatchdogForTimer(now)
 	if len(claimed) == 0 {
+		if len(losses) > 0 {
+			// Losses-only fire (spec §2: never a silent strand): the drop
+			// already persisted the cause for the gate's TakeLossCause/rule-5
+			// read — deliver the honest notice now and kick the current
+			// objective so the re-drive (or the rule-5 terminal verdict)
+			// runs promptly instead of waiting on arbitrary future input.
+			s.kickGoalWaitLosses(losses, objective)
+			return
+		}
 		s.armGoalWaitTimer()
 		return
 	}
@@ -1397,6 +1429,46 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 	// itself resets the stretch, even when the wake's own fold carries no
 	// advancement.
 	s.noteGoalWatchdogActivity(s.sclock().Now())
+	kick(prompt)
+}
+
+// kickGoalWaitLosses delivers the honest notice + re-drive kick for a
+// timer fire that dropped leases but claimed none (spec §2: never a silent
+// strand). The drop already persisted the cause (claim helper), so the next
+// gate's TakeLossCause/rule-5 read owns the verdict — this kick only
+// schedules that evaluation promptly. Loss delivery is watchdog activity
+// (spec §6 signal 2): the stretch resets like any wake. Call with no locks
+// held; kicks fire outside all locks.
+func (s *Session) kickGoalWaitLosses(losses []string, objective string) {
+	s.mu.Lock()
+	kick := s.kickFunc
+	pendingAsk := len(s.askPending) > 0
+	s.mu.Unlock()
+	if pendingAsk {
+		// Arm, don't kick past an unanswered ask: the cause persists and
+		// the reply turn's gate delivers the notice.
+		s.armGoalWaitTimer()
+		return
+	}
+	s.goalUpdateMu.Lock()
+	full, ok := s.getOrCreateGoalStore().GoalSnapshot()
+	s.goalUpdateMu.Unlock()
+	if !ok || full.Objective != objective {
+		// Cleared or retargeted between drop and kick: the persisted cause
+		// (or the superseded routing) already owns the notice — §3 clear
+		// drops silently, retarget routes via the gate's superseded path.
+		s.armGoalWaitTimer()
+		return
+	}
+	prompt := goal.Render(full.Objective)
+	s.appendTurn(schema.TurnSteering, llm.User(
+		goalWaitNoticePrefix+" "+strings.Join(losses, "; ")+"; re-arm or proceed without the wait."))
+	s.maybeAutoSave()
+	s.noteGoalWatchdogActivity(s.sclock().Now())
+	s.armGoalWaitTimer()
+	if kick == nil {
+		return
+	}
 	kick(prompt)
 }
 
@@ -1598,7 +1670,7 @@ func (s *Session) settleGoalOnIdle() bool {
 	// and the settle kicks exactly once via the same claim path. With no kick
 	// wired the claim persists and the next gate drives the wake inline.
 	now := s.sclock().Now()
-	claimed, _ := s.claimGoalWaitExpiredWaits(now)
+	claimed, _, settleLosses := s.claimGoalWaitExpiredWaits(now)
 	// Snapshot BEFORE the s.mu section below: getOrCreateGoalStore's Once is
 	// lock-free, but Snapshot takes the store mutex — and the section already
 	// holds s.mu while the gate path may hold goalUpdateMu and want s.mu
@@ -1667,6 +1739,20 @@ func (s *Session) settleGoalOnIdle() bool {
 		}
 	}
 	s.mu.Unlock()
+	// Losses-only settle (spec §2: never a silent strand): the claim dropped
+	// leases but claimed none — deliver the honest notice and kick the
+	// current objective through the shared loss path (which re-checks
+	// clear/retarget/ask under its own locks) instead of returning false.
+	if prompt == "" && len(claimed) == 0 && len(settleLosses) > 0 {
+		s.goalUpdateMu.Lock()
+		full, ok := s.getOrCreateGoalStore().GoalSnapshot()
+		s.goalUpdateMu.Unlock()
+		if ok {
+			s.kickGoalWaitLosses(settleLosses, full.Objective)
+			return kick != nil && !pendingAsk
+		}
+		return false
+	}
 	if prompt != "" {
 		// Delivered-set mark after the kick decision, outside s.mu: a timer
 		// re-fire for these wait_ids collapses instead of re-kicking. (The
