@@ -299,4 +299,41 @@ export class ReaderPositionRepository {
 			// Keep the caller's in-memory anchor when persistence is unavailable.
 		}
 	}
+	removeHub(hubId: string) {
+		const raw = this.storage.getItemSync(key);
+		const cached = memory.get(this.storage) ?? {};
+		const remainingCached = Object.fromEntries(
+			Object.entries(cached).filter(
+				([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`),
+			),
+		);
+		const disk: Stored = {};
+		if (raw) {
+			try {
+				const value: unknown = JSON.parse(raw);
+				if (
+					typeof value === "object" &&
+					value !== null &&
+					!Array.isArray(value)
+				)
+					for (const [entryKey, candidate] of Object.entries(value))
+						if (valid(candidate)) disk[entryKey] = candidate;
+			} catch {
+				// Invalid persisted data is discarded as it is during save.
+			}
+		}
+		const remaining = Object.fromEntries(
+			Object.entries(disk).filter(
+				([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`),
+			),
+		);
+		if (Object.keys(remaining).length === Object.keys(disk).length) {
+			memory.set(this.storage, remainingCached);
+			return;
+		}
+		if (Object.keys(remaining).length > 0)
+			this.storage.setItemSync(key, JSON.stringify(remaining));
+		else this.storage.removeItemSync(key);
+		memory.set(this.storage, remainingCached);
+	}
 }

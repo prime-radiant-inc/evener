@@ -28,6 +28,7 @@ import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
+import { readerPositions } from "./nativeReaderPosition";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -194,6 +195,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			selection.remove(id, {
 				removeHub(hubId: string) {
 					drafts.removeHub(hubId);
+					readerPositions.removeHub(hubId);
 					removeOrganizationData(hubId);
 				},
 			}),

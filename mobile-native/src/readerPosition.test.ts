@@ -13,13 +13,15 @@ import {
 } from "./readerPosition";
 import type { TimelineRow } from "./timeline";
 
-function storage(): ReaderStorage {
-	const values = new Map<string, string>();
+function storageFrom(values: Map<string, string>): ReaderStorage {
 	return {
 		getItemSync: (key) => values.get(key) ?? null,
 		setItemSync: (key, value) => void values.set(key, value),
 		removeItemSync: (key) => void values.delete(key),
 	};
+}
+function storage(): ReaderStorage {
+	return storageFrom(new Map<string, string>());
 }
 const row = (
 	id: string,
@@ -261,6 +263,52 @@ describe("reader positions", () => {
 		expect(repo.read("bounded", "0")).toBeNull();
 		expect(repo.read("bounded", "100")).not.toBeNull();
 	});
+	it("removes every session for one hub from memory and persisted storage", () => {
+		const values = new Map<string, string>();
+		const disk = storageFrom(values);
+		const repo = new ReaderPositionRepository(disk);
+		const anchor = (hubId: string, sessionRef: string) => ({
+			hubId,
+			sessionRef,
+			itemKey: `${hubId}-${sessionRef}`,
+			withinItemOffset: 1,
+			touchedAt: 1,
+		});
+		repo.save(anchor("gone", "one"));
+		repo.save(anchor("gone", "two"));
+		repo.save(anchor("kept", "one"));
+		repo.removeHub("gone");
+		expect(repo.read("gone", "one")).toBeNull();
+		expect(repo.read("gone", "two")).toBeNull();
+		expect(repo.read("kept", "one")).not.toBeNull();
+		expect(
+			new ReaderPositionRepository(storageFrom(values)).read("gone", "one"),
+		).toBeNull();
+		expect(
+			new ReaderPositionRepository(storageFrom(values)).read("kept", "one"),
+		).not.toBeNull();
+	});
+	it("removes a cached anchor left by a failed save and preserves other caches", () => {
+		const values = new Map<string, string>();
+		const disk = storageFrom(values);
+		disk.setItemSync = () => {
+			throw new Error("full");
+		};
+		const repo = new ReaderPositionRepository(disk);
+		const anchor = (hubId: string) => ({
+			hubId,
+			sessionRef: "session",
+			itemKey: hubId,
+			withinItemOffset: 1,
+			touchedAt: 1,
+		});
+		repo.save(anchor("gone"));
+		repo.save(anchor("kept"));
+		disk.setItemSync = (key, value) => void values.set(key, value);
+		repo.removeHub("gone");
+		expect(repo.read("gone", "session")).toBeNull();
+		expect(repo.read("kept", "session")).toEqual(anchor("kept"));
+	});
 	it("does not throw when reader storage is unavailable", () => {
 		const repo = new ReaderPositionRepository({
 			getItemSync: () => {
@@ -299,6 +347,47 @@ describe("reader positions", () => {
 		expect(new ReaderPositionRepository(disk).read("hub", "session")).toEqual(
 			anchor,
 		);
+	});
+	it("keeps anchors when hub removal persistence fails", () => {
+		const disk = storage();
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "item",
+			withinItemOffset: 1,
+			touchedAt: 1,
+		};
+		const repo = new ReaderPositionRepository(disk);
+		repo.save(anchor);
+		disk.removeItemSync = () => {
+			throw new Error("full");
+		};
+		expect(() => repo.removeHub("hub")).toThrow("full");
+		expect(repo.read("hub", "session")).toEqual(anchor);
+	});
+	it("propagates a failed disk read without clearing cached anchors", () => {
+		let writes = 0;
+		const disk: ReaderStorage = {
+			getItemSync: () => {
+				throw new Error("unavailable");
+			},
+			setItemSync: () => {
+				writes += 1;
+			},
+			removeItemSync: () => undefined,
+		};
+		const repo = new ReaderPositionRepository(disk);
+		const anchor = {
+			hubId: "hub",
+			sessionRef: "session",
+			itemKey: "item",
+			withinItemOffset: 1,
+			touchedAt: 1,
+		};
+		repo.save(anchor);
+		expect(() => repo.removeHub("hub")).toThrow("unavailable");
+		expect(repo.read("hub", "session")).toEqual(anchor);
+		expect(writes).toBe(0);
 	});
 	it("does not write after a failed disk read", () => {
 		let writes = 0;
