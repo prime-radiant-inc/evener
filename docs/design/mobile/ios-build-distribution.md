@@ -71,11 +71,37 @@ duplicate rejection, iPhone artifact identity, internal-group selection,
 processed-build membership and receipt hashes, plus preservation of Debug and
 unrelated Xcode targets. They do not test Apple's service or system signing.
 
-A fresh scratch copy completed Expo iOS prebuild and CocoaPods deployment
-installation using Ruby 3.3.6, Bundler 2.7.2 and CocoaPods 1.16.2. Its lock
-matches the tracked `mobile-native/Podfile.lock` (SHA-256
-`6885a8f0633c5be7ca895a2dcf39b11b5a9015125299c2d81463710a5f8fc6c2`).
-The existing generated project and installed app were preserved.
+The first scratch prebuild and deployment installation passed with lock
+SHA-256 `6885a8f0633c5be7ca895a2dcf39b11b5a9015125299c2d81463710a5f8fc6c2`.
+A later installation from the project worktree exposed a portability defect:
+Expo 57's precompiled `ExpoModulesCore` podspec includes the absolute checkout
+path in its local tarball URL and preparation command. CocoaPods therefore
+computes a different specification checksum in another directory. The first
+same-directory success did not qualify the lock for CI.
+
+`package.json` now selects `expo-modules-core` in
+`expo.autolinking.ios.buildFromSource`. The installed Expo 57 autolinker supports
+that iOS option and deliberately propagates source mode to interdependent Expo
+modules. React Native, Hermes and ExpoModulesJSI retain their prebuilt artifacts.
+The source image module also requires locked SDWebImage and WebP dependencies.
+This adds native compilation work while keeping dependency installation locked
+and independent of the checkout path. No dependency version was upgraded.
+
+The regenerated lock has SHA-256
+`b3ac266123ab00cf8b0aa9e48cc81ce3d9b6f4eabf3edb49b1649f48742ca52f`.
+Coordinator deployment installation with Ruby 3.3.6, Bundler 2.7.2 and CocoaPods
+1.16.2 passed without changing it. A Luna reviewer independently prebuilt and
+installed from `/tmp/evener-tf-review.yEVQBP/mobile-native`, with a physically
+copied dependency tree. The coordinator repeated its locked deployment install
+and verified identical lock and resolved Core specification hashes across both
+directories. The Release simulator build and signature verification passed with
+arm64 and x86_64 slices and iPhone device family 1. The [portability and build
+receipt](assets/2026-09-08-ios-pod-lock-portability.json) retains exact logs,
+configuration and artifact hashes. The installed native app
+and draft database are backed up and have not been replaced by this build.
+The local Xcode version is 26.6; the workflow's pinned 26.4 runner still requires
+an actual CI run. The native gate passed 692 tests across 74 files plus TypeScript,
+and distribution behavior checks passed again with the external boundary faked.
 
 The remaining external setup is the App Store Connect app/team and internal
 group, access to the iOS distribution certificate/profile and API key, and the
