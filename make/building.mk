@@ -32,13 +32,14 @@ build: build-runtime
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/ops/build-runtime-pair.sh
 
-# Cross-compile for Linux (eval deployments). Invalidates the agent package
-# cache to ensure embedded files (templates, sections, agent .md) are fresh.
-## Cross-compile evener-linux-amd64 for Linux eval deployments. Starts by
-## running `go clean -cache`, which wipes the whole Go build cache.
+# Cross-compile for Linux (eval deployments). Rebuilds the linux target
+# closure from source (`go build -a`) so embedded files (templates,
+# sections, agent .md, frontend dist) are re-read from disk and stay fresh.
+## Cross-compile evener-linux-amd64 for Linux eval deployments, forcing a
+## rebuild of the linux target closure (`go build -a`) so embedded files
+## stay fresh without wiping the shared Go build cache.
 build-linux:
-	go clean -cache 2>/dev/null && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags "$(LDFLAGS)" -o evener-linux-amd64 ./cmd/evener/
 
 ## Alias for build-runtime.
 build-hub: build-runtime
