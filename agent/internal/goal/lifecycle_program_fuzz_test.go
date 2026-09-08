@@ -50,30 +50,46 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 
 		neverProgressed := NewStore()
 		neverProgressed.Set(objective, start)
-		if snap, active := neverProgressed.RecordContinuation(foldStallOutcome(), false, start.Add(time.Second)); !active || snap.NoProgressStreak != 1 {
+		// First fold establishes history (a first-seen hash reads as
+		// advancement); the identical second fold is the true repeat.
+		if snap, active := neverProgressed.RecordContinuation(foldStallOutcome(), false, start.Add(time.Second)); !active || snap.NoProgressStreak != 0 {
+			t.Fatalf("history-establishing continuation = %+v active=%v", snap, active)
+		}
+		if snap, active := neverProgressed.RecordContinuation(foldStallOutcome(), false, start.Add(2*time.Second)); !active || snap.NoProgressStreak != 1 {
 			t.Fatalf("never-progress continuation = %+v active=%v", snap, active)
 		}
-		for i := 0; i < NoProgressLimit; i++ {
-			snap, active := store.RecordContinuation(foldStallOutcome(), false, start.Add(time.Duration(i+2)*time.Second))
-			wantActive := i < NoProgressLimit-1
-			if active != wantActive {
-				t.Fatalf("no-progress turn %d active=%v, want %v", i, active, wantActive)
-			}
-			if !wantActive && (snap.Status != StatusBlocked || snap.StopReason != "no progress") {
-				t.Fatalf("no-progress terminal snapshot = %+v", snap)
+		// Stall graduation under the ledger (spec §§1, 4, 6) on a fresh
+		// store: K-1 identical turns accrue below the K=6 fresh-tier trip,
+		// the K-th nudges (still active), and the next identical turn
+		// blocks with "no progress" (mirrors
+		// TestRecordContinuationNoProgressGrace).
+		stalled := NewStore()
+		stalled.Set(objective, start)
+		for i := 0; i < RepetitionThresholdFresh-1; i++ {
+			snap, active := stalled.RecordContinuation(foldStallOutcome(), false, start.Add(time.Duration(i+2)*time.Second))
+			if !active || snap.Status != StatusActive {
+				t.Fatalf("leading stall turn %d = %+v active=%v, want active", i, snap, active)
 			}
 		}
-		if snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d", Mutated: true}, true, start.Add(10*time.Second)); active || snap.Status != StatusBlocked {
+		snap, active := stalled.RecordContinuation(foldStallOutcome(), false, start.Add(time.Duration(RepetitionThresholdFresh+1)*time.Second))
+		if !active || snap.Status != StatusActive {
+			t.Fatalf("nudge turn = %+v active=%v, want the stage trip (still active)", snap, active)
+		}
+		snap, active = stalled.RecordContinuation(foldStallOutcome(), false, start.Add(time.Duration(RepetitionThresholdFresh+2)*time.Second))
+		if active || snap.Status != StatusBlocked || snap.StopReason != "no progress" {
+			t.Fatalf("post-nudge turn = %+v active=%v, want blocked/no-progress", snap, active)
+		}
+		if snap, active := stalled.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d", Mutated: true}, true, start.Add(10*time.Second)); active || snap.Status != StatusBlocked {
 			t.Fatalf("terminal continuation changed state: %+v active=%v", snap, active)
 		}
-		if store.SetTerminal(StatusComplete, reason, start.Add(11*time.Second)) {
+		if stalled.SetTerminal(StatusComplete, reason, start.Add(11*time.Second)) {
 			t.Fatal("SetTerminal replaced an auto-blocked goal")
 		}
-		terminal, reported := store.TakeTerminalReport()
+		terminal, reported := stalled.TakeTerminalReport()
 		if !reported || terminal.Status != StatusBlocked || terminal.StopReason != "no progress" {
 			t.Fatalf("terminal report = %+v reported=%v", terminal, reported)
 		}
-		if _, reported := store.TakeTerminalReport(); reported {
+		if _, reported := stalled.TakeTerminalReport(); reported {
 			t.Fatal("terminal report emitted twice")
 		}
 
