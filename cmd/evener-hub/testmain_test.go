@@ -207,17 +207,22 @@ func defaultRootsOutsideTestEnv() []string {
 
 // canonicalizeExisting resolves symlinks through the deepest ancestor of path
 // that exists and rejoins the rest, so a default nothing has created yet still
-// compares against the real location of the tree it would land in.
-func canonicalizeExisting(path string) string {
+// compares against the real location of the tree it would land in. It fails
+// closed on a symlink it cannot resolve: a dangling link is where a write
+// would create its target, and that target may be anywhere.
+func canonicalizeExisting(path string) (string, bool) {
 	path = filepath.Clean(path)
 	var rest []string
 	for {
 		if resolved, err := filepath.EvalSymlinks(path); err == nil {
-			return filepath.Join(append([]string{resolved}, rest...)...)
+			return filepath.Join(append([]string{resolved}, rest...)...), true
+		}
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", false
 		}
 		parent := filepath.Dir(path)
 		if parent == path {
-			return filepath.Join(append([]string{path}, rest...)...)
+			return filepath.Join(append([]string{path}, rest...)...), true
 		}
 		rest = append([]string{filepath.Base(path)}, rest...)
 		path = parent
@@ -227,12 +232,20 @@ func canonicalizeExisting(path string) string {
 // containedIn reports whether path lies strictly inside root once both are
 // resolved through canonicalizeExisting: a temp root reached through a symlink
 // (macOS /var is /private/var) compares equal to itself, and a link planted
-// under the root cannot point a default outside it.
+// under the root, dangling or not, cannot point a default outside it.
 func containedIn(root, path string) bool {
 	if !filepath.IsAbs(path) {
 		return false
 	}
-	rel, err := filepath.Rel(canonicalizeExisting(root), canonicalizeExisting(path))
+	realRoot, ok := canonicalizeExisting(root)
+	if !ok {
+		return false
+	}
+	realPath, ok := canonicalizeExisting(path)
+	if !ok {
+		return false
+	}
+	rel, err := filepath.Rel(realRoot, realPath)
 	if err != nil {
 		return false
 	}
@@ -280,6 +293,10 @@ func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
 	if err := os.Symlink(outside, escape); err != nil {
 		t.Fatal(err)
 	}
+	dangling := filepath.Join(realRoot, "dangling")
+	if err := os.Symlink(filepath.Join(outside, "not-yet-created"), dangling); err != nil {
+		t.Fatal(err)
+	}
 	sep := string(os.PathSeparator)
 	cases := []struct {
 		name, root, path string
@@ -289,6 +306,7 @@ func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
 		{"root reached through a symlink", link, filepath.Join(realRoot, "home"), true},
 		{"path reached through a symlink", realRoot, filepath.Join(link, "home"), true},
 		{"symlink planted under the root", realRoot, filepath.Join(escape, "AGENTS.md"), false},
+		{"dangling symlink planted under the root", realRoot, filepath.Join(dangling, "AGENTS.md"), false},
 		{"dot-dot traversal", realRoot, realRoot + sep + ".." + sep + "outside" + sep + "x", false},
 		{"the root itself", realRoot, realRoot, false},
 		{"sibling sharing the root as a prefix", realRoot, realRoot + "-sibling", false},
