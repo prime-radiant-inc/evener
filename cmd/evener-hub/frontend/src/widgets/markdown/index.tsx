@@ -247,21 +247,29 @@ function containsLinkDefinition(source: string): boolean {
 }
 
 function tokensContainDef(tokens: Token[]): boolean {
-  for (const token of tokens) {
-    if (token.type === "def") return true;
-    if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
-    if ("items" in token) {
-      for (const item of token.items) {
-        if (tokensContainDef(item.tokens)) return true;
+  // Any unexpected shape (malformed tokens, a future marked token type with
+  // unguarded nesting) fails closed to the full parse: a missed `def` would
+  // resolve differently under the windowed halves, while a spurious fallback
+  // is exactly today's behavior.
+  try {
+    for (const token of tokens) {
+      if (token.type === "def") return true;
+      if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
+      if ("items" in token) {
+        for (const item of token.items ?? []) {
+          if (tokensContainDef(item?.tokens ?? [])) return true;
+        }
+      }
+      if (token.type === "table") {
+        for (const cell of [...(token.header ?? []), ...(token.rows ?? []).flat()]) {
+          if (tokensContainDef(cell?.tokens ?? [])) return true;
+        }
       }
     }
-    if (token.type === "table") {
-      for (const cell of [...token.header, ...token.rows.flat()]) {
-        if (tokensContainDef(cell.tokens)) return true;
-      }
-    }
+    return false;
+  } catch {
+    return true;
   }
-  return false;
 }
 
 // The head-side gate verdicts cached per exact head text: every one of them
