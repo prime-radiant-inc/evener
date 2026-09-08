@@ -217,17 +217,21 @@ const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>|\]\]>/i;
 // streaming). The boundary is the FIRST at/after the window edge, so the tail
 // holds at most the window - taking the last boundary at/before the edge
 // instead would accept a tail holding the entire remainder of a long
-// paragraph. Leading blank lines of the tail are skipped - insignificant in
-// both paths; a tail of nothing but blanks likewise declines the windowed
-// path.
+// paragraph. CRLF sources carry no "\n\n" span (a \r sits between the \n
+// pair), so both line endings are searched and the earliest boundary wins.
+// Leading blank lines of the tail are skipped - insignificant in both paths;
+// a tail of nothing but blanks likewise declines the windowed path.
 function splitLiveSource(source: string): { head: string; tail: string } | null {
   const edge = source.length - LIVE_TAIL_WINDOW;
-  const blank = source.indexOf("\n\n", edge);
+  const lf = source.indexOf("\n\n", edge);
+  const crlf = source.indexOf("\r\n\r\n", edge);
+  const blank = lf === -1 ? crlf : crlf === -1 ? lf : Math.min(lf, crlf);
   if (blank === -1) return null;
-  let tailStart = blank + 2;
-  while (source.charAt(tailStart) === "\n") tailStart += 1;
+  const separator = source.startsWith("\r\n\r\n", blank) ? 4 : 2;
+  let tailStart = blank + separator;
+  while (source.charAt(tailStart) === "\n" || source.charAt(tailStart) === "\r") tailStart += 1;
   if (tailStart >= source.length) return null;
-  return { head: source.slice(0, blank + 2), tail: source.slice(tailStart) };
+  return { head: source.slice(0, blank + separator), tail: source.slice(tailStart) };
 }
 
 // Exact link-definition detection through the shared lexer: a definition on

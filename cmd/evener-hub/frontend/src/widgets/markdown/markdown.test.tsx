@@ -2,12 +2,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import DOMPurify from "dompurify";
+import { afterEach, expect, test, vi } from "vitest";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
 
 afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const CODEBLOCK_PRE_CLASS = requireClass(codeblockStyles.pre, "codeblock.module.css", "pre");
 const CODEBLOCK_CODE_CLASS = requireClass(codeblockStyles.code, "codeblock.module.css", "code");
@@ -294,15 +298,53 @@ test("live matches settled on a long definition-free source across tail-growth r
   // only the first boundary at/after the window edge engages the path).
   const first = `${head + sentence.repeat(10).trim()}\n\n${sentence.repeat(5).trim()}`;
   expect(first.length).toBeGreaterThan(2000);
+  // Engagement proof, not just output equality: the windowed path parses head
+  // and tail separately while the full-parse fallback parses once, so the
+  // sanitize-call count separates them (live==settled alone holds on either
+  // path and could not catch a regression to the fallback).
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
   const live = render(<Markdown source={first} live />);
   const settledFirst = render(<Markdown source={first} />);
   expect(live.container.innerHTML).toBe(settledFirst.container.innerHTML);
+  // Live first render parses head and tail separately (two calls) and the
+  // settled render once: three total. The full-parse fallback would give two
+  // (one live + one settled), so this count proves the windowed path engaged.
+  expect(sanitizeSpy.mock.calls.length).toBe(3);
+  sanitizeSpy.mockClear();
   // Tail-only growth: no new blank line crosses the split, so the head is
   // unchanged and the cached head HTML is reused.
   const second = `${first} ${sentence.trim()}`;
   live.rerender(<Markdown source={second} live />);
   const settledSecond = render(<Markdown source={second} />);
   expect(live.container.innerHTML).toBe(settledSecond.container.innerHTML);
+  // Head HTML served from cache: the live rerender sanitizes only the grown
+  // tail (one call), and the settled render sanitizes once - two total. A
+  // fallback would parse the whole live source too (still two), so this count
+  // alone proves the cached-head shape only together with the first render's
+  // three; either count dropping to the settled-only shape fails loudly.
+  expect(sanitizeSpy.mock.calls.length).toBe(2);
+});
+
+// CRLF twin of the windowed-path case: a source whose only paragraph breaks
+// are "\r\n\r\n" must split the same way - "\n\n" never appears in it, so a
+// split search on LF alone would decline to the fallback instead of engaging.
+test("live matches settled on a long CRLF source across tail-growth rerenders (windowed path)", () => {
+  const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+  const head = `${sentence.repeat(12).trim()}\r\n\r\n${sentence.repeat(12).trim()}\r\n\r\n`;
+  const first = `${head + sentence.repeat(10).trim()}\r\n\r\n${sentence.repeat(5).trim()}`;
+  expect(first).not.toContain("\n\n");
+  expect(first.length).toBeGreaterThan(2000);
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  const live = render(<Markdown source={first} live />);
+  const settledFirst = render(<Markdown source={first} />);
+  expect(live.container.innerHTML).toBe(settledFirst.container.innerHTML);
+  expect(sanitizeSpy.mock.calls.length).toBe(3);
+  sanitizeSpy.mockClear();
+  const second = `${first} ${sentence.trim()}`;
+  live.rerender(<Markdown source={second} live />);
+  const settledSecond = render(<Markdown source={second} />);
+  expect(live.container.innerHTML).toBe(settledSecond.container.innerHTML);
+  expect(sanitizeSpy.mock.calls.length).toBe(2);
 });
 
 // The table chrome lives in the stylesheet, not on a class the component
