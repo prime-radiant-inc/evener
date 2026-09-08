@@ -929,6 +929,26 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	kick(prompt)
 }
 
+// registerGoalWait validates and installs one wait lease (spec section 2),
+// keeping the mutation and its GOAL_UPDATED event ordered under goalUpdateMu
+// like setGoalTerminal. It reports the registered lease and whether the
+// registration succeeded; on failure the store's LastRejectReason names the
+// failed check. On success the coalesced timer re-arms to the new lease (the
+// arm runs after the unlock: armGoalWaitTimer takes goalUpdateMu itself).
+func (s *Session) registerGoalWait(req goal.WaitKind, now time.Time) (goal.Wait, bool) {
+	s.goalUpdateMu.Lock()
+	w, ok := s.getOrCreateGoalStore().RegisterWait(req, now)
+	if !ok {
+		s.goalUpdateMu.Unlock()
+		return goal.Wait{}, false
+	}
+	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	s.goalUpdateMu.Unlock()
+	s.emitGoalUpdated(snap)
+	s.armGoalWaitTimer()
+	return w, true
+}
+
 // CancelGoalWait removes one live lease by wait_id (spec section 7): the live
 // lease leaves the registry; an already-claimed pendingWake entry still
 // drives once with the cancellation noted - cancel never swallows a consumed

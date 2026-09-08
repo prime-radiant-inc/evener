@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // Slice-1 gate tests (spec sections 1-3): park skips every fold; expiry
@@ -725,3 +727,345 @@ func countSteeringNotes(sess *Session, substr string) int {
 	}
 	return n
 }
+
+// Slice-1 tool tests (spec sections 2, 7): goal_wait registers through the
+// model-facing tool (hallucinated targets reject with the reason named; a
+// valid until_time parks and arms the timer); goal_cancel_wait removes the
+// live lease and disarms the timer; a claimed pendingWake still drives once.
+func goalWaitToolCall(id, kind, target string, timeoutSeconds int64, label, matcher string) llm.ToolCallData {
+	args, _ := json.Marshal(map[string]any{
+		"kind":            kind,
+		"target":          target,
+		"timeout_seconds": timeoutSeconds,
+		"label":           label,
+		"matcher":         matcher,
+	})
+	return llm.ToolCallData{ID: id, Name: "goal_wait", Arguments: args, Type: "function"}
+}
+
+// TestGoalWaitToolHallucinatedTargetNamesReason pins the fail-closed
+// registration path (spec section 2): a goal_wait naming a job with no record
+// at all is rejected with an error naming the hallucinated target - never
+// parked.
+func TestGoalWaitToolHallucinatedTargetNamesReason(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool reject", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_job", "job_999", 60, "", ""))
+	if !res.IsError {
+		t.Fatalf("goal_wait on hallucinated job_999 should be IsError, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "job_999") {
+		t.Fatalf("goal_wait rejection %q must name the hallucinated target job_999", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (a rejected registration must not park)", snap.Status)
+	}
+	if gsnap, _ := store.GoalSnapshot(); len(gsnap.Waits) != 0 {
+		t.Fatalf("waits after reject = %+v, want none", gsnap.Waits)
+	}
+}
+
+// TestGoalWaitToolValidUntilTimeParks pins the model-declared registration
+// path (spec section 2): a valid until_time goal_wait parks the goal and arms
+// the coalesced timer, carrying the lease's wait_id.
+func TestGoalWaitToolValidUntilTimeParks(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool park", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, "short-timer", ""))
+	if res.IsError {
+		t.Fatalf("valid goal_wait should succeed, got error: %s", res.Output)
+	}
+	gsnap, _ := store.GoalSnapshot()
+	if len(gsnap.Waits) != 1 {
+		t.Fatalf("waits after goal_wait = %+v, want one live lease", gsnap.Waits)
+	}
+	waitID := gsnap.Waits[0].Lease.WaitID
+	if !strings.Contains(res.Output, waitID) {
+		t.Fatalf("goal_wait output %q must carry the lease wait_id %q", res.Output, waitID)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusWaiting {
+		t.Fatalf("status = %q, want waiting after a valid goal_wait", snap.Status)
+	}
+	if prompt, ok := sess.armGoalContinuation(false, true); ok || prompt != "" {
+		t.Fatalf("parked gate = (%q, %v), want held after the tool-registered wait", prompt, ok)
+	}
+}
+
+// TestGoalCancelWaitToolDisarmsLiveLease pins the live-cancel half (spec
+// section 7): goal_cancel_wait removes the live lease, returns the goal to
+// active, and disarms the timer, so the goal re-arms normally with no wake.
+func TestGoalCancelWaitToolDisarmsLiveLease(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool cancel", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, "", ""))
+	if res.IsError {
+		t.Fatalf("precondition goal_wait: %s", res.Output)
+	}
+	gsnap, _ := store.GoalSnapshot()
+	waitID := gsnap.Waits[0].Lease.WaitID
+	sess.armGoalWaitTimer()
+
+	args, _ := json.Marshal(map[string]any{"wait_id": waitID})
+	cres := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gc1", Name: "goal_cancel_wait", Arguments: args, Type: "function"})
+	if cres.IsError {
+		t.Fatalf("goal_cancel_wait on the live lease should succeed, got error: %s", cres.Output)
+	}
+	sess.mu.Lock()
+	armed := sess.goalWaitTimer != nil
+	sess.mu.Unlock()
+	if armed {
+		t.Fatal("timer must disarm when the tool cancels the last live lease")
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active after cancelling the last live lease", snap.Status)
+	}
+	if prompt, cont := sess.armGoalContinuation(false, true); !cont || strings.Contains(prompt, goalWaitWakeTrailerPrefix) {
+		t.Fatalf("post-cancel gate = (%q, %v), want a plain active drive with no wake trailer", prompt, cont)
+	}
+}
+
+// TestGoalCancelWaitToolKeepsClaimedWake pins cancel-vs-pendingWake through
+// the tool (spec section 7): cancelling a claimed (no longer live) lease
+// reports the miss, and the already-claimed wake still drives once with the
+// cancellation noted - cancel never silently swallows a consumed fire.
+func TestGoalCancelWaitToolKeepsClaimedWake(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool cancel race", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: "+w.Lease.Label, clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	args, _ := json.Marshal(map[string]any{"wait_id": w.Lease.WaitID})
+	cres := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gc1", Name: "goal_cancel_wait", Arguments: args, Type: "function"})
+	if cres.IsError {
+		t.Fatalf("cancel of a claimed lease must not be a tool error, got: %s", cres.Output)
+	}
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, w.Lease.WaitID) {
+		t.Fatalf("gate after tool cancel = (%q, %v), want the claimed wake to still drive once", prompt, cont)
+	}
+}
+
+// TestGoalWaitToolSizeCapsRejectNamesCheck pins the spec section 2 size caps
+// through the tool: an over-cap matcher and an over-cap label each reject
+// with the failed check named - never parked.
+func TestGoalWaitToolSizeCapsRejectNamesCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		label   string
+		matcher string
+		want    string
+	}{
+		{"matcher cap", "", strings.Repeat("m", goal.MaxMatcherBytes+1), "matcher"},
+		{"label cap", strings.Repeat("l", goal.MaxLabelRunes+1), "", "label"},
+		{"label charset", "bad\x07label", "", "label"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clk := agenttest.NewFakeClock()
+			sess := newWaitGateSession(t, clk)
+			defer sess.Close()
+			wireKickAndNotify(sess)
+
+			store := sess.getOrCreateGoalStore()
+			store.Set("tool caps", clk.Now())
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, tc.label, tc.matcher))
+			if !res.IsError {
+				t.Fatalf("over-cap %s should be IsError, got output: %s", tc.name, res.Output)
+			}
+			if !strings.Contains(res.Output, tc.want) {
+				t.Fatalf("rejection %q must name the failed check %q", res.Output, tc.want)
+			}
+			if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+				t.Fatalf("status = %q, want active (a capped registration must not park)", snap.Status)
+			}
+		})
+	}
+}
+
+// TestGoalWaitToolNoGoalNamesState pins the no-goal rejection (spec section
+// 7: validation errors name the failed check): goal_wait with no goal set
+// errors naming the missing goal instead of parking nothing.
+func TestGoalWaitToolNoGoalNamesState(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	sess.getOrCreateGoalStore().Clear()
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_time", "", 60, "", ""))
+	if !res.IsError {
+		t.Fatalf("goal_wait with no goal should be IsError, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "no active goal") {
+		t.Fatalf("rejection %q must name the missing goal", res.Output)
+	}
+}
+
+// TestGoalWaitToolUnknownKindNamesKind pins the unknown-kind rejection:
+// goal_wait with a kind outside the six registry kinds errors naming the
+// kind - never parked.
+func TestGoalWaitToolUnknownKindNamesKind(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool kind", clk.Now())
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_never", "", 60, "", ""))
+	if !res.IsError {
+		t.Fatalf("goal_wait with unknown kind should be IsError, got output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "until_never") {
+		t.Fatalf("rejection %q must name the unknown kind", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (an unknown kind must not park)", snap.Status)
+	}
+}
+
+// TestGoalWaitToolRetainedTerminalCatchUp pins the terminal catch-up route
+// through the tool (spec section 2): a goal_wait on a retained-terminal job
+// fires immediately with the terminal outcome as the trigger - no live lease,
+// no park.
+func TestGoalWaitToolRetainedTerminalCatchUp(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool catch-up", clk.Now())
+	store.SetSubstrate(&goalWaitToolSubstrate{jobs: map[string]goalWaitToolTarget{"job_7": {retained: true, excerpt: "job job_7 exited 0"}}})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_job", "job_7", 60, "", ""))
+	if res.IsError {
+		t.Fatalf("retained-terminal goal_wait should succeed, got error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "fired immediately") || !strings.Contains(res.Output, "exited 0") {
+		t.Fatalf("catch-up output %q must carry the fire and the terminal excerpt", res.Output)
+	}
+	gsnap, _ := store.GoalSnapshot()
+	if len(gsnap.Waits) != 0 {
+		t.Fatalf("catch-up leaves no live lease: %+v", gsnap.Waits)
+	}
+	if len(gsnap.PendingWake) != 1 {
+		t.Fatalf("catch-up must queue exactly one pending wake: %+v", gsnap.PendingWake)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (catch-up never parks)", snap.Status)
+	}
+}
+
+// TestGoalWaitToolLiveJobParks pins the live-target route through the tool
+// (spec section 2): a goal_wait on a running job parks on a live lease.
+func TestGoalWaitToolLiveJobParks(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool live job", clk.Now())
+	store.SetSubstrate(&goalWaitToolSubstrate{jobs: map[string]goalWaitToolTarget{"job_1": {live: true}}})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_job", "job_1", 60, "", ""))
+	if res.IsError {
+		t.Fatalf("live-job goal_wait should succeed, got error: %s", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusWaiting {
+		t.Fatalf("status = %q, want waiting on a live job", snap.Status)
+	}
+}
+
+// TestGoalCancelWaitToolUnknownIDReportsMiss pins the cancel-miss path (spec
+// section 7): goal_cancel_wait naming no live lease is not a tool error - it
+// reports the miss - and leaves the goal undisturbed.
+func TestGoalCancelWaitToolUnknownIDReportsMiss(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("tool miss", clk.Now())
+	args, _ := json.Marshal(map[string]any{"wait_id": "wait_404"})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{ID: "gc1", Name: "goal_cancel_wait", Arguments: args, Type: "function"})
+	if res.IsError {
+		t.Fatalf("cancel of an unknown id must not be a tool error, got: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "wait_404") {
+		t.Fatalf("miss output %q must name the unknown wait_id", res.Output)
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (a missed cancel disturbs nothing)", snap.Status)
+	}
+}
+
+// goalWaitToolTarget is one deterministic substrate entry for tool-level
+// registration tests (live = wake-capable; retained = terminal inside the
+// record-retention window with the terminal outcome excerpt).
+type goalWaitToolTarget struct {
+	live     bool
+	retained bool
+	excerpt  string
+}
+
+// goalWaitToolSubstrate is a deterministic in-memory predicate substrate for
+// tool-level registration tests. Absent entries model hallucinated targets.
+type goalWaitToolSubstrate struct {
+	jobs map[string]goalWaitToolTarget
+}
+
+func (f *goalWaitToolSubstrate) LookupJob(id string) (bool, bool, string, bool) {
+	t, ok := f.jobs[id]
+	if !ok {
+		return false, false, "", false
+	}
+	return t.live, t.retained, t.excerpt, true
+}
+
+func (f *goalWaitToolSubstrate) LookupDelegate(id string) (bool, bool, string, bool) {
+	return false, false, "", false
+}
+
+func (f *goalWaitToolSubstrate) StatFile(path string) (string, bool) { return "", false }
+
+func (f *goalWaitToolSubstrate) LookupApproval(contentKey, generation string) bool { return false }
+
+func (f *goalWaitToolSubstrate) LookupChild(id string) bool { return false }
+
+func (f *goalWaitToolSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }

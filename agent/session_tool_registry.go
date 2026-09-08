@@ -190,6 +190,8 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
 	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
+	registerWait         func(goal.WaitKind, time.Time) (goal.Wait, bool)
+	cancelWait           func(string, time.Time) bool
 }
 
 // Store returns the session's goal store, initializing it if needed.
@@ -209,6 +211,35 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 	snap, _ := store.Snapshot()
 	return snap, true
 }
+
+// RegisterWait validates and installs one wait lease through the owning
+// Session when available (keeping the mutation and its GOAL_UPDATED event
+// ordered); direct test constructions fall back to the store-only behavior.
+func (g goalGuard) RegisterWait(req goal.WaitKind, now time.Time) (goal.Wait, bool) {
+	if g.registerWait != nil {
+		return g.registerWait(req, now)
+	}
+	return g.Store().RegisterWait(req, now)
+}
+
+// CancelWait removes one live lease by wait_id through the owning Session
+// when available; direct test constructions fall back to the store-only
+// behavior.
+func (g goalGuard) CancelWait(waitID string, now time.Time) bool {
+	if g.cancelWait != nil {
+		return g.cancelWait(waitID, now)
+	}
+	return g.Store().CancelWait(waitID, now)
+}
+
+// RejectReason names the most recent registration rejection, or "" when the
+// last RegisterWait succeeded. The Task-3 tool surface propagates it as the
+// validation error.
+func (g goalGuard) RejectReason() string { return g.Store().LastRejectReason() }
+
+// Snapshot returns a value copy of the current goal, or (zero, false) if no
+// goal is set.
+func (g goalGuard) Snapshot() (goal.Snapshot, bool) { return g.Store().Snapshot() }
 
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
@@ -255,6 +286,8 @@ func newToolDeps(s *Session) *toolDeps {
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
 			setTerminal:          s.setGoalTerminal,
+			registerWait:         s.registerGoalWait,
+			cancelWait:           func(waitID string, _ time.Time) bool { return s.CancelGoalWait(waitID) },
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

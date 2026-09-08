@@ -1020,6 +1020,75 @@ func DefAskUser() llm.ToolDefinition {
 	}
 }
 
+// DefGoalWait returns the tool definition for goal_wait (spec section 2:
+// model-declared wait registration). The model names a wait kind plus its
+// predicate: kind selects the source (until_time | until_job | until_delegate
+// | until_approval | until_event | until_child); target carries the kind's
+// target identity (job id, delegate id, child session id, file path, URL, or
+// approval content key); event_subtype selects the until_event flavor
+// (file_modified | http_match | external_label); matcher carries the
+// http_match/event matcher body (capped at 1KB); ask_generation binds an
+// until_approval lease to the stable turn/ask-call ID of the ask_user call;
+// label is the chip-rendered short label (capped at 256 chars, restricted
+// printable charset); timeout_seconds is the lease time-to-live (default 600,
+// cap 86400). Registration runs the identical validation as the harness-auto
+// path: hallucinated targets are rejected with the reason named, never
+// parked; a retained-terminal job/delegate fires immediately with the
+// terminal outcome instead of parking.
+func DefGoalWait() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_wait",
+		Description: `Park the active session goal on a waited event instead of polling for it. ` +
+			`The goal burns zero turns while parked and wakes exactly once when the wait fires or expires. ` +
+			`Use until_time to sleep until a deadline; until_job/until_delegate to wait on a supervised job or delegate you own; ` +
+			`until_approval to wait on a live ask_user question you asked (with its ask-call ID); ` +
+			`until_event file_modified to wait on a file inside the session sandbox changing, http_match to wait on a URL matching, ` +
+			`external_label for a harness-signalled label; until_child to wait on a known descendant session's terminal report. ` +
+			`Hallucinated targets are rejected with the reason named; a retained-terminal job/delegate fires immediately with its terminal outcome.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "Wait kind: until_time | until_job | until_delegate | until_approval | until_event | until_child.",
+					"enum":        []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"},
+				},
+				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, URL, or approval content key. Empty for until_time."},
+				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor: file_modified | http_match | external_label.", "enum": []string{"file_modified", "http_match", "external_label"}},
+				"matcher":        map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
+				"ask_generation": map[string]any{"type": "string", "description": "Stable turn/ask-call ID of the ask_user call an until_approval wait binds to."},
+				"label":          map[string]any{"type": "string", "description": "Chip-rendered short label (max 256 chars, printable). Defaults per kind when empty."},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400,
+					"description": "Lease time-to-live in seconds (default 600, max 86400)."},
+			},
+			"required": []string{"kind"},
+		},
+	}
+}
+
+// DefGoalCancelWait returns the tool definition for goal_cancel_wait (spec
+// section 7): remove one live wait lease by wait_id. Cancel removes the live
+// lease only and disarms its timer; an already-claimed pendingWake entry
+// still drives once with the cancellation noted - cancel never silently
+// swallows a consumed fire.
+func DefGoalCancelWait() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "goal_cancel_wait",
+		Description: `Cancel one live goal wait by wait_id. ` +
+			`The live lease is removed and its timer disarmed; cancelling the last live lease returns the goal to active. ` +
+			`An already-claimed (fired) wait still drives its wake turn once - cancel never swallows a consumed fire.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"wait_id": map[string]any{"type": "string", "description": "The wait_id of the live lease to cancel (returned by goal_wait)."},
+			},
+			"required": []string{"wait_id"},
+		},
+	}
+}
+
 // DefUpdateGoal returns the tool definition for update_goal.
 // The model calls this to declare the active goal complete or blocked.
 func DefUpdateGoal() llm.ToolDefinition {

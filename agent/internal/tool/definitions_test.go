@@ -1001,3 +1001,49 @@ func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
 		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
 	}
 }
+
+func TestDefGoalWaitShape(t *testing.T) {
+	def := DefGoalWait()
+	if def.Name != "goal_wait" {
+		t.Fatalf("name = %q, want goal_wait", def.Name)
+	}
+	required(t, def, "goal_wait", []string{"kind"})
+	props := def.Parameters["properties"].(map[string]any)
+	kind, ok := props["kind"].(map[string]any)
+	if !ok {
+		t.Fatalf("goal_wait missing kind property")
+	}
+	enum, ok := kind["enum"].([]string)
+	if !ok {
+		t.Fatalf("kind enum = %T, want []string", kind["enum"])
+	}
+	for _, want := range []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"} {
+		if !slices.Contains(enum, want) {
+			t.Fatalf("kind enum = %v, want %q", enum, want)
+		}
+	}
+	for _, prop := range []string{"target", "event_subtype", "matcher", "ask_generation", "label", "timeout_seconds"} {
+		if _, ok := props[prop]; !ok {
+			t.Fatalf("goal_wait missing property %q", prop)
+		}
+	}
+	timeout, ok := props["timeout_seconds"].(map[string]any)
+	if !ok {
+		t.Fatalf("goal_wait missing timeout_seconds property")
+	}
+	if timeout["type"] != "integer" {
+		t.Fatalf("timeout_seconds type = %v, want integer", timeout["type"])
+	}
+}
+
+func TestDefGoalCancelWaitShape(t *testing.T) {
+	def := DefGoalCancelWait()
+	if def.Name != "goal_cancel_wait" {
+		t.Fatalf("name = %q, want goal_cancel_wait", def.Name)
+	}
+	required(t, def, "goal_cancel_wait", []string{"wait_id"})
+	props := def.Parameters["properties"].(map[string]any)
+	if _, ok := props["wait_id"]; !ok {
+		t.Fatalf("goal_cancel_wait missing wait_id property")
+	}
+}
