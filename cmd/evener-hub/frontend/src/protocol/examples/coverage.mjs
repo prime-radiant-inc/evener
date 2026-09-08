@@ -2,6 +2,15 @@ import { METHOD_NAMES, NOTIFICATION_NAMES } from "@evener/appwire-client";
 
 // A listed recipe exercises these requests; this is not branch/outcome coverage.
 const recipes = {
+  "session-lineage.mjs": [
+    "initialize",
+    "thread/read",
+    "thread/resume",
+    "thread/fork",
+    "evener/thread/transcripts/list",
+    "evener/subagentPreview",
+  ],
+  "maintenance-checks.mjs": ["initialize", "ping", "evener/auth/test", "evener/plugin/checkNow"],
   "oauth.mjs": [
     "initialize",
     "evener/auth/status",
