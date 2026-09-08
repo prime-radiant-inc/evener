@@ -332,7 +332,7 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	if installed == nil || installed.Source != plugins.LaunchPluginSourceInstalled || installed.Marketplace != "task3-market" || installed.Path == "" {
 		t.Fatalf("installed candidate = %+v", installed)
 	}
-	if !strings.Contains(out.String(), `"skillCount"`) || !strings.Contains(out.String(), `"mcpCount"`) {
+	if !strings.Contains(out.String(), `"skill_count"`) || !strings.Contains(out.String(), `"mcp_count"`) {
 		t.Fatalf("effective JSON omitted count fields: %s", out.String())
 	}
 

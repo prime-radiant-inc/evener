@@ -64,7 +64,7 @@ type Catalog struct {
 	// and were therefore dropped rather than failing the whole catalog. A
 	// skipped plugin is simply absent from Plugins (and so not installable);
 	// this field exists so Browse/CLI/callers can surface a warning about it.
-	SkippedPlugins []string `json:"skippedPlugins,omitempty"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	SkippedPlugins []string `json:"skipped_plugins,omitempty"`
 }
 
 type catalogMetadata struct {

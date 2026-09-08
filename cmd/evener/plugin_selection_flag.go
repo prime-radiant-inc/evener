@@ -118,11 +118,11 @@ type effectivePluginJSON struct {
 	Source       plugins.LaunchPluginSource `json:"source"`
 	Marketplace  string                     `json:"marketplace,omitempty"`
 	Path         string                     `json:"path,omitempty"`
-	SkillCount   int                        `json:"skillCount"`   //nolint:tagliatelle // stable CLI JSON uses camelCase
-	AgentCount   int                        `json:"agentCount"`   //nolint:tagliatelle // stable CLI JSON uses camelCase
-	CommandCount int                        `json:"commandCount"` //nolint:tagliatelle // stable CLI JSON uses camelCase
-	HookCount    int                        `json:"hookCount"`    //nolint:tagliatelle // stable CLI JSON uses camelCase
-	MCPCount     int                        `json:"mcpCount"`     //nolint:tagliatelle // stable CLI JSON uses camelCase
+	SkillCount   int                        `json:"skill_count"`
+	AgentCount   int                        `json:"agent_count"`
+	CommandCount int                        `json:"command_count"`
+	HookCount    int                        `json:"hook_count"`
+	MCPCount     int                        `json:"mcp_count"`
 }
 
 // fatalLaunchPluginError decides what a resolver failure means to a launch,

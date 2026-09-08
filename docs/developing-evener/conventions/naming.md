@@ -119,9 +119,10 @@ Two standard gates enforce the convention:
 - **Go struct tags** — golangci-lint's `tagliatelle` linter (configured in
   `.golangci.yml`) requires snake_case `json`/`toml` tags by default,
   camelCase `json` tags in the appwire-adjacent packages (per-package
-  overrides), and nothing under `llm/providers/` (excluded; upstream owns
-  the casing). A single field can opt out with a trailing
-  `//nolint:tagliatelle // <reason>` comment.
+  overrides). Every `llm/providers/` package is held to the snake_case
+  default except `providers/google`, which has a per-package camelCase
+  override because Gemini's REST wire format is camelCase. A single field
+  can opt out with a trailing `//nolint:tagliatelle // <reason>` comment.
 
   `server/appwire_*.go` is camelCase too, but it shares package `server`
   with snake_case code, and tagliatelle's overrides are per-package. That
@@ -144,10 +145,10 @@ make lint-naming     # TOML data files
 ```
 
 The Make lint targets use a worktree-scoped golangci-lint cache, so findings
-under `llm/providers/` or `server/appwire_` are evaluated against this tree's
-paths rather than a sibling checkout's. If an external invocation still uses
-the global cache, `make lint-cache-clean` clears only the Make-managed cache;
-use that invocation's own cache-clean command for its global cache.
+under `server/appwire_` are evaluated against this tree's paths rather than a
+sibling checkout's. If an external invocation still uses the global cache,
+`make lint-cache-clean` clears only the Make-managed cache; use that
+invocation's own cache-clean command for its global cache.
 
 ## Adding a new surface
 
@@ -176,15 +177,37 @@ When you add a new TOML config file, JSON payload, or CLI flag:
 
 ## Migration status
 
-The tree matches the rule end-to-end. Only two JSON tags outside the
-appwire/providers carve-outs intentionally stay camelCase:
+The tree matches the rule end-to-end. Every camelCase JSON tag outside the
+appwire/providers carve-outs carries a per-field
+`//nolint:tagliatelle // <reason>` naming the wire format that fixes it, and
+these are all of them:
 
-- `mcpServers` in `agent/mcp_config.go` and `agent/plugin.go` —
-  mirrors the Claude `.mcp.json` format. Marked
-  `// evener:naming-ignore` with a pointer back to the upstream format.
+- `mcpServers` — `agent/plugin/plugin.go`, `agent/mcpconfig/config.go`,
+  `internal/plugins/catalog.go`. The upstream `.mcp.json` key spelling.
+- The Claude plugin store's on-disk state — `internal/plugins/registry.go`
+  (`installPath`, `gitCommitSha`, `installedAt`, `lastUpdated`,
+  `autoUpgrade`), `internal/plugins/marketplaces.go` (`installLocation`,
+  `lastUpdated`), and `internal/plugins/catalog.go` (`pluginRoot`). These
+  files share `~/.claude/plugins/` state and `marketplace.json` with Claude
+  Code, so the keys are decoded as well as written —
+  `internal/plugins/registry_test.go` feeds `installPath` as fixture JSON.
+  Projections of that state that nothing decodes are snake_case, e.g.
+  `ListItem` in `internal/plugins/install.go`, which only feeds
+  `plugin list --json`.
+- The doctor Finding contract — `agent/doctor/audit.go` (`suggestedFix`,
+  `sessionRefs`, `watchIds`, …), specified in the `doctoring-evener` skill's
+  `references/finding-contract.md`, plus the narrow decoders that read it back
+  in `cmd/evener-doctor`'s tests.
+- The Claude hook wire format — `agent/plugin/hooks.go` (`asyncRewake`,
+  `statusMessage`).
+- Gemini grounding metadata — `internal/apptranscript/apptranscript.go`
+  (`webSearchQueries`, `groundingChunks`), fixed by the Gemini API.
+- The Navigation v2 wire contract — `hubapi/navigation.go`
+  (`attentionSummary`) and `hubapi/navigation_delta.go` (`entityKey`,
+  `upsertedEntities`, …), which the web client reads directly.
 
-Hub REST/SSE shapes and TUI-internal types that previously leaked
-camelCase have all migrated: REST request bodies use `turn_id`, the
-TUI now reuses the appwire-defined `ToolOutputDeltaParams` and
-`NotificationRef` types directly instead of locally redeclaring the
-wire shape with camelCase tags.
+Types that previously leaked camelCase by locally redeclaring a wire shape
+have migrated onto the type that owns it: the TUI reuses the appwire-defined
+`ToolOutputDeltaParams` and `NotificationRef` directly, and
+`hubapi.AttentionSummary` is an alias for `appwire.AttentionSummary` rather
+than a copy of it.

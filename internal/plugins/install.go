@@ -344,12 +344,12 @@ type ListItem struct {
 	Marketplace  string    `json:"marketplace"`
 	Version      string    `json:"version"`
 	Enabled      bool      `json:"enabled"`
-	AutoUpgrade  bool      `json:"autoUpgrade"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	AutoUpgrade  bool      `json:"auto_upgrade"`
 	Broken       bool      `json:"broken"`
-	InstallPath  string    `json:"installPath"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	GitCommitSha string    `json:"gitCommitSha"` //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	InstalledAt  time.Time `json:"installedAt"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
-	LastUpdated  time.Time `json:"lastUpdated"`  //nolint:tagliatelle // matches Claude Code plugin/marketplace JSON schema
+	InstallPath  string    `json:"install_path"`
+	GitCommitSha string    `json:"git_commit_sha"`
+	InstalledAt  time.Time `json:"installed_at"`
+	LastUpdated  time.Time `json:"last_updated"`
 }
 
 func splitKey(key string) (plugin, marketplace string) {

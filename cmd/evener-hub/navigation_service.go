@@ -1351,7 +1351,7 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	favoriteView := hubcore.ClassifyFavoriteDecisions(favorites, authority).Presentation
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
-	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
+	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), attention, snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
 	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now)}, nil
 }
 

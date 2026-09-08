@@ -652,12 +652,6 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 	}
 }
 
-// hubAttentionSummaryFromCore maps hubcore's internal attention summary to
-// hubapi's public wire type (hubapi cannot import the hub's internal package).
-func hubAttentionSummaryFromCore(sum appwire.AttentionSummary) hubapi.AttentionSummary {
-	return hubapi.AttentionSummary{NeedsYou: sum.NeedsYou, Error: sum.Error, Working: sum.Working}
-}
-
 func (s *WebServer) apiTreeSources() []hubapi.Source {
 	sources := []hubapi.Source{{
 		ID:     "local",

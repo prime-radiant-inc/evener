@@ -1,6 +1,10 @@
 package hubapi
 
-import "time"
+import (
+	"time"
+
+	"primeradiant.com/evener/appwire"
+)
 
 // MobileAPIVersion is the REST contract version implemented by the dedicated
 // mobile client. Pairing requires an exact match with HealthResponse.
@@ -28,20 +32,14 @@ type HealthCapabilities struct {
 // AttentionSummary is the authoritative badge count set: how many live,
 // top-level, not-manually-archived sessions need attention, are erroring, or
 // are working — the NeedsYou tier's eligibility set (only an explicit archive
-// decision suppresses; age never decays attention). Notification clients
-// (notifications.js) drive the tab title and favicon badge from this on
-// baseline load. It mirrors
-// appwire.AttentionSummary's shape as a parallel wire type — hubapi is the
-// REST client surface and deliberately does not import appwire — including
-// its camelCase tags: this is the same "summary" object evener/attention/changed
-// pushes incrementally (appwire.AttentionChangedPayload.Summary), so the JS
-// layer applies one field-access path to either the REST baseline or the live
-// notification.
-type AttentionSummary struct {
-	NeedsYou int `json:"needsYou"` //nolint:tagliatelle // camelCase: see AttentionSummary's doc
-	Error    int `json:"error"`
-	Working  int `json:"working"`
-}
+// decision suppresses; age never decays attention). The web client drives the
+// tab title from needsYou+error (frontend/src/notifications/title.ts) and the
+// favicon badge dot from all three counts
+// (frontend/src/notifications/favicon.ts) on baseline load. It is the same
+// "summary" object evener/attention/changed pushes incrementally
+// (appwire.AttentionChangedPayload.Summary), so the JS layer applies one
+// field-access path to either the REST baseline or the live notification.
+type AttentionSummary = appwire.AttentionSummary
 
 type Source struct {
 	ID     string `json:"id"`

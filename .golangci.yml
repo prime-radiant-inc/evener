@@ -93,9 +93,6 @@ linters:
           - pkg: appwire
             rules:
               json: camel
-          - pkg: cmd/evener-hub/internal/appsource
-            rules:
-              json: camel
           - pkg: internal/appserver
             rules:
               json: camel
@@ -149,16 +146,13 @@ linters:
       - path: _test\.go
         text: SA5011
 
-      # llm/providers/ speaks each upstream provider's wire format; tag
-      # casing belongs to upstream, not to this repo's snake_case default.
-      # (Paths are relative to this config file, so this matches the llm
-      # module's run from the repo root.)
-      - path: ^llm/providers/
-        linters:
-          - tagliatelle
       # server/appwire_*.go mirrors the camelCase appwire wire format inside
       # a package that is otherwise snake_case. tagliatelle's overrides are
-      # per-package, so this per-file regime is expressed as an exclusion.
+      # per-package, so this per-file regime is expressed as an exclusion here
+      # and enforced by .golangci-appwire.yml, which flips package server to
+      # camelCase and discards every finding outside these files. Exactly one
+      # of the two runs judges any given file; narrowing this pattern would
+      # make them contradict each other.
       - path: ^server/appwire_
         linters:
           - tagliatelle
