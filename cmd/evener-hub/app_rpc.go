@@ -665,7 +665,7 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}
-		if err := relays.startRelayForThread(ctx, resp.Thread); err != nil {
+		if err := relays.startRelayForCreatedThread(ctx, resp.Thread); err != nil {
 			appserver.Notify(ctx, appwire.NotifyWarning, appwire.WarningParams{
 				ThreadID: resp.Thread.ID,
 				Ref:      resp.Thread.Evener.Ref,

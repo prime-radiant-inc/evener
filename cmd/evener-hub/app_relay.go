@@ -35,6 +35,7 @@ type hubRelayHandle struct {
 	commandOwners int
 	pendingRoutes int
 	routeChanged  chan struct{}
+	startup       *hubThreadStartup
 }
 
 type relayKeyState struct {
@@ -51,6 +52,7 @@ type relayKeyState struct {
 	publications    int
 	publicationDone chan struct{}
 	done            chan struct{}
+	startup         *hubThreadStartup
 }
 
 type hubThreadReadResult struct {
@@ -251,15 +253,16 @@ func stampForkCapability(notification appwire.Notification) appwire.Notification
 }
 
 type hubRelayFunctions struct {
-	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
-	readThread          func(context.Context, appsource.Source, appwire.ThreadReadParams) (*hubThreadReadResult, error)
-	captureThreadRead   func(context.Context, appwire.ThreadReadParams, *hubThreadReadResult) bool
-	startTurn           func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
-	startRelayForThread func(context.Context, appwire.Thread) error
-	stopRelay           func(string)
-	stopCanonicalRelay  func(appwire.Ref)
-	relayCommandCount   func(string) int
-	relayPublished      func(string) bool
+	startRelay                 func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
+	readThread                 func(context.Context, appsource.Source, appwire.ThreadReadParams) (*hubThreadReadResult, error)
+	captureThreadRead          func(context.Context, appwire.ThreadReadParams, *hubThreadReadResult) bool
+	startTurn                  func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	startRelayForThread        func(context.Context, appwire.Thread) error
+	startRelayForCreatedThread func(context.Context, appwire.Thread) error
+	stopRelay                  func(string)
+	stopCanonicalRelay         func(appwire.Ref)
+	relayCommandCount          func(string) int
+	relayPublished             func(string) bool
 }
 
 var observeHubRelayFunctions func(hubRelayFunctions)
@@ -348,6 +351,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	pendingRelays := map[string]map[*relayKeyState]*hubRelayHandle{}
 	canonicalRelays := map[appwire.Ref]*hubRelayHandle{}
 	relayGenerations := map[string]uint64{}
+	// Only creation requests awaiting admission live here. Their relay owns
+	// the record afterward, so suppression expires with the relay generation.
+	pendingThreadStarts := map[string]*hubThreadStartup{}
 	removeStateRoutesLocked := func(handle *hubRelayHandle, state *relayKeyState) {
 		if state == nil {
 			return
@@ -620,6 +626,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					}
 					target.state.publications++
 				}
+				startup := target.state.startup
 				relayMu.Unlock()
 				if !current {
 					return
@@ -628,7 +635,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
 				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
-					server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					if !startup.hold(notification) {
+						server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					}
 					return struct{}{}, nil
 				})
 				_ = publicationErr
@@ -862,6 +871,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					done:         make(chan struct{}),
 				}
 				registerPendingStateLocked(handle, state)
+			}
+			if startup := pendingThreadStarts[relayKey]; startup != nil {
+				state.startup = startup
 			}
 			state.commands++
 			handle.commandOwners++
@@ -1355,7 +1367,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
-				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
+				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay, startup: pendingThreadStarts[relayKey]}
 				relayedThreads[relayKey] = relayHandle
 				stopInitialCancellation = context.AfterFunc(ctx, func() {
 					var cancel context.CancelFunc
@@ -1580,6 +1592,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				backoff.Reset()
 				consecutiveFailures = 0
 				trackActiveTurn(notification)
+				relayMu.Lock()
+				startup := relayHandle.startup
+				relayMu.Unlock()
+				if startup.hold(notification) {
+					return
+				}
 				if source.ID() == "local" {
 					notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
 				}
@@ -1781,6 +1799,55 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		return nil
 	}
+	startRelayForCreatedThread := func(ctx context.Context, thread appwire.Thread) error {
+		if thread.ID == "" {
+			thread.ID = thread.SessionID
+		}
+		relayKey := threadRef(thread)
+		if relayKey == "" {
+			return startRelayForThread(ctx, thread)
+		}
+		startup := &hubThreadStartup{thread: thread}
+		relayMu.Lock()
+		pendingThreadStarts[relayKey] = startup
+		if existing := relayedThreads[relayKey]; existing != nil {
+			if state := existing.relayKeys[relayKey]; state != nil {
+				state.startup = startup
+			} else {
+				existing.startup = startup
+			}
+		}
+		relayMu.Unlock()
+		err := startRelayForThread(ctx, thread)
+		relayMu.Lock()
+		if pendingThreadStarts[relayKey] == startup {
+			delete(pendingThreadStarts, relayKey)
+		}
+		admitted := false
+		if handle := relayedThreads[relayKey]; handle != nil && handle.established && !handle.stopping {
+			if state := handle.relayKeys[relayKey]; state != nil {
+				admitted = state.startup == startup && !state.retiring
+			} else {
+				admitted = handle.startup == startup
+			}
+		}
+		relayMu.Unlock()
+		notification, original := startup.finish(admitted && err == nil && ctx.Err() == nil)
+		if notification != nil {
+			_, publicationErr := withDeletionTargetOwnership(cfg, relayKey, thread.ID, "", func() (struct{}, error) {
+				if original {
+					server.Broadcast(relayKey, notification.Method, notification.Params)
+				} else {
+					appserver.Notify(ctx, notification.Method, notification.Params)
+				}
+				return struct{}{}, nil
+			})
+			if publicationErr != nil {
+				return publicationErr
+			}
+		}
+		return err
+	}
 	stopCanonicalRelay := func(ref appwire.Ref) {
 		var closeHandle bool
 		var cancelInitializing context.CancelFunc
@@ -1873,14 +1940,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		return handle != nil && handle.relayKeys[key] != nil
 	}
 	return hubRelayFunctions{
-		startRelay:          startRelay,
-		readThread:          readThread,
-		captureThreadRead:   captureThreadRead,
-		startTurn:           startTurn,
-		startRelayForThread: startRelayForThread,
-		stopRelay:           stopRelay,
-		stopCanonicalRelay:  stopCanonicalRelay,
-		relayCommandCount:   relayCommandCount,
-		relayPublished:      relayPublished,
+		startRelay:                 startRelay,
+		readThread:                 readThread,
+		captureThreadRead:          captureThreadRead,
+		startTurn:                  startTurn,
+		startRelayForThread:        startRelayForThread,
+		startRelayForCreatedThread: startRelayForCreatedThread,
+		stopRelay:                  stopRelay,
+		stopCanonicalRelay:         stopCanonicalRelay,
+		relayCommandCount:          relayCommandCount,
+		relayPublished:             relayPublished,
 	}
 }
