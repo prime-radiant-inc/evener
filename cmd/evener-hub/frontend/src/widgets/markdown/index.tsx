@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { Marked, type RendererObject, type Tokens } from "marked";
+import { Marked, type RendererObject, type Token, type Tokens } from "marked";
 import { useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -200,6 +200,10 @@ const TAIL_BLOCK_MARKER =
 // leave the tail's `[label]` use literal under the windowed parse. Verified
 // against the shared lexer: top-level, blockquote-nested, and list-nested
 // definitions all trip this pattern while definition-free heads do not.
+// Shapes the pattern cannot cover (an escaped label like `[foo\]bar]: /url`
+// has no `[...]:` span for it to match; a definition indented as a list-item
+// continuation sits past its 0-3-space allowance) are caught by the
+// shared-lexer check in the gate below instead.
 const HEAD_SPLIT_HAZARD =
   /^(?: {0,3}>[ \t]?)+ {0,3}\[[^\]\n]+\]:|^ {0,3}(?: {0,3}>[ \t]?)* {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+.*\[[^\]\n]+\]:|^ {0,3}\[[^\]\n]+\]:|^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$/m;
 
@@ -226,6 +230,56 @@ function splitLiveSource(source: string): { head: string; tail: string } | null 
   while (source.charAt(tailStart) === "\n") tailStart += 1;
   if (tailStart >= source.length) return null;
   return { head: source.slice(0, blank + 2), tail: source.slice(tailStart) };
+}
+
+// Exact link-definition detection through the shared lexer: a definition on
+// either side of the split registers globally with marked and resolves
+// `[label]` uses anywhere in the whole - including across the split - that a
+// standalone tail parse would leave literal, so any `def` token, top level
+// or nested in a blockquote/list/table, falls back to the full parse. A
+// lexer failure fails closed to the full parse as well.
+function containsLinkDefinition(source: string): boolean {
+  let tokens: Token[];
+  try {
+    tokens = markdownLexer.lexer(source);
+  } catch {
+    return true;
+  }
+  return tokensContainDef(tokens);
+}
+
+function tokensContainDef(tokens: Token[]): boolean {
+  for (const token of tokens) {
+    if (token.type === "def") return true;
+    if ("tokens" in token && tokensContainDef(token.tokens ?? [])) return true;
+    if ("items" in token) {
+      for (const item of token.items) {
+        if (tokensContainDef(item.tokens)) return true;
+      }
+    }
+    if (token.type === "table") {
+      for (const cell of [...token.header, ...token.rows.flat()]) {
+        if (tokensContainDef(cell.tokens)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The head-side lexer check cached per exact head text: re-lexing the head
+// on every live render would reintroduce the O(n^2) the head HTML cache
+// exists to avoid, so a head that lexes clean stays clean-keyed until its
+// text changes. (The tail is window-bounded, so it lexes per render with no
+// cache.)
+function headHasLinkDefinition(
+  head: string,
+  cache: { current: { headSource: string; headHasDef: boolean } | null },
+): boolean {
+  const hit = cache.current;
+  if (hit !== null && hit.headSource === head) return hit.headHasDef;
+  const headHasDef = containsLinkDefinition(head);
+  cache.current = { headSource: head, headHasDef };
+  return headHasDef;
 }
 
 // The tail's first non-blank line, when indented, could still belong to a
@@ -263,6 +317,9 @@ export function Markdown({ source, live = false }: MarkdownProps) {
   // always take the settled full-parse path unchanged, so the final HTML is
   // byte-identical with or without this throttle.
   const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
+  // Backs headHasLinkDefinition below - same cache discipline as headCacheRef:
+  // keyed on the head's own exact text, never stale, misses re-lex once.
+  const headDefCacheRef = useRef<{ headSource: string; headHasDef: boolean } | null>(null);
   const html = useMemo(() => {
     if (!live || source.length <= LIVE_WINDOWED_MIN_LENGTH) {
       const rawHtml = md.parse(live ? closeOpenMarkdown(source) : source, { async: false });
@@ -288,6 +345,8 @@ export function Markdown({ source, live = false }: MarkdownProps) {
       split === null ||
       closeOpenMarkdown(split.head) !== split.head ||
       HEAD_SPLIT_HAZARD.test(split.head) ||
+      headHasLinkDefinition(split.head, headDefCacheRef) ||
+      containsLinkDefinition(split.tail) ||
       HTML_BLOCK_START.test(split.head) ||
       HTML_BLOCK_END.test(split.tail) ||
       TAIL_BLOCK_MARKER.test(split.tail) ||

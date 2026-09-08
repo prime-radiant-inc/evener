@@ -238,6 +238,45 @@ test("renders GFM column alignment via the align attribute", () => {
   expect(tds.map((td) => td.getAttribute("align"))).toEqual(["left", "center", "right"]);
 });
 
+// --- windowed live path: link definitions across the split ------------------
+// Past the live-window threshold the live path may serve the head from cache
+// and re-parse only the tail - but a link definition on either side of the
+// split registers globally with marked, so the halves must never parse
+// independently while one is present. These shapes all evade the
+// HEAD_SPLIT_HAZARD / TAIL_BLOCK_MARKER line patterns (an escaped label like
+// `[foo\]bar]` has no `[...]:` span for them to match; a definition indented
+// as a list-item continuation sits past their 0-3-space allowance) and are
+// caught by the shared-lexer gate instead. Each case asserts the live render
+// matches the settled render exactly, and that the settled render really
+// resolves the reference - so the test cannot pass vacuously with the link
+// left literal in both.
+function expectLiveMatchesSettled(source: string, url: string) {
+  const live = render(<Markdown source={source} live />);
+  const settled = render(<Markdown source={source} />);
+  expect(settled.container.querySelector(`a[href="${url}"]`)).not.toBeNull();
+  expect(live.container.innerHTML).toBe(settled.container.innerHTML);
+}
+
+test("live matches settled when an escaped-label definition sits in the head", () => {
+  const source = `${"x".repeat(1200)}\n\n[foo\\]bar]: /url\n\nsee [foo\\]bar] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when a list-continuation-indented definition sits in the head", () => {
+  const source = `${"x".repeat(1100)}\n\n- item\n\n    [lbl]: /url\n\nsee [lbl] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when a blockquote-nested escaped-label definition sits in the head", () => {
+  const source = `${"x".repeat(1100)}\n\n> [q\\]z]: /url\n\nsee [q\\]z] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when the definition sits in the tail", () => {
+  const source = `${"z".repeat(1150)}\n\nsee [t\\]d] here\n\n[t\\]d]: /url\n${"w".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
 // The table chrome lives in the stylesheet, not on a class the component
 // writes, so - like the ink/font-size assertions above - this reads the
 // stylesheet's own source. Guards the table styling contract: a header band
