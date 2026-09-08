@@ -1,0 +1,159 @@
+{
+  "status": "bounded native rejection and recovery observed; owned fixture cleaned",
+  "scope": "Corrected iPad encoded-image size validation",
+  "fixtureRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-settings-root-2ld63dog",
+  "native": {
+    "source": "d20229b75",
+    "initialPID": 29261,
+    "coldLaunchPID": 42478,
+    "jsBundleSHA256": "d47fe4d8f7976ef7c2b7600e3f4cd70171292876d00c3f177891e6facf62db26"
+  },
+  "sourceImages": {
+    "convertedOversizeJPEG": {
+      "bytes": 4013748,
+      "sha256": "dc9116ae9770c8406e09e5bcf8dbc64fce42f772651223e1d6f7de78eb5329ae"
+    },
+    "decodedPNGReference": {
+      "bytes": 15921361,
+      "sha256": "32f6deb0b550aa81ce8fece6cd6707a3c7ea08d7969096e2a08f6937dcf1ee9c",
+      "qualification": "independent Pillow-decoded reference only; not the native encoded artifact"
+    },
+    "validControlPNG": {
+      "bytes": 760,
+      "sha256": "a4c5707369296670bedf47baea799d5bfd23d89db99cb0922d3f7c72145bfc99"
+    }
+  },
+  "pickerCache": {
+    "convertedOversizeJPEGBytes": 4013748,
+    "convertedOversizeJPEGSHA256": "dc9116ae9770c8406e09e5bcf8dbc64fce42f772651223e1d6f7de78eb5329ae",
+    "sameAsSource": true
+  },
+  "behavior": {
+    "nativeValidation": "rejected converted oversize image with the shared maximum 8 MB message",
+    "laterControlImageRetained": true,
+    "reopenedAfterColdLaunch": true,
+    "creationDraftAndImageRowsByteIdenticalAfterRestart": true,
+    "retainedImage": "valid-control.png",
+    "retainedMarker": "[image 2]",
+    "newSessionSubmitted": false
+  },
+  "rawMetadata": {
+    "sourceImagesSHA256": "f4bfcd00527d0f7994bce13e7af62f4806251d9efc9e07b3e09d89799a543f68",
+    "pickerCacheSHA256": "69c46eb4515dfdfa7ab3a564036f2ec355b5f5136424acc9832a01bb8ef928d2",
+    "encodedRejectionSHA256": "e92dea3f40bed9c14ee3ac190ef6bb1199002c593a1f2ba58d79dc2905b8fe01",
+    "encodedRejectionStorageSHA256": "9cc9974a20f7e879bfd07da30579b07daf06c8920385f9f30525475759d3fe94",
+    "imageRestartReopenedSHA256": "b77185851059dd92860172c5ede9ec99dadc9ea613bb2943c5a675fb05103ab2",
+    "imageRestartReopenedStorageSHA256": "9cc9974a20f7e879bfd07da30579b07daf06c8920385f9f30525475759d3fe94"
+  },
+  "cleanup": {
+    "processes": {
+      "43703": "absent",
+      "43760": "absent",
+      "43762": "absent",
+      "46182": "absent"
+    },
+    "ownedExecutableScan": [],
+    "ports": {
+      "58131": "no listener",
+      "58231": "no listener"
+    },
+    "tokenCredentialsAndPrivateHubLogsAbsent": true,
+    "nativeProfileAndAllDraftTablesEmptyAfterColdLaunch": true,
+    "cleanupColdLaunchPID": 94994,
+    "nativeRemovalFirstAttempt": "Installation interrupted removal before completion; profile and creation draft remained. Repeated ordinary removal completed; cold-launch verified absent. No product fix was needed.",
+    "photos": {
+      "baselineFilesUnchanged": 7,
+      "assets": [
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0001.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0002.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0003.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0004.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0005.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 0,
+          "ZTRASHEDSTATE": 0,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": null,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0006.HEIC"
+        },
+        {
+          "ZTRASHEDREASON": 1,
+          "ZTRASHEDSTATE": 1,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": 810542267.138206,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0007.PNG"
+        },
+        {
+          "ZTRASHEDREASON": 1,
+          "ZTRASHEDSTATE": 1,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": 810544922.899132,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0008.JPG"
+        },
+        {
+          "ZTRASHEDREASON": 1,
+          "ZTRASHEDSTATE": 1,
+          "ZTRASHEDBYPARTICIPANT": null,
+          "ZTRASHEDDATE": 810544922.899388,
+          "ZDIRECTORY": "DCIM/100APPLE",
+          "ZFILENAME": "IMG_0009.PNG"
+        }
+      ],
+      "ownedImportsInThisCase": [
+        "IMG_0008.JPG",
+        "IMG_0009.PNG"
+      ],
+      "baselineNote": "IMG_0007.PNG was already in Recently Deleted from the preceding image-only creation case; it is one of the seven unchanged baseline files."
+    },
+    "photoCleanupReceipt": {
+      "sha256": "870eebbe26edbffec61e3a40a3b9ebc406d08144fb69689fd10bfcbf02ca4bca",
+      "bytes": 1906
+    },
+    "rootCleanupReceipt": {
+      "sha256": "b176db009c24608639d7acbbc6cd2661cfa7d298b589b1038e2f9a4f6606df2c",
+      "bytes": 579
+    }
+  },
+  "limitations": [
+    "The native encoded PNG byte count is not asserted from an actual native output file; only the independent decoded PNG reference exceeds 8 MiB.",
+    "No claim about all image formats, dimensions, picker limits, physical devices, accessibility, or release acceptance."
+  ]
+}

@@ -55,3 +55,27 @@ The journey above precedes this size correction; the oversized-image picker
 case on the corrected device build remains open. This evidence also leaves
 maximum-count selection, interrupted creation dispatch, large-text/VoiceOver,
 performance and physical-device qualification open.
+
+## Encoded oversize-image rejection
+
+The [size-validation receipt](assets/ipad-image-size-receipt.json) records the
+corrected native build `d20229b75` (`d47fe4d8…` bundle hash) rejecting the
+converted `converted-oversize.jpeg` picker image with the shared “maximum 8 MB”
+message while retaining the later `valid-control.png` attachment. The source
+JPEG in the native ImagePicker cache was 4,013,748 bytes with SHA-256
+`dc9116ae…`, matching the source file. An independently decoded PNG reference
+was 15,921,361 bytes and is evidence for the oversize condition only; it is not
+asserted to be the native encoded artifact’s byte count.
+
+The rejection accessibility capture and SQLite snapshot show the valid control
+image retained. After cold launch (native PID 42478), the `creation_drafts` and
+image rows were byte-identical to the pre-restart snapshot, and the reopened UI
+still showed the retained control image. The installed source bundle remained
+unchanged after prebuild verification.
+
+The owned profile and drafts were removed and stayed absent after cold launch.
+Root rechecked fixture processes, listeners and credential cleanup. The two photos imported for this case
+were moved to Recently Deleted; six original library photos and all seven
+baseline image files remained unchanged. This case qualifies rejection and durable recovery;
+image-count limits, other formats, accessibility, physical devices, and signed
+release acceptance remain open.
