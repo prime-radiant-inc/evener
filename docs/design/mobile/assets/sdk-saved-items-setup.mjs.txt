@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {AppwireClient} from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/ws/index.js';
+const root=process.cwd(),rt=JSON.parse(readFileSync(root+'/runtime.json')),token=readFileSync(root+'/state/evener/auth-token','utf8').trim();
+const hub=new AppwireClient({url:`ws://127.0.0.1:${rt.hubPort}/rpc`,clientInfo:{name:'saved-items-root',version:'1'},socketFactory:e=>new WebSocket(e,{headers:{Authorization:`Bearer ${token}`}})});
+try{await hub.connect();const started=await hub.request('thread/start',{cwd:root+'/workspace-v3',input:[{type:'text',text:'saved-items-root-fixture'}],modelProvider:'fixture',model:'fixture-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:8}});const ref=started.thread.evener.ref;writeFileSync('session-v3.json',JSON.stringify({ref,turnId:started.turn.id}),{mode:0o600});
+let ready=false;for(let i=0;i<1200;i++){const r=await hub.request('thread/read',{ref,includeTurns:true,subscribe:false});if(['idle','awaiting'].includes(r.thread.status.type)&&r.thread.turns.some(t=>t.id===started.turn.id&&t.status==='completed')){ready=true;break;}await new Promise(r=>setTimeout(r,50));}assert(ready,'requested turn completes');
+for(const [name,params] of [['location',{resource:'location',ref}],['projects',{resource:'catalog',catalog:'projects',limit:50,offset:0}]]){const r=await hub.request('evener/navigation/read',{representationVersion:2,...params});writeFileSync(name+'-v3.json',JSON.stringify(r,null,2),{mode:0o600});console.log(JSON.stringify({name,status:r.status,metadata:r.data?.metadata,entities:r.data?.entities?.map(e=>({kind:e.kind,key:e.key,fields:Object.keys(e.value)}))}));}
+}finally{hub.close();}

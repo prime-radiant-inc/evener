@@ -1,0 +1,9 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {AppwireClient} from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/ws/index.js';
+const rt=JSON.parse(readFileSync('runtime.json')),token=readFileSync('state/evener/auth-token','utf8').trim(),origin=`http://192.168.118.141:${rt.hubPort}`;
+const c=new AppwireClient({url:`ws://192.168.118.141:${rt.hubPort}/rpc`,clientInfo:{name:'native-pairing',version:'1'},socketFactory:u=>new WebSocket(u,{headers:{Authorization:`Bearer ${token}`}})});
+try{await c.connect();const r=await c.request('evener/mobile/pairing',{origin});const u=new URL(r.authUrl);assert.equal(u.origin,origin);assert.equal(decodeURIComponent(u.pathname.slice('/auth/'.length)),token);const p=spawnSync('xcrun',['simctl','pbcopy','F9170898-2B92-4420-BD12-9B54B3FC4AE0'],{input:r.authUrl,stdio:['pipe','pipe','pipe']});assert.equal(p.status,0);const record={origin,urlSHA256:createHash('sha256').update(r.authUrl).digest('hex'),tokenMatched:true,simulatorPasteboardSet:true};writeFileSync('run/pairing-generation.json',JSON.stringify(record)+'\n',{flag:'wx',mode:0o600});console.log(JSON.stringify({origin,tokenMatched:true,simulatorPasteboardSet:true}));}finally{c.close()}

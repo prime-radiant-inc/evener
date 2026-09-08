@@ -1,0 +1,138 @@
+{
+  "status": "scoped native journey passed",
+  "build": {
+    "status": "passed",
+    "sourceHead": "dc9a9aaa33d6ca0d8cd00c6c7a63b8c67bba331c",
+    "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+    "build": {
+      "tool": "XcodeBuildMCP build_sim",
+      "workspacePath": "/tmp/evener-native-takeover-01a07a02/mobile-native/ios/Evener.xcworkspace",
+      "scheme": "Evener",
+      "configuration": "Release",
+      "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+      "platform": "iOS Simulator",
+      "useLatestOS": true,
+      "install": false,
+      "launch": false
+    },
+    "artifact": {
+      "appPath": "/Users/jesse/Library/Developer/XcodeBuildMCP/workspaces/evener-45158c16b1b8/DerivedData/Evener-baeded78c6b6/Build/Products/Release-iphonesimulator/Evener.app",
+      "mainJsBundleSha256": "e833dd2b8c4c5f173e5c96212499a8461cae97db26a4e61ad8ec65938350f71c"
+    },
+    "nativeFileHashes": {
+      "mobile-native/src/connection.ts": "f95c5d14a02ae9032b893a2163f20faf8a14752e434c4f87605b108a2369aa1a",
+      "mobile-native/src/connection.test.ts": "8317560daffee63e13b71e977cf532d132de8030781f12c0f29c81e6aa996168",
+      "mobile-native/src/pairingImport.ts": "5e7a49e483396b042c259ac274bed4227daee926c837a015adf82c092e2814e0",
+      "mobile-native/src/pairingImport.test.ts": "a5af56eea644998004b9f4985a498ff6b13e1f24024dceb4c61fc95293c4701c",
+      "mobile-native/src/screens.tsx": "26575812a5c034515703b55873d2ed959f2e10cf3bfeb68dcb2cf92151c6fea0"
+    },
+    "sourceIdentityNote": "sourceHead is the build-time base HEAD, with the five native files then uncommitted. Their recorded hashes match commit 8d2297116 and the current source; installed and built bundle hashes match."
+  },
+  "fixture": {
+    "root": "/private/tmp/evener-native-pairing-lan-osyBAM",
+    "hubPID": 41588,
+    "providerPID": 41557,
+    "hubPort": 58232,
+    "providerPort": 58231,
+    "origin": "http://192.168.118.141:58232",
+    "scriptSHA256": "2fe8fb467dfe2c0dee6b3fc6874b40735d2399d7de62a6a5342937f972c90818",
+    "binarySHA256": {
+      "evener": "1f79cf2fecf5bb3cba9090270d41d7e480ff13d45af7ed228c7c23c9146eef94",
+      "evener-dev": "ffdbdfe0fda350978a6261795e3a232f7806019e59837ad686738c071108b27a"
+    }
+  },
+  "pairing": {
+    "origin": "http://192.168.118.141:58232",
+    "urlSHA256": "83ec8114c2de70dffb321de9735d4379b9a9dbc3eacb4d6a93427702a70a09db",
+    "tokenMatched": true,
+    "simulatorPasteboardSet": true
+  },
+  "observations": [
+    "Malformed escaped URL rejected with generic error; no import available and manual fields unchanged.",
+    "Real hub-generated authUrl pasted through the Simulator paste menu; secret stayed masked.",
+    "Review displayed the exact LAN origin while manual origin/token remained empty.",
+    "Deliberate import populated origin/token and cleared raw link/preview.",
+    "Save and connect opened authenticated empty session roster on the owned LAN hub.",
+    "Cold launch reconnected to the imported secure profile without re-entering credentials."
+  ],
+  "screenshots": [
+    {
+      "file": "ios-pairing-review.jpg",
+      "sha256": "44644911fc47d3af2be111285a38fafc9e9b873e2d0ff1c2f5dfebf826cfa084"
+    },
+    {
+      "file": "ios-pairing-connected.jpg",
+      "sha256": "51452b5c400c2c4f9d08de7274facea2fa4744eae51c8dd1cf6a06a8261aee1c"
+    },
+    {
+      "file": "ios-pairing-cold-launch.jpg",
+      "sha256": "1ef6ea0c345473ff3b0262f09fc2ba7a91fa9f206eb2fadce8ddcb9ae3ba0149"
+    }
+  ],
+  "limitations": [
+    "iPhone17Pro iOS26.5 simulator only; not a physical phone or iPad.",
+    "Pasted URL import; camera scanning and OS deep-link routing not implemented/qualified.",
+    "No expired-token or lost-save/reachability-failure matrix in this native journey."
+  ],
+  "cleanup": {
+    "ownedDaemonPIDsTerminated": [
+      14487,
+      78433
+    ],
+    "remainingOwnedDaemons": 0,
+    "listenerPortsAbsent": [
+      54937,
+      54938,
+      58231,
+      58232,
+      58367,
+      58368
+    ],
+    "privateHubLogsRemoved": true,
+    "originalHubPID": 67518,
+    "originalHubPort": 54211,
+    "profileRemoved": true,
+    "originalProfileAndSessionRestored": true,
+    "originalSessionRef": "local:034Kr1zgMSNk9h2z1HH56T",
+    "originalDraftSHA256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+    "preservedDraftCount": 7,
+    "simulatorPasteboardCleared": true,
+    "nativeAppKeptInstalled": true,
+    "unrelatedApplePatchUnchanged": true,
+    "hubExit": 0,
+    "authTokenFilesRemoved": true,
+    "fixturePaths": [
+      {
+        "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7",
+        "config": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/config/evener",
+        "state": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/state/evener",
+        "removedAuthToken": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/hub.log"
+      },
+      {
+        "root": "/private/tmp/evener-native-pairing-lan-osyBAM",
+        "config": "/private/tmp/evener-native-pairing-lan-osyBAM/config/evener",
+        "state": "/private/tmp/evener-native-pairing-lan-osyBAM/state/evener",
+        "removedAuthToken": "/private/tmp/evener-native-pairing-lan-osyBAM/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/tmp/evener-native-pairing-lan-osyBAM/hub.log"
+      },
+      {
+        "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6",
+        "config": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/config/evener",
+        "state": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/state/evener",
+        "removedAuthToken": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/hub.log"
+      },
+      {
+        "root": "/private/tmp/saved-items-e2e.NYGUTl",
+        "config": "/private/tmp/saved-items-e2e.NYGUTl/config/evener",
+        "state": "/private/tmp/saved-items-e2e.NYGUTl/state/evener",
+        "removedAuthToken": "/private/tmp/saved-items-e2e.NYGUTl/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/tmp/saved-items-e2e.NYGUTl/hub.log"
+      }
+    ],
+    "credentialScope": "Hub bearer auth-token files were removed. Empty auth-none scripted-provider credentials.toml configuration is retained."
+  },
+  "installedBundleSHA256": "e833dd2b8c4c5f173e5c96212499a8461cae97db26a4e61ad8ec65938350f71c",
+  "nativeSourceCommit": "8d2297116"
+}

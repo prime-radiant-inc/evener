@@ -1,0 +1,215 @@
+{
+  "scope": "Two distinct SDK CLI fixtures: failure/retry observations and separately retained installed-byte verification. No native app or installed-hub restart in these runs.",
+  "recipeCommit": "64c707aeb",
+  "package": {
+    "path": "/tmp/evener-upgrade-sdk.bRl648/evener-appwire-client-0.1.0.tgz",
+    "sha256": "2ebffa16390f6b106825770abde7704222897df23b6c049003996b2145e5bd13"
+  },
+  "installedRecipeEquivalence": [
+    {
+      "path": "/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples/hub-upgrade-logic.mjs",
+      "sha256": "66a56837a9709793047de0d8e2befa9831ac5bc044977a5036bd005923033bff"
+    },
+    {
+      "path": "/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples/hub-upgrade-cli.mjs",
+      "sha256": "9b2093e3dca57230fc05c5d5565c196e0d7f8084529e282605ca23551062705b"
+    },
+    {
+      "path": "/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples/hub-upgrade.mjs",
+      "sha256": "13bcbc048e24bf34b90f56b2e248b437d34699d3ec7abd87ebf9053160e80b91"
+    },
+    {
+      "path": "/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples/hub-upgrade.contract.mjs",
+      "sha256": "de25c674eb236383a1df828f3e6f01751dcbe0fdeecec31d5ca3c4c9bed0b931"
+    }
+  ],
+  "installerInputs": {
+    "buildMetadata": "ccdde59b9-dirty (2026-09-08T02:29:38Z)",
+    "binaries": {
+      "evener": {
+        "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+      },
+      "evener-dev": {
+        "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+      }
+    }
+  },
+  "failureRetryRun": {
+    "root": "/tmp/evener-upgrade-qualify.7057",
+    "rpcPort": 51242,
+    "operations": [
+      {
+        "name": "upgrade",
+        "summary": {
+          "action": "upgrade",
+          "outcome": "acknowledged",
+          "execution": "unverified",
+          "installedCount": 2,
+          "outputWritten": true
+        },
+        "privateOutput": {
+          "path": "/tmp/evener-upgrade-qualify.7057/upgrade-output.json",
+          "sha256": "5f7b87c6c66a10f33bb2fb089bd2aa60877b4a2ca5e5ba24877a3b339e28b72e"
+        },
+        "mode": "0600",
+        "status": {
+          "downloads": 1,
+          "lastSuccessfulInstalledCount": 2,
+          "mode": "success",
+          "errorClass": ""
+        },
+        "statusArtifact": {
+          "path": "/tmp/evener-upgrade-qualify.7057/status-success.json",
+          "sha256": "f8603837f406da373b6fcd4d3f5dedccf76b5bfaa8de305daf90497a09d61736"
+        }
+      },
+      {
+        "name": "fail",
+        "summary": {
+          "action": "upgrade",
+          "outcome": "uncertain",
+          "execution": "unverified",
+          "outputWritten": true
+        },
+        "privateOutput": {
+          "path": "/tmp/evener-upgrade-qualify.7057/fail-output.json",
+          "sha256": "4ba980d12434b2ad41453453ff67a9a6a57aadd8d1fe47d2d2f97d4b9dc12f0e"
+        },
+        "mode": "0600",
+        "status": {
+          "downloads": 2,
+          "lastSuccessfulInstalledCount": 2,
+          "mode": "fail",
+          "errorClass": "upgrade"
+        },
+        "statusArtifact": {
+          "path": "/tmp/evener-upgrade-qualify.7057/status-fail.json",
+          "sha256": "549a9a993fdb2444a9e942129468cd001a746610ee1855df553b446f7dade939"
+        }
+      },
+      {
+        "name": "retry",
+        "summary": {
+          "action": "upgrade",
+          "outcome": "acknowledged",
+          "execution": "unverified",
+          "installedCount": 2,
+          "outputWritten": true
+        },
+        "privateOutput": {
+          "path": "/tmp/evener-upgrade-qualify.7057/retry-output.json",
+          "sha256": "5f7b87c6c66a10f33bb2fb089bd2aa60877b4a2ca5e5ba24877a3b339e28b72e"
+        },
+        "mode": "0600",
+        "status": {
+          "downloads": 3,
+          "lastSuccessfulInstalledCount": 2,
+          "mode": "success",
+          "errorClass": ""
+        },
+        "statusArtifact": {
+          "path": "/tmp/evener-upgrade-qualify.7057/status-retry.json",
+          "sha256": "e8bd0b3c7a9c8b60fed7c2220e8945935f227910757507534fc45b43a8f64437"
+        }
+      }
+    ],
+    "reproductionHelper": {
+      "path": "/tmp/evener-upgrade-qualify.7057/reproduce-upgrade.sh",
+      "sha256": "9e220e227f52eb72fd86630062c3422a94910f38165597d04ffbb11ad5540f87"
+    }
+  },
+  "installedBytesRun": {
+    "root": "/tmp/evener-upgrade-verified.39014",
+    "rpcPort": 59576,
+    "outputs": [
+      {
+        "name": "review",
+        "privateOutput": {
+          "path": "/tmp/evener-upgrade-verified.39014/review-output.json",
+          "sha256": "db4ffb470476236abe530c4400972a42af7e39e530b103147380f509d6ee1537"
+        },
+        "mode": "0600",
+        "summary": {
+          "action": "review",
+          "outcome": "read",
+          "execution": "unverified",
+          "outputWritten": true
+        }
+      },
+      {
+        "name": "upgrade",
+        "privateOutput": {
+          "path": "/tmp/evener-upgrade-verified.39014/upgrade-output.json",
+          "sha256": "0f015cc010689aa2c19724dc1b412cbe37a42d1d0cb5a0b701dcb7b174d05648"
+        },
+        "mode": "0600",
+        "summary": {
+          "action": "upgrade",
+          "outcome": "acknowledged",
+          "execution": "unverified",
+          "installedCount": 2,
+          "outputWritten": true
+        }
+      }
+    ],
+    "installed": [
+      {
+        "name": "evener",
+        "checksum": {
+          "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+        },
+        "retainedChecksum": {
+          "path": "/tmp/evener-upgrade-verified.39014/installed-evener.sha256",
+          "sha256": "29edaf6771235defea0cd8f8857e3b7c749840336df232bc7dd6a0333303a09d"
+        },
+        "symlinkTarget": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness753252391/001/prefix/share/evener/bin/evener",
+        "retainedLink": {
+          "path": "/tmp/evener-upgrade-verified.39014/symlink-evener.txt",
+          "sha256": "be64144f40ec0cdebb9cd3911bec936c791cb00f4594f2ecf38c115ed01db2d1"
+        }
+      },
+      {
+        "name": "evener-dev",
+        "checksum": {
+          "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+        },
+        "retainedChecksum": {
+          "path": "/tmp/evener-upgrade-verified.39014/installed-evener-dev.sha256",
+          "sha256": "36b2b129b8bc0991b1efd922978abf730d0f1bcb03f8b7a6cec7cdb4f7ef1971"
+        },
+        "symlinkTarget": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness753252391/001/prefix/share/evener/bin/evener-dev",
+        "retainedLink": {
+          "path": "/tmp/evener-upgrade-verified.39014/symlink-evener-dev.txt",
+          "sha256": "e06409dfb68c19354fc0c580fefd54a25b7777950a2630d49b6289e9e8e5d880"
+        }
+      }
+    ],
+    "harnessLog": {
+      "path": "/tmp/evener-upgrade-verified.39014/harness.log",
+      "sha256": "72abef417a2d157c659ad94a750693560d84745497ae72ba6002c2a39a22f8be"
+    },
+    "reproductionHelper": {
+      "path": "/tmp/reproduce-upgrade-verified.sh",
+      "sha256": "b26e8d5dda7573754e27dcf5a0ef6d4799a6d2fa98815e86d1a3b6e75133d5f6"
+    }
+  },
+  "cleanup": {
+    "portsChecked": [
+      51241,
+      51242,
+      51243,
+      59576,
+      59577,
+      59575
+    ],
+    "listenersRemaining": [],
+    "fixtureTokensRemoved": true,
+    "temporaryInstallPrefixesRemoved": true
+  },
+  "limitations": [
+    "The first run retains request counters and outputs; installed bytes were captured in the separate second run.",
+    "The second worker receipt incorrectly also described failure/retry from the first run; this receipt keeps the fixtures separate.",
+    "Running installed-binary identity was not checked; native UI and public release service acceptance remain separate.",
+    "Shell helpers retain owned fixture paths and need new ports/paths for reproduction; the first helper is not claimed as a complete original verification driver."
+  ]
+}
