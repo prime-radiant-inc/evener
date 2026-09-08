@@ -27,6 +27,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
@@ -11045,22 +11046,17 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 	}
 	if cfg.Registry == nil {
 		// Every auth and instance answer comes from the registry, so a hub
-		// fixture without one answers nothing. Offline, uncached and with no
-		// user layer: what the test's own environment and state root say, and
-		// nothing from the developer's providers.toml. Its credential and
-		// state layers are this server's own, not cmdutil.LoadRegistry's
-		// process-wide pair, so the store the auth handlers write is the one
-		// the registry resolves from and stray OAuth records come from this
-		// server's state root.
-		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-			return cmdutil.LoadRegistry(append(extra,
-				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-				registry.WithCredentials(cmdutil.StoreCredentialSource{Store: cfg.CredsStore}),
-				registry.WithStateRoot(cfg.HubStateRoot))...)
-		})
-		if err := cfg.Registry.Reload(); err != nil {
-			t.Fatalf("registry: %v", err)
-		}
+		// fixture without one answers nothing. newTestRegistry loads it
+		// straight from this server's own store and state root - offline,
+		// uncached, no user layer and no ambient environment - so the store
+		// the auth handlers write is the one the registry resolves from,
+		// stray OAuth records come from this server's state root, and nothing
+		// reaches the developer's providers.toml or credentials.toml.
+		// cmdutil.LoadRegistry will not do: it loads the process-wide
+		// credentials.toml before any caller option applies, so the fixture
+		// failed whenever that file was malformed, had loose permissions or
+		// was rewritten by another test.
+		cfg.Registry = newTestRegistry(t, cfg.HubStateRoot, "", cfg.CredsStore, nil)
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
@@ -11181,6 +11177,46 @@ func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
 	}
 	if other.ActiveSource == "store" {
 		t.Fatalf("second server resolved a stored key for anthropic; it is reading the first server's credentials")
+	}
+}
+
+// TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile pins the last
+// piece of shared state out of the fixture's default registry: loading it must
+// not read the process-wide credentials.toml at all. cmdutil.LoadRegistry
+// loads that file before any caller option applies, so a file that is
+// malformed, has group- or world-readable permissions, or is rewritten by
+// another test failed every fixture server, whatever store the test handed it.
+func TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile(t *testing.T) {
+	// t.Setenv, hence no t.Parallel: the process credentials path is
+	// process-wide state, and the testing package resumes parallel tests only
+	// once the sequential ones have finished.
+	broken := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(broken, []byte("[[[not credentials\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", broken, err)
+	}
+	t.Setenv(envvars.EVENERCredentialsConfig.Name, broken)
+	if _, err := credentials.LoadStore(cmdutil.CredentialsPath()); err == nil {
+		t.Fatalf("LoadStore(%s) succeeded; this test needs a process credentials file that cannot be loaded", cmdutil.CredentialsPath())
+	}
+
+	srv, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer srv.Close()
+	if err := web.cfg.Registry.Reload(); err != nil {
+		t.Fatalf("registry reload: %v; the fixture registry is still reading the process credentials file", err)
+	}
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var status appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &status); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if status.ActiveSource == "store" {
+		t.Fatalf("anthropic resolved a stored key; the registry is reading credentials this test never wrote")
 	}
 }
 
