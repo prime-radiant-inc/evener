@@ -3,10 +3,10 @@
 
 import type { Token, Tokens } from "marked";
 import { pendingTextJoined } from "../../../../protocol/reducer";
-import { markdownLexer } from "../../../../widgets/markdown";
+import { markdownLexer } from "../../../../widgets/markdown/lexer";
 
 // Lexer-only use of the app's shared Markdown tokenizer (see
-// widgets/markdown/index.tsx) so nested links, block prefixes, and emphasis
+// widgets/markdown/lexer.ts) so nested links, block prefixes, and emphasis
 // are handled as syntax rather than accumulated regex cases.
 
 const ISO_TIMESTAMP = /^(\d{4}|[+-]\d{6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
