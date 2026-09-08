@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,49 +43,65 @@ func quietHubFor(t *testing.T, s *Session) *delegateQuietWatchHub {
 	return hub
 }
 
-// waitForQuietHubCount polls for the hub entry count, since tick dispatch runs
-// on the hub goroutine and detached entries land asynchronously to Advance.
-func waitForQuietHubCount(t *testing.T, s *Session, want int) *delegateQuietWatchHub {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		delegateQuietWatchHubs.Lock()
-		hub := delegateQuietWatchHubs.hubs[s]
-		n := -1
-		if hub != nil {
-			hub.mu.Lock()
-			n = len(hub.entries)
-			hub.mu.Unlock()
-		} else if want == 0 {
-			delegateQuietWatchHubs.Unlock()
-			return nil
-		}
-		delegateQuietWatchHubs.Unlock()
-		if n == want {
-			return hub
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("hub entry count = %d, want %d", n, want)
-		}
-		time.Sleep(time.Millisecond)
+// quietHubTripwire bounds waits on real completion signals: the entry channel
+// (closed by detach), the tick hook (fired by tick work), and the hub exit
+// channel (closed when the serve loop returns). Detach, tick work, and hub
+// shutdown are all in-process with no I/O, so this fires only on a genuine
+// hang, never on scheduler contention. It is a tripwire only — the
+// synchronization mechanism is the channel, not time
+// (docs/developing-evener/testing.md Flakes and Timeouts).
+const quietHubTripwire = 10 * time.Second
+
+// quietHubEntryCount reads the hub's entry count under both locks. Detach is
+// synchronous through the returned CancelFunc (it closes entry.stop before
+// returning), so callers that just detached assert on this directly instead
+// of polling.
+func quietHubEntryCount(s *Session) (hub *delegateQuietWatchHub, n int) {
+	delegateQuietWatchHubs.Lock()
+	defer delegateQuietWatchHubs.Unlock()
+	hub = delegateQuietWatchHubs.hubs[s]
+	if hub == nil {
+		return nil, -1
 	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return hub, len(hub.entries)
 }
 
-// waitForPendingQuiet polls the receiver transcript fold until want attention
-// IDs land (tick work runs on detached goroutines, so it is not synchronous
-// with the fake-clock Advance that fires the ticker).
-func waitForPendingQuiet(t *testing.T, root *Session, want int) []string {
+// awaitQuietTicks collects tick-done signals for exactly the leases in want
+// (each lease fires once per shared tick): the hook fires on the tick worker
+// after the durable write lands, so a received signal means the attention is
+// already readable. It returns the leases in arrival order.
+func awaitQuietTicks(t *testing.T, want map[delegateLease]int) []delegateLease {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if got := pendingQuietAttention(t, root); len(got) >= want {
-			return got
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pending quiet attention = %#v, want at least %d", pendingQuietAttention(t, root), want)
-		}
-		time.Sleep(time.Millisecond)
+	ticks := make(chan delegateLease, 16)
+	restore := setQuietWatchTickDone(func(lease delegateLease) { ticks <- lease })
+	t.Cleanup(restore)
+	var got []delegateLease
+	remaining := make(map[delegateLease]int, len(want))
+	for lease, n := range want {
+		remaining[lease] = n
 	}
+	left := 0
+	for _, n := range want {
+		left += n
+	}
+	timer := time.NewTimer(quietHubTripwire)
+	defer timer.Stop()
+	for left > 0 {
+		select {
+		case lease := <-ticks:
+			if remaining[lease] <= 0 {
+				t.Fatalf("unexpected tick for lease %+v (got so far %+v)", lease, got)
+			}
+			remaining[lease]--
+			left--
+			got = append(got, lease)
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %d more tick(s), got %+v", left, got)
+		}
+	}
+	return got
 }
 
 // ageHubLeasesPastQuietWindow moves virtual time past the quiet window BEFORE
@@ -117,9 +132,12 @@ func TestDelegateQuietHub_SharedTicksReachAllLeases(t *testing.T) {
 		t.Fatalf("quiet hub tickers = %d, want 1 shared ticker", got)
 	}
 
+	want := map[delegateLease]int{leaseA: 1, leaseB: 1}
 	clk.Advance(delegateQuietCheckInterval)
-	got := waitForPendingQuiet(t, root, 2)
-	if len(got) != 2 {
+	if got := awaitQuietTicks(t, want); len(got) != 2 {
+		t.Fatalf("shared-tick completions = %+v, want one per lease", got)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 2 {
 		t.Fatalf("shared-tick quiet attention = %#v, want one per lease", got)
 	}
 }
@@ -135,11 +153,18 @@ func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
 	cancelB := root.startDelegateQuietWatchdog(context.Background(), leaseB)
 	defer cancelB()
 
+	// Detach is synchronous: cancelA closes the entry's stop channel before
+	// it returns, so the entry count below is a direct assertion, not a poll.
 	cancelA()
-	waitForQuietHubCount(t, root, 1)
+	if _, n := quietHubEntryCount(root); n != 1 {
+		t.Fatalf("hub entry count = %d, want 1", n)
+	}
 
 	clk.Advance(delegateQuietCheckInterval)
-	got := waitForPendingQuiet(t, root, 1)
+	if got := awaitQuietTicks(t, map[delegateLease]int{leaseB: 1}); len(got) != 1 || got[0] != leaseB {
+		t.Fatalf("remaining lease ticks = %+v, want [%+v]", got, leaseB)
+	}
+	got := pendingQuietAttention(t, root)
 	for _, id := range got {
 		if id == delegateQuietAttentionID(leaseA) {
 			t.Fatalf("detached lease still ticked: %#v", got)
@@ -161,7 +186,12 @@ func TestDelegateQuietHub_StopsAfterLastDetach(t *testing.T) {
 	}
 	cancel()
 
-	if hub := waitForQuietHubCount(t, root, 0); hub != nil {
+	// Detach unregisters synchronously: the registry check below reads state
+	// the CancelFunc established before returning.
+	delegateQuietWatchHubs.Lock()
+	_, registered := delegateQuietWatchHubs.hubs[root]
+	delegateQuietWatchHubs.Unlock()
+	if registered {
 		t.Fatal("hub still registered after last detach")
 	}
 	if got := clk.BlockedCount(); got != 0 {
@@ -202,22 +232,25 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	defer atomic.StoreUint32(slowEntry.busy, 0)
 
 	clk.Advance(delegateQuietCheckInterval)
-	got := waitForPendingQuiet(t, root, 1)
-	if len(got) != 1 || got[0] != delegateQuietAttentionID(leaseFast) {
+	if got := awaitQuietTicks(t, map[delegateLease]int{leaseFast: 1}); len(got) != 1 || got[0] != leaseFast {
+		t.Fatalf("ticks with blocked lease = %+v, want only [%+v]", got, leaseFast)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != delegateQuietAttentionID(leaseFast) {
 		t.Fatalf("attention with blocked lease = %#v, want only %q", got, delegateQuietAttentionID(leaseFast))
 	}
 
-	// Shutdown must not wait for the wedged tick: detach everything and
-	// require both cancels to return promptly.
-	var wg sync.WaitGroup
-	wg.Add(2)
-	done := make(chan struct{})
-	go func() { defer wg.Done(); cancelSlow() }()
-	go func() { defer wg.Done(); cancelFast() }()
-	go func() { wg.Wait(); close(done) }()
+	// Shutdown must not wait for the wedged tick: detach is synchronous and
+	// never joins tick work, so both cancels return directly. The tripwire
+	// below guards the join only against a genuine hang.
+	shutdown := make(chan struct{})
+	go func() {
+		defer close(shutdown)
+		cancelSlow()
+		cancelFast()
+	}()
 	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-shutdown:
+	case <-time.After(quietHubTripwire): // TRIPWIRE: cancels join no tick work; sync detach is the mechanism.
 		t.Fatal("hub shutdown blocked on wedged lease tick")
 	}
 }

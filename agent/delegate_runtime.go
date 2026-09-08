@@ -203,13 +203,39 @@ var delegateQuietWatchHubs = struct {
 	hubs: make(map[*Session]*delegateQuietWatchHub),
 }
 
-// delegateQuietWatchTickDone observes one hub tick's completed lease work. It is
-// nil in production; tests set it to await tick completion deterministically
+// delegateQuietWatchTickDone observes one hub tick's completed lease work. It
+// is nil in production; tests set it to await tick completion deterministically
 // instead of polling. It fires after runDelegateQuietWatchdogTick returns, so
 // the tick's durable write is already visible to the observer; coalesced and
-// detached ticks do no work and never fire it. Observers must not block: the
-// call runs on the tick's worker goroutine.
-var delegateQuietWatchTickDone func(lease delegateLease)
+// detached ticks do no work and never fire it. Stored atomically because the
+// hub's tick workers read it while tests swap it; observers must not block:
+// the call runs on the tick's worker goroutine.
+var delegateQuietWatchTickDone atomic.Pointer[func(lease delegateLease)]
+
+// quietWatchTickDone loads the tick observer, if any.
+func quietWatchTickDone() func(lease delegateLease) {
+	if ptr := delegateQuietWatchTickDone.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
+// setQuietWatchTickDone swaps the tick observer for tests; a nil hook clears it.
+func setQuietWatchTickDone(hook func(lease delegateLease)) (restore func()) {
+	prev := delegateQuietWatchTickDone.Load()
+	if hook == nil {
+		delegateQuietWatchTickDone.Store(nil)
+	} else {
+		delegateQuietWatchTickDone.Store(&hook)
+	}
+	return func() {
+		if prev == nil {
+			delegateQuietWatchTickDone.Store(nil)
+		} else {
+			delegateQuietWatchTickDone.Store(prev)
+		}
+	}
+}
 
 // delegateQuietWatchHubForSession returns the live hub for s, creating it on
 // first use. The ticker is created outside the registry lock so arming one
@@ -364,7 +390,7 @@ func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 					default:
 					}
 					_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
-					if done := delegateQuietWatchTickDone; done != nil {
+					if done := quietWatchTickDone(); done != nil {
 						done(entry.lease)
 					}
 				}(entry)
