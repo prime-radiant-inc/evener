@@ -616,6 +616,15 @@ type RestoreSessionConfig struct {
 	// from the parent's own toSnapshot), which is a different question.
 	TurnEndsProcess bool
 
+	// AgentsDocPath carries through to the restored Session's SessionConfig,
+	// REPLACING the persisted value rather than merging with it, exactly like
+	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
+	// to whoever is restoring it — a hub hands over its own concrete config
+	// root, the same one Settings edits — not to the session on disk, whose
+	// snapshot predates the flag or names a root the hub has since left. Empty
+	// keeps the persisted path.
+	AgentsDocPath string
+
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -714,6 +723,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if _, err := ParseProviderIdleTimeout(cfg.ProviderIdleTimeout); err != nil {
 		return nil, err
+	}
+	if v := strings.TrimSpace(restoreCfg.AgentsDocPath); v != "" {
+		cfg.AgentsDocPath = v
 	}
 	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
 		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)

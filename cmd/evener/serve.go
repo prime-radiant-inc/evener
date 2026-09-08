@@ -578,6 +578,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 			ProviderIdleTimeout:         *providerIdleTimeout,
+			AgentsDocPath:               *agentsDoc,
 		})
 		if err != nil {
 			// A resume provisions this environment's sandbox from the

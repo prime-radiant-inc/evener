@@ -31,7 +31,58 @@ const UserDocFile = "AGENTS.md"
 // in a git repo) down to the current working directory. Files are loaded in depth order (root first; deeper
 // files have higher precedence) and filtered by the active provider profile (caller-provided list).
 func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]ProjectDoc, bool) {
-	return loadProjectDocs(env, 0, filenames...)
+	if env == nil {
+		return nil, false
+	}
+
+	cwd := strings.TrimSpace(env.WorkingDirectory())
+	if cwd == "" {
+		return nil, false
+	}
+	// Resolve symlinks so cwd and git root use consistent paths (macOS /var -> /private/var).
+	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = resolved
+	}
+
+	root := cwd
+	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
+		root = gr
+	}
+
+	dirs := execenv.DirsFromRootToCwd(root, cwd)
+	used := 0
+	out := []ProjectDoc{}
+	for _, dir := range dirs {
+		relDir := "."
+		if r, err := filepath.Rel(root, dir); err == nil {
+			relDir = r
+		}
+		for _, name := range filenames {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			b, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+
+			key := name
+			if relDir != "." && relDir != "" {
+				key = filepath.Join(relDir, name)
+			}
+
+			content := string(b)
+			if used+len(content) > projectDocByteBudget {
+				out = append(out, ProjectDoc{Path: key, Content: truncateDoc(content, projectDocByteBudget-used, projectDocTruncMark)})
+				return out, true
+			}
+			used += len(content)
+			out = append(out, ProjectDoc{Path: key, Content: content})
+		}
+	}
+	return out, false
 }
 
 // LoadInstructionDocs is a session's whole instruction set: the personal doc
@@ -49,7 +100,7 @@ func LoadInstructionDocs(env execenv.ExecutionEnvironment, userDocPath string, f
 		}
 		out = append(out, user)
 	}
-	project, truncated := loadProjectDocs(env, 0, filenames...)
+	project, truncated := LoadProjectDocs(env, filenames...)
 	return append(out, project...), truncated || userTruncated
 }
 
@@ -93,60 +144,4 @@ func truncateDoc(content string, remain int, mark string) string {
 		content += "\n"
 	}
 	return content + mark + "\n"
-}
-
-// loadProjectDocs is LoadProjectDocs with `used` bytes of the budget already
-// spent by a doc loaded before the repo's own.
-func loadProjectDocs(env execenv.ExecutionEnvironment, used int, filenames ...string) ([]ProjectDoc, bool) {
-	if env == nil {
-		return nil, false
-	}
-
-	cwd := strings.TrimSpace(env.WorkingDirectory())
-	if cwd == "" {
-		return nil, false
-	}
-	// Resolve symlinks so cwd and git root use consistent paths (macOS /var -> /private/var).
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = resolved
-	}
-
-	root := cwd
-	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
-		root = gr
-	}
-
-	dirs := execenv.DirsFromRootToCwd(root, cwd)
-	out := []ProjectDoc{}
-	for _, dir := range dirs {
-		relDir := "."
-		if r, err := filepath.Rel(root, dir); err == nil {
-			relDir = r
-		}
-		for _, name := range filenames {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			path := filepath.Join(dir, name)
-			b, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-
-			key := name
-			if relDir != "." && relDir != "" {
-				key = filepath.Join(relDir, name)
-			}
-
-			content := string(b)
-			if used+len(content) > projectDocByteBudget {
-				out = append(out, ProjectDoc{Path: key, Content: truncateDoc(content, projectDocByteBudget-used, projectDocTruncMark)})
-				return out, true
-			}
-			used += len(content)
-			out = append(out, ProjectDoc{Path: key, Content: content})
-		}
-	}
-	return out, false
 }

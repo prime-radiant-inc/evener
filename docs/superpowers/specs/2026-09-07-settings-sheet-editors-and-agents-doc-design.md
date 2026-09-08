@@ -64,7 +64,8 @@ outputs refreshed by `make generate`):
   same way `registry.WriteConfigFile` writes providers.toml, except that a
   symlinked AGENTS.md is followed so a dotfiles-managed copy stays the source
   of truth (providers.toml gets the same fix in its own PR), creating the
-  config root if needed. No precondition: the last write wins (Jesse's call).
+  target's directory if needed. No precondition: the last write wins
+  (Jesse's call).
 - `evener/settings/agentsDoc/changed` — broadcast after a successful set,
   carrying `AgentsDocResponse`, so other clients refresh.
 
