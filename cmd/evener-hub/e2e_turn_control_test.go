@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -180,6 +181,84 @@ func TestE2E_TurnControlReachesTheSession(t *testing.T) {
 	awaitThread(ctx, t, client, ref, "the interrupted turn to stop", func(thread appwire.Thread) bool {
 		return thread.Evener.ActiveTurnID != secondTurn
 	})
+}
+
+// TestE2E_IdleShutdownClosedReachesASeparateHubSubscriber exercises the
+// subprocess-only lifecycle boundary: the actor uses one hub connection to
+// shut down an already completed daemon turn while a second hub connection
+// remains subscribed to the same ref.
+func TestE2E_IdleShutdownClosedReachesASeparateHubSubscriber(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
+	}
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+	stack := startHubStack(t, provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	actor := stack.dialRPC(ctx, t)
+	observer := stack.dialRPC(ctx, t)
+	started, err := clientRequest[appwire.ThreadStartResponse](ctx, actor, appwire.MethodThreadStart, appwire.ThreadStartParams{
+		Harness: "evener", CWD: stack.workDir,
+		Input:           []appwire.InputItem{{Type: "text", Text: "idle shutdown close delivery"}},
+		Model:           stack.model,
+		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+	})
+	if err != nil {
+		t.Fatalf("thread/start: %v", err)
+	}
+	ref := started.Thread.Evener.Ref
+	opening, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for opening model request: %v", err)
+	}
+	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, observer, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+		t.Fatalf("observer thread/read subscribe: %v", err)
+	}
+	closed := make(chan appwire.Notification, 1)
+	go func() {
+		for notification := range observer.Notifications() {
+			if notification.Method == appwire.NotifyThreadClosed {
+				closed <- notification
+				return
+			}
+		}
+	}()
+	if _, err := clientRequest[appwire.TurnQueueResponse](ctx, actor, appwire.MethodTurnQueue, appwire.TurnQueueParams{
+		Ref: ref, ExpectedInstanceID: localInstanceIDForTestRef(ref), ClientMutationID: newMutationID(t),
+		Input: []appwire.InputItem{{Type: "text", Text: "queued before shutdown"}},
+	}); err != nil {
+		t.Fatalf("turn/queue: %v", err)
+	}
+	opening.RespondToolCall("communicate", communicateArgs("opening turn done"))
+	queuedRound, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatalf("waiting for queued model request: %v", err)
+	}
+	queuedRound.RespondToolCall("communicate", communicateArgs("queued turn done"))
+	awaitThread(ctx, t, actor, ref, "opening turn to finish", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == ""
+	})
+	if _, err := clientRequest[appwire.EmptyResponse](ctx, actor, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case notification := <-closed:
+		var params appwire.ThreadClosedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode thread/closed: %v", err)
+		}
+		if params.Ref != ref || params.ThreadID != started.Thread.SessionID {
+			t.Fatalf("thread/closed params=%+v, want ref=%q threadId=%q", params, ref, started.Thread.SessionID)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("separate hub subscriber did not receive matching thread/closed")
+	}
 }
 
 // TestE2E_TurnControlReachesAnAgentStartedTurn is the regression its sibling
