@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
@@ -11047,12 +11048,12 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 			*root = t.TempDir()
 		}
 	}
-	// credentials.toml gets the same treatment, and needs its own default
-	// because no root reaches it: newHubAuthControllerWithStore ignores the
-	// state root it is handed and falls back to the process-wide
-	// XDG-derived store, so parallel tests calling evener/auth/apiKey/set or
-	// apiKey/clear would overwrite each other's keys. CredentialsPath is the
-	// same file, as in production (main.go loads the store from
+	// credentials.toml gets the same treatment: the auth controller keeps its
+	// OAuth records in the registry's state root, but the store it writes
+	// keys to follows no root, so without a default parallel tests calling
+	// evener/auth/apiKey/set or apiKey/clear would share the process-wide
+	// XDG-derived store and overwrite each other's keys. CredentialsPath is
+	// the same file, as in production (main.go loads the store from
 	// cmdutil.CredentialsPath and hands children that path).
 	if cfg.CredsStore == nil {
 		// A caller that brings its own registry has already chosen where that
@@ -11177,6 +11178,54 @@ func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
 // the reload behind that same call resolves from the shared file: the caller
 // is told "none" for the key it just stored, and a parallel test's registry
 // answers from whatever the shared file happens to hold.
+// TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
+// server's auth controller and registry share that server's own state root:
+// an OAuth record under one server's root signs that server in and is
+// invisible to another, so parallel tests never read or overwrite each
+// other's auth/<instance>.json.
+func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	if err := authopenai.SaveAuth(firstWeb.cfg.HubStateRoot, "openai-codex", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Hour),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email",
+		AccessToken:  "stored-access-token",
+		RefreshToken: "stored-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "stored@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses := map[string]appwire.AuthStatusResponse{}
+	for name, srv := range map[string]*httptest.Server{"first": first, "second": second} {
+		client := dialHubRPC(t, srv)
+		defer client.Close()
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("%s Initialize: %v", name, err)
+		}
+		status, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai-codex"})
+		if err != nil {
+			t.Fatalf("%s AuthStatus: %v", name, err)
+		}
+		statuses[name] = status
+	}
+	if got := statuses["first"]; !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Errorf("first status=%+v, want signed in from the record under its own state root %s", got, firstWeb.cfg.HubStateRoot)
+	}
+	if got := statuses["second"]; got.SignedIn || got.HasStoredOAuth {
+		t.Errorf("second status=%+v, want signed out: the first server's record must not be visible to it", got)
+	}
+}
+
 func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
 	t.Parallel()
 	first := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
