@@ -1412,7 +1412,7 @@ func goalResumedText(data events.GoalResumedData) string {
 	if len(data.WaitIDs) == 0 {
 		return "Goal resumed"
 	}
-	return fmt.Sprintf("Goal resumed: %s", strings.Join(data.WaitIDs, ", "))
+	return "Goal resumed: " + strings.Join(data.WaitIDs, ", ")
 }
 
 // GoalWaitingChipText aggregates a parked goal for the status chip

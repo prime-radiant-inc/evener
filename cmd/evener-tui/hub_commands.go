@@ -1119,7 +1119,7 @@ func splitGoalResumeArgs(tail string) (extendBudget string, extendValue int64, o
 		return "", 0, strings.TrimSpace(tail), nil
 	}
 	if len(tokens) < 3 {
-		return "", 0, "", fmt.Errorf("usage: /goal resume [--extend <budget> <value>] [objective text]; --extend needs exactly two tokens: <budget> (continuations, deadline, or parked-total) and <value>")
+		return "", 0, "", errors.New("usage: /goal resume [--extend <budget> <value>] [objective text]; --extend needs exactly two tokens: <budget> (continuations, deadline, or parked-total) and <value>")
 	}
 	extendBudget = strings.ToLower(strings.TrimSpace(tokens[1]))
 	if extendBudget == "" {
@@ -1190,9 +1190,9 @@ func hubGoalStatusText(goal *appwire.GoalState) string {
 		return "No goal set. Use /goal <objective> to set one."
 	}
 	progress := hubGoalProgressText(goal)
-	out := fmt.Sprintf("Goal: %s %s", goal.Status, progress)
+	out := "Goal: " + goal.Status + " " + progress
 	if goal.Status == "waiting" {
-		out += fmt.Sprintf(" · waiting on %s", hubGoalWaitingSummary(goal))
+		out += " · waiting on " + hubGoalWaitingSummary(goal)
 	}
 	if strings.TrimSpace(goal.Stage) != "" {
 		out += " · " + strings.TrimSpace(goal.Stage)
@@ -1206,9 +1206,9 @@ func hubGoalStatusText(goal *appwire.GoalState) string {
 // "unset", never a real cap — cf. goalSeedData's v1 backfill).
 func hubGoalProgressText(goal *appwire.GoalState) string {
 	if goal.MaxContinuations > 0 {
-		return fmt.Sprintf("%d/%d", goal.UsedContinuations, goal.MaxContinuations)
+		return strconv.Itoa(goal.UsedContinuations) + "/" + strconv.Itoa(goal.MaxContinuations)
 	}
-	return fmt.Sprintf("%d", goal.Iterations)
+	return strconv.Itoa(goal.Iterations)
 }
 
 // hubGoalChipText aggregates the session-header goal chip (spec §6):

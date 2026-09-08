@@ -858,7 +858,8 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			RegisteredAt:   now,
 			IdempotencyKey: key,
 		}}
-		g.Waits = append(kept, w)
+		kept = append(kept, w)
+		g.Waits = kept
 		g.Status = StatusWaiting
 		g.UpdatedAt = now
 		s.settleParkAnchorLocked(now)
@@ -1004,7 +1005,8 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		s.lastRejectReason = ""
 		return w, true
 	}
-	g.Waits = append(kept, w)
+	kept = append(kept, w)
+	g.Waits = kept
 	g.Status = StatusWaiting
 	g.UpdatedAt = now
 	s.settleParkAnchorLocked(now)
@@ -1073,7 +1075,8 @@ func (s *Store) ParkAutoWait(timeout time.Duration, now time.Time) (Wait, bool) 
 		RegisteredAt:   now,
 		IdempotencyKey: key,
 	}}
-	g.Waits = append(kept, w)
+	kept = append(kept, w)
+	g.Waits = kept
 	g.Status = StatusWaiting
 	g.UpdatedAt = now
 	s.settleParkAnchorLocked(now)
@@ -1275,10 +1278,7 @@ func (s *Store) AccrueParkedAtRegistration(now time.Time) time.Duration {
 	if s.goal == nil || s.parkEnter.IsZero() {
 		return 0
 	}
-	d := now.Sub(s.parkEnter)
-	if d < 0 {
-		d = 0
-	}
+	d := max(now.Sub(s.parkEnter), 0)
 	s.goal.Budgets.ParkedTotal += d
 	s.parkEnter = now
 	s.goal.UpdatedAt = now
@@ -1382,10 +1382,7 @@ func (s *Store) settleParkAnchorLocked(now time.Time) {
 		return
 	}
 	if !s.parkEnter.IsZero() {
-		d := now.Sub(s.parkEnter)
-		if d < 0 {
-			d = 0
-		}
+		d := max(now.Sub(s.parkEnter), 0)
 		s.goal.Budgets.ParkedTotal += d
 	}
 	if s.goal.Status == StatusWaiting {
@@ -1407,10 +1404,7 @@ func (s *Store) AccrueParked(now time.Time) time.Duration {
 	if enter.IsZero() || s.goal == nil {
 		return 0
 	}
-	d := now.Sub(enter)
-	if d < 0 {
-		d = 0
-	}
+	d := max(now.Sub(enter), 0)
 	s.goal.Budgets.ParkedTotal += d
 	s.goal.UpdatedAt = now
 	return d
@@ -1599,8 +1593,8 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 			return GoalSnapshot{}, fmt.Errorf("invalid --extend deadline value %d: want a positive second count", ext.Value)
 		}
 		out.Budgets.Deadline = now.Add(time.Duration(ext.Value) * time.Second)
-		if cap := now.Add(GoalDeadlineCap); out.Budgets.Deadline.After(cap) {
-			out.Budgets.Deadline = cap
+		if deadlineCap := now.Add(GoalDeadlineCap); out.Budgets.Deadline.After(deadlineCap) {
+			out.Budgets.Deadline = deadlineCap
 		}
 		out.DeadlineFinalDelivered = false
 	case ExtendParkedTotal:
@@ -2042,16 +2036,10 @@ func MigrateV1ToPersisted(objective, status, stopReason string, iterations, noPr
 		k = NeverProgressedLimit
 	}
 	remaining := k - noProgressStreak
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining = max(remaining, 0)
 	seeded := k - remaining
-	if seeded < 0 {
-		seeded = 0
-	}
-	if seeded > LedgerWindowSize {
-		seeded = LedgerWindowSize
-	}
+	seeded = max(seeded, 0)
+	seeded = min(seeded, LedgerWindowSize)
 	entries := make([]LedgerEntry, 0, seeded)
 	for range seeded {
 		entries = append(entries, LedgerEntry{Fingerprint: MigratedFingerprint})

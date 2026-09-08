@@ -205,14 +205,6 @@ func (s *Session) takeGoalTurnEvidence() []goalTurnCallEvidence {
 	return ev
 }
 
-// clearGoalTurnEvidence drops the accumulator without folding (park/hold/
-// wait-attributable paths). Self-locking.
-func (s *Session) clearGoalTurnEvidence() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.goalTurnEvidence = nil
-}
-
 // buildGoalTurnOutcome folds one turn's evidence into a pre-scoped
 // TurnOutcome (spec §4): the action fingerprint joins every call in the turn
 // (multi-call turns read as one compound action — repetition means the whole

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -221,16 +222,16 @@ func TestGoalLedgerGateMigratedSeedFeedsRealLedger(t *testing.T) {
 	wireKickAndNotify(sess)
 	sess.getOrCreateGoalStore().RestoreSnapshot(v1seed)
 
-	real := ledgerGateOutcome("grep pattern=x", "ok", "out", "d", false)
-	foldGateContinuations(t, sess, goal.RepetitionThresholdFresh-1, real)
-	prompt, cont := sess.armGoalContinuationWithOutcome(false, true, real)
+	actual := ledgerGateOutcome("grep pattern=x", "ok", "out", "d", false)
+	foldGateContinuations(t, sess, goal.RepetitionThresholdFresh-1, actual)
+	prompt, cont := sess.armGoalContinuationWithOutcome(false, true, actual)
 	if !cont || prompt == "" {
 		t.Fatalf("6th real gate = (%q, %v), want the residual nudge, not a block", prompt, cont)
 	}
 	if snap, _ := sess.getOrCreateGoalStore().Snapshot(); snap.Status != goal.StatusActive {
 		t.Fatalf("status = %q, want active after the nudge", snap.Status)
 	}
-	prompt, cont = sess.armGoalContinuationWithOutcome(false, true, real)
+	prompt, cont = sess.armGoalContinuationWithOutcome(false, true, actual)
 	if cont || prompt != "" {
 		t.Fatalf("7th real gate = (%q, %v), want a block", prompt, cont)
 	}
@@ -284,8 +285,8 @@ func TestGoalLedgerGateBackstopNeedsRefillAfterMigration(t *testing.T) {
 
 func countTrailingNonAdvancing(s goal.LedgerSummary) int {
 	n := 0
-	for i := len(s.Entries) - 1; i >= 0; i-- {
-		if s.Entries[i].Advancement {
+	for _, e := range slices.Backward(s.Entries) {
+		if e.Advancement {
 			break
 		}
 		n++
@@ -433,13 +434,12 @@ func TestGoalChildForwardSiblingWakeDelivers(t *testing.T) {
 	}
 	// Register the waiter's lease store-direct (the waiter child's own
 	// substrate has no controller tree; ClaimChildWaits needs no substrate).
-	w, ok := waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
-	_ = w
+	_, ok := waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
 	if !ok {
 		// Fall back: inject the stub substrate and retry (documents the
 		// substrate-independence of the claim path either way).
 		waiter.sess.getOrCreateGoalStore().SetSubstrate(&goalWaitTerminalStub{children: map[string]bool{"fwd_done": true}})
-		w, ok = waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
+		_, ok = waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
 		if !ok {
 			t.Fatalf("precondition: waiter registration should succeed: %q", waiter.sess.getOrCreateGoalStore().LastRejectReason())
 		}
@@ -560,11 +560,7 @@ func TestGoalChildForwardStopGatedEmitsLossNotice(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.name == "stable stop gate" {
-				tc.gate()
-			} else {
-				tc.gate()
-			}
+			tc.gate()
 			sess.forwardChildTerminalToWaits(doneChild)
 			waiterFull, _ := gatedChild.sess.getOrCreateGoalStore().GoalSnapshot()
 			if len(waiterFull.PendingWake) != 0 {

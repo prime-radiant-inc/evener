@@ -1083,13 +1083,6 @@ func claimedPredicateFire(claimed []goal.PendingWake) bool {
 	return false
 }
 
-// claimedChildTerminal is the legacy until_child-only evidence check, kept
-// for the Task-8 userspace mirror (session_goal_task8_test.go): production
-// folds on claimedPredicateFire (all predicate kinds).
-func claimedChildTerminal(claimed []goal.PendingWake, _ goal.GoalSnapshot) bool {
-	return claimedPredicateFire(claimed)
-}
-
 // renderGoalWakePrompt renders the wait-attributable wake turn prompt (spec
 // section 2): the current objective plus one trailer frame carrying every
 // coalesced (wait_id, trigger excerpt, fired_at) triple. Pure: no locks.

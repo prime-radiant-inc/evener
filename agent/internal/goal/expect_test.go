@@ -136,7 +136,7 @@ func TestRecordContinuationAutoParkBound(t *testing.T) {
 		if full.LedgerSummary.Stage != StageNudged && full.LedgerSummary.Stage != StageAutoPark {
 			t.Fatalf("pre-park %d: stage = %q", i+1, full.LedgerSummary.Stage)
 		}
-		snap, active = s.RecordContinuation(stall, false, now)
+		_, active = s.RecordContinuation(stall, false, now)
 		if !active {
 			t.Fatalf("auto-park %d must stay active", i+1)
 		}

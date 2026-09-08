@@ -108,9 +108,7 @@ func goalWaitNextFire(full goal.GoalSnapshot, now time.Time) (fire time.Time, ok
 	}
 	if full.Budgets.MaxParkedTotal > 0 {
 		remaining := full.Budgets.MaxParkedTotal - full.Budgets.ParkedTotal
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining = max(remaining, 0)
 		if crossing := now.Add(remaining); crossing.Before(fire) {
 			fire = crossing
 		}

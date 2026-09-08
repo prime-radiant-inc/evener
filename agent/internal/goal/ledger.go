@@ -37,6 +37,7 @@ package goal
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -248,8 +249,8 @@ func BackstopStalled(s LedgerSummary) bool {
 		return false
 	}
 	run := 0
-	for i := len(s.Entries) - 1; i >= 0; i-- {
-		if s.Entries[i].Advancement {
+	for _, e := range slices.Backward(s.Entries) {
+		if e.Advancement {
 			break
 		}
 		run++

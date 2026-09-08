@@ -13,17 +13,6 @@ import (
 // + Session.GoalResume land. Deterministic: FakeClock, scripted outcomes — no
 // wall-clock sleeps, no live provider.
 
-// resumeBlockedNoProgress blocks the goal with the stall verdict via the
-// terminal path, failing on setup errors.
-func resumeBlockedNoProgress(t *testing.T, sess *Session, now time.Time) {
-	t.Helper()
-	store := sess.getOrCreateGoalStore()
-	store.Set("stalled objective", now)
-	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictNoProgress, now) {
-		t.Fatal("precondition: SetTerminal should block the active goal")
-	}
-}
-
 // TestGoalResumeNoProgressKeepsBudgetsResetsLedger pins the §5 no-progress
 // path: ledger reset, waits cleared, budgets kept, autoReparks reset — and the
 // goal drives again (status active).
@@ -45,7 +34,7 @@ func TestGoalResumeNoProgressKeepsBudgetsResetsLedger(t *testing.T) {
 	}
 	full, _ := store.GoalSnapshot()
 	used := full.Budgets.UsedContinuations
-	max := full.Budgets.MaxContinuations
+	maxCont := full.Budgets.MaxContinuations
 	deadline := full.Budgets.Deadline
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictNoProgress, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
@@ -71,8 +60,8 @@ func TestGoalResumeNoProgressKeepsBudgetsResetsLedger(t *testing.T) {
 	if after.AutoReparks != 0 {
 		t.Fatalf("autoReparks = %d, want reset on resume", after.AutoReparks)
 	}
-	if after.Budgets.UsedContinuations != used || after.Budgets.MaxContinuations != max || !after.Budgets.Deadline.Equal(deadline) {
-		t.Fatalf("budgets = %+v, want kept (used=%d max=%d deadline=%s)", after.Budgets, used, max, deadline)
+	if after.Budgets.UsedContinuations != used || after.Budgets.MaxContinuations != maxCont || !after.Budgets.Deadline.Equal(deadline) {
+		t.Fatalf("budgets = %+v, want kept (used=%d max=%d deadline=%s)", after.Budgets, used, maxCont, deadline)
 	}
 	if after.LedgerSummary.Stage != goal.StageNone {
 		t.Fatalf("stage = %q, want none after ledger reset", after.LedgerSummary.Stage)

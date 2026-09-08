@@ -608,7 +608,7 @@ func TestGateTerminalLatchBlocksAfterFlaggedDrive(t *testing.T) {
 	store.Set("latch goal", clk.Now())
 	// Spend the continuation budget while ACTIVE (parked gates never fold):
 	// fold the interim judge to the cap first, then park the wait.
-	for i := 0; i < goal.DefaultMaxContinuations; i++ {
+	for i := range goal.DefaultMaxContinuations {
 		store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "spend", ObservationClass: "ok", ObservationHash: "spend", StateDigest: fmt.Sprintf("spend-%d", i), Mutated: true}, false, clk.Now())
 	}
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now()); !ok {
@@ -660,7 +660,7 @@ func TestGateLatchedDropNoticesFreshWake(t *testing.T) {
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("latch drop", clk.Now())
-	for i := 0; i < goal.DefaultMaxContinuations; i++ {
+	for i := range goal.DefaultMaxContinuations {
 		store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "spend", ObservationClass: "ok", ObservationHash: "spend", StateDigest: fmt.Sprintf("spend-%d", i), Mutated: true}, false, clk.Now())
 	}
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "first", Timeout: time.Minute}, clk.Now()); !ok {

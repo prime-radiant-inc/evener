@@ -36,22 +36,8 @@ type ExpectRequest struct {
 	Predicate WaitKind
 }
 
-// validExpectKind reports whether k may serve as an expect predicate: file
-// (until_event/file_modified), job, and delegate only (fix-1/4 I1 —
-// restrict, don't extend: approval/child/http/external-label substrates are
-// out of scope for v1).
-func validExpectKind(k Kind) bool {
-	switch k {
-	case WaitUntilJob, WaitUntilDelegate, WaitUntilEvent:
-		return true
-	}
-	return false
-}
-
 // expectKindRejected reports the named rejection for a non-registrable
-// condition kind/subtype (fix-1/4 I1). ok=false means registrable (or the
-// validExpectKind gate already passed — callers check this first for the
-// specific reason).
+// condition kind/subtype (fix-1/4 I1). ok=false means registrable.
 func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
 	switch pred.Kind {
 	case WaitUntilApproval:
@@ -149,10 +135,7 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 // until_child snapshots known-descendant truth. Caller must hold s.mu.
 func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline string, ok bool) {
 	sub := s.substrate
-	kindNeedsSubstrate := true
-	if pred.Kind == WaitUntilEvent && pred.EventSubtype == EventExternalLabel {
-		kindNeedsSubstrate = false
-	}
+	kindNeedsSubstrate := pred.Kind != WaitUntilEvent || pred.EventSubtype != EventExternalLabel
 	if kindNeedsSubstrate && sub == nil {
 		s.lastRejectReason = fmt.Sprintf("%s %q: no wait substrate wired", pred.Kind, pred.Target)
 		return false, "", false

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -124,14 +125,14 @@ func goalWaitTimeoutArg(args map[string]any) (time.Duration, error) {
 		seconds = v
 	case float64:
 		if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v >= aboveMaxInt || v < math.MinInt {
-			return 0, fmt.Errorf("invalid_request: timeout_seconds must be an integer")
+			return 0, errors.New("invalid_request: timeout_seconds must be an integer")
 		}
 		seconds = int(v)
 	default:
-		return 0, fmt.Errorf("invalid_request: timeout_seconds must be an integer")
+		return 0, errors.New("invalid_request: timeout_seconds must be an integer")
 	}
 	if seconds < 1 || seconds > 86400 {
-		return 0, fmt.Errorf("invalid_request: timeout_seconds must be between 1 and 86400")
+		return 0, errors.New("invalid_request: timeout_seconds must be between 1 and 86400")
 	}
 	return time.Duration(seconds) * time.Second, nil
 }
@@ -157,7 +158,7 @@ func validateGoalWaitArgs(args map[string]any) error {
 		return err
 	}
 	if kind == "" {
-		return fmt.Errorf("invalid_request: kind is required")
+		return errors.New("invalid_request: kind is required")
 	}
 	switch goal.Kind(kind) {
 	case goal.WaitUntilTime, goal.WaitUntilJob, goal.WaitUntilDelegate,
@@ -166,12 +167,12 @@ func validateGoalWaitArgs(args map[string]any) error {
 		return fmt.Errorf("invalid_request: unknown wait kind %q (must be until_time | until_job | until_delegate | until_approval | until_event | until_child)", kind)
 	}
 	if kind == string(goal.WaitUntilEvent) && subtype == "" {
-		return fmt.Errorf("invalid_request: event_subtype is required for kind \"until_event\"")
+		return errors.New("invalid_request: event_subtype is required for kind \"until_event\"")
 	}
 	// M2: file_modified/http_match need their target at tool level (a file
 	// path / URL); only external_label fires via notification/expiry with no
 	// durable target to name, and only until_time is target-free by kind.
-	if kind != string(goal.WaitUntilTime) && !(kind == string(goal.WaitUntilEvent) && subtype == string(goal.EventExternalLabel)) && strings.TrimSpace(target) == "" {
+	if kind != string(goal.WaitUntilTime) && (kind != string(goal.WaitUntilEvent) || subtype != string(goal.EventExternalLabel)) && strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for kind %q", kind)
 	}
 	if _, err := goalWaitTimeoutArg(args); err != nil {
@@ -200,7 +201,7 @@ func validateGoalWaitArgs(args map[string]any) error {
 	}
 	for _, r := range label {
 		if !unicode.IsPrint(r) {
-			return fmt.Errorf("invalid_request: label must be printable text")
+			return errors.New("invalid_request: label must be printable text")
 		}
 	}
 	return nil
@@ -262,7 +263,7 @@ func decodeGoalWaitArgs(args map[string]any) (goal.WaitKind, error) {
 func checkGoalWaitRegistrable(deps *toolDeps) error {
 	snap, ok := deps.goalGuard.Snapshot()
 	if !ok {
-		return fmt.Errorf("goal_wait: no active goal is set for this session; set one with /goal before registering waits")
+		return errors.New("goal_wait: no active goal is set for this session; set one with /goal before registering waits")
 	}
 	if snap.Status == goal.StatusComplete || snap.Status == goal.StatusBlocked {
 		return fmt.Errorf("goal_wait: goal is %q; waits register on active goals only", string(snap.Status))
@@ -341,14 +342,14 @@ func goalWaitTool(deps *toolDeps, args map[string]any) (any, error) {
 func goalCancelWaitTool(deps *toolDeps, args map[string]any) (any, error) {
 	raw, present := args["wait_id"]
 	if !present || raw == nil {
-		return nil, fmt.Errorf("invalid_request: wait_id is required")
+		return nil, errors.New("invalid_request: wait_id is required")
 	}
 	waitID, ok := raw.(string)
 	if !ok {
-		return nil, fmt.Errorf("invalid_request: wait_id must be a string")
+		return nil, errors.New("invalid_request: wait_id must be a string")
 	}
 	if strings.TrimSpace(waitID) == "" {
-		return nil, fmt.Errorf("invalid_request: wait_id is required")
+		return nil, errors.New("invalid_request: wait_id is required")
 	}
 	if !deps.goalGuard.CancelWait(waitID, deps.now()) {
 		return tool.StateResult{
@@ -393,7 +394,7 @@ func validateGoalExpectArgs(args map[string]any) error {
 		return err
 	}
 	if strings.TrimSpace(desc) == "" {
-		return fmt.Errorf("invalid_request: desc is required")
+		return errors.New("invalid_request: desc is required")
 	}
 	kind, err := goalWaitStringArg(args, "kind")
 	if err != nil {
@@ -467,7 +468,7 @@ func validateGoalExpectArgs(args map[string]any) error {
 	}
 	for _, r := range desc {
 		if !unicode.IsPrint(r) {
-			return fmt.Errorf("invalid_request: desc must be printable text")
+			return errors.New("invalid_request: desc must be printable text")
 		}
 	}
 	return nil
@@ -519,7 +520,7 @@ func goalExpectTool(deps *toolDeps, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if snap, ok := deps.goalGuard.Snapshot(); !ok {
-		return nil, fmt.Errorf("goal_expect: no active goal is set for this session; set one with /goal before registering conditions")
+		return nil, errors.New("goal_expect: no active goal is set for this session; set one with /goal before registering conditions")
 	} else if snap.Status == goal.StatusComplete || snap.Status == goal.StatusBlocked {
 		return nil, fmt.Errorf("goal_expect: goal is %q; conditions register on active goals only", string(snap.Status))
 	}
