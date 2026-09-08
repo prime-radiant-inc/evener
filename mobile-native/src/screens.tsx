@@ -64,6 +64,11 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
+import {
+	editPairingInput,
+	importPairing as importReviewedPairing,
+	reviewPairingInput,
+} from "./pairingImport";
 import { QuestionSheet } from "./QuestionSheet";
 import { QueueSheet } from "./QueueSheet";
 import {
@@ -173,6 +178,7 @@ export function HubsScreen({
 	const [name, setName] = useState("");
 	const [origin, setOrigin] = useState("");
 	const [token, setToken] = useState("");
+	const [pairingReview, setPairingReview] = useState(editPairingInput(""));
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const inputStyle = [
@@ -192,6 +198,7 @@ export function HubsScreen({
 			setName("");
 			setOrigin("");
 			setToken("");
+			setPairingReview(editPairingInput(""));
 			if (selected) navigation.navigate("Sessions");
 		} catch {
 			setError(
@@ -200,6 +207,19 @@ export function HubsScreen({
 		} finally {
 			setSaving(false);
 		}
+	}
+	function reviewPairingURL() {
+		const review = reviewPairingInput(pairingReview.input);
+		setPairingReview(review);
+		setError(review.error);
+	}
+	function importPairing() {
+		const imported = importReviewedPairing(pairingReview);
+		if (!imported) return;
+		setOrigin(imported.origin);
+		setToken(imported.token);
+		setPairingReview(imported.state);
+		setError(null);
 	}
 	function remove(id: string, label: string) {
 		Alert.alert(
@@ -308,6 +328,36 @@ export function HubsScreen({
 						onChangeText={setName}
 						style={inputStyle}
 					/>
+					<TextInput
+						accessibilityLabel="Pairing URL"
+						placeholder="Paste pairing URL"
+						placeholderTextColor={colors.secondary}
+						value={pairingReview.input}
+						onChangeText={(value) => {
+							setPairingReview(editPairingInput(value));
+							setError(null);
+						}}
+						autoCapitalize="none"
+						autoCorrect={false}
+						keyboardType="url"
+						secureTextEntry
+						style={inputStyle}
+					/>
+					{pairingReview.preview ? (
+						<View style={{ gap: 8 }}>
+							<Copy muted>Pairing target: {pairingReview.preview.origin}</Copy>
+							<Action disabled={saving} onPress={importPairing}>
+								Import pairing link
+							</Action>
+						</View>
+					) : (
+						<Action
+							disabled={saving || !pairingReview.input.trim()}
+							onPress={reviewPairingURL}
+						>
+							Review pairing link
+						</Action>
+					)}
 					<TextInput
 						accessibilityLabel="Hub origin"
 						placeholder="https://hub.example.com:9180"
