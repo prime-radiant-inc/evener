@@ -1,0 +1,162 @@
+{
+  "status": "passed",
+  "hubPort": 51691,
+  "beforeThreadList": {
+    "data": []
+  },
+  "afterThreadList": {
+    "data": []
+  },
+  "outcomes": [
+    {
+      "name": "reserved",
+      "method": "thread/turns/items/list",
+      "params": {},
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "method not found: thread/turns/items/list",
+        "code": -32601,
+        "data": {
+          "evenerErrorInfo": "methodNotFound"
+        },
+        "wireError": true
+      }
+    },
+    {
+      "name": "read-missing-target",
+      "method": "thread/read",
+      "params": {},
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "threadId or ref is required",
+        "code": -32602,
+        "data": {
+          "evenerErrorInfo": "invalidParams"
+        },
+        "wireError": true
+      }
+    },
+    {
+      "name": "read-missing-ref-with-other-thread-id",
+      "method": "thread/read",
+      "params": {
+        "ref": "local:missing-ref",
+        "threadId": "other"
+      },
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "thread not found: missing-ref",
+        "code": -32014,
+        "data": {
+          "evenerErrorInfo": "sessionUnavailable"
+        },
+        "wireError": true
+      }
+    },
+    {
+      "name": "turns-invalid-cursor",
+      "method": "thread/turns/list",
+      "params": {
+        "ref": "local:missing-ref",
+        "cursor": "42",
+        "itemLimit": 4
+      },
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "cursor must be an opaque item cursor",
+        "code": -32602,
+        "data": {
+          "evenerErrorInfo": "invalidParams"
+        },
+        "wireError": true
+      }
+    },
+    {
+      "name": "turns-missing-cursor",
+      "method": "thread/turns/list",
+      "params": {
+        "ref": "local:missing-ref",
+        "itemLimit": 4
+      },
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "cursor is required for thread/turns/list",
+        "code": -32602,
+        "data": {
+          "evenerErrorInfo": "invalidParams"
+        },
+        "wireError": true
+      }
+    },
+    {
+      "name": "turns-invalid-limit",
+      "method": "thread/turns/list",
+      "params": {
+        "ref": "local:missing-ref",
+        "cursor": "opaque",
+        "itemLimit": 41
+      },
+      "error": {
+        "constructor": "WireError",
+        "name": "WireError",
+        "message": "itemLimit must be between 1 and 40",
+        "code": -32602,
+        "data": {
+          "evenerErrorInfo": "invalidParams"
+        },
+        "wireError": true
+      }
+    }
+  ],
+  "assertions": {
+    "allSixRejected": true,
+    "threadListUnchanged": true
+  },
+  "sdk": {
+    "package": "@evener/appwire-client@0.1.0",
+    "packageSourceRevision": "58d1b079f",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "distIndexJsSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "schema": "evener.sdk.read-errors.v1",
+  "sourceHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+  "driver": {
+    "path": "/tmp/read-errors.mjs",
+    "sha256": "a73e8124de2f3f08a61606df6eb8df691ee0049f0060868f8416af6b348b48ec",
+    "sdk": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js"
+  },
+  "rawCapture": {
+    "path": "/tmp/evener-sdk-read-errors-1788899328/read-errors.log",
+    "sha256": "9ed75561677587aad7b8101ab3a919408d38037e0220017ed265d53b0fad866e",
+    "exit": 0
+  },
+  "cleanup": {
+    "hubPid": 20376,
+    "hubPort": 51691,
+    "tokenRetained": false,
+    "processRemaining": false,
+    "listenerRemaining": false
+  },
+  "contractSource": [
+    "appwire/protocol.go",
+    "appwire/paging.go",
+    "server/appwire_runtime.go"
+  ],
+  "limitations": [
+    "The conflicting target values refer to nonexistent sessions; this does not test rejection of conflicting existing targets.",
+    "The before/after list is empty; preservation of an existing session is not claimed.",
+    "Invalid paging inputs are rejected before missing-session resolution; valid paging, lifecycle and native UI remain outside this receipt."
+  ],
+  "backend": {
+    "binaryPath": "/tmp/evener-sdk-read-errors-1788899328/evener",
+    "binarySha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+    "sourceRevision": "3284d6ac5",
+    "sourceBasis": "matches the previously verified 3284d6ac5 fixture binary SHA-256"
+  }
+}

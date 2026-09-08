@@ -10,14 +10,14 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 | Method | Scope | Recorded success/effect/readback | Invalid or unsupported input | Capability or permission | Conflict or stale binding | Disconnect or uncertainty | Lifecycle |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `initialize` | connection | RECORDED — [2026-09-08-sdk-plugin-marketplace-producers](assets/2026-09-08-sdk-plugin-marketplace-producers.json): two installed clients connected before recorded requests; malformed handshake outcomes remain unreviewed. | U | U | U | U | U |
-| `ping` | connection | U | U | U | U | U | U |
-| `thread/list` | both | U | U | U | U | U | U |
-| `thread/read` | both | RECORDED — [2026-09-08-iphone-execution](assets/2026-09-08-iphone-execution.json): realController.assertions; independent vision readback and second-client propagation, on the host. | U | U | U | U | U |
-| `thread/unsubscribe` | both | U | U | U | U | U | U |
-| `thread/turns/list` | both | U | U | U | U | U | U |
-| `thread/turns/items/list` | unimplemented | Declared reserved/unimplemented in [catalog](../../../appwire/protocol.go); no successful operation. Executed rejection remains U. | U | U | U | U | U |
-| `thread/start` | hub | U | U | U | U | U | U |
+| `initialize` | connection | RECORDED — [standalone initialize](assets/2026-09-08-sdk-standalone-initialize.json): installed SDK connects to repaired standalone daemon; older hub connection evidence also remains in the marketplace/plugin receipt. | RECORDED — same receipt: SDK rejects old standalone handshake with empty serverInfo.version; this is response validation, not all invalid initialize inputs. | U | U | U | U |
+| `ping` | connection | RECORDED — [standalone initialize](assets/2026-09-08-sdk-standalone-initialize.json): installed SDK receives empty ping result from repaired daemon. | U | U | U | U | U |
+| `thread/list` | both | RECORDED — [standalone initialize](assets/2026-09-08-sdk-standalone-initialize.json): one owned daemon session listed; [read errors](assets/2026-09-08-sdk-read-errors.json): empty hub list before/after rejected requests. | U | U | U | U | U |
+| `thread/read` | both | RECORDED — [2026-09-08-iphone-execution](assets/2026-09-08-iphone-execution.json): realController.assertions; independent vision readback and second-client propagation, on the host. | RECORDED — [read errors](assets/2026-09-08-sdk-read-errors.json): missing target gives -32602/invalidParams; nonexistent ref with another nonexistent threadId gives -32014/sessionUnavailable. No existing-target conflict claim. | U | U | U | U |
+| `thread/unsubscribe` | both | RECORDED — [standalone initialize](assets/2026-09-08-sdk-standalone-initialize.json): acknowledgment after subscribed read; later notification suppression remains unreviewed. | U | U | U | U | U |
+| `thread/turns/list` | both | U | RECORDED — [read errors](assets/2026-09-08-sdk-read-errors.json): missing/numeric cursor and itemLimit=41 each give -32602/invalidParams before nonexistent-target resolution. | U | U | U | U |
+| `thread/turns/items/list` | unimplemented | Declared reserved/unimplemented in [catalog](../../../appwire/protocol.go); no successful operation. | RECORDED — [read errors](assets/2026-09-08-sdk-read-errors.json): installed SDK WireError -32601/methodNotFound. | U | U | U | U |
+| `thread/start` | hub | RECORDED — [attention producer](assets/2026-09-08-sdk-attention-producer.json): returned exact owned session and held turn; working attention notification and authoritative summary. No thread/started notification claim. | U | U | U | U | U |
 | `thread/resume` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): endedParentResumed and outputs resume.json / independent-parent.json. | U | U | U | U | U |
 | `thread/fork` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): regularForkAcknowledged, asideForkAcknowledged, originalInputRetained, independentChildParentLinks. | U | U | U | U | U |
 | `thread/clear` | both | U | U | U | U | U | U |
@@ -27,7 +27,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `thread/vision-model/set` | both | RECORDED — [2026-09-08-iphone-execution](assets/2026-09-08-iphone-execution.json): realController.assertions; off, catalog model, second-client change and restoration. No native interaction. | U | U | U | U | U |
 | `thread/compact/start` | both | U | U | U | U | U | U |
 | `thread/shutdown` | both | U | U | U | U | U | U |
-| `turn/start` | both | U | U | U | U | U | U |
+| `turn/start` | both | RECORDED — [message reset](assets/2026-09-08-sdk-message-reset-producer.json): exact returned turn_m1 completes after scripted partial-response retry; replacement present and stale text absent in SDK readback. | U | U | U | U | U |
 | `turn/steer` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.steer, exactMarkerCounts, turnCompletedReadback. | U | U | U | U | U |
 | `turn/interrupt` | both | U | U | U | U | U | U |
 | `turn/queue` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.queued and preDrainIds; consumed by drain in this scenario. | U | U | U | U | U |
@@ -46,7 +46,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/path/validate` | hub | U | U | U | U | U | U |
 | `evener/git/head` | hub | U | U | U | U | U | U |
 | `evener/mobile/pairing` | hub | U | U | U | U | U | U |
-| `evener/navigation/read` | hub | U | U | U | U | U | U |
+| `evener/navigation/read` | hub | RECORDED — [attention producer](assets/2026-09-08-sdk-attention-producer.json): authoritative manifest snapshots before/after held turn; final summary equals exact event summary. Other resources and races remain unreviewed. | U | U | U | U | U |
 | `evener/favorite/set` | hub | U | U | U | U | U | U |
 | `evener/archive/set` | hub | U | U | U | U | U | U |
 | `evener/project/delete` | hub | U | U | U | U | U | U |

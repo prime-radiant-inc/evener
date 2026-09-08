@@ -1,0 +1,195 @@
+{
+  "schema": "evener.sdk.attention-producer.receipt.v2",
+  "status": "passed",
+  "date": "2026-09-08",
+  "scope": {
+    "qualified": [
+      "evener/attention/changed",
+      "evener/navigation/invalidated",
+      "evener/navigation/read"
+    ],
+    "nativeUI": false,
+    "provider": "owned scripted fixture provider",
+    "client": "independently installed @evener/appwire-client AppwireClient"
+  },
+  "fixture": {
+    "root": "/tmp/evener-sdk-attention-fresh-HsPLjX",
+    "hubPort": 54349,
+    "providerPort": 54348,
+    "sessionRef": "local:034LReILoc7PMtpvfjvh6r",
+    "threadId": "034LReILoc7PMtpvfjvh6r",
+    "cwd": "/private/tmp/evener-sdk-attention-fresh-HsPLjX/workspace"
+  },
+  "observation": {
+    "navigationReadRequest": {
+      "representationVersion": 2,
+      "resource": "manifest"
+    },
+    "before": {
+      "status": "ok",
+      "generationId": "cd2a04565bf06fc42efbf0796d59fb7f",
+      "revision": 9,
+      "attentionSummary": {
+        "needsYou": 2,
+        "error": 0,
+        "working": 0
+      },
+      "sections": {
+        "live": {
+          "count": 2
+        },
+        "needs_you": {
+          "count": 2
+        },
+        "pin_sections": {
+          "count": 0
+        }
+      }
+    },
+    "event": {
+      "method": "evener/attention/changed",
+      "changed": [
+        {
+          "threadId": "034LReILoc7PMtpvfjvh6r",
+          "title": "session fjvh6r",
+          "project": "workspace",
+          "level": "working",
+          "prevLevel": "idle"
+        }
+      ],
+      "summary": {
+        "needsYou": 2,
+        "error": 0,
+        "working": 1
+      }
+    },
+    "after": {
+      "status": "ok",
+      "generationId": "cd2a04565bf06fc42efbf0796d59fb7f",
+      "revision": 11,
+      "attentionSummary": {
+        "needsYou": 2,
+        "error": 0,
+        "working": 1
+      },
+      "sections": {
+        "live": {
+          "count": 3
+        },
+        "needs_you": {
+          "count": 2
+        },
+        "pin_sections": {
+          "count": 0
+        }
+      }
+    },
+    "navigationInvalidation": {
+      "method": "evener/navigation/invalidated",
+      "params": {
+        "generationId": "cd2a04565bf06fc42efbf0796d59fb7f",
+        "sequence": 12,
+        "targets": [
+          {
+            "kind": "catalog",
+            "catalog": "projects",
+            "revision": 10
+          },
+          {
+            "kind": "manifest",
+            "revision": 10
+          },
+          {
+            "kind": "project",
+            "projectKey": "private-tmp-evener-sdk-attention-fresh-HsPLjX-workspace-ZTViui8abT",
+            "revision": 12
+          },
+          {
+            "kind": "section",
+            "section": "live",
+            "revision": 13
+          }
+        ]
+      }
+    },
+    "started": {
+      "ref": "local:034LReILoc7PMtpvfjvh6r",
+      "threadId": "034LReILoc7PMtpvfjvh6r",
+      "status": {
+        "type": "idle"
+      },
+      "turnId": "turn_m1"
+    }
+  },
+  "artifacts": {
+    "qualification": {
+      "path": "/tmp/evener-sdk-attention-fresh-HsPLjX/attention-qualification.json",
+      "sha256": "514d8dd2e05b7bee1c01a74bc80f73d809471ce38eeceacf53e61a88921791f7"
+    },
+    "driver": {
+      "path": "/tmp/evener-sdk-attention-fresh-HsPLjX/attention-held.mjs",
+      "sha256": "39eff6de31d432abccfaf43fa5d6be27c1357f2e0961b87a33f93bd9d4269854"
+    },
+    "cleanup": {
+      "path": "/tmp/evener-sdk-attention-fresh-HsPLjX/cleanup.py",
+      "runtimePath": "/tmp/evener-sdk-attention-fresh-HsPLjX/runtime.json",
+      "ownedPids": [
+        29628,
+        29732,
+        41739,
+        57490,
+        63000
+      ],
+      "cleanupOutput": {
+        "pids": [
+          41739,
+          57490,
+          63000
+        ],
+        "remaining": [],
+        "tokensRemoved": 0
+      },
+      "postCleanupProcessMatch": "none",
+      "postCleanupAuthTokenMatch": "none"
+    },
+    "sourceHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+    "backend": {
+      "sourceCheckoutHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+      "binaryPath": "/tmp/evener-sdk-idle-close-current-OwRkNp/bin/evener",
+      "binarySha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+      "devBinaryPath": "/tmp/evener-sdk-idle-close-current-OwRkNp/bin/evener-dev",
+      "devBinarySha256": "28267467f9758126d49e737795d685f7f2e15dc2e86d861cd3aa26c2ad57ad50",
+      "binarySourceRevision": "3284d6ac54e34409e8115f872fbe8479a3dc7006",
+      "vcsModified": true
+    },
+    "backendSource": {
+      "checkoutHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+      "gitBlobIds": {
+        "cmd/evener-hub/main_background.go": "f47346950a1e52cec740d7200b90be98025ed102",
+        "cmd/evener-hub/app_rpc.go": "f6cc22c22f90a15bc71b2da1e9971d270bc2b2dc",
+        "internal/appprojector/appwire_projection.go": "68fdf6bf1e24f31b0031bba4b0f2636b4f7c6cd3"
+      }
+    },
+    "installedSdk": {
+      "packageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+      "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+      "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+      "tarballPath": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+      "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+    }
+  },
+  "method": "Fresh isolated fixture using the independently installed @evener/appwire-client AppwireClient request() and onNotification(). The observer subscribed before actor thread/start; a held scripted-provider turn produced the decoded working transition for the exact started ref. Before and after used authoritative evener/navigation/read with {representationVersion:2,resource:\"manifest\"}. The event summary exactly equals the after-read attentionSummary; the after live section is 3 (before was 2).",
+  "limitations": [
+    "No native UI, iPad/accessibility, Android, or plugin executable qualification.",
+    "The navigation invalidation was observed as an intermediate notification (sequence 12); the final authoritative read was revision 11 after subsequent projector updates.",
+    "The setup and held turn used the owned scripted provider; provider release completed, detached processes were terminated, and fixture auth-token files were absent after cleanup."
+  ],
+  "rootReview": {
+    "exactEventTargetMatched": true,
+    "eventSummaryEqualsAuthoritativeAfterRead": true,
+    "bothListenersClosed": true,
+    "ownedProcessesRemaining": false,
+    "bearerTokensRemaining": false,
+    "sourceIdentityNote": "Git blob IDs identify inspected source at checkout HEAD; tested binary has its own older build revision and hash."
+  }
+}
