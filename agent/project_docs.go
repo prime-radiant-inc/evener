@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.
@@ -26,6 +27,19 @@ const (
 // UserDocFile is the personal instructions file evener loads from the user
 // config root ahead of every repo's own project docs.
 const UserDocFile = "AGENTS.md"
+
+// personalDocPath is the personal instructions file a session reads: the path
+// its launcher configured, or the default under the user config root. A root
+// that cannot be resolved stays empty rather than joining into the relative
+// "AGENTS.md" — a daemon would otherwise read whatever file happens to sit in
+// its working directory as the user's own instructions, and LoadUserDoc
+// already reports an empty path as an absent doc.
+func personalDocPath(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return userdirs.Subdir(userdirs.DefaultConfigRoot(), UserDocFile)
+}
 
 // LoadProjectDocs discovers and loads project instruction files from git root (or working directory when not
 // in a git repo) down to the current working directory. Files are loaded in depth order (root first; deeper

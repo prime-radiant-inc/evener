@@ -1451,12 +1451,8 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
 	}
 
-	agentsDocPath := s.cfg.AgentsDocPath
-	if agentsDocPath == "" {
-		agentsDocPath = filepath.Join(userdirs.DefaultConfigRoot(), UserDocFile)
-	}
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), agentsDocPath, s.profile.ProjectDocFiles()...)
+	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 
 	// Cache tool definitions and the rendered prompt. A render failure here is a
 	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing

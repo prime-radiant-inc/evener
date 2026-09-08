@@ -308,3 +308,31 @@ func TestLoadInstructionDocs_OversizedRepoDocLeavesThePersonalDocIntact(t *testi
 		t.Fatal("expected the project truncation marker on the repo doc")
 	}
 }
+
+func TestPersonalDocPath_ConfiguredWins(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("/hub/AGENTS.md"); got != "/hub/AGENTS.md" {
+		t.Fatalf("personalDocPath = %q, want the configured path untouched", got)
+	}
+}
+
+// A daemon whose config root cannot be resolved must read no personal doc at
+// all: joining an empty root would leave the relative "AGENTS.md", and the
+// daemon would take whatever file sits in its working directory as the user's
+// own instructions.
+func TestPersonalDocPath_EmptyRootIsEmpty(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if got := personalDocPath(""); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the config root is unresolvable", got)
+	}
+}
+
+func TestPersonalDocPath_DefaultsUnderTheConfigRoot(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	want := filepath.Join(configHome, "evener", UserDocFile)
+	if got := personalDocPath(""); got != want {
+		t.Fatalf("personalDocPath = %q, want %q", got, want)
+	}
+}

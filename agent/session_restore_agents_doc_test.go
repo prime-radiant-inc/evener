@@ -33,3 +33,15 @@ func TestRestoreSessionAppliesTheAgentsDocOverride(t *testing.T) {
 		restored.Close()
 	}
 }
+
+// A stable delegate restarted from its frozen descriptor reads the personal
+// doc of whoever is running the tree now, not the one named when it was
+// frozen: after a resume through a hub whose config root moved, a root session
+// and its delegates would otherwise load different personal instructions.
+func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
+	frozen := SessionConfig{AgentsDocPath: "/old/AGENTS.md", NoProjectPrompts: true}.toSnapshot()
+	got := subagentConfigFromFrozenDescriptor(frozen, SessionConfig{AgentsDocPath: "/hub/AGENTS.md"})
+	if got.AgentsDocPath != "/hub/AGENTS.md" {
+		t.Fatalf("frozen-descriptor AgentsDocPath = %q, want the live parent's %q (frozen was %q)", got.AgentsDocPath, "/hub/AGENTS.md", "/old/AGENTS.md")
+	}
+}
