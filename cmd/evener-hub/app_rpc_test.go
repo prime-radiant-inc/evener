@@ -11082,6 +11082,15 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 		// was rewritten by another test.
 		cfg.Registry = newTestRegistry(t, cfg.HubStateRoot, "", cfg.CredsStore, nil)
 	}
+	return startHubRPCTestServer(t, cfg)
+}
+
+// startHubRPCTestServer serves cfg exactly as given, with none of
+// newHubRPCTestServerWithWeb's per-test defaults. It is for the rare test
+// whose subject is an unset root: an empty LaunchConfigRoot means "none" to
+// the handlers, and the fixture would fill it in.
+func startHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
