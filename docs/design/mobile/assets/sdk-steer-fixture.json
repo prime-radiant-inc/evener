@@ -1,0 +1,11 @@
+{
+  "cwd": "/tmp/evener-sdk-steer-N2Is3k/workspace",
+  "provider": "sdk-steer-fixture-20260907",
+  "markers": {
+    "cancel": "SDK-CANCEL-AUTHORED-20260907",
+    "promote": "SDK-STEER-AUTHORED-20260907",
+    "drain1": "SDK-DRAIN-AUTHORED-20260907",
+    "drain2": "SDK-DRAIN-COMPOSER-AUTHORED-20260907",
+    "draft": "SDK-DRAFT-20260907"
+  }
+}

@@ -285,3 +285,40 @@ ESM/CommonJS imports, declarations and all eighteen packaged contract files.
 the successful individual phases; the earlier interrupted canonical invocation
 is not reported as an exit-zero run. Independent Luna evidence review found no
 remaining overclaim in this section or the native build/launch record.
+
+## Packaged steering and composer drain — 7 September
+
+Source `5429db421` adds `runQueue({ action: "steer" })` and optional text
+input when draining a reviewed nonempty queue. The 13 queue contracts and
+`make test-api-package` passed, including an outside-checkout installation.
+The [receipt](assets/sdk-steer-receipt.json) identifies the independently
+installed tarball:
+`28a8559aced5d7847371bd71c8bf3ec2bd6c7c84aec9de08297f6dd1747839dc`.
+Bot verified that its README, queue logic/contracts and coverage map match the
+integrated source byte for byte.
+
+A Luna medium tester ran the [driver](assets/sdk-steer-driver.mjs.txt) against
+a fresh isolated real hub and [scripted model service](assets/sdk-steer-provider.go.txt).
+Direct steering produced an applied receipt identifying its turn and no queue
+entry IDs. The driver then queued two messages and drained them with authored
+composer text. The drain receipt identified exactly the two reviewed queue IDs;
+readback represented an empty queue. The service's
+[request observations](assets/sdk-steer-provider-observations.json) show the
+authored text reaching the actual model request. Those observations are boolean
+presence checks, not counts within a request.
+
+The tester released the provider through a real `communicate` completion and
+separately read an awaiting thread with no active turn. Bot independently read
+the persisted transcript, checked both mutation IDs against their receipts, and
+counted the direct steer marker once and both drain markers once in the combined
+steering entry. The receipt preserves those extracted entries and transcript
+hash. The driver has one helper invocation per action; real wire dispatch
+counters were not instrumented. Deterministic contracts establish the recipe's
+single-dispatch/no-replay behavior, not a universal server exactly-once guarantee.
+
+Root and the tester verified that the owned hub/provider ports and reported
+processes were gone and the fixture token and continuation secret were removed.
+No proxy or live model service was used. This closes the bounded SDK steering
+recipe qualification; native steering UI, live model behavior, broader recovery,
+the remaining 26 catalog method names without recipes (including one reserved
+unsupported entry), notification coverage and publication remain separate work.

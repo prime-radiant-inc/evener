@@ -1,0 +1,161 @@
+{
+  "date": "2026-09-07",
+  "scope": "SDK-only steer once and drain with appended composer input",
+  "source": {
+    "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+    "head": "759e7b10fa82fb4d4c47ef4cb1560de064ee4158",
+    "protocolDirtyFiles": [
+      "README.md",
+      "examples/coverage.mjs",
+      "examples/queue-logic.mjs",
+      "examples/queue.contract.mjs"
+    ],
+    "integratedCommit": "5429db421",
+    "installedFilesMatchIntegratedSource": true
+  },
+  "artifacts": {
+    "root": "/tmp/evener-sdk-steer-N2Is3k",
+    "protocolTarballSHA256": "28a8559aced5d7847371bd71c8bf3ec2bd6c7c84aec9de08297f6dd1747839dc",
+    "hubBinarySHA256": "184174d0573836cfda3f03dafede7b38b40645030b1e64c6ee0436ec448529f3",
+    "providerBinarySHA256": "671731bd399587456e46521c6794ecfcf0ed240783f4cb93af981d70dc412549",
+    "driverSHA256": "ee6f036e74551e1405c573f187373f8f2dada12ae61a31fa260bfa0bff28f599",
+    "providerObservationNDJSONSHA256": "affbf26e45f845c6cf61056b6236e0a49046e94954b83e226bcf89c049c12779",
+    "providerSourceSHA256": "b08b340cf89659b83d00256e37666d32c048b77ac465b7fcc7d844014048bfc5",
+    "fixtureSHA256": "1826012b638e2d29ce67492b4d37d002609cad21b0c52229d780a48496ed883b"
+  },
+  "binding": {
+    "ref": "local:034KyFyikOhtGIijraGqz7",
+    "instanceId": "034KyFyikOhtGIijraGqz7"
+  },
+  "actions": {
+    "steer": "applied",
+    "drain": "applied",
+    "drainQueueEntryIds": [
+      "queue_1",
+      "queue_2"
+    ],
+    "postDrainDepth": 0
+  },
+  "assertions": {
+    "steerReceiptApplied": true,
+    "drainReceiptApplied": true,
+    "drainReceiptIDsEqualPreDrainIDs": true,
+    "postDrainDepthZero": true,
+    "providerSteerSeenAtLeastOnce": true,
+    "providerDrain1SeenAtLeastOnce": true,
+    "providerDrain2SeenAtLeastOnce": true,
+    "transcriptSteerExactCountOne": true,
+    "transcriptDrainCombinedExactCountOne": true,
+    "turnCompletedReadback": true,
+    "oneSteerHelperInvocation": true
+  },
+  "provider": {
+    "request1": {
+      "steer": true,
+      "cancel": false,
+      "drain1": false,
+      "drain2": false
+    },
+    "request2": {
+      "steer": true,
+      "cancel": true,
+      "drain1": true,
+      "drain2": true
+    },
+    "notice": "Queue checkpoint."
+  },
+  "transcript": {
+    "status": "awaiting",
+    "activeTurnId": "",
+    "exactMarkerCounts": {
+      "SDK-STEER-AUTHORED-20260907": 1,
+      "SDK-DRAIN-AUTHORED-20260907": 1,
+      "SDK-DRAIN-COMPOSER-AUTHORED-20260907": 1
+    },
+    "entries": [
+      {
+        "seq": 2,
+        "kind": "STEERING",
+        "stableTurnId": "turn_m2",
+        "clientMutationId": "0824a3d5-5ae1-46c1-a9d6-ffe11dad14da",
+        "text": "SDK-STEER-AUTHORED-20260907"
+      },
+      {
+        "seq": 5,
+        "kind": "STEERING",
+        "stableTurnId": "turn_m3",
+        "clientMutationId": "924c9408-8c45-4de3-b32f-86b3406f9c7d",
+        "text": "SDK-CANCEL-AUTHORED-20260907\n\nSDK-DRAIN-AUTHORED-20260907\n\nSDK-DRAIN-COMPOSER-AUTHORED-20260907"
+      }
+    ],
+    "sourceSHA256": "61dd63a256db8261c0c7f8d9e0ef656389b7dee4741209e6b3429d8d43b3304e",
+    "finalReadbackEvidence": "Observed by the tester through thread/read; counts and mutation IDs independently rederived by root from the persisted transcript."
+  },
+  "cleanup": {
+    "hubPortClosed": true,
+    "providerPortClosed": true,
+    "ownedReportedPidsAbsent": true,
+    "ownedTokenAndScopeSecretRemoved": true,
+    "checkedBy": "tester and root"
+  },
+  "receipts": {
+    "ref": "local:034KyFyikOhtGIijraGqz7",
+    "instanceId": "034KyFyikOhtGIijraGqz7",
+    "steer": {
+      "clientMutationId": "0824a3d5-5ae1-46c1-a9d6-ffe11dad14da",
+      "disposition": "applied",
+      "threadId": "034KyFyikOhtGIijraGqz7",
+      "instanceId": "034KyFyikOhtGIijraGqz7",
+      "turnId": "turn_m2",
+      "projectionState": "pending"
+    },
+    "queued": [
+      {
+        "clientMutationId": "2fc22287-0d71-4950-8684-26cd1f312a4b",
+        "disposition": "applied",
+        "threadId": "034KyFyikOhtGIijraGqz7",
+        "instanceId": "034KyFyikOhtGIijraGqz7",
+        "queueEntryIds": [
+          "queue_1"
+        ],
+        "projectionState": "pending"
+      },
+      {
+        "clientMutationId": "f744f358-f9b9-4f9a-996e-34f51b790b55",
+        "disposition": "applied",
+        "threadId": "034KyFyikOhtGIijraGqz7",
+        "instanceId": "034KyFyikOhtGIijraGqz7",
+        "queueEntryIds": [
+          "queue_2"
+        ],
+        "projectionState": "pending"
+      }
+    ],
+    "drain": {
+      "clientMutationId": "924c9408-8c45-4de3-b32f-86b3406f9c7d",
+      "disposition": "applied",
+      "threadId": "034KyFyikOhtGIijraGqz7",
+      "instanceId": "034KyFyikOhtGIijraGqz7",
+      "turnId": "turn_m3",
+      "queueEntryIds": [
+        "queue_1",
+        "queue_2"
+      ],
+      "projectionState": "pending"
+    },
+    "preDrainIds": [
+      "queue_1",
+      "queue_2"
+    ],
+    "postDrain": {
+      "revision": 3
+    }
+  },
+  "limits": [
+    "External model boundary is scripted; no live provider behavior is qualified.",
+    "Provider observations prove sentinel presence, not multiplicity.",
+    "One helper invocation is observed for steer and drain; real wire dispatch counters were not instrumented.",
+    "The driver does not itself wait for final completion. The tester released the scripted provider and separately read the final thread.",
+    "No native UI qualification is claimed for the new SDK recipe."
+  ]
+}

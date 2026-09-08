@@ -340,3 +340,44 @@ qualifies direct-disconnect behavior through real hub handlers; current iOS
 recovery interaction, real-provider denial, physical-device and accessibility
 qualification remain open. Android release qualification remains deferred for
 iOS-only v1.
+
+## iOS interrupted OAuth recovery — 7 September
+
+Bot rebuilt and ran iPhone 17 Pro Release source `759e7b10f`, with
+`main.jsbundle` SHA-256
+`bda26fddce4ffd9dc46d1c8205de61a1413483ef21f96b0db828c84a3cbbed0c`.
+The [receipt and native accessibility captures](assets/ios-oauth-recovery-receipt.json)
+record direct native connections to a fresh `TestNativeAuthHarness`.
+Only the external OAuth service and clock were scripted. The real hub auth
+handlers, registry and temporary credential storage handled every operation.
+The fixture does not exercise bearer authentication.
+
+For device and browser completion, Bot held the external token exchange,
+backgrounded Evener, verified that its TCP connection to the fixture had closed,
+then released the exchange. The fixture stored OAuth credentials after the
+native client disconnected. Foregrounding the same process preserved the
+interrupted sign-in screen. The device screen retained its exact code and
+uncertainty message; its read-only status action displayed configured OAuth
+without converting the uncertain attempt to an acknowledged completion.
+The browser screen retained its phase and displayed configured OAuth after a
+status read. Its redirect field is cleared when submitted, as designed.
+No automatic resubmission or fresh start was requested.
+
+The browser authorization page was opened in Simulator Safari. Bot read the
+callback from that actual fixture URL through HTTP and entered it using native
+accessibility, so this run does not qualify keyboard paste. A separate device
+attempt also verified stored credentials after an actual app restart; its new
+process ID distinguishes that result from the foreground checks.
+
+Bot then canceled a pending device flow, switched to the original hub, approved
+the abandoned fixture flow, and returned. No sign-in sheet reappeared, and that
+provider remained signed out. This is cancel-then-switch coverage, not a switch
+with an active sheet. Native mutation dispatch counts were not instrumented.
+
+Both owned provider credentials were cleared in the native UI and verified
+signed out. The fixture profile was removed, the harness exited zero, its port
+closed, and Go removed its credential directory. The original conversation and
+all seven drafts were restored and verified; both unrelated Apple changes
+remain byte-identical. The simulator clipboard was restored and temporary
+callback/input files removed. Live provider accounts, denial/revocation,
+iPad, physical devices, VoiceOver, large text and distribution remain open.

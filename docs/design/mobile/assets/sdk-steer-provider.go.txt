@@ -1,0 +1,109 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"primeradiant.com/evener/test/e2e/fakellm"
+	"strings"
+	"syscall"
+)
+
+func messageText(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	blocks, _ := value.([]any)
+	var out strings.Builder
+	for _, raw := range blocks {
+		block, _ := raw.(map[string]any)
+		if text, ok := block["text"].(string); ok {
+			out.WriteString(text)
+		}
+	}
+	return out.String()
+}
+func run() error {
+	if len(os.Args) != 2 {
+		return errors.New("metadata path required")
+	}
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		return errors.New("metadata unavailable")
+	}
+	var config struct{ Markers map[string]string }
+	if json.Unmarshal(data, &config) != nil || len(config.Markers) != 5 {
+		return errors.New("invalid metadata")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	server, err := fakellm.NewOn("127.0.0.1:0")
+	if err != nil {
+		return errors.New("listener unavailable")
+	}
+	defer server.Close()
+	commands := make(chan string)
+	go func() {
+		defer close(commands)
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			select {
+			case commands <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	out := json.NewEncoder(os.Stdout)
+	_ = out.Encode(map[string]any{"baseURL": server.BaseURL(), "pid": os.Getpid()})
+	for n := 1; ; n++ {
+		call, err := server.Next(ctx.Done())
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return errors.New("request unavailable")
+		}
+		seen := map[string]bool{}
+		for key := range config.Markers {
+			seen[key] = false
+		}
+		messages, _ := call.Body["messages"].([]any)
+		for _, raw := range messages {
+			message, _ := raw.(map[string]any)
+			if message["role"] != "user" {
+				continue
+			}
+			text := messageText(message["content"])
+			for key, marker := range config.Markers {
+				seen[key] = seen[key] || strings.Contains(text, marker)
+			}
+		}
+		_ = out.Encode(map[string]any{"request": n, "callId": call.ToolCallID(), "previous": call.PreviousToolCallID(), "seen": seen})
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-call.Cancelled():
+			_ = out.Encode(map[string]any{"request": n, "cancelled": true})
+			continue
+		case command, ok := <-commands:
+			if !ok {
+				return nil
+			}
+			if command != "continue" && command != "finish" {
+				return errors.New("invalid release command")
+			}
+			call.RespondToolCall("communicate", map[string]any{"message": "Queue checkpoint.", "end_turn": command == "finish", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}})
+		}
+	}
+}
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
