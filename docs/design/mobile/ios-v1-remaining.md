@@ -2,19 +2,34 @@
 
 Updated 8 September 2026. See the [current project status](status.md) for implemented behavior, artifact identities and verified checks.
 
-This checklist narrows native-mobile delivery to Jesse's selected iOS-only v1 scope. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
+This checklist follows Jesse's selected iOS-only v1 scope. **Current milestone: full iPhone functionality. iPad and accessibility work are paused as of 8 September 2026.** Preserve their implementation and evidence; do not assign those tasks or require them to close this functional milestone. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
+
+## iPhone functionality milestone
+
+Complete every currently supported native workflow against real Evener behavior:
+
+1. Reading and composition: long/paged/live transcripts, authenticated images and attachments, copy/open/return, send/steer/queue/stop and durable drafts.
+2. Lifecycle and hubs: reconnect, background/cold launch, overlapping operations, credential changes and isolation between hubs, with no duplicate sends or lost drafts after uncertain replies.
+3. Creation and management: project/harness/model/vision/reasoning choices, launch options and trust, valid/invalid creation, rename/clear/compact/fork/delete, search/archive/favorites/pins and return navigation. Verify remaining vision-selection wiring against current contracts before implementation.
+4. Running work and decisions: goals/tasks/delegates and paged output, real approvals/questions, simultaneous updates and stale or interrupted decisions. Existing successful journeys do not need to be rediscovered; focus on outstanding cases and regressions.
+5. Administration: provider instances/sign-in/credential edits, plugin and marketplace lifecycle, inherited settings and stale-editor conflicts, preferences and hub upgrade/recovery.
+6. For every area, exercise supported actions on an identified iPhone build, retain authoritative backend results, and fix reproduced defects. SDK behavior used by these workflows must work; exhaustive standalone SDK qualification remains a separate project deliverable.
+
+A source route or passing unit suite is not enough. Functional completion means the supported actions are reachable and work end to end on iPhone, including recovery from ordinary connection and process interruptions. Signing/distribution, broader performance qualification and paused work remain separately visible below.
 
 ## Dependency order
 
-1. Freeze the intended source head and build both iPhone and iPad Release artifacts from that same head. Record source, bundle, binary and SDK hashes.
+1. Freeze the intended source head and build the iPhone Release artifact from that head. Record source, bundle, binary and SDK hashes.
 2. Preserve the [verified 8 September integration baseline](assets/2026-09-08-status-verification.json); rerun affected checks and canonical gates after source changes. Keep unrelated generated Apple changes intact.
 3. Re-run real-daemon workflows against isolated authenticated v4 hubs with a scripted provider at the LLM boundary. Capture direct API readback and persisted state before native claims.
-4. Qualify the current Release artifact on iPhone and iPad: lifecycle, hubs, workflows, reader, accessibility, typography, gestures, rotation and failure recovery. iPhone and iPad journeys can run in parallel when they use separate profiles and fixtures; shared artifact installation, hub mutations and final evidence identity remain coordinator-owned gates. Repeat required cases after cold launch where persistence is part of the contract.
+4. Qualify iPhone functionality on the current Release artifact: lifecycle, hubs, workflows, reader, keyboard, gestures and failure recovery. Independent real-hub fixtures and SDK checks can run in parallel; shared artifact installation, hub mutations and final evidence identity remain coordinator-owned gates. Repeat required cases after cold launch where persistence is part of the contract.
 5. Complete physical-device, signing, install/update and performance checks, then make the final release decision from one identity-matched record.
 
 Source and deterministic gates can run in parallel with independent SDK recipe work and isolated fixture preparation. Interactions on the same device, shared-hub mutations, artifact installation and final integration remain serialized; separate devices and isolated fixtures can run in parallel. Up to three bounded Luna workers can own disjoint lanes; one coordinator must own artifact identity, shared-device lifecycle and final gates.
 
 ## Implemented but not yet qualified on the current iOS Release artifact
+
+The retained detail below includes paused iPad/accessibility gaps. Only the functional iPhone portions are active now.
 
 - **Conversation and reader:** item paging, fragment/live merge, reconnect, stable transcript identity, caller-owned cursor recovery, rich Markdown, images, reader anchors and native Latest boundary are implemented. Focused service/native tests pass and dated iPad recovery evidence exists, but scoped hub removal and the reproduced iPhone cold-restoration failure now have native evidence. The current artifact still needs rich streaming/image combinations, VoiceOver, iPad reader recovery and scale/performance coverage. See [reader recovery](ipad-reader-recovery-evidence.md), [scoped removal](ipad-reader-removal-evidence.md), [iPhone cold restoration](iphone-reader-upgrade-evidence.md), and the reader row in [acceptance](acceptance.md).
   The saved-anchor cold-launch failure is fixed in `7944778e0`: approximate restoration now retries when the furthest measured row advances and resets its bounded failure budget only after genuine progress. Installed launch plus two independent cold launches restored saved m12 at the exact pre-cold endpoint. Broader final-release reader, accessibility, scale, performance and workflow coverage remains pending.
@@ -30,13 +45,14 @@ Source and deterministic gates can run in parallel with independent SDK recipe w
 - SDK notification producer coverage is tracked separately: the audited receipt union covers 27 of 36 distinct notification names, including settings, credentials, navigation, queue change and current-source terminal close. The remaining nine names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
 - No whole-SDK readiness conclusion follows from the 90/91 recipe and 27/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
 
-## External qualification inputs still required
+## Paused work and later release qualification
 
-- VoiceOver focus, rotor/custom-action discovery and activation; largest text, reduced motion, dark/light, landscape and hardware keyboard behavior.
+- **Paused:** iPad implementation/qualification and dedicated accessibility work, including VoiceOver focus/rotor/custom actions, accessibility text scaling and reduced motion. Preserve existing behavior and evidence.
+- **Later release qualification:** iPhone appearance, landscape and hardware keyboard behavior beyond the ordinary keyboard/navigation checks needed for usable workflows.
 - Representative large transcripts and live streaming/image reflow with measured scroll/input latency and memory/leak observations.
-- Physical iPhone/iPad networking and pairing, including signed install, update/relaunch and credential/keychain behavior. Simulator screenshots do not close these gates.
-- Final current-head iPhone and iPad Release artifact identity, installation receipts, cold-launch/restart evidence and preservation checks for unrelated Apple files.
+- Physical iPhone networking and pairing, including signed install, update/relaunch and credential/keychain behavior. Simulator screenshots do not close these gates.
+- Final current-head iPhone Release artifact identity, installation receipts, cold-launch/restart evidence and preservation checks for unrelated Apple files.
 
 ## Exit record
 
-Close this list only when every implemented workflow has a current artifact identity, deterministic checks are green, real-daemon readback is retained, required iPhone/iPad journeys are observed, and physical/accessibility/performance/signing evidence is attached. Historical receipts remain provenance but cannot substitute for the final source and artifact record.
+Close the iPhone functionality milestone when every supported workflow has an identified build, passing relevant deterministic checks, observed native behavior and authoritative real-daemon results, including interruption recovery. Track physical installation/distribution, performance, complete SDK qualification and paused iPad/accessibility work separately; do not report the whole project or release complete from the functional milestone alone. Historical receipts retain their recorded scope.

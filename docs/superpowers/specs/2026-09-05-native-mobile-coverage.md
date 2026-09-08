@@ -1,5 +1,7 @@
 # Native mobile coverage
 
+**Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](../../design/mobile/ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
+
 Jesse's v1 objective is an intuitive, reliable iOS app for iPhone and iPad with shared code,
 multiple Evener hubs, and mobile access to Evener functionality. A working shell
 is an iteration milestone. It is not feature completeness. Voice with barge-in

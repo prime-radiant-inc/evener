@@ -23,8 +23,12 @@ qualification are deferred. Preserve the existing Android source and evidence;
 do not remove its support or bypass shared checks. This decision supersedes
 both-platform requirements in the original handoff and historical studies.
 Shared feature completeness, multi-hub correctness and the independent SDK
-remain required. iPhone/iPad accessibility, physical networking, performance,
-signing and install/update qualification remain release gates.
+remain required. On 8 September Jesse paused iPad and accessibility work and
+selected full iPhone functionality as the immediate milestone. Preserve those
+requirements and evidence, but do not dispatch paused work or let it block the
+functional milestone. The [active checklist](../../design/mobile/ios-v1-remaining.md)
+supersedes iPad/accessibility sequencing below. Physical networking, performance,
+signing and install/update remain separate release qualification work.
 
 ## Global constraints and evidence baseline
 

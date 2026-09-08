@@ -11,9 +11,12 @@ and release evidence needed to close it.
 
 Jesse selected **iOS-only v1** during takeover continuation. All Android evidence
 and remaining work below is preserved for later delivery and does not block v1.
-Current acceptance requires iPhone/iPad, shared behavior and SDK qualification;
-physical-device, VoiceOver, performance and signed install/update checks remain
-required. Historical Android entries are not claims of current acceptance.
+On 8 September Jesse paused **iPad and accessibility work** to focus on full
+iPhone functionality. Those requirements remain recorded below but are inactive
+for this milestone. Native iPhone workflows, shared correctness and recovery
+remain active; full SDK qualification and physical-device/performance/signed
+install-update release evidence are tracked separately. Historical Android
+entries are not claims of current acceptance.
 
 ## Current snapshot — 8 September 2026
 
