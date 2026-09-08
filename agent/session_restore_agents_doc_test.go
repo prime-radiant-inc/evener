@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -43,5 +45,43 @@ func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
 	got := subagentConfigFromFrozenDescriptor(frozen, SessionConfig{AgentsDocPath: "/hub/AGENTS.md"})
 	if got.AgentsDocPath != "/hub/AGENTS.md" {
 		t.Fatalf("frozen-descriptor AgentsDocPath = %q, want the live parent's %q (frozen was %q)", got.AgentsDocPath, "/hub/AGENTS.md", "/old/AGENTS.md")
+	}
+}
+
+// The third path into a child's config, and the one the two rules above do not
+// cover: a stable delegate restarted from its committed descriptor, whose
+// snapshot names the path that was true when the delegate was frozen. A hub
+// whose config root moved between runs would otherwise leave a resumed root
+// session and the delegates it restores on different personal instructions.
+func TestRestoredStableDelegateTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.AgentsDocPath = "/old/AGENTS.md"
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	root.cfg.AgentsDocPath = "/hub/AGENTS.md"
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+
+	sub, _, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	defer sub.sess.discardRestoredCandidate()
+	if got := sub.sess.cfg.AgentsDocPath; got != "/hub/AGENTS.md" {
+		t.Fatalf("restored delegate AgentsDocPath = %q, want the live parent's %q (the descriptor froze %q)", got, "/hub/AGENTS.md", "/old/AGENTS.md")
 	}
 }

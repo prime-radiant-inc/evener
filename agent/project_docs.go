@@ -29,16 +29,23 @@ const (
 const UserDocFile = "AGENTS.md"
 
 // personalDocPath is the personal instructions file a session reads: the path
-// its launcher configured, or the default under the user config root. A root
-// that cannot be resolved stays empty rather than joining into the relative
-// "AGENTS.md" — a daemon would otherwise read whatever file happens to sit in
-// its working directory as the user's own instructions, and LoadUserDoc
-// already reports an empty path as an absent doc.
+// its launcher configured, or the default under the user config root. A
+// relative path is never trusted, whichever way it was named. A daemon would
+// resolve it against its own working directory and read whatever file the
+// repository put there as the user's standing instructions, so a root that
+// cannot be resolved (empty), a relative root (XDG_CONFIG_HOME=conf), and an
+// operator's `--agents-doc ./x` are all refused alike. The hub only ever hands
+// an absolute path, and LoadUserDoc already reports an empty path as an absent
+// doc.
 func personalDocPath(configured string) string {
-	if configured != "" {
-		return configured
+	path := configured
+	if path == "" {
+		path = userdirs.Subdir(userdirs.DefaultConfigRoot(), UserDocFile)
 	}
-	return userdirs.Subdir(userdirs.DefaultConfigRoot(), UserDocFile)
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
 }
 
 // LoadProjectDocs discovers and loads project instruction files from git root (or working directory when not

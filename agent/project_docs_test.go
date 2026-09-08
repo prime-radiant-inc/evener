@@ -336,3 +336,24 @@ func TestPersonalDocPath_DefaultsUnderTheConfigRoot(t *testing.T) {
 		t.Fatalf("personalDocPath = %q, want %q", got, want)
 	}
 }
+
+// A relative config root — XDG_CONFIG_HOME set to a relative value — derives a
+// relative personal-doc path, which a daemon would resolve against its own
+// working directory: the repository's conf/evener/AGENTS.md would become the
+// user's standing instructions.
+func TestPersonalDocPath_RefusesARelativeRoot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "conf")
+	if got := personalDocPath(""); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the config root is relative", got)
+	}
+}
+
+// The same rule holds for a path an operator named outright: `--agents-doc
+// ./AGENTS.md` resolves against the daemon's working directory exactly as a
+// derived relative path does, so it is refused for the same reason.
+func TestPersonalDocPath_RefusesARelativeConfiguredPath(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("./AGENTS.md"); got != "" {
+		t.Fatalf("personalDocPath = %q, want no path when the configured path is relative", got)
+	}
+}
