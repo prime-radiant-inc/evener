@@ -562,6 +562,7 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	client.Start(context.WithoutCancel(ctx))
 	defer client.Close()
 	threadClosed := make(chan struct{})
+	var threadClosedParams json.RawMessage
 	var notificationMethods []string
 	var notificationMu sync.Mutex
 	go func() {
@@ -570,6 +571,9 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 			notificationMethods = append(notificationMethods, notification.Method)
 			notificationMu.Unlock()
 			if notification.Method == appwire.NotifyThreadClosed {
+				notificationMu.Lock()
+				threadClosedParams = append(json.RawMessage(nil), notification.Params...)
+				notificationMu.Unlock()
 				close(threadClosed)
 				return
 			}
@@ -638,6 +642,16 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		got := append([]string(nil), notificationMethods...)
 		notificationMu.Unlock()
 		t.Fatalf("subscribed client did not receive thread/closed before serve shutdown; methods=%v", got)
+	}
+	notificationMu.Lock()
+	paramsJSON := append(json.RawMessage(nil), threadClosedParams...)
+	notificationMu.Unlock()
+	var params appwire.ThreadClosedParams
+	if err := json.Unmarshal(paramsJSON, &params); err != nil {
+		t.Fatalf("decode thread/closed params: %v; raw=%s", err, paramsJSON)
+	}
+	if params.Ref != ref || params.ThreadID != entry.SessionID {
+		t.Fatalf("thread/closed params = %+v, want ref=%q threadId=%q", params, ref, entry.SessionID)
 	}
 }
 
