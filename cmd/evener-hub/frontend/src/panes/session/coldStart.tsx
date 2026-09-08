@@ -23,7 +23,7 @@ function hasAuthoritativeFrame(turn: TurnModel): boolean {
 }
 
 function shouldShowColdStart(model: ThreadModel, hasPendingSend: boolean, awaitingFirstFrame: boolean): boolean {
-  if (isThreadTerminalStatus(model.status.type)) return false;
+  if (model.status.type === "restartRequired" || isThreadTerminalStatus(model.status.type)) return false;
 
   const turns = realTurns(model.turns);
   if (turns.length === 0) return hasPendingSend || awaitingFirstFrame;

@@ -1061,31 +1061,34 @@ describe("the error anchor (failed turn)", () => {
 });
 
 describe("the needs-you upgrade", () => {
-  test("the pill upgrades to needs-you in place when the status flip lands in a LATER render than the content that produced it", () => {
-    const { ref } = makeListHandle();
-    const { measure } = makeMeasure(SCROLLED_AWAY);
-    const { result, rerender } = renderHook(
-      ({ m }) =>
-        useTranscriptScroll({
-          ref: "ref_a",
-          model: m,
-          listRef: ref,
-          loadOlder: vi.fn(() => Promise.resolve()),
-          measure,
-        }),
-      { initialProps: { m: model([turn("t1", ["i1"])], { status: { type: "idle" } }) } },
-    );
+  test.each(["awaiting", "warning", "restartRequired"] as const)(
+    "the %s pill upgrades to needs-you in place when the status flip lands in a LATER render than the content that produced it",
+    (statusType) => {
+      const { ref } = makeListHandle();
+      const { measure } = makeMeasure(SCROLLED_AWAY);
+      const { result, rerender } = renderHook(
+        ({ m }) =>
+          useTranscriptScroll({
+            ref: "ref_a",
+            model: m,
+            listRef: ref,
+            loadOlder: vi.fn(() => Promise.resolve()),
+            measure,
+          }),
+        { initialProps: { m: model([turn("t1", ["i1"])], { status: { type: "idle" } }) } },
+      );
 
-    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "idle" } }) });
-    expect(result.current.pillCount).toBe(1);
-    expect(result.current.pillNeedsYou).toBe(false);
+      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "idle" } }) });
+      expect(result.current.pillCount).toBe(1);
+      expect(result.current.pillNeedsYou).toBe(false);
 
-    // Same content, later render: status alone flips to awaiting.
-    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: "awaiting" } }) });
+      // Same content, later render: status alone requires attention.
+      rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])], { status: { type: statusType } }) });
 
-    expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
-    expect(result.current.pillNeedsYou).toBe(true);
-  });
+      expect(result.current.pillCount).toBe(1); // unchanged - no new content in this render
+      expect(result.current.pillNeedsYou).toBe(true);
+    },
+  );
 
   test("askPending alone (independent of status.type) also upgrades the pill", () => {
     const { ref } = makeListHandle();

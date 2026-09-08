@@ -142,7 +142,7 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    evener: { ref, mutationStateAuthoritative: true, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
     ...overrides,
   };
 }
@@ -2079,6 +2079,7 @@ test("sending recovered text uses current Composer routing and consumes the reco
       ref: "ref_a",
       capabilities: FULL_CAPABILITIES,
       activeTurnId: "turn-current",
+      mutationStateAuthoritative: true,
       queue: { revision: 4 },
     },
   });

@@ -115,3 +115,10 @@ describe("detectFires", () => {
     ).toEqual(["local:b", "local:c"]);
   });
 });
+
+test("restart-required sessions enter attention and preserve notification baseline", () => {
+  const next = snapshotFromNavigation([row({ ref: "local:upgrade", state: "restartRequired" })]);
+  expect(next.get("local:upgrade")?.level).toBe("needs_you");
+  expect(detectFires(new Map(), next, "all").map((entry) => entry.ref)).toEqual(["local:upgrade"]);
+  expect(detectFires(next, next, "all")).toEqual([]);
+});

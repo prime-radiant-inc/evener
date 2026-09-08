@@ -328,10 +328,19 @@ test("successful keyless testing refreshes availability without an auth notifica
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
-  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  const connectProvider = await screen.findByRole("button", { name: "Connect provider" });
+  // Finish the lazy dialog's mount and catalog refresh before retaining a button
+  // reference: the refresh replaces the initially cached instance rows.
+  await act(async () => {
+    await user.click(connectProvider);
+    await vi.dynamicImportSettled();
+  });
   const testConnection = await screen.findByRole("button", { name: "Test connection" });
   available = true;
   await user.click(testConnection);
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
+    { method: "evener/auth/test", params: { provider: "ollama" } },
+  ]);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   await user.click(modelTrigger());
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
