@@ -1375,13 +1375,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// A wake that releases the wait below is consumed by it, so take the
 		// edge back before parking: the next pass must treat the wake as its
 		// own and kick at full rate instead of skipping on a stale streak.
-		wokeByWait := false
-		select {
-		case <-wake:
-			wokeByWait = true
-		case <-recheck:
-		case <-ctx.Done():
-			return lastResult, ctx.Err()
+		wokeByWait, err := waitDrainWake(ctx, wake, recheck)
+		if err != nil {
+			return lastResult, err
 		}
 		wakePending = wokeByWait
 	}
@@ -1496,14 +1492,18 @@ func takeDrainWake(wake <-chan struct{}) bool {
 	}
 }
 
-func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) error {
+// waitDrainWake blocks until a completion wakes us, the periodic re-check
+// fires, or the caller's context is cancelled. It reports whether the wake
+// rail released the wait, so the caller can carry that consumed edge forward
+// (via wakePending) instead of letting it vanish inside the select.
+func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan time.Time) (bool, error) {
 	select {
 	case <-wake:
-		return nil
+		return true, nil
 	case <-recheck:
-		return nil
+		return false, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 }
 
