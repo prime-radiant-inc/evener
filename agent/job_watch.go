@@ -3910,6 +3910,18 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		return state, false, err
 	}
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+	// The eviction events landed with the pending event above: drop the
+	// evicted keys from the runtime map (releasing their receipts) and surface
+	// their diagnostics BEFORE the fallible stable-enqueue verification below,
+	// so the journal and the runtime map agree on every return path.
+	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
+	var evictionDiagnostics []jobNotification
+	for _, eviction := range record.evictions {
+		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
+	}
+	for _, diagnostic := range evictionDiagnostics {
+		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
+	}
 	if enqueueReceipt != nil {
 		jm.observeWatchReceiptBoundary()
 		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
@@ -3926,16 +3938,6 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
 			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
 		}
-	}
-	// The eviction events landed with the pending event above; now drop the
-	// evicted keys from the runtime map and surface their diagnostics.
-	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
-	var evictionDiagnostics []jobNotification
-	for _, eviction := range record.evictions {
-		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
-	}
-	for _, diagnostic := range evictionDiagnostics {
-		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
 	return record.persisted, true, nil
 }
