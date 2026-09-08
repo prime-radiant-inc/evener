@@ -174,25 +174,18 @@ func (s *Session) Meta() schema.SessionMeta {
 	}
 }
 
-// goalSnapshotForMeta calls PersistSnapshot on the goal store and maps the
-// resulting primitives to a *schema.GoalSnapshot. Returns nil when no goal is
-// set (PersistSnapshot ok==false). Called from Meta() which holds s.mu; the
-// goal store has its own independent mutex, so there is no lock-order issue.
+// goalSnapshotForMeta returns the v2 persisted goal image for Meta() (spec
+// §7): waits with full predicate payloads, pendingWake, budgets incl.
+// maxParkedTotal, ledger-summary stub, stage, terminalPending, lossCause,
+// deadlineFinalDelivered. Returns nil when no goal is set. Called from Meta()
+// which holds s.mu; the goal store has its own independent mutex, so there is
+// no lock-order issue.
 func (s *Session) goalSnapshotForMeta() *schema.GoalSnapshot {
-	obj, status, stopReason, iters, streak, madeProgress, created, updated, ok := s.getOrCreateGoalStore().PersistSnapshot()
+	persisted, ok := s.getOrCreateGoalStore().PersistSnapshot()
 	if !ok {
 		return nil
 	}
-	return &schema.GoalSnapshot{
-		Objective:        obj,
-		Status:           status,
-		Iterations:       iters,
-		NoProgressStreak: streak,
-		MadeProgressOnce: madeProgress,
-		StopReason:       stopReason,
-		CreatedAt:        created,
-		UpdatedAt:        updated,
-	}
+	return goalPersistFromStore(persisted)
 }
 
 // ContextPressure returns the estimated context pressure as a fraction (0.0–1.0).

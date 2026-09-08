@@ -131,21 +131,21 @@ func TestPersistSnapshotRestoreRoundTrip(t *testing.T) {
 	// One progress turn so madeProgressOnce=true, NoProgressStreak=0, Iterations=1.
 	s.RecordContinuation(true, clock())
 
-	obj, status, stopReason, iters, streak, madeProg, created, updated, ok := s.PersistSnapshot()
+	persisted, ok := s.PersistSnapshot()
 	if !ok {
 		t.Fatal("PersistSnapshot: expected ok=true")
 	}
-	if obj != "obj" || status != string(StatusActive) || stopReason != "" {
-		t.Fatalf("PersistSnapshot: unexpected values: obj=%q status=%q stopReason=%q", obj, status, stopReason)
+	if persisted.Objective != "obj" || persisted.Status != StatusActive || persisted.StopReason != "" {
+		t.Fatalf("PersistSnapshot: unexpected values: obj=%q status=%q stopReason=%q", persisted.Objective, persisted.Status, persisted.StopReason)
 	}
-	if iters != 1 || streak != 0 || !madeProg {
-		t.Fatalf("PersistSnapshot: unexpected counters: iters=%d streak=%d madeProgressOnce=%v", iters, streak, madeProg)
+	if persisted.Iterations != 1 || persisted.NoProgressStreak != 0 || !persisted.MadeProgressOnce {
+		t.Fatalf("PersistSnapshot: unexpected counters: iters=%d streak=%d madeProgressOnce=%v", persisted.Iterations, persisted.NoProgressStreak, persisted.MadeProgressOnce)
 	}
 
 	// Restore into a fresh store and verify the limit regime is NoProgressLimit
 	// (not NeverProgressedLimit), proving madeProgressOnce survived the round-trip.
 	s2 := NewStore()
-	s2.Restore(obj, status, stopReason, iters, streak, madeProg, created, updated)
+	s2.RestoreSnapshot(persisted)
 
 	for i := range NoProgressLimit - 1 {
 		if _, active := s2.RecordContinuation(false, clock()); !active {

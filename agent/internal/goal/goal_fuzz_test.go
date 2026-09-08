@@ -83,43 +83,20 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 }
 
 type fuzzGoalPersistence struct {
-	objective        string
-	status           string
-	stopReason       string
-	iterations       int
-	noProgressStreak int
-	madeProgressOnce bool
-	created          time.Time
-	updated          time.Time
-	ok               bool
+	persisted PersistedGoal
+	ok        bool
 }
 
 func captureFuzzGoal(store *Store) fuzzGoalPersistence {
-	objective, status, stopReason, iterations, noProgressStreak, madeProgressOnce, created, updated, ok := store.PersistSnapshot()
+	persisted, ok := store.PersistSnapshot()
 	return fuzzGoalPersistence{
-		objective:        objective,
-		status:           status,
-		stopReason:       stopReason,
-		iterations:       iterations,
-		noProgressStreak: noProgressStreak,
-		madeProgressOnce: madeProgressOnce,
-		created:          created,
-		updated:          updated,
-		ok:               ok,
+		persisted: persisted,
+		ok:        ok,
 	}
 }
 
 func restoreFuzzGoal(store *Store, persisted fuzzGoalPersistence) {
-	store.Restore(
-		persisted.objective,
-		persisted.status,
-		persisted.stopReason,
-		persisted.iterations,
-		persisted.noProgressStreak,
-		persisted.madeProgressOnce,
-		persisted.created,
-		persisted.updated,
-	)
+	store.RestoreSnapshot(persisted.persisted)
 }
 
 func assertFuzzGoalPersistence(t *testing.T, phase string, got, want fuzzGoalPersistence) {

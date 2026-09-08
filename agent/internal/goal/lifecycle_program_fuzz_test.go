@@ -37,12 +37,12 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 		if snap, active := store.RecordContinuation(true, start.Add(time.Second)); !active || snap.Status != StatusActive || snap.NoProgressStreak != 0 || snap.Iterations != 1 {
 			t.Fatalf("progress continuation = %+v active=%v", snap, active)
 		}
-		objective0, status0, reason0, iterations0, streak0, progressed0, created0, updated0, ok := store.PersistSnapshot()
+		persisted, ok := store.PersistSnapshot()
 		if !ok {
 			t.Fatal("active goal did not persist")
 		}
 		restored := NewStore()
-		restored.Restore(objective0, status0, reason0, iterations0, streak0, progressed0, created0, updated0)
+		restored.RestoreSnapshot(persisted)
 		if snap, ok := restored.Snapshot(); !ok || snap.Objective != objective || snap.Status != StatusActive || snap.Iterations != 1 || snap.NoProgressStreak != 0 {
 			t.Fatalf("restored active snapshot = %+v ok=%v", snap, ok)
 		}
@@ -101,7 +101,7 @@ func assertFuzzGoalAbsent(t *testing.T, store *Store, phase string) {
 	if snap, ok := store.Snapshot(); ok || snap != (Snapshot{}) {
 		t.Fatalf("%s Snapshot = %+v ok=%v, want no goal", phase, snap, ok)
 	}
-	if objective, status, reason, iterations, streak, progressed, created, updated, ok := store.PersistSnapshot(); ok || objective != "" || status != "" || reason != "" || iterations != 0 || streak != 0 || progressed || !created.IsZero() || !updated.IsZero() {
-		t.Fatalf("%s PersistSnapshot returned goal data", phase)
+	if persisted, ok := store.PersistSnapshot(); ok || persisted != (PersistedGoal{}) {
+		t.Fatalf("%s PersistSnapshot returned goal data: %+v", phase, persisted)
 	}
 }

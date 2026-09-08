@@ -75,6 +75,7 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// marked Superseded and drive a single no-op evaluation on the current
 	// objective, never the old one.
 	s.stopGoalWaitTimerLocked()
+	s.getOrCreateGoalStore().SetTerminalPending(false, s.sclock().Now())
 	s.goalTerminalPending = false
 	s.goalSupersededArmed = false
 	s.mu.Unlock()
@@ -104,6 +105,7 @@ func (s *Session) ClearGoal() {
 	// timer so a stale fire cannot claim after the clear, and drop the latch
 	// and delivered set with the goal they belonged to.
 	s.stopGoalWaitTimerLocked()
+	s.getOrCreateGoalStore().SetTerminalPending(false, s.sclock().Now())
 	s.goalTerminalPending = false
 	s.goalWakeDelivered = nil
 	s.goalSupersededArmed = false
@@ -384,7 +386,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 	// fire's wake.
 	s.mu.Lock()
 	delivered := s.goalWakeDelivered
-	latched := s.goalTerminalPending
+	latched := s.goalTerminalPending || full.TerminalPending
 	s.mu.Unlock()
 	var claimed []goal.PendingWake
 	for _, w := range full.Waits {
@@ -427,6 +429,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// Latched but nothing fresh to gate and bounds clean - clear and
 		// decide normally. (Bounds breached with no fresh wakes still
 		// pre-decides below so the block path - not a plain drive - runs.)
+		store.SetTerminalPending(false, now)
 		s.mu.Lock()
 		s.goalTerminalPending = false
 		s.mu.Unlock()
@@ -440,6 +443,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 			s.dropLatchedWakes(full, verdict, now)
 			return s.blockGoalFromGate(verdict)
 		}
+		store.SetTerminalPending(false, now)
 		s.mu.Lock()
 		s.goalTerminalPending = false
 		s.mu.Unlock()
@@ -495,6 +499,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 			// NEXT gate enforces bounds before rule 1 (no starvation by
 			// flapping predicates).
 			if boundsBreached(full, now) {
+				store.SetTerminalPending(true, now)
 				s.mu.Lock()
 				s.goalTerminalPending = true
 				s.mu.Unlock()
@@ -700,6 +705,7 @@ func (s *Session) dropLatchedWakes(full goal.GoalSnapshot, verdict string, now t
 	s.goalUpdateMu.Lock()
 	drained := s.getOrCreateGoalStore().DrainPendingWake(now)
 	s.goalUpdateMu.Unlock()
+	s.getOrCreateGoalStore().SetTerminalPending(false, now)
 	s.mu.Lock()
 	s.goalTerminalPending = false
 	s.mu.Unlock()
@@ -720,6 +726,7 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 		s.emitCurrentGoalState()
 	}
 	s.stopGoalWaitTimer()
+	s.getOrCreateGoalStore().SetTerminalPending(false, s.sclock().Now())
 	s.mu.Lock()
 	s.goalTerminalPending = false
 	s.goalSupersededArmed = false
@@ -780,43 +787,40 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 }
 
 // armGoalWaitTimer arms the single coalesced wait timer (spec section 2) to
-// the earliest live wait deadline - the slice-1 subset of the four-way min
-// (poll/parked-total/deadline projection arrives with persistence). No live
-// waits, or an already-expired earliest deadline (the claim path owns it),
+// the four-way min computed by goalWaitNextFire — min(earliest live wait
+// deadline, goal deadline, projected maxParkedTotal-crossing, next poll due)
+// — the single source stated once there and referenced from every arming
+// site (never the two- or three-way subsets). A fire instant at or before
+// now (the claim path owns already-expired deadlines) or no live waits
 // leaves the timer disarmed. Re-arming strands the previous callback via the
 // generation counter. Lock order: goalUpdateMu, then s.mu (the SetGoal order).
 func (s *Session) armGoalWaitTimer() {
 	s.goalUpdateMu.Lock()
 	full, ok := s.getOrCreateGoalStore().GoalSnapshot()
 	s.goalUpdateMu.Unlock()
-	var earliest time.Time
-	if ok && full.Status == goal.StatusWaiting {
-		for _, w := range full.Waits {
-			if !w.Live() {
-				continue
-			}
-			if earliest.IsZero() || w.Lease.Deadline.Before(earliest) {
-				earliest = w.Lease.Deadline
-			}
-		}
-	}
 	now := s.sclock().Now()
+	var fire time.Time
+	var armed bool
+	if ok {
+		fire, armed = goalWaitNextFire(full, now)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t := s.goalWaitTimer; t != nil {
 		t.Stop()
 		s.goalWaitTimer = nil
 	}
-	if earliest.IsZero() || !now.Before(earliest) {
-		// Nothing to wait on, or the earliest deadline already passed (the
-		// claim path converts it on the next gate/settle/timer pass) -
-		// disarm, stranding any in-flight callback via the generation bump.
+	if !armed || !now.Before(fire) {
+		// Nothing to wait on, or the computed fire instant already passed
+		// (the claim path converts it on the next gate/settle/timer pass)
+		// - disarm, stranding any in-flight callback via the generation
+		// bump.
 		s.goalWaitTimerGen++
 		return
 	}
 	s.goalWaitTimerGen++
 	gen := s.goalWaitTimerGen
-	s.goalWaitTimer = s.sclock().AfterFunc(earliest.Sub(now), func() { s.fireGoalWaitTimer(gen) })
+	s.goalWaitTimer = s.sclock().AfterFunc(fire.Sub(now), func() { s.fireGoalWaitTimer(gen) })
 }
 
 // stopGoalWaitTimerLocked disarms the coalesced wait timer. Caller must hold

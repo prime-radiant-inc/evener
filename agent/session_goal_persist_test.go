@@ -88,7 +88,7 @@ func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
 	// Restore into a fresh store.
 	fresh := goal.NewStore()
 	g := meta.Goal
-	fresh.Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	fresh.RestoreSnapshot(goalRestoreToStore(g, g.UpdatedAt))
 
 	snap, ok := fresh.Snapshot()
 	if !ok {
@@ -127,7 +127,7 @@ func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
 	}
 
 	fresh := goal.NewStore()
-	fresh.Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	fresh.RestoreSnapshot(goalRestoreToStore(g, g.UpdatedAt))
 
 	// With madeProgressOnce=true, consecutive no-progress turns must accrue the
 	// streak. Fire goal.NoProgressLimit no-progress turns; the store should

@@ -34,6 +34,45 @@ const (
 	GoalTurnMaxRounds    = 30
 )
 
+// Ledger bounds and the migration fingerprint (spec §§4, 7). The ledger window
+// keeps the last max(N,B)=12 entries (~1KB); synthetic migration entries
+// carry MigratedFingerprint (distinct from all real fingerprints) so the
+// seeding preserves remaining-till-block without polluting live repetition.
+const (
+	// LedgerWindowSize bounds the persisted ledger-summary window.
+	LedgerWindowSize = 12
+	// MigratedFingerprint marks synthetic migration-seeded ledger entries.
+	MigratedFingerprint = "migrated"
+)
+
+// GraduationStage is the persisted stall-graduation stage (spec §6): restart
+// after a nudge graduates, never re-nudges.
+type GraduationStage string
+
+const (
+	StageNone     GraduationStage = ""
+	StageNudged   GraduationStage = "nudged"
+	StageAutoPark GraduationStage = "auto-parked"
+)
+
+// LedgerEntry is one bounded ledger-summary entry (spec §7). Slice 1 seeds
+// migration entries only; the Task-6 ledger owns live folding.
+type LedgerEntry struct {
+	Fingerprint string
+	Class       string
+	Hash        string
+	Digest      string
+	Advancement bool
+}
+
+// LedgerSummary is the persisted ledger window plus graduation stage.
+type LedgerSummary struct {
+	Entries    []LedgerEntry
+	Repetition int
+	Tier       int
+	Stage      GraduationStage
+}
+
 // Spend budgets (spec §5). Every park, wake, re-park, and resume path accrues
 // against a budget or a bound — no goal is unbounded.
 const (
@@ -52,6 +91,12 @@ const (
 	DefaultMaxParkedTotal = 24 * time.Hour
 	// MaxParkedTotalCap is the largest configured/extended parked-total cap.
 	MaxParkedTotalCap = 24 * time.Hour
+	// GoalWaitPollInterval is the valued poll interval owned by the coalesced
+	// timer (spec §2): conditions observe on this cadence (floor 60s like
+	// existing timers); the four-way min re-arms to min(earliest wait
+	// deadline, goal deadline, projected maxParkedTotal-crossing, next poll
+	// due) — stated here once, referenced from the restore/timer sites.
+	GoalWaitPollInterval = 60 * time.Second
 )
 
 // Verdicts are distinct — never collapsed (spec §1).
@@ -219,6 +264,22 @@ type Goal struct {
 	// AdvancementSinceLoss is the persisted advancement flag the loss
 	// check-before-reset ordering reads and writes (spec §1 rule 5).
 	AdvancementSinceLoss bool
+	// LedgerSummary is the bounded ledger window + graduation stage (spec
+	// §7). Slice 1 seeds migration entries; the Task-6 ledger owns live
+	// folding. Preserved across retarget with the ledger reset? No — like
+	// the streak, it resets on retarget (fresh objective, fresh evidence).
+	LedgerSummary LedgerSummary
+	// AutoReparks counts consecutive auto-re-parks (spec §5 bound: at most 3,
+	// then graduate to block). Reset by intervening advancement and by
+	// /goal resume from "no progress".
+	AutoReparks int
+	// TerminalPending latches a terminal-flagged rule-1 drive (spec §1 R7
+	// M-I1). Persisted so the latch survives restart.
+	TerminalPending bool
+	// DeadlineFinalDelivered is the persisted one-shot marker for the
+	// deadline-expiry synthetic wake (spec §1): set at claim time so rule 3
+	// cannot loop final turns; reset by resume --extend deadline.
+	DeadlineFinalDelivered bool
 }
 
 // Snapshot is an immutable value copy of the goal for read surfaces (the status
@@ -234,19 +295,24 @@ type Snapshot struct {
 
 // GoalSnapshot is the full persisted goal read for the gate and the v2
 // persistence mapping (spec §§1, 7): status, waits, pendingWake, budgets,
-// advancement markers, loss cause, stop. Slices are copies — mutating them
+// ledger summary, autoReparks, terminalPending, advancement markers, loss
+// cause, deadline one-shot marker, stop. Slices are copies — mutating them
 // does not affect the store.
 type GoalSnapshot struct {
-	Objective            string
-	Status               Status
-	Iterations           int
-	NoProgressStreak     int
-	StopReason           string
-	Waits                []Wait
-	PendingWake          []PendingWake
-	Budgets              Budgets
-	LossCause            string
-	AdvancementSinceLoss bool
+	Objective              string
+	Status                 Status
+	Iterations             int
+	NoProgressStreak       int
+	StopReason             string
+	Waits                  []Wait
+	PendingWake            []PendingWake
+	Budgets                Budgets
+	LedgerSummary          LedgerSummary
+	AutoReparks            int
+	TerminalPending        bool
+	LossCause              string
+	AdvancementSinceLoss   bool
+	DeadlineFinalDelivered bool
 }
 
 // Store holds one goal per session behind its own mutex (mirrors agent TaskStore).
@@ -343,17 +409,33 @@ func (s *Store) GoalSnapshot() (GoalSnapshot, bool) {
 	}
 	g := s.goal
 	return GoalSnapshot{
-		Objective:            g.Objective,
-		Status:               g.Status,
-		Iterations:           g.Iterations,
-		NoProgressStreak:     g.NoProgressStreak,
-		StopReason:           g.StopReason,
-		Waits:                append([]Wait(nil), g.Waits...),
-		PendingWake:          append([]PendingWake(nil), g.PendingWake...),
-		Budgets:              g.Budgets,
-		LossCause:            g.LossCause,
-		AdvancementSinceLoss: g.AdvancementSinceLoss,
+		Objective:              g.Objective,
+		Status:                 g.Status,
+		Iterations:             g.Iterations,
+		NoProgressStreak:       g.NoProgressStreak,
+		StopReason:             g.StopReason,
+		Waits:                  append([]Wait(nil), g.Waits...),
+		PendingWake:            append([]PendingWake(nil), g.PendingWake...),
+		Budgets:                g.Budgets,
+		LedgerSummary:          cloneLedgerSummary(g.LedgerSummary),
+		AutoReparks:            g.AutoReparks,
+		TerminalPending:        g.TerminalPending,
+		LossCause:              g.LossCause,
+		AdvancementSinceLoss:   g.AdvancementSinceLoss,
+		DeadlineFinalDelivered: g.DeadlineFinalDelivered,
 	}, true
+}
+
+// cloneLedgerSummary deep-copies a ledger summary so the GoalSnapshot read
+// shares nothing mutable with the store.
+func cloneLedgerSummary(in LedgerSummary) LedgerSummary {
+	out := LedgerSummary{
+		Entries:    append([]LedgerEntry(nil), in.Entries...),
+		Repetition: in.Repetition,
+		Tier:       in.Tier,
+		Stage:      in.Stage,
+	}
+	return out
 }
 
 // RegisterWait validates and installs one wait lease, parking the goal (spec
@@ -795,50 +877,195 @@ func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bo
 	return s.snapLocked(), g.Status == StatusActive
 }
 
-// PersistSnapshot returns a full-fidelity read of the current goal including
-// madeProgressOnce and timestamps — the fields omitted from the public Snapshot
-// type — so the session can persist them to meta.json. ok is false when no goal
-// is set. "reported" is intentionally not returned; it is runtime-only state.
-//
-// Slice-1 note: waits, pendingWake, budgets, and loss fields persist in Task 4
-// (GoalSnapshot v2 through agent/schema); until then a restore carries the v1
-// shape only and re-registration re-parks.
-func (s *Store) PersistSnapshot() (objective, status, stopReason string, iterations, noProgressStreak int, madeProgressOnce bool, created, updated time.Time, ok bool) {
+// PersistedGoal is the store-native persisted goal image (spec §7 v2): every
+// field the schema snapshot carries, in store types. The session mapping
+// converts this to schema.GoalSnapshot; the store never imports schema (leaf
+// package, no cycle).
+type PersistedGoal struct {
+	Objective              string
+	Status                 Status
+	Iterations             int
+	NoProgressStreak       int
+	MadeProgressOnce       bool
+	StopReason             string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	Waits                  []Wait
+	PendingWake            []PendingWake
+	Budgets                Budgets
+	LedgerSummary          LedgerSummary
+	AutoReparks            int
+	TerminalPending        bool
+	LossCause              string
+	AdvancementSinceLoss   bool
+	DeadlineFinalDelivered bool
+	NextWaitID             uint64
+}
+
+// PersistSnapshot returns the full-fidelity v2 persisted image of the current
+// goal (spec §7): waits with full predicate payloads, pendingWake, budgets
+// incl. maxParkedTotal, ledger summary + stage, autoReparks, terminalPending,
+// loss cause, deadline one-shot marker, stop. ok is false when no goal is
+// set. The runtime-only reported once-gate is intentionally not returned: the
+// persisted stop doubles as the no-reemit marker (dormant-blocked restore
+// suppresses the terminal report; completes are never restored).
+func (s *Store) PersistSnapshot() (PersistedGoal, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.goal == nil {
-		return "", "", "", 0, 0, false, time.Time{}, time.Time{}, false
+		return PersistedGoal{}, false
 	}
 	g := s.goal
-	return g.Objective, string(g.Status), g.StopReason, g.Iterations, g.NoProgressStreak, g.madeProgressOnce, g.CreatedAt, g.UpdatedAt, true
+	return PersistedGoal{
+		Objective:              g.Objective,
+		Status:                 g.Status,
+		Iterations:             g.Iterations,
+		NoProgressStreak:       g.NoProgressStreak,
+		MadeProgressOnce:       g.madeProgressOnce,
+		StopReason:             g.StopReason,
+		CreatedAt:              g.CreatedAt,
+		UpdatedAt:              g.UpdatedAt,
+		Waits:                  append([]Wait(nil), g.Waits...),
+		PendingWake:            append([]PendingWake(nil), g.PendingWake...),
+		Budgets:                g.Budgets,
+		LedgerSummary:          cloneLedgerSummary(g.LedgerSummary),
+		AutoReparks:            g.AutoReparks,
+		TerminalPending:        g.TerminalPending,
+		LossCause:              g.LossCause,
+		AdvancementSinceLoss:   g.AdvancementSinceLoss,
+		DeadlineFinalDelivered: g.DeadlineFinalDelivered,
+		NextWaitID:             s.nextWaitID,
+	}, true
 }
 
-// Restore installs a fully-reconstructed goal from persisted primitives, replacing
-// any current goal. The "reported" flag is left false (runtime-only state always
-// starts fresh on load). It is called by the session restore path to bring the
-// goal store back to the state captured in meta.json.
-//
-// Slice-1 note: Task 4 extends this path to the v2 shape (waits re-validated,
-// budgets backfilled per the §7 table, dormant-blocked restore). Until then it
-// round-trips the v1 shape; a restored "waiting" status with no waits resolves
-// to active on first read so the store never strands a goal parked on nothing.
-func (s *Store) Restore(objective, status, stopReason string, iterations, noProgressStreak int, madeProgressOnce bool, created, updated time.Time) {
+// RestoreSnapshot installs a fully-reconstructed goal from a v2 persisted
+// image (spec §7), replacing any current goal. Waits restore verbatim — the
+// session path re-validates every predicate immediately after (attach-scan at
+// restore) — and a restored "waiting" status with no waits resolves to active
+// so the store never strands a goal parked on nothing. The runtime-only
+// reported once-gate always starts false; the caller suppresses the terminal
+// report for dormant-blocked restores via the persisted stop (no separate
+// reported flag). Budgets restore verbatim (never silently loosened). The
+// wait-id counter restores to max(seen)+1 so restored ids never collide with
+// fresh registrations.
+func (s *Store) RestoreSnapshot(p PersistedGoal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := Status(status)
-	if st == StatusWaiting {
+	st := p.Status
+	if st == StatusWaiting && len(p.Waits) == 0 && len(p.PendingWake) == 0 {
 		st = StatusActive
 	}
 	s.goal = &Goal{
+		Objective:              p.Objective,
+		Status:                 st,
+		Iterations:             p.Iterations,
+		NoProgressStreak:       p.NoProgressStreak,
+		madeProgressOnce:       p.MadeProgressOnce,
+		StopReason:             p.StopReason,
+		Waits:                  append([]Wait(nil), p.Waits...),
+		PendingWake:            append([]PendingWake(nil), p.PendingWake...),
+		Budgets:                p.Budgets,
+		LedgerSummary:          cloneLedgerSummary(p.LedgerSummary),
+		AutoReparks:            p.AutoReparks,
+		TerminalPending:        p.TerminalPending,
+		LossCause:              p.LossCause,
+		AdvancementSinceLoss:   p.AdvancementSinceLoss,
+		DeadlineFinalDelivered: p.DeadlineFinalDelivered,
+		CreatedAt:              p.CreatedAt,
+		UpdatedAt:              p.UpdatedAt,
+	}
+	s.nextWaitID = maxNextWaitID(p.Waits, p.PendingWake, p.NextWaitID)
+}
+
+// maxNextWaitID returns a wait-id counter that keeps restored ids unique:
+// one past the largest wait_N sequence observed in the restored waits,
+// pendingWake, or the persisted counter — whichever is greatest.
+func maxNextWaitID(waits []Wait, pending []PendingWake, persisted uint64) uint64 {
+	next := persisted
+	consider := func(id string) {
+		var n uint64
+		if _, err := fmt.Sscanf(id, "wait_%d", &n); err == nil && n > next {
+			next = n
+		}
+	}
+	for _, w := range waits {
+		consider(w.Lease.WaitID)
+	}
+	for _, p := range pending {
+		consider(p.WaitID)
+	}
+	return next
+}
+
+// MigrateV1ToPersisted converts a v1 (pre-wait-registry) persisted goal image
+// to the v2 shape (spec §7 migration table, one-way). The conversion is
+// bound-preserving, not history-preserving: old {streak, madeProgressOnce} →
+// an initial ledger window that preserves remaining-till-block:
+// remaining = (madeProgressOnce ? 3 : 6) - streak, seeded as K-remaining
+// synthetic identical non-advancing entries with the dedicated "migrated"
+// fingerprint (distinct from all real fingerprints), so a streak-5 goal
+// reaches K after exactly 1 more non-advancing turn (nudging per graduation,
+// not blocking). Disclosed residual: a post-migration
+// different-but-still-non-advancing first turn resets repetition to 1,
+// granting at most K−1 extra turns once per migration (the B=12 backstop
+// still bites).
+//
+// Budgets backfill (old snapshots predate budgets): maxContinuations ←
+// default, usedContinuations ← old Iterations, deadline ← max(CreatedAt+4h,
+// restore_time+1h) (documented anchor — never instant-expiry, never a fresh
+// 4h laundering an old goal), parkedTotal ← 0, autoReparks ← 0,
+// pendingWake ← empty, deadlineFinalDelivered ← false, terminalPending ←
+// false. Stage seeds per the remaining-till-block table; loss fields clear.
+func MigrateV1ToPersisted(objective, status, stopReason string, iterations, noProgressStreak int, madeProgressOnce bool, created, updated, restoreTime time.Time) PersistedGoal {
+	k := NoProgressLimit
+	if !madeProgressOnce {
+		k = NeverProgressedLimit
+	}
+	remaining := k - noProgressStreak
+	if remaining < 0 {
+		remaining = 0
+	}
+	seeded := k - remaining
+	if seeded < 0 {
+		seeded = 0
+	}
+	if seeded > LedgerWindowSize {
+		seeded = LedgerWindowSize
+	}
+	entries := make([]LedgerEntry, 0, seeded)
+	for range seeded {
+		entries = append(entries, LedgerEntry{Fingerprint: MigratedFingerprint})
+	}
+	stage := StageNone
+	if remaining == 0 {
+		stage = StageNudged
+	}
+	deadline := created.Add(DefaultGoalDeadline)
+	floor := restoreTime.Add(time.Hour)
+	if deadline.Before(floor) {
+		deadline = floor
+	}
+	return PersistedGoal{
 		Objective:        objective,
-		Status:           st,
+		Status:           Status(status),
 		Iterations:       iterations,
 		NoProgressStreak: noProgressStreak,
-		madeProgressOnce: madeProgressOnce,
+		MadeProgressOnce: madeProgressOnce,
 		StopReason:       stopReason,
-		Budgets:          DefaultBudgets(created),
 		CreatedAt:        created,
 		UpdatedAt:        updated,
+		Budgets: Budgets{
+			MaxContinuations:  DefaultMaxContinuations,
+			UsedContinuations: iterations,
+			Deadline:          deadline,
+			MaxParkedTotal:    DefaultMaxParkedTotal,
+		},
+		LedgerSummary: LedgerSummary{
+			Entries:    entries,
+			Repetition: seeded,
+			Tier:       k,
+			Stage:      stage,
+		},
 	}
 }
 
@@ -852,4 +1079,18 @@ func (s *Store) snapLocked() Snapshot {
 		NoProgressStreak: g.NoProgressStreak,
 		StopReason:       g.StopReason,
 	}
+}
+
+// SetTerminalPending writes the terminal-flagged rule-1 latch (spec §1 R7
+// M-I1) through to the store so it persists across restart. The session gate
+// mirrors it locally for lock-order reasons (s.mu vs goalUpdateMu); restore
+// seeds the local mirror from this persisted value.
+func (s *Store) SetTerminalPending(lat bool, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return
+	}
+	s.goal.TerminalPending = lat
+	s.goal.UpdatedAt = now
 }
