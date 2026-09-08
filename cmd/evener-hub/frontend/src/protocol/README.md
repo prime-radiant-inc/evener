@@ -935,6 +935,74 @@ does not prove that a tool resumed. Unknown/already-resolved cards can conflict;
 the recipe never resubmits them. Question answers use a separate turn contract
 and are outside this example.
 
+### Session lineage and resume
+
+`session-lineage.mjs` defaults to read-only transcript-target discovery. Set
+`EVENER_REF` or provide `{ "ref": "local:owned-session" }` in
+`EVENER_SESSION_LINEAGE_PARAMS_FILE`. Select
+`EVENER_SESSION_LINEAGE_ACTION=transcripts|preview|review|resume|fork`.
+`preview` accepts an optional integer `limit`; the hub defaults nonpositive
+values to three and caps it at five. Empty previews contain `items: []`;
+populated previews contain items with empty IDs, so these are
+display previews, not stable identities for reader restoration.
+
+Use `review` with `EVENER_SESSION_LINEAGE_OUTPUT_FILE` set to a new absolute
+private file. It reads metadata without subscribing and returns a `review`
+object containing `threadId` and any present `instanceId` and `name`.
+Source-backed and ended threads may omit the instance and capabilities.
+For an authored action, put that object into a parameter file as `reviewed`,
+alongside `ref`, then set `EVENER_SESSION_LINEAGE_MUTATION=1` and
+`EVENER_SESSION_LINEAGE_OWNED_HUB` equal to `EVENER_RPC_URL`.
+An optional `expectedInstanceId` must equal the reviewed instance; it is a
+client check and is not sent as an invented server precondition.
+
+`resume` sends only the reviewed `ref`, starts or recovers that session, and
+reads it again. The underlying API also supports a `sessionId` parameter;
+this reviewed recipe uses `ref` to retain source identity throughout.
+An ordinary local `fork` requires `sourceTurnId` and either `deferInput: true`
+or nonblank `editedInput`. Despite its name, `sourceTurnId` is the positive
+**transcript entry index**, optionally prefixed with `turn_`, taken from an
+item's `transcriptEntryIndex`; do not pass a live turn ID. Turn-based forks
+require the current `forkFromTurn` capability. Optional `label`, `modelProvider`
+and `model` are forwarded; their effect remains source-defined. The local
+handler creates the child from inherited configuration.
+
+For a local tip-copy side thread, use `aside: true` and omit divergence,
+replacement-input and label fields. Nonlocal sources can support whole-thread
+forks with those fields omitted; the source decides availability. Preflight
+review cannot atomically prevent concurrent changes for fork or resume.
+
+A valid fork response must identify a different child. The recipe reads that
+child and preserves `originalInput` for deliberate editing/submission. If the
+reply is lost or malformed, it reads only the known parent, reports `uncertain`
+and does not infer a child or repeat the fork. Acknowledged forks retain their
+response even when child readback fails. Use the private output file to retain
+the response and original input; stdout contains only outcome/count metadata.
+Exit 2 means uncertainty or unavailable readback, including an acknowledged
+fork whose child read failed. Exit 1 covers validation and other read failures;
+the shared acknowledged-readback diagnostic below applies to resume.
+
+### Connection and maintenance checks
+
+`maintenance-checks.mjs` defaults to `ping` with no parameters. Select
+`EVENER_MAINTENANCE_ACTION=auth/test` with a parameters file containing
+`{ "provider": "owned-instance" }`, or `plugin/checkNow` with no parameters.
+The file variable is `EVENER_MAINTENANCE_PARAMS_FILE`. Both selected checks
+require `EVENER_MAINTENANCE_MUTATION=1` and
+`EVENER_MAINTENANCE_OWNED_HUB` equal to `EVENER_RPC_URL`: credential testing can
+probe the provider using effective credentials, and a plugin check can perform
+configured plugin maintenance. Neither runs by default or retries on failure.
+
+Set `EVENER_MAINTENANCE_OUTPUT_FILE` to a new absolute private file for full
+results. Output is reserved before connecting and created with mode 0600;
+existing files are refused. Missing readback produces a valid JSON outcome
+record instead of a fabricated response. Stdout contains only outcome and
+count metadata. Credential status is preserved in private readback; a
+successful RPC does not imply successful authentication. Exit 2 means an
+uncertain check and exit 1 means invalid input, unavailable ping or an output
+failure. These contracts are exercised with deterministic SDK-boundary fakes;
+they do not qualify live credentials or plugin downloads.
+
 ### Management mutation recovery
 
 These management and approval recipes require an explicit mutation opt-in and a separately
