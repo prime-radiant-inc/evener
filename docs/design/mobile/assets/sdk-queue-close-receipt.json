@@ -23,7 +23,7 @@
   },
   "threadClosed": {
     "status": "unqualified",
-    "reason": "matching thread/closed was not observed before the bounded 30-second tripwire after an empty thread/shutdown acknowledgment",
+    "reason": "matching thread/closed was not observed before the bounded 30-second tripwire in the separate fresh fixture after an empty thread/shutdown acknowledgment",
     "evidenceRoot": "/tmp/evener-sdk-producers-final-SqGtdW/run/qualification"
   },
   "limits": [
