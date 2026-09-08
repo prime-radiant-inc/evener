@@ -1,0 +1,148 @@
+{
+  "status": "passed",
+  "scope": "One bounded real AppWire SDK warning producer acceptance",
+  "source": {
+    "worktree": "live-concepts-plan2-integrate",
+    "head": "c8b661a2c",
+    "backendBinarySource": "d2d5eedf9",
+    "binarySHA256": {
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4"
+    }
+  },
+  "sdk": {
+    "sourceCommit": "58d1b079f",
+    "tarballSHA256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "tarballFilesCompared": 139,
+    "packageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client"
+  },
+  "fixture": {
+    "root": "/tmp/evener-contentfilter-warning-acceptance-BxHflv",
+    "helpersCreatedBeforeLaunch": [
+      "fixture.py",
+      "setup.mjs",
+      "run.mjs",
+      "run-contentfilter.mjs"
+    ],
+    "turnId": "turn_m2",
+    "sessionRef": "local:034L7dwi7IF7Lagvo87SbL",
+    "helperHashes": {
+      "fixture.py": "46886a39975e32ba990238dfb0c72fa58f9415263073ec927b14c44b43b58540",
+      "setup.mjs": "8521658ee614557f7c9e96466a810a4374be43e2a68361809fd1e8e8730e90e1",
+      "run.mjs": "b52f08e3096343ddbc1a393a72ed09ae0ab5c68cef23a346e85676135ed204e0",
+      "run-contentfilter.mjs": "f6c02e0c8f13f7f201fb34ce2b7c48808313662549dca09d89558db1387936f4"
+    },
+    "prelaunchHashLimitation": "prelaunch.json omitted run-contentfilter.mjs; filesystem birth and modification timestamps precede runtime.json, and the retained runner is hashed here after qualification"
+  },
+  "qualification": {
+    "providerHTTP": [
+      {
+        "index": 3,
+        "status": 503,
+        "role": "controlled transient retry"
+      },
+      {
+        "index": 4,
+        "status": 400,
+        "errorCode": "invalid_prompt",
+        "role": "content filter"
+      },
+      {
+        "index": 5,
+        "status": 200,
+        "role": "successful retry"
+      }
+    ],
+    "observerOutcome": "read",
+    "observerEventCount": 3,
+    "warningCount": 1,
+    "warning": {
+      "method": "warning",
+      "source": "provider",
+      "title": "Provider error",
+      "message": "Content filter hit \u2014 compacting context and retrying",
+      "turnIdField": "absent; correlated inside turn_m2 started/completed window"
+    },
+    "completedTurn": "turn_m2",
+    "distinctQualifiedNotificationNamesAfterRun": 15
+  },
+  "cleanup": {
+    "initialIssue": "First cleanup left owned daemon PID 10532 listening on 127.0.0.1:60886.",
+    "repair": "SIGTERM sent to PID 10532; descendants and listeners rechecked.",
+    "finalProof": "/tmp/evener-contentfilter-warning-acceptance-BxHflv/cleanup-proof.json",
+    "hubProviderAndDaemonAbsent": true,
+    "bearerTokenRemoved": true,
+    "privateHubLogRemoved": true,
+    "credentialsFile": "removed after verifying it was empty and mode 0600"
+  },
+  "limitations": [
+    "One content-filter retry path only; no claim for all warning producers.",
+    "No reconnect/replay, native UI, devices, accessibility, signed release, jobs, delegates, or broader live-provider acceptance."
+  ],
+  "privateArtifacts": {
+    "prelaunch.json": {
+      "sha256": "28a5ade2f86c295476dfca2b86c6718894abde9bb00cab4c6e791ee96a34a8dd",
+      "bytes": 731
+    },
+    "runtime.json": {
+      "sha256": "b9139ee9aa79a15811fe888d95cc5e82da4ba2651c812347035f350a33ee714c",
+      "bytes": 1110
+    },
+    "session.json": {
+      "sha256": "318ce77c9973f9a8ef5c006b3e8fb7dd8e889a4cc73339840b325400ff43fead",
+      "bytes": 113
+    },
+    "provider-requests.json": {
+      "sha256": "45eaa47f271059f424083f595b70ee79f8fe8aa3725172cbe29cd6d7ecde7cae",
+      "bytes": 233245
+    },
+    "cleanup-proof.json": {
+      "sha256": "040611f55493f571b53ce9f808691a4f871c42a55c0a5a55d5c77b33cf77bd47",
+      "bytes": 1011
+    },
+    "run/qualification/initial-read.json": {
+      "sha256": "51ad4b77aa62d57970607f9b94f05b387296124d8387972e4678c31a01fd937c",
+      "bytes": 4452
+    },
+    "run/qualification/turn-start.json": {
+      "sha256": "836c9e472507a54e92588a12e77147bda5e1fe69ad9edefeb9e355f6dbc97689",
+      "bytes": 343
+    },
+    "run/qualification/final-read.json": {
+      "sha256": "efb8b6ad5aad7e555f7c776127a4ba3dd578b929eb40927599591300432ebdd0",
+      "bytes": 56127
+    },
+    "run/qualification/raw-events.json": {
+      "sha256": "652467f14c26e60c86237f4c1ffe123b48513dd0c3ee3a6f412a8f32fc9f2472",
+      "bytes": 9479
+    },
+    "run/qualification/observer-result.json": {
+      "sha256": "bba274a3424771b15c6ee95f802c6e984fab505a7d98388f64e7d14c01bcf098",
+      "bytes": 112959
+    },
+    "run/qualification/provider-http-evidence.json": {
+      "sha256": "30ca1818bc8be1691ce0034c3628234a744f3d4bf007c54e9beee0a46249b299",
+      "bytes": 240861
+    },
+    "provider-request-1.json": {
+      "sha256": "fc446035e0bad5f00a76dbff7ecd697c5be84638e417d27e218d045a722f0704",
+      "bytes": 1349
+    },
+    "provider-request-2.json": {
+      "sha256": "1eb9f0cd8d74cc64b0d7aff27fae123caa8d92a03d67433cc7d3808881817b86",
+      "bytes": 109430
+    },
+    "provider-request-3.json": {
+      "sha256": "a31279fe6bd39523b079848075cf06d263bf6f7ffdb5fb4dc682deaa918e77db",
+      "bytes": 110102
+    },
+    "provider-request-4.json": {
+      "sha256": "a31279fe6bd39523b079848075cf06d263bf6f7ffdb5fb4dc682deaa918e77db",
+      "bytes": 110102
+    },
+    "provider-request-5.json": {
+      "sha256": "a31279fe6bd39523b079848075cf06d263bf6f7ffdb5fb4dc682deaa918e77db",
+      "bytes": 110102
+    }
+  }
+}
