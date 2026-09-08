@@ -1,0 +1,176 @@
+{
+  "schema": "evener.sdk.standalone-initialize.v1",
+  "status": "passed",
+  "date": "2026-09-08",
+  "scope": "Installed SDK connects to standalone evener serve after build version metadata is supplied. No model turn, native device or general SDK outcome qualification.",
+  "source": {
+    "baseHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+    "changedFiles": [
+      {
+        "path": "server/server.go",
+        "sha256": "070a1b01fe842d616b46f0f427c849ec468bd821d79be682084ba783018c9cbc"
+      },
+      {
+        "path": "server/appwire_server_test.go",
+        "sha256": "5966be3d858c86a387662c19fa1b58faf539a4bd4ff6231859044d99234854b2"
+      }
+    ]
+  },
+  "sdk": {
+    "package": "@evener/appwire-client@0.1.0",
+    "packageSourceRevision": "58d1b079f",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "distIndexJsSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "installedConsumerIsSymlink": false
+  },
+  "before": {
+    "case": "before",
+    "binary": "/tmp/evener-sdk-idle-close-current-OwRkNp/bin/evener",
+    "binarySha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+    "driverExit": 0,
+    "result": {
+      "status": "expected-rejection",
+      "handshake": {
+        "serverInfo": {
+          "name": "evener-serve",
+          "version": ""
+        },
+        "protocolVersion": "evener-appwire-v4",
+        "sourceId": "local",
+        "features": {
+          "threadList": true,
+          "threadTurnsList": true,
+          "turnStart": true,
+          "turnSteer": true,
+          "threadClear": true,
+          "threadShutdown": true,
+          "forkFromTurn": false,
+          "tasks": true,
+          "transcriptList": false,
+          "modelList": true,
+          "directoryComplete": false,
+          "auth": false
+        }
+      },
+      "error": "invalid initialize response"
+    }
+  },
+  "after": {
+    "case": "after",
+    "binary": "/private/tmp/evener-daemon-version-_gjn4uoq/bin/evener",
+    "binarySha256": "412e59fabe6de546892f2778e8515709345ce4ec9ff9e2ec3fa8927fbd05abc7",
+    "driverExit": 0,
+    "result": {
+      "status": "passed",
+      "handshake": {
+        "serverInfo": {
+          "name": "evener-serve",
+          "version": "9bb59d643-dirty"
+        },
+        "protocolVersion": "evener-appwire-v4",
+        "sourceId": "local",
+        "features": {
+          "threadList": true,
+          "threadTurnsList": true,
+          "turnStart": true,
+          "turnSteer": true,
+          "threadClear": true,
+          "threadShutdown": true,
+          "forkFromTurn": false,
+          "tasks": true,
+          "transcriptList": false,
+          "modelList": true,
+          "directoryComplete": false,
+          "auth": false
+        }
+      },
+      "ping": {},
+      "threadId": "034LRgcHX7C8N7UjHCChgr",
+      "ref": "local:034LRgcHX7C8N7UjHCChgr",
+      "readbackMatched": true,
+      "unsubscribeAcknowledged": true
+    }
+  },
+  "providerCalls": [
+    {
+      "method": "GET",
+      "path": "/v1/models"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/models"
+    }
+  ],
+  "modelRequests": 0,
+  "cleanup": {
+    "before": {
+      "pid": 77842,
+      "exit": 0,
+      "portClosed": true,
+      "tokenRemoved": true
+    },
+    "after": {
+      "pid": 77909,
+      "exit": 0,
+      "portClosed": true,
+      "tokenRemoved": true
+    }
+  },
+  "artifacts": {
+    "run.py": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/run.py",
+      "sha256": "7f820e3ef1e880d4c8604604f474a4b6aaf4acdbe1328edc0f7e817a79ca6d5d"
+    },
+    "probe.mjs": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/probe.mjs",
+      "sha256": "ace7b88083ca9cf24985a77eba2672117a36c213a0c4d268413bd9c673abdca4"
+    },
+    "result.json": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/result.json",
+      "sha256": "03867a263a0e00a595c6c982980eefdedaaf0c17ce2881fe34f2eee079d3dba0"
+    },
+    "before/daemon.log": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/before/daemon.log",
+      "sha256": "ad3d3e3ad85e0de73750d95fba8501d6b7bd0a55d950f496b5a053f18e2e5962"
+    },
+    "before/driver.log": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/before/driver.log",
+      "sha256": "0100418b3f403088ad7365ea92286f96afee7dfc2eacd178537279a94cca10d2"
+    },
+    "after/daemon.log": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/after/daemon.log",
+      "sha256": "cf1e6c337ce2f9ff7b3f9fc7001c0b800dba8a3702dbb1a3f8d8cab210a6a294"
+    },
+    "after/driver.log": {
+      "path": "/private/tmp/evener-daemon-version-_gjn4uoq/after/driver.log",
+      "sha256": "4f38e0f79497c3066c1d7bf8a74c45c9a452026c7ec326684f0b45da00f8b21b"
+    }
+  },
+  "verification": [
+    {
+      "command": "go test ./server -run ^TestServerAppWireInitializeReportsBuildVersion$ -count=1",
+      "outcome": "expected regression failure before fix",
+      "log": "/tmp/evener-daemon-version-red.log",
+      "logSha256": "0c7108d2acbac3ad40bd458b68947f23fbc9f5b47da4fe5ca2e19145a7041379"
+    },
+    {
+      "command": "go test ./server -run ^TestServerAppWireInitialize -count=1",
+      "outcome": "passed",
+      "log": "/tmp/evener-daemon-version-green.log",
+      "logSha256": "b84342a35e6b93d11c4df4bab47ff72a2fba1a5c737bf6f9eaa97b6a70a819c6"
+    },
+    {
+      "command": "go test ./server -count=1",
+      "outcome": "passed",
+      "log": "/tmp/evener-daemon-version-server-suite.log",
+      "logSha256": "0dec48954712075d63da5759d26403814c4c838aa5f55d3afcf6153523e5ddff"
+    },
+    {
+      "command": "make build",
+      "outcome": "passed",
+      "log": "/tmp/evener-daemon-version-build.log",
+      "logSha256": "5a17105e5b962470347b90cddfd4493e927a3ab6d8320c470f07268495647fbf"
+    }
+  ]
+}
