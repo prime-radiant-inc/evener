@@ -4,29 +4,33 @@ This inventory is generated from the authoritative `appwire.Methods` and `appwir
 
 ## Counts and interpretation
 
-The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **65 distinct methods** across **22 recipes** and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
+The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **76 distinct methods** across **24 recipes** and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
+
+The discovery and session-management recipes add eleven method names with
+21 deterministic logic/CLI contracts. They have no new real-hub acceptance
+claim in this inventory. Existing dated acceptance remains scoped to its artifacts.
 
 ## Methods
 
 | Method | Scope | Cookbook recipe(s) | Evidence currently present | Unassessed or remaining qualification |
 |---|---|---|---|---|
-| `initialize` | `connection` | `oauth.mjs`, `credentials.mjs`, `commands.mjs`, `session-settings.mjs`, `preferences.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `organization.mjs`, `plugins.mjs`, `plugin-management.mjs`, `instances.mjs`, `marketplaces.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `tasks.mjs`, `job-output.mjs`, `activity.mjs`, `queue.mjs`, `repository-trust.mjs`, `project-layer.mjs`, `inspect.mjs` | Live prerequisite in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); no handshake-specific assertion | handshake failure/skew and native qualification not assessed here |
+| `initialize` | `connection` | `oauth.mjs`, `credentials.mjs`, `commands.mjs`, `session-settings.mjs`, `preferences.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `organization.mjs`, `plugins.mjs`, `plugin-management.mjs`, `instances.mjs`, `marketplaces.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `tasks.mjs`, `job-output.mjs`, `activity.mjs`, `queue.mjs`, `repository-trust.mjs`, `project-layer.mjs`, `inspect.mjs`, `discovery.mjs`, `session-management.mjs` | Live prerequisite in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); no handshake-specific assertion | handshake failure/skew and native qualification not assessed here |
 | `ping` | `connection` | — | — | live keepalive acceptance + native qualification not assessed here |
 | `thread/list` | `both` | `inspect.mjs` | recipe | server/live acceptance + native qualification |
-| `thread/read` | `both` | `session-settings.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `queue.mjs` | [SDK management/question/reader/approval evidence](sdk-management-evidence.md#structured-question-recipe-and-real-completion), [reader evidence](reader-continuity-evidence.md#environment-identity-across-shutdown-7-september-2026), [approval evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions) | remaining failure/platform cases are documented in cited evidence |
+| `thread/read` | `both` | `session-settings.mjs`, `session-lifecycle.mjs`, `streaming-rejoin.mjs`, `approvals.mjs`, `questions.mjs`, `goals.mjs`, `queue.mjs`, `session-management.mjs` | [SDK management/question/reader/approval evidence](sdk-management-evidence.md#structured-question-recipe-and-real-completion), [reader evidence](reader-continuity-evidence.md#environment-identity-across-shutdown-7-september-2026), [approval evidence](approval-evidence.md#direct-v4-execution-through-native-and-packaged-sdk-decisions) | remaining failure/platform cases are documented in cited evidence |
 | `thread/unsubscribe` | `both` | `session-lifecycle.mjs`, `streaming-rejoin.mjs` | recipe + deterministic logic contract `streaming-rejoin.contract.mjs` | server/live acceptance + native qualification |
 | `thread/turns/list` | `both` | `streaming-rejoin.mjs`, `questions.mjs` | recipe + deterministic logic contract; question/reader workflows cite bounded reads | real paging/anchor restoration across all platforms not assessed here |
 | `thread/turns/items/list` | `unimplemented` | — | Catalog only; server marks unimplemented | Reserved unsupported entry; no new functionality required for v1; classify expected rejection |
 | `thread/start` | `hub` | `session-lifecycle.mjs` | Real native question session creation is cited in [question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification) | standalone SDK creation not assessed here; Android is deferred beyond the iOS-only v1 scope |
 | `thread/resume` | `hub` | — | — | server/live acceptance + native qualification |
 | `thread/fork` | `hub` | — | — | server/live acceptance + native qualification |
-| `thread/clear` | `both` | — | — | server/live acceptance + native qualification |
+| `thread/clear` | `both` | `session-management.mjs` | deterministic logic/CLI contract `session-management.contract.mjs` | server/live acceptance + native qualification |
 | `thread/model/set` | `both` | `session-settings.mjs` | Real packaged SDK setter acceptance in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september) | provider-specific and native qualification not assessed here |
-| `evener/thread/name/set` | `both` | — | — | server/live acceptance + native qualification |
+| `evener/thread/name/set` | `both` | `session-management.mjs` | deterministic logic/CLI contract `session-management.contract.mjs` | server/live acceptance + native qualification |
 | `thread/reasoning-effort/set` | `both` | `session-settings.mjs` | Real packaged SDK setter acceptance in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september) | provider/native failure matrix not assessed here |
 | `thread/vision-model/set` | `both` | `session-settings.mjs` | Real packaged SDK setter acceptance in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september) | provider/native failure matrix not assessed here |
-| `thread/compact/start` | `both` | — | — | server/live acceptance + native qualification |
-| `thread/shutdown` | `both` | — | Real SDK lifecycle shutdown/readback in [reader evidence](reader-continuity-evidence.md#environment-identity-across-shutdown-7-september-2026) | shutdown failure/reconnect and native qualification not assessed here |
+| `thread/compact/start` | `both` | `session-management.mjs` | deterministic logic/CLI contract `session-management.contract.mjs` | server/live acceptance + native qualification |
+| `thread/shutdown` | `both` | `session-management.mjs` | deterministic logic/CLI contract `session-management.contract.mjs` + Real SDK lifecycle shutdown/readback in [reader evidence](reader-continuity-evidence.md#environment-identity-across-shutdown-7-september-2026) | shutdown failure/reconnect and native qualification not assessed here |
 | `turn/start` | `both` | `session-lifecycle.mjs`, `questions.mjs` | Real packaged SDK question submission in [question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification) | non-question turn outcomes are not assessed here; Android is deferred beyond the iOS-only v1 scope |
 | `turn/steer` | `both` | `queue.mjs` | deterministic logic contract `queue.contract.mjs` + [packaged steering evidence](sdk-management-evidence.md#packaged-steering-and-composer-drain--7-september) | native UI, live model behavior and broader recovery remain open |
 | `turn/interrupt` | `both` | `session-lifecycle.mjs` | recipe | server/live acceptance + native qualification |
@@ -40,11 +44,11 @@ The structured catalog contains **91 methods** and **36 notifications**. The coo
 | `evener/jobs/output` | `both` | `job-output.mjs` | recipe + deterministic logic contract `job-output.contract.mjs` | server/live acceptance + native qualification |
 | `evener/thread/transcripts/list` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/subagentPreview` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/paths/complete` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/paths/complete` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/dirs/create` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/projects/recent` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/path/validate` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/git/head` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/projects/recent` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
+| `evener/path/validate` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
+| `evener/git/head` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/mobile/pairing` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/navigation/read` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
 | `evener/favorite/set` | `hub` | — | — | server/live acceptance + native qualification |
@@ -55,8 +59,8 @@ The structured catalog contains **91 methods** and **36 notifications**. The coo
 | `evener/pin-section/delete` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
 | `evener/session-pin/assign` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
 | `evener/session-pin/unpin` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
-| `evener/search` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/harnesses/list` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/search` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
+| `evener/harnesses/list` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/upgrade` | `hub` | — | — | server/live acceptance + native qualification |
 | `evener/auth/status` | `hub` | `oauth.mjs`, `credentials.mjs` | `credentials.contract.mjs` + [owned-hub credential acceptance](sdk-management-evidence.md#packaged-stored-credentials--7-september) + [packaged device and browser OAuth evidence](sdk-management-evidence.md#packaged-device-and-browser-oauth--7-september)  + [iOS recovery evidence](providers-evidence.md#ios-interrupted-oauth-recovery--7-september) | real provider accounts, bearer isolation and full native device/accessibility matrix remain open |
 | `evener/auth/test` | `hub` | — | — | server/live acceptance + native qualification |
@@ -95,7 +99,7 @@ The structured catalog contains **91 methods** and **36 notifications**. The coo
 | `evener/plugin/disable` | `hub` | `plugin-management.mjs` | Real installed SDK plugin disable acceptance in [SDK evidence](sdk-management-evidence.md#marketplace-and-sandbox-approval-recipes) | broader controlled-source/native marketplace cases remain open |
 | `evener/plugin/setAutoUpgrade` | `hub` | `plugin-management.mjs` | Real installed SDK auto-upgrade toggle acceptance in [SDK evidence](sdk-management-evidence.md#marketplace-and-sandbox-approval-recipes) | broader controlled-source/native marketplace cases remain open |
 | `evener/command/list` | `hub` | `commands.mjs` | Real empty/one/empty catalog acceptance in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); recipe + deterministic logic contract | broader controlled-source/native cases not assessed here |
-| `evener/settings/overview` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/settings/overview` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/settings/transcriptDisplay/get` | `hub` | `preferences.mjs` | recipe + deterministic logic contract `preferences.contract.mjs` | server/live acceptance + native qualification |
 | `evener/settings/transcriptDisplay/patch` | `hub` | `preferences.mjs` | recipe + deterministic logic contract `preferences.contract.mjs` | server/live acceptance + native qualification |
 | `evener/settings/keybindings/get` | `hub` | `preferences.mjs` | recipe + deterministic logic contract `preferences.contract.mjs` | server/live acceptance + native qualification |

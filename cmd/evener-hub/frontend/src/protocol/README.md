@@ -105,6 +105,76 @@ recipe coverage against the generated catalog. It lists every uncovered request
 and notification, including reserved entries that require support classification.
 The report measures recipe presence, not exhaustive branch or outcome coverage.
 
+### Discovering hub paths, projects, and settings
+
+`discovery.mjs` runs one explicitly selected read. Set `EVENER_DISCOVERY_ACTION`
+and optionally `EVENER_DISCOVERY_PARAMS_FILE` to a JSON object containing only
+the RPC parameters below. Paths refer to the hub's filesystem.
+
+| Action | Method | Parameters |
+| --- | --- | --- |
+| `paths` | `evener/paths/complete` | Optional `prefix`, `limit`, `includeFiles` |
+| `projects` | `evener/projects/recent` | Optional `limit` |
+| `validatePath` | `evener/path/validate` | `path`, optional `kind` |
+| `gitHead` | `evener/git/head` | `cwd` |
+| `search` | `evener/search` | Optional `query` |
+| `harnesses` | `evener/harnesses/list` | None |
+| `settings` | `evener/settings/overview` | None |
+
+An omitted/empty completion prefix uses the hub's home-directory default.
+A nonpositive path/project limit uses the server default. Empty path validation
+returns a normal invalid-path result; it is not a transport error. An empty
+Git head or search field remains empty. Settings sections and optional fields
+retain their wire omission semantics. Known response fields are checked and
+future fields are preserved. The recipe does not create directories, launch
+sessions, execute harnesses or edit settings.
+
+Import `runDiscovery(hub, { action, params })` from `examples/discovery-logic.mjs`
+for complete `readback`. The CLI prints only action/outcome/counts. Set
+`EVENER_DISCOVERY_OUTPUT_FILE` to a new absolute filename for private complete
+output; it may contain paths, session titles and server diagnostics. The file
+is reserved before connection with exclusive creation and mode `0600`.
+Incomplete output is removed on failure only if the path still identifies the
+reserved file. No request is retried automatically.
+
+### Reviewing and managing a session
+
+`session-management.mjs` defaults to `EVENER_SESSION_MANAGEMENT_ACTION=list`.
+Put `{ "ref": "local:session-id" }` in `EVENER_SESSION_MANAGEMENT_PARAMS_FILE`.
+The recipe reads `thread/read` without turns or subscription. Programmatic
+`runSessionManagement` from `examples/session-management-logic.mjs` returns the
+snapshot and a review containing the thread ID, instance ID and optional name.
+Source-backed sessions without an instance remain readable but have no usable
+mutation review. Omitted controls remain unavailable.
+
+Set `EVENER_SESSION_MANAGEMENT_REVIEW_FILE` in list mode to save a new private
+absolute file containing `ref`, `expectedInstanceId`, and `reviewed`. Output is
+reserved before connection, uses exclusive `0600` creation, and shares the
+ownership-aware failure cleanup described above. Review this state before use.
+
+Mutations require `EVENER_SESSION_MANAGEMENT_MUTATION=1` and
+`EVENER_SESSION_MANAGEMENT_OWNED_HUB` equal to `EVENER_RPC_URL`. Use the reviewed
+file as the params file, adding `name` only for `rename`. Supported actions are
+`rename`, `compact`, `clear`, and `shutdown`. The recipe captures authored input
+before connecting, rereads the selected session, and checks the reviewed
+identity/name and current action capability before dispatching once.
+
+Rename, compact and shutdown have no atomic instance/review guard in their
+wire parameters; the preflight does not prevent another client's subsequent
+change. Rename and compact return an authoritative readback of the same
+instance. Shutdown acknowledges an asynchronous stop and reports readback
+unavailable, without claiming that the session has already stopped.
+
+Clear sends a fresh client mutation ID and the reviewed expected instance.
+Its validated replacement snapshot is the atomic readback: the qualified ref
+stays the same, while the receipt must identify the returned replacement thread
+and nonempty instance. Missing, malformed or unrelated receipts leave the
+outcome uncertain and are not returned as validated readback. No action is
+automatically replayed after failure; read current state and review it again.
+CLI output contains metadata only, and uncertain outcomes exit with code 2.
+An acknowledgment does not prove provider execution or attribute later state
+to this client.
+
 ### Reading the command catalog
 
 Run `commands.mjs` with the connection variables above to read
