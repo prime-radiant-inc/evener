@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
@@ -111,11 +110,7 @@ func (s *WebServer) apiStateGlob() string {
 func warningPayload(raw json.RawMessage) map[string]any {
 	message := warningMessage(raw)
 	payload := map[string]any{"message": message}
-	var params struct {
-		Source string `json:"source"`
-		Title  string `json:"title"`
-		Hint   string `json:"hint"`
-	}
+	var params appwire.WarningParams
 	if json.Unmarshal(raw, &params) == nil {
 		if params.Source != "" {
 			payload["source"] = params.Source
@@ -145,23 +140,12 @@ func addDiagnosticDefaults(payload map[string]any, message string) {
 }
 
 func warningMessage(raw json.RawMessage) string {
-	var params struct {
-		Message string `json:"message"`
-		Warning any    `json:"warning"`
-	}
+	var params appwire.WarningParams
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return string(raw)
 	}
-	if strings.TrimSpace(params.Message) != "" {
-		return params.Message
-	}
-	switch warning := params.Warning.(type) {
-	case string:
-		return warning
-	case map[string]any:
-		if message, ok := warning["message"].(string); ok {
-			return message
-		}
+	if message := params.EffectiveMessage(); message != "" {
+		return message
 	}
 	return string(raw)
 }

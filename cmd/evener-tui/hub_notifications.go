@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/evener/cmd/evener-tui/internal/pending"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
-	"primeradiant.com/evener/envvars"
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
@@ -164,7 +163,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	case appwire.NotifyTurnCompleted:
 		var params appwire.TurnCompletedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			turnID := envvars.FirstNonEmpty(params.TurnID, params.Turn.ID)
+			turnID := params.Turn.ID
 			for _, item := range params.Turn.Items {
 				if item.TurnID == "" {
 					item.TurnID = turnID
@@ -267,26 +266,19 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		// classifyWarningCategory uses the typed Cause; otherwise it falls
 		// back to the message-substring path so legacy NotifyWarning
 		// payloads still classify correctly.
-		var params struct {
-			Message string                   `json:"message"`
-			Source  string                   `json:"source"`
-			Title   string                   `json:"title"`
-			Cause   *appwire.DiagnosticCause `json:"cause"`
-			Warning struct {
-				Message string `json:"message"`
-			} `json:"warning"`
-		}
+		var params appwire.WarningParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			message := params.Message
-			if strings.TrimSpace(message) == "" {
-				message = params.Warning.Message
-			}
+			message := params.EffectiveMessage()
 			title := params.Title
 			source := params.Source
 			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" && classifyWarningCategory(message, params.Cause) == "provider" {
 				source = "provider"
 			}
-			m.addSessionSystemOnce(hubdiagnostics.FormatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause))
+			line := hubdiagnostics.FormatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause)
+			if hint := strings.TrimSpace(params.Hint); hint != "" {
+				line += " (" + hint + ")"
+			}
+			m.addSessionSystemOnce(line)
 		}
 	}
 	m.session.refreshViewport()

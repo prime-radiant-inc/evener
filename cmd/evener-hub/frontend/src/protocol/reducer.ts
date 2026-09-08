@@ -1068,7 +1068,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
 
     case "turn/completed": {
       const params = n.params;
-      const turnId = params.turnId || params.turn.id;
+      const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       const oldTurn = model.turns.find((t) => t.id === turnId);

@@ -1866,7 +1866,6 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
 | `turn` | `appwire.Turn` |  |  |
 
 

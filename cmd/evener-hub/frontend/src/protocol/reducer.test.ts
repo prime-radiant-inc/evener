@@ -602,7 +602,6 @@ test("a mid-stream model state stays observationally frozen while later deltas c
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -808,7 +807,6 @@ test("turn/completed only merges same-ID keyless items, not conflicting keys or 
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "full", items: [item] },
     },
   });
@@ -918,7 +916,6 @@ test("active full turn/completed preserves only identity-matched hydrated item m
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_active",
         turn: {
           id: "turn_active",
           status: "completed",
@@ -1115,7 +1112,6 @@ test("turn/completed applies with authoritative ref and thread identity", () => 
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "", items: [] },
     },
   };
@@ -1197,7 +1193,6 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
     params: {
       threadId: "thr_a",
       ref: "ref_a",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "" },
     },
   };
@@ -1315,7 +1310,6 @@ test("turn/completed settles only the FIRST turn matching a duplicated id, leavi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1372,7 +1366,6 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1402,7 +1395,6 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1478,7 +1470,6 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1532,7 +1523,6 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1600,7 +1590,6 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -1645,7 +1634,6 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1714,7 +1702,6 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1870,7 +1857,6 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -2713,7 +2699,6 @@ test("settling nonempty pending text marks its fresh text as provided", () => {
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "shared-turn",
         turn: { id: "shared-turn", status: "completed", itemsView: "" },
       },
     },
@@ -3799,7 +3784,6 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -4005,7 +3989,6 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4525,9 +4508,9 @@ test("thread/status/changed to a non-active status clears the live work-clock an
 
 test("turn/completed clears the live work-clock anchor — the active turn just ended", () => {
   // Wire shapes: evener.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
-  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {turnId,
-  // turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433 citing
-  // the internal/appprojector live settle sites).
+  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {threadId,
+  // ref, turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433
+  // citing the internal/appprojector live settle sites).
   let model = testHydrate({
     status: { type: "active" },
     evener: {
@@ -4548,7 +4531,6 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4624,7 +4606,6 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4859,7 +4840,6 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -5370,7 +5350,6 @@ test("modelRetry clears when its turn completes", () => {
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "" },
       },
     },
@@ -5397,10 +5376,7 @@ test("modelRetry clears when a new turn starts", () => {
 // emits ONE turn/completed per announcement, each carrying a single item and
 // all naming the SAME synthetic turn: appwire.SystemPreludeTurnID before the
 // session's first real turn has started, a freshly minted "turn_N" gap id
-// between two real turns (kata 9ekv). The payload is a map literal with no
-// top-level "turnId" key at all, so the reducer's params.turn.id fallback is
-// the only id on the frame — TurnCompletedParams declares turnId required,
-// hence the cast for the wire-true shape.
+// between two real turns (kata 9ekv). turn.id is the only id on the frame.
 function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
   return {
     method: "turn/completed",
@@ -5409,7 +5385,7 @@ function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
       ref: "ref_t",
       turn: { id: turnId, status: "completed", itemsView: "full", items: [item] },
     },
-  } as AnyNotification;
+  };
 }
 
 const PLUGIN_LOADED_ITEM: ThreadItem = {
