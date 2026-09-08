@@ -389,3 +389,109 @@ no original-hub touch. No auth token, provider prompt, or private result body
 is included in the archived assets. The evidence is limited to this packaged
 SDK-only build and scripted provider; it does not qualify the latest backend,
 live provider behavior, or native/mobile release acceptance.
+
+
+## Packaged compaction effects, lineage, setup and maintenance — 7 September
+
+These new direct authenticated loopback journeys use the real hub, daemon,
+transcript store and AppWire handlers. Only the external model service is
+scripted. The owned fixtures have isolated XDG roots, no inherited provider
+credentials and plugin auto-upgrade disabled. There is no WebSocket proxy.
+The backend executables carry `ccdde59b9-dirty`, built at
+`2026-09-08T02:29:38Z`; exact executable hashes are recorded in each receipt.
+This is backend provenance, separate from SDK and native artifact identities.
+
+### Compaction effects and reserved rejection
+
+The [compaction-effect receipt](assets/sdk-compaction-effect-receipt.json)
+closes the SDK compaction-effect gap left by the command-only observations
+above. Five authored turns completed before compaction. The persisted history
+had 16 entries plus its header, and no summary request had occurred. One call
+through the installed session-management recipe was acknowledged; the transcript
+then gained `CHECKPOINT` and `SUMMARY` entries. The provider metadata identifies
+exactly one no-tools, non-name-schema summary request. Its unique summary marker
+also appeared in the next tool-capable model request. A second SDK connection
+read the same session identity. The recipe conservatively retains
+`execution: unverified`; these independent checks establish the observed effect.
+
+The [exact driver](assets/sdk-compaction-effect-driver.mjs.txt) and
+[scripted service/hub launcher](assets/sdk-compaction-effect-fixture.py.txt)
+are archived with checksums. Raw model requests and transcript bodies remain
+private; the receipt contains entry kinds, counts and hashes only. The installed
+SDK tarball hashes to
+`89bfc7445f3fbfe1f6a053b7f5c76dffdbcb0f715cf4f2f2cbe3ce2e1eeab2be`.
+An additional actual request for reserved `thread/turns/items/list` was rejected
+with code `-32601` and `methodNotFound`, as recorded separately in the receipt.
+The earlier failed compaction runs remain excluded from acceptance. Summary
+quality, public model services and the native compaction UI are unqualified.
+
+### Lineage
+
+The [lineage receipt](assets/sdk-lineage-receipt.json) and
+[exact driver](assets/sdk-lineage-driver.mjs.txt) qualify transcript listing,
+nonempty bounded preview, regular fork, aside fork and resuming an ended parent.
+The source index came from the actual user item's `transcriptEntryIndex`.
+The regular fork retained the original input and both distinct children referred
+to the parent. Before resume, authoritative readback reached `notLoaded`;
+afterward it retained the parent identity with an active runtime. A separately
+connected SDK client verified the parent and both child relationships. Private
+readback files were exclusively created with mode `0600` and are hashed in the
+receipt. The [launcher](assets/sdk-lineage-fixture.py.txt) is also archived.
+
+The driver imports an independently installed tarball with SHA-256
+`01e1a26e0fabc7bdba878ebd75140299b65c720b3fc47e9a8ead98e2c6c753a0`.
+It was packed while HEAD was `0410b2036`, before setup/saved-item changes were
+committed at `a229b0c82`. Root compared the installed lineage and setup logic,
+CLI, entrypoint and contract files byte-for-byte with committed source; the
+receipt records those hashes. This does not relabel the tarball's build source.
+The lineage journey uses the reusable logic; CLI output contracts were tested
+separately. Lost fork replies, competing writers and native UI are not qualified
+by this run. The earlier incomplete worker lineage run is superseded here.
+
+### Hub setup and maintenance
+
+The same installed tarball passed the actual hub-setup CLI against the compaction
+fixture. [Setup proof](assets/sdk-setup-receipt.json) and the
+[exact driver](assets/sdk-setup-driver.py.txt) record a new nested directory,
+canonical path/readback and `created: true`, followed by deliberate repetition
+returning `created: false`. Pairing generation produced the current
+`/auth/<escaped-token>` format; the driver compared its decoded token privately
+to the fixture token. Every private output had mode `0600` and stdout contained
+only the documented metadata. The credential-bearing pairing output was removed
+immediately after verification. This proves generation, not phone import,
+reachability, DNS or LAN connectivity.
+
+The [maintenance receipt](assets/sdk-maintenance-receipt.json) records packaged
+CLI ping, `evener/auth/test` and `evener/plugin/checkNow`, using the earlier
+`89bfc744…` tarball on a separate owned hub. Root verified all retained private
+output hashes and modes. Auth testing succeeded through the scripted
+`auth = none` model-list endpoint; it does not qualify real account credentials.
+Plugin checking began and ended with an empty marketplace registry and returned
+an empty result; no installation or upgrade is claimed. The archived
+[reproduction helper](assets/sdk-maintenance-helper.mjs.txt) was prepared after
+the run; the exact original CLI invocation script was not retained.
+
+### Cleanup and reproduction limits
+
+The successful fixtures exited zero. Root verified their listener ports and
+owned executables were gone, and removed fixture bearer-token files and private
+hub logs. An orphaned daemon from the superseded worker lineage run was identified
+by its owned executable path, terminated, and checked again before its credential
+was removed. This is cleanup evidence, not workflow qualification. The original
+hub on port 54211 and all seven native drafts remain preserved.
+
+Archived drivers retain the original owned paths and installed-package imports.
+To reproduce, prepare a fresh private fixture directory with copied `evener` and
+`evener-dev`, isolated config/state/cache/data/run/workspace directories, empty
+credentials and marketplace registry, and the receipt's SDK package. Copy the
+launcher/driver there, supply new input metadata and update their package/fixture
+paths. Start the launcher, wait for its runtime metadata, then run the driver;
+request its loopback `/shutdown` afterward and independently check all owned
+processes and listeners. These are source/evidence helpers, not a self-contained
+release harness. Never repoint them at a production hub. The original sensitive
+outputs are private local evidence and are not included in these assets.
+
+The setup and saved-item implementation at `a229b0c82` passed 18 focused
+contracts, the canonical frontend gate and outside-checkout package qualification.
+The full canonical gate and separate vet last exited zero at `ccdde59b9`.
+The added runtime receipts do not imply a newer full-gate or iOS release pass.

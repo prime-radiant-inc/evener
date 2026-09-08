@@ -1,0 +1,116 @@
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createConnection } from 'node:net';
+import { AppwireClient } from '/tmp/evener-maintenance-pkg.9dq88v/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-maintenance-pkg.9dq88v/node_modules/ws/index.js';
+import { runSessionManagement } from '/tmp/evener-maintenance-pkg.9dq88v/node_modules/@evener/appwire-client/examples/session-management-logic.mjs';
+
+const root = dirname(fileURLToPath(import.meta.url));
+const runtime = JSON.parse(readFileSync(join(root,'runtime.json'),'utf8'));
+const url = `ws://127.0.0.1:${runtime.hubPort}/rpc`;
+await waitFor(()=>existsSync(join(root,'state/evener/auth-token')),'hub token readiness');
+await waitFor(()=>new Promise(resolve=>{
+  const socket=createConnection({host:'127.0.0.1',port:runtime.hubPort});
+  let settled=false;
+  const finish=ok=>{if(!settled){settled=true;socket.destroy();resolve(ok);}};
+  socket.setTimeout(1000,()=>finish(false));socket.on('connect',()=>finish(true));socket.on('error',()=>finish(false));
+}),'hub listener readiness');
+const token = readFileSync(join(root,'state/evener/auth-token'),'utf8').trim();
+const hub = new AppwireClient({url,clientInfo:{name:'compaction-effect',version:'1'},socketFactory:(endpoint)=>new WebSocket(endpoint,{headers:{Authorization:`Bearer ${token}`}})});
+process.env.EVENER_RPC_URL = url;
+process.env.EVENER_SESSION_MANAGEMENT_MUTATION = '1';
+const events = [];
+const pending = new Set();
+hub.onNotification(event=>{
+  events.push(event);
+  for(const notify of [...pending])notify();
+});
+function waitForEvent(method,ref,start,turnId) {
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{pending.delete(check);reject(new Error(`No ${method} completion event`));},60000);
+    function check(){
+      const event=events.slice(start).find(e=>e.method===method && e.params.ref===ref && (turnId===undefined || e.params.turnId===turnId));
+      if(event){clearTimeout(timer);pending.delete(check);resolve(event);}
+    }
+    pending.add(check);check();
+  });
+}
+async function waitFor(condition,label){
+  const deadline=Date.now()+60000;
+  for(;;){const result=await condition();if(result)return result;if(Date.now()>deadline)throw new Error(`Missing ${label}`);await new Promise(resolve=>setTimeout(resolve,25));}
+}
+function findTranscript(ref){
+  const filename=ref.slice('local:'.length)+'.transcript.jsonl';
+  const base=join(root,'state/evener/projects');
+  const path=readdirSync(base,{recursive:true}).find(p=>p.endsWith('/'+filename));
+  assert.ok(path,'Owned transcript exists');return join(base,path);
+}
+function lines(path){return readFileSync(path,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);}
+function entryKind(entry){return entry.turn?.kind ?? entry.kind;}
+let ref;
+try {
+  await hub.connect();
+  const started=await hub.request('thread/start',{cwd:join(root,'workspace'),modelProvider:'fixture',model:'fixture-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:8}});
+  ref=started.thread.evener.ref;
+  const instanceId=started.thread.evener.instanceId;
+  writeFileSync(join(root,'session.json'),JSON.stringify({ref,instanceId})+'\n',{mode:0o600});
+  await hub.request('thread/read',{ref,includeTurns:true,subscribe:true});
+  async function runTurn(index){
+    await waitFor(async()=>{
+      const state=await hub.request('thread/read',{ref,includeTurns:false,subscribe:false});
+      writeFileSync(join(root,'current-state.json'),JSON.stringify({index,status:state.thread.status,capabilities:state.thread.evener.capabilities})+'\n');
+      return ['idle','awaiting'].includes(state.thread.status.type);
+    },'idle session before input');
+    const start=events.length;
+    const response=await hub.request('turn/start',{ref,expectedInstanceId:instanceId,clientMutationId:randomUUID(),input:[{type:'text',text:`fixture-input-${index}`} ]});
+    assert.ok(response.turn?.id,'Turn acknowledgment includes the accepted turn identity');
+    const completed=await waitFor(async()=>{
+      const read=await hub.request('thread/read',{ref,includeTurns:true,subscribe:false});
+      const turn=read.thread.turns?.find(turn=>turn.id===response.turn.id && turn.status==='completed');
+      return ['idle','awaiting'].includes(read.thread.status.type) && turn;
+    },'accepted turn completion in authoritative readback');
+    return {turnId:completed.id,receipt:response.receipt};
+  }
+  const turns=[];
+  for(let i=0;i<5;i++)turns.push(await runTurn(i));
+  const transcript=findTranscript(ref);
+  const beforeEntries=lines(transcript);
+  const before=await hub.request('thread/read',{ref,includeTurns:true,subscribe:false});
+  const requestBefore=JSON.parse(readFileSync(join(root,'provider-requests.json'),'utf8'));
+  assert.equal(requestBefore.filter(r=>r.kind==='summary').length,0);
+  assert.ok(beforeEntries.length>6);
+  const reviewed={threadId:before.thread.id,instanceId};
+  if(Object.hasOwn(before.thread,'name'))reviewed.name=before.thread.name;
+  const result=await runSessionManagement(hub,{action:'compact',params:{ref,expectedInstanceId:instanceId,reviewed},ownedHub:url});
+  assert.equal(result.outcome,'acknowledged');
+  const afterEntries=await waitFor(()=>{const current=lines(transcript);return current.some(entry=>entryKind(entry)==='SUMMARY') && current;},'persisted summary');
+  const requestsAfter=JSON.parse(readFileSync(join(root,'provider-requests.json'),'utf8'));
+  assert.equal(requestsAfter.filter(r=>r.kind==='summary').length,1);
+  await runTurn('after-compact');
+  const requestsFinal=JSON.parse(readFileSync(join(root,'provider-requests.json'),'utf8'));
+  const lastTurn=requestsFinal.filter(r=>r.kind==='turn').at(-1);
+  assert.equal(lastTurn.containsSummaryMarker,true,'Published summary reaches the next model call');
+  const summaryEntry=afterEntries.find(entry=>entryKind(entry)==='SUMMARY');
+  assert.ok(JSON.stringify(summaryEntry).includes('fixture-summary-8fa2c019'));
+  const independent=new AppwireClient({url,clientInfo:{name:'compaction-readback',version:'1'},socketFactory:e=>new WebSocket(e,{headers:{Authorization:`Bearer ${token}`}})});
+  let readback;
+  try {await independent.connect();readback=await independent.request('thread/read',{ref,includeTurns:true,subscribe:false});}finally{independent.close();}
+  assert.equal(readback.thread.id,before.thread.id);
+  const hash=path=>({path,sha256:createHash('sha256').update(readFileSync(path)).digest('hex')});
+  const receipt={source:JSON.parse(readFileSync(join(root,'inputs.json'),'utf8')),runtime:{hubPID:runtime.hubPID,providerPID:runtime.providerPID,hubPort:runtime.hubPort,providerPort:runtime.providerPort},ref,instanceId,
+    preCompact:{persistedEntries:beforeEntries.length,kinds:beforeEntries.map(entryKind),completedTurns:turns.length,providerRequests:requestBefore},
+    compact:{outcome:result.outcome,recipeExecution:result.execution,persistedSummary:true,summaryCalls:requestsAfter.filter(r=>r.kind==='summary').length,kinds:afterEntries.map(entryKind)},
+    postCompact:{nextModelSawSummary:lastTurn.containsSummaryMarker,providerRequests:requestsFinal,independentReadbackThreadMatches:true},
+    transcript:hash(transcript),providerLog:hash(join(root,'provider-requests.json')),driver:hash(fileURLToPath(import.meta.url)),fixture:hash(join(root,'fixture.py')),
+    limitations:['Scripted provider plumbing; summary quality and public provider behavior are not qualified.','SDK-only journey; native UI compaction acceptance remains separate.']};
+  writeFileSync(join(root,'receipt.json'),JSON.stringify(receipt,null,2)+'\n',{mode:0o600});
+  console.log(JSON.stringify({ref,beforeEntries:beforeEntries.length,summaryEntries:afterEntries.filter(e=>entryKind(e)==='SUMMARY').length,summaryCalls:receipt.compact.summaryCalls,nextModelSawSummary:true,independentReadback:true}));
+} finally {
+  if(ref) {
+    try{await hub.request('thread/shutdown',{ref});}catch{}
+  }
+  hub.close();
+}

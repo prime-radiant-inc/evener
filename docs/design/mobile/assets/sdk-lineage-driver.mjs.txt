@@ -1,0 +1,69 @@
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AppwireClient } from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/ws/index.js';
+import { runSessionLineage } from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client/examples/session-lineage-logic.mjs';
+const root=dirname(fileURLToPath(import.meta.url));
+const runtime=JSON.parse(readFileSync(join(root,'runtime.json'),'utf8'));
+async function waitFor(condition,label){
+  const deadline=Date.now()+60000;
+  for(;;){const value=await condition();if(value)return value;if(Date.now()>deadline)throw new Error(`Missing ${label}`);await new Promise(r=>setTimeout(r,25));}
+}
+await waitFor(async()=>{try{return (await fetch(`http://127.0.0.1:${runtime.hubPort}/api/health`)).ok;}catch{return false;}},'hub readiness');
+const token=readFileSync(join(root,'state/evener/auth-token'),'utf8').trim();
+const url=`ws://127.0.0.1:${runtime.hubPort}/rpc`;
+const makeHub=()=>new AppwireClient({url,clientInfo:{name:'lineage-qualification',version:'1'},socketFactory:e=>new WebSocket(e,{headers:{Authorization:`Bearer ${token}`}})});
+const hub=makeHub();process.env.EVENER_RPC_URL=url;process.env.EVENER_SESSION_LINEAGE_MUTATION='1';
+const refs=[];const outputs=[];
+const hash=path=>({path,sha256:createHash('sha256').update(readFileSync(path)).digest('hex')});
+function save(name,value){const path=join(root,name+'.json');writeFileSync(path,JSON.stringify(value,null,2)+'\n',{flag:'wx',mode:0o600});outputs.push(hash(path));return value;}
+async function recipe(action,params,name=action){return save(name,await runSessionLineage(hub,{action,params,ownedHub:url}));}
+async function review(ref,name){return (await recipe('review',{ref},name)).review;}
+try{
+  await hub.connect();
+  const started=await hub.request('thread/start',{cwd:join(root,'workspace'),input:[{type:'text',text:'lineage-fixture-input'}],modelProvider:'fixture',model:'fixture-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:8}});
+  const parent=started.thread.evener.ref;refs.push(parent);
+  const completed=await waitFor(async()=>{
+    const read=await hub.request('thread/read',{ref:parent,includeTurns:true,subscribe:false});
+    return ['idle','awaiting'].includes(read.thread.status.type) && read.thread.turns?.some(t=>t.id===started.turn.id && t.status==='completed') && read;
+  },'completed initial authored input');
+  save('parent-completed',completed);
+  const item=completed.thread.turns.flatMap(t=>t.items??[]).find(i=>i.type==='userMessage');
+  assert.ok(Number.isSafeInteger(item?.transcriptEntryIndex) && item.transcriptEntryIndex>0);
+  const transcripts=await recipe('transcripts',{ref:parent});
+  assert.ok(transcripts.readback.data.some(t=>t.ref===parent));
+  const preview=await recipe('preview',{ref:parent,limit:20});
+  assert.ok(Array.isArray(preview.readback.items) && preview.readback.items.length>0);
+  const regular=await recipe('fork',{ref:parent,reviewed:await review(parent,'review-regular'),sourceTurnId:String(item.transcriptEntryIndex),deferInput:true},'regular-fork');
+  assert.equal(regular.outcome,'acknowledged');
+  const child=regular.response.thread.evener.ref;refs.push(child);
+  assert.notEqual(child,parent);assert.equal(regular.readback.thread.evener.parentRef,parent);
+  assert.equal(regular.response.originalInput,'lineage-fixture-input');
+  const aside=await recipe('fork',{ref:parent,reviewed:await review(parent,'review-aside'),aside:true},'aside-fork');
+  assert.equal(aside.outcome,'acknowledged');
+  const side=aside.response.thread.evener.ref;refs.push(side);
+  assert.notEqual(side,parent);assert.notEqual(side,child);assert.equal(aside.readback.thread.evener.parentRef,parent);
+  await hub.request('thread/shutdown',{ref:parent});
+  const ended=await waitFor(async()=>{const r=await hub.request('thread/read',{ref:parent,includeTurns:false,subscribe:false});return r.thread.status.type==='notLoaded' && r;},'ended parent readback');
+  save('parent-ended',ended);
+  const resumed=await recipe('resume',{ref:parent,reviewed:await review(parent,'review-resume')});
+  assert.equal(resumed.outcome,'acknowledged');assert.equal(resumed.readback.thread.id,started.thread.id);
+  assert.notEqual(resumed.readback.thread.status.type,'notLoaded');
+  const independent=makeHub();
+  try{
+    await independent.connect();
+    for(const [name,ref] of [['parent',parent],['regular',child],['aside',side]]){
+      const read=save('independent-'+name,await independent.request('thread/read',{ref,includeTurns:true,subscribe:false}));
+      assert.equal(read.thread.evener.ref,ref);
+      if(ref!==parent)assert.equal(read.thread.evener.parentRef,parent);
+    }
+  }finally{independent.close();}
+  save('receipt',{source:JSON.parse(readFileSync(join(root,'inputs.json'),'utf8')),sdk:JSON.parse(readFileSync('/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/inputs.json','utf8')),runtime:{hubPID:runtime.hubPID,providerPID:runtime.providerPID,hubPort:runtime.hubPort,providerPort:runtime.providerPort},parentRef:parent,regularChild:child,asideChild:side,sourceTranscriptEntry:item.transcriptEntryIndex,transcriptTargets:transcripts.readback.data.length,previewItems:preview.readback.items.length,previewTruncated:preview.readback.truncated,regularForkAcknowledged:true,originalInputRetained:true,asideForkAcknowledged:true,endedParentResumed:true,independentChildParentLinks:true,outputs:[...outputs],driver:hash(fileURLToPath(import.meta.url)),limitations:['Reusable SDK logic qualified; CLI output runner is covered separately by deterministic tests.','Scripted model boundary; no public model service or native UI qualification.','No lost fork reply or competing-writer runtime scenario.']});
+  console.log(JSON.stringify({regularFork:true,asideFork:true,endedParentResumed:true,independentReadback:true}));
+}finally{
+  for(const ref of refs){try{await hub.request('thread/shutdown',{ref});}catch{}}
+  hub.close();
+}

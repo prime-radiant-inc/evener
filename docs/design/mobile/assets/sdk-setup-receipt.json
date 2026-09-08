@@ -1,0 +1,122 @@
+{
+  "sdk": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z",
+    "tarball": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/evener-appwire-client-0.1.0.tgz",
+      "sha256": "01e1a26e0fabc7bdba878ebd75140299b65c720b3fc47e9a8ead98e2c6c753a0"
+    },
+    "package": "@evener/appwire-client",
+    "baseCommit": "0410b2036dc649b7a52bbc051a90cc5fe89b15d0"
+  },
+  "runtime": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o",
+    "source": "ccdde59b9",
+    "binaries": {
+      "evener": {
+        "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+      },
+      "evener-dev": {
+        "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+      }
+    },
+    "buildMetadata": "ccdde59b9-dirty (2026-09-08T02:29:38Z)"
+  },
+  "recipeCommit": "a229b0c82",
+  "operations": [
+    {
+      "action": "create",
+      "stdout": {
+        "action": "dirs",
+        "outcome": "acknowledged",
+        "execution": "unverified",
+        "created": true,
+        "outputWritten": true
+      },
+      "params": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/workspace/sdk-created/child"
+      },
+      "output": {
+        "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/setup-results/create.json",
+        "sha256": "9ec3b13f73817999280a3227799b4ea3a9a60837ce1c084d1e3c39ba0d2a07de",
+        "mode": "0o600"
+      }
+    },
+    {
+      "action": "existing",
+      "stdout": {
+        "action": "dirs",
+        "outcome": "acknowledged",
+        "execution": "unverified",
+        "created": false,
+        "outputWritten": true
+      },
+      "params": {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/workspace/sdk-created/child"
+      },
+      "output": {
+        "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/setup-results/existing.json",
+        "sha256": "b8e91d425c00a28981603447397b05ed8a7847a6f528dc0ddd8fd6a535490d23",
+        "mode": "0o600"
+      }
+    },
+    {
+      "action": "pairing",
+      "stdout": {
+        "action": "pairing",
+        "outcome": "read",
+        "execution": "unverified",
+        "outputWritten": true
+      },
+      "params": {
+        "origin": "https://hub.fixture.example"
+      },
+      "output": {
+        "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/setup-results/pairing.json",
+        "sha256": "427b09fad91097c4ddd49d585033961a705a431323238e0b268ab92c3c4ef8fa",
+        "mode": "0o600"
+      },
+      "credentialOutputRemoved": true
+    }
+  ],
+  "driver": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/qualify-setup.py",
+    "sha256": "7a5ad3aefc306be111641758fde473fcfebd80d55f8ae7b46a01c341a6fa0b27",
+    "mode": "0o644"
+  },
+  "limitations": [
+    "Pairing generation only: no phone import, DNS/reachability or LAN qualification.",
+    "Directory creation qualified only inside the disposable fixture workspace."
+  ],
+  "cleanup": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o",
+    "ports": [
+      59294,
+      59293
+    ],
+    "listenersRemaining": [],
+    "ownedExecutablesRemaining": [],
+    "tokenRemoved": true,
+    "privateHubLogRemoved": true
+  },
+  "sourceEquivalence": {
+    "verifiedAgainstCommit": "a229b0c82",
+    "files": [
+      {
+        "path": "examples/hub-setup-logic.mjs",
+        "sha256": "6a337c067703d52097067109c561299aabea54261d9621bd0afd803f7f60232a"
+      },
+      {
+        "path": "examples/hub-setup-cli.mjs",
+        "sha256": "f19be10d7001a7ec3b6d46606052044301ea4d1c115eb070cfd54a3081cc38f4"
+      },
+      {
+        "path": "examples/hub-setup.mjs",
+        "sha256": "2dd9a26fa75be8339b53aaa734c2244a6244aa5ec5bdcd2ac92cfa0dcdf4a283"
+      },
+      {
+        "path": "examples/hub-setup.contract.mjs",
+        "sha256": "dc65dfaf626034310c5c85dabaf8b5444959f8a467cca5e33f2984a74fb71d2c"
+      }
+    ]
+  }
+}
