@@ -1123,3 +1123,38 @@ iPad artifacts, global/settings and accessibility matrices, independent SDK
 outcome coverage, measured performance, then physical-device/signing/update and
 final repository/release qualification. These scoped passes do not close those
 release requirements.
+
+## Reader recovery, accessibility and SDK checkpoint — 8 September 2026
+
+Three Luna medium lanes handled implementation, independent testing and evidence;
+root integrated changes, operated the iPad simulator and verified raw receipts.
+
+- `4256cd00a` adds six actual SDK notification producers, bringing this evidence
+  series to 21/36 distinct names. Outcome and reconnect/replay qualification is
+  still incomplete; the SDK remains pre-release.
+- `6dec4867c` exposes launch setting values to accessibility and fixes clipped
+  iPad headings at the largest text size. The original iPhone received the
+  branded artifact with all seven baseline drafts preserved.
+- `0493bd9fb`, `39d109036` and `66e55d887` preserve stable historical items and
+  caller-owned cursors through overlapping projection reads. Final real provider
+  503/SSE retry at turn m70, native cold launch and largest text retain the
+  complete m4 reader anchor at offset 106. Endpoint evidence is scoped in
+  [the reader receipt](../../design/mobile/ipad-reader-recovery-evidence.md).
+- `7b954fe90` fixes Latest using actual native content extent, verified at normal
+  and largest text sizes. `517f70ae3` removes reader anchors with their hub;
+  four storage/isolation regressions pass, with its fresh native removal journey
+  still open. Final native gate: 682 tests/74 files plus TypeScript. Shared
+  service/store suite: 392 tests; mobile Biome/TypeScript checks pass.
+
+The final Release removal build starts with empty fixture state. Native profile
+and drafts were removed through the app; the old orphaned anchor was explicitly
+cleaned during test teardown and is not counted as product removal proof. Owned
+reader processes/listeners, tokens and logs are gone. Original hub, seven iPhone
+drafts and unrelated Apple patch remain intact. No push, merge or publication.
+
+Next: actual native removal and remaining recovery/workflow combinations,
+rich-content reader and global/settings matrix, remaining SDK producer/outcome
+cases, VoiceOver and measured performance, physical iPhone/iPad LAN/pairing,
+signing/distribution/update, then final repository and requirement-by-requirement
+release qualification. iOS-only v1 remains approved; Android is preserved and
+its release qualification deferred. These passes do not close the release goal.
