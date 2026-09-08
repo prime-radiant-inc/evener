@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -77,5 +78,28 @@ func TestSessionConditionWatchNote_RidesTheFiredNotification(t *testing.T) {
 	block := formatJobNotificationBlock(notified[0], notificationExcerpt{}, false)
 	if !strings.Contains(block, "Watch event triggered:") || !strings.Contains(block, "Note: tool audit") {
 		t.Fatalf("session watch block lacks the note:\n%s", block)
+	}
+}
+
+// TestStableReceiverWatchNote_RidesTheDurableFrame covers the stable-receiver
+// rail (source="parent" / source="dlg_..."), whose fire is delivered as a watch
+// frame rather than a rendered notification body. The note has to travel in the
+// frame itself, because the frame is the whole payload the receiver reads.
+func TestStableReceiverWatchNote_RidesTheDurableFrame(t *testing.T) {
+	fixture := newStableWatchRuntimeBase(t, nil)
+	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
+		"operation": "create",
+		"source":    "dlg_source",
+		"events":    []any{"communicate"},
+		"note":      "watching for the handoff",
+	}, 4096); err != nil {
+		t.Fatalf("create noted stable delegate watch: %v", err)
+	}
+
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "handoff"})
+
+	frame := fixture.requireOnePending(t).state.Frame
+	if !strings.Contains(frame, "note: watching for the handoff") {
+		t.Fatalf("stable-receiver frame lacks the note:\n%s", frame)
 	}
 }

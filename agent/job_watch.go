@@ -3517,13 +3517,16 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	d.message = limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
 	watchID := ""
 	generation := ""
+	note := ""
 	if d.cfg != nil {
 		watchID = d.cfg.watchID
 		generation = d.cfg.generation
+		note = d.cfg.note
 	}
 	d.frame = jm.buildWatchFrame(&watchConfig{
 		watchID:    watchID,
 		generation: generation,
+		note:       note,
 		send:       d.send,
 	}, d.watchedIdentity, d.trigger, d.deliveryID, events.SessionEvent{
 		Kind:       d.eventKind,
@@ -5111,6 +5114,12 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
 	b.WriteString("\n")
 	writeWatchFrameTopField(&b, "trigger", limitWatchText(trigger, watchTriggerMaxChars))
+	// A send delivers the frame instead of a rendered notification body, so the
+	// note has to ride here or a stable receiver never sees why the watch was
+	// armed. Bounded where the note is stored, as watchConditionSummary bounds it.
+	if cfg.note != "" {
+		writeWatchFrameTopField(&b, "note", limitWatchText(cfg.note, watchMessageMaxChars))
+	}
 	writeWatchFrameProvenance(&b, p)
 	writeWatchFrameEvent(&b, ev)
 
