@@ -294,11 +294,22 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
 // just src. src keeps preferring url — the field the legacy web client
 // (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — falling back to path or name, exactly as before;
-// name/path/source ride alongside it unresolved so a renderer can caption the
-// image instead of losing everything but whichever field happened to win
-// that fallback (kata byq2).
-function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | undefined {
+// treats as the <img src> — then the inline data-URI bytes, then a
+// sha-addressed /s/{route}/images/{sha} route rebuilt from metadata["sha"]
+// when the serving session is known (the wire Thread.sessionId, mirroring
+// stampThreadImageURLs' sessionID-over-ID preference in output_images.go;
+// imageSessionRoute undefined keeps that branch dark), then path or name,
+// exactly as before; name/path/source ride alongside src unresolved so a
+// renderer can caption the image instead of losing everything but whichever
+// field happened to win that fallback (kata byq2). Bytes beat the
+// synthesized route because they render unconditionally while the route 404s
+// whenever the session is absent from the hub's Past index
+// (handleSessionImage, image_serve.go) — so the route only ever fires for
+// sha-only replay descriptors that carry no bytes at all.
+function imagesToItemImagesForSession(
+  images: InputItem[] | undefined,
+  imageSessionRoute: string | undefined,
+): ItemImage[] | undefined {
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -306,10 +317,36 @@ function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | unde
   // through to the bare name gave the browser a relative URL that 404s, and
   // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
   return images.map((img) => ({
-    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
+    src: img.url ?? inlineImageSrc(img) ?? metadataShaImageSrc(img, imageSessionRoute) ?? img.path ?? img.name ?? "",
     name: img.name,
     path: img.path,
   }));
+}
+
+// A replayed input image carries no bytes at all: projectReplayInputImage
+// (app_threadread.go) strips Data and records the content sha in
+// metadata["sha"], and stampInputImageURLs (output_images.go) fills in the
+// sha-addressed /s/{session}/images/{sha} route the hub serves those bytes on
+// (handleSessionImage). A live or paged payload that reaches the client
+// without that stamp (older-producer frames, page fits the read path didn't
+// re-stamp) still names fetchable bytes by sha, so the short route is the src
+// when — and only when — no inline bytes are present: the browser fetches and
+// caches by URL instead of holding a ~33%-inflated base64 copy in the model
+// heap and the DOM, but payload bytes render unconditionally while the route
+// 404s for any session absent from the hub's Past index, so bytes stay first.
+// Strict lowercase-hex only (imageShaRegexp): a non-sha metadata value is
+// never URL-shaped, so it falls through to path/name rather than producing a
+// src the hub would 400 on. imageSessionRoute is undefined wherever the wire
+// named no serving session (absent/blank sessionId — the same gap
+// stampThreadImageURLs patches with the thread id); without it there is
+// nothing fetchable to prefer and the data-URI fallback stands.
+function metadataShaImageSrc(img: InputItem, imageSessionRoute?: string): string | undefined {
+  const sha = img.metadata?.sha;
+  if (sha === undefined || sha === "" || imageSessionRoute === undefined || imageSessionRoute === "") {
+    return undefined;
+  }
+  if (!/^[0-9a-f]{64}$/.test(sha)) return undefined;
+  return `/s/${imageSessionRoute}/images/${sha}`;
 }
 
 function inlineImageSrc(img: InputItem): string | undefined {
@@ -354,7 +391,17 @@ function itemTextPresence(item: ItemModel): ItemTextPresence {
   return (item as InternalItemModel)[ITEM_TEXT_PRESENCE] ?? "provided";
 }
 
-function wireItemToModel(item: ThreadItem): ItemModel {
+// imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
+// callers that can name the serving session — hydrateThread's wire
+// thread.sessionId (falling back to the thread id, mirroring
+// stampThreadImageURLs in output_images.go), item pages and live
+// notifications' model.imageSessionId, carried on the model from hydrate —
+// so a sha-bearing input image that arrived WITHOUT its stamped url still
+// folds to the short /s/{route}/images/{sha} src when it carries no inline
+// bytes — otherwise the bytes stay the src. Undefined on the paths that
+// cannot name it — the sha branch then stays dark and every image resolves
+// exactly as before.
+function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemModel {
   const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,
     turnId: item.turnId ?? "",
@@ -370,7 +417,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     error: item.error,
     prevalOnly: item.prevalOnly,
     exitCode: item.exitCode,
-    images: imagesToItemImages(item.images),
+    images: imagesToItemImagesForSession(item.images, imageSessionRoute),
     outputImages: outputImagesToItemImages(item.outputImages),
     status: item.status,
     source: item.source,
@@ -497,8 +544,11 @@ function wireToTurnScalars(turn: Turn): Omit<TurnModel, "items"> {
   };
 }
 
-function wireToTurnModel(turn: Turn): TurnModel {
-  return { ...wireToTurnScalars(turn), items: (turn.items ?? []).map(wireItemToModel) };
+function wireToTurnModel(turn: Turn, imageSessionRoute?: string): TurnModel {
+  return {
+    ...wireToTurnScalars(turn),
+    items: (turn.items ?? []).map((item) => wireItemToModel(item, imageSessionRoute)),
+  };
 }
 
 // evener.activeTurnId is the primary signal; a turn already marked inProgress
@@ -677,11 +727,38 @@ function mergePageTurn(older: TurnModel, newer: TurnModel): TurnModel {
   };
 }
 
+// The escaped /s/{route} fragment the hub serves sha-addressed image bytes
+// under. The hub's own stamp (sessionImageURL, output_images.go) escapes the
+// wire Thread.sessionId with url.PathEscape — never the stable workspace ref
+// (handleSessionImage looks the id up in Past.Find, where a ref like
+// local:stable finds nothing, and a stable ref can name a different session
+// than the one that served the bytes). encodeURIComponent is the matching
+// client-side escape. An empty id names no fetchable route, so the sha branch
+// stays dark for it. A session id never carries a slash (identifier's
+// base62 UUIDv7), and any foreign ref form the page route cannot serve keeps
+// the branch dark too.
+export function imageSessionRouteForSession(sessionId: string): string | undefined {
+  if (sessionId === "" || sessionId.includes("/")) return undefined;
+  return encodeURIComponent(sessionId);
+}
+
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
   const thread = resp.thread;
+  // The snapshot's own stamped urls already win per-image (url-first
+  // precedence); the route only matters for sha-bearing images that arrived
+  // WITHOUT a stamp — replayed input images from a read path that didn't
+  // re-stamp, or older-producer frames.
+  // stampThreadImageURLs (output_images.go) prefers the wire session id and
+  // falls back to the thread id, trimming both (strings.TrimSpace); the
+  // client-side rebuild matches it exactly — a whitespace-padded session id
+  // must not win the fallback and escape to a /s/%20.../images route the hub
+  // would 404 on while the trimmed thread id would have served.
+  const imageSessionId = thread.sessionId.trim() || thread.id.trim();
+  const imageSessionRoute = imageSessionRouteForSession(imageSessionId);
   return {
     ref,
     threadId: thread.id,
+    imageSessionId,
     ...(thread.evener.instanceId === undefined ? {} : { instanceId: thread.evener.instanceId }),
     name: thread.name ?? "",
     status: thread.status,
@@ -696,7 +773,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
-    turns: mergeToolCallsByCallId((thread.turns ?? []).map(wireToTurnModel)),
+    turns: mergeToolCallsByCallId((thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
@@ -753,7 +830,12 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
 }
 
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const olderTurns = (resp.data ?? []).map(wireToTurnModel);
+  // The page response carries no ref of its own (ThreadTurnsListResponse is
+  // bare turns); the model it merges into already knows the serving session,
+  // carried from hydrate on model.imageSessionId. A legacy model hydrated
+  // before that field existed re-derives it from its own thread id.
+  const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
+  const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
   const turns: TurnModel[] = [];
 
   for (const older of olderTurns) {
@@ -888,10 +970,15 @@ function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: Tu
 // sends one turn/completed per announcement, all naming the same synthetic
 // turn, so replacing would leave a startup burst showing only its last line
 // where the snapshot shows every one (server/appwire_turns.go's upsertItem).
-function upsertTurnItems(items: ItemModel[], incoming: ThreadItem[], now: number): ItemModel[] {
+function upsertTurnItems(
+  items: ItemModel[],
+  incoming: ThreadItem[],
+  now: number,
+  imageSessionRoute?: string,
+): ItemModel[] {
   let next = items;
   for (const wire of incoming) {
-    const settled = wireItemToModel(wire);
+    const settled = wireItemToModel(wire, imageSessionRoute);
     const index = next.findIndex((it) => itemIdentityMatches(it, settled));
     if (index === -1) {
       next = [...next, settled];
@@ -920,6 +1007,7 @@ function mergeTurnCompletionStamp(
   turnId: string,
   stamp: Turn,
   now: number,
+  imageSessionRoute?: string,
 ): TurnModel {
   const base: TurnModel = existing ?? { id: turnId, status: "", items: [] };
   return {
@@ -929,7 +1017,7 @@ function mergeTurnCompletionStamp(
     completedAt: epochMsToISO(stamp.completedAt) ?? base.completedAt,
     durationMs: stamp.durationMs ?? base.durationMs,
     error: stamp.error,
-    items: upsertTurnItems(base.items, stamp.items ?? [], now),
+    items: upsertTurnItems(base.items, stamp.items ?? [], now, imageSessionRoute),
   };
 }
 
@@ -960,7 +1048,13 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // same reason.
 function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
   const existing = model.turns.find((t) => t.id === turnId);
-  const settled = mergeTurnCompletionStamp(existing, turnId, stamp, now);
+  const settled = mergeTurnCompletionStamp(
+    existing,
+    turnId,
+    stamp,
+    now,
+    imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+  );
   return {
     ...model,
     turns: existing ? settleFirstMatchingTurn(model.turns, turnId, settled) : placeNewTurn(model.turns, settled),
@@ -1058,6 +1152,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turn } = n.params;
+      // The serving session is the model's own hydrate-carried imageSessionId
+      // (the wire thread.sessionId the image bytes belong to) — never
+      // params.ref or model.ref, which can be a stable workspace alias for a
+      // different session than the one serving /s/{id}/images/{sha}.
+      const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
       // turns is presented everywhere else (mapTurn, findItemTurnId) as if
       // ids are unique. A duplicate here should never happen — the two known
       // ways it could (eptj, bz2z) are both fixed server-side — but blindly
@@ -1072,14 +1171,14 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         );
         return {
           ...model,
-          turns: model.turns.map((t, i) => (i === existingIndex ? wireToTurnModel(turn) : t)),
+          turns: model.turns.map((t, i) => (i === existingIndex ? wireToTurnModel(turn, imageSessionRoute) : t)),
           activeTurnId: turn.id,
           lastFrameAt: now,
         };
       }
       return {
         ...model,
-        turns: [...model.turns, wireToTurnModel(turn)],
+        turns: [...model.turns, wireToTurnModel(turn, imageSessionRoute)],
         activeTurnId: turn.id,
         lastFrameAt: now,
       };
@@ -1094,7 +1193,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const stamp = params.turn;
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
-        settledTurn = wireToTurnModel(stamp);
+        settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
         // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
         // read/write disjoint fields off the same `old` reference, so
@@ -1146,7 +1245,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: upsertTurnItems(turn.items, [item], now),
+          items: upsertTurnItems(
+            turn.items,
+            [item],
+            now,
+            imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -1155,7 +1259,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
-      const incoming = wireItemToModel(item);
+      const incoming = wireItemToModel(item, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
       // A live watcher on a long turn sees nothing move on thread/status/
       // changed until the turn ends, however many tool calls fail inside it
       // (kata 895d) — item/completed is the finer-grained carrier, stamped
@@ -1504,7 +1608,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             type: "steering",
             ...(params.startedAt !== undefined ? { startedAt: epochMsToISO(params.startedAt) } : {}),
             text: params.text ?? "",
-            images: imagesToItemImages(params.images),
+            images: imagesToItemImagesForSession(
+              params.images,
+              imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
+            ),
             status: "completed",
             source: params.source,
             steeringKind: params.kind,

@@ -3155,14 +3155,15 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
 		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
 	}
-	recs, err := jm.store.Load()
-	if err != nil {
-		return err
-	}
+	// One journal read for both consumers: LoadEvents returns the raw events
+	// and Fold derives the same job records Load would fold from them, so this
+	// path does one readAllLocked+fold instead of two. No cache is added — the
+	// events are a local of this call only.
 	stored, err := jm.store.LoadEvents()
 	if err != nil {
 		return err
 	}
+	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
@@ -3542,6 +3543,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 
 // recordWatchSend persists a fired send as pending and returns its state.
 // ok=false means the send was superseded or unresolvable (already handled).
+// A persist failure after a durable prefix landed (persisted=true) still
+// returns ok=true with the persisted state, so the journal and the runtime
+// map can be reconciled against it instead of a ghost ok=false.
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
@@ -3567,7 +3571,14 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
-		return jobstore.WatchSendState{}, nil, false, perr
+		if !persisted {
+			return jobstore.WatchSendState{}, nil, false, perr
+		}
+		// The pending event (and any durable prefix of its co-generated
+		// group) is already journaled and committed to the runtime map:
+		// surface the persisted state with ok=true alongside the failure
+		// instead of a ghost ok=false that hides the durable prefix.
+		return persistedState, d.cfg, true, perr
 	}
 	if !persisted {
 		return jobstore.WatchSendState{}, nil, false, nil
@@ -3606,10 +3617,16 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, err := jm.recordWatchSend(d)
-		if err != nil || !ok {
+		state, _, ok, _ := jm.recordWatchSend(d)
+		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
+		// A partial-persist failure still returns ok=true with the persisted
+		// state: the pending frame is already journaled and committed to the
+		// runtime map, so it owes the owner a wake like any recorded send —
+		// otherwise the frame stalls until unrelated activity. The failure
+		// itself is already queued as a diagnostic at the persist site, so it
+		// coexists with the token/kick below.
 		recorded = true
 		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
 			tokens = append(tokens, watchSendTokenNotification("", state))
@@ -3892,47 +3909,120 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 			enqueueReceipt.controller.AbortWatchEnqueue(enqueueReceipt)
 		}
 	}()
-	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+	// Persist the pending event and any cap-overflow eviction terminal events
+	// as one group: AppendBatch writes them with a single fsync and rolls the
+	// whole group back on failure (all-or-nothing). A lone pending event stays
+	// on the appendEvent seam inside appendWatchSendEvents.
+	// Without the batch seam (jm.appendEvents == nil) a multi-event group has
+	// no atomic write: keep the pre-batch sequential protocol instead, so a
+	// later eviction write can fail while the pending event is already
+	// durable — persisted=true with each durable prefix committed to the
+	// runtime map — instead of leaving a durable prefix behind an ok=false
+	// return that never commits it.
+	if len(record.evictions) != 0 && jm.appendEvents == nil {
+		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return state, false, err
+		}
+		jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+		var evictionDiagnostics []jobNotification
+		for _, eviction := range record.evictions {
+			applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
+			if err != nil {
+				jm.removeWatchSendTerminalSnapshots(applied)
+				jm.enqueueWatchNotifications([]jobNotification{
+					watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				})
+				return record.persisted, true, err
+			}
+			jm.removeWatchSendTerminalSnapshots(applied)
+			evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
+		}
+		for _, diagnostic := range evictionDiagnostics {
+			jm.enqueueWatchNotifications([]jobNotification{diagnostic})
+		}
+		if enqueueReceipt != nil {
+			completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+			enqueueCompleted = completed
+			if verr != nil {
+				return record.persisted, true, verr
+			}
+		}
+		return record.persisted, true, nil
+	}
+	group := append([]jobstore.Event(nil), record.pendingEvents...)
+	var evictionSnapshots []watchSendTerminalSnapshot
+	for _, eviction := range record.evictions {
+		evictionSnapshots = append(evictionSnapshots, eviction.terminal)
+		group = append(group, eviction.terminal.events...)
+	}
+	if err := jm.appendWatchSendEvents(group); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return state, false, err
 	}
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
-	if enqueueReceipt != nil {
-		jm.observeWatchReceiptBoundary()
-		deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
-		if err != nil {
-			return record.persisted, true, err
-		}
-		enqueueCompleted = true
-		jm.rememberStableWatchReceipt(deliveryReceipt)
-		folded, err := jm.store.LoadWatchSends()
-		if err != nil {
-			return record.persisted, true, err
-		}
-		pending := folded.Pending[record.persisted.Key]
-		if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
-			return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
-		}
-	}
+	// The eviction events landed with the pending event above: drop the
+	// evicted keys from the runtime map (releasing their receipts) and surface
+	// their diagnostics BEFORE the fallible stable-enqueue verification below,
+	// so the journal and the runtime map agree on every return path.
+	jm.removeWatchSendTerminalSnapshots(evictionSnapshots)
 	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
-		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
-		if err != nil {
-			jm.removeWatchSendTerminalSnapshots(applied)
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return record.persisted, true, err
-		}
-		jm.removeWatchSendTerminalSnapshots(applied)
 		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
 	}
 	for _, diagnostic := range evictionDiagnostics {
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
+	if enqueueReceipt != nil {
+		completed, verr := jm.verifyStableWatchEnqueue(enqueueReceipt, record.persisted)
+		enqueueCompleted = completed
+		if verr != nil {
+			return record.persisted, true, verr
+		}
+	}
 	return record.persisted, true, nil
+}
+
+// verifyStableWatchEnqueue completes an admitted stable enqueue and checks the
+// persisted pending frame survives a durable refold. Both persist branches
+// (the nil-seam sequential protocol and the batch group write) share it so
+// their verification cannot diverge. completed reports whether
+// CompleteWatchEnqueue consumed the receipt: the caller must still skip the
+// deferred abort when a later refold check fails. A nil receipt is a
+// non-stable send: nothing to verify.
+func (jm *jobManager) verifyStableWatchEnqueue(enqueueReceipt *delegateWatchReceipt, persisted jobstore.WatchSendState) (completed bool, err error) {
+	if enqueueReceipt == nil {
+		return false, nil
+	}
+	jm.observeWatchReceiptBoundary()
+	deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return false, err
+	}
+	jm.rememberStableWatchReceipt(deliveryReceipt)
+	folded, err := jm.store.LoadWatchSends()
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return true, err
+	}
+	pending := folded.Pending[persisted.Key]
+	if pending == nil || pending.DeliveryID != persisted.DeliveryID || pending.UpdateSeq != persisted.UpdateSeq {
+		verr := errors.New("stable watch pending frame did not survive durable refold")
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(persisted.Key.ResolvedWatchedIdentity, "watch send stable enqueue failed: "+limitWatchText(verr.Error(), watchReadErrorMaxChars)),
+		})
+		return true, verr
+	}
+	return true, nil
 }
 
 func (jm *jobManager) beginWatchPersistence() func() {
@@ -4624,6 +4714,17 @@ func (jm *jobManager) removeWatchSendTerminalSnapshots(snapshots []watchSendTerm
 }
 
 func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	// Batch multi-event groups through AppendBatch: one fsync, all-or-nothing,
+	// so a co-generated group either lands together or rolls back together.
+	// Single-event appends stay on the appendEvent seam — one fsync either way,
+	// and fault-injection harnesses stubbing only appendEvent keep intercepting
+	// settle/drop/pending writes (same shape as appendJobEvents).
+	if len(events) > 1 && jm.appendEvents != nil {
+		return jm.appendEvents(events)
+	}
 	for _, e := range events {
 		if err := jm.appendEvent(e); err != nil {
 			return err
