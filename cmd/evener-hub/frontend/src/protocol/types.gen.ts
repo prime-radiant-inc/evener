@@ -15,6 +15,16 @@ export interface AgentMessageResetParams {
   itemId: string;
 }
 
+export interface AgentsDocResponse {
+  path: string;
+  exists: boolean;
+  content: string;
+}
+
+export interface AgentsDocSetParams {
+  content: string;
+}
+
 export interface ArchiveParams {
   kind: string;
   id: string;
@@ -2193,6 +2203,8 @@ export const METHOD_NAMES = [
   "evener/settings/transcriptDisplay/patch",
   "evener/settings/keybindings/get",
   "evener/settings/keybindings/patch",
+  "evener/settings/agentsDoc/get",
+  "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
 ] as const;
 
@@ -2235,6 +2247,7 @@ export const NOTIFICATION_NAMES = [
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
   "evener/settings/keybindings/changed",
+  "evener/settings/agentsDoc/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2374,6 +2387,8 @@ export interface MethodTypes {
   "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
   "evener/settings/keybindings/get": { params: EmptyParams; result: KeybindingsOverrides };
   "evener/settings/keybindings/patch": { params: KeybindingsPatchParams; result: KeybindingsOverrides };
+  "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
+  "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
@@ -2414,6 +2429,7 @@ export interface NotificationTypes {
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
   "evener/settings/keybindings/changed": KeybindingsOverrides;
+  "evener/settings/agentsDoc/changed": AgentsDocResponse;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

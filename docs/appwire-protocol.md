@@ -175,6 +175,8 @@ no router (reserved).
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
 | `evener/settings/keybindings/get` | hub | `EmptyParams` | `KeybindingsOverrides` | Reads the canonical user keybinding overrides (version, revision, rules). |
 | `evener/settings/keybindings/patch` | hub | `KeybindingsPatchParams` | `KeybindingsOverrides` | Replaces the user keybinding overrides using an expected revision and returns the canonical value. |
+| `evener/settings/agentsDoc/get` | hub | `EmptyParams` | `AgentsDocResponse` | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
+| `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 
 ## Notifications (server → client)
@@ -220,6 +222,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
 | `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
+| `evener/settings/agentsDoc/changed` | `AgentsDocResponse` | Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content. |
 
 ## Type reference
 
@@ -246,6 +249,22 @@ An embedded type contributes its own fields inline.
 | `ref` | `string` |  |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
+
+
+### `AgentsDocResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+| `exists` | `bool` |  |  |
+| `content` | `string` |  |  |
+
+
+### `AgentsDocSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `content` | `string` |  |  |
 
 
 ### `ArchiveParams`

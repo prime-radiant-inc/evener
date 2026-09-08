@@ -1353,3 +1353,66 @@ func TestServeDisposesTheSandboxScratchWhenRestoreFails(t *testing.T) {
 		t.Fatalf("serve error = %v, want the restore failure", err)
 	}
 }
+
+// A hub hands every session it spawns the hub's own concrete AGENTS.md path,
+// the way it hands over the plugin root, so a per-launch XDG_CONFIG_HOME
+// override cannot make Settings and the session read different files.
+func TestServeAgentsDocFlagReachesTheSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	wantPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	got := ""
+	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		got = cfg.AgentsDocPath
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--agents-doc", wantPath,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "session creation") {
+		t.Fatalf("serve error = %v, want the session-creation failure", err)
+	}
+	if got != wantPath {
+		t.Fatalf("SessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
+
+// A resume takes the flag too: the hub passes --agents-doc on every resume it
+// spawns (buildResumeArgs), and the restore has to prefer it over the path
+// frozen in the snapshot, which a pre-feature session never had and a moved
+// hub no longer uses.
+func TestServeAgentsDocFlagReachesTheRestoredSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	wantPath := filepath.Join(t.TempDir(), "AGENTS.md")
+	got := ""
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		got = restoreCfg.AgentsDocPath
+		return nil, errors.New("no session today")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+		"--agents-doc", wantPath,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if got != wantPath {
+		t.Fatalf("RestoreSessionConfig.AgentsDocPath = %q, want %q", got, wantPath)
+	}
+}
