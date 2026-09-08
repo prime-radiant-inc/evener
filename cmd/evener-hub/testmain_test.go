@@ -176,19 +176,19 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 	}
 }
 
-// defaultRootsOutsideTestEnv lists every filesystem root the hub falls back to
-// when a WebConfig field is left unset (the launch config root, the hub state
-// root, the plugin store root, the MCP config path), every path runMain opens
-// when a flag is unset (the config file, the state glob, the past-index DB,
-// the rendezvous run dir), plus the HOME and XDG bases they derive from, that
-// resolves outside testEnvRoot. Empty means the throwaway env contains them
-// all.
-func defaultRootsOutsideTestEnv() []string {
+type namedPath struct{ name, path string }
+
+// hubDefaultRoots lists every filesystem root the hub falls back to when a
+// WebConfig field is left unset (the launch config root, the hub state root,
+// the plugin store root, the MCP config path), every path runMain opens when a
+// flag is unset (the config file, the state glob, the past-index DB, the
+// rendezvous run dir), plus the HOME and XDG bases they derive from.
+func hubDefaultRoots() []namedPath {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "(unresolved: " + err.Error() + ")"
 	}
-	roots := []struct{ name, path string }{
+	return []namedPath{
 		{"os.UserHomeDir", home},
 		{envvars.XDGConfigHome.Name, envvars.XDGConfigHome.Getenv()},
 		{envvars.XDGStateHome.Name, envvars.XDGStateHome.Getenv()},
@@ -203,13 +203,33 @@ func defaultRootsOutsideTestEnv() []string {
 		{"DefaultPastIndexDBPath", DefaultPastIndexDBPath()},
 		{"rendezvous.DefaultDir", rendezvous.DefaultDir()},
 	}
+}
+
+// rootsOutside reports every entry of roots that does not lie inside root. An
+// entry that is a glob is judged on its own path and on each current match,
+// so a symlinked project directory under the state root cannot point outside.
+func rootsOutside(root string, roots []namedPath) []string {
 	var escaped []string
-	for _, root := range roots {
-		if !containedIn(testEnvRoot, root.path) {
-			escaped = append(escaped, fmt.Sprintf("%s = %q", root.name, root.path))
+	for _, r := range roots {
+		paths := []string{r.path}
+		if strings.ContainsAny(r.path, "*?[") {
+			if matches, err := filepath.Glob(r.path); err == nil {
+				paths = append(paths, matches...)
+			}
+		}
+		for _, path := range paths {
+			if !containedIn(root, path) {
+				escaped = append(escaped, fmt.Sprintf("%s = %q", r.name, path))
+			}
 		}
 	}
 	return escaped
+}
+
+// defaultRootsOutsideTestEnv is rootsOutside over the hub's defaults and the
+// throwaway root TestMain built. Empty means the env contains them all.
+func defaultRootsOutsideTestEnv() []string {
+	return rootsOutside(testEnvRoot, hubDefaultRoots())
 }
 
 // canonicalizeExisting resolves symlinks through the deepest ancestor of path
@@ -324,6 +344,34 @@ func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
 		if got := containedIn(tc.root, tc.path); got != tc.want {
 			t.Errorf("%s: containedIn(%q, %q) = %v, want %v", tc.name, tc.root, tc.path, got, tc.want)
 		}
+	}
+}
+
+// TestRootsOutsideExpandsGlobs pins that a glob among the default roots is
+// judged by what it matches, not by its literal prefix: a symlinked project
+// directory planted under the state root and pointing outside it is reported,
+// and a pattern with no matches is judged on its own path.
+func TestRootsOutsideExpandsGlobs(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	projects := filepath.Join(root, "state", "evener", "projects")
+	if err := os.MkdirAll(projects, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(projects, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	roots := []namedPath{{"state glob", filepath.Join(projects, "*")}}
+	got := rootsOutside(root, roots)
+	if len(got) != 1 || !strings.Contains(got[0], escape) {
+		t.Fatalf("rootsOutside with an escaping match = %q, want exactly that match reported", got)
+	}
+	if err := os.Remove(escape); err != nil {
+		t.Fatal(err)
+	}
+	if got := rootsOutside(root, roots); len(got) != 0 {
+		t.Fatalf("rootsOutside with no matches = %q, want none", got)
 	}
 }
 
