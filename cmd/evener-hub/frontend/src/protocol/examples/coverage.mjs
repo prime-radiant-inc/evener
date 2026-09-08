@@ -20,6 +20,7 @@ const recipes = {
   ],
   "maintenance-checks.mjs": ["initialize", "ping", "evener/auth/test", "evener/plugin/checkNow"],
   "hub-upgrade.mjs": ["initialize", "evener/settings/overview", "evener/upgrade"],
+  "navigation-invalidation.mjs": ["initialize", "evener/navigation/read"],
   "oauth.mjs": [
     "initialize",
     "evener/auth/status",
@@ -149,6 +150,7 @@ const coveredNotifications = [
   "item/agentMessage/delta",
   "item/agentMessage/reset",
   "evener/thread/resync",
+  "evener/navigation/invalidated",
 ];
 const covered = new Set(Object.values(recipes).flat());
 for (const method of covered) {
