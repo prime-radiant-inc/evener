@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "checks": {
+    "devicePending": true,
+    "deviceAuthorized": true,
+    "expiry": true,
+    "faultRecovery": true,
+    "lostDeviceReply": true,
+    "browserCompletion": true,
+    "lostBrowserReply": true,
+    "crossProviderBinding": true
+  },
+  "cleanup": true,
+  "date": "2026-09-07",
+  "sourceParent": "d8f6c4a4c76fa23786a7ddba2560f9d4f0174319",
+  "sourceState": "working tree; code and receipt are recorded together",
+  "transport": "direct loopback AppWire; no WebSocket proxy",
+  "oauthBoundary": "scripted external device/code/token exchange; real registered hub handlers and temporary credential storage",
+  "providerAccountExecution": "unverified",
+  "tarballSha256": "06b68ee1a7e2a318553158ada72e985fb908f5f1fb686c5682acaacc8ef849fc",
+  "driverSha256": "61168ca40ee47ff935d7af9fb062abe7fb7bc568b8e72b663cccb2a1803e2def",
+  "harnessSha256": "0df7ea59689227a4f2b2d8f5a3235bd2ef96316d2dbeb1f7d32103863efa3529",
+  "nativeBundleSha256": "bda26fddce4ffd9dc46d1c8205de61a1413483ef21f96b0db828c84a3cbbed0c",
+  "nativeEvidence": "Release build and launch only for this change; sign-in recovery UI journey pending",
+  "catalog": {
+    "recipes": 22,
+    "requestNames": 64,
+    "catalogRequestNames": 91,
+    "notificationNames": 3
+  },
+  "harnessExitCode": 0,
+  "fixturePortClosed": true
+}

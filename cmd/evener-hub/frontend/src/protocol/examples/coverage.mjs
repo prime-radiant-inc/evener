@@ -2,6 +2,14 @@ import { METHOD_NAMES, NOTIFICATION_NAMES } from "@evener/appwire-client";
 
 // A listed recipe exercises these requests; this is not branch/outcome coverage.
 const recipes = {
+  "oauth.mjs": [
+    "initialize",
+    "evener/auth/status",
+    "evener/auth/device/start",
+    "evener/auth/device/poll",
+    "evener/auth/login/start",
+    "evener/auth/login/complete",
+  ],
   "credentials.mjs": [
     "initialize",
     "evener/auth/list",
