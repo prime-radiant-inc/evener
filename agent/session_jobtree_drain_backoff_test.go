@@ -313,11 +313,11 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 		if time.Now().After(quietDeadline) {
 			t.Fatalf("precondition: tree must read quiescent after residue clear, got outstanding=true after 30s")
 		}
-		// TRIPWIRE: not a completion-signal wait — a quiet scan above is
-		// the signal; 10ms only yields instead of busy-spinning.
 		select {
 		case <-done:
 			t.Fatalf("drain returned during quiescence poll with turns = %d, want the skipped-kick pass to run first", turns.Load())
+		// TRIPWIRE: not a completion-signal wait — the quiet scan above is
+		// the signal; 10ms only yields instead of busy-spinning.
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
