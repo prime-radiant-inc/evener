@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -710,7 +711,12 @@ func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
 // chain below the stamp under test.
 func TestPluginAgentModelListingAttribution(t *testing.T) {
 	stateDir := t.TempDir()
-	adapter := &fakeAdapter{name: "openai", liveModels: attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")}
+	var listings atomic.Int64
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")
+	adapter := &fakeAdapter{name: "openai", liveModels: func(ctx context.Context) ([]registry.Model, error) {
+		listings.Add(1)
+		return listModels(ctx)
+	}}
 	client := registryClient(t, map[string]registry.Provider{
 		"openai": {Base: "openai", APIKey: "k", Models: modelRows("gpt-5.3")},
 	}, adapter)
@@ -729,9 +735,17 @@ func TestPluginAgentModelListingAttribution(t *testing.T) {
 		},
 	}
 
+	listingsBefore := listings.Load()
 	selected, err := sess.selectSubagentModel(llm.WithAPILogContext(context.Background(), sess.ID()), "", "reviewer")
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
+	}
+	// The fixture registry already carries gpt-5.3, so a selection that never
+	// listed could still land on the plugin's model while the session log held
+	// nothing but the listing NewSession issued. Counting the listings the
+	// selection itself drives is what holds the seam under test.
+	if got := listings.Load() - listingsBefore; got != 1 {
+		t.Fatalf("live model listings during selection = %d, want 1", got)
 	}
 	// Landing on the plugin's own model with no fallback warning is reachable
 	// only through the listing under test: a candidate equal to the session's
