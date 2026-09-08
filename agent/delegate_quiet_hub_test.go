@@ -69,38 +69,45 @@ func quietHubEntryCount(s *Session) (hub *delegateQuietWatchHub, n int) {
 	return hub, len(hub.entries)
 }
 
-// awaitQuietTicks collects tick-done signals for exactly the leases in want
-// (each lease fires once per shared tick): the hook fires on the tick worker
+// armQuietTicks installs the tick-done hook for exactly the leases in want and
+// returns the wait for their completions. Call it BEFORE advancing the fake
+// clock: Advance delivers the buffered tick to the hub loop, which can consume
+// it and finish the tick work before a hook installed after Advance exists,
+// flaking the wait on the 10s tripwire. The hook fires on the tick worker
 // after the durable write lands, so a received signal means the attention is
-// already readable. It returns the leases in arrival order.
-func awaitQuietTicks(t *testing.T, want map[delegateLease]int) []delegateLease {
+// already readable (each lease fires once per shared tick). The returned wait
+// collects the leases in arrival order.
+func armQuietTicks(t *testing.T, want map[delegateLease]int) func() []delegateLease {
 	t.Helper()
 	ticks := make(chan delegateLease, 16)
 	restore := setQuietWatchTickDone(func(lease delegateLease) { ticks <- lease })
 	t.Cleanup(restore)
-	var got []delegateLease
 	remaining := make(map[delegateLease]int, len(want))
 	maps.Copy(remaining, want)
 	left := 0
 	for _, n := range want {
 		left += n
 	}
-	timer := time.NewTimer(quietHubTripwire)
-	defer timer.Stop()
-	for left > 0 {
-		select {
-		case lease := <-ticks:
-			if remaining[lease] <= 0 {
-				t.Fatalf("unexpected tick for lease %+v (got so far %+v)", lease, got)
+	var got []delegateLease
+	return func() []delegateLease {
+		t.Helper()
+		timer := time.NewTimer(quietHubTripwire)
+		defer timer.Stop()
+		for left > 0 {
+			select {
+			case lease := <-ticks:
+				if remaining[lease] <= 0 {
+					t.Fatalf("unexpected tick for lease %+v (got so far %+v)", lease, got)
+				}
+				remaining[lease]--
+				left--
+				got = append(got, lease)
+			case <-timer.C:
+				t.Fatalf("timed out waiting for %d more tick(s), got %+v", left, got)
 			}
-			remaining[lease]--
-			left--
-			got = append(got, lease)
-		case <-timer.C:
-			t.Fatalf("timed out waiting for %d more tick(s), got %+v", left, got)
 		}
+		return got
 	}
-	return got
 }
 
 // ageHubLeasesPastQuietWindow moves virtual time past the quiet window BEFORE
@@ -132,8 +139,9 @@ func TestDelegateQuietHub_SharedTicksReachAllLeases(t *testing.T) {
 	}
 
 	want := map[delegateLease]int{leaseA: 1, leaseB: 1}
+	wait := armQuietTicks(t, want)
 	clk.Advance(delegateQuietCheckInterval)
-	if got := awaitQuietTicks(t, want); len(got) != 2 {
+	if got := wait(); len(got) != 2 {
 		t.Fatalf("shared-tick completions = %+v, want one per lease", got)
 	}
 	if got := pendingQuietAttention(t, root); len(got) != 2 {
@@ -159,8 +167,9 @@ func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
 		t.Fatalf("hub entry count = %d, want 1", n)
 	}
 
+	wait := armQuietTicks(t, map[delegateLease]int{leaseB: 1})
 	clk.Advance(delegateQuietCheckInterval)
-	if got := awaitQuietTicks(t, map[delegateLease]int{leaseB: 1}); len(got) != 1 || got[0] != leaseB {
+	if got := wait(); len(got) != 1 || got[0] != leaseB {
 		t.Fatalf("remaining lease ticks = %+v, want [%+v]", got, leaseB)
 	}
 	got := pendingQuietAttention(t, root)
@@ -230,8 +239,9 @@ func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.
 	}
 	defer atomic.StoreUint32(slowEntry.busy, 0)
 
+	wait := armQuietTicks(t, map[delegateLease]int{leaseFast: 1})
 	clk.Advance(delegateQuietCheckInterval)
-	if got := awaitQuietTicks(t, map[delegateLease]int{leaseFast: 1}); len(got) != 1 || got[0] != leaseFast {
+	if got := wait(); len(got) != 1 || got[0] != leaseFast {
 		t.Fatalf("ticks with blocked lease = %+v, want only [%+v]", got, leaseFast)
 	}
 	if got := pendingQuietAttention(t, root); len(got) != 1 || got[0] != delegateQuietAttentionID(leaseFast) {
