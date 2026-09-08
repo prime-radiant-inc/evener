@@ -857,6 +857,46 @@ test("a shifted reloaded marker still retries its trailing prose as text", async
   expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
 });
 
+test("a reloaded marker-only input whose lost filename ends with a paren shows re-attach", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 1: plot))",
+          images: [{ src: "/s/sess_1/images/abc" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+});
+
+test("a reloaded marker-only input whose lost filename holds ') ' shows re-attach", () => {
+  seedThread("ref_a", [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        item({
+          turnId: "turn_1",
+          text: "(attached image 1: plot) draft.png)",
+          images: [{ src: "/s/sess_1/images/abc" }],
+        }),
+      ],
+    },
+    RELOADED_FAILURE,
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
+  expect(screen.getByText("Attached image unavailable — re-attach the image to retry.")).toBeTruthy();
+});
+
 test("glued user text after an unnamed marker is preserved, not swallowed", async () => {
   const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
   const text = "(attached image 1)foo) describe it";
