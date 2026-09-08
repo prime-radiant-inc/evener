@@ -6,12 +6,12 @@ wire types. The [TypeScript client library](../cmd/evener-hub/frontend/src/proto
 provides the transport used by Evener's web and native clients, without a UI
 framework dependency. Other languages can implement the same wire contract.
 
-The current documentation is being expanded toward independent implementation.
-Launch configuration, creation and a start/interrupt lifecycle are described
-below. Full transcript reconciliation, mutation recovery, approvals, navigation,
-providers, plugin management and upgrades still require dedicated chapters and
-runnable fixtures. A method
-being listed or callable is not evidence that its full workflow is documented.
+The guide and packaged cookbook cover connection, lifecycle, reading, creation,
+launch settings, decisions, work, providers, plugins, organization and maintenance.
+The [current project status](design/mobile/status.md#typescript-sdk-status)
+separates recipe coverage, tested package behavior and real-producer evidence.
+Complete success/failure/disconnect and recovery outcomes remain qualification
+work; a method being listed or callable does not establish its full workflow.
 
 The [mobile delivery protocol inventory](design/mobile/protocol-coverage.md)
 accounts for every current method and notification, with router scope, reserved
@@ -391,9 +391,10 @@ and the launch/updated notification. It writes a project override, checks the
 layer and effective configuration, restores the original layer and checks that
 the global layer stayed unchanged. See the package README for invocation and
 concurrent-writer limitations. The repository-trust recipe adds trustRepo, stale-hash rejection and fresh
-revision confirmation. The current cookbook contains twenty-two recipes covering
-65 of 91 catalog method names and three notification names. These are
-recipe-presence counts, not whole-protocol or failure-path coverage. Run the
+revision confirmation. The current cookbook contains 34 recipes covering
+90 of 91 catalog method names and all 36 notification names. The remaining
+method is reserved and intentionally unsupported. These are recipe-presence
+counts, not whole-protocol producer or failure-path coverage. Run the
 packaged coverage report below for the current inventory and remaining gaps.
 
 The target is a fixture-backed cookbook covering every supported catalog method

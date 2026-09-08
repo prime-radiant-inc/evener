@@ -1,0 +1,42 @@
+{
+  "schema": "evener.mobile.status.v1",
+  "date": "2026-09-08",
+  "platformScope": "iOS-only v1: iPhone and iPad",
+  "compiledSourceCommit": "fe403ee3ae26ce6e039343ba6d35084faa958cb0",
+  "sourceChangesDuringGate": "documentation only; pre-existing Apple diff preserved",
+  "canonicalGate": {
+    "startedAt": "2026-09-08T16:22:30.618945+00:00",
+    "sourceHead": "a35a5cfaca91738240de5afd7a8a22b8dd0c7138",
+    "compiledSourceCommit": "fe403ee3a",
+    "log": "/tmp/evener-mobile-docs-gate.log",
+    "finishedAt": "2026-09-08T16:30:15.401261+00:00",
+    "exitCode": 0,
+    "command": "make merge-approval-gate",
+    "logSha256": "01711c07ceefeab1e2bf4d50424a75a61f8b55d7fb87ec712841f2c1cd428ef5",
+    "phases": [
+      "lint",
+      "build",
+      "full Go modules and frontend",
+      "native tests and TypeScript",
+      "outside-checkout SDK package qualification"
+    ]
+  },
+  "vet": {
+    "sourceCommit": "fe403ee3a",
+    "command": "make vet",
+    "exitCode": 0,
+    "log": "/tmp/evener-mobile-docs-vet.log",
+    "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "nativeTests": {
+    "passed": 685,
+    "files": 74,
+    "typeScript": "passed"
+  },
+  "preservedAppleDiffSha256": "f7613605cc9a6c37f6ba048f17c0f90951b8798ccd799ed86cf7dd5490a4fcba",
+  "limits": [
+    "No physical-device, VoiceOver, performance or signed distribution acceptance from these checks.",
+    "Browser geometry and race gates are separate; this documentation run did not repeat them.",
+    "Native device and packaged-SDK producer artifacts have distinct identities recorded in their feature receipts."
+  ]
+}

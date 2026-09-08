@@ -1,14 +1,18 @@
 # Evener native mobile
 
-A shared Expo / React Native client for iOS and Android, under active development.
-It uses the shared AppWire client and selected services/state modules. The native
-UI is in this directory; the old Tauri UI is not loaded or used as feature authority.
-Current web/server behavior defines scope.
+A shared Expo / React Native client whose current release scope is iOS-only v1
+(iPhone and iPad). Android sources, build instructions and historical evidence
+are retained for later delivery and are explicitly deferred. It uses the shared
+AppWire client and selected services/state modules. The native UI is in this
+directory; the old Tauri UI is not loaded or used as feature authority. Current
+web/server behavior defines scope.
 
 The [delivery plan](../docs/superpowers/plans/2026-09-06-native-mobile-delivery.md)
 defines sequencing, worker ownership and release acceptance. The
 [backlog](../docs/design/mobile/backlog.md) tracks remaining work. Implemented
-features below are not a claim of complete native or release qualification.
+features below are not a claim of complete native or release qualification. See
+the [current status](../docs/design/mobile/status.md), [iOS v1 remaining work](../docs/design/mobile/ios-v1-remaining.md),
+and [acceptance ledger](../docs/design/mobile/acceptance.md).
 
 ## Run on simulators
 
@@ -19,10 +23,12 @@ NODE_OPTIONS=--dns-result-order=ipv4first npm start -- --localhost --port 8087
 ```
 
 The initial slice used Expo Go; the current app requires standalone development
-or Release builds for its native dependencies and qualification. Android tooling
-must be on PATH, or set ANDROID_HOME to
-your SDK directory. On this Mac it is `/opt/homebrew/share/android-commandlinetools`.
-The DNS option keeps localhost on IPv4 for the simulator and adb reverse.
+or Release builds for its native dependencies and qualification. iOS simulator
+qualification is current. Android tooling and the Android commands below are
+retained for deferred work; Android qualification does not block iOS v1. Android
+tooling must be on PATH, or set `ANDROID_HOME` to your SDK directory. On this Mac
+it is `/opt/homebrew/share/android-commandlinetools`. The DNS option keeps
+localhost on IPv4 for the simulator and adb reverse.
 
 Add a hub with its name, HTTP(S) origin, and bearer token. For a hub on this Mac,
 iOS uses `http://127.0.0.1:9180`, Android Emulator uses `http://10.0.2.2:9180`.
@@ -30,7 +36,8 @@ Physical phones need a reachable LAN/VPN address. Credentials are separate
 SecureStore items; hub IDs are stored in a secure index. Never put tokens in
 source, a URL, environment variables exposed by Expo, or screenshots.
 
-For standalone development builds, use `npm run ios` / `npm run android`.
+For standalone development builds, use `npm run ios`. The historical Android
+command is `npm run android` when deferred Android work resumes.
 `npx expo prebuild` generates the native directories from app.json. Both native
 platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
@@ -41,8 +48,11 @@ Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.
 ```sh
 npm test
 npm run check
-npx expo export --platform ios --platform android
+npx expo export --platform ios
 ```
+
+The Android export remains available for deferred platform work with
+`npx expo export --platform android`.
 
 The optional read-only production smoke check loads a credential file without
 logging its contents and uses the real AppWire client and conversation service:
@@ -70,22 +80,30 @@ No script in the default tests calls a real hub or LLM provider.
   manual recovery, never automatically resent.
 - Conversation and creation drafts persist in SQLite, scoped by hub and session
   as applicable, including images and uncertain-delivery state. Saved navigation
-  restores supported destinations; reader-position restoration remains open.
+  and reader-position restoration are implemented; the iPhone largest-text cold
+  restore is qualified on source `7944778e0`, while broader reflow combinations
+  and iPad reader qualification remain open.
 - Native screens cover questions/approvals, queue operations, goals/tasks/activity,
   provider instances and sign-in, plugins/marketplaces, hub information and launch
-  configuration/trust. Full parity, upgrade/recovery and failure/lifecycle
-  acceptance are unfinished; see the delivery plan rather than historical claims
-  that these surfaces are absent.
+  configuration/trust. These advertised operations are wired in source and await
+  current-artifact workflow qualification. Full parity, upgrade/recovery and
+  failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
 - Historical production roster reads were slow. Representative-data measurement
   and normal deployment verification remain open; tiny fixtures do not establish
   production responsiveness. Voice/barge-in is outside v1.
 
 Native screenshots and verification observations are recorded in the task's
-handoff report. Standalone Release builds were installed and launched on
-iPhone 17 Pro (iOS 26.5) and Pixel 7 (Android 35) simulators. Both saved an
-authenticated hub and created a session against an isolated real Evener hub
-using the scripted test provider. iOS retained its saved connection after restart.
-Physical-device behavior and distribution signing remain unverified.
+handoff report and the linked acceptance evidence. Current native source
+`7944778e0` includes the saved-reader cold-restore fix; the native gate reports
+685 tests across 74 files plus TypeScript. The iPhone exact saved m12 anchor at
+largest text was restored across installed launch plus two independent cold
+launches. The latest iPad checks used the same artifact and qualified clean/cold
+launch, the empty-hub form's keyboard dismissal and largest-text scrolling.
+Landscape, VoiceOver and iPad
+reader cold restoration remain unqualified. Physical-device behavior,
+distribution signing, performance and the final workflow matrix remain open.
+Earlier iPhone and Android simulator evidence is retained as historical context;
+Android qualification is deferred beyond iOS-only v1.
 
 ## Safe playground
 
@@ -113,7 +131,7 @@ the application entitlement required by SecureStore, so saving hub credentials
 fails with Keychain error -34018. No paid provisioning profile is needed for
 the simulator.
 
-For an ARM64 Android emulator:
+For deferred Android work on an ARM64 Android emulator:
 
 ```sh
 ./android/gradlew -p android :app:assembleRelease --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
@@ -135,7 +153,12 @@ WebSocket forwarding or fault-injection proxies: they trigger security review
 pauses in this workflow. Exercise transport faults in deterministic client tests;
 native connection checks should use the real hub connection.
 
-The real-hub check exposed follow-up usability gaps: internal prompt-loading
+The historical early-slice real-hub check exposed follow-up usability gaps:
+internal prompt-loading
 notices dominate the initial transcript, and session-creation failures do not
 yet show the specific hub rejection. These checks establish basic creation and
 connectivity, not full conversation usability or complete workflow coverage.
+See the [current status](../docs/design/mobile/status.md) for SDK evidence and
+current qualification boundaries. The latest real SDK shutdown journey received
+`thread/closed` from backend `3284d6ac5`; older failures remain historical `d2d5eedf9`
+evidence.

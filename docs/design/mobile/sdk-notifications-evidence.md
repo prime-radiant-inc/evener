@@ -1,5 +1,10 @@
 # Packaged SDK notification observations — 7 September 2026
 
+For current native implementation and release status, see the [project status](status.md)
+and [acceptance ledger](acceptance.md). The audited union below includes **27 of
+36 notification names** across separately identified packages and fixtures.
+The dated observations remain scoped evidence rather than a release decision.
+
 Source `58d1b079f` adds session, work, streaming and hub observation recipes.
 Together with existing recipes, the cookbook handles 36 notification names and
 90 of 91 method names across 34 recipes. The remaining method is reserved and
@@ -202,7 +207,52 @@ acceptance.
 
 The [additional producer receipt](sdk-additional-producers-evidence.md) qualifies
 six names through actual status transitions, turn lifecycle, and a correlated
-agent item start/delta/completion. The evidence series now covers 21 distinct
+agent item start/delta/completion. The evidence series then covered 21 distinct
 notification names. The delta is correlated by wire item ID; stable transcript
 key and position are verified on started/completed items and canonical readback.
 This is scoped producer evidence, with remaining outcomes and recovery open.
+
+## Queue and thread-close producer evidence
+
+The [queue/close receipt](assets/sdk-queue-close-receipt.json) adds two distinct
+producer names to the dated union: `thread/queueChanged` was observed after a
+real `turn/queue` acknowledgment and canonical queued-entry readback, and the
+current-source run observed the exact target `thread/closed` after shutdown.
+The close run used backend source `3284d6ac5`, retained 28 raw events, and
+confirmed the final canonical thread status was `awaiting`; the earlier failed
+close attempts remain historical and are not counted. The resulting union is
+27 of 36 notification names with scoped producer/readback evidence. This
+reconciles the earlier 21-name summary with the separate real navigation
+invalidation receipt, the two model-setting producer/readback names, and the
+credential update receipt, which were omitted from that historical subtotal.
+
+The [navigation receipt](assets/sdk-navigation-receipt.json),
+[settings receipt](assets/sdk-settings-receipt.json) and
+[credential receipt](assets/sdk-credentials-receipt.json) supply those additional
+names. Each records real mutations, observed notifications and authoritative
+readback; their package and backend identities remain distinct. The nine names
+outside this audited union need consolidated producer evidence or fresh
+qualification; this is not a claim that every historical source was retested.
+
+The audited receipt union is:
+
+`evener/delegate/updated`, `evener/goal/updated`,
+`evener/job/finished`, `evener/job/started`,
+`evener/jobs/treeUpdated`, `evener/navigation/invalidated`,
+`evener/settings/keybindings/changed`,
+`evener/settings/transcriptDisplay/changed`, `evener/steering/injected`,
+`evener/task/updated`, `evener/thread/modelRetry`, `evener/auth/updated`,
+`evener/thread/name/changed`, `item/agentMessage/delta`, `item/completed`,
+`item/reasoning/summaryTextDelta`, `item/started`, `item/toolOutput/delta`,
+`thread/model/changed`, `thread/reasoning-effort/changed`,
+`thread/queueChanged`, `thread/status/changed`,
+`thread/vision-model/changed`, `turn/completed`, `turn/started`,
+`thread/closed`, and `warning`.
+
+This union is producer/readback evidence for the cited bounded fixtures. It does
+not include producer/readback qualification for the other nine catalog names: `thread/started`, `item/agentMessage/reset`,
+`evener/thread/resync`, `evener/launch/updated`, `evener/attention/changed`,
+`evener/marketplace/updated`,
+`evener/plugin/updated`, `evener/sandbox/escalation/requested`, and
+`evener/sandbox/escalation/resolved`. It also does not qualify every outcome or ordering path, continuous
+reconnect/replay, native UI, or release acceptance.

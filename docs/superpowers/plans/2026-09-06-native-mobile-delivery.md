@@ -10,6 +10,11 @@
 
 **Spec:** [Full coverage objective](../specs/2026-09-05-native-mobile-coverage.md), [product philosophy](../../design/mobile/philosophy.md), [style guide](../../design/mobile/style-guide.md), and [acceptance backlog](../../design/mobile/backlog.md).
 
+The [current project status](../../design/mobile/status.md) and
+[iOS v1 remaining work](../../design/mobile/ios-v1-remaining.md) summarize
+verified progress and current gates. The dated checkpoints below preserve
+implementation history.
+
 ## V1 platform scope
 
 Jesse explicitly selected **iOS-only v1** during takeover continuation. Android
@@ -63,10 +68,10 @@ The reusable work cycle is: source-backed gap → whole-workflow design → fail
 **Files:** branch history; `docs/design/mobile/backlog.md`; `mobile-native/README.md`; coverage spec above; `make/testing.mk`; existing `.github/workflows/` gates.
 
 - [x] Preserve the unrelated generated Tauri iOS modifications, checkpoint the branch, and rebase onto freshly fetched main. Rebased onto `3b1c5f82c`, yielding `ee142bd5e`; unrelated edits restored with identical binary diff. Backup: `codex/mobile-before-main-rebase-20260906`.
-- [ ] Run affected generation and repository/native checks after integration. Record the new source revision before dispatching feature edits.
+- [x] Run affected generation and repository/native checks after integration. The [8 September receipt](../../design/mobile/assets/2026-09-08-status-verification.json) records canonical gate and vet exit 0 at compiled source `fe403ee3a`. Repeat affected gates after source changes.
 - [ ] Replace historical status assertions in the coverage inventory with source-verified implementation and qualification columns. Keep historical evidence dated and attributed.
-- [ ] Create one acceptance ledger row per workflow below: web/server source, native source, deterministic tests, real-daemon scenario, iOS evidence, Android evidence, source/build identity, remaining acceptance, owner. Missing evidence stays open.
-- [x] Add explicit native test/typecheck and clean API-package checks to the existing gate ownership. Implemented in `d7075ce74` and corrected/qualified in `cab95068c`: `make test-native`, `make test-api-package`, merge gate and CI ownership. Full repository gate still requires a successful integrated run.
+- [x] Create the [acceptance ledger](../../design/mobile/acceptance.md) with one row per workflow: web/server source, native source, deterministic tests, real-daemon scenario, iOS evidence, Android evidence, source/build identity, remaining acceptance, owner. Missing evidence stays open.
+- [x] Add explicit native test/typecheck and clean API-package checks to the existing gate ownership. Implemented in `d7075ce74` and corrected/qualified in `cab95068c`: `make test-native`, `make test-api-package`, merge gate and CI ownership. Current integrated gate evidence is recorded in the [status page](../../design/mobile/status.md#verification-record).
 
 **Exit:** one source revision, an exhaustive workflow ledger, and gates that actually execute native/package checks. No feature declared absent or finished merely from an old document.
 
@@ -86,7 +91,8 @@ The reusable work cycle is: source-backed gap → whole-workflow design → fail
 **Issues:** MOB-001/002/003/009/011. **Files:** `mobile-native/src/screens.tsx`, `TimelineItem.tsx`, `MarkdownResponse.tsx`, `ComposerSettings.tsx`, `CommandCompletion.tsx`, `TranscriptImages.tsx`, `ImageAttachments.tsx`, `location.ts`; design study and style guide.
 
 - [ ] Update one whole-screen study with identical substantial content for reading, keyboard-open composition, running work, failure and pending decision. Show both themes, iPhone/iPad layouts and large text. Consolidate healthy connection chrome and secondary actions as a screen-level design decision.
-- [ ] Implement reader restoration using message identity and within-message position; define persistence explicitly. Handle pagination, streaming, image reflow and returning from sheets without stealing the reader's place. Scope disclosure and position by hub/session.
+- [x] Implement persisted reader restoration by hub/session, item identity and within-item offset. `7944778e0` fixes virtualized measurement progress during cold restoration; repeated iPhone largest-text launches passed.
+- [ ] Qualify the full pagination, streaming, image reflow and sheet-return combinations on iPhone/iPad without stealing the reader's place. Scoped cold-launch evidence does not close this matrix.
 - [ ] Qualify Markdown, long code/tables, links/copy, multiple and authenticated images, error/loading states and return paths. A displayed source path is not proof that its destination opens.
 - [ ] Exercise long drafts/model names, model/default reasoning, command selection/failure, Send/Steer/Stop/Queue and attachments with real keyboards. Full-width input and reachable controls must coexist with useful reading space.
 
@@ -131,10 +137,11 @@ These can run in parallel after lifecycle contracts stabilize, with disjoint fil
 
 **Issue:** MOB-018. **Files:** `docs/appwire-client.md`, `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/{README.md,package.json,examples/coverage.mjs}` and neighboring examples/tests.
 
-Run this lane alongside packages 1–5, not after them. The current inventory records 90/91 catalog methods across 34 recipes and handles all 36 notification names as catalog entries; [21/36 notification names have scoped producer/readback evidence in the notification series](../../design/mobile/sdk-additional-producers-evidence.md). These are catalog and bounded evidence counts, not complete execution, failure, or outcome coverage.
+Run this lane alongside packages 1–5, not after them. The current inventory records 90/91 catalog methods across 34 recipes and handles all 36 notification names as catalog entries; [27/36 notification names have scoped producer/readback evidence across the audited receipts](../../design/mobile/sdk-notifications-evidence.md#queue-and-thread-close-producer-evidence). These are catalog and bounded evidence counts, not complete execution, failure, or outcome coverage.
 
 - [ ] Map every supported/reserved method and notification from the generated catalog. Link each workflow to executable cases; account for reserved-method rejection separately from usable capabilities.
-- [ ] Add streaming/reset/paging/rejoin recipes first, then mutation recovery and decisions, then management, credentials/plugins, trust and upgrade with their native packages.
+- [x] Add recipes for the supported method and notification catalog, including streaming/rejoin, decisions, management, credentials/plugins, trust and upgrade.
+- [ ] Complete the catalog-derived success/failure/disconnect and producer outcome matrix; recipe presence does not close it.
 - [ ] Explain exact presence/default semantics, errors, event ordering, snapshot reconciliation, lifecycle, identity and recovery without requiring implementation-source reading.
 - [ ] Verify outside-checkout tarball consumers, ESM/CommonJS, declarations without skipped checks, package contents, and the iOS Metro Release bundle. Execute happy/failure cases against real isolated Evener with a scripted provider boundary; verify effects and cleanup.
 
@@ -154,11 +161,14 @@ Run this lane alongside packages 1–5, not after them. The current inventory re
 
 ## Immediate dispatch queue
 
-1. Bot: integrate current main, preserve unrelated work, validate the result.
-2. Luna medium A: current-source workflow/contract ledger and stale inventory correction.
-3. Luna medium B: explicit native/package gate integration using existing tooling.
-4. Luna medium C: lifecycle failure investigation with bounded source ownership; Bot owns simulator reproduction.
-5. After those results: Bot designs the complete conversation journey; Luna workers implement reader continuity, independent decision regressions and SDK streaming recipes in parallel where files do not overlap.
+This historical queue is superseded by the current status snapshot and the
+remaining-work checklist. Do not dispatch the old v4-integration or stale
+inventory work packages again. The canonical gate and separate vet now have a [passing durable receipt](../../design/mobile/assets/2026-09-08-status-verification.json). Current next work is to qualify the remaining iPhone/iPad
+workflow and recovery cases on identity-matched artifacts; complete the SDK
+success/failure/disconnect and notification producer matrix; then run the
+accessibility, performance, physical-device and signing/update release matrix.
+Keep implementation-present items (reader, pin/section, fork, keybindings,
+plugins and hub settings) separate from their still-open qualification.
 
 This sequence supersedes the README's isolated-space-fix first priority. Existing backlog IDs and historical evidence stay intact; this plan supplies dependencies and release criteria, not a reduced scope.
 
@@ -1158,3 +1168,43 @@ cases, VoiceOver and measured performance, physical iPhone/iPad LAN/pairing,
 signing/distribution/update, then final repository and requirement-by-requirement
 release qualification. iOS-only v1 remains approved; Android is preserved and
 its release qualification deferred. These passes do not close the release goal.
+
+## Current status snapshot — 8 September 2026
+
+The [current native status snapshot](../../design/mobile/status.md) is the
+canonical summary. This plan remains the dependency-ordered implementation
+and qualification record; dated checkpoints are provenance, not a
+replacement for current evidence.
+
+Jesse's approved v1 scope is iOS only. Android implementation and evidence are
+preserved, but Android release qualification is deferred. Voice/barge-in is
+outside v1. The current reader source `7944778e0` has repeated largest-text
+cold-launch proof of the exact saved anchor and verified hub-scoped anchor
+removal, with 685 native tests plus TypeScript. The reader result is scoped;
+rich streaming/image combinations, wider iPad reader coverage, VoiceOver,
+physical devices, performance and signing/install/update remain open.
+
+The production shutdown/runtime correction is `4f3e824ac`; exact real-SDK
+`thread/closed` qualification is current at `3284d6ac5`. Close failures tied to
+`d2d5eedf9` came from stale binaries and are historical. The current compiled
+test fix is `fe403ee3a`. Preserve these source/build boundaries in future
+receipts and do not turn a scoped run into a release claim.
+
+The SDK catalog has 91 methods; recipes cover the 90 supported methods and
+all 36 notification names. One method is reserved and unsupported. These counts
+measure recipe/catalog presence; qualified outcomes, failures, disconnects,
+reconnect and replay remain narrower, so whole-SDK readiness is still open.
+Current source inspection finds goals, tasks, activity, plugins and hub
+settings operations wired. Task mutations are not advertised, and native job
+output is selectable. Track their remaining work as separate implementation
+and workflow-qualification items.
+
+The launch-settings path gaps are stale where the [iPad launch-settings
+evidence](../../design/mobile/ipad-launch-settings-evidence.md) records
+successful path/MCP/environment/fallback validation, conflict handling and
+readback. Its remaining global, two-hub, fault, accessibility, Dynamic Type,
+physical-device, performance and signed-update limits still apply.
+
+The [status snapshot](../../design/mobile/status.md#verification-record) records
+the current canonical gate, separate vet result and exact source identity.
+The unrelated Apple changes remain preserved.

@@ -1,6 +1,6 @@
 # Native mobile backlog
 
-Owner: Bot, with Jesse setting product direction. Updated 7 September 2026.
+Owner: Bot, with Jesse setting product direction. Updated 8 September 2026.
 
 This is the working issue backlog for the shared iOS/Android app. Add feedback
 here with a stable ID, observed problem, acceptance criteria and evidence.
@@ -16,6 +16,48 @@ beautiful native experience. Voice/barge-in is outside v1. Feature authority
 is current web behavior, server contracts and Jesse's requests. The old mobile
 UI is not authority. The [capability inventory](../../superpowers/specs/2026-09-05-native-mobile-coverage.md)
 and linked evidence are historical detail; entries below describe open work.
+
+The [current status snapshot](status.md) is the canonical summary of the
+latest native source, artifacts, gates and remaining release work. This
+backlog keeps the detailed issue history and acceptance boundaries; its
+historical checkpoints must not override that snapshot.
+
+## Current status — 8 September 2026
+
+The approved v1 scope is iOS only. Android source, evidence and unresolved
+issues remain preserved for later qualification; Android is not a current v1
+release gate. Voice and barge-in also remain outside v1.
+
+The native reader source `7944778e0` has repeated largest-text cold-launch
+evidence with the exact saved anchor restored, and hub-scoped reader-anchor
+removal is verified. That source has 685 native tests plus TypeScript checks.
+These are scoped reader and storage results, not whole-product release
+acceptance. Rich streaming/image combinations, the wider iPad reader journey,
+VoiceOver, physical devices, performance, signing/install/update and several
+workflow recovery cases remain open.
+
+The production shutdown/runtime correction is `4f3e824ac`; the exact current
+real-SDK `thread/closed` qualification is recorded against `3284d6ac5`.
+Earlier close failures tied to `d2d5eedf9` used stale binaries and remain
+historical. The current compiled test fix is `fe403ee3a`. Do not merge these
+identities into a single release claim.
+
+The SDK catalog has 91 methods; recipes cover the 90 supported methods and
+all 36 notification names. The remaining method is reserved and intentionally
+unsupported. These are recipe/catalog presence counts. The qualified outcome, failure,
+disconnect, reconnect and replay scope is narrower and does not establish
+whole-SDK readiness. Goals, tasks, activity, plugins and hub-settings
+operations found in the current source are wired; task mutations are not
+advertised, and native job output is selectable. Each still needs the
+workflow-level evidence called out in its issue.
+
+The iOS path gaps previously listed for launch settings are stale where the
+[iPad launch-settings evidence](ipad-launch-settings-evidence.md) records
+successful validation, save, conflict handling and readback. Keep only the
+remaining limits in that evidence (global editing, two-hub drafts, fault,
+VoiceOver, Dynamic Type, physical device, performance and signed updates).
+Historical unchecked tasks are implementation-versus-qualification work:
+source wiring alone does not close an issue row.
 
 ## Next work
 
@@ -154,14 +196,17 @@ real-content studies and native examples; no classification guessed from prose;
 no loss of raw details or required actions. Review full screens rather than
 isolated components. Include code, tables, images, tool failure and notifications.
 
-### MOB-003 · P1 · Preserve the reader's place and choices · Open
+### MOB-003 · P1 · Preserve the reader's place and choices · Implemented; qualification open
 
-Disclosure choices now survive row/screen remounts in memory. Reading-position
-restoration, long-list virtualization acceptance and process-restart behavior
-remain incomplete. Streaming must not pull the reader away from older content.
+Disclosure choices survive row/screen remounts in memory. Reader anchors persist
+by hub, session, item identity and within-item offset. The reproduced iPhone
+largest-text cold-launch failure is fixed and verified at `7944778e0`;
+[the receipt](iphone-reader-upgrade-evidence.md) records repeated restoration.
+Long-list, streaming/image reflow and current-artifact iPad reader qualification
+remain open. Streaming must not pull the reader away from older content.
 
 Acceptance: native long-history scroll/return, background/relaunch, pagination,
-image reflow and streaming tests; explicit decision on disk persistence;
+image reflow and streaming tests; verified disk persistence;
 separate hub/session state; no lost draft. See [disclosure evidence](interruption-notices.md).
 
 ### MOB-004 · P1 · Complete multiple-hub operation · Open
@@ -186,11 +231,12 @@ session/item IDs; auth rotation, failed credentials, reconnect, removal and
 switching during a pending operation. Native checks must prove destination
 isolation and preserve unfinished work. Include physical LAN access and pairing.
 
-### MOB-005 · P1 · Complete session and project navigation/management · Open
+### MOB-005 · P1 · Complete session and project navigation/management · Implemented; qualification open
 
-Finish current-web lifecycle, fork/edit/remove and organization workflows,
-pin sections, remaining paging and branch recovery. Existing clear/project
-command work is not full session-management acceptance.
+Lifecycle, fork/remove, favorite/archive, pin-section and related navigation
+routes are implemented. Qualify their current-artifact outcomes, remaining
+paging and branch recovery. Existing route and command coverage is not full
+session-management acceptance.
 
 Acceptance: every offered action maps to a current contract; native empty/error,
 disconnected and uncertain outcomes; correct destination after rename, clear,
@@ -274,7 +320,7 @@ hub switch on both platforms. Never restart or replay sign-in merely because
 an observation timed out. Use scripted auth for deterministic automation;
 real provider acceptance requires an explicitly chosen test account.
 
-### MOB-014 · P1 · Marketplaces and installed plugins · In progress
+### MOB-014 · P1 · Marketplaces and installed plugins · Implemented; qualification open
 
 The installed-plugin controller now implements all six plugin mutations with
 plugin + marketplace identity, external-update refresh, stale-read fencing,
@@ -329,7 +375,7 @@ Acceptance for v1: iOS native lifecycle on an owned fixture marketplace,
 notification refresh, partial loading errors, cross-device changes, long lists,
 large text, disconnect during mutation and hub switching without blind replay.
 
-### MOB-015 · P1 · Hub information and launch settings · In progress
+### MOB-015 · P1 · Hub information and launch settings · Implemented; qualification open
 
 The native Hub settings screen now exposes the typed read-only overview and
 links to Providers/Plugins, replacing their separate session-list actions. Four
@@ -351,10 +397,13 @@ explicit none from inheritance. Both native platforms and independent AppWire
 readbacks exercise these states; 304 native tests pass. See
 [fallback evidence and remaining checks](hub-information-and-launch-settings.md#model-fallback-collection-editor).
 Path lists and file browsing now have 308 passing native tests and both Release
-builds. Android exercises file selection with spaces, directory navigation,
-file-type rejection, directory save/reload and restoration, with independent
-AppWire reads. iOS path checks remain pending because the Mac locked. See
-[path evidence and gaps](hub-information-and-launch-settings.md#path-collection-editor).
+builds. The current iPad launch-settings journey validates path, MCP,
+environment and fallback save/readback plus stale conflict handling; the old
+“iOS path checks remain pending because the Mac locked” wording is historical
+and stale. Global editing, two-hub drafts, fault, Dynamic Type, accessibility,
+physical-device, performance and signed-update qualification remain open. See
+[path evidence and gaps](hub-information-and-launch-settings.md#path-collection-editor)
+and [iPad launch-settings evidence](ipad-launch-settings-evidence.md).
 MCP server specifications now share the resource editor: 311 native tests and
 both builds pass; Android validates/rejects commands, saves/reloads, retains a
 backgrounded draft and removes the fixture, with independent wire readback.

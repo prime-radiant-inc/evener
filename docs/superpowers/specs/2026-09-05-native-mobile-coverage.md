@@ -9,13 +9,17 @@ Android delivery is deferred by Jesse’s explicit takeover-continuation decisio
 Preserve its existing source and historical evidence; Android-specific acceptance
 is not a v1 release gate. Shared correctness and complete SDK coverage remain in scope.
 
-## Historical inventory and current acceptance
+For current implementation, artifact and release status, use the [project status](../../design/mobile/status.md)
+and [acceptance ledger](../../design/mobile/acceptance.md). The coverage map below
+summarizes current wiring; the dated updates preserve historical evidence.
 
-The table below is a historical inventory, not a current absence or completion
-claim. Use the [current acceptance ledger](../../design/mobile/acceptance.md)
-for source verification, exact-build evidence and remaining work.
+## Coverage map — 8 September 2026
 
-Initial inventory at `fabdb86db`, updated through the queue and session-control increments on 5 September 2026. The current
+The table below refreshes implementation and remaining acceptance from the
+original inventory. Use the [current acceptance ledger](../../design/mobile/acceptance.md)
+for source verification and exact-build evidence.
+
+The initial inventory was recorded at `fabdb86db` on 5 September 2026. The current
 [design roadmap](../../design/mobile/README.md) and
 [workflow studies](../../design/mobile/workflow-studies.md) govern visual work.
 No workflow below is certified release-complete.
@@ -28,23 +32,27 @@ behavioral verification, including errors, authorization, and hub isolation.
 | Workflow | Native status | Work still required |
 | --- | --- | --- |
 | Hubs and connections | Named profiles, secure bearer credentials, rename/token editing, switch, reconnect; one active foreground connection | Live credential rotation and editor failure recovery, pairing, physical network and auth recovery checks; deliberate cross-hub navigation and draft isolation |
-| Browse conversations | First 50 distinct sessions, server-side search, paged project catalogs and current/recent/archived project sessions | Full navigation invalidation, real subagent lifecycle acceptance, favorites, pin sections and remaining paging acceptance |
-| Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; approved first visual slice; native Markdown/code installed with initial copy and dark-mode evidence | Complete rich-text interaction/accessibility validation, full gallery accessibility/authenticated-image acceptance, long-transcript performance, reading-position restoration and accessible disclosure |
+| Browse conversations | First 50 distinct sessions, server-side search, paged project catalogs and current/recent/archived project sessions; live invalidation and nested related-session navigation are implemented | Remaining current-artifact lifecycle/fault acceptance, favorites/pin-section browsing and representative-device paging/accessibility checks |
+| Read conversation | Shared canonical projection, older history, expandable activity and grouped internal details; native Markdown/code; saved item/offset and Latest restoration are implemented, with largest-text iPhone cold restoration verified | Complete rich-text interaction/accessibility validation, authenticated-image recovery, current-artifact iPad reader recovery, long-transcript performance and VoiceOver/accessibility |
 | Compose | Text send/steer/queue/stop, durable per-hub/session drafts, queue inspection/cancel/promotion/drain and idle recovery; native image selection, durable images and transcript gallery; inline catalog-command/skill completion; real-daemon delivery evidence | Built-in command routing and command execution acceptance (see command-completion.md), queue-specific uncertain/reconnect/stale-view acceptance and final-head running-turn regression |
 | Create session | Native project/harness/model/reasoning/prompt flow; real isolated Evener creation manually exercised on both standalone platforms | Large catalogs, directory assistance, actionable validation, physical keyboard/accessibility coverage and final-head regression checks |
-| Manage session | Native rename, context compaction and confirmed runtime stop; both-platform isolated real-daemon checks | Fork, clear, explicit lifecycle controls, disconnected/uncertain action acceptance, accessibility and physical-device verification |
-| Model and launch settings | Model/reasoning selection during creation and in the composer for existing sessions | Vision selection, reasoning fault/a11y acceptance, launch layers, schema validation and repository trust |
+| Manage session | Native rename, compaction, confirmed stop, clear continuation, ordinary fork and deletion/recovery routes are implemented | Current-artifact fork/remove journeys, disconnected/uncertain actions, native compaction effects, accessibility and physical-device verification |
+| Model and launch settings | Model/reasoning selection during creation and in the composer; launch layers, trust and environment/fallback/MCP/path settings are implemented | Vision selection, schema/fault/accessibility coverage and current-artifact settings matrix |
 | Goals and work | Goal set/edit/clear through the composer, live status and iterations; native grouped task reader; Activity tree and paged job output, with both-platform real-hub evidence in goal-controls.md, task-list.md and activity.md | Goal/task accessibility, scale and final release acceptance; real delegate navigation and branch paging, native activity fault/reconnect checks, full metadata and output presentation |
 | Approvals and questions | Sandbox approval sheet, explicit allow/deny, live resolution and stale request guards; automated and controlled-wire native evidence in `docs/design/mobile/approval-evidence.md`. Structured question sheet with explicit choices, written alternatives, exact-definition selection persistence and durable answer delivery; evidence in `docs/design/mobile/question-evidence.md` | Real sandbox execution/resumption and native fault/accessibility acceptance; final-head multi-question and race acceptance (both platforms now have real harness pause/resume evidence in `docs/design/mobile/web-parity-audit.md`), question accessibility/fault acceptance and other user decision surfaces |
-| Hub navigation | Project pin/favorite and project/session archive/unarchive in row actions; both-platform isolated-hub checks | Project/session removal, session pin assign/unpin, section rename/delete and pinned browsing |
-| Provider authentication | Implemented native provider and sign-in surfaces; v4 credential JSON migration at `06e879aa1` | Final-build both-platform login/key/JSON/device-flow, lifecycle and credential isolation acceptance |
-| Instances | Native list/create/edit/remove/default controllers and screen exist | Final-build both-platform mutation/reconciliation and large-catalog acceptance |
-| Plugins and marketplaces | Native plugin and marketplace screens/controllers exist | Verify every offered operation against current contracts; real Git update, failure and both-platform acceptance |
-| Hub preferences | Native hub overview and launch settings exist | Transcript preferences, keybindings and hub upgrade require current-source coverage and native qualification |
-| Native distribution | Standalone simulator/emulator release builds and installation recorded; iOS credential persistence checked | Distribution signing, physical devices, final-head both-platform regression and performance evidence |
+| Hub navigation | Project/session favorite/archive, removal, project pinning, session pin assignment/unpin, pin-section lifecycle and pinned browsing routes are implemented | Current-artifact pin/section/removal journeys, disconnected recovery, cross-hub invalidation and accessibility |
+| Provider authentication | Implemented native provider and sign-in surfaces; v4 credential JSON migration at `06e879aa1` | Final-build iPhone/iPad login/key/JSON/device-flow, lifecycle and credential isolation acceptance |
+| Instances | Native list/create/edit/remove/default controllers and screen exist | Final-build iPhone/iPad mutation/reconciliation and large-catalog acceptance |
+| Plugins and marketplaces | Native plugin and marketplace screens/controllers exist | Verify every offered operation against current contracts; real Git update, failure and iPhone/iPad acceptance |
+| Hub preferences | Native hub overview, launch settings, transcript preferences, keybindings and durable hub-upgrade review/recovery controllers are implemented | Current-artifact settings/upgrade journeys, stale/reconnect/fault cases, accessibility, iPad and signed-update qualification |
+| Native distribution | Standalone simulator/emulator release builds and installation recorded; iOS credential persistence checked | Distribution signing, physical iPhone/iPad devices, final-head iOS regression and performance evidence |
 | Design quality | Approved research, philosophy, style guide, lookbook and screen studies; first visual slice installed on both platforms | Further native interaction refinement, rich rendering, accessible visual system and measured fluency |
 
-## Verification boundaries
+## Historical verification boundaries — 5 September 2026
+
+The following records the initial slice and its then-open work. Later sections
+record subsequent increments; the current status and acceptance ledger above
+supersede these historical source, test-count and platform-scope descriptions.
 
 - The first slice was manually exercised in Expo Go on iOS26.5 and Android35.
   Production checks read the local hub. Scripted playground mutations prove the
@@ -62,7 +70,7 @@ behavioral verification, including errors, authorization, and hub isolation.
   release APK; see [artifact identity and observations](../../design/mobile/android-runtime-evidence.md).
   Complete final-head and lifecycle coverage remains outstanding. These are
   historical observations, not freshly repeated final-head manual results.
-- Current source anchors: `mobile-native/src/screens.tsx` (four-route shell,
+- Initial source anchors: `mobile-native/src/screens.tsx` (four-route shell,
   first-page roster, composer), `ConnectionProvider.tsx` (one foreground client),
   `newSession.ts` (creation state), and `TimelineItem.tsx` / `MarkdownResponse.tsx` (native rich-text rendering).
   The shared `mobile/src/services/attachments.ts` explicitly remains a pure
