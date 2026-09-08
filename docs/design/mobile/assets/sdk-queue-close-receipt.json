@@ -24,11 +24,65 @@
   "threadClosed": {
     "status": "unqualified",
     "reason": "matching thread/closed was not observed before the bounded 30-second tripwire in the separate fresh fixture after an empty thread/shutdown acknowledgment",
-    "evidenceRoot": "/tmp/evener-sdk-producers-final-SqGtdW/run/qualification"
+    "evidenceRoot": "/tmp/evener-sdk-producers-final-SqGtdW/run/qualification",
+    "attempts": [
+      {
+        "fixtureRoot": "/tmp/evener-sdk-close-run-YFL38i",
+        "status": "unqualified",
+        "targetRef": "local:034LCKvi930wqGmW0mx10P",
+        "targetThreadId": "034LCKvi930wqGmW0mx10P",
+        "rawEventsFinal": "/tmp/evener-sdk-close-run-YFL38i/run/qualification/raw-events-final.json",
+        "rawEventsFinalSha256": "9b54b2fdb07e071e7befba8ade4a1e98eb5fa746599ea8efb39c52365758f304",
+        "rawEventsJsonl": "/tmp/evener-sdk-close-run-YFL38i/run/qualification/raw-events.jsonl",
+        "rawEventsJsonlSha256": "fde781d1bd2a02afa138cc2f0e77edcc134251478e28043841f0ab99e8f43604",
+        "rawEventCount": 26,
+        "observedMethods": [
+          "turn/started",
+          "item/completed",
+          "thread/status/changed",
+          "evener/thread/modelRetry",
+          "thread/queueChanged",
+          "item/started",
+          "item/reasoning/summaryTextDelta",
+          "item/agentMessage/delta",
+          "turn/completed",
+          "evener/navigation/invalidated",
+          "evener/attention/changed"
+        ],
+        "providerRecords": [
+          [
+            3,
+            503
+          ],
+          [
+            4,
+            200
+          ],
+          [
+            5,
+            200
+          ]
+        ],
+        "daemonPort": 57812,
+        "reason": "No exact matching thread/closed arrived during the 30-second awaited wait after thread/shutdown; process then exited."
+      }
+    ],
+    "cleanupProof": "/tmp/evener-sdk-close-run-YFL38i/cleanup-proof.json",
+    "binaryHashes": {
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+      "scripted-provider": "d8386955440cc23ec3b8cd6e85da264f34e843c05a88fb93c854e985dc175a15"
+    },
+    "helperHashes": {
+      "fixture.py": "8027eb5f06006a8f6812e55af43ab11301808487e0d7f873ebaac54b6330d598",
+      "setup.mjs": "63706cb6ba808fd8cf99f8478067bd99889f0f7f726b85c6f0dc6c00755e32b7",
+      "run.mjs": "c13b19513d5477853a153d78afd01882293929b287d421d9efeb6b6328f61c08",
+      "run-await-close.mjs": "3d9088dad761e89ddf5e02983e5be1a736f6397c6428603ea79032f2b674adfb"
+    }
   },
   "limits": [
     "No thread/closed producer claim",
     "No native or live-model claim",
-    "The failed awaited runner did not write its in-memory event list before the tripwire; pre-shutdown records are retained"
+    "Earlier final-SqGtdW runner had a separate pre-shutdown-only limitation; the close-run fixture writes every incoming event immediately and saves the final list in finally."
   ]
 }
