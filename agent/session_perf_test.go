@@ -698,6 +698,8 @@ func TestSession_ProjectDocsLoadedOnceAtInit(t *testing.T) {
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
+		// The count below is of repo docs only, so the personal doc is pointed at nothing regardless of the environment.
+		AgentsDocPath: filepath.Join(dir, "no-personal-AGENTS.md"),
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
