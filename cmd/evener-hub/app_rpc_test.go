@@ -11038,6 +11038,24 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 			*root = t.TempDir()
 		}
 	}
+	// credentials.toml gets the same treatment, and needs its own default
+	// because no root reaches it: newHubAuthControllerWithStore ignores the
+	// state root it is handed and falls back to the process-wide
+	// XDG-derived store, so parallel tests calling evener/auth/apiKey/set or
+	// apiKey/clear would overwrite each other's keys. CredentialsPath is the
+	// same file, as in production (main.go loads the store from
+	// cmdutil.CredentialsPath and hands children that path).
+	if cfg.CredsStore == nil {
+		credsPath := filepath.Join(t.TempDir(), "credentials.toml")
+		store, err := credentials.LoadStore(credsPath)
+		if err != nil {
+			t.Fatalf("LoadStore(%s): %v", credsPath, err)
+		}
+		cfg.CredsStore = store
+	}
+	if cfg.CredentialsPath == "" {
+		cfg.CredentialsPath = cfg.CredsStore.Path()
+	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
@@ -11080,6 +11098,39 @@ func TestHubRPCTestServerGivesEachTestItsOwnRoots(t *testing.T) {
 				t.Errorf("%s resolved to the package-wide default %q", root.name, root.shared)
 			}
 		}
+	}
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnCredentials pins the credential half
+// of the same contract. newHubAuthControllerWithStore ignores its state-root
+// argument, so a nil CredsStore lands on the process-wide XDG-derived
+// credentials.toml: two parallel tests calling evener/auth/apiKey/set read
+// each other's keys, and one calling apiKey/clear wipes the other's.
+func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	shared := cmdutil.CredentialsPath()
+	var paths []string
+	for i, cfg := range []hubcore.WebConfig{firstWeb.cfg, secondWeb.cfg} {
+		if cfg.CredsStore == nil {
+			t.Errorf("server %d has a nil CredsStore; the auth controller falls back to the process-wide store", i)
+			continue
+		}
+		paths = append(paths, cfg.CredsStore.Path())
+		if cfg.CredsStore.Path() == shared {
+			t.Errorf("server %d keeps credentials at the process-wide default %q", i, shared)
+		}
+		if cfg.CredentialsPath != cfg.CredsStore.Path() {
+			t.Errorf("server %d has CredentialsPath %q but a store at %q; a spawned child resolves keys from a different file than the hub writes",
+				i, cfg.CredentialsPath, cfg.CredsStore.Path())
+		}
+	}
+	if len(paths) == 2 && paths[0] == paths[1] {
+		t.Errorf("both servers keep credentials at %q; the fixture is not isolating them", paths[0])
 	}
 }
 
