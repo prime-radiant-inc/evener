@@ -15,8 +15,11 @@
 // reason.
 import { type ReactNode, useId, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
-import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
-import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
+import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
+import { ModelCatalog } from "../../widgets/modelCatalog";
+import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets/modelCatalog";
+import { PathField } from "../../widgets/pathfield";
+import type { PathFieldKind } from "../../widgets/pathfield";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { asEnvEntries, asMcpList, asStringList, inheritedItems } from "../settings/sections/launchShared/inherited";
 import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
