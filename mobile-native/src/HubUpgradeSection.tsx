@@ -8,6 +8,7 @@ export interface HubUpgradeSectionProps {
 	state: UpgradeState;
 	onStart: () => void;
 	onRefresh: () => void;
+	onReviewAnother: () => void;
 	disabled?: boolean;
 	runningIdentity?: { version?: string; commit?: string };
 }
@@ -45,6 +46,7 @@ export function HubUpgradeSection({
 	state,
 	onStart,
 	onRefresh,
+	onReviewAnother,
 	disabled = false,
 	runningIdentity,
 }: HubUpgradeSectionProps) {
@@ -62,8 +64,10 @@ export function HubUpgradeSection({
 	const overview = "overview" in state ? state.overview : undefined;
 	const running = overview?.hub ?? runningIdentity;
 	const error =
-		state.kind === "uncertain" || state.kind === "storageUnavailable"
-			? state.message
+		state.kind === "installed" ||
+		state.kind === "uncertain" ||
+		state.kind === "storageUnavailable"
+			? (state.message ?? null)
 			: null;
 
 	return (
@@ -99,9 +103,14 @@ export function HubUpgradeSection({
 				</Copy>
 			)}
 			{(state.kind === "installed" || state.kind === "uncertain") && (
-				<Action disabled={disabled} tone="quiet" onPress={onRefresh}>
-					Refresh running version
-				</Action>
+				<>
+					<Action disabled={disabled} tone="quiet" onPress={onRefresh}>
+						Refresh running version
+					</Action>
+					<Action disabled={disabled} tone="quiet" onPress={onReviewAnother}>
+						Review another update
+					</Action>
+				</>
 			)}
 			<ErrorMessage message={error} />
 		</View>
