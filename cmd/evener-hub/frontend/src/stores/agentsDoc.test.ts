@@ -62,6 +62,94 @@ describe("fetch", () => {
   test("throws when no client is connected", async () => {
     await expect(agentsDocStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
+
+  // Only the most recently started read may land, exactly as
+  // stores/credentials.ts fences its own: an overlapping older response
+  // carries a view of the file that is already out of date, and the section
+  // syncs its draft off whatever `doc` holds.
+  test("an older fetch that resolves last does not overwrite the newer one", async () => {
+    const fake = connectFakeClient();
+    let finishOlder!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishOlder = resolve;
+        }),
+    );
+    const older = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+
+    fake.on("evener/settings/agentsDoc/get", () => DOC);
+    await agentsDocStore.getState().fetch();
+
+    finishOlder({ ...DOC, content: "# older\n" });
+    await older;
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
+
+  test("a late response from a replaced client is dropped", async () => {
+    const first = connectFakeClient();
+    let finishFirst!: (doc: AgentsDocResponse) => void;
+    first.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishFirst = resolve;
+        }),
+    );
+    const interrupted = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+
+    // Scripted before connecting: the replacement's own reconnect refetch
+    // fires the moment it becomes the store's client.
+    const second = new FakeClient("ready");
+    second.on("evener/settings/agentsDoc/get", () => DOC);
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+
+    finishFirst({ ...DOC, content: "# from the dead socket\n" });
+    await interrupted;
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
+});
+
+// An automatic reconnect reuses the same AppwireClient, so a socket drop and
+// recovery is a state transition and nothing else. The broadcasts that landed
+// while it was down are gone, so the store has to re-read the file itself.
+describe("reconnect", () => {
+  test("a reconnect on the same client refetches", async () => {
+    const fake = connectFakeClient();
+    const away: AgentsDocResponse = { ...DOC, content: "# while we were away\n" };
+    let calls = 0;
+    fake.on("evener/settings/agentsDoc/get", () => {
+      calls += 1;
+      return calls === 1 ? DOC : away;
+    });
+    await agentsDocStore.getState().fetch();
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    expect(agentsDocStore.getState().doc).toEqual(away);
+  });
+
+  test("a reconnect before anything was requested fetches nothing", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/settings/agentsDoc/get", () => DOC);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.calls).toEqual([]);
+    expect(agentsDocStore.getState().doc).toBeNull();
+  });
 });
 
 describe("save", () => {

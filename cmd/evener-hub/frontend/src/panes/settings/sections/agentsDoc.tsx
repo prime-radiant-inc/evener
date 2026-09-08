@@ -14,7 +14,6 @@
 import { useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../protocol/errors";
 import { agentsDocStore, useAgentsDocStore } from "../../../stores/agentsDoc";
-import { useConnectionStore } from "../../../stores/connection";
 import { Button, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
@@ -45,15 +44,12 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const client = useConnectionStore((s) => s.client);
   const toast = useToasts();
 
-  // `client` is a trigger-only dependency, never read here: a drop replaces
-  // the wired client outright (shell/ConnectionBanner.tsx's retry), and the
-  // broadcasts that landed while the socket was down are gone, so the fresh
-  // client has to re-read the file. The content-keyed effect below is what
-  // keeps that refetch from taking a dirty draft with it.
-  useConnectedEffect(() => agentsDocStore.getState().fetch(), [client]);
+  // Reconnects are the store's business (stores/agentsDoc.ts refetches on
+  // every one); this is the mount read. The content-keyed effect below is
+  // what keeps either of them from taking a dirty draft with it.
+  useConnectedEffect(() => agentsDocStore.getState().fetch(), []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the only trigger; draft and baseline are read at that moment, not watched
   useEffect(() => {

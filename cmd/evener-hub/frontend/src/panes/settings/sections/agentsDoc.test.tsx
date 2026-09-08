@@ -233,17 +233,19 @@ test("a changed broadcast echoing this client's own save leaves later keystrokes
   expect(screen.queryByRole("status")).toBeNull();
 });
 
-// A dropped socket is replaced by a whole new client (ConnectionBanner's
-// retry), and the editor heard no `changed` broadcast while it was down. A
-// one-shot mount fetch would leave it holding pre-drop content, and the next
-// Save would push that over whatever the reconnected hub now has.
-test("a reconnect on a fresh client refetches the file", async () => {
-  connectFakeClient();
+// An automatic reconnect keeps the same client - only a banner retry brings
+// a fresh one - and the editor heard no `changed` broadcast while the socket
+// was down. A one-shot mount fetch would leave it holding pre-drop content,
+// and the next Save would push that over whatever the reconnected hub has.
+test("a reconnect refetches the file", async () => {
+  const fake = connectFakeClient();
   renderSection();
   await waitFor(() => expect(editor().value).toBe("# hi\n"));
 
   act(() => {
-    connectFakeClient({ ...DOC, content: "# while we were away\n" });
+    fake.on("evener/settings/agentsDoc/get", () => ({ ...DOC, content: "# while we were away\n" }));
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
   });
   await waitFor(() => expect(editor().value).toBe("# while we were away\n"));
 });

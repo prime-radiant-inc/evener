@@ -40,6 +40,14 @@ export interface AgentsDocStoreState {
   save(content: string): Promise<AgentsDocResponse>;
 }
 
+// Only the most recently started read may land: a response from an
+// overlapping older fetch, or from a client the store has since replaced,
+// carries a view of the file that is already out of date. requestedDoc is
+// what tells the reconnect subscriber below that a view has asked for this
+// file at all.
+let requestVersion = 0;
+let requestedDoc = false;
+
 export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
   doc: null,
   loading: false,
@@ -47,11 +55,15 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
 
   async fetch() {
     const client = requireClient();
+    requestedDoc = true;
+    const version = ++requestVersion;
     set({ loading: true, error: null });
     try {
       const doc = await client.request("evener/settings/agentsDoc/get", {});
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ doc, loading: false });
     } catch (err) {
+      if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });
     }
   },
@@ -92,13 +104,36 @@ function attachNotifications(client: AppwireClientLike | null): void {
 // React to the connection store rather than reading it once: this module can
 // be evaluated before AppShell's connect() effect runs (stores/extensions.ts
 // documents the mount-order race in full).
-connectionStore.subscribe((state) => attachNotifications(state.client));
+connectionStore.subscribe((state, previous) => {
+  if (state.client !== previous.client || state.state !== previous.state) {
+    requestVersion += 1;
+  }
+  attachNotifications(state.client);
+  // Once a view has read the file, every reconnect has to re-read it - an
+  // automatic one reuses this same client, so a drop and recovery is a state
+  // transition and nothing else. The `changed` broadcasts that landed while
+  // the socket was down are gone, and the next Save would push pre-drop
+  // content over whatever the hub now has.
+  if (
+    requestedDoc &&
+    state.client &&
+    state.state === "ready" &&
+    (state.client !== previous.client || previous.state !== "ready")
+  ) {
+    void agentsDocStore
+      .getState()
+      .fetch()
+      .catch(() => {});
+  }
+});
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
 
 // resetAgentsDocStoreForTests resets the singleton between tests, including
 // the module-private wiring above. No production code should ever call this.
 export function resetAgentsDocStoreForTests(): void {
+  requestVersion += 1;
+  requestedDoc = false;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
