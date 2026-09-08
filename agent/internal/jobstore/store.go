@@ -802,6 +802,13 @@ func (s *Store) Close() error {
 // check readAllLocked uses. A foreign append between two loads changes the
 // size or mtime, fails the check, and forces the full read-and-fold — so
 // callers that depend on seeing foreign appends instantly still see them.
+// The trust check alone is not the whole story: with stale filesystem
+// metadata an earlier load can leave the cursor's consumed offset ahead of
+// the size it recorded, and a stat that still reports that size would keep
+// passing while foreign appends pile up past it. A hit therefore also
+// requires the cursor to have consumed through the reported size — the same
+// condition readAllLocked uses to skip its rescan — so any such divergence
+// forces the full read-and-fold.
 // A store whose cursor is disabled (see fileCursor) never reports a hit:
 // its filesystem cannot resolve a write by size and mtime, so a stat cannot
 // prove the bytes are unchanged and every load re-reads, as before.
@@ -816,7 +823,7 @@ func (s *Store) foldCurrentLocked() (bool, error) {
 		}
 		return false, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
 	}
-	return s.cursorTrustedLocked(info), nil
+	return s.cursorTrustedLocked(info) && info.Size() == s.cursor.offset, nil
 }
 
 func (s *Store) foldJobsHitLocked() (map[string]*JobRecord, bool, error) {
