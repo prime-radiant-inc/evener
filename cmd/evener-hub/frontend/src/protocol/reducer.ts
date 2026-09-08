@@ -312,13 +312,7 @@ function imagesToItemImagesForSession(
   // through to the bare name gave the browser a relative URL that 404s, and
   // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
   return images.map((img) => ({
-    src:
-      img.url ??
-      metadataShaImageSrc(img, imageSessionRoute) ??
-      inlineImageSrc(img) ??
-      img.path ??
-      img.name ??
-      "",
+    src: img.url ?? metadataShaImageSrc(img, imageSessionRoute) ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
     name: img.name,
     path: img.path,
   }));
@@ -340,7 +334,7 @@ function imagesToItemImagesForSession(
 // the caller's ref — see imagesToItemImagesForSession); without it there is
 // nothing fetchable to prefer and the data-URI fallback stands.
 function metadataShaImageSrc(img: InputItem, imageSessionRoute?: string): string | undefined {
-  const sha = img.metadata?.["sha"];
+  const sha = img.metadata?.sha;
   if (sha === undefined || sha === "" || imageSessionRoute === undefined || imageSessionRoute === "") {
     return undefined;
   }
@@ -761,9 +755,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
-    turns: mergeToolCallsByCallId(
-      (thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute)),
-    ),
+    turns: mergeToolCallsByCallId((thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.evener.queue,
     pendingMutations: thread.evener.pendingMutations ?? [],
