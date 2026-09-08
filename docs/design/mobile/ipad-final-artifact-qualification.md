@@ -8,9 +8,10 @@ Device: iPad simulator `6462A0FC-A190-4F08-A0CC-9B7E6C792AEC`. Artifact: Release
 - Installation succeeded through XcodeBuildMCP on the specified iPad only.
 - A clean launch and a terminate/relaunch cycle both showed the empty `Evener · Hubs` screen with `Saved hubs`, `Add hub`, four empty inputs, and disabled review/save actions.
 - Post-install hashes matched the pre-install hashes exactly.
+- A direct `idb` tap on the observed Hub name field at simulator point `(160,292)` revealed the iPad software keyboard; a direct tap on the keyboard dismissal control returned to the unchanged empty form. No text was entered.
 
 Private captures: `/tmp/evener-ipad-final-current.png` and `/tmp/evener-ipad-cold-relaunch.png`.
 
 ## Not qualified
 
-The direct accessibility tree exposed the simulator’s `DockFolderViewService` rather than the app controls. A coordinate focus attempt did not produce a keyboard-visible state, so keyboard reveal/dismiss, largest text, landscape, VoiceOver, pairing, and reader cold-restore remain unqualified on iPad. The final device state was left at empty Hubs, normal text, portrait.
+The direct accessibility tree exposed the simulator’s `DockFolderViewService` rather than the app controls. Keyboard reveal/dismiss is qualified by the direct simulator interaction above; largest text, landscape, VoiceOver, pairing, and reader cold-restore remain unqualified on iPad. The final device state was left at empty Hubs, normal text, portrait.
