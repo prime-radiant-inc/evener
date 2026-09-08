@@ -1,0 +1,141 @@
+{
+  "schema": "evener.sdk.message-reset.producer.v1",
+  "status": "passed",
+  "sourceHead": "9bb59d6439f73b54dda54a1704e8b2281610c465",
+  "backendSourceRevision": "3284d6ac5",
+  "backendBinarySHA256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+  "fixture": {
+    "root": "/private/tmp/evener-sdk-message-reset.WDuvWK",
+    "provider": "private loopback scripted OpenAI-compatible; no credential",
+    "failure": "first streamed partial response closed before completion",
+    "replacement": "next streamed response"
+  },
+  "identity": {
+    "threadId": "034LReOD7yOqVEOXZMhNNs",
+    "ref": "local:034LReOD7yOqVEOXZMhNNs",
+    "turnId": "turn_m1",
+    "mutationId": "bd27972a-8ded-4199-9d99-6b76c059ae50"
+  },
+  "eventSequence": [
+    {
+      "method": "item/agentMessage/delta",
+      "params": {
+        "threadId": "034LReOD7yOqVEOXZMhNNs",
+        "ref": "local:034LReOD7yOqVEOXZMhNNs",
+        "turnId": "turn_m1",
+        "itemId": "item_assistant_24",
+        "delta": "stale partial"
+      }
+    },
+    {
+      "method": "evener/thread/modelRetry",
+      "params": {
+        "threadId": "034LReOD7yOqVEOXZMhNNs",
+        "ref": "local:034LReOD7yOqVEOXZMhNNs",
+        "turnId": "turn_m1",
+        "attempt": 1,
+        "maxAttempts": 11,
+        "delayMs": 1295,
+        "errorClass": "unknown",
+        "model": "fixture-model"
+      }
+    },
+    {
+      "method": "item/agentMessage/reset",
+      "params": {
+        "threadId": "034LReOD7yOqVEOXZMhNNs",
+        "ref": "local:034LReOD7yOqVEOXZMhNNs",
+        "turnId": "turn_m1",
+        "itemId": "item_assistant_24"
+      }
+    },
+    {
+      "method": "item/agentMessage/delta",
+      "params": {
+        "threadId": "034LReOD7yOqVEOXZMhNNs",
+        "ref": "local:034LReOD7yOqVEOXZMhNNs",
+        "turnId": "turn_m1",
+        "itemId": "item_communicate_preview_25",
+        "delta": "replacement final"
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "ref": "local:034LReOD7yOqVEOXZMhNNs",
+        "threadId": "034LReOD7yOqVEOXZMhNNs",
+        "turn": {
+          "id": "turn_m1",
+          "itemsView": "",
+          "status": "completed",
+          "completedAt": 1788899659759,
+          "durationMs": 1406
+        }
+      }
+    }
+  ],
+  "assertions": {
+    "resetCount": 1,
+    "retryCount": 1,
+    "staleDeltaObserved": true,
+    "resetItemMatchesStaleDelta": true,
+    "replacementDeltaObserved": true,
+    "staleAndReplacementItemIdsDiffer": true,
+    "replacementReadback": true,
+    "finalTurnCompleted": true
+  },
+  "rawEvidence": {
+    "driverLog": "/private/tmp/evener-sdk-message-reset.WDuvWK/driver2.log",
+    "hubLog": "/private/tmp/evener-sdk-message-reset.WDuvWK/hub.log",
+    "privateReceipt": "/private/tmp/evener-sdk-message-reset.WDuvWK/receipt-private.json",
+    "fixtureSHA256": "372724266d52a54f1f924dcd671fd878e69f17aebd6585a9c6d966a37ade1885",
+    "driverSHA256": "efa633592f613fa99e0984efc1365fa6d4a15b2df2e411ee33595a2237f3a023",
+    "driverLogSHA256": "a0c11f358d5e7c4a570c27509a0b18b481088ab0f79d1b779b6cbc59d842a348",
+    "hubLogSHA256": "cc44407e2c6f1d26cc137a64dc0b479690d69e2d93454c0af4122bdfae149a75",
+    "privateReceiptSHA256": "436e52eb595161e20677a6db06422d9bec68af4f5727e4be8c62c59999608b7d",
+    "transcriptSha256": "a833d393abc001752b5894a1ce003d30207c1b6d5bdc6d13da4e97f86f86ea6f"
+  },
+  "excluded": [
+    "native UI/device acceptance",
+    "raw WebSocket-only evidence",
+    "real external provider"
+  ],
+  "sdk": {
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "tarballPath": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "distIndexJsSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36"
+  },
+  "authoritativeReadback": {
+    "source": "Installed SDK thread/read projection summarized in receipt-private.json",
+    "turnId": "turn_m1",
+    "turnStatus": "completed",
+    "replacementContentPresent": true,
+    "staleContentAbsent": true,
+    "rawReceiptSha256": "436e52eb595161e20677a6db06422d9bec68af4f5727e4be8c62c59999608b7d",
+    "transcriptPath": "/private/tmp/evener-sdk-message-reset.WDuvWK/state/evener/projects/private-tmp-evener-sdk-message-reset-WDuvWK-workspace-SDaALGIO0p/sessions/034LReOD7yOqVEOXZMhNNs.transcript.jsonl",
+    "transcriptSha256": "a833d393abc001752b5894a1ce003d30207c1b6d5bdc6d13da4e97f86f86ea6f"
+  },
+  "cleanup": {
+    "rootVerifiedAttempts": [
+      {
+        "root": "/private/tmp/evener-sdk-message-reset.WDuvWK",
+        "ownedProcessesRemaining": false,
+        "bearerTokensRemaining": false,
+        "recordedListenersClosed": true
+      },
+      {
+        "root": "/private/tmp/evener-sdk-message-reset.UHTrdf",
+        "ownedProcessesRemaining": false,
+        "bearerTokensRemaining": false,
+        "recordedListenersClosed": true
+      },
+      {
+        "root": "/private/tmp/evener-sdk-message-reset.DJS2Mi",
+        "ownedProcessesRemaining": false,
+        "bearerTokensRemaining": false,
+        "recordedListenersClosed": true
+      }
+    ]
+  }
+}

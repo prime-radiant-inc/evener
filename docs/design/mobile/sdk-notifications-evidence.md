@@ -1,7 +1,7 @@
 # Packaged SDK notification observations — 7 September 2026
 
 For current native implementation and release status, see the [project status](status.md)
-and [acceptance ledger](acceptance.md). The audited union below includes **32 of
+and [acceptance ledger](acceptance.md). The audited union below includes **34 of
 36 notification names** across separately identified packages and fixtures.
 The dated observations remain scoped evidence rather than a release decision.
 
@@ -238,7 +238,11 @@ The [8 September launch-layer receipt](assets/2026-09-08-sdk-launch-producer.jso
 
 The subsequent [marketplace/plugin receipt](assets/2026-09-08-sdk-plugin-marketplace-producers.json) adds `evener/marketplace/updated` and `evener/plugin/updated` through two independently installed AppwireClient instances. Seven owned mutations produced the matching empty notification payloads and authoritative catalog readbacks. The coordinator independently checked the retained payloads and state. An earlier raw-WebSocket attempt is excluded from SDK qualification. Manifest-only installation does not establish plugin execution.
 
-The [sandbox receipt](assets/2026-09-08-sdk-sandbox-producers.json) adds `evener/sandbox/escalation/requested` and `evener/sandbox/escalation/resolved`. Both Allow and Deny cases retain exact session/escalation identity, resolved events and completed-turn readbacks. The coordinator verified the persisted successful/denied `write_file` results, allowed file content and denied target absence. The allow target was reused across attempts, so fresh creation is not claimed. Each resolve used one driver request invocation; wire dispatch counts were not instrumented. All owned attempt processes and bearer tokens were removed, including leftovers found during coordinator review. The audited union is now **32 of 36** names.
+The [sandbox receipt](assets/2026-09-08-sdk-sandbox-producers.json) adds `evener/sandbox/escalation/requested` and `evener/sandbox/escalation/resolved`. Both Allow and Deny cases retain exact session/escalation identity, resolved events and completed-turn readbacks. The coordinator verified the persisted successful/denied `write_file` results, allowed file content and denied target absence. The allow target was reused across attempts, so fresh creation is not claimed. Each resolve used one driver request invocation; wire dispatch counts were not instrumented. All owned attempt processes and bearer tokens were removed, including leftovers found during coordinator review. That batch brought the audited union to **32 of 36** names.
+
+The [message-reset receipt](assets/2026-09-08-sdk-message-reset-producer.json) adds `item/agentMessage/reset`. A scripted provider interrupted its first partial response. The installed SDK observed the exact stale item delta, retry, matching reset, replacement delta and completed target turn; its authoritative readback contained the replacement and excluded stale text. The coordinator verified raw event order, hashes and cleanup across all three attempts. This does not qualify a continuously reconnecting reducer or native rendering.
+
+The [attention receipt](assets/2026-09-08-sdk-attention-producer.json) adds `evener/attention/changed`. A held turn produced an idle-to-working transition for the exact started session. The subsequent authoritative navigation manifest summary matched the event: needsYou=2, error=0, working=1, compared with working=0 before. The live count moved from 2 to 3. The intermediate invalidation is retained without treating its revision as the final snapshot. The coordinator verified target identity, raw capture, binary/package hashes and fixture cleanup. The audited union is now **34 of 36** names.
 
 The audited receipt union is:
 
@@ -254,10 +258,11 @@ The audited receipt union is:
 `thread/queueChanged`, `thread/status/changed`,
 `thread/vision-model/changed`, `turn/completed`, `turn/started`,
 `thread/closed`, `warning`, `evener/marketplace/updated`,
-`evener/plugin/updated`, `evener/sandbox/escalation/requested`, and
-`evener/sandbox/escalation/resolved`.
+`evener/plugin/updated`, `evener/sandbox/escalation/requested`,
+`evener/sandbox/escalation/resolved`, `item/agentMessage/reset`, and
+`evener/attention/changed`.
 
 This union is producer/readback evidence for the cited bounded fixtures. It does
-not include producer/readback qualification for the other four catalog names: `thread/started`, `item/agentMessage/reset`,
-`evener/thread/resync`, and `evener/attention/changed`. It also does not qualify every outcome or ordering path, continuous
+not include producer/readback qualification for the other two catalog names: `thread/started` and
+`evener/thread/resync`. It also does not qualify every outcome or ordering path, continuous
 reconnect/replay, native UI, or release acceptance.
