@@ -1183,10 +1183,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const stamp = params.turn;
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
-        settledTurn = wireToTurnModel(
-          stamp,
-          imageSessionRouteForSession(model.imageSessionId ?? model.threadId),
-        );
+        settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
         // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
         // read/write disjoint fields off the same `old` reference, so

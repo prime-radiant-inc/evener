@@ -2087,8 +2087,7 @@ test("item/completed resolves a sha-routed tool-result image's src from its url"
   ]);
 });
 
-const SHA_IMAGE =
-  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const SHA_IMAGE = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 function hydrateWithShaImage(imageOverrides: Partial<InputItem> = {}): ThreadModel {
   // The default fixture's wire session ("sess_t") differs from its ref
@@ -2126,9 +2125,7 @@ test("hydrateThread resolves a sha-bearing image without a stamped url to the se
 test("a stamped url wins over the rebuilt sha route", () => {
   const stamped = `/s/sess_t/images/${SHA_IMAGE}`;
   const model = hydrateWithShaImage({ url: stamped });
-  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
-    { src: stamped, name: "photo.png", path: undefined },
-  ]);
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: stamped, name: "photo.png", path: undefined }]);
 });
 
 test("a non-hex metadata sha falls back to the inline data-URI, never a hub-400 route", () => {
