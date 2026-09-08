@@ -3,8 +3,14 @@ import WebSocket from "ws";
 import type { WebSocketLike } from "../../cmd/evener-hub/frontend/src/protocol/transport";
 import { createHubClient } from "../src/connection";
 
+const origin = process.env.EVENER_NATIVE_AUTH_ORIGIN;
+if (!origin)
+  throw new Error(
+    "Set EVENER_NATIVE_AUTH_ORIGIN to the owned loopback fixture.",
+  );
+const control = (path: string) => `${origin}${path}`;
 const c = createHubClient(
-  "http://127.0.0.1:9201",
+  origin,
   "",
   (url, options) => new WebSocket(url, options) as unknown as WebSocketLike,
 );
@@ -17,6 +23,36 @@ try {
       authModes: x.authModes,
     })),
   });
+  if (!list.instances.some((x) => x.name === "work-secondary"))
+    throw Error("second Codex instance missing");
+  const secondary = await c.request("evener/auth/device/start", {
+    provider: "work-secondary",
+  });
+  const secondaryPending = await c.request("evener/auth/device/poll", {
+    provider: "work-secondary",
+    flowId: secondary.flowId,
+  });
+  if (secondaryPending.state !== "pending")
+    throw Error("secondary not pending");
+  await assert.rejects(
+    c.request("evener/auth/device/poll", {
+      provider: "work",
+      flowId: secondary.flowId,
+    }),
+  );
+  await fetch(
+    control(`/approve?code=${encodeURIComponent(secondary.userCode)}`),
+    {
+      method: "POST",
+    },
+  );
+  const secondaryResult = await c.request("evener/auth/device/poll", {
+    provider: "work-secondary",
+    flowId: secondary.flowId,
+  });
+  if (secondaryResult.state !== "authorized")
+    throw Error("secondary not authorized");
+  await c.request("evener/auth/logout", { provider: "work-secondary" });
   const start = await c.request("evener/auth/device/start", {
     provider: "work",
   });
@@ -25,7 +61,9 @@ try {
     flowId: start.flowId,
   });
   if (pending.state !== "pending") throw Error("expected pending");
-  await fetch("http://127.0.0.1:9201/approve", { method: "POST" });
+  await fetch(control(`/approve?code=${encodeURIComponent(start.userCode)}`), {
+    method: "POST",
+  });
   const result = await c.request("evener/auth/device/poll", {
     provider: "work",
     flowId: start.flowId,
@@ -40,7 +78,7 @@ try {
   const expiring = await c.request("evener/auth/device/start", {
     provider: "work",
   });
-  const expire = await fetch("http://127.0.0.1:9201/clock/expire", {
+  const expire = await fetch(control("/clock/expire"), {
     method: "POST",
   });
   assert.equal(expire.status, 204, "fixture expiry control");
@@ -56,9 +94,12 @@ try {
   const retrying = await c.request("evener/auth/device/start", {
     provider: "work",
   });
-  const fault = await fetch("http://127.0.0.1:9201/fault/poll", {
-    method: "POST",
-  });
+  const fault = await fetch(
+    control(`/fault/poll?code=${encodeURIComponent(retrying.userCode)}`),
+    {
+      method: "POST",
+    },
+  );
   assert.equal(fault.status, 204, "fixture poll failure control");
   await assert.rejects(
     c.request("evener/auth/device/poll", {
@@ -70,11 +111,17 @@ try {
     provider: "work",
   });
   assert.equal(beforeRetry.signedIn, false);
-  const clear = await fetch("http://127.0.0.1:9201/fault/clear", {
-    method: "POST",
-  });
+  const clear = await fetch(
+    control(`/fault/clear?code=${encodeURIComponent(retrying.userCode)}`),
+    {
+      method: "POST",
+    },
+  );
   assert.equal(clear.status, 204, "fixture failure recovery control");
-  await fetch("http://127.0.0.1:9201/approve", { method: "POST" });
+  await fetch(
+    control(`/approve?code=${encodeURIComponent(retrying.userCode)}`),
+    { method: "POST" },
+  );
   const retried = await c.request("evener/auth/device/poll", {
     provider: "work",
     flowId: retrying.flowId,
@@ -83,7 +130,7 @@ try {
   assert.equal(retried.status?.activeSource, "oauth");
   await c.request("evener/auth/logout", { provider: "work" });
   console.log({ expiry: "expired", sameFlowRetry: "authorized" });
-  await fetch("http://127.0.0.1:9201/mode/browser", { method: "POST" });
+  await fetch(control("/mode/browser"), { method: "POST" });
   const fallback = await c.request("evener/auth/device/start", {
     provider: "work",
   });
@@ -91,13 +138,15 @@ try {
   const browser = await c.request("evener/auth/login/start", {
     provider: "work",
   });
-  const url = new URL(browser.url);
-  const redirectUrl =
-    "http://localhost:1455/auth/callback?" +
-    new URLSearchParams({
-      code: "fixture-code",
-      state: url.searchParams.get("state") ?? "",
-    });
+  const browserPage = await fetch(browser.url);
+  assert.equal(browserPage.status, 200, "fixture browser authorization page");
+  const page = await browserPage.text();
+  const match = page.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i);
+  if (!match) throw Error("browser page did not expose redirect metadata");
+  const redirectUrl = match[1]
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
   const complete = await c.request("evener/auth/login/complete", {
     provider: "work",
     flowId: browser.flowId,
@@ -107,8 +156,8 @@ try {
     throw Error("browser not stored");
   console.log({ browser: complete.status.activeSource });
   await c.request("evener/auth/logout", { provider: "work" });
-  await fetch("http://127.0.0.1:9201/mode/device", { method: "POST" });
-  console.log(await (await fetch("http://127.0.0.1:9201/status")).json());
+  await fetch(control("/mode/device"), { method: "POST" });
+  console.log(await (await fetch(control("/status?provider=work"))).json());
 } finally {
   c.close();
 }

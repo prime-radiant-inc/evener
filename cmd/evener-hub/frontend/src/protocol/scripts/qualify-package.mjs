@@ -107,6 +107,7 @@ run(
   [
     "--test",
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/credentials.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/oauth.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/preferences.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/organization.contract.mjs"),

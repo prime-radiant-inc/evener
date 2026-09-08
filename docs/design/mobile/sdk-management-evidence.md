@@ -237,3 +237,51 @@ case proves unchanged state without calling it acknowledged. No mutation is
 automatically replayed. Provider execution remains unverified. Browser/device
 OAuth recipes, disconnect/restart outcomes, full streaming recovery and native
 iOS release qualification remain open.
+
+## Packaged device and browser OAuth — 7 September
+
+The OAuth recipe and shared credential-status decoder are recorded with this
+entry. The outside-checkout package has SHA-256
+`06b68ee1a7e2a318553158ada72e985fb908f5f1fb686c5682acaacc8ef849fc`.
+It requires reviewed status for starts, captures flow ownership before connecting,
+performs a single operation per call and preserves uncertainty after thrown or
+malformed replies. Browser/device authorization receives one current status
+readback; acknowledgment and current state remain separate. CLI starts reserve
+private output before connection, and failed operations do not overwrite or
+remove a pre-existing destination. The README documents explicit polling,
+private flow/redirect files, fallback and readback outcomes.
+
+The [receipt](assets/sdk-oauth-receipt.json) and
+[driver](assets/sdk-oauth-driver.mjs.txt) record eight passing scenarios against
+real registered hub handlers and temporary credential storage: pending device
+poll, device authorization/readback, fresh-flow expiry, failed poll followed by
+an explicit same-flow retry, browser fallback/completion, cross-instance handle
+rejection, and lost replies during device and browser exchange. The external
+OAuth boundary is scripted; this does not qualify a real provider account.
+
+For each lost reply, a real SDK client issued its mutation while the fixture
+held the external token exchange. The driver closed that client's connection,
+released the exchange, observed the real auth notification on a second connected
+client and read configured OAuth status there. The original recipe retained both
+write and readback errors in an AggregateError. Delegating request counters assert
+one mutation and one attempted status read, with no replay. There is no WebSocket
+proxy or frame-drop wrapper. The device case begins signed out; the browser case
+follows a verified normal completion and logout.
+
+The driver cleared both owned provider credentials and verified signed-out state.
+The harness then exited zero, its port closed and its temporary state was removed
+by Go test cleanup. The recipe catalog now lists 22 examples containing 64 of 91
+request names and three notification names. These are recipe-presence counts;
+auth notifications observed by this acceptance driver are not claimed as another
+notification recipe. Provider execution, publication, broader reconnect recovery
+and the full mobile acceptance matrix remain open.
+
+Validation: the canonical run passed lint, build, full Go/module tests and the
+web gate, then caught type errors in new native test doubles. After correcting
+those doubles, a fresh `make test-native` passed 663 tests in 73 files and strict
+TypeScript, and `make test-api-package` passed outside-checkout installation,
+ESM/CommonJS imports, declarations and all eighteen packaged contract files.
+`make vet` and the focused exchange-gate race check also passed. This records
+the successful individual phases; the earlier interrupted canonical invocation
+is not reported as an exit-zero run. Independent Luna evidence review found no
+remaining overclaim in this section or the native build/launch record.

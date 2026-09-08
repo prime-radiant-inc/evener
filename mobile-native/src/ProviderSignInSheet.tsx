@@ -43,7 +43,11 @@ export function ProviderSignInSheet({
     setLocalError(null);
     try {
       const parsed = new URL(url);
-      if (!["https:", "http:"].includes(parsed.protocol))
+      if (
+        !["https:", "http:"].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password
+      )
         throw new Error("Unsupported URL");
       await Linking.openURL(url);
     } catch {
@@ -92,6 +96,13 @@ export function ProviderSignInSheet({
           <ErrorMessage message={localError || state.error} />
           {state.busy && (
             <ActivityIndicator accessibilityLabel="Checking sign-in" />
+          )}
+          {state.credentialState !== "unknown" && (
+            <Copy>
+              {state.credentialState === "configured"
+                ? "Current OAuth sign-in is configured."
+                : "Current OAuth sign-in is not configured."}
+            </Copy>
           )}
           {state.phase === "authorized" && (
             <Copy>
@@ -170,6 +181,16 @@ export function ProviderSignInSheet({
                 Finish sign-in
               </Action>
             </>
+          )}
+          {["device", "browser", "error", "expired"].includes(state.phase) && (
+            <Action
+              disabled={!connected || state.busy}
+              onPress={() => {
+                void flow.checkStatus();
+              }}
+            >
+              Check credential status
+            </Action>
           )}
           {["error", "expired"].includes(state.phase) && (
             <Action

@@ -97,7 +97,7 @@ launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
 management and recovery paths, including activity-tree traversal. Additional
-creation cases, continuous reconnect recovery, OAuth login flows and hub upgrades
+creation cases, continuous reconnect recovery and hub upgrades
 remain to be added.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
@@ -162,8 +162,67 @@ in `AcknowledgedReadbackError`; two failures retain both causes in an
 readback, not the logout reply's `removed` field. Provider execution remains
 `unverified`. The CLI prints only action/outcome/execution and status booleans or
 a provider count; it excludes provider names, account details, environment names,
-keys, credential JSON and private error bodies. OAuth browser/device flows and
-`evener/auth/test` require separate workflows.
+keys, credential JSON and private error bodies. OAuth browser/device flows use
+the recipe below; `evener/auth/test` remains a separate workflow.
+
+### Device and browser OAuth
+
+`oauth.mjs` performs one OAuth operation per invocation. Use the connection
+variables above plus `EVENER_OAUTH_ACTION`, `EVENER_OAUTH_PARAMS_FILE`,
+`EVENER_OAUTH_MUTATION=1` and `EVENER_OAUTH_OWNED_HUB` exactly equal to
+`EVENER_RPC_URL`. Polling also requires mutation opt-in: an authorized poll
+exchanges and stores credentials. Provider values identify authored instances.
+
+| Action | Private JSON parameters | Result |
+| --- | --- | --- |
+| `device/start` | `{provider, reviewed}` | Device flow or explicit browser fallback. |
+| `login/start` | `{provider, reviewed}` | Browser flow. |
+| `device/poll` | `{provider, flow}` | Pending, expired, authorized or uncertain. |
+| `login/complete` | `{provider, flow, redirectUrl}` | Authorized or uncertain. |
+
+For starts, obtain the complete reviewed status with `runCredentials` from
+`credentials-logic.mjs`. The recipe checks current OAuth support and exact
+status equality before starting. This preflight is not an atomic revision check.
+A returned flow records `rpcUrl`, `provider`, `kind`, `flowId` and `url`, plus
+`userCode` and `intervalSeconds` for a device flow. Retain the full returned
+object in `flow` for continuation. Different endpoints, providers or flow kinds
+reject before connection; caller input is copied before the first await.
+Programmatic callers must provide a hub configured for the owned endpoint.
+
+Start actions also require `EVENER_OAUTH_OUTPUT_FILE`. The CLI reserves a new
+file exclusively with mode `0600` before connecting, then writes the returned
+flow there. Existing files are never overwritten. Keep params, flow and redirect
+files private. The CLI prints only action/outcome and, after readback, `signedIn`.
+It never prints URLs, codes, providers, account details, file contents or private
+errors. Fallback and failed starts remove only the invocation's empty reservation.
+A filesystem failure after the hub creates a flow reports `started` with
+`challenge: write_unconfirmed`; an empty reservation is removed, while nonempty
+output is retained for inspection. Do not assume a retained partial file is usable.
+
+Open the saved URL manually. For device flows, call `device/poll` deliberately,
+respecting the saved interval; use a five-second delay for a zero interval and
+at least one second otherwise. There is no hidden poll loop. On explicit device
+fallback, review status and deliberately call `login/start`. Open its URL and
+paste the full returned redirect into the private completion params file.
+Canceling means discarding the local handle and private files; the wire protocol
+has no cancel method. It does not revoke a flow already stored on the hub.
+
+Import `runOAuth` from `examples/oauth-logic.mjs` for structured results.
+Authorized replies require matching provider and valid `supported`, `signedIn`
+and `hasStoredOAuth` fields, then receive one fresh credential status readback.
+The result preserves both `acknowledged` and `readback`: a concurrent logout can
+make the latter signed out. Other active credential sources do not invalidate
+stored OAuth acknowledgment. A thrown or malformed mutation reply performs one
+status readback and remains `uncertain` even when credentials are configured.
+A failed readback after valid authorization raises `OAuthReadbackError`, extending
+`AcknowledgedReadbackError` and preserving `.acknowledged` and `.cause`; if both
+mutation and readback fail, `AggregateError.errors` retains both errors.
+Programmatic errors and complete results may contain private data; do not log them.
+
+Pending and expired replies return directly. Expired also covers an unknown or
+already consumed flow, so read current credentials before deliberately starting
+again. No result authorizes automatic replay. CLI exit code `2` means uncertain;
+other failures use `1`. None of these status checks proves provider execution.
 
 ### Reading and changing session settings
 

@@ -313,3 +313,30 @@ switch. Those distinctions remain in MOB-013's acceptance scope.
 
 ![Android expired code](assets/providers/android-device-expired.png)
 ![Android explicit status retry](assets/providers/android-device-retry.png)
+
+## Sign-in recovery validation — 7 September
+
+The native sign-in state machine now validates device/browser challenges and
+requires a matching supported, signed-in, stored-OAuth status before showing
+success. Losing a connection during a device poll preserves an uncertain flow
+and requires an explicit retry. Read-only credential status can be checked while
+retaining the attempt's phase and flow; configured current credentials do not
+claim that an uncertain completion succeeded. Late replies and failures cannot
+modify replacement flows. A status read that outlasts the polling interval
+restores normal polling only when the flow has no unresolved uncertainty.
+
+The focused regression run first reported 22 failures and 13 existing passes,
+then passed all 35 checks after integration and correction of one scripted test
+that continued returning errors after its intended recovery point. Existing
+background, reconnect, disposal and browser no-replay tests remain. The exchange
+fixture's one-shot gate also passes its focused race check.
+
+An iPhone 17 Pro Release build launched with bundle SHA-256
+`bda26fddce4ffd9dc46d1c8205de61a1413483ef21f96b0db828c84a3cbbed0c`.
+The original conversation and all seven unsent drafts were preserved. This is
+build/launch evidence for the new code, not acceptance of its new status button
+or interrupted-sign-in UI. The [SDK OAuth receipt](assets/sdk-oauth-receipt.json)
+qualifies direct-disconnect behavior through real hub handlers; current iOS
+recovery interaction, real-provider denial, physical-device and accessibility
+qualification remain open. Android release qualification remains deferred for
+iOS-only v1.
