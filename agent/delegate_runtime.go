@@ -198,7 +198,10 @@ var delegateQuietWatchHubs = struct {
 // lease on it. The returned CancelFunc detaches exactly this registration:
 // the hub's single ticker keeps serving the remaining leases, and the hub
 // goroutine exits (stopping the shared ticker) only when the last
-// registration leaves, so no ticker leaks after a lease ends.
+// registration leaves, so no ticker leaks after a lease ends. Cancellation
+// rides on the run context via context.AfterFunc rather than a parked
+// goroutine per registration, so the hub goroutine stays the only
+// steady-state goroutine per session no matter how many leases share it.
 func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLease) context.CancelFunc {
 	if ctx == nil {
 		ctx = context.Background()
@@ -240,16 +243,10 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 			}
 		})
 	}
-	go func() {
-		select {
-		case <-watchCtx.Done():
-			detach()
-		case <-entry.stop:
-		case <-hub.done:
-		}
-	}()
+	stopAfter := context.AfterFunc(watchCtx, detach)
 	return func() {
 		detach()
+		stopAfter()
 		cancel()
 		<-stopped
 	}
