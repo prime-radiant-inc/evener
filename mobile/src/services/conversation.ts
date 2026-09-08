@@ -674,19 +674,15 @@ export function createConversationService(
     },
 
     async loadOlder(cursor) {
-      let requestedCursor = cursor;
       const pending = pendingProjection;
       if (ref === null && pending !== null && pending.instanceId !== null) {
         // A same-session refresh closes mutation gates while validating its
-        // snapshot. Paging waits for that validation and the refreshed cursor.
+        // snapshot. Paging waits for validation while retaining its cursor.
         const expected = pending;
         let projection: PendingProjection = pending;
         for (;;) {
-          const response = await projection.read;
-          if (pendingProjection === projection) {
-            requestedCursor = response.olderCursor ?? cursor;
-            break;
-          }
+          await projection.read;
+          if (pendingProjection === projection) break;
           const next: PendingProjection | null = pendingProjection;
           if (
             next === null ||
@@ -706,7 +702,7 @@ export function createConversationService(
       try {
         response = await client.request("thread/turns/list", {
           ref: threadRef,
-          cursor: requestedCursor,
+          cursor,
           itemsView: "fragment",
           itemLimit: READ_ITEM_LIMIT,
         });
