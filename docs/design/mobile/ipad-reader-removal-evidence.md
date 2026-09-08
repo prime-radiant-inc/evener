@@ -36,3 +36,24 @@ the exact profile/ref identifiers, and the independent before/after comparison.
 Remaining scope includes drafts, rich media, live-tail behavior, accessibility
 and physical-device qualification, distribution signing/update, and final
 release gates.
+
+## Frozen reader-progress artifact follow-up
+
+The frozen Release simulator artifact was installed on the same iPad after the
+two-profile qualification. Its `main.jsbundle` SHA-256 is
+`1d5f0061f1b644928124358436bd7313565d2ed231dd56ff44ac015ce4b7ac7e` and its
+`Evener` executable SHA-256 is
+`7e1e295075aa7ceec32fc667b5079028b086c9253017dc9aec6f524036e25040`.
+
+Before installation, B's saved anchor was
+`apptranscript-item-v1:turn_m3:4:0` at offset `61.5`. After installation and
+cold launch, the raw reader-position value was byte-equal, with the same item
+and offset. B was then removed through the labeled confirmation flow; a final
+cold launch showed an empty Saved hubs screen and no reader-position row. This
+is a bounded artifact-preservation and profile-removal observation. It does
+not qualify the broader reader-restoration behavior, which remains open on
+other devices and journeys.
+
+![B after frozen artifact installation](assets/ipad-reader-progress-after-install.png)
+![B removal confirmation](assets/ipad-reader-progress-remove-B.png)
+![Empty hubs after B removal and cold launch](assets/ipad-reader-progress-empty.png)
