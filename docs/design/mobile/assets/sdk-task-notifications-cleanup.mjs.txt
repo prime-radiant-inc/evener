@@ -1,0 +1,6 @@
+import {readFileSync} from 'node:fs';
+import {AppwireClient} from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js';
+const rt=JSON.parse(readFileSync('runtime.json')),session=JSON.parse(readFileSync('session.json')),token=readFileSync('state/evener/auth-token','utf8').trim();
+const hub=new AppwireClient({url:`ws://127.0.0.1:${rt.hubPort}/rpc`,clientInfo:{name:'notification-owned-cleanup',version:'1'},socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+try{await hub.connect();await hub.request('thread/shutdown',{ref:session.ref});console.log(JSON.stringify({shutdownAcknowledged:true,ref:session.ref}));}finally{hub.close();}

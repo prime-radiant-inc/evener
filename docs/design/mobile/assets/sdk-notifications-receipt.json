@@ -1,0 +1,416 @@
+{
+  "status": "scoped installed SDK runtime passed",
+  "package": {
+    "packageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+    "tarballSHA256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "sourceCommit": "58d1b079f",
+    "files": [
+      {
+        "file": "bounded-notifications.contract.mjs",
+        "sha256": "3bda6831a85f79bd8039fc12f20ab19887c3ea2e228ca4f00f1f71895832f44f"
+      },
+      {
+        "file": "bounded-notifications.mjs",
+        "sha256": "c7644418a1d67439a3f3fd1ca2c6ab1e664cfa70b330a84cf91888e00d673dca"
+      },
+      {
+        "file": "hub-notifications-cli.mjs",
+        "sha256": "543ac2d260ba4e9725339647797d776d4768eaecdd6a1aaf68c87f0eaa33ee95"
+      },
+      {
+        "file": "hub-notifications-logic.mjs",
+        "sha256": "5d3c8884bc5523d930e8c9e7446a49fc7c5a2c8eac53506791b93399640d2176"
+      },
+      {
+        "file": "hub-notifications.contract.mjs",
+        "sha256": "83add1a3fdba2c0e83ddb23bd80a1708d53b159b3430b09148127f25e499ac8e"
+      },
+      {
+        "file": "hub-notifications.mjs",
+        "sha256": "d44d8da58908b364bdfcda3c9b08a89c00afcbb57682947b7c4a2c8f60b47e32"
+      },
+      {
+        "file": "session-notifications-cli.mjs",
+        "sha256": "c3bbbeba269cde8c8dfab3be01b9dacb4d0ebae053f7c26a197e252a45f72bfa"
+      },
+      {
+        "file": "session-notifications-logic.mjs",
+        "sha256": "e25993060490585a7d1e1a9edc6341055bfac7ffada8ee38d29fa5e41257005c"
+      },
+      {
+        "file": "session-notifications.contract.mjs",
+        "sha256": "6df46d21f8d113d2d72d13a50f7aafce61fcb742f4f91fa20edadf9cef773a51"
+      },
+      {
+        "file": "session-notifications.mjs",
+        "sha256": "5e3a373e76db316597388d87bfce35b4bad15c0a9a1e592fd955aef0250742f8"
+      },
+      {
+        "file": "streaming-notifications-cli.mjs",
+        "sha256": "94bc141a73e708bc23c19ed81c4b771a439547306d8c48bb210cfbcda95bc8a2"
+      },
+      {
+        "file": "streaming-notifications-logic.mjs",
+        "sha256": "70b8e3336b45b6567f87514b275b5af546538e560bdbe4a68ea1b4559b6bbef6"
+      },
+      {
+        "file": "streaming-notifications.contract.mjs",
+        "sha256": "06e0f1d23fba2f3bdbdd9609d3db9e88d6fe3ad96cacd65a90c71b0948ed607a"
+      },
+      {
+        "file": "streaming-notifications.mjs",
+        "sha256": "82a64ba49b400f995accf9b45a90dfb5439bd0133e05c96cb55a519cb588ce7c"
+      },
+      {
+        "file": "work-notifications-cli.mjs",
+        "sha256": "0ee40b659eb4c4356d4f2f0a884b069d114f0521a35c92dfca9ea7e240815f38"
+      },
+      {
+        "file": "work-notifications-logic.mjs",
+        "sha256": "c36a2903f198ee43043ff2c66eae60dd50a342b7f59ef1e2a530d1a729370e9f"
+      },
+      {
+        "file": "work-notifications.contract.mjs",
+        "sha256": "df13be1c851b0f378cd2cece2b0894cb11a78b7076cde379d99ea7fd7233a072"
+      },
+      {
+        "file": "work-notifications.mjs",
+        "sha256": "3df5ca08950b94d85cbda76bd2157e178fff75d10815ffc6006c9131b2146f49"
+      }
+    ],
+    "installedPackageRealpath": "/private/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "installedPackageIsSymlink": false,
+    "consumerDependency": "file:../../../tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz"
+  },
+  "installedContracts": {
+    "contractModules": 31,
+    "newNotificationContractModules": 5,
+    "testsPassed": 321,
+    "testsFailed": 0,
+    "logPath": "/tmp/evener-notifications-installed-contracts.log",
+    "logSha256": "13f30de10c5dfde5bc6f82aed4eaba1595092726eed686dec9980954317ffdc3"
+  },
+  "runtime": {
+    "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm",
+    "baseFixture": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7",
+    "binarySHA256": {
+      "evener": "1f79cf2fecf5bb3cba9090270d41d7e480ff13d45af7ed228c7c23c9146eef94",
+      "evener-dev": "ffdbdfe0fda350978a6261795e3a232f7806019e59837ad686738c071108b27a"
+    },
+    "fixtureSHA256": "828bac7308eecc13709603bf62097a8ffe8f4ccf8662fa6173dcb347fdc3ab9f",
+    "binarySource": "dc9a9aaa3 with reviewed project deletion array fix (132fffc26), same immutable pair as saved-item runtime receipt",
+    "fixturePreparationHead": "5db618cf602e6ca75c3c583fa5b1d0536c076627",
+    "sourceIdentityNote": "fixturePreparationHead identifies when the disposable fixture was prepared, before SDK observer code was committed. The observer source and packaged files used for all acceptance runs are sdkSourceCommit 58d1b079f. Backend binaries are the unchanged immutable pair built from dc9a9aaa3 plus project-delete fix132fffc26, with hashes recorded here; the fixture preparation HEAD is not a backend build identity."
+  },
+  "session": {
+    "ref": "local:034L4CnDkWz2QdBhcrKDW4",
+    "threadId": "034L4CnDkWz2QdBhcrKDW4",
+    "instanceId": "034L4CnDkWz2QdBhcrKDW4"
+  },
+  "actions": [
+    {
+      "name": "session-name-set",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/session-name-set.json",
+        "sha256": "b243c1594fba089805de52aa1404134f826e0f9f853598b75d8114263a39cd80",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/session-name-set-ack.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/thread/name/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "session-name-restored",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/session-name-restored.json",
+        "sha256": "438c7556ac90c48c4916a8ff105abf4a9bc03708a94592c53ad1b1475c063011",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/session-name-restored-ack.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/thread/name/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "vision-off",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/vision-off.json",
+        "sha256": "ee32ff1d47d8a1f6e484e7964a1ced07e3202fee309c82c7fc98a3f2e98e11f9",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/vision-off-ack.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "mode": 384
+      },
+      "eventNames": [
+        "thread/vision-model/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "vision-restored-empty",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/vision-restored-empty.json",
+        "sha256": "7cf14739a451003aef6e12cfb1bbef8fdafe3a7fa511f2319124c5fea896d1d2",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/vision-restored-empty-ack.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "mode": 384
+      },
+      "eventNames": [
+        "thread/vision-model/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "display-changed",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/display-changed.json",
+        "sha256": "3f539d1bbb7c6aef1e8a31d35cf9fcdd99446538b79a2c65983a47b21a4ebb31",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/display-changed-ack.json",
+        "sha256": "0b53987e3a1cb31584202bcd2930d2cdfddb33aa8d40b104012d0a22efb4dbc9",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/settings/transcriptDisplay/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "display-restored",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/display-restored.json",
+        "sha256": "ac669e65107292e7bccb5b7c5cd1dc7cddb4b65eb15ca21c42366368f533bf21",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/display-restored-ack.json",
+        "sha256": "60e58918a298e5b0f1aecedad6df46aa32fff732df50e2598c2cefb66032ab53",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/settings/transcriptDisplay/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "keybinding-unbound",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/keybinding-unbound.json",
+        "sha256": "b546f4f74d86e4b77400e1544c021508343e5cef4d7bf744289b1fb57c5fa76e",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/keybinding-unbound-ack.json",
+        "sha256": "766145c093ca53d3b129a92d4c1d95aa07bb453ae5790b5abc66180cebd351b2",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/settings/keybindings/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "keybinding-restored",
+      "status": "passed",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/keybinding-restored.json",
+        "sha256": "e7d84d510ddbe7c629074ab0bfba5e4e010a0bee967eec72854052418d11757e",
+        "mode": 384
+      },
+      "ack": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/keybinding-restored-ack.json",
+        "sha256": "38f9addaccd664ff3d9353166a51b497728ae2e71a15ca2adeb39cff7a02b72f",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/settings/keybindings/changed"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    },
+    {
+      "name": "goal-cleared-absent",
+      "status": "passed",
+      "scope": "Clearing an already absent owned goal emits null; no new goal or continuation was created.",
+      "result": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/goal-cleared-absent.json",
+        "sha256": "cfba7405120e19674f317b598af3d2412a9de25899029fb1ce469bcf0b2be6b6",
+        "mode": 384
+      },
+      "eventNames": [
+        "evener/goal/updated"
+      ],
+      "eventCount": 1,
+      "outcome": "read"
+    }
+  ],
+  "cli": [
+    {
+      "name": "session",
+      "exitCode": 0,
+      "summary": {
+        "outcome": "read",
+        "eventCount": 0,
+        "overflow": false,
+        "changedDuringReadback": false,
+        "connectionInterrupted": false,
+        "outputWritten": true
+      },
+      "privateOutput": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/session-cli.json",
+        "mode": 384,
+        "sha256": "1b597b563e5f2c731f7c411137594d27c7a686c71b049774b453c610911b178e"
+      }
+    },
+    {
+      "name": "work",
+      "exitCode": 0,
+      "summary": {
+        "outcome": "read",
+        "ref": "local:034L4CnDkWz2QdBhcrKDW4",
+        "eventCount": 0,
+        "overflow": false,
+        "changedDuringReadback": false,
+        "taskAvailable": true,
+        "jobState": "read",
+        "connectionInterrupted": false,
+        "outputWritten": true
+      },
+      "privateOutput": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/work-cli.json",
+        "mode": 384,
+        "sha256": "beb41db13fe6d0bd2dc9b1b41ed906ebc6f8fac7ab77bde5f84aac300c13413e"
+      }
+    },
+    {
+      "name": "streaming",
+      "exitCode": 0,
+      "summary": {
+        "outcome": "read",
+        "eventCount": 0,
+        "overflow": false,
+        "changedDuringReadback": false,
+        "connectionInterrupted": false,
+        "outputWritten": true
+      },
+      "privateOutput": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/streaming-cli.json",
+        "mode": 384,
+        "sha256": "f37410f389688f7c3641056c2e789dffd4741e9a66016e7acb59a6a8e4917924"
+      }
+    },
+    {
+      "name": "hub",
+      "exitCode": 0,
+      "summary": {
+        "outcome": "read",
+        "eventCount": 0,
+        "overflow": false,
+        "changedDuringReadback": false,
+        "connectionInterrupted": false,
+        "outputWritten": true
+      },
+      "privateOutput": {
+        "file": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/hub-cli.json",
+        "mode": 384,
+        "sha256": "14d39ec509e9cdbce41246928ae21ff1bbe0158add96b0d3046189e064880b18"
+      }
+    }
+  ],
+  "overflow": {
+    "privateReceipt": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/run/overflow-receipt.json",
+    "sha256": "69ff794b498dfc4bac4485e9a130ef7c1630f3442ef116f0e57fd7111fe178e3",
+    "eventCount": 2,
+    "retainedEvents": 1,
+    "overflow": true,
+    "outcome": "uncertain",
+    "currentNameRestored": true
+  },
+  "helpers": [
+    {
+      "file": "sdk-notifications-fixture.py.txt",
+      "sha256": "828bac7308eecc13709603bf62097a8ffe8f4ccf8662fa6173dcb347fdc3ab9f"
+    },
+    {
+      "file": "sdk-notifications-setup.mjs.txt",
+      "sha256": "8b31368f9c79a2ecee7ffccdee75966f41d0ebf43350bda7979c24a53086edfa"
+    },
+    {
+      "file": "sdk-notifications-session-hub.mjs.txt",
+      "sha256": "e16ee1a84ea05d69c45bb63e2812646cadd9e28eaf68864b7b9c9716863649dc"
+    },
+    {
+      "file": "sdk-notifications-cli.mjs.txt",
+      "sha256": "7e65f7d3b5d2136d763157ce6306fac10a2d57ef55e45d95eb1e2c32eb602243"
+    },
+    {
+      "file": "sdk-notifications-overflow.mjs.txt",
+      "sha256": "71a54ea0ec579b44aef52dc8ba7a4143e440ef25437bf14c54fa7cec6d99c881"
+    },
+    {
+      "file": "sdk-notifications-cleanup.mjs.txt",
+      "sha256": "10590ece48620b8c39bdb1e291554dd98b7480a7eaed6450107c3075ee68bea9"
+    }
+  ],
+  "cleanup": {
+    "fixtureRoot": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm",
+    "configPath": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/config/evener",
+    "statePath": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/state/evener",
+    "providerPID": 16391,
+    "hubPID": 16472,
+    "portsAbsent": [
+      60325,
+      60326
+    ],
+    "ownedLeftoverDaemonsTerminated": [],
+    "remainingOwnedProcesses": 0,
+    "authTokenRemoved": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/state/evener/auth-token",
+    "privateHubLogRemoved": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-runtime-5poi1hkm/hub.log",
+    "originalHubPreserved": {
+      "pid": 67518,
+      "port": 54211
+    }
+  },
+  "limitations": [
+    "Scripted external provider and owned hub only.",
+    "No new goal lifecycle, full streaming replay, native UI or public service acceptance.",
+    "Notification windows are scoped; all36producer outcomes are not qualified.",
+    "Quiet reads and CLI execution do not qualify all real notification producers.",
+    "Goal case clears an already absent goal; no new goal execution or continuation.",
+    "Task/tool producer runtime is recorded separately when verified."
+  ],
+  "sdkSourceCommit": "58d1b079f"
+}

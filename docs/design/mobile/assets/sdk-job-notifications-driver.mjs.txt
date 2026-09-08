@@ -1,0 +1,130 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { AppwireClient } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js";
+import { runWorkNotifications } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/examples/work-notifications-logic.mjs";
+import WebSocket from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js";
+
+const root = process.cwd();
+const runtime = JSON.parse(await readFile(`${root}/runtime.json`, "utf8"));
+const session = JSON.parse(await readFile(`${root}/session.json`, "utf8"));
+const token = (await readFile(`${root}/state/evener/auth-token`, "utf8")).trim();
+const packageRoot = "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client";
+const outDir = `${root}/run/qualification`;
+await mkdir(outDir, { recursive: true });
+const files = [];
+const rawEvents = [];
+const save = async (name, value) => {
+  const path = `${outDir}/${name}.json`;
+  await writeFile(path, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 });
+  const details = await stat(path);
+  files.push({ path, sha256: createHash("sha256").update(await readFile(path)).digest("hex"), mode: details.mode & 0o777 });
+  return path;
+};
+const hash = (value) => createHash("sha256").update(value).digest("hex");
+const makeClient = (name) => new AppwireClient({
+  url: `ws://127.0.0.1:${runtime.hubPort}/rpc`,
+  clientInfo: { name, version: "job-notification-qualification" },
+  socketFactory: (url) => new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } }),
+});
+const actor = makeClient("job-notification-actor");
+const observer = makeClient("job-notification-observer");
+let release;
+let rejectReady;
+const ready = new Promise((resolve, reject) => { release = resolve; rejectReady = reject; });
+let finishQualification;
+let observerError;
+let rawSaved = false;
+let readyOnce = false;
+const qualificationDone = new Promise((resolve) => { finishQualification = resolve; });
+const stopRaw = observer.onNotification((notification) => rawEvents.push(structuredClone(notification)));
+const observerRun = runWorkNotifications(observer, { ref: session.ref }, { observeDurationMs: 10_000, maxEvents: 100, observe: async () => { if (!readyOnce) { readyOnce = true; release(); } await qualificationDone; } });
+observerRun.catch((error) => { observerError = { name: error?.name, message: error?.message }; rejectReady?.(error); finishQualification?.(); });
+const waitCompleted = (client, ref, turnId) => new Promise(async (resolve, reject) => {
+  const deadline = Date.now() + 30_000;
+  try {
+    while (Date.now() < deadline) {
+      const response = await client.request("thread/read", { ref, includeTurns: true, subscribe: false });
+      const turns = response?.thread?.turns;
+      if (Array.isArray(turns) && turns.some((turn) => turn?.id === turnId && turn?.status === "completed")) return resolve(response);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    reject(new Error("bounded wait for authoritative completed turn expired"));
+  } catch (error) { reject(error); }
+});
+const waitForFinishedNotification = (ref) => new Promise((resolve, reject) => {
+  const deadline = Date.now() + 30_000;
+  const check = () => {
+    const event = rawEvents.find((notification) => notification?.method === "evener/job/finished" && notification?.params?.ref === ref && notification?.params?.job?.jobType === "shell" && notification?.params?.job?.command?.includes("job-notification-acceptance-c82f"));
+    if (event) return resolve(event);
+    if (Date.now() >= deadline) return reject(new Error("bounded wait for matching shell job finish expired"));
+    setTimeout(check, 100);
+  };
+  check();
+});
+const findJob = (value, jobId) => {
+  if (!value || typeof value !== "object") return undefined;
+  if (value.jobId === jobId) return value;
+  for (const child of Object.values(value)) {
+    const found = findJob(child, jobId);
+    if (found) return found;
+  }
+  return undefined;
+};
+try {
+  await actor.connect();
+  await ready;
+  const initial = await actor.request("thread/read", { ref: session.ref, includeTurns: false, subscribe: false });
+  await save("initial-read", initial);
+  assert.equal(initial.thread.evener.ref, session.ref);
+  const turnStart = await actor.request("turn/start", {
+    ref: session.ref,
+    clientMutationId: "job-notification-qualification-c82f",
+    expectedInstanceId: initial.thread.evener.instanceId,
+    input: [{ type: "text", text: "job-notification-acceptance-c82f" }],
+  });
+  await save("turn-start", turnStart);
+  const turnId = turnStart?.turn?.id;
+  assert.equal(typeof turnId, "string");
+  const final = await waitCompleted(actor, session.ref, turnId);
+  await save("final-read", final);
+  const finishedNotification = await waitForFinishedNotification(session.ref);
+  await save("job-finished-notification", finishedNotification);
+  finishQualification(final);
+  const work = await observerRun;
+  await save("work-result", work);
+  await save("raw-events", rawEvents);
+  rawSaved = true;
+  assert.equal(work.outcome, "read");
+  const rawStarted = rawEvents.find((notification) => notification?.method === "evener/job/started" && notification?.params?.ref === session.ref && notification?.params?.job?.jobType === "shell" && notification?.params?.job?.command?.includes("job-notification-acceptance-c82f"));
+  const rawFinished = rawEvents.find((notification) => notification?.method === "evener/job/finished" && notification?.params?.ref === session.ref && notification?.params?.job?.jobType === "shell" && notification?.params?.job?.jobId === rawStarted?.params?.job?.jobId);
+  const started = work.events.find((event) => event.method === "evener/job/started" && event.job.jobType === "shell" && event.job.jobId === rawStarted?.params?.job?.jobId);
+  const finished = work.events.find((event) => event.method === "evener/job/finished" && event.job.jobType === "shell" && event.job.jobId === rawStarted?.params?.job?.jobId);
+  assert(started, "missing shell job started notification");
+  assert(rawStarted, "missing raw shell job started notification");
+  assert(rawFinished, "missing raw matching shell job finished notification");
+  assert(finished, "missing matching shell job finished notification");
+  const job = findJob(work.readback.jobs.tree, started.job.jobId);
+  assert(job, "missing shell job in authoritative jobs readback");
+  assert.equal(job.type, "shell");
+  assert.equal(job.terminal, true);
+  assert.equal(job.status, "completed");
+  assert.equal(job.exitCode, 0);
+  assert.equal(job.hasOutput, true);
+  assert(job.outputBytes >= "job-notification-acceptance-c82f".length);
+  assert(job.command?.includes("job-notification-acceptance-c82f"));
+  const receipt = { status: "passed", packageRoot, fixtureRoot: root, sessionRefHash: hash(session.ref), turnIdHash: hash(turnId), jobIdHash: hash(started.job.jobId), notificationNames: [...new Set(work.events.map((event) => event.method))], eventCount: work.eventCount, jobStatus: job.status, privateFiles: files, limitations: ["Job-only qualification; stable delegates are intentionally out of scope.", "Jobs output capability is not used as a completion oracle."] };
+  await save("receipt", receipt);
+  console.log(JSON.stringify({ status: receipt.status, outcome: work.outcome, eventCount: work.eventCount, notificationNames: receipt.notificationNames, privateFileCount: files.length }));
+} catch (error) {
+  finishQualification?.();
+  await observerRun.catch(() => {});
+  if (!rawSaved) await save("raw-events-failure", rawEvents);
+  await save("failure", { name: error?.name, message: error?.message, observerError, privateEvidence: files });
+  console.error("Job notification qualification failed; private evidence retained.");
+  process.exitCode = 1;
+} finally {
+  actor.close();
+  stopRaw();
+  observer.close();
+}

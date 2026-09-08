@@ -55,7 +55,7 @@ must use an isolated current-v4 hub and scripted provider.
 | Hub upgrade reports target, progress/result, disconnect recovery, and never replays mutation | Current `evener/upgrade` handler and real `selfupdate.Upgrade` | Native Hub update section and durable attempt/review controller implemented | 16 focused native tests; fixture archive/cancellation/repeated-hold race tests | Actual disposable-prefix download failure, canceled held download, deliberate retry, installation and installed-binary hub restart | [Current iPhone journey](hub-upgrade-evidence.md#actual-ios-installation-and-recovery--7-september-2026), cold-launch checkpoint and independent running-commit readback | Deferred beyond iOS-only v1 | Native `4f630af16`; backend `bb044658d-dirty`; hashes in receipt | Lost successful-install reply, overlapping hubs, public release service, iPad, physical-device/a11y and signed app update qualification | Coordinator |
 | Reader position, navigation stack, drafts, and process lifecycle restore the right place | `mobile/src/state/navigation.ts`; conversation read/open contracts | `mobile-native/src/location.ts`, `nativeLocation.ts`, `readerPosition.ts`, `nativeReaderPosition.ts`, `screens.tsx` and SQLite draft state; route/draft and semantic item/offset restoration are implemented | Location restoration, reader-position and conversation draft tests | Kill/background/restart during paging/streaming and hub switch; restore exact session, item identity/offset and newer draft | [Reader continuity evidence](reader-continuity-evidence.md) qualifies dated older-page live-to-saved/restart and measured text-size recovery journeys; wider matrix remains open | Historical cold-start/back/font-recreation evidence; first-pass v4 build not final reviewed source | Current source; first-pass v4 Release builds installed but not final reviewed artifacts | Image/reflow and streaming continuity, far-page recovery, form drafts, iPad/VoiceOver/physical devices and current-source builds | Coordinator |
 | Physical accessibility, typography, gestures, light/dark, reduced motion, rotation, and performance meet release bar | Web UI source/style guide plus native platform contracts; server responsiveness measured in `docs/design/mobile/roster-performance.md` | Native UI is present; release qualification remains open (MOB-010/MOB-017) | Existing deterministic UI/controller tests; no complete physical/performance harness | Representative data streaming load, measured scroll/input latency, memory/leak checks, background/foreground and network recovery | Simulator observations only; no physical device, distribution signing, or final reviewed source build | Emulator observations only; ANR/font-scale root cause unresolved; no physical device/signing or final reviewed source build | First-pass v4 Release artifacts installed/launched but not final reviewed; source remains dirty | Physical iOS/Android, signing/distribution, large text/screen reader, reduced motion, dark/light, landscape, performance and final repository gates | Coordinator |
-| Independently usable AppWire library and complete protocol recipes cover every supported method/notification | `cmd/evener-hub/frontend/src/protocol/types.gen.ts`, protocol README and server handlers | `cmd/evener-hub/frontend/src/protocol` package and docs; standalone package boundary exists | External tarball installation, ESM/CommonJS imports, declarations and packaged contract files passed; 13 queue contracts passed after RED/GREEN integration. [Protocol inventory](protocol-coverage.md) records 30 recipes, 90/91 catalog methods and nine bounded notification observers; presence is separate from qualified outcomes | [SDK management evidence](sdk-management-evidence.md) records the independent consumer and controlled owned-v4 workflows; the [protocol README](../../../cmd/evener-hub/frontend/src/protocol/README.md) is the runnable package guide | No native-specific evidence required; package acceptance is independent of native qualification | No native-specific evidence required; package acceptance is independent of native qualification | Lineage/maintenance and empty-preview fix `ccdde59b9`; setup/saved-item recipes `a229b0c82`, upgrade recipe `64c707aeb`; dated receipts identify independently tested tarballs and scope | Complete catalog-derived outcome matrix and failures/disconnects; reserved rejection has an owned-hub receipt; publication remains separate from local tests; this inventory does not claim complete method/notification outcome coverage | Protocol owner |
+| Independently usable AppWire library and complete protocol recipes cover every supported method/notification | `cmd/evener-hub/frontend/src/protocol/types.gen.ts`, protocol README and server handlers | `cmd/evener-hub/frontend/src/protocol` package and docs; standalone package boundary exists | External tarball installation, ESM/CommonJS imports, declarations and packaged contract files passed; 13 queue contracts passed after RED/GREEN integration. [Protocol inventory](protocol-coverage.md) records 34 recipes, 90/91 catalog methods and all 36 notification names; 49 new observer contracts and 321 installed-package tests passed at `58d1b079f`. Presence is separate from qualified outcomes | [SDK management evidence](sdk-management-evidence.md) records the independent consumer and controlled owned-v4 workflows; the [protocol README](../../../cmd/evener-hub/frontend/src/protocol/README.md) is the runnable package guide | No native-specific evidence required; package acceptance is independent of native qualification | No native-specific evidence required; package acceptance is independent of native qualification | Notification recipes `58d1b079f`; earlier lineage, setup, saved-item and upgrade recipes have dated receipts identifying independently tested tarballs and scope | Complete catalog-derived outcome matrix and failures/disconnects; reserved rejection has an owned-hub receipt; publication remains separate from local tests; this inventory does not claim complete method/notification outcome coverage | Protocol owner |
 
 ## Required release record
 
@@ -201,3 +201,48 @@ secret scan passed. Logs are `/tmp/evener-pairing-navigation-delete-final-canoni
 `/tmp/evener-pairing-navigation-delete-final-vet.log`, and
 `/tmp/evener-pairing-navigation-evidence-secrets.log`. These gates cover the
 compiled source at that commit; the device and release gaps above remain open.
+
+## Notification cookbook and gate checkpoint — 7 September 2026
+
+The current notification qualification adds the session, work, streaming and
+hub observers. The cookbook now contains 34 recipes covering 90 of 91 cataloged
+methods and all 36 cataloged notification names. The one remaining method is
+reserved and unsupported; these counts describe recipe presence rather than
+complete producer or release acceptance. The five notification names exercised
+against the owned real hub are recorded in [notification evidence](sdk-notifications-evidence.md).
+
+At source `58d1b079f`, the canonical integration gate exited zero (run `11473`)
+and the separate vet run exited zero (run `66642`). Logs are `/tmp/evener-all-notifications-canonical.log`
+and `/tmp/evener-all-notifications-vet.log`. After residue cleanup,
+`make test-api-package` exited zero at `30906`, recorded in
+`/tmp/evener-notifications-after-residue-package.log`.
+
+The notification receipt records the installed SDK tarball, isolated scripted
+provider and owned hub, private result modes and hashes, and credential/log
+cleanup. The real-hub scope covers the five named notifications and bounded
+observer/CLI behavior. Task and tool producer outcomes, full streaming and
+lifecycle recovery, reconnect/replay, native iPad and physical-device,
+accessibility, performance, and signing/update acceptance remain open.
+
+## Real notification lifecycle and iPad follow-through
+
+The [notification evidence](sdk-notifications-evidence.md) now includes twelve
+actual notification names across separate session/settings, task/tool, shell
+job and stable-delegate fixtures. Each uses the installed `58d1b079f` SDK;
+the task/job/delegate runs use backend `d2d5eedf9`. The task run exposed and then
+verified the producer fix for absent steering images. Real outcomes remain
+bounded to the recorded cases; no complete lifecycle/reconnect matrix is claimed.
+
+At backend source `d2d5eedf9`, the canonical integration gate exited zero
+(run `79691`, `/tmp/evener-steering-images-canonical.log`) and vet exited zero
+(run `94896`, `/tmp/evener-steering-images-vet.log`). Native-only follow-up
+`1e0533ce1` changes iOS hub-form keyboard avoidance after the iPad landscape
+check could not reach Save with the software keyboard open. All 675 native
+tests and TypeScript passed (run `92883`, `/tmp/evener-ipad-keyboard-native.log`),
+and its Release artifact built. Root then found a simulator coordinate error:
+the original app also scrolls correctly with the transformed landscape gesture.
+Commit `401eddc95` reverts the unnecessary candidate. The final compiled sources
+match the source qualified by the `d2d5eedf9` canonical gate.
+[Actual iPad form evidence](ipad-form-evidence.md) qualifies the original Release
+form in portrait/landscape with the software keyboard; broader iPad and physical
+device acceptance remains open.

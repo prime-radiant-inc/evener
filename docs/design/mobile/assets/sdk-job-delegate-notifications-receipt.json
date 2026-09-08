@@ -1,0 +1,180 @@
+{
+  "status": "verified",
+  "scope": "real SDK job and stable-delegate notification acceptance",
+  "source": {
+    "backendSourceCommit": "d2d5eedf9d39e7f45e3d2a73bb0ababb0bf8873c",
+    "sdkSourceCommit": "58d1b079f",
+    "jobLaunchSourceHead": "1e0533ce15f3acdca4ba943198742bb442a84455",
+    "jobLaunchSourceHeadMeaning": "Working checkout HEAD at fixture launch; the additional commit only changes native keyboard layout. The copied backend binaries were built at backendSourceCommit.",
+    "binarySHA256": {
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980"
+    },
+    "packageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client"
+  },
+  "helperSnapshots": {
+    "postRunComputed": true,
+    "sha256": {
+      "sdk-job-notifications-fixture.py.txt": "625daca8babe9b2c02efd3271494a50fc0957ac95b24c1f322bc133cdef63aae",
+      "sdk-job-notifications-setup.mjs.txt": "8521658ee614557f7c9e96466a810a4374be43e2a68361809fd1e8e8730e90e1",
+      "sdk-job-notifications-driver.mjs.txt": "bbcc6094ffaa081f7c95fa4cae158380c664236d9a58f10bd117ea16b826f6fb",
+      "sdk-delegate-notifications-fixture.py.txt": "06b0d89247df7e8d4005e1652167566d854a6885872195c64118893d14fc3a53",
+      "sdk-delegate-notifications-setup.mjs.txt": "36ec38badcc8e30693422d4d04081fa65b21c7afd94194bc629ce3e4500640e2",
+      "sdk-delegate-notifications-qualify.mjs.txt": "896b11c66a75681a6da2b979d535157fa6da51bc5fc7c783a2ed5afb250a65ef",
+      "sdk-delegate-notifications-provider-state.py.txt": "df514b4e9809068e9633b157f0e40e06b8ea2d3a34434ad45a95a7c4e52a8bdd"
+    }
+  },
+  "job": {
+    "fixtureRoot": "/tmp/evener-job-notification-run-KzgBqU",
+    "runtime": {
+      "hubPID": 42150,
+      "providerPID": 42116,
+      "hubPort": 64534,
+      "providerPort": 64533
+    },
+    "verified": true,
+    "eventNames": [
+      "evener/job/finished",
+      "evener/job/started",
+      "evener/jobs/treeUpdated"
+    ],
+    "jobStatus": "completed",
+    "jobExitCode": 0,
+    "jobOutputBytes": 32,
+    "privateEvidence": [
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/setup/thread-start.json",
+        "sha256": "266a3471f4c43c57216cbff9d3985bae57a9afb13487025ad141bcc1a876ebff",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/setup/thread-read.json",
+        "sha256": "db56c1c71188eef2bef4c5c7ff0656fb0948dc9322453925204a5abd9f7ead09",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/initial-read.json",
+        "sha256": "07485fa64370382824d204d1ec68569fc25867aefa50b4a5d3f1b9f9705a0995",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/turn-start.json",
+        "sha256": "e985801d3f65db869689a8d755925d7f8b50eeb311f443fc2546ffd932da5a53",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/final-read.json",
+        "sha256": "d96cb737c99991f2505bcff661350253772929e2f0e20a426f5fd6807a21e4bc",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/job-finished-notification.json",
+        "sha256": "a5dc51dfeafd72d3f06db150997bc8f3e65f8a1577b218b98e33bc69fe43bcf3",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/work-result.json",
+        "sha256": "45e8c614696ae894f1fead1cad531af7a6bd575c1241c89211d26b925e70c965",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/run/qualification/raw-events.json",
+        "sha256": "5c69bf8a57190812892adc78423d590727112796cb57063cb37d92d0434c0df0",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-job-notification-run-KzgBqU/provider-requests.json",
+        "sha256": "cffeee7adca9bf9b7ca1aeb7664dfead91ef7058b852ffce8bf05cb0bac4c71e",
+        "mode": "0o600"
+      }
+    ],
+    "cleanup": {
+      "processAndPortAbsence": {
+        "hubPID": true,
+        "providerPID": true,
+        "hubPort": true,
+        "providerPort": true
+      },
+      "tokenRemoved": true,
+      "hubLogRemovedAfterVerification": true
+    },
+    "limitation": "Output bytes and exit code were verified; output contents were not independently read as proof.",
+    "rootVerification": "/tmp/evener-job-notification-run-KzgBqU/root-verification.json"
+  },
+  "delegate": {
+    "fixtureRoot": "/tmp/evener-delegate-notification-run-w1y9rvwq",
+    "runtime": {
+      "hubPID": 30923,
+      "providerPID": 30886,
+      "hubPort": 62376,
+      "providerPort": 62374
+    },
+    "verified": true,
+    "notificationName": "evener/delegate/updated",
+    "workOutcome": "read",
+    "childPreviewItemCount": 4,
+    "privateEvidence": [
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/turn-start.json",
+        "sha256": "a057079a0765996b5601f640e7f356096d5201e29fc3215af0195d4c9b875d6e",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/delegate-events.json",
+        "sha256": "94da13f417b87c1987b07a63c27a9e274be654de7646b61b899b62cefd14f19c",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/child-preview.json",
+        "sha256": "ed6cf23d7a4b0591533d656f48d0d8e89e5e173ed13ed5622a7224af5ac6996f",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/completion-notification.json",
+        "sha256": "f0dc2b31b63f7715f7f223662e3e703af4bfadb2c6d877471d7d539ab19d293f",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/final-thread.json",
+        "sha256": "66d0e647147f6140eda152357502da58f5c46463096e8a9743b66ee3dd9a8a64",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/work-result.json",
+        "sha256": "55bf227d34adc5d6e3c434e3512f2b8fee86b7b75cf15086b48aa8bc64c654d6",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/run/events.json",
+        "sha256": "f729c546f0e81b9b3050d2249dd0ea45c232ade7c74e5d29b7c6a75ed8320f1c",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/provider-request-bodies.jsonl",
+        "sha256": "1839c311103dfbfe337a90e872e9dcbd57d3f19e822ed2fdc277705209e11cde",
+        "mode": "0o600"
+      },
+      {
+        "path": "/tmp/evener-delegate-notification-run-w1y9rvwq/provider-requests.json",
+        "sha256": "cee140e1a6652d4f0e97808eb28a5850188b98116d562500a06bd25ca816ea28",
+        "mode": "0o644"
+      }
+    ],
+    "cleanup": {
+      "processAndPortAbsence": {
+        "hubPID": true,
+        "providerPID": true,
+        "hubPort": true,
+        "providerPort": true
+      },
+      "tokenRemoved": true,
+      "hubLogRemovedAfterVerification": true
+    },
+    "rootVerification": "/tmp/evener-delegate-notification-run-w1y9rvwq/root-verification.json"
+  },
+  "privacy": "Captured provider bodies, tool results, transcripts, events, and runtime credentials remain private. Published helper sources contain only the synthetic scripted inputs; the receipt contains metadata, hashes and local evidence paths.",
+  "limitations": [
+    "One background shell job and one stable-delegate report; no job output contents were independently read.",
+    "Delegate follow-up, stop/resume, disconnect/replay, broader lifecycle and native activity UI acceptance remain separate."
+  ]
+}

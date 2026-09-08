@@ -1,0 +1,26 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import WebSocket from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js";
+import { AppwireClient } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js";
+const root = process.cwd();
+const runtime = JSON.parse(readFileSync(root + "/runtime.json"));
+const token = readFileSync(root + "/state/evener/auth-token", "utf8").trim();
+const hub = new AppwireClient({url: `ws://127.0.0.1:${runtime.hubPort}/rpc`, clientInfo: {name: "delegate-fixture-setup", version: "1"}, socketFactory: url => new WebSocket(url, {headers: {Authorization: `Bearer ${token}`}})});
+const events = [];
+let connected = false;
+const waitFor = predicate => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { hubOff(); reject(new Error("bounded setup completion deadline")); }, 30000);
+  const check = () => { const value = events.find(predicate); if (value) { clearTimeout(timer); hubOff(); resolve(value); } };
+  const hubOff = hub.onNotification(() => check());
+  check();
+});
+try {
+  hub.onNotification(n => events.push(n));
+  await hub.connect();
+  connected = true;
+  const started = await hub.request("thread/start", {cwd: root + "/workspace", input: [{type: "text", text: "delegate fixture initial turn"}], modelProvider: "fixture", model: "fixture-model", nonInteractive: false, launchOverrides: {noProjectPrompts: true, maxRounds: 8}});
+  const ref = started.thread.evener.ref;
+  await waitFor(n => n.method === "turn/completed" && n.params?.ref === ref && n.params?.turn?.id === started.turn.id);
+  writeFileSync(root + "/session.json", JSON.stringify({ref, threadId: started.thread.id, instanceId: started.thread.evener.instanceId}) + "\n", {flag: "wx", mode: 0o600});
+  writeFileSync(root + "/setup-metadata.json", JSON.stringify({ref, threadId: started.thread.id, eventNames: [...new Set(events.map(n => n.method))]}) + "\n", {flag: "wx", mode: 0o600});
+  console.log(JSON.stringify({status: "ready", ref, threadId: started.thread.id}));
+} finally { if (connected) hub.close(); }

@@ -1,0 +1,92 @@
+import assert from "node:assert/strict";
+import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import WebSocket from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js";
+import { AppwireClient } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js";
+import { runWorkNotifications } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/examples/work-notifications-logic.mjs";
+
+const root = process.cwd();
+const runtime = JSON.parse(readFileSync(root + "/runtime.json"));
+const session = JSON.parse(readFileSync(root + "/session.json"));
+const token = readFileSync(root + "/state/evener/auth-token", "utf8").trim();
+const make = name => new AppwireClient({url: `ws://127.0.0.1:${runtime.hubPort}/rpc`, clientInfo: {name, version: "1"}, socketFactory: url => new WebSocket(url, {headers: {Authorization: `Bearer ${token}`}})});
+const actor = make("delegate-fixture-actor");
+const workClient = make("delegate-fixture-work-observer");
+const events = [];
+const files = [];
+let subscribed = false;
+let workSettled;
+let initial;
+let started;
+let activity;
+let finalThread;
+let workResult;
+function save(name, value) {
+  const path = root + "/run/" + name + ".json";
+  writeFileSync(path, JSON.stringify(value) + "\n", {flag: "wx", mode: 0o600});
+  files.push({path, sha256: createHash("sha256").update(readFileSync(path)).digest("hex"), mode: statSync(path).mode & 0o777});
+}
+function waitFor(predicate, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { off(); reject(new Error("bounded wait expired: " + label)); }, 30000);
+    const check = () => { const value = events.find(predicate); if (value) { clearTimeout(timer); off(); resolve(value); } };
+    const off = actor.onNotification(() => check());
+    check();
+  });
+}
+function hasDelegate(node, delegateId) {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node.entries) && node.entries.some(entry => entry?.kind === "delegate" && entry.delegate?.delegateId === delegateId)) return true;
+  return Array.isArray(node.entries) && node.entries.some(entry => hasDelegate(entry?.delegate?.child, delegateId));
+}
+let releaseReady;
+let rejectReady;
+let releaseDone;
+const ready = new Promise((resolve, reject) => { releaseReady = resolve; rejectReady = reject; });
+const done = new Promise(resolve => { releaseDone = resolve; });
+const workPromise = runWorkNotifications(workClient, {ref: session.ref}, {observe: async () => { releaseReady(); await done; }, observeDurationMs: 0});
+workSettled = workPromise.then(value => ({status: "fulfilled", value}), reason => { rejectReady(reason); return {status: "rejected", reason}; });
+try {
+  actor.onNotification(n => events.push(n));
+  await actor.connect();
+  subscribed = true;
+  initial = await actor.request("thread/read", {ref: session.ref, includeTurns: true, subscribe: true});
+  await ready;
+  started = await actor.request("turn/start", {ref: session.ref, clientMutationId: "delegate-notification-qualification-6d1b", expectedInstanceId: initial.thread.evener.instanceId, input: [{type: "text", text: "delegate-notification-qualification-6d1b"}]});
+  save("turn-start", started);
+  const delegateEvent = await waitFor(n => n.method === "evener/delegate/updated" && n.params?.ref === session.ref && n.params.delegate?.delegateId, "owner delegate update");
+  const delegate = delegateEvent.params.delegate;
+  assert(delegate.childSessionId && delegate.transcriptRef);
+  const settled = await waitFor(n => n.method === "evener/delegate/updated" && n.params?.ref === session.ref && n.params.delegate?.delegateId === delegate.delegateId && n.params.delegate?.terminal === true, "terminal delegate update");
+  save("delegate-events", {created: delegateEvent, settled});
+  const preview = await actor.request("evener/subagentPreview", {ref: delegate.transcriptRef, limit: 5});
+  save("child-preview", preview);
+  assert.equal(preview.ref, delegate.transcriptRef);
+  assert(preview.items.some(item => item.text?.includes("delegate-child-complete")));
+  const completed = await waitFor(n => n.method === "turn/completed" && n.params?.ref === session.ref && (n.params.turnId === started.turn.id || n.params.turn?.id === started.turn.id), "parent turn completion");
+  save("completion-notification", completed);
+  finalThread = await actor.request("thread/read", {ref: session.ref, includeTurns: true, subscribe: false});
+  save("final-thread", finalThread);
+  assert(finalThread.thread.turns.some(turn => turn.id === started.turn.id && turn.status === "completed"));
+  releaseDone();
+  const workSettlement = await workSettled;
+  if (workSettlement.status === "rejected") throw workSettlement.reason;
+  workResult = workSettlement.value;
+  assert.equal(workResult.outcome, "read");
+  activity = workResult.readback.jobs;
+  save("work-result", workResult);
+  assert(hasDelegate(activity.tree?.root, delegate.delegateId), "work readback did not contain stable delegate");
+  save("events", events);
+  save("receipt", {status: "passed", ref: session.ref, delegateId: delegate.delegateId, childSessionId: delegate.childSessionId, notification: "evener/delegate/updated", parentTurnId: started.turn.id, childPreviewItems: preview.items.length, workOutcome: workResult.outcome, privateFiles: files});
+  console.log(JSON.stringify({status: "passed", notification: "evener/delegate/updated", childPreviewItems: preview.items.length, workOutcome: workResult.outcome}));
+} catch (error) {
+  releaseDone();
+  await workSettled;
+  save("failure", {message: error.message, events, initial, started, activity, finalThread, workResult, privateFiles: files});
+  console.error("Delegate fixture qualification failed; private evidence retained.");
+  process.exitCode = 1;
+} finally {
+  if (subscribed) await actor.request("thread/unsubscribe", {ref: session.ref}).catch(() => {});
+  actor.close();
+  workClient.close();
+}

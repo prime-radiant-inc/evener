@@ -1,10 +1,10 @@
 # AppWire protocol coverage inventory
 
-This inventory is generated from the authoritative `appwire.Methods` and `appwire.Notifications` catalogs originally inventoried at `759e7b10f`, with the packaged recipe inventory rechecked at `16ae1576f` and dated credential/OAuth evidence from the same delivery line. The `turn/steer` and optional drain-input recipes are integrated at `5429db421`; their dated direct-hub qualification uses a scripted model boundary and does not qualify native UI or live model behavior. It distinguishes cookbook presence, deterministic contract tests, real hub acceptance, and native qualification. A recipe or contract is not evidence of live-hub or native acceptance; “deterministic contract” below means the recipe logic contract, not server method acceptance. Dated acceptance links below are evidence from separate controlled owned fixtures, with their stated scope and limits. No operation was performed for this inventory.
+This inventory is generated from the authoritative `appwire.Methods` and `appwire.Notifications` catalogs originally inventoried at `759e7b10f`, with the packaged recipe inventory rechecked at `58d1b079f` and dated credential/OAuth evidence from the same delivery line. The `turn/steer` and optional drain-input recipes are integrated at `5429db421`; their dated direct-hub qualification uses a scripted model boundary and does not qualify native UI or live model behavior. It distinguishes cookbook presence, deterministic contract tests, real hub acceptance, and native qualification. A recipe or contract is not evidence of live-hub or native acceptance; “deterministic contract” below means the recipe logic contract, not server method acceptance. Dated acceptance links below are evidence from separate controlled owned fixtures, with their stated scope and limits. No operation was performed for this inventory.
 
 ## Counts and interpretation
 
-The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **90 distinct methods** across **30 recipes** and explicitly observes nine notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
+The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **90 distinct methods** across **34 recipes** and explicitly handles all **36 notification names** in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
 
 The discovery and session-management recipes add eleven method names with
 21 deterministic logic/CLI contracts. The discovery reads also have a current owned-hub run in the [upgrade receipt](assets/ios-upgrade-receipt.json); management command receipts remain scoped in [SDK evidence](sdk-management-evidence.md#sdk-discovery-and-compaction-command-receipts--7-september). [New compaction-effect evidence](sdk-management-evidence.md#compaction-effects-and-reserved-rejection) establishes persisted summary and next-model use; native UI and model quality remain separate.
@@ -18,6 +18,12 @@ Mutation modes require explicit actions and private outputs; deletion confirmati
 client-side target review, not atomic server preconditions. Only the reserved
 unsupported method lacks a cookbook recipe; its actual expected rejection is
 recorded in the compaction-effect receipt. Upgrade review is the read-only default.
+
+The four bounded notification recipes share observation/cleanup logic and add
+49 deterministic contracts. They retain private snapshots and events, report
+interruption/overflow/readback races as uncertain, and never replay mutations.
+[Installed-package runtime evidence](sdk-notifications-evidence.md) qualifies
+selected actual producers and CLI paths; it does not qualify all 36 producers.
 
 ## Methods
 
@@ -119,42 +125,42 @@ recorded in the compaction-effect receipt. Upgrade review is the read-only defau
 
 | Notification | Cookbook recipe(s) explicitly observing it | Evidence currently present | Unassessed or remaining qualification |
 |---|---|---|---|
-| `thread/started` | — | catalog only | live ordering/failure + native qualification |
-| `thread/closed` | — | catalog only | live ordering/failure + native qualification |
-| `thread/status/changed` | — | catalog only | live ordering/failure + native qualification |
-| `thread/queueChanged` | — | catalog only | live ordering/failure + native qualification |
-| `evener/thread/name/changed` | — | catalog only | live ordering/failure + native qualification |
-| `thread/model/changed` | — | Observed by the seven-mutation settings driver in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); recipe does not own subscriptions | broader notification ordering/failure and native qualification not assessed here |
-| `thread/reasoning-effort/changed` | — | Observed by the seven-mutation settings driver in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); recipe does not own subscriptions | broader notification ordering/failure and native qualification not assessed here |
-| `thread/vision-model/changed` | — | Observed by the seven-mutation settings driver in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); recipe does not own subscriptions | broader notification ordering/failure and native qualification not assessed here |
+| `thread/started` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `thread/closed` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `thread/status/changed` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `thread/queueChanged` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/thread/name/changed` | `session-notifications.mjs` | Bounded deterministic contracts + [actual scoped events and independent snapshot readback](sdk-notifications-evidence.md) | live ordering/failure + native qualification |
+| `thread/model/changed` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; Observed by the seven-mutation settings driver in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); that dated driver is separate from the new observer | broader notification ordering/failure and native qualification not assessed here |
+| `thread/reasoning-effort/changed` | `session-notifications.mjs` | Bounded recipe + deterministic notification contracts; Observed by the seven-mutation settings driver in [SDK evidence](sdk-management-evidence.md#packaged-session-settings-and-command-catalog--7-september); that dated driver is separate from the new observer | broader notification ordering/failure and native qualification not assessed here |
+| `thread/vision-model/changed` | `session-notifications.mjs` | Bounded deterministic contracts + [actual scoped events and independent snapshot readback](sdk-notifications-evidence.md) | broader notification ordering/failure and native qualification not assessed here |
 | `turn/started` | `session-lifecycle.mjs` | recipe inventory + deterministic contract where listed | live ordering/failure + native qualification |
 | `turn/completed` | `session-lifecycle.mjs`, `streaming-rejoin.mjs` | Real SDK lifecycle barriers in [reader evidence](reader-continuity-evidence.md#native-live-to-saved-continuity-7-september-2026) and [question evidence](real-question-harness-evidence.md#direct-v4-questions-restart-and-keyboard-qualification); recipe inventory + deterministic contract | broader ordering/failure remains open; Android is deferred beyond the iOS-only v1 scope |
 | `item/started` | `streaming-rejoin.mjs` | bounded recipe observer handles this name; no continuous reducer claim | live ordering/failure + native qualification |
 | `item/completed` | `streaming-rejoin.mjs` | bounded recipe observer handles this name; no continuous reducer claim | live ordering/failure + native qualification |
 | `item/agentMessage/delta` | `streaming-rejoin.mjs` | bounded recipe observer handles this name; no continuous reducer claim | live ordering/failure + native qualification |
 | `item/agentMessage/reset` | `streaming-rejoin.mjs` | bounded recipe observer handles this name; no continuous reducer claim | live ordering/failure + native qualification |
-| `item/reasoning/summaryTextDelta` | — | catalog only | live ordering/failure + native qualification |
-| `item/toolOutput/delta` | — | catalog only | live ordering/failure + native qualification |
-| `warning` | — | catalog only | live ordering/failure + native qualification |
-| `evener/thread/modelRetry` | — | catalog only | live ordering/failure + native qualification |
-| `evener/steering/injected` | — | catalog only | live ordering/failure + native qualification |
-| `evener/job/started` | — | catalog only | live ordering/failure + native qualification |
-| `evener/job/finished` | — | catalog only | live ordering/failure + native qualification |
-| `evener/delegate/updated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/jobs/treeUpdated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/auth/updated` | — | [independent observer received eleven credential updates](sdk-management-evidence.md#packaged-stored-credentials--7-september) | continuous recovery, failure and native qualification remain open |
+| `item/reasoning/summaryTextDelta` | `streaming-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `item/toolOutput/delta` | `streaming-notifications.mjs` | deterministic contract + [actual owned task completion](sdk-notifications-evidence.md#actual-task-completion-and-tool-output) | broader ordering, failure/reconnect and native qualification remain open |
+| `warning` | `streaming-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/thread/modelRetry` | `streaming-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/steering/injected` | `streaming-notifications.mjs` | deterministic contract + [actual owned task completion](sdk-notifications-evidence.md#actual-task-completion-and-tool-output) | automatic tasks-done steering only; user steering, failures/reconnect and native qualification remain separate |
+| `evener/job/started` | `work-notifications.mjs` | deterministic contract + [actual owned job/delegate lifecycle](sdk-notifications-evidence.md#actual-shell-job-and-stable-delegate) | broader ordering, failure/reconnect and native qualification remain open |
+| `evener/job/finished` | `work-notifications.mjs` | deterministic contract + [actual owned job/delegate lifecycle](sdk-notifications-evidence.md#actual-shell-job-and-stable-delegate) | broader ordering, failure/reconnect and native qualification remain open |
+| `evener/delegate/updated` | `work-notifications.mjs` | deterministic contract + [actual owned job/delegate lifecycle](sdk-notifications-evidence.md#actual-shell-job-and-stable-delegate) | broader ordering, failure/reconnect and native qualification remain open |
+| `evener/jobs/treeUpdated` | `work-notifications.mjs` | deterministic contract + [actual owned job/delegate lifecycle](sdk-notifications-evidence.md#actual-shell-job-and-stable-delegate) | broader ordering, failure/reconnect and native qualification remain open |
+| `evener/auth/updated` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; [independent observer received eleven credential updates](sdk-management-evidence.md#packaged-stored-credentials--7-september) | continuous recovery, failure and native qualification remain open |
 | `evener/launch/updated` | `repository-trust.mjs`, `project-layer.mjs` | recipe inventory + deterministic contract where listed | live ordering/failure + native qualification |
-| `evener/attention/changed` | — | catalog only | live ordering/failure + native qualification |
+| `evener/attention/changed` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
 | `evener/navigation/invalidated` | `navigation-invalidation.mjs` | [Real favorite invalidations and manifest readback](sdk-management-evidence.md#packaged-navigation-invalidation--7-september-2026); bounded deterministic race contracts | other resources, continuous reducers, live generation/gap/fault recovery and native qualification remain open |
-| `evener/marketplace/updated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/plugin/updated` | — | catalog only | live ordering/failure + native qualification |
+| `evener/marketplace/updated` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/plugin/updated` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
 | `evener/thread/resync` | `streaming-rejoin.mjs` | bounded recipe observer handles this name; no continuous reducer claim | live ordering/failure + native qualification |
-| `evener/task/updated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/goal/updated` | — | catalog only | live ordering/failure + native qualification |
-| `evener/sandbox/escalation/requested` | — | catalog only | live ordering/failure + native qualification |
-| `evener/sandbox/escalation/resolved` | — | catalog only | live ordering/failure + native qualification |
-| `evener/settings/transcriptDisplay/changed` | — | catalog only | live ordering/failure + native qualification |
-| `evener/settings/keybindings/changed` | — | catalog only | live ordering/failure + native qualification |
+| `evener/task/updated` | `work-notifications.mjs` | deterministic contract + [actual owned task completion](sdk-notifications-evidence.md#actual-task-completion-and-tool-output) | broader ordering, failure/reconnect and native qualification remain open |
+| `evener/goal/updated` | `work-notifications.mjs` | Bounded deterministic contracts + [clear of an already absent goal](sdk-notifications-evidence.md) | live ordering/failure + native qualification |
+| `evener/sandbox/escalation/requested` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/sandbox/escalation/resolved` | `hub-notifications.mjs` | Bounded recipe + deterministic notification contracts; real producer outcome not qualified by this batch | live ordering/failure + native qualification |
+| `evener/settings/transcriptDisplay/changed` | `hub-notifications.mjs` | Bounded deterministic contracts + [actual scoped events and independent snapshot readback](sdk-notifications-evidence.md) | live ordering/failure + native qualification |
+| `evener/settings/keybindings/changed` | `hub-notifications.mjs` | Bounded deterministic contracts + [actual scoped events and independent snapshot readback](sdk-notifications-evidence.md) | live ordering/failure + native qualification |
 
 ## Lifecycle and failure qualification gaps
 

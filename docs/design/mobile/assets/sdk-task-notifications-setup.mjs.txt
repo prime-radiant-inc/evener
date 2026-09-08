@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {AppwireClient} from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/ws/index.js';
+const root=process.cwd(),runtime=JSON.parse(readFileSync(root+'/runtime.json')),token=readFileSync(root+'/state/evener/auth-token','utf8').trim();
+const hub=new AppwireClient({url:`ws://127.0.0.1:${runtime.hubPort}/rpc`,clientInfo:{name:'notification-runtime-setup',version:'1'},socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+const events=[];
+let changed;
+const waiters=new Set();
+const off=hub.onNotification(n=>{events.push(n);for(const w of waiters)w();});
+async function until(predicate){if(predicate())return;await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{waiters.delete(check);reject(new Error('Notification completion deadline'));},30000);function check(){if(predicate()){clearTimeout(timer);waiters.delete(check);resolve();}}waiters.add(check);check();});}
+try{
+ await hub.connect();
+ const started=await hub.request('thread/start',{cwd:root+'/workspace',input:[{type:'text',text:'notification fixture initial turn'}],modelProvider:'fixture',model:'fixture-model',nonInteractive:false,launchOverrides:{noProjectPrompts:true,maxRounds:8}});
+ const ref=started.thread.evener.ref;
+ await until(()=>events.some(n=>n.method==='turn/completed' && n.params.ref===ref && n.params.turn.id===started.turn.id));
+ const read=await hub.request('thread/read',{ref,includeTurns:true,subscribe:false});
+ assert(read.thread.turns.some(t=>t.id===started.turn.id && t.status==='completed'));
+ writeFileSync(root+'/session.json',JSON.stringify({ref,threadId:read.thread.id,instanceId:read.thread.evener.instanceId}),{flag:'wx',mode:0o600});
+ writeFileSync(root+'/run/initial-thread.json',JSON.stringify(read),{flag:'wx',mode:0o600});
+ writeFileSync(root+'/run/initial-events.json',JSON.stringify(events),{flag:'wx',mode:0o600});
+ console.log(JSON.stringify({status:'ready',ref,threadId:read.thread.id,eventNames:[...new Set(events.map(n=>n.method))],capabilities:read.thread.evener.capabilities}));
+}finally{off();hub.close();}

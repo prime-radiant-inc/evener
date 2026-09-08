@@ -1,0 +1,216 @@
+{
+  "status": "passed",
+  "sdkSourceCommit": "58d1b079f",
+  "packageRoot": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+  "fixture": {
+    "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf",
+    "backendSourceCommit": "d2d5eedf9d39e7f45e3d2a73bb0ababb0bf8873c",
+    "sdkSourceCommit": "58d1b079f",
+    "binarySHA256": {
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4",
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980"
+    },
+    "fixtureSHA256": "26220527666627c35d4d942238d6010a4ba2b041a098527294edf47b7bca7c4b",
+    "compiledSourceNote": "All compiled source is committed; pre-existing Apple changes and current evidence docs are unrelated to these Go binaries."
+  },
+  "session": {
+    "ref": "local:034L5OOjuNaiC5IeC5GRdG",
+    "threadId": "034L5OOjuNaiC5IeC5GRdG",
+    "instanceId": "034L5OOjuNaiC5IeC5GRdG"
+  },
+  "turnId": "turn_m2",
+  "taskId": 1,
+  "completionTurnId": "turn_m2",
+  "taskStatus": "done",
+  "streaming": {
+    "outcome": "read",
+    "eventCount": 3,
+    "eventNames": [
+      "item/toolOutput/delta",
+      "evener/steering/injected"
+    ]
+  },
+  "work": {
+    "outcome": "read",
+    "eventCount": 2,
+    "eventNames": [
+      "evener/task/updated"
+    ]
+  },
+  "privateFiles": [
+    {
+      "file": "run/initial-independent.json",
+      "sha256": "8f59774d35734bd35da8d7dcf9413a3f7bb849a44537f138905c377a353e6bde",
+      "mode": 384
+    },
+    {
+      "file": "run/turn-start.json",
+      "sha256": "63afd2615b50f6c105034a45cbafa341f578616ec30aa6bd5996580982b583a8",
+      "mode": 384
+    },
+    {
+      "file": "run/added-task-readback.json",
+      "sha256": "13ddb0f1ed36a93c636c5c002016490bb259c8c055b118676c52014ef2f46a12",
+      "mode": 384
+    },
+    {
+      "file": "run/completion-notification.json",
+      "sha256": "30a53183bec18edd488bc3e7c873e9b9a8e98ad6d3d1792a9934b00a5be64c05",
+      "mode": 384
+    },
+    {
+      "file": "run/final-independent.json",
+      "sha256": "03c485226d9f6cd60d5dcfc09c7d241692bc9accdab55a5bbe9af686727b7429",
+      "mode": 384
+    },
+    {
+      "file": "run/completed-task-readback.json",
+      "sha256": "90e463854ae3632f7c65fa3be14858610cdc03ba80daac0503832d88fb93912b",
+      "mode": 384
+    },
+    {
+      "file": "run/streaming-result.json",
+      "sha256": "260d6c1e57ae2d88776e6765db26e32c0fa068dc6559391bda3317ab80e2c3bf",
+      "mode": 384
+    },
+    {
+      "file": "run/work-result.json",
+      "sha256": "2c749f21f2a57d47cbb4884c9ff54d2cf3709c3eb3fe4bfb7f947e3142353998",
+      "mode": 384
+    },
+    {
+      "file": "run/raw-events.json",
+      "sha256": "f03d79eb3d1b1768912eaa43425e5bc82c0876c5706f1e67c20620259850e9f9",
+      "mode": 384
+    }
+  ],
+  "limitations": [
+    "One scripted add/update/communicate turn. No jobs, delegates, model retry, reasoning or user-authored steering acceptance; only the automatic tasks-done steering is exercised."
+  ],
+  "cleanup": {
+    "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf",
+    "pids": {
+      "hubPID": 65121,
+      "providerPID": 65021
+    },
+    "ports": {
+      "hubPort": 54110,
+      "providerPort": 54109
+    },
+    "absent": {
+      "hubPort": true,
+      "providerPort": true,
+      "hubPID": true,
+      "providerPID": true
+    },
+    "tokenRemoved": true,
+    "privateHubLogsRemoved": true,
+    "rawEvidenceRetained": true,
+    "shutdownAcknowledgment": {
+      "shutdownAcknowledged": true,
+      "ref": "local:034L5OOjuNaiC5IeC5GRdG"
+    }
+  },
+  "providerRequestMetadata": [
+    {
+      "index": 1,
+      "kind": "name",
+      "qualification": false,
+      "toolCount": 0,
+      "schemaProperties": [
+        "name"
+      ],
+      "messageCount": 2,
+      "containsSummaryMarker": false,
+      "bodyHash": {
+        "sha256": "0aa19d4ff46b07fb6bddb0976f6c87c97be0ee3c5a9114c9ea41bb8446c3ab7a"
+      }
+    },
+    {
+      "index": 2,
+      "kind": "turn",
+      "qualification": false,
+      "toolCount": 26,
+      "schemaProperties": [],
+      "messageCount": 3,
+      "containsSummaryMarker": false,
+      "bodyHash": {
+        "sha256": "15c9bb90117e74a054829357ac0660eabb62226871af834efdf187da5b8e5b91"
+      },
+      "authoredTool": "communicate",
+      "authoredTaskId": null
+    },
+    {
+      "index": 3,
+      "kind": "turn",
+      "qualification": true,
+      "toolCount": 26,
+      "schemaProperties": [],
+      "messageCount": 6,
+      "containsSummaryMarker": false,
+      "bodyHash": {
+        "sha256": "f378597bb05176d873b9f3b073405a4f1d9a49c0d5c352dc35acbe3a28f6a744"
+      },
+      "authoredTool": "task_list",
+      "authoredTaskId": null
+    },
+    {
+      "index": 4,
+      "kind": "turn",
+      "qualification": true,
+      "toolCount": 26,
+      "schemaProperties": [],
+      "messageCount": 8,
+      "containsSummaryMarker": false,
+      "bodyHash": {
+        "sha256": "6cf6e06cc538296d81b74b5dc182d66ca9bfab3f05fd30265ab546f11097dde3"
+      },
+      "authoredTool": "task_list",
+      "authoredTaskId": 1
+    },
+    {
+      "index": 5,
+      "kind": "turn",
+      "qualification": true,
+      "toolCount": 26,
+      "schemaProperties": [],
+      "messageCount": 11,
+      "containsSummaryMarker": false,
+      "bodyHash": {
+        "sha256": "c9bd6ffa46c53623dacf963a9e48549762ccc8be18794bfe1659a414dc8b3a3b"
+      },
+      "authoredTool": "communicate",
+      "authoredTaskId": null
+    }
+  ],
+  "helpers": [
+    {
+      "source": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf/fixture.py",
+      "published": "docs/design/mobile/assets/sdk-task-notifications-fixture.py.txt",
+      "sha256": "26220527666627c35d4d942238d6010a4ba2b041a098527294edf47b7bca7c4b"
+    },
+    {
+      "source": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf/setup.mjs",
+      "published": "docs/design/mobile/assets/sdk-task-notifications-setup.mjs.txt",
+      "sha256": "8b31368f9c79a2ecee7ffccdee75966f41d0ebf43350bda7979c24a53086edfa"
+    },
+    {
+      "source": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf/qualify.mjs",
+      "published": "docs/design/mobile/assets/sdk-task-notifications-qualify.mjs.txt",
+      "sha256": "043fff860586c805546e446956c9d0890bc2fc81e8a1196d2857ee5758276e49"
+    },
+    {
+      "source": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-fixed-ya61txsf/cleanup.mjs",
+      "published": "docs/design/mobile/assets/sdk-task-notifications-cleanup.mjs.txt",
+      "sha256": "10590ece48620b8c39bdb1e291554dd98b7480a7eaed6450107c3075ee68bea9"
+    }
+  ],
+  "priorUnqualifiedRun": {
+    "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-notification-task-root-aeza7qcl",
+    "cause": "Producer emitted images:null contrary to the declared optional array. Packaged streaming observer rejected it. Corrected at d2d5eedf9 without loosening the SDK.",
+    "rawFailure": {
+      "sha256": "01138f74b8e4f41b179d9fcf1a5e94519952a7190098ea8b1cacfd4336f4cbb3"
+    }
+  },
+  "startupCorrection": "An empty fixture credentials file initially had mode0644; the hub rejected it before session creation. Corrected to0600, stopped the failed owned processes and retained the setup failure evidence. No task mutation occurred in that startup attempt."
+}
