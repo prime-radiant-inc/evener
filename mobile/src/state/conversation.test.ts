@@ -1310,6 +1310,191 @@ describe("ConversationStore", () => {
         expect(item.label).toBe("Reasoning");
       }
     });
+
+    it.each(["completed", "failed", "interrupted"] as const)(
+      "preserves streamed reasoning text when sparse item/completed settles it as %s",
+      async (status) => {
+        const service = new FakeConversationService();
+        const store = createConversationStore();
+        service.openConv = makeConversation({ items: [] });
+        await store.getState().open(service, "ref-1");
+        store.getState().applyNotification({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: {
+              type: "reasoning",
+              id: "reason-sparse-1",
+              status: "inProgress",
+            },
+          },
+        } as AnyNotification);
+        for (const delta of ["Think", "ing"]) {
+          store.getState().applyNotification({
+            method: "item/reasoning/summaryTextDelta",
+            params: {
+              threadId: "thread-1",
+              ref: "ref-1",
+              turnId: "t1",
+              itemId: "reason-sparse-1",
+              summaryIndex: 0,
+              delta,
+            },
+          } as AnyNotification);
+        }
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: {
+              type: "reasoning",
+              id: "reason-sparse-1",
+              status,
+            },
+          },
+        } as AnyNotification);
+        const item = store
+          .getState()
+          .conversation?.items.find(
+            (candidate) => candidate.id === "reason-sparse-1",
+          );
+        expect(item?.kind).toBe("activity");
+        if (item?.kind === "activity") {
+          expect(item.state).toBe("completed");
+          expect(item.detail.output).toBe("Thinking");
+        }
+      },
+    );
+
+    it.each([
+      ["explicit empty text", "", ""],
+      ["explicit text", "final reasoning", "final reasoning"],
+    ] as const)(
+      "%s remains authoritative when reasoning item completes",
+      async (_label, text, expectedOutput) => {
+        const service = new FakeConversationService();
+        const store = createConversationStore();
+        service.openConv = makeConversation({ items: [] });
+        await store.getState().open(service, "ref-1");
+        store.getState().applyNotification({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: {
+              type: "reasoning",
+              id: "reason-authoritative-1",
+              status: "inProgress",
+              text: "old reasoning",
+            },
+          },
+        } as AnyNotification);
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: {
+              type: "reasoning",
+              id: "reason-authoritative-1",
+              status: "completed",
+              text,
+            },
+          },
+        } as AnyNotification);
+        const item = store
+          .getState()
+          .conversation?.items.find(
+            (candidate) => candidate.id === "reason-authoritative-1",
+          );
+        expect(item?.kind).toBe("activity");
+        if (item?.kind === "activity") {
+          expect(item.detail.output).toBe(expectedOutput);
+        }
+      },
+    );
+
+    it("retains truncation ownership when sparse completion preserves output", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "reasoning",
+            id: "reason-truncated-1",
+            status: "inProgress",
+          },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-truncated-1",
+          summaryIndex: 0,
+          delta: "x".repeat(MAX_ITEM_BYTES + 100),
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().getTruncatedItemIds().has("reason-truncated-1"),
+      ).toBe(true);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "reasoning",
+            id: "reason-truncated-1",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+      const item = store
+        .getState()
+        .conversation?.items.find(
+          (candidate) => candidate.id === "reason-truncated-1",
+        );
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.detail.output?.endsWith("… truncated")).toBe(true);
+      }
+      expect(
+        store.getState().getTruncatedItemIds().has("reason-truncated-1"),
+      ).toBe(true);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "reasoning",
+            id: "reason-truncated-1",
+            status: "completed",
+            text: "short",
+          },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().getTruncatedItemIds().has("reason-truncated-1"),
+      ).toBe(false);
+    });
   });
 
   describe("assistant delta appends to item", () => {

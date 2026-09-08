@@ -98,7 +98,7 @@
   "defectObserved": {
     "description": "Completed turn retained a reasoning item with status inProgress; native rendered Reasoning running.",
     "location": "internal/appprojector/appwire_projection.go",
-    "sourceFixValidation": "In progress separately; this installed native/runtime pair has not been replaced with the fix."
+    "sourceFixValidation": "Source regression suites and independent review pass separately; this installed native/runtime pair has not been replaced with the fix."
   },
   "captures": [
     {
