@@ -635,6 +635,56 @@ func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	return true
 }
 
+// DrainPendingWake removes and returns the persisted consumed-but-undelivered
+// fire backlog (spec §1): the wake turn's tail fold calls this in the same
+// commit that folds the turn, so a crash between kick and fold re-drives a
+// safe fresh evaluation on restore instead of losing the wake (spec §7).
+// Returns nil when there is no backlog.
+func (s *Store) DrainPendingWake(now time.Time) []PendingWake {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil || len(g.PendingWake) == 0 {
+		return nil
+	}
+	drained := append([]PendingWake(nil), g.PendingWake...)
+	g.PendingWake = nil
+	g.UpdatedAt = now
+	return drained
+}
+
+// DrainPendingWakeIDs removes and returns the backlog entries naming one of
+// ids (spec §1 coalescing): the wake turn's tail fold consumes exactly the
+// batch its kick delivered, while entries claimed mid-turn (never marked
+// delivered) stay queued to drive their own wake. Returns nil when nothing
+// matched.
+func (s *Store) DrainPendingWakeIDs(ids []string, now time.Time) []PendingWake {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil || len(g.PendingWake) == 0 || len(ids) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var drained, kept []PendingWake
+	for _, p := range g.PendingWake {
+		if want[p.WaitID] {
+			drained = append(drained, p)
+		} else {
+			kept = append(kept, p)
+		}
+	}
+	if len(drained) == 0 {
+		return nil
+	}
+	g.PendingWake = kept
+	g.UpdatedAt = now
+	return drained
+}
+
 // TakeTerminalReport returns (snapshot, true) exactly once for a terminal goal —
 // the first time it is called after the goal stops — and (zero, false) thereafter
 // (or when there is no goal, or the goal is still active or waiting). This makes the

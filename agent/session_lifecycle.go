@@ -366,6 +366,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// already fired is joined below via sweepWG instead — spec §P3).
 		s.stopLaneResidueSweepTimer()
 		s.stopLaneReLockRetryTimer()
+		// Slice-1 goal wait timer (spec section 3): a close that begins before
+		// the earliest wait deadline cancels the wake outright; the closing
+		// flag plus the generation bump strand an in-flight callback.
+		s.stopGoalWaitTimer()
 
 		// Step 3: join the in-flight-dispose WaitGroup with NO locks held, then
 		// join any in-flight P3 open-pass residue sweep before this session's own
@@ -675,6 +679,7 @@ func (s *Session) discardRestoredCandidate() {
 		}
 		s.stopLaneResidueSweepTimer()
 		s.stopLaneReLockRetryTimer()
+		s.stopGoalWaitTimer()
 
 		if s.jobManager != nil && s.jobManager.store != nil {
 			_ = s.jobManager.store.Close()

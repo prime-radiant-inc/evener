@@ -641,6 +641,34 @@ type Session struct {
 	// dependents already drained still kicks — and cleared by SetGoal/ClearGoal
 	// (a retarget voids a pending hold). Guarded by s.mu.
 	goalDependentsHeld bool
+	// goalWaitTimer is the coalesced wait timer for a parked goal (spec §2): a
+	// single sclock timer armed to the earliest live wait deadline (slice-1
+	// subset of the §2 four-way min — poll/parked-total/deadline projection
+	// arrives with Task 4's persistence). Its callback claims expiry into
+	// pendingWake and kicks outside the lock. Disarmed on Set/Clear/CancelWait
+	// so no post-clear stale fire can re-park the goal (spec §3). Guarded by
+	// s.mu; nil when no wait timer is armed.
+	goalWaitTimer clock.Timer
+	// goalWaitTimerGen strands superseded timer callbacks: every re-arm bumps
+	// it, and a callback whose generation mismatches drops without claiming
+	// (the disarm race in spec §2 routes to the honest loss notice instead of
+	// a stale wake). Guarded by s.mu.
+	goalWaitTimerGen uint64
+	// goalTerminalPending latches a terminal-flagged rule-1 drive (spec §1 R7
+	// M-I1): the wake turn ran while a budget was also exceeded, so the next
+	// gate evaluates budget/deadline rules before rule 1 — on breach it blocks
+	// with the corresponding verdict (fresh pendingWake dropped with the honest
+	// loss notice), otherwise it clears the latch and proceeds to rule 1.
+	// Persisted to schema in Task 4; session-local until then. Guarded by s.mu.
+	goalTerminalPending bool
+	// goalWakeDelivered records claimed-but-consumed wake batches by wait_id
+	// (spec §2 fired_epoch dedupe in session form): a timer callback or
+	// notification that finds its wait already delivered drops without
+	// re-claiming, so a refire collapses to one wake. Entries accumulate until
+	// the wake turn's tail fold consumes them... (slice-1: cleared on
+	// Set/Clear, the only fold sites that can retire a batch; Task 4 clears at
+	// tail-fold commit). Guarded by s.mu.
+	goalWakeDelivered map[string]bool
 	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
 	// loop immediately by feeding the first continuation prompt back into the
 	// serve loop's input channel. It is a callback because the agent module must
