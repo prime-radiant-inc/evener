@@ -63,14 +63,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	}
 	writeAPIWireError(httptest.NewRecorder(), 502, errors.New("plain"))
 	writeAPIWireError(httptest.NewRecorder(), 502, appwire.WireError{Code: appwire.CodeConflict, Message: "wire"})
-	for _, raw := range []string{
-		`not-json`, `{"message":" explicit "}`, `{"source":"s","title":"t","hint":"h"}`, `{"warning":"warning text"}`,
-		`{"warning":{"message":"nested"}}`, `{"warning":{"message":2}}`, `{}`,
-	} {
-		_ = warningPayload([]byte(raw))
-	}
-	p := map[string]any{"source": "s", "title": "t", "hint": "h"}
-	addDiagnosticDefaults(p, "message")
 	if gotP, gotM := splitProviderModel(" openai/model "); gotP != "openai" || gotM != "model" {
 		t.Fatalf("split=%q/%q", gotP, gotM)
 	}

@@ -2,12 +2,16 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import DOMPurify from "dompurify";
+import { afterEach, expect, test, vi } from "vitest";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
 
 afterEach(cleanup);
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const CODEBLOCK_PRE_CLASS = requireClass(codeblockStyles.pre, "codeblock.module.css", "pre");
 const CODEBLOCK_CODE_CLASS = requireClass(codeblockStyles.code, "codeblock.module.css", "code");
@@ -236,6 +240,111 @@ test("renders GFM column alignment via the align attribute", () => {
   expect(ths.map((th) => th.getAttribute("align"))).toEqual(["left", "center", "right"]);
   const tds = Array.from(container.querySelectorAll("tbody tr:first-child td"));
   expect(tds.map((td) => td.getAttribute("align"))).toEqual(["left", "center", "right"]);
+});
+
+// --- windowed live path: link definitions across the split ------------------
+// Past the live-window threshold the live path may serve the head from cache
+// and re-parse only the tail - but a link definition on either side of the
+// split registers globally with marked, so the halves must never parse
+// independently while one is present. These shapes all evade the
+// HEAD_SPLIT_HAZARD / TAIL_BLOCK_MARKER line patterns (an escaped label like
+// `[foo\]bar]` has no `[...]:` span for them to match; a definition indented
+// as a list-item continuation sits past their 0-3-space allowance) and are
+// caught by the shared-lexer gate instead. Each case asserts the live render
+// matches the settled render exactly, and that the settled render really
+// resolves the reference - so the test cannot pass vacuously with the link
+// left literal in both.
+function expectLiveMatchesSettled(source: string, url: string) {
+  const live = render(<Markdown source={source} live />);
+  const settled = render(<Markdown source={source} />);
+  expect(settled.container.querySelector(`a[href="${url}"]`)).not.toBeNull();
+  expect(live.container.innerHTML).toBe(settled.container.innerHTML);
+}
+
+test("live matches settled when an escaped-label definition sits in the head", () => {
+  const source = `${"x".repeat(1200)}\n\n[foo\\]bar]: /url\n\nsee [foo\\]bar] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when a list-continuation-indented definition sits in the head", () => {
+  const source = `${"x".repeat(1100)}\n\n- item\n\n    [lbl]: /url\n\nsee [lbl] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when a blockquote-nested escaped-label definition sits in the head", () => {
+  const source = `${"x".repeat(1100)}\n\n> [q\\]z]: /url\n\nsee [q\\]z] here ${"y".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+test("live matches settled when the definition sits in the tail", () => {
+  const source = `${"z".repeat(1150)}\n\nsee [t\\]d] here\n\n[t\\]d]: /url\n${"w".repeat(1050)}`;
+  expectLiveMatchesSettled(source, "/url");
+});
+
+// Companion to the link-definition fallback cases above: this source is
+// paragraphs-only, balanced, and definition-free past the live-window
+// threshold, so the live path takes the windowed branch (settled head served
+// from cache, tail window re-parsed) instead of the full-parse fallback each
+// of the cases above forces. Rerendering the same mounted component with a
+// tail-only append keeps the split head byte-identical, so the second render
+// serves the head from cache (a hit) while re-parsing just the grown tail -
+// and each render asserts the live output is byte-identical to the settled
+// full parse, so the test cannot pass vacuously on a degraded path.
+test("live matches settled on a long definition-free source across tail-growth rerenders (windowed path)", () => {
+  const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+  const head = `${sentence.repeat(12).trim()}\n\n${sentence.repeat(12).trim()}\n\n`;
+  // The tail carries its own paragraph break inside the window, so the split
+  // boundary sits at most LIVE_TAIL_WINDOW from the end (see splitLiveSource:
+  // only the first boundary at/after the window edge engages the path).
+  const first = `${head + sentence.repeat(10).trim()}\n\n${sentence.repeat(5).trim()}`;
+  expect(first.length).toBeGreaterThan(2000);
+  // Engagement proof, not just output equality: the windowed path parses head
+  // and tail separately while the full-parse fallback parses once, so the
+  // sanitize-call count separates them (live==settled alone holds on either
+  // path and could not catch a regression to the fallback).
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  const live = render(<Markdown source={first} live />);
+  const settledFirst = render(<Markdown source={first} />);
+  expect(live.container.innerHTML).toBe(settledFirst.container.innerHTML);
+  // Live first render parses head and tail separately (two calls) and the
+  // settled render once: three total. The full-parse fallback would give two
+  // (one live + one settled), so this count proves the windowed path engaged.
+  expect(sanitizeSpy.mock.calls.length).toBe(3);
+  sanitizeSpy.mockClear();
+  // Tail-only growth: no new blank line crosses the split, so the head is
+  // unchanged and the cached head HTML is reused.
+  const second = `${first} ${sentence.trim()}`;
+  live.rerender(<Markdown source={second} live />);
+  const settledSecond = render(<Markdown source={second} />);
+  expect(live.container.innerHTML).toBe(settledSecond.container.innerHTML);
+  // Head HTML served from cache: the live rerender sanitizes only the grown
+  // tail (one call), and the settled render sanitizes once - two total. A
+  // fallback would parse the whole live source too (still two), so this count
+  // alone proves the cached-head shape only together with the first render's
+  // three; either count dropping to the settled-only shape fails loudly.
+  expect(sanitizeSpy.mock.calls.length).toBe(2);
+});
+
+// CRLF twin of the windowed-path case: a source whose only paragraph breaks
+// are "\r\n\r\n" must split the same way - "\n\n" never appears in it, so a
+// split search on LF alone would decline to the fallback instead of engaging.
+test("live matches settled on a long CRLF source across tail-growth rerenders (windowed path)", () => {
+  const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+  const head = `${sentence.repeat(12).trim()}\r\n\r\n${sentence.repeat(12).trim()}\r\n\r\n`;
+  const first = `${head + sentence.repeat(10).trim()}\r\n\r\n${sentence.repeat(5).trim()}`;
+  expect(first).not.toContain("\n\n");
+  expect(first.length).toBeGreaterThan(2000);
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  const live = render(<Markdown source={first} live />);
+  const settledFirst = render(<Markdown source={first} />);
+  expect(live.container.innerHTML).toBe(settledFirst.container.innerHTML);
+  expect(sanitizeSpy.mock.calls.length).toBe(3);
+  sanitizeSpy.mockClear();
+  const second = `${first} ${sentence.trim()}`;
+  live.rerender(<Markdown source={second} live />);
+  const settledSecond = render(<Markdown source={second} />);
+  expect(live.container.innerHTML).toBe(settledSecond.container.innerHTML);
+  expect(sanitizeSpy.mock.calls.length).toBe(2);
 });
 
 // The table chrome lives in the stylesheet, not on a class the component

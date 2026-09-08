@@ -54,9 +54,10 @@ func TestBuildSpawnArgs(t *testing.T) {
 			ReasoningEffort: "medium",
 			AppReplaySize:   &ssering,
 		}},
-		WorkingDir: "/Users/jesse/git/foo",
-		StateDir:   "/Users/jesse/.local/state/evener/projects/foo",
-		RunDir:     "/Users/jesse/.cache/evener/run",
+		WorkingDir:    "/Users/jesse/git/foo",
+		StateDir:      "/Users/jesse/.local/state/evener/projects/foo",
+		RunDir:        "/Users/jesse/.cache/evener/run",
+		AgentsDocPath: "/Users/jesse/.config/evener/AGENTS.md",
 	}
 	args := buildSpawnArgs(req)
 	want := map[string]string{
@@ -68,6 +69,7 @@ func TestBuildSpawnArgs(t *testing.T) {
 		"--dir":              "/Users/jesse/git/foo",
 		"--state-dir":        "/Users/jesse/.local/state/evener/projects/foo",
 		"--run-dir":          "/Users/jesse/.cache/evener/run",
+		"--agents-doc":       "/Users/jesse/.config/evener/AGENTS.md",
 		"--addr":             "127.0.0.1:0",
 	}
 	got := pairsToMap(args)
@@ -118,10 +120,11 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 	maxRounds := 50
 	req := hubcore.ResumeRequest{
-		SessionID:  "01JRESUME",
-		WorkingDir: "/wd",
-		StateDir:   "/st",
-		RunDir:     "/rn",
+		SessionID:     "01JRESUME",
+		WorkingDir:    "/wd",
+		StateDir:      "/st",
+		RunDir:        "/rn",
+		AgentsDocPath: "/Users/jesse/.config/evener/AGENTS.md",
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model:           "openai/gpt-env",
 			FastCheapModel:  "openai/gpt-4.1-nano",
@@ -137,7 +140,7 @@ func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 			t.Fatalf("resume args must not include ambient %s: %v", forbidden, args)
 		}
 	}
-	for _, required := range []string{"serve", "--resume", "01JRESUME", "--agent", "default", "--reasoning-effort", "medium", "--max-rounds", "50"} {
+	for _, required := range []string{"serve", "--resume", "01JRESUME", "--agent", "default", "--reasoning-effort", "medium", "--max-rounds", "50", "--agents-doc", "/Users/jesse/.config/evener/AGENTS.md"} {
 		if !hasArg(args, required) {
 			t.Fatalf("resume args missing %q: %v", required, args)
 		}

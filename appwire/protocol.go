@@ -200,6 +200,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerSettingsTranscriptDisplayPatch, TranscriptDisplayDefaultsPatchParams{}, TranscriptDisplayPatchResponse{}, ScopeHub, "Updates one transcript-display default using an expected revision and returns the canonical value."},
 	{MethodEvenerSettingsKeybindingsGet, EmptyParams{}, KeybindingsOverrides{}, ScopeHub, "Reads the canonical user keybinding overrides (version, revision, rules)."},
 	{MethodEvenerSettingsKeybindingsPatch, KeybindingsPatchParams{}, KeybindingsOverrides{}, ScopeHub, "Replaces the user keybinding overrides using an expected revision and returns the canonical value."},
+	{MethodEvenerSettingsAgentsDocGet, EmptyParams{}, AgentsDocResponse{}, ScopeHub, "Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content."},
+	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 }
 
@@ -293,4 +295,5 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
 	{NotifyEvenerSettingsTranscriptDisplayChanged, TranscriptDisplayChangedParams{}, "Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration."},
 	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
+	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
 }

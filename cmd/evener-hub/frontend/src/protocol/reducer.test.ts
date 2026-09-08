@@ -12,6 +12,7 @@ import {
   chunkViewBackingForTests,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  imageSessionRouteForSession,
   mergeOlderItemPage,
   notificationTargetsThread,
   pendingTextJoined,
@@ -21,6 +22,7 @@ import {
 import { hydrateStreamingAgentMessage } from "./testing/tokenFlood";
 import type {
   AnyNotification,
+  InputItem,
   QueueState,
   SandboxEscalationRequested,
   Thread,
@@ -28,6 +30,7 @@ import type {
   ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  Turn,
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 
@@ -602,7 +605,6 @@ test("a mid-stream model state stays observationally frozen while later deltas c
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -808,7 +810,6 @@ test("turn/completed only merges same-ID keyless items, not conflicting keys or 
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "full", items: [item] },
     },
   });
@@ -918,7 +919,6 @@ test("active full turn/completed preserves only identity-matched hydrated item m
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_active",
         turn: {
           id: "turn_active",
           status: "completed",
@@ -1115,7 +1115,6 @@ test("turn/completed applies with authoritative ref and thread identity", () => 
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "", items: [] },
     },
   };
@@ -1197,7 +1196,6 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
     params: {
       threadId: "thr_a",
       ref: "ref_a",
-      turnId: "turn_1",
       turn: { id: "turn_1", status: "completed", itemsView: "" },
     },
   };
@@ -1315,7 +1313,6 @@ test("turn/completed settles only the FIRST turn matching a duplicated id, leavi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1372,7 +1369,6 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -1402,7 +1398,6 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1478,7 +1473,6 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1532,7 +1526,6 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -1600,7 +1593,6 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -1645,7 +1637,6 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1714,7 +1705,6 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "", error },
       },
     },
@@ -1870,7 +1860,6 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -2096,6 +2085,165 @@ test("item/completed resolves a sha-routed tool-result image's src from its url"
       source: "tool-result",
     },
   ]);
+});
+
+const SHA_IMAGE = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+function hydrateWithShaImage(imageOverrides: Partial<InputItem> = {}): ThreadModel {
+  // The default fixture's wire session ("sess_t") differs from its ref
+  // ("ref_t") on purpose: the sha route must be built from the serving
+  // session, never the ref — a stable workspace alias (e.g. local:stable)
+  // names no Past.Find entry and its /s/{ref}/images/{sha} 404s.
+  const turns: Turn[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      itemsView: "full",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE }, ...imageOverrides }],
+        },
+      ],
+    },
+  ];
+  return testHydrate({ turns });
+}
+
+test("hydrateThread resolves a sha-bearing image without a stamped url to the serving session's image route", () => {
+  const model = hydrateWithShaImage();
+  expect(model.imageSessionId).toBe("sess_t");
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a stamped url wins over the rebuilt sha route", () => {
+  const stamped = `/s/sess_t/images/${SHA_IMAGE}`;
+  const model = hydrateWithShaImage({ url: stamped });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: stamped, name: "photo.png", path: undefined }]);
+});
+
+test("inline bytes win over the rebuilt sha route (bytes render when the Past index cannot serve the route)", () => {
+  // A sha+bytes payload (legacy/live frames the hub never stripped) resolves
+  // to the bytes: the route 404s for any session absent from the hub's Past
+  // index (handleSessionImage, image_serve.go), while the bytes render
+  // unconditionally. Sha-only replay descriptors still resolve to the route
+  // (the test above).
+  const model = hydrateWithShaImage({
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a non-hex metadata sha falls back to the inline data-URI, never a hub-400 route", () => {
+  const model = hydrateWithShaImage({
+    metadata: { sha: "not-a-sha" },
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a sha+bytes image with no known session keeps the data-URI (unknown-session fallback)", () => {
+  // Blank wire ids name no fetchable route (imageSessionRoute undefined keeps
+  // the branch dark), so the same sha+bytes payload that resolves to a route
+  // above resolves to the usable bytes here instead of a broken src.
+  const model = hydrateWithShaImage({});
+  const wireModel = { ...model, imageSessionId: "", threadId: "" };
+  const page: ThreadTurnsListResponse = {
+    data: [
+      {
+        id: "turn_0",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_paged",
+            turnId: "turn_0",
+            text: "older",
+            status: "completed",
+            images: [
+              {
+                type: "image",
+                name: "photo.png",
+                mediaType: "image/png",
+                data: "iVBORw0KGgo=",
+                metadata: { sha: SHA_IMAGE },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  };
+  const paged = mergeOlderItemPage(wireModel, page);
+  expect(itemAt(turnAt(paged, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a live item/completed with sha but no stamped url resolves to the hydrated session's route", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE } }],
+        },
+      },
+    },
+    1002,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("imageSessionRouteForSession escapes the session id and rejects what cannot serve", () => {
+  expect(imageSessionRouteForSession("sess_t")).toBe("sess_t");
+  expect(imageSessionRouteForSession("")).toBeUndefined();
+  expect(imageSessionRouteForSession("proj/one")).toBeUndefined();
+});
+
+test("hydrateThread trims a whitespace-padded sessionId and falls back to the trimmed thread id", () => {
+  // stampThreadImageURLs (output_images.go) trims both (strings.TrimSpace):
+  // a padded-but-blank "  " session id must fall back to the thread id, and
+  // a clean thread id must survive — neither may escape to a /s/%20... route.
+  const blankPadded = testHydrate({ id: "thr_t", sessionId: "   " });
+  expect(blankPadded.imageSessionId).toBe("thr_t");
+  const padded = testHydrate({ id: "  thr_t  ", sessionId: "  sess_t  " });
+  expect(padded.imageSessionId).toBe("sess_t");
 });
 
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
@@ -2713,7 +2861,6 @@ test("settling nonempty pending text marks its fresh text as provided", () => {
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "shared-turn",
         turn: { id: "shared-turn", status: "completed", itemsView: "" },
       },
     },
@@ -3799,7 +3946,6 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "interrupted", itemsView: "" },
       },
     },
@@ -4005,7 +4151,6 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4055,6 +4200,71 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
     text: "context canceled",
     warning: { source: "user", title: "Cancelled", hint: "" },
   });
+});
+
+test("warning with object-form `warning.message` and no top-level message renders that nested message", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: { message: "nested warning text" } } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("nested warning text");
+});
+
+test("warning with bare-string `warning` and no top-level message renders that string", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", warning: "provider hiccup" } },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("provider hiccup");
+});
+
+test.each([
+  ["blank string warning", ""],
+  ["object warning with no message field", { source: "x" }],
+  ["object warning with non-string message", { message: 42 }],
+  ["number warning", 42],
+])("warning with no message anywhere (%s) falls back to the raw frame", (_case, warning) => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe(JSON.stringify(params));
 });
 
 // Settled tool calls keep their arguments: the live projector's
@@ -4525,9 +4735,9 @@ test("thread/status/changed to a non-active status clears the live work-clock an
 
 test("turn/completed clears the live work-clock anchor — the active turn just ended", () => {
   // Wire shapes: evener.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
-  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {turnId,
-  // turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433 citing
-  // the internal/appprojector live settle sites).
+  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {threadId,
+  // ref, turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433
+  // citing the internal/appprojector live settle sites).
   let model = testHydrate({
     status: { type: "active" },
     evener: {
@@ -4548,7 +4758,6 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4624,7 +4833,6 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "completed", itemsView: "" },
       },
     },
@@ -4859,7 +5067,6 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: {
           id: "turn_1",
           status: "completed",
@@ -5370,7 +5577,6 @@ test("modelRetry clears when its turn completes", () => {
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "" },
       },
     },
@@ -5397,10 +5603,7 @@ test("modelRetry clears when a new turn starts", () => {
 // emits ONE turn/completed per announcement, each carrying a single item and
 // all naming the SAME synthetic turn: appwire.SystemPreludeTurnID before the
 // session's first real turn has started, a freshly minted "turn_N" gap id
-// between two real turns (kata 9ekv). The payload is a map literal with no
-// top-level "turnId" key at all, so the reducer's params.turn.id fallback is
-// the only id on the frame — TurnCompletedParams declares turnId required,
-// hence the cast for the wire-true shape.
+// between two real turns (kata 9ekv). turn.id is the only id on the frame.
 function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
   return {
     method: "turn/completed",
@@ -5409,7 +5612,7 @@ function announcementFrame(turnId: string, item: ThreadItem): AnyNotification {
       ref: "ref_t",
       turn: { id: turnId, status: "completed", itemsView: "full", items: [item] },
     },
-  } as AnyNotification;
+  };
 }
 
 const PLUGIN_LOADED_ITEM: ThreadItem = {

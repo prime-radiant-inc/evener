@@ -161,7 +161,7 @@ export function buildFloodStream(count: number, seed = 1): FloodStream {
     } as AnyNotification,
     {
       method: "turn/completed",
-      params: { threadId, ref, turnId, turn: { id: turnId, status: "completed", itemsView: "" } },
+      params: { threadId, ref, turn: { id: turnId, status: "completed", itemsView: "" } },
     } as AnyNotification,
   ];
 

@@ -4,13 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.
 type ProjectDoc struct {
 	// Path is a stable, human-friendly identifier for the instruction file (relative to git root when available).
+	// The personal doc is the exception: a display path outside the repo, with the home directory collapsed to "~".
 	Path string
 	// Content is the raw file content (may be truncated when total budget is exceeded).
 	Content string
@@ -19,7 +22,35 @@ type ProjectDoc struct {
 const (
 	projectDocByteBudget = 32 * 1024
 	projectDocTruncMark  = "[Project instructions truncated at 32KB]"
+	userDocTruncMark     = "[Personal instructions truncated at 32KB]"
 )
+
+// UserDocFile is the personal instructions file evener loads from the user
+// config root ahead of every repo's own project docs.
+const UserDocFile = "AGENTS.md"
+
+// personalDocPath is the personal instructions file a session reads: the path
+// its launcher configured, or the default under the user config root. A
+// relative path is never trusted, whichever way it was named. A daemon would
+// resolve it against its own working directory and read whatever file the
+// repository put there as the user's standing instructions, so a root that
+// cannot be resolved (empty), a relative root (XDG_CONFIG_HOME=conf), and an
+// operator's `--agents-doc ./x` are all refused alike. The hub only ever hands
+// an absolute path, and LoadUserDoc already reports an empty path as an absent
+// doc.
+func personalDocPath(configured string) string {
+	// Trimmed to match RestoreSessionFromMetaWithConfig, which trims the
+	// override it stores, and LoadUserDoc, which trims the path it reads: a
+	// hub's concrete root with stray whitespace still names the same file.
+	path := strings.TrimSpace(configured)
+	if path == "" {
+		path = userdirs.Subdir(userdirs.DefaultConfigRoot(), UserDocFile)
+	}
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
 
 // LoadProjectDocs discovers and loads project instruction files from git root (or working directory when not
 // in a git repo) down to the current working directory. Files are loaded in depth order (root first; deeper
@@ -44,8 +75,8 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 	}
 
 	dirs := execenv.DirsFromRootToCwd(root, cwd)
-	out := []ProjectDoc{}
 	used := 0
+	out := []ProjectDoc{}
 	for _, dir := range dirs {
 		relDir := "."
 		if r, err := filepath.Rel(root, dir); err == nil {
@@ -69,15 +100,7 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 
 			content := string(b)
 			if used+len(content) > projectDocByteBudget {
-				remain := projectDocByteBudget - used
-				if remain < len(content) {
-					content = content[:remain]
-				}
-				if !strings.HasSuffix(content, "\n") {
-					content += "\n"
-				}
-				content += projectDocTruncMark + "\n"
-				out = append(out, ProjectDoc{Path: key, Content: content})
+				out = append(out, ProjectDoc{Path: key, Content: truncateDoc(content, projectDocByteBudget-used, projectDocTruncMark)})
 				return out, true
 			}
 			used += len(content)
@@ -87,5 +110,68 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 	return out, false
 }
 
-// (gitRootOrEmpty and dirsFromRootToCwd moved to agent/execenv as
-// GitRootOrEmpty / DirsFromRootToCwd — see agent/execenv/gitpath.go.)
+// LoadInstructionDocs is a session's whole instruction set: the personal doc
+// at userDocPath first, then the repo's project docs. The two byte budgets are
+// separate, each the size of projectDocByteBudget, so a long personal doc can
+// never silence a repo's instructions and a long repo doc can never silence
+// the user's own; each side truncates with its own marker.
+func LoadInstructionDocs(env execenv.ExecutionEnvironment, userDocPath string, filenames ...string) ([]ProjectDoc, bool) {
+	out := []ProjectDoc{}
+	userTruncated := false
+	if user, ok := LoadUserDoc(userDocPath); ok {
+		if len(user.Content) > projectDocByteBudget {
+			user.Content = truncateDoc(user.Content, projectDocByteBudget, userDocTruncMark)
+			userTruncated = true
+		}
+		out = append(out, user)
+	}
+	project, truncated := LoadProjectDocs(env, filenames...)
+	return append(out, project...), truncated || userTruncated
+}
+
+// LoadUserDoc reads the personal instructions file at path. ok is false when
+// the path is empty or the file is missing or blank. Path is the display path
+// the prompt labels the block with: the home directory collapsed to "~", so
+// the model sees "~/.config/evener/AGENTS.md" rather than a machine-specific
+// absolute path.
+func LoadUserDoc(path string) (ProjectDoc, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ProjectDoc{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return ProjectDoc{}, false
+	}
+	return ProjectDoc{Path: tildeCollapse(path), Content: string(b)}, true
+}
+
+// tildeCollapse rewrites a path under the home directory as "~/...".
+func tildeCollapse(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return "~/" + filepath.ToSlash(rel)
+}
+
+// truncateDoc cuts content to remain bytes and appends mark, the truncation
+// marker naming the kind of doc that was cut.
+func truncateDoc(content string, remain int, mark string) string {
+	if remain < len(content) {
+		// The budget is bytes but the prompt must stay valid UTF-8, so the cut
+		// lands on the last whole rune that fits.
+		for remain > 0 && !utf8.RuneStart(content[remain]) {
+			remain--
+		}
+		content = content[:remain]
+	}
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + mark + "\n"
+}

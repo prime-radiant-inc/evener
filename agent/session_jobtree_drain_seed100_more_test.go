@@ -23,18 +23,18 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatal("drain wake was not queued")
 	}
 	notify()
-	if err := waitDrainWake(context.Background(), wake, make(chan time.Time)); err != nil {
-		t.Fatalf("queued wake: %v", err)
+	if woke, err := waitDrainWake(context.Background(), wake, make(chan time.Time)); err != nil || !woke {
+		t.Fatalf("queued wake: woke=%v err=%v", woke, err)
 	}
 	recheck := make(chan time.Time, 1)
 	recheck <- frozenTestTime
-	if err := waitDrainWake(context.Background(), make(chan struct{}), recheck); err != nil {
-		t.Fatalf("queued recheck: %v", err)
+	if woke, err := waitDrainWake(context.Background(), make(chan struct{}), recheck); err != nil || woke {
+		t.Fatalf("queued recheck: woke=%v err=%v", woke, err)
 	}
 	waitCtx, waitCancel := context.WithCancel(context.Background())
 	waitCancel()
-	if err := waitDrainWake(waitCtx, make(chan struct{}), make(chan time.Time)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled wake = %v", err)
+	if woke, err := waitDrainWake(waitCtx, make(chan struct{}), make(chan time.Time)); !errors.Is(err, context.Canceled) || woke {
+		t.Fatalf("cancelled wake = woke=%v err=%v", woke, err)
 	}
 
 	root := newSession(t)

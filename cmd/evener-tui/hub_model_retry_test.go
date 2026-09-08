@@ -199,7 +199,7 @@ func TestModelRetryClearsOnTurnBoundaries(t *testing.T) {
 			t.Fatalf("precondition: modelRetry not recorded for %s", method)
 		}
 
-		raw, err := json.Marshal(appwire.TurnCompletedParams{TurnID: "turn_1"})
+		raw, err := json.Marshal(appwire.TurnCompletedParams{Turn: appwire.Turn{ID: "turn_1"}})
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
