@@ -163,3 +163,139 @@ func TestPersistSnapshotRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("restored goal: objective changed to %q", snap.Objective)
 	}
 }
+
+func TestBudgetsDefaults(t *testing.T) {
+	now := clock()
+	s := NewStore()
+	s.Set("ship it", now)
+	gsnap, ok := s.GoalSnapshot()
+	if !ok {
+		t.Fatal("GoalSnapshot: expected ok=true")
+	}
+	b := gsnap.Budgets
+	if b.MaxContinuations != DefaultMaxContinuations || DefaultMaxContinuations != 200 {
+		t.Fatalf("MaxContinuations = %d, want default 200", b.MaxContinuations)
+	}
+	if b.UsedContinuations != 0 || b.ParkedTotal != 0 {
+		t.Fatalf("fresh budgets must be unused: %+v", b)
+	}
+	if !b.Deadline.Equal(now.Add(DefaultGoalDeadline)) || DefaultGoalDeadline != 4*time.Hour {
+		t.Fatalf("Deadline = %v, want now+4h", b.Deadline)
+	}
+	if b.MaxParkedTotal != DefaultMaxParkedTotal || DefaultMaxParkedTotal != 24*time.Hour {
+		t.Fatalf("MaxParkedTotal = %v, want 24h", b.MaxParkedTotal)
+	}
+	if MaxContinuationsCap != 1000 || GoalDeadlineCap != 24*time.Hour || MaxParkedTotalCap != 24*time.Hour {
+		t.Fatalf("caps = %d/%v/%v, want 1000/24h/24h", MaxContinuationsCap, GoalDeadlineCap, MaxParkedTotalCap)
+	}
+}
+
+func TestBudgetsAccrueInFold(t *testing.T) {
+	s := NewStore()
+	s.Set("obj", clock())
+	snap, active := s.RecordContinuation(true, clock())
+	if !active {
+		t.Fatal("progress turn must remain active")
+	}
+	gsnap, ok := s.GoalSnapshot()
+	if !ok {
+		t.Fatal("GoalSnapshot: expected ok=true")
+	}
+	if gsnap.Budgets.UsedContinuations != 1 || snap.Iterations != 1 {
+		t.Fatalf("fold must accrue budgets with iterations: budgets=%+v iterations=%d", gsnap.Budgets, snap.Iterations)
+	}
+}
+
+func TestRecordContinuationSkipsFoldWhileWaiting(t *testing.T) {
+	s := NewStore()
+	s.Set("obj", clock())
+	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Minute}, clock()); !ok {
+		t.Fatal("register should succeed")
+	}
+	snap, active := s.RecordContinuation(false, clock())
+	if active {
+		t.Fatal("RecordContinuation on a waiting goal must not drive")
+	}
+	if snap.Status != StatusWaiting || snap.Iterations != 0 {
+		t.Fatalf("waiting goal must skip every fold: %+v", snap)
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if gsnap.Budgets.UsedContinuations != 0 {
+		t.Fatalf("parked goal burns zero budget: %+v", gsnap.Budgets)
+	}
+}
+
+func TestSetTerminalFromWaitingClearsWaits(t *testing.T) {
+	s := NewStore()
+	s.Set("obj", clock())
+	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Minute}, clock()); !ok {
+		t.Fatal("register should succeed")
+	}
+	if !s.SetTerminal(StatusBlocked, "done waiting", clock()) {
+		t.Fatal("SetTerminal from waiting should succeed")
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if gsnap.Status != StatusBlocked || gsnap.StopReason != "done waiting" {
+		t.Fatalf("terminal = %v/%q", gsnap.Status, gsnap.StopReason)
+	}
+	if len(gsnap.Waits) != 0 {
+		t.Fatalf("terminal transition must clear waits: %+v", gsnap.Waits)
+	}
+}
+
+func TestRetargetKeepsBudgetsClearsWaits(t *testing.T) {
+	s := NewStore()
+	s.Set("old", clock())
+	s.RecordContinuation(true, clock())
+	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Minute}, clock()); !ok {
+		t.Fatal("register should succeed")
+	}
+	s.Set("new", clock())
+	gsnap, ok := s.GoalSnapshot()
+	if !ok || gsnap.Status != StatusActive || gsnap.Objective != "new" {
+		t.Fatalf("retarget = %+v ok=%v", gsnap, ok)
+	}
+	if len(gsnap.Waits) != 0 {
+		t.Fatalf("retarget must clear waits: %+v", gsnap.Waits)
+	}
+	if gsnap.Budgets.UsedContinuations != 1 || gsnap.Budgets.MaxContinuations != DefaultMaxContinuations {
+		t.Fatalf("retarget must keep budgets: %+v", gsnap.Budgets)
+	}
+}
+
+func TestDecideGoalStepSlice1(t *testing.T) {
+	now := clock()
+	full := Budgets{MaxContinuations: 200, Deadline: now.Add(4 * time.Hour), MaxParkedTotal: 24 * time.Hour}
+	mkWait := func() Wait {
+		return Wait{Lease: Lease{WaitID: "wait_1", Kind: WaitUntilTime, Deadline: now.Add(time.Minute), RegisteredAt: now, IdempotencyKey: "k"}}
+	}
+	cases := []struct {
+		name        string
+		snap        GoalSnapshot
+		pending     []PendingWake
+		markers     AdvancementMarkers
+		wantStep    GoalStep
+		wantVerdict string
+	}{
+		{"undelivered pending wake drives", GoalSnapshot{Budgets: full}, []PendingWake{{WaitID: "wait_1", Trigger: "t", FiredAt: now}}, AdvancementMarkers{}, StepDrive, ""},
+		{"snapshot backlog drives", GoalSnapshot{Budgets: full, PendingWake: []PendingWake{{WaitID: "wait_1"}}}, nil, AdvancementMarkers{}, StepDrive, ""},
+		{"continuations spent blocks", GoalSnapshot{Budgets: Budgets{MaxContinuations: 200, UsedContinuations: 200, Deadline: now.Add(time.Hour), MaxParkedTotal: 24 * time.Hour}}, nil, AdvancementMarkers{}, StepBlock, VerdictBudgetExhausted},
+		{"parked total spent blocks", GoalSnapshot{Budgets: Budgets{MaxContinuations: 200, Deadline: now.Add(time.Hour), ParkedTotal: 24 * time.Hour, MaxParkedTotal: 24 * time.Hour}}, nil, AdvancementMarkers{}, StepBlock, VerdictBudgetExhausted},
+		{"deadline passed blocks", GoalSnapshot{Budgets: Budgets{MaxContinuations: 200, Deadline: now.Add(-time.Second), MaxParkedTotal: 24 * time.Hour}}, nil, AdvancementMarkers{}, StepBlock, VerdictDeadlineExceeded},
+		{"live wait parks", GoalSnapshot{Budgets: full, Waits: []Wait{mkWait()}}, nil, AdvancementMarkers{}, StepPark, ""},
+		{"lost wait without advancement blocks", GoalSnapshot{Budgets: full}, nil, AdvancementMarkers{LossThisTurn: true, LossCause: "disk gone"}, StepBlock, "waiting lost: disk gone"},
+		{"lost wait with live waits parks", GoalSnapshot{Budgets: full, Waits: []Wait{mkWait()}}, nil, AdvancementMarkers{LossThisTurn: true, LossCause: "disk gone"}, StepPark, ""},
+		{"lost wait with advancement drives", GoalSnapshot{Budgets: full}, nil, AdvancementMarkers{LossThisTurn: true, LossCause: "disk gone", AdvancedSinceLoss: true}, StepDrive, ""},
+		{"unset budgets never block", GoalSnapshot{}, nil, AdvancementMarkers{}, StepDrive, ""},
+		{"active and idle drives", GoalSnapshot{Budgets: full}, nil, AdvancementMarkers{}, StepDrive, ""},
+	}
+	for _, tc := range cases {
+		step, verdict := DecideGoalStep(tc.snap, TurnOutcome{}, nil, tc.pending, tc.markers, now)
+		if step != tc.wantStep || verdict != tc.wantVerdict {
+			t.Errorf("%s: got (%q,%q), want (%q,%q)", tc.name, step, verdict, tc.wantStep, tc.wantVerdict)
+		}
+	}
+	if VerdictNoProgress != "no progress" || VerdictBudgetExhausted != "budget exhausted" || VerdictDeadlineExceeded != "deadline exceeded" {
+		t.Fatal("verdict strings must match spec §1 verbatim")
+	}
+}
