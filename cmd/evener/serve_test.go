@@ -883,6 +883,9 @@ func (a *subprocessShutdownAdapter) Name() string { return "openai" }
 
 func (a *subprocessShutdownAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = os.WriteFile(a.enteredPath, []byte("entered\n"), 0o600)
+	if os.Getenv("EVENER_SERVE_SUBPROCESS_IDLE") == "1" {
+		return llm.Response{Provider: req.Provider, Model: req.Model, Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}, nil
+	}
 	<-ctx.Done()
 	_ = os.WriteFile(a.cancelledPath, []byte("cancelled\n"), 0o600)
 	for {
@@ -930,10 +933,20 @@ func TestRunServeShutdownSubprocessHelper(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("runServe: %v", err)
 	}
+	os.Exit(0)
 }
 
 func TestRunServeShutdownSubprocessDeliversClosed(t *testing.T) {
 	t.Parallel()
+	runSubprocessShutdownCase(t, false)
+}
+
+func TestRunServeShutdownSubprocessIdleDeliversClosed(t *testing.T) {
+	t.Parallel()
+	runSubprocessShutdownCase(t, true)
+}
+
+func runSubprocessShutdownCase(t *testing.T, idle bool) {
 	root := t.TempDir()
 	runDir := filepath.Join(root, "run")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
@@ -952,6 +965,9 @@ func TestRunServeShutdownSubprocessDeliversClosed(t *testing.T) {
 		"EVENER_SERVE_SUBPROCESS_CANCELLED="+cancelledPath,
 		"EVENER_SERVE_SUBPROCESS_RELEASE="+releasePath,
 	)
+	if idle {
+		cmd.Env = append(cmd.Env, "EVENER_SERVE_SUBPROCESS_IDLE=1")
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -1009,12 +1025,24 @@ func TestRunServeShutdownSubprocessDeliversClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFile(enteredPath)
+	if idle {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			read, readErr := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, Subscribe: false})
+			if readErr == nil && read.Thread.Status.Type != appwire.ThreadStatusActive {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	if err := client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	waitFile(cancelledPath)
-	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if !idle {
+		waitFile(cancelledPath)
+		if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case notification := <-closed:
