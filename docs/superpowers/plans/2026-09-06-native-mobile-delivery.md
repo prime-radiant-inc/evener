@@ -131,7 +131,7 @@ These can run in parallel after lifecycle contracts stabilize, with disjoint fil
 
 **Issue:** MOB-018. **Files:** `docs/appwire-client.md`, `docs/appwire-protocol.md`, `cmd/evener-hub/frontend/src/protocol/{README.md,package.json,examples/coverage.mjs}` and neighboring examples/tests.
 
-Run this lane alongside packages 1–5, not after them. The current inventory records 90/91 catalog methods across 34 recipes and handles all 36 notification names as catalog entries; [15/36 notification names have scoped producer/readback evidence](../../design/mobile/sdk-notifications-evidence.md#actual-content-filter-warning). These are catalog and bounded evidence counts, not complete execution, failure, or outcome coverage.
+Run this lane alongside packages 1–5, not after them. The current inventory records 90/91 catalog methods across 34 recipes and handles all 36 notification names as catalog entries; [21/36 notification names have scoped producer/readback evidence in the notification series](../../design/mobile/sdk-additional-producers-evidence.md). These are catalog and bounded evidence counts, not complete execution, failure, or outcome coverage.
 
 - [ ] Map every supported/reserved method and notification from the generated catalog. Link each workflow to executable cases; account for reserved-method rejection separately from usable capabilities.
 - [ ] Add streaming/reset/paging/rejoin recipes first, then mutation recovery and decisions, then management, credentials/plugins, trust and upgrade with their native packages.

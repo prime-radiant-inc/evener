@@ -1,0 +1,120 @@
+{
+  "schema": "evener.sdk.additional-producers.receipt.v1",
+  "status": "passed",
+  "date": "2026-09-08",
+  "fixtureRoot": "/tmp/evener-session-producers-m1F18a",
+  "qualificationRoot": "/tmp/evener-session-producers-m1F18a/run/qualification",
+  "threadRef": "local:034L8xNc8hCjPgf37m5kTW",
+  "turnId": "turn_m2",
+  "qualifiedNotificationNames": [
+    "thread/status/changed",
+    "turn/started",
+    "turn/completed",
+    "item/started",
+    "item/completed",
+    "item/agentMessage/delta"
+  ],
+  "rawEvents": {
+    "path": "/tmp/evener-session-producers-m1F18a/run/qualification/raw-events.json",
+    "sha256": "b36b206b2f8374bc4be926e3aefc52c678368a2c51c119a8a5d99ba7b9449a81",
+    "eventIndexes": {
+      "thread/status/changed": [
+        2,
+        11
+      ],
+      "turn/started": [
+        0
+      ],
+      "turn/completed": [
+        10
+      ],
+      "item/started": [
+        6
+      ],
+      "item/completed": [
+        8
+      ],
+      "item/agentMessage/delta": [
+        7
+      ]
+    }
+  },
+  "contracts": {
+    "statusTransition": [
+      "active",
+      "awaiting"
+    ],
+    "turnLifecycleMatches": true,
+    "agentItemLifecycleMatches": true,
+    "agentItemId": "item_communicate_preview_29",
+    "agentTranscriptKey": "apptranscript-item-v1:turn_m2:3:2",
+    "agentTextMatchesFinalRead": true,
+    "agentTextMatchesProviderRequest4": true,
+    "statusEventsHaveTopLevelTurnId": false,
+    "agentDeltaHasTranscriptKey": false
+  },
+  "finalRead": {
+    "path": "/tmp/evener-session-producers-m1F18a/run/qualification/final-read.json",
+    "sha256": "b1d361edcd2c85668631d3e109e3735fd163e6280bb947265d5c5d01833adcae",
+    "completedTurn": "turn_m2",
+    "completedAgentItem": "item_communicate_preview_29"
+  },
+  "providerEvidence": {
+    "path": "/tmp/evener-session-producers-m1F18a/run/qualification/provider-http-evidence.json",
+    "sha256": "2cd4be809495887fe657e535a373ab6c74659289bf730c23a2271eabcd710c39",
+    "qualificationRequestIndex": 4,
+    "authoredTool": "communicate"
+  },
+  "sdkPackage": {
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+    "tarballRegularFiles": 139,
+    "consumerRegularFiles": 283,
+    "tarballByteEqualToConsumer": true
+  },
+  "cleanup": {
+    "hubLogRetained": false,
+    "privateAuthOrCredentialsPresent": false,
+    "ownedProcessesPresent": false,
+    "ownedListenersPresent": false
+  },
+  "scope": {
+    "threadStarted": "not part of this six-name qualification; no global claim",
+    "globalSdkNotificationCoverage": false,
+    "releaseAcceptance": false
+  },
+  "source": {
+    "backendCommit": "d2d5eedf9",
+    "sdkCommit": "58d1b079f",
+    "binaryHashes": {
+      "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+      "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4"
+    },
+    "helperHashes": {
+      "fixture.py": "25928dfae85dc76ee3162a6b68a5bde5057c2e486156fea5f0115ce3cda979d7",
+      "setup.mjs": "63706cb6ba808fd8cf99f8478067bd99889f0f7f726b85c6f0dc6c00755e32b7",
+      "run.mjs": "c13b19513d5477853a153d78afd01882293929b287d421d9efeb6b6328f61c08"
+    }
+  },
+  "observerPaths": {
+    "filteredSessionRecipe": "two thread/status/changed events",
+    "rawSdkOnNotification": "turn and item lifecycle plus agent delta"
+  },
+  "verificationEvidence": [
+    {
+      "path": "/tmp/evener-session-producers-m1F18a/prelaunch.json",
+      "sha256": "840ce9735792676a31ae9b5adb43a1195f0f833224687823ef957283470e0dd8"
+    },
+    {
+      "path": "/tmp/evener-session-producers-m1F18a/run/qualification/observer-result.json",
+      "sha256": "695a0fe97e68dfa7e045cf9bcbbae8c920694cb172dee6e889aeaba9e29a18fc"
+    },
+    {
+      "path": "/tmp/evener-session-producers-verify.py",
+      "sha256": "62dcf760f9b4f0611c201f0e056ce2d05eb45b207fe2705191ff92cfc0a3ff34"
+    },
+    {
+      "path": "/tmp/evener-session-producers-verification.json",
+      "sha256": "fc2ddc4eef420debce412b97932bac48a498f05c9c23ab0453e6037d649c0ddb"
+    }
+  ]
+}
