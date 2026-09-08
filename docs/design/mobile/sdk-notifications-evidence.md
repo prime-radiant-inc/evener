@@ -1,9 +1,11 @@
 # Packaged SDK notification observations — 7 September 2026
 
 For current native implementation and release status, see the [project status](status.md)
-and [acceptance ledger](acceptance.md). The audited union below includes **34 of
-36 notification names** across separately identified packages and fixtures.
-The dated observations remain scoped evidence rather than a release decision.
+and [acceptance ledger](acceptance.md). The historical union recorded below
+reached **34 of 36 notification names** across separately identified packages
+and fixtures. The current two-receipt qualification later in this document
+brings the combined scoped producer union to **36 of 36 distinct names**. The
+dated observations remain scoped evidence rather than a release decision.
 
 Source `58d1b079f` adds session, work, streaming and hub observation recipes.
 Together with existing recipes, the cookbook handles 36 notification names and
@@ -242,9 +244,37 @@ The [sandbox receipt](assets/2026-09-08-sdk-sandbox-producers.json) adds `evener
 
 The [message-reset receipt](assets/2026-09-08-sdk-message-reset-producer.json) adds `item/agentMessage/reset`. A scripted provider interrupted its first partial response. The installed SDK observed the exact stale item delta, retry, matching reset, replacement delta and completed target turn; its authoritative readback contained the replacement and excluded stale text. The coordinator verified raw event order, hashes and cleanup across all three attempts. This does not qualify a continuously reconnecting reducer or native rendering.
 
-The [attention receipt](assets/2026-09-08-sdk-attention-producer.json) adds `evener/attention/changed`. A held turn produced an idle-to-working transition for the exact started session. The subsequent authoritative navigation manifest summary matched the event: needsYou=2, error=0, working=1, compared with working=0 before. The live count moved from 2 to 3. The intermediate invalidation is retained without treating its revision as the final snapshot. The coordinator verified target identity, raw capture, binary/package hashes and fixture cleanup. The audited union is now **34 of 36** names.
+The [attention receipt](assets/2026-09-08-sdk-attention-producer.json) adds `evener/attention/changed`. A held turn produced an idle-to-working transition for the exact started session. The subsequent authoritative navigation manifest summary matched the event: needsYou=2, error=0, working=1, compared with working=0 before. The live count moved from 2 to 3. The intermediate invalidation is retained without treating its revision as the final snapshot. The coordinator verified target identity, raw capture, binary/package hashes and fixture cleanup. This brought the audited union to **34 of 36** names.
 
-The audited receipt union is:
+## Current two-receipt producer qualification — 8 September 2026
+
+The earlier **34 of 36** count is a historical milestone for the receipts
+listed above. Two additional root-audited receipts now qualify the remaining
+producer names. The [thread/started receipt](assets/2026-09-08-sdk-thread-started-confirmed.json)
+uses the independently installed `@evener/appwire-client` listener before a
+real `thread/start`, matches the returned ref, thread ID and instance ID,
+performs an authoritative subscribed read, and observes one startup event
+through a subsequent real rename event/readback barrier. The [resync
+receipt](assets/2026-09-08-sdk-resync-confirmed.json) observes
+`evener/thread/resync` from the independently installed SDK after daemon
+termination and public resume, with the retained session identity and
+authoritative subscribed read.
+
+Together these two receipts add `thread/started` and `evener/thread/resync`;
+their union with the earlier receipts is **36 of 36 distinct notification
+names**. This is scoped producer/readback coverage across the cited fixtures,
+not qualification of every method success/failure/disconnect outcome, all
+reconnect or replay paths, or SDK release readiness. The failed
+[resync producer attempt](assets/2026-09-08-sdk-resync-producer.json) remains
+explicitly unqualified.
+
+The receipts retain the installed SDK package and tarball hashes. The startup
+fixture records the `8a1b1826b-dirty` runtime pair and its pre-lint-fix source
+hashes; the resync fixture records its older `9bb59d643-dirty` runtime pair.
+These provenance differences do not merge the fixtures into one artifact or
+upgrade native acceptance.
+
+The combined audited receipt union is:
 
 `evener/delegate/updated`, `evener/goal/updated`,
 `evener/job/finished`, `evener/job/started`,
@@ -259,10 +289,9 @@ The audited receipt union is:
 `thread/vision-model/changed`, `turn/completed`, `turn/started`,
 `thread/closed`, `warning`, `evener/marketplace/updated`,
 `evener/plugin/updated`, `evener/sandbox/escalation/requested`,
-`evener/sandbox/escalation/resolved`, `item/agentMessage/reset`, and
-`evener/attention/changed`.
+`evener/sandbox/escalation/resolved`, `item/agentMessage/reset`,
+`evener/attention/changed`, `thread/started`, and `evener/thread/resync`.
 
-This union is producer/readback evidence for the cited bounded fixtures. It does
-not include producer/readback qualification for the other two catalog names: `thread/started` and
-`evener/thread/resync`. It also does not qualify every outcome or ordering path, continuous
-reconnect/replay, native UI, or release acceptance.
+This union is producer/readback evidence for the cited bounded fixtures. It also
+does not qualify every outcome or ordering path, continuous reconnect/replay,
+native UI, or release acceptance.
