@@ -361,7 +361,7 @@ describe("ConversationService", () => {
       );
       expect(listCall?.params).toMatchObject({
         ref: "ref-1",
-        cursor: "fresh-cursor",
+        cursor: "cursor-from-before-refresh",
       });
     });
 
@@ -420,7 +420,7 @@ describe("ConversationService", () => {
       expect(
         client.calls.find((call) => call.method === "thread/turns/list")
           ?.params,
-      ).toMatchObject({ cursor: "latest-cursor", ref: "ref-1" });
+      ).toMatchObject({ cursor: "caller-cursor", ref: "ref-1" });
     });
 
     it("does not page when a pending read changes ref", async () => {
