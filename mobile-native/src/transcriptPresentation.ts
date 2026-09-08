@@ -43,6 +43,39 @@ const KNOWN_EVENTS = new Set([
 	"environment",
 ]);
 const CRITICAL_EVENTS = new Set(["error", "tool_repair"]);
+const MAX_ACTION_DETAIL_LENGTH = 256;
+
+function writeFileActionSummary(
+	item: Extract<MobileTimelineItem, { kind: "activity" }>,
+): string | undefined {
+	if (item.family !== "tool" || item.label !== "write_file") return undefined;
+	if (!item.detail.arguments) return undefined;
+	try {
+		const args: unknown = JSON.parse(item.detail.arguments);
+		if (typeof args !== "object" || args === null) return undefined;
+		const record = args as Record<string, unknown>;
+		const path =
+			typeof record.file_path === "string" ? record.file_path.trim() : "";
+		if (!path) return undefined;
+		const boundedPath =
+			path.length > MAX_ACTION_DETAIL_LENGTH
+				? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...`
+				: path;
+		return `Write ${boundedPath}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function actionSummary(
+	item: Extract<MobileTimelineItem, { kind: "activity" }>,
+): string {
+	return (
+		item.detail.description?.trim() ||
+		writeFileActionSummary(item) ||
+		ACTION_SUMMARY_UNAVAILABLE
+	);
+}
 
 function isCritical(item: MobileTimelineItem): boolean {
 	if (item.kind === "activity")
@@ -63,8 +96,7 @@ function activityMode(
 			mode: "critical",
 			...(item.family === "tool"
 				? {
-						summary:
-							item.detail.description?.trim() || ACTION_SUMMARY_UNAVAILABLE,
+						summary: actionSummary(item),
 					}
 				: {}),
 		};
@@ -76,15 +108,15 @@ function activityMode(
 	if (item.family === "reasoning")
 		return content.reasoning ? { mode: "full" } : null;
 	if (!item.detail.description?.trim() && content.toolCalls)
-		return { mode: "critical", summary: ACTION_SUMMARY_UNAVAILABLE };
+		return { mode: "critical", summary: actionSummary(item) };
 	if (content.toolCalls) return { mode: "full" };
 	if (content.toolIntent)
 		return {
 			mode: "intent",
-			summary: item.detail.description?.trim() || ACTION_SUMMARY_UNAVAILABLE,
+			summary: actionSummary(item),
 		};
 	if (item.family === "tool" && !item.detail.description?.trim())
-		return { mode: "critical", summary: ACTION_SUMMARY_UNAVAILABLE };
+		return { mode: "critical", summary: actionSummary(item) };
 	return null;
 }
 
