@@ -3897,6 +3897,55 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	// as one group: AppendBatch writes them with a single fsync and rolls the
 	// whole group back on failure (all-or-nothing). A lone pending event stays
 	// on the appendEvent seam inside appendWatchSendEvents.
+	// Without the batch seam (jm.appendEvents == nil) a multi-event group has
+	// no atomic write: keep the pre-batch sequential protocol instead, so a
+	// later eviction write can fail while the pending event is already
+	// durable — persisted=true with each durable prefix committed to the
+	// runtime map — instead of leaving a durable prefix behind an ok=false
+	// return that never commits it.
+	if len(record.evictions) != 0 && jm.appendEvents == nil {
+		if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return state, false, err
+		}
+		jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
+		var evictionDiagnostics []jobNotification
+		for _, eviction := range record.evictions {
+			applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
+			if err != nil {
+				jm.removeWatchSendTerminalSnapshots(applied)
+				jm.enqueueWatchNotifications([]jobNotification{
+					watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+				})
+				return record.persisted, true, err
+			}
+			jm.removeWatchSendTerminalSnapshots(applied)
+			evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
+		}
+		for _, diagnostic := range evictionDiagnostics {
+			jm.enqueueWatchNotifications([]jobNotification{diagnostic})
+		}
+		if enqueueReceipt != nil {
+			jm.observeWatchReceiptBoundary()
+			deliveryReceipt, err := enqueueReceipt.controller.CompleteWatchEnqueue(enqueueReceipt)
+			if err != nil {
+				return record.persisted, true, err
+			}
+			enqueueCompleted = true
+			jm.rememberStableWatchReceipt(deliveryReceipt)
+			folded, err := jm.store.LoadWatchSends()
+			if err != nil {
+				return record.persisted, true, err
+			}
+			pending := folded.Pending[record.persisted.Key]
+			if pending == nil || pending.DeliveryID != record.persisted.DeliveryID || pending.UpdateSeq != record.persisted.UpdateSeq {
+				return record.persisted, true, errors.New("stable watch pending frame did not survive durable refold")
+			}
+		}
+		return record.persisted, true, nil
+	}
 	group := append([]jobstore.Event(nil), record.pendingEvents...)
 	var evictionSnapshots []watchSendTerminalSnapshot
 	for _, eviction := range record.evictions {
