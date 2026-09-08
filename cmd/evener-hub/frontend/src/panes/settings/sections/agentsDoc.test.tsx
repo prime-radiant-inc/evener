@@ -322,6 +322,47 @@ test("a read landing after a superseded save re-syncs a draft that matches disk"
   expect(editor().value).toBe("# hi\nmore");
 });
 
+// A save whose client was replaced mid-flight resolves with its own raw
+// response, because the store refuses to land anything for a socket that is
+// gone - and the replacement's reconnect refetch may already have put a newer
+// document there. So the resolved value is not evidence about the file any
+// more; the document the store holds is, and that is what the save is judged
+// against.
+test("a save resolving on a replaced client defers to the document the replacement fetched", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+
+  let finishWriting!: (doc: AgentsDocResponse) => void;
+  fake.on(
+    "evener/settings/agentsDoc/set",
+    () =>
+      new Promise<AgentsDocResponse>((resolve) => {
+        finishWriting = resolve;
+      }),
+  );
+  await user.click(saveButton());
+
+  // A fresh client - a banner retry - whose reconnect refetch lands first.
+  act(() => {
+    connectFakeClient({ ...DOC, content: "# theirs\n" });
+  });
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+
+  await act(async () => {
+    finishWriting({ ...DOC, content: "# hi\nmore" });
+  });
+
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "warning" && t.text.startsWith("Saved AGENTS.md, but"))).toBe(true),
+  );
+  expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(false);
+  expect(screen.getByRole("status").textContent).toContain("changed on disk");
+  expect(editor().value).toBe("# hi\nmore");
+});
+
 // An automatic reconnect keeps the same client - only a banner retry brings
 // a fresh one - and the editor heard no `changed` broadcast while the socket
 // was down. A one-shot mount fetch would leave it holding pre-drop content,

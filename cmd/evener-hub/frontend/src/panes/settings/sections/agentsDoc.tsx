@@ -82,9 +82,13 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
       // The store resolves a save with whatever document is newer than the
       // write when one landed behind it, so a save that comes back holding
       // something other than what it sent was overwritten on its way in -
-      // the file moved under the user and the notice has to stay up.
-      setBaseline(saved.content);
-      if (saved.content === sent) {
+      // the file moved under the user and the notice has to stay up. The
+      // reference is the store's own document rather than the resolved value:
+      // a response from a client the store has since replaced never lands
+      // there, so it can be older than what the replacement already fetched.
+      const authoritative = agentsDocStore.getState().doc?.content ?? saved.content;
+      setBaseline(authoritative);
+      if (authoritative === sent) {
         setStale(false);
         toast.push("success", "Saved AGENTS.md");
       } else {
