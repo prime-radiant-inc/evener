@@ -186,6 +186,45 @@ func TestLoadIgnoreSetReportsCancellation(t *testing.T) {
 	}
 }
 
+// cancelOnDirReadFS fires its cancel the first time ReadDir succeeds for dir,
+// so entries already read keep flowing through the walk callback with a nil
+// error — the shape a cancellation landing mid-directory takes.
+type cancelOnDirReadFS struct {
+	fs.FS
+	cancel context.CancelFunc
+	dir    string
+	fired  bool
+}
+
+func (c *cancelOnDirReadFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(c.FS, name)
+	if err == nil && !c.fired && name == c.dir {
+		c.fired = true
+		c.cancel()
+	}
+	return entries, nil
+}
+
+// TestLoadIgnoreSetStopsBetweenEntries pins the promptness half the error-path
+// check cannot see: a cancellation landing after a directory was successfully
+// read keeps delivering that directory's remaining entries with a nil error,
+// and no file is ever opened again, so nothing observes the cancellation. The
+// walk must still report it rather than a partial rule set with a nil error.
+func TestLoadIgnoreSetStopsBetweenEntries(t *testing.T) {
+	tree := fstest.MapFS{".gitignore": &fstest.MapFile{Data: []byte("root.log\n")}}
+	for i := range 200 {
+		name := "d/f" + string(rune('a'+i%26)) + string(rune('0'+i/26)) + ".txt"
+		tree[name] = &fstest.MapFile{Data: []byte("x")}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fsys := cancelFS{ctx: ctx, fsys: &cancelOnDirReadFS{FS: tree, cancel: cancel, dir: "d"}}
+	set, err := loadIgnoreSet(ctx, fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loadIgnoreSet cancelled mid-directory = (%v, %v), want context.Canceled", set, err)
+	}
+}
+
 // TestLoadIgnoreSetStopsMidWalkCancels is the promptness half: a cancellation
 // landing once discovery is already under way must unwind the walk, not grind
 // through the rest of the tree. The counter cancels on the second listing, so

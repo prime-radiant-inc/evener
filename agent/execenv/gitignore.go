@@ -382,17 +382,18 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 		// it finished is not held any more, and counting it here would refuse
 		// on memory nothing occupies. The cumulative counters stay call-wide.
 		budget.resetLive()
-		_ = fs.WalkDir(fsys, sc.prefix, func(p string, d fs.DirEntry, err error) error {
+		walkErr := fs.WalkDir(fsys, sc.prefix, func(p string, d fs.DirEntry, err error) error {
+			// A cancellation can land after a directory was successfully read,
+			// so its remaining entries keep arriving with a nil error and no
+			// file is ever opened again: without this check the walk would
+			// process them all and report whatever partial rule set it
+			// assembled. Checking first also keeps a cancelled walk that hit
+			// the budget reporting the cancellation the caller asked for.
+			if cerr := ctx.Err(); cerr != nil {
+				budgetErr = cerr
+				return cerr
+			}
 			if err != nil {
-				// A cancellation is not an unreadable entry either: skipping
-				// it would let the walk keep traversing after cancellation
-				// and report whatever partial rule set it assembled. The
-				// ctx check comes first so a cancelled walk that also hit
-				// the budget reports the cancellation the caller asked for.
-				if cerr := ctx.Err(); cerr != nil {
-					budgetErr = cerr
-					return cerr
-				}
 				// A budget refusal is not an unreadable entry: skipping it would
 				// let the directory that tripped the bound be read again by
 				// whatever walks next, and would leave this set reported as
@@ -463,6 +464,17 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 			return nil
 		})
+		// The walk's own return is the backstop for a failure the callback
+		// never classified: every callback error sets budgetErr, so a
+		// non-nil return with budgetErr still nil is either a cancellation
+		// that raced the callback checks or a best-effort traversal failure
+		// the callback already swallowed. Cancellations report; anything
+		// else stays best-effort.
+		if budgetErr == nil && walkErr != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				budgetErr = cerr
+			}
+		}
 		if budgetErr != nil {
 			break
 		}
