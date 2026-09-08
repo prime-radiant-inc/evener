@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -870,6 +871,166 @@ type shutdownBlockingAdapter struct {
 	entered   chan struct{}
 	cancelled chan struct{}
 	release   chan struct{}
+}
+
+type subprocessShutdownAdapter struct {
+	enteredPath   string
+	cancelledPath string
+	releasePath   string
+}
+
+func (a *subprocessShutdownAdapter) Name() string { return "openai" }
+
+func (a *subprocessShutdownAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = os.WriteFile(a.enteredPath, []byte("entered\n"), 0o600)
+	<-ctx.Done()
+	_ = os.WriteFile(a.cancelledPath, []byte("cancelled\n"), 0o600)
+	for {
+		if _, err := os.Stat(a.releasePath); err == nil {
+			return llm.Response{Provider: req.Provider, Model: req.Model, Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}, ctx.Err()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (a *subprocessShutdownAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func TestRunServeShutdownSubprocessHelper(t *testing.T) {
+	if os.Getenv("EVENER_SERVE_SUBPROCESS_HELPER") != "1" {
+		return
+	}
+	runDir := os.Getenv("EVENER_SERVE_SUBPROCESS_RUN_DIR")
+	enteredPath := os.Getenv("EVENER_SERVE_SUBPROCESS_ENTERED")
+	cancelledPath := os.Getenv("EVENER_SERVE_SUBPROCESS_CANCELLED")
+	releasePath := os.Getenv("EVENER_SERVE_SUBPROCESS_RELEASE")
+	oldLoadClient := serveLoadClient
+	serveLoadClient = func(string) (*llm.Client, error) {
+		client := llm.NewClient()
+		client.Register(&subprocessShutdownAdapter{enteredPath: enteredPath, cancelledPath: cancelledPath, releasePath: releasePath})
+		return client, nil
+	}
+	defer func() { serveLoadClient = oldLoadClient }()
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe([]string{
+			"--model", "openai/gpt-5.2", "--addr", "127.0.0.1:0",
+			"--dir", t.TempDir(), "--state-dir", t.TempDir(), "--run-dir", runDir,
+		})
+	}()
+	entry := waitForServeTestRendezvous(t, runDir)
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("EVENER_SERVE_SUBPROCESS_READY"), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("runServe: %v", err)
+	}
+}
+
+func TestRunServeShutdownSubprocessDeliversClosed(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	runDir := filepath.Join(root, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	readyPath := filepath.Join(root, "ready.json")
+	enteredPath := filepath.Join(root, "entered")
+	cancelledPath := filepath.Join(root, "cancelled")
+	releasePath := filepath.Join(root, "release")
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestRunServeShutdownSubprocessHelper$")
+	cmd.Env = append(os.Environ(),
+		"EVENER_SERVE_SUBPROCESS_HELPER=1",
+		"EVENER_SERVE_SUBPROCESS_RUN_DIR="+runDir,
+		"EVENER_SERVE_SUBPROCESS_READY="+readyPath,
+		"EVENER_SERVE_SUBPROCESS_ENTERED="+enteredPath,
+		"EVENER_SERVE_SUBPROCESS_CANCELLED="+cancelledPath,
+		"EVENER_SERVE_SUBPROCESS_RELEASE="+releasePath,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(releasePath, []byte("release\n"), 0o600)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	waitFile := func(path string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %s", path)
+	}
+	waitFile(readyPath)
+	var entry rendezvous.Entry
+	data, err := os.ReadFile(readyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "subprocess-shutdown-test", Version: "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan appwire.Notification, 1)
+	go func() {
+		for n := range client.Notifications() {
+			if n.Method == appwire.NotifyThreadClosed {
+				closed <- n
+				return
+			}
+		}
+	}()
+	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{ClientMutationID: "subprocess-shutdown", ExpectedInstanceID: entry.SessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "hold"}}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(enteredPath)
+	if err := client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(cancelledPath)
+	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case notification := <-closed:
+		var params appwire.ThreadClosedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Ref != ref || params.ThreadID != entry.SessionID {
+			t.Fatalf("thread/closed params = %+v, want ref=%q threadId=%q", params, ref, entry.SessionID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("subprocess exited without delivering matching thread/closed")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("subprocess: %v", err)
+	}
 }
 
 func (a *shutdownBlockingAdapter) Name() string { return "openai" }
