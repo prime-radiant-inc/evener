@@ -191,11 +191,15 @@ function LaunchDefaults({
         {state.saving && (
           <ActivityIndicator accessibilityLabel="Saving launch defaults" />
         )}
-        <ErrorMessage message={state.error} />
+        <ErrorMessage
+          message={
+            state.error ??
+            (state.changedElsewhere
+              ? "Launch settings changed elsewhere. Reload before saving."
+              : null)
+          }
+        />
         <ErrorMessage message={state.resolveError} />
-        {state.changedElsewhere && (
-          <Copy>Launch settings changed elsewhere. Reload before saving.</Copy>
-        )}
         {notice && <Copy>{notice}</Copy>}
         {state.resolved?.diagnostics?.map((d) => (
           <Copy muted key={JSON.stringify(d)}>
