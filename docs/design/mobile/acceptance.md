@@ -274,3 +274,17 @@ The final evidence secret scan passed in 31 seconds (run `66807`,
 `/tmp/evener-ipad-streaming-final-secrets.log`). The existing canonical gate and
 vet evidence at `d2d5eedf9` remain the backend baseline; this batch adds the
 scoped native copy check, current Release build and actual journeys above.
+
+## Native image creation and encoded limits
+
+The [iPad image journey](ipad-image-creation-evidence.md) adds image-only native
+creation, byte-identical creation-image recovery after cold launch, a live
+gallery while the opening turn is held, and completed SDK/API readback with the
+same image hash. Temporary native state was removed and original photos and
+seven iPhone drafts were preserved.
+
+Commit `d20229b75` rejects converted PNGs above the decoded 8 MiB server limit
+before saving them as attachments. The native gate passed 678 tests in 74 files
+and TypeScript; its Release build installed and launched successfully. The
+native oversized-picker case and broader image/release matrix remain open;
+the receipt distinguishes the earlier journey artifact from this new build.

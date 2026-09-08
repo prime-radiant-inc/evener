@@ -1,0 +1,287 @@
+{
+  "scope": "iPad image-only native creation, durable image draft, live gallery and completed readback",
+  "nativeArtifactForJourney": {
+    "nativeSourceHead": "8afaeacba",
+    "appPath": "/Users/jesse/Library/Developer/CoreSimulator/Devices/6462A0FC-A190-4F08-A0CC-9B7E6C792AEC/data/Containers/Bundle/Application/05A3161D-AB59-4BAC-B23E-1EAA1376F016/Evener.app",
+    "mainBundleSha256": "250e35b3e5511f1d0021bb35ab015aa768048510798b53d263f37bae59295c6b",
+    "coldLaunchPid": 393,
+    "hubProfile": "02fb26df-161e-4ff9-bd74-d732a705bb87",
+    "ref": "local:034L6zkRET9JUqnUDlpclX",
+    "turnId": "turn_m1"
+  },
+  "image": {
+    "id": "68528e91-ebfb-47b4-8528-d7026eec23ff",
+    "bytes": 747473,
+    "sha256": "424a8a2b2c2c29cea7dbb84f3c8cf78370c0c269021190e73e65ea30c843b6aa",
+    "media_type": "image/png"
+  },
+  "backendSource": "d2d5eedf9",
+  "backendSha256": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+  "sdkSource": "58d1b079f6329aaee7e4584cc5c833adc3819bab",
+  "coldLaunchPids": [
+    393,
+    37146
+  ],
+  "qualified": [
+    "creation draft bytes survive cold launch",
+    "image-only native create after explicit model selection",
+    "confirmed create clears creation metadata and bytes",
+    "live image tile and gallery while turn is held",
+    "matching canonical and outbound API image hashes",
+    "HTTP 200 completed turn",
+    "transcript and gallery reopen after cold launch",
+    "scoped hub removal clears local state"
+  ],
+  "apiEvidence": {
+    "evidenceSource": "Evener exact API ledger; independent provider capture unavailable",
+    "apiLedgerPath": "/tmp/evener-native-image-fixture-01a07a02-1788848688/state/evener/projects/private-tmp-evener-native-image-fixture-01a07a02-1788848688-workspace-v4WFW6tlbD/sessions/034L6zkRET9JUqnUDlpclX.api.jsonl",
+    "sha256": "f36020ed854477f107c0fa5f0c58acb76cd5290c9178a97468c4f54a29c73781",
+    "attemptId": "att_034L6zkgLLUGnCt66rXlFW",
+    "endpoint": "http://127.0.0.1:58111/v1/chat/completions",
+    "outcome": "success",
+    "statusCode": 200,
+    "images": [
+      {
+        "bytes": 747473,
+        "sha256": "424a8a2b2c2c29cea7dbb84f3c8cf78370c0c269021190e73e65ea30c843b6aa",
+        "role": "user"
+      }
+    ],
+    "requestBytes": 1087490,
+    "responseBytes": 535,
+    "responseSseChunks": 2,
+    "completedCommunicate": true
+  },
+  "cleanup": {
+    "fixtureProcessesAbsent": [
+      58813,
+      58817,
+      64207,
+      70835,
+      13946
+    ],
+    "privateCredentialsAndHubLogRemoved": true,
+    "nativeProfilesAndDraftsRemoved": true,
+    "sixOriginalPhotosHashIdentical": true,
+    "importedPhoto": "Removed through Photos; retained by iOS in Recently Deleted for 30 days"
+  },
+  "sizeFix": {
+    "source": "d20229b75",
+    "nativeTests": 678,
+    "testFiles": 74,
+    "typeScript": "passed",
+    "releaseBuild": "passed",
+    "installedBundleSha256": "d47fe4d8f7976ef7c2b7600e3f4cd70171292876d00c3f177891e6facf62db26",
+    "launchPid": 29261,
+    "oversizePickerDeviceAcceptance": "not yet run"
+  },
+  "limitations": [
+    "Simulator, not physical-device qualification",
+    "Single image; no maximum-count native run",
+    "No process death between submit checkpoint and dispatch",
+    "No independent raw provider-side capture; exact request and response come from Evener API ledger",
+    "Two seed sessions existed before the native creation; first default-model attempt failed before creation"
+  ],
+  "privateEvidence": [
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/after-coldlaunch.json",
+      "sha256": "eb00654318cb23605b08d8a9ce5848dc11312bfca8b162fb471983bff73b5edf",
+      "bytes": 4134
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/api-image-receipt.json",
+      "sha256": "8c87c953a93a3b906e87f4bd1a1ef62c8f5638dfa0e0a123c3fd7931c26fbd9d",
+      "bytes": 818
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/choose-model.json",
+      "sha256": "8bc19f159090c6388c67ac66c01d054396fc93a4f88ca4115105f8933a8be8ac",
+      "bytes": 2870
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/cleanup-hubs.json",
+      "sha256": "d49afc77d493bca1f3dc5e9c5cd01b237097be5d98a8a7b925aa809c276a5386",
+      "bytes": 5989
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/cleanup-sessions.json",
+      "sha256": "4b291a52474805f4d7c2a421f3181aa864216691e1053adfa61d48887e3243f9",
+      "bytes": 4629
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/completed-read-summary.json",
+      "sha256": "4d9b8cacb01e1f3896a02cae99b611d81130e724fee3034d83e95aae37ba6333",
+      "bytes": 12083
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/completed-thread-read.json",
+      "sha256": "217540cc8c870413e815b21f025da8699a29af00bdc9fd4a67a2b4bea86f6821",
+      "bytes": 1048352
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/completed.json",
+      "sha256": "62ae4f24bcc11818fef0aa07b758776f552784a976de7daafa34e1fd57add70f",
+      "bytes": 6089
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/connected.json",
+      "sha256": "cc43ca2e2883a85e19b18b8d6ca1e326a22086cadd094e1779902a228863f8a5",
+      "bytes": 4154
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/created-held-storage.json",
+      "sha256": "757d8910b929c2f3e956a0ff826a18515d9a37a218818203b64996aa7fa00b5e",
+      "bytes": 717
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/created-held.json",
+      "sha256": "8b5b35603e2aecc0a4f8ad1d64aae4912d6c9797cbca06045d77bb290b01c4f1",
+      "bytes": 6475
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/expected-native-image.json",
+      "sha256": "bb3c860d7dca2e168f715ffbab26e566da6d54e188ebb63091d60ec5d17a8a6c",
+      "bytes": 674
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/explicit-model.json",
+      "sha256": "72f359cd17c57de29b2bfacadd93b68fa457d61738affa279cbbc04c0cac1e1b",
+      "bytes": 8413
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/final-clean-storage.json",
+      "sha256": "31d3705038f15dac9b28cab99c6f18e2d05dd2a4abc7b988301b32c1e30af637",
+      "bytes": 488
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/final-hubs.json",
+      "sha256": "772f9bad38bd88585cf5fa155f35c1bbb825bccb5f97d72ac118650b94855cac",
+      "bytes": 5175
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/gallery-coldlaunch.json",
+      "sha256": "ad26257e8fd977e75095d2b21318c822df48abb1f141af6b2b2f8e96be4c05cb",
+      "bytes": 1551
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/held-thread-read.json",
+      "sha256": "0c04a70095a0e9bb16b7c07cacec85c05d76f7399be8de1a2bbf39c6a151dd23",
+      "bytes": 1046625
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/image-restored-storage.json",
+      "sha256": "16a89d2516c7606d5e4831b7a8feabd40be6466edb91c60b47518389593eea82",
+      "bytes": 997903
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/image-restored.json",
+      "sha256": "747cef73235f2a6b134606949e6ab9ec2aeb8daca7dccc67c84762e54c72b46a",
+      "bytes": 7832
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/image-staged-storage.json",
+      "sha256": "16a89d2516c7606d5e4831b7a8feabd40be6466edb91c60b47518389593eea82",
+      "bytes": 997903
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/image-staged.json",
+      "sha256": "30d73547aaecface1e2523d36d7e9dcb8f43242ab69259f0d79af3287ad8c2cf",
+      "bytes": 7870
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/initial.json",
+      "sha256": "9a360763838dd1e8975c7425ebf307697e10e1a7bee048fa1a8d3e72a04c7bd9",
+      "bytes": 5175
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/live-gallery.json",
+      "sha256": "0f48cac22b17441c5619f41704f10d993204dd6fb93c8100b380181da4c5bbb0",
+      "bytes": 1543
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/media-baseline.json",
+      "sha256": "98be69b16d3bef32bf1478aacfe957833b457567c4d195cdfed7182baef63cb7",
+      "bytes": 1401
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/native-artifact.json",
+      "sha256": "584b4015bf776540d0551e2a18ed6bacaa016e8e431598bce5312bb21a40c594",
+      "bytes": 460
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/native-create-held-storage.json",
+      "sha256": "7a273ad3085f165c7cfba0f3f0ce7ee2e45043dfdbc30015807310cbe5c99b60",
+      "bytes": 997902
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/native-create-held.json",
+      "sha256": "fef8b183f4c85c188a4507f4c4fbcc2e0fafe16e6f18784fd68d6edb85fcf465",
+      "bytes": 8411
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/new-session.json",
+      "sha256": "61ba2f20da5d76e93baa36612fa216a4764ad1abdcda9e151d015e7f32288dfe",
+      "bytes": 10082
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/owned-photo-open.json",
+      "sha256": "f7bb5f7458988017e769b0132735c0435fd97ce0f93ba2c827969786c3f8e222",
+      "bytes": 1573
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photo-delete-confirm.json",
+      "sha256": "a4bff34a92253d215663121761971b3f59653825392c788c901b7f2d63f93568",
+      "bytes": 1685
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photo-picker.json",
+      "sha256": "ce44478c91b1c8a9d3503de485e32f9c549c9fdb5466f2176607ca014dc86129",
+      "bytes": 819
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photos-after-delete.json",
+      "sha256": "683371e7f1e7439b5a10799bbd337c5eeb935060aff363509fc7cf8563313f6b",
+      "bytes": 2550
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photos-cleanup.json",
+      "sha256": "da2815b169ff0e80680e29529c634e4e5b94f32df314e06fa29b5730bbfcd951",
+      "bytes": 3124
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photos-library.json",
+      "sha256": "f7ef31369ecad453a8cb7e721a736b95db7485562e0e87875e9569c27443870f",
+      "bytes": 2108
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/photos-ready.json",
+      "sha256": "cff0398f441e46dfcedb357895d751f778b0472302f4bc44750e59764de7a314",
+      "bytes": 5728
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/release.json",
+      "sha256": "c8bbf728734847575079302c6ae69799c801ee0b011eb6bee479ef340764164b",
+      "bytes": 18
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/remove-confirmation.json",
+      "sha256": "5cf2d89c1111c31a056c65c2a812c6cd0a16d8b20c1e017c77f70dc5765520e7",
+      "bytes": 2061
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/size-fix-launched-storage.json",
+      "sha256": "5bfabca878e83e74bb0529d73530abe7d3782cab98522e57fcb8c344a8af0984",
+      "bytes": 488
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/size-fix-launched.json",
+      "sha256": "5d530c74f22bd2a456a766fa46d420d5030ee279d0a3d9c8e52d47d5f6ae53c5",
+      "bytes": 5175
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76/transcript-coldlaunch.json",
+      "sha256": "6fc9d9650becd41e2b532c22d2d81c9f20cf0f82067feca66a1cbd2eb820e398",
+      "bytes": 6119
+    }
+  ]
+}

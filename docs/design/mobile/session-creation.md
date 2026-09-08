@@ -532,3 +532,12 @@ through Android's native confirmation dialog. The temporary proxy exited and
 port 9201 had no listener; the ordinary proxy on port 9200 remained listening.
 The idle hub session was retained for inspection. This pass changed no
 application code and did not rerun unchanged unit suites.
+
+## Current iPad image-only creation
+
+The [current iPad journey](ipad-image-creation-evidence.md) verifies a native
+image-only opening prompt, saved image bytes across cold launch, clearing the
+creation draft after confirmed creation, and the same image in the live gallery,
+completed SDK transcript and outgoing provider request recorded by Evener.
+Its receipt separates the qualified journey from the subsequent encoded-size
+fix and retains the remaining limits and recovery cases explicitly.
