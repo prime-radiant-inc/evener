@@ -88,6 +88,7 @@ const recipes = {
   "queue.mjs": [
     "initialize",
     "thread/read",
+    "turn/steer",
     "turn/queue",
     "turn/cancelQueued",
     "turn/promoteQueuedAsSteer",

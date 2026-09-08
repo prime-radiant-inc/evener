@@ -7,8 +7,9 @@ import { runQueue } from "./queue-logic.mjs";
 const ref = "local:queue";
 const instanceId = "instance";
 const clientMutationId = "queue-action-once";
-const actions = ["queue", "cancel", "promote", "drain"];
+const actions = ["queue", "steer", "cancel", "promote", "drain"];
 const methods = {
+  steer: "turn/steer",
   queue: "turn/queue",
   cancel: "turn/cancelQueued",
   promote: "turn/promoteQueuedAsSteer",
@@ -31,7 +32,7 @@ const params = (action) => ({
   ref,
   expectedInstanceId: instanceId,
   clientMutationId,
-  ...(action === "queue" ? { input: [{ type: "text", text: "sentinel" }] } : {}),
+  ...(["queue", "steer"].includes(action) ? { input: [{ type: "text", text: "sentinel" }] } : {}),
   ...(["cancel", "promote"].includes(action) ? { index: 1, expectedEntryId: "b" } : {}),
   ...(action === "drain" ? { expectedQueueRevision: 7 } : {}),
 });
@@ -43,8 +44,10 @@ const response = (action, change = {}) => ({
     threadId: "queue-thread",
     disposition: "applied",
     projectionState: action === "cancel" ? "removed" : "pending",
-    queueEntryIds: action === "queue" ? ["c"] : action === "drain" ? ["a", "b"] : ["b"],
-    ...(["promote", "drain"].includes(action) ? { turnId: "turn-2" } : {}),
+    ...(action === "steer"
+      ? {}
+      : { queueEntryIds: action === "queue" ? ["c"] : action === "drain" ? ["a", "b"] : ["b"] }),
+    ...(["steer", "promote", "drain"].includes(action) ? { turnId: action === "steer" ? "turn-3" : "turn-2" } : {}),
     ...change,
   },
 });
@@ -83,10 +86,23 @@ test("all queue actions use guarded wire parameters once and validate their rece
     }
   }));
 
+test("steer sends reviewed text once and validates its turn receipt", async () =>
+  mutate(async () => {
+    const ack = response("steer");
+    const after = snapshot({ queue: { revision: 8 } });
+    const script = scriptedHub([() => snapshot(), () => ack, () => after]);
+    const result = await run(script, "steer");
+    assert.equal(result.outcome, "acknowledged");
+    assert.equal(result.execution, "unverified");
+    assert.deepEqual(result.receipt, ack.receipt);
+    assert.deepEqual(writes(script), [{ method: "turn/steer", params: params("steer") }]);
+  }));
+
 test("queue ownership and invalid authored parameters refuse before connecting", () =>
   mutate(async () => {
     const bad = [
       ["queue", { ...params("queue"), input: "" }],
+      ["steer", { ...params("steer"), input: "" }],
       ["queue", { ...params("queue"), input: [] }],
       ["queue", { ...params("queue"), input: [{ type: "text", text: " " }] }],
       ["queue", { ...params("queue"), input: [{ type: "image", url: "x" }] }],
@@ -94,8 +110,9 @@ test("queue ownership and invalid authored parameters refuse before connecting",
       ["cancel", { ...params("cancel"), index: -1 }],
       ["cancel", { ...params("cancel"), expectedEntryId: "" }],
       ["drain", { ...params("drain"), expectedQueueRevision: 0.5 }],
-      ["drain", { ...params("drain"), input: [] }],
+      ["drain", { ...params("drain"), input: [{ type: "image", url: "x" }] }],
       ["queue", { ...params("queue"), clientMutationId: " padded " }],
+      ["steer", { ...params("steer"), input: [{ type: "image", url: "x" }] }],
       ["queue", { ...params("queue"), expectedInstanceId: "" }],
       [["queue"], params("queue")],
     ];
@@ -125,6 +142,7 @@ test("queue preflight refuses shifted entries, stale revisions, missing capabili
       ["drain", { queue: { revision: 7 } }],
       ["drain", { queue: { revision: 7, depth: 2 } }],
       ["queue", { capabilities: { queue: false, send: true, steer: true } }],
+      ["steer", { capabilities: { queue: true, send: true, steer: false } }],
       ["promote", { capabilities: { send: false, steer: false } }],
       ["drain", { capabilities: { send: false, steer: false } }],
       ["queue", { instanceId: "replacement" }],
@@ -135,6 +153,19 @@ test("queue preflight refuses shifted entries, stale revisions, missing capabili
       await assert.rejects(run(script, action));
       assert.equal(writes(script).length, 0);
     }
+  }));
+
+test("drain accepts authored composer text and receipt IDs remain queued entries", async () =>
+  mutate(async () => {
+    const input = { ...params("drain"), input: [{ type: "text", text: "composer" }] };
+    const ack = response("drain");
+    const after = snapshot({ queue: { revision: 8, ids: [], depth: 0 } });
+    const script = scriptedHub([() => snapshot(), () => ack, () => after]);
+    const result = await run(script, "drain", input);
+    assert.equal(result.outcome, "acknowledged");
+    assert.deepEqual(writes(script), [{ method: "turn/drainAsSteer", params: input }]);
+    assert.deepEqual(result.receipt.queueEntryIds, ["a", "b"]);
+    assert.equal(result.receipt.turnId, "turn-2");
   }));
 
 test("held queues can be cancelled without capabilities or resumed with send", () =>
@@ -184,11 +215,11 @@ test("malformed queue receipts remain uncertain, refresh once, and expose no rec
         response(action, { queueEntryIds: ["a", "a"] }),
         response(action, { queueEntryIds: [""] }),
       ];
-      if (action !== "queue") invalid.push(response(action, { queueEntryIds: ["unknown"] }));
+      if (action !== "queue" && action !== "steer") invalid.push(response(action, { queueEntryIds: ["unknown"] }));
       if (action === "queue") invalid.push(response(action, { queueEntryIds: ["c", "d"] }));
       if (action === "drain")
         invalid.push(response(action, { queueEntryIds: ["a"] }), response(action, { queueEntryIds: ["b", "a"] }));
-      if (["promote", "drain"].includes(action)) invalid.push(response(action, { turnId: "" }));
+      if (["steer", "promote", "drain"].includes(action)) invalid.push(response(action, { turnId: "" }));
       else invalid.push(response(action, { turnId: "unexpected" }));
       if (action === "cancel")
         invalid.push({ ...response(action), removedText: null }, { ...response(action), removedImages: -1 });
@@ -261,17 +292,32 @@ test("readback rejects replacement bindings and retains dual failures", () =>
     });
   }));
 
-test("caller changes during connection cannot change the reviewed queue action", () =>
+test("drain validates its revision before connecting even with valid composer input", async () =>
   mutate(async () => {
-    const input = params("queue");
-    const original = structuredClone(input);
-    const script = scriptedHub([() => snapshot(), () => response("queue"), () => snapshot()]);
-    const connect = script.hub.connect;
-    script.hub.connect = async () => {
-      input.ref = "other";
-      input.input[0].text = "different";
-      await connect();
-    };
-    await run(script, "queue", input);
-    assert.deepEqual(writes(script), [{ method: "turn/queue", params: original }]);
+    const script = scriptedHub([]);
+    await assert.rejects(
+      run(script, "drain", {
+        ...params("drain"),
+        expectedQueueRevision: 1.5,
+        input: [{ type: "text", text: "composer" }],
+      }),
+    );
+    assert.equal(script.calls.length, 0);
+  }));
+
+test("caller changes during connection cannot change the reviewed input", () =>
+  mutate(async () => {
+    for (const action of ["queue", "steer", "drain"]) {
+      const input = { ...params(action), input: [{ type: "text", text: "authored" }] };
+      const original = structuredClone(input);
+      const script = scriptedHub([() => snapshot(), () => response(action), () => snapshot()]);
+      const connect = script.hub.connect;
+      script.hub.connect = async () => {
+        input.ref = "other";
+        input.input[0].text = "different";
+        await connect();
+      };
+      await run(script, action, input);
+      assert.deepEqual(writes(script), [{ method: methods[action], params: original }]);
+    }
   }));

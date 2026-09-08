@@ -429,9 +429,10 @@ that decision. Choose `EVENER_QUEUE_ACTION` and add its parameters:
 | Action | Additional parameters | Effect |
 | --- | --- | --- |
 | `queue` | `input: [{ "type": "text", "text": "..." }]` | Accept text for later processing. This recipe supports text only; the typed API also supports images. |
+| `steer` | `input: [{ "type": "text", "text": "..." }]` | Send text to the current turn when steering is available. Waiting queue entries remain queued. |
 | `cancel` | `index`, `expectedEntryId` | Remove the reviewed entry. |
 | `promote` | `index`, `expectedEntryId` | Use that entry as steering, or resume a held queue. |
-| `drain` | `expectedQueueRevision` | Combine the complete reviewed queue as one input. This recipe supplies no additional input. |
+| `drain` | `expectedQueueRevision`, optional text `input` | Combine the complete reviewed queue and any appended composer input atomically. |
 
 Mutations additionally require `EVENER_QUEUE_MUTATION=1` and a separately
 authored `EVENER_QUEUE_OWNED_HUB` exactly matching `EVENER_RPC_URL`. The recipe
@@ -439,6 +440,12 @@ checks capabilities, the session instance, and the selected entry or complete
 queue revision before dispatch. The server receives the instance and entry/
 revision preconditions too. Resuming a held queue also releases remaining
 waiting messages; review the full queue before promoting an entry.
+
+Direct steering has no expected-active-turn field: the server applies it to
+the active turn when it handles the request. Its receipt identifies that turn
+and contains no queue entry IDs. A drain receipt identifies only the existing
+queued entries; appended composer text does not acquire a synthetic queue ID.
+An empty drain input array is allowed when the reviewed queue is nonempty.
 
 ```sh
 EVENER_QUEUE_ACTION=cancel EVENER_QUEUE_MUTATION=1 \
