@@ -326,10 +326,11 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Wake yourself later: `after_seconds` fires once, `repeat_seconds` fires every interval, and `note` is delivered with the wake so you know why you set it. " +
+	desc := "Wake yourself later: `after_seconds` fires once and `repeat_seconds` fires every interval. " +
 		"Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. " +
 		"To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. " +
-		"Each `create` is a new timer; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
+		"`note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. " +
+		"Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `<` escaped; `inspect` returns it verbatim. " +
 		"Create, inspect, list, or clear standing triggers on a source you can observe. " +
 		"For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. " +
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
