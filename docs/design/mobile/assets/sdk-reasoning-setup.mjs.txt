@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { AppwireClient } from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js";
+import WebSocket from "/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js";
+
+const root = process.cwd();
+const runtime = JSON.parse(await readFile(`${root}/runtime.json`, "utf8"));
+const token = (await readFile(`${root}/state/evener/auth-token`, "utf8")).trim();
+const outDir = `${root}/run/setup`;
+await mkdir(outDir, { recursive: true });
+const save = async (name, value) => {
+  const path = `${outDir}/${name}.json`;
+  await writeFile(path, `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 });
+  const info = await stat(path);
+  return { path, sha256: createHash("sha256").update(await readFile(path)).digest("hex"), mode: info.mode & 0o777 };
+};
+const events = [];
+const hub = new AppwireClient({
+  url: `ws://127.0.0.1:${runtime.hubPort}/rpc`,
+  clientInfo: { name: "job-notification-setup", version: "1" },
+  socketFactory: (url) => new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } }),
+});
+const off = hub.onNotification((notification) => events.push(notification));
+try {
+  await hub.connect();
+  const started = await hub.request("thread/start", {
+    cwd: `${root}/workspace`, input: [{ type: "text", text: "job notification fixture setup" }],
+    modelProvider: "fixture", model: "fixture-model", nonInteractive: false,
+    launchOverrides: { noProjectPrompts: true, maxRounds: 8 },
+  });
+  await save("thread-start", started);
+  const ref = started?.thread?.evener?.ref;
+  const turnId = started?.turn?.id;
+  assert.equal(typeof turnId, "string");
+  const deadline = Date.now() + 30_000;
+  while (!events.some((notification) => notification?.method === "turn/completed" && notification?.params?.ref === ref && (notification?.params?.turn?.id === turnId || notification?.params?.turnId === turnId))) {
+    if (Date.now() >= deadline) throw new Error("bounded wait for setup turn completion expired");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(typeof ref, "string");
+  const read = await hub.request("thread/read", { ref, includeTurns: true, subscribe: false });
+  await save("thread-read", read);
+  const session = { ref, threadId: read.thread.id, instanceId: read.thread.evener.instanceId };
+  await writeFile(`${root}/session.json`, `${JSON.stringify(session)}\n`, { flag: "wx", mode: 0o600 });
+  console.log(JSON.stringify({ status: "ready", refHash: createHash("sha256").update(ref).digest("hex"), privateFiles: 2 }));
+} finally {
+  off();
+  hub.close();
+}

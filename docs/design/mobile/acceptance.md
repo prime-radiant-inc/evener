@@ -246,3 +246,31 @@ match the source qualified by the `d2d5eedf9` canonical gate.
 [Actual iPad form evidence](ipad-form-evidence.md) qualifies the original Release
 form in portrait/landscape with the software keyboard; broader iPad and physical
 device acceptance remains open.
+
+## Current iPad lifecycle and SDK streaming evidence
+
+Release source `8afaeacba` removes the native screen's guessed hub configuration
+path. Root's touched-file Biome and native TypeScript checks passed, and the
+iPad Release build succeeded (build cell `3097`). Its installed bundle and
+source identity are recorded in the [iPad lifecycle receipt](assets/ipad-lifecycle-receipt.json).
+
+The [connected iPad journey](ipad-lifecycle-evidence.md) passed two-hub
+authentication, held-turn switching and transcript/draft isolation, cold launch,
+same-process foreground, hub offline/restart/reconnect and scoped profile
+removal. Root independently verified the final SDK reads, every retained draft
+checkpoint, closed fixture processes/listeners, original seven iPhone drafts
+and the byte-identical unrelated Apple patch. This is scoped simulator evidence;
+the broader accessibility, physical-device and release matrix remains open.
+
+The [SDK notification evidence](sdk-notifications-evidence.md) now includes
+actual provider retry and reasoning-summary deltas through the packaged client,
+with raw event identities matched to completed turns and retained HTTP response
+evidence. Fourteen distinct notification names have scoped producer/readback
+evidence in that document; cookbook presence remains 36 names. Warning and other
+producer/outcome combinations, continuous reconnect/replay, image and large-data
+recovery, VoiceOver, performance and distribution signing/update remain open.
+
+The final evidence secret scan passed in 31 seconds (run `66807`,
+`/tmp/evener-ipad-streaming-final-secrets.log`). The existing canonical gate and
+vet evidence at `d2d5eedf9` remain the backend baseline; this batch adds the
+scoped native copy check, current Release build and actual journeys above.

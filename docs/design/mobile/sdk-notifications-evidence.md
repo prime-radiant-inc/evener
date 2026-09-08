@@ -131,3 +131,29 @@ evidence was retained. Across this document's fixtures, twelve distinct
 notification names have actual producer/readback evidence, with the specific
 scope and limitations stated above. This is not full notification or release
 acceptance.
+
+## Actual retry and reasoning notifications
+
+The [retry receipt](assets/sdk-retry-notification-receipt.json) records a
+strengthened disposable-provider run. Qualification request 3 returned HTTP
+503 and request 4 returned HTTP 200. The SDK observer received one
+`evener/thread/modelRetry` event with `attempt: 1`, `statusCode: 503`, and the
+same `turn_m2` identity that the final independent read reported as completed.
+The run returned `read` with no overflow or connection interruption. Its exact
+fixture source and drivers are retained as helper snapshots; raw
+provider bodies, reads, events and provider status records remain private.
+
+The [reasoning receipt](assets/sdk-reasoning-notification-receipt.json) records
+the same controlled retry boundary with a streamed reasoning delta. The SDK
+observer received `item/reasoning/summaryTextDelta` for `turn_m2`, item
+`item_reasoning_28`, summary index 0, alongside the retry event. The provider's
+raw SSE response and the AppWire event carry the same opaque sentinel. The
+final read independently reports `turn_m2` completed. The fixture's private
+hub log was removed after process/listener checks; raw provider/session evidence
+remains private.
+
+These runs add two distinct producer names to the twelve previously qualified
+names, bringing this document's actual producer/readback evidence to fourteen.
+The retry name appearing in both receipts is one notification name, not two.
+They qualify one transient retry and one reasoning-delta path only; warning
+producers, broader retry policy and continuous reconnect/replay remain open.
