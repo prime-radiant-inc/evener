@@ -33,7 +33,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `turn/queue` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.queued and preDrainIds; consumed by drain in this scenario. | U | U | U | U | U |
 | `turn/drainAsSteer` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.drain, postDrainDepth=0, exact combined transcript marker. | U | U | U | U | U |
 | `turn/promoteQueuedAsSteer` | both | U | U | U | U | U | U |
-| `turn/cancelQueued` | both | U | U | U | U | U | U |
+| `turn/cancelQueued` | both | RECORDED — [queue cancellation](assets/2026-09-08-sdk-cancel-queue-outcomes.json): exact entry removed; survivor and later positive turn complete; canceled text absent from provider user input and transcript. | RECORDED — same receipt: index 7 with depth 1 returns -32013/notAccepted/none. | U | RECORDED — same receipt: literal wrong expected-instance ID returns -32013/notAccepted/none; no replaced-instance lifecycle claim. | U | U |
 | `goal/set` | both | U | U | U | U | U | U |
 | `evener/tasks/list` | both | U | U | U | U | U | U |
 | `evener/jobs/list` | both | U | U | U | U | U | U |
@@ -58,15 +58,15 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/search` | hub | U | U | U | U | U | U |
 | `evener/harnesses/list` | hub | U | U | U | U | U | U |
 | `evener/upgrade` | hub | U | U | U | U | U | U |
-| `evener/auth/status` | hub | U | U | U | U | U | U |
+| `evener/auth/status` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): 45 status requests with stored, environment, ADC, and cleared-state readbacks. | U | U | U | U | U |
 | `evener/auth/test` | hub | U | U | U | U | U | U |
 | `evener/auth/login/start` | hub | U | U | U | U | U | U |
 | `evener/auth/login/complete` | hub | U | U | U | U | U | U |
-| `evener/auth/logout` | hub | U | U | U | U | U | U |
-| `evener/auth/list` | hub | U | U | U | U | U | U |
-| `evener/auth/apiKey/set` | hub | U | U | U | U | U | U |
-| `evener/auth/apiKey/clear` | hub | U | U | U | U | U | U |
-| `evener/auth/credentialJson/set` | hub | U | U | U | U | U | U |
+| `evener/auth/logout` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): absent, environment-only, stored-key, and ADC-only logout readbacks; stored removal assertions included. | U | U | U | U | U |
+| `evener/auth/list` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): two list requests; four owned instances each appear exactly once and credential metadata is excluded from summaries. | U | U | U | U | U |
+| `evener/auth/apiKey/set` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): three successful stored-key sets with independent status readback and eleven total observed auth updates across the recipe. | U | U | U | U | U |
+| `evener/auth/apiKey/clear` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): two successful clears with status readback; environment/ADC fallback and stored-state removal asserted. | U | U | U | U | U |
+| `evener/auth/credentialJson/set` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): valid Google credential JSON stored with status readback; ADC preserved after clearing. | U — incomplete JSON produced an uncertain recipe outcome and unchanged ADC-backed state; the retained driver does not assert the underlying RPC error. | U | U | U | U |
 | `evener/auth/device/start` | hub | U | U | U | U | U | U |
 | `evener/auth/device/poll` | hub | U | U | U | U | U | U |
 | `evener/launch/resolve` | hub | U | U | U | U | U | U |
@@ -75,10 +75,10 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/launch/setLayer` | hub | RECORDED — [2026-09-08-sdk-launch-producer](assets/2026-09-08-sdk-launch-producer.json): observation.readback maxRounds=7, two project-layer updates and original layer restored. | U | U | U | U | U |
 | `evener/launch/trustRepo` | hub | U | U | U | U | U | U |
 | `model/list` | both | U | U | U | U | U | U |
-| `evener/instance/list` | hub | U | U | U | U | U | U |
-| `evener/instance/create` | hub | U | U | U | U | U | U |
+| `evener/instance/list` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): one authoritative instance-list response confirms all four removed fixture instances are absent. | U | U | U | U | U |
+| `evener/instance/create` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): four owned provider instances created and observed through subsequent list/status checks. | U | U | U | U | U |
 | `evener/instance/edit` | hub | U | U | U | U | U | U |
-| `evener/instance/remove` | hub | U | U | U | U | U | U |
+| `evener/instance/remove` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): four owned instances removed in cleanup and absent from the final authoritative list. | U | U | U | U | U |
 | `evener/instance/setDefault` | hub | U | U | U | U | U | U |
 | `evener/plugin/checkNow` | hub | U | U | U | U | U | U |
 | `evener/plugin/preview` | hub | U | U | U | U | U | U |
@@ -104,7 +104,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 ## Review progress and next order
 
-This index has 26 narrowly recorded success/effect cells. The other 64 supported methods and all failure/lifecycle cells still need indexing or qualification. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
+This index has 42 narrowly recorded success/effect cells. The other 48 supported methods and remaining failure/lifecycle cells still need indexing or qualification. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
 
 1. Index existing receipts and raw assertions before creating duplicate fixtures. Verify actual installed SDK execution, exact target/operation and authoritative effect.
 2. Review mutation identity, stale binding and lost-reply outcomes for send, queue, decisions and lifecycle operations needed by the active iPhone journey.

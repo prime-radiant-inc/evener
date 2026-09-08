@@ -1,0 +1,153 @@
+{
+  "schema": "evener.sdk.cancel-queue.outcomes.v1",
+  "status": "scoped-outcomes-observed",
+  "date": "2026-09-08",
+  "fixtureRoot": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6",
+  "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+  "head": "6a0278e3633190225f5ecb1eb64222dbd1a372c3",
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "binaries": {
+    "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evenerDev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65",
+    "provider": "671731bd399587456e46521c6794ecfcf0ed240783f4cb93af981d70dc412549"
+  },
+  "identity": {
+    "ref": "local:034LUfLV27AwONQCKfFYkF",
+    "instanceId": "034LUfLV27AwONQCKfFYkF",
+    "hubPort": 60159,
+    "providerPort": 60106
+  },
+  "queue": {
+    "preCancelIds": [
+      "queue_1",
+      "queue_2"
+    ],
+    "cancelledId": "queue_1",
+    "survivorId": "queue_2",
+    "cancelReceipt": {
+      "clientMutationId": "sdk-cancel-remove-0",
+      "disposition": "applied",
+      "threadId": "034LUfLV27AwONQCKfFYkF",
+      "instanceId": "034LUfLV27AwONQCKfFYkF",
+      "queueEntryIds": [
+        "queue_1"
+      ],
+      "projectionState": "removed"
+    },
+    "postCancel": {
+      "depth": 1,
+      "revision": 3,
+      "preview": [
+        "SDK-CANCEL-SURVIVOR-20260908"
+      ],
+      "ids": [
+        "queue_2"
+      ],
+      "clientMutationIds": [
+        "sdk-cancel-entry-1"
+      ],
+      "texts": [
+        "SDK-CANCEL-SURVIVOR-20260908"
+      ]
+    },
+    "invalidIndexRejection": {
+      "code": -32013,
+      "message": "appwire turn/cancelQueued: cancel: queue index 7 out of range (depth 1)",
+      "data": {
+        "clientMutationId": "sdk-cancel-invalid-index",
+        "evenerErrorInfo": "conflict",
+        "mutationOutcome": "notAccepted",
+        "retryDisposition": "none"
+      }
+    },
+    "wrongExpectedInstanceRejection": {
+      "code": -32013,
+      "message": "appwire turn/cancelQueued: thread instance is stale",
+      "data": {
+        "clientMutationId": "sdk-cancel-stale-instance",
+        "evenerErrorInfo": "conflict",
+        "mutationOutcome": "notAccepted",
+        "retryDisposition": "none"
+      }
+    },
+    "wrongExpectedInstanceValue": "stale-instance"
+  },
+  "barriers": {
+    "providerRequests": [
+      {
+        "request": 1,
+        "cancelled": false,
+        "survivor": false,
+        "after": false
+      },
+      {
+        "request": 2,
+        "cancelled": false,
+        "survivor": true,
+        "after": false
+      },
+      {
+        "request": 3,
+        "cancelled": false,
+        "survivor": true,
+        "after": true
+      }
+    ],
+    "cancelledMarkerConsumed": false,
+    "survivorConsumed": true,
+    "laterPositiveTurnCompleted": true
+  },
+  "transcript": {
+    "turnCount": 5,
+    "exactCancelledCount": 0,
+    "exactSurvivorCount": 1,
+    "exactAfterCount": 1,
+    "coordinatorExactUserItemCounts": {
+      "cancelled": 0,
+      "survivor": 1,
+      "after": 1
+    }
+  },
+  "capture": {
+    "outcome": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/capture/outcome.json",
+    "providerObservation": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/capture/provider-observation.ndjson",
+    "files": [
+      {
+        "path": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/run-cancel.mjs",
+        "sha256": "98f002c998e10a97f0e2641f8d6750f03701802d03067744166f74202a8f47b0"
+      },
+      {
+        "path": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/fixture.json",
+        "sha256": "2d97366229c18eec94a45612cdff7a582eef4f8879e781a1dfdde9852e3b4a4e"
+      },
+      {
+        "path": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/provider-source.go",
+        "sha256": "b08b340cf89659b83d00256e37666d32c048b77ac465b7fcc7d844014048bfc5"
+      },
+      {
+        "path": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/capture/outcome.json",
+        "sha256": "c8d21a3f4561176f50c3978c319fe0ded469fa60826ad8b14cdd03799c240bef"
+      },
+      {
+        "path": "/private/tmp/evener-sdk-cancel-queue-xi4Zw6/capture/provider-observation.ndjson",
+        "sha256": "862f001eb388c80093c75ae200a74a0307918ca75ca8e39cacfaffc07dbae6da"
+      }
+    ]
+  },
+  "cleanup": {
+    "fixtureOwnedProcessesStopped": true,
+    "authTokenFileRemoved": true,
+    "privateRawCapturesRetained": true
+  },
+  "scope": [
+    "Installed SDK through the real hub and daemon with a scripted external provider.",
+    "Final captured attempt only; earlier failed attempts are excluded.",
+    "Provider marker checks inspect user input messages in the three observed requests.",
+    "Wrong expected-instance ID is a literal mismatched value; no replaced-instance lifecycle is qualified.",
+    "No lost-reply, automatic replay, restart, reconnect, concurrent queue editing, or native UI acceptance claim."
+  ]
+}
