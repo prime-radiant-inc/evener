@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"sync"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -53,16 +54,16 @@ const (
 	LaunchLayerLaunch  LaunchLayerSupport = "launch"
 )
 
-type LaunchOptionChoice struct {
-	Value    string `json:"value"`
-	Label    string `json:"label"`
-	Disabled bool   `json:"disabled,omitempty"`
-	Hint     string `json:"hint,omitempty"`
-}
+// A choice and an env fallback are the wire types themselves, so the schema
+// here and the evener/launch/schema response cannot drift: a field added in
+// appwire arrives on both sides at once instead of being dropped by a
+// field-by-field copy. LaunchOption below stays its own struct because it
+// types Group/Kind/PathKind/DefaultableLayers as this package's own enums,
+// which the builder and the resolver's validation use; appwire declares those
+// four as plain strings.
+type LaunchOptionChoice = appwire.LaunchOptionChoice
 
-type LaunchOptionEnvFallback struct {
-	Name string `json:"name"`
-}
+type LaunchOptionEnvFallback = appwire.LaunchOptionEnvFallback
 
 type LaunchOption struct {
 	Field             string                   `json:"field"`

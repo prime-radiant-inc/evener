@@ -121,7 +121,7 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 			{Method: appwire.NotifyEvenerSteeringInjected, Params: []byte(`{"text":"Job job_123 finished: headline"}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"warning":{"message":"provider unavailable"}}`)},
 			{Method: appwire.NotifyWarning, Params: []byte(`{"message":"provider error: openai rate limited"}`)},
-			{Method: appwire.NotifyTurnCompleted, Params: []byte(`{"turnId":"turn","turn":{"status":"failed","error":{"message":"bad"},"items":[{"type":"agentMessage"}]}}`)},
+			{Method: appwire.NotifyTurnCompleted, Params: []byte(`{"turn":{"id":"turn","status":"failed","error":{"message":"bad"},"items":[{"type":"agentMessage"}]}}`)},
 		} {
 			_ = m.applyHubNotification(n)
 		}

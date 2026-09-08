@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,6 +53,31 @@ func TestHubLaunchControllerSchema(t *testing.T) {
 	}
 	if got.Options[0].Field != "agent" {
 		t.Fatalf("first schema field = %q, want agent", got.Options[0].Field)
+	}
+}
+
+func TestHubLaunchControllerSchema_WireMatchesInternal(t *testing.T) {
+	c := newHubLaunchController(t.TempDir())
+	got, err := c.Schema(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("Schema: %v", err)
+	}
+	internal := launchconfig.LaunchOptionSchema()
+	if len(got.Options) != len(internal) {
+		t.Fatalf("got %d wire options, want %d internal options", len(got.Options), len(internal))
+	}
+	for i, opt := range internal {
+		internalJSON, err := json.Marshal(opt)
+		if err != nil {
+			t.Fatalf("marshal internal option %q: %v", opt.Field, err)
+		}
+		wireJSON, err := json.Marshal(got.Options[i])
+		if err != nil {
+			t.Fatalf("marshal wire option %q: %v", opt.Field, err)
+		}
+		if !bytes.Equal(internalJSON, wireJSON) {
+			t.Errorf("option %q: internal and wire JSON diverge\ninternal: %s\nwire:     %s", opt.Field, internalJSON, wireJSON)
+		}
 	}
 }
 

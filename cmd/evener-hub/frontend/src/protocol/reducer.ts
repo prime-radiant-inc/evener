@@ -16,6 +16,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
   Turn,
+  WarningParams,
 } from "./types.gen";
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
@@ -1013,6 +1014,24 @@ function upsertPendingEscalation(
 // be mistaken for the retry's wait being over.
 const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
 
+// Restates appwire.WarningParams.EffectiveMessage shape for shape: the
+// generated types (WarningParams, `warning` typed `unknown`) are
+// declarations only, no runtime logic is generated alongside them, so the
+// rule cannot be derived from the types and has to be written out again
+// here. `message` wins when non-blank; otherwise `warning` counts when it is
+// itself a non-blank string, or an object (and not an array) whose own
+// `message` is a non-blank string. Every other shape carries no message.
+function warningMessage(params: WarningParams): string {
+  if (typeof params.message === "string" && params.message.trim() !== "") return params.message;
+  const warning = params.warning;
+  if (typeof warning === "string" && warning.trim() !== "") return warning;
+  if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
+    const nested = (warning as { message?: unknown }).message;
+    if (typeof nested === "string" && nested.trim() !== "") return nested;
+  }
+  return "";
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -1068,7 +1087,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
 
     case "turn/completed": {
       const params = n.params;
-      const turnId = params.turnId || params.turn.id;
+      const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       const oldTurn = model.turns.find((t) => t.id === turnId);
@@ -1429,7 +1448,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: params.message ?? "",
+            text: warningMessage(params) || JSON.stringify(params),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };

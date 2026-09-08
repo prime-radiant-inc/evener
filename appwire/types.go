@@ -780,11 +780,10 @@ type GoalUpdatedParams struct {
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
-// completed turn and its ID.
+// completed turn.
 type TurnCompletedParams struct {
 	ThreadID string `json:"threadId"`
 	Ref      string `json:"ref"`
-	TurnID   string `json:"turnId"`
 	Turn     Turn   `json:"turn"`
 }
 

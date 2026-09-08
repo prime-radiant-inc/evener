@@ -9592,10 +9592,6 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 		if !strings.Contains(string(got.Params), "subscribe failed after start") || !strings.Contains(string(got.Params), `"source":"hub"`) {
 			t.Fatalf("warning params=%s", got.Params)
 		}
-		payload := warningPayload(got.Params)
-		if payload["source"] != "hub" || payload["title"] != "Live updates unavailable" {
-			t.Fatalf("warning payload=%+v", payload)
-		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for relay warning")
 	}

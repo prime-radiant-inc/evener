@@ -644,7 +644,6 @@ test("cold-start skeleton clears when the first turn terminates without an autho
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
         turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
       },
     } as AnyNotification);
@@ -1328,7 +1327,6 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_2",
         turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
       },
     } as AnyNotification);

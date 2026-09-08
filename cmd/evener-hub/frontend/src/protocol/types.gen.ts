@@ -1994,7 +1994,6 @@ export interface TurnCancelQueuedResponse {
 export interface TurnCompletedParams {
   threadId: string;
   ref: string;
-  turnId: string;
   turn: Turn;
 }
 
