@@ -67,8 +67,9 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 			env := map[string]string{}
 			want := cmdutil.DefaultStateRoot()
 			if data == "xdg" {
-				env[envvars.XDGStateHome.Name] = " /state "
-				want = filepath.Join("/state", "evener")
+				stateHome := t.TempDir()
+				env[envvars.XDGStateHome.Name] = " " + stateHome + " "
+				want = filepath.Join(stateHome, "evener")
 			}
 			if got := openAIStateDirFromEnvMap(env); got != want {
 				t.Fatalf("openAIStateDirFromEnvMap(%v) = %q, want %q", env, got, want)
