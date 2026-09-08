@@ -161,6 +161,7 @@ class FakeConversationService implements ConversationService {
   async setReasoningEffort(effort: string) {
     this.setReasoningEffortCalls.push(effort);
   }
+  async setVisionModel(_visionModel: string) {}
   async rename(name: string) {
     this.renameCalls.push(name);
     if (this.renameShouldReject !== null) throw this.renameShouldReject;

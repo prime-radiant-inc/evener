@@ -2354,6 +2354,14 @@ export function createConversationStore() {
             break;
           }
 
+          case "thread/vision-model/changed": {
+            const params = n.params as { visionModel: string };
+            set({
+              conversation: { ...conv, visionModel: params.visionModel },
+            });
+            break;
+          }
+
           case "turn/started": {
             turnOwnerRev++;
             set({

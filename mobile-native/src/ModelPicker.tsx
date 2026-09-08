@@ -9,11 +9,13 @@ export function ModelPicker({
   currentModel,
   ready,
   done,
+  setting = "model",
 }: {
   controls: SessionControls;
   currentModel: string;
   ready: boolean;
   done: () => void;
+  setting?: "model" | "vision";
 }) {
   const colors = useColors();
   const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
@@ -23,27 +25,33 @@ export function ModelPicker({
   useEffect(() => {
     setSelected(null);
     void controls.loadModels();
-  }, [controls]);
+  }, [controls, setting]);
   const models = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return (state.catalog?.data ?? []).filter((model) =>
-      `${model.displayName ?? ""} ${model.provider} ${model.model}`
-        .toLowerCase()
-        .includes(query),
+    return (state.catalog?.data ?? []).filter(
+      (model) =>
+        (setting !== "vision" || model.supportsVision !== false) &&
+        `${model.displayName ?? ""} ${model.provider} ${model.model}`
+          .toLowerCase()
+          .includes(query),
     );
-  }, [state.catalog, search]);
+  }, [state.catalog, search, setting]);
   const disabled = !ready || state.pending !== null || state.loadingModels;
   const available =
     selected &&
     state.catalog?.data.some(
       (entry) =>
-        entry.provider === selected.provider && entry.model === selected.model,
+        entry.provider === selected.provider &&
+        entry.model === selected.model &&
+        (setting !== "vision" || entry.supportsVision !== false),
     );
   return (
     <View
       style={[styles.fill, { paddingHorizontal: 20, gap: 12, paddingTop: 16 }]}
     >
-      <Copy muted>{`Current · ${currentModel}`}</Copy>
+      <Copy
+        muted
+      >{`${setting === "vision" ? "Vision model" : "Current"} · ${currentModel || (setting === "vision" ? "Session model" : "")}`}</Copy>
       <TextInput
         accessibilityLabel="Search models"
         value={search}
@@ -63,7 +71,12 @@ export function ModelPicker({
       />
       <ErrorMessage message={state.modelError} />
       <ErrorMessage
-        message={state.lastAction === "changeModel" ? state.error : null}
+        message={
+          state.lastAction === "changeModel" ||
+          state.lastAction === "setVisionModel"
+            ? state.error
+            : null
+        }
       />
       {state.loadingModels ? (
         <ActivityIndicator
@@ -87,7 +100,30 @@ export function ModelPicker({
         keyboardShouldPersistTaps="handled"
         keyExtractor={(model) => JSON.stringify([model.provider, model.model])}
         ListHeaderComponent={
-          state.catalog?.diagnostics?.length ? (
+          setting === "vision" ? (
+            <View style={{ gap: 8, paddingBottom: 12 }}>
+              <Choice
+                label="Use session model"
+                selected={currentModel === ""}
+                disabled={disabled}
+                onPress={() =>
+                  void controls.setVisionModel("").then((changed) => {
+                    if (changed) done();
+                  })
+                }
+              />
+              <Choice
+                label="Disable vision"
+                selected={currentModel === "off"}
+                disabled={disabled}
+                onPress={() =>
+                  void controls.setVisionModel("off").then((changed) => {
+                    if (changed) done();
+                  })
+                }
+              />
+            </View>
+          ) : state.catalog?.diagnostics?.length ? (
             <View style={{ gap: 8, paddingBottom: 12 }}>
               <Action
                 tone="quiet"
@@ -141,7 +177,8 @@ export function ModelPicker({
             muted
           >{`Selected · ${selected.provider}/${selected.model}`}</Copy>
         ) : null}
-        {state.pending === "changeModel" ? (
+        {state.pending === "changeModel" ||
+        state.pending === "setVisionModel" ? (
           <ActivityIndicator
             accessibilityLabel="Changing model"
             color={colors.accent}
@@ -150,15 +187,17 @@ export function ModelPicker({
         <Action
           disabled={disabled || !available}
           onPress={() => {
-            if (selected)
-              void controls
-                .changeModel(selected.provider, selected.model)
-                .then((changed) => {
-                  if (changed) done();
-                });
+            if (!selected) return;
+            const change =
+              setting === "vision"
+                ? controls.changeVisionModel(selected.provider, selected.model)
+                : controls.changeModel(selected.provider, selected.model);
+            void change.then((changed) => {
+              if (changed) done();
+            });
           }}
         >
-          Use model
+          {setting === "vision" ? "Use vision model" : "Use model"}
         </Action>
       </View>
     </View>

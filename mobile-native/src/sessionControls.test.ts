@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WireError } from "../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   ModelListResponse,
   Thread,
@@ -16,6 +17,7 @@ async function boundary(actions: {
   reasoning?: (effort: string) => Promise<void>;
   models?: () => Promise<ModelListResponse>;
   model?: (provider: string, model: string) => Promise<void>;
+  vision?: (visionModel: string) => Promise<void>;
 }) {
   const thread: Thread = {
     id: "thread",
@@ -43,7 +45,7 @@ async function boundary(actions: {
         forkFromTurn: false,
         shutdown: true,
         changeModel: true,
-        changeVisionModel: false,
+        changeVisionModel: actions.vision !== undefined,
         queue: false,
         goal: false,
         rename: true,
@@ -60,6 +62,10 @@ async function boundary(actions: {
           model: string;
         };
         await actions.model?.(modelProvider, model);
+        return {};
+      }
+      if (method === "thread/vision-model/set") {
+        await actions.vision?.((params as { visionModel: string }).visionModel);
         return {};
       }
       if (method === "evener/thread/name/set")
@@ -81,6 +87,129 @@ async function boundary(actions: {
 }
 
 describe("conversation-owned session controls", () => {
+  it.each([undefined, true])(
+    "sets a catalog vision model with support metadata %j",
+    async (supportsVision) => {
+      const applied: string[] = [];
+      const controls = new SessionControls(
+        await boundary({
+          models: async () => ({
+            data: [{ provider: "one", model: "vision", supportsVision }],
+          }),
+          vision: async (value) => {
+            applied.push(value);
+          },
+        }),
+        async () => {},
+        () => {},
+        () => true,
+        () => null,
+        () => true,
+      );
+      await controls.loadModels();
+      expect(await controls.changeVisionModel("one", "vision")).toBe(true);
+      expect(applied).toEqual(["one/vision"]);
+    },
+  );
+  it("rejects a catalog model explicitly marked as not supporting vision", async () => {
+    let attempts = 0;
+    const service = await boundary({
+      models: async () => ({
+        data: [{ provider: "one", model: "text", supportsVision: false }],
+      }),
+      vision: async () => {
+        attempts++;
+      },
+    });
+    const controls = new SessionControls(
+      service,
+      async () => {},
+      () => {},
+      () => true,
+      () => null,
+      () => true,
+    );
+    await controls.loadModels();
+    expect(await controls.changeVisionModel("one", "text")).toBe(false);
+    expect(attempts).toBe(0);
+  });
+  it("refreshes once after actionUnavailable without replaying the vision mutation", async () => {
+    let attempts = 0;
+    const service = await boundary({
+      models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+      vision: async () => {
+        attempts++;
+        throw new WireError("Vision is unavailable", -32000, {
+          evenerErrorInfo: "actionUnavailable",
+        });
+      },
+    });
+    let refreshed = 0;
+    const controls = new SessionControls(
+      service,
+      async () => {
+        refreshed++;
+      },
+      () => {},
+      () => true,
+      () => null,
+      () => true,
+    );
+    await controls.loadModels();
+    expect(await controls.changeVisionModel("one", "vision")).toBe(false);
+    expect(attempts).toBe(1);
+    expect(refreshed).toBe(1);
+    expect(controls.getSnapshot().error).not.toBeNull();
+  });
+  it.each(["switch", "dispose", "reject"] as const)(
+    "handles %s during rejected-action refresh without replay or stale publication",
+    async (outcome) => {
+      let current = true;
+      let attempts = 0;
+      const enteredRefresh = Promise.withResolvers<void>();
+      const refreshed = Promise.withResolvers<void>();
+      const controls = new SessionControls(
+        await boundary({
+          vision: async () => {
+            attempts++;
+            throw new WireError("Unavailable", -32000, {
+              evenerErrorInfo: "actionUnavailable",
+            });
+          },
+        }),
+        async () => {
+          enteredRefresh.resolve();
+          await refreshed.promise;
+        },
+        () => {},
+        () => current,
+        () => null,
+        () => true,
+      );
+      let publications = 0;
+      controls.subscribe(() => {
+        publications++;
+      });
+      const request = controls.setVisionModel("off");
+      await enteredRefresh.promise;
+      expect(publications).toBe(1);
+      expect(await controls.setVisionModel("")).toBe(false);
+      if (outcome === "switch") current = false;
+      if (outcome === "dispose") controls.dispose();
+      if (outcome === "reject") refreshed.reject(new Error("Disconnected"));
+      else refreshed.resolve();
+      expect(await request).toBe(false);
+      expect(attempts).toBe(1);
+      if (outcome === "reject") {
+        expect(publications).toBe(2);
+        expect(controls.getSnapshot().pending).toBeNull();
+        expect(controls.getSnapshot().error).not.toBeNull();
+      } else {
+        expect(publications).toBe(1);
+        expect(controls.getSnapshot().error).toBeNull();
+      }
+    },
+  );
   it("keeps one outstanding action and refreshes after rename", async () => {
     let resolve!: () => void;
     const names: string[] = [];

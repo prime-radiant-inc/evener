@@ -385,6 +385,7 @@ describe("ConversationScreen — composer integration", () => {
       shutdown: vi.fn(),
       changeModel: vi.fn(),
       setReasoningEffort: vi.fn(),
+      setVisionModel: vi.fn(),
       rename: vi.fn(),
       cancelQueued: vi.fn(),
       close: vi.fn(),

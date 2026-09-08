@@ -2310,6 +2310,7 @@ export function ConversationScreen({
 								{submissionActions(["send", "steer"])}
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||
+									controlsState.lastAction === "setVisionModel" ||
 									controlsState.lastAction === "setReasoningEffort") ? (
 									<Action
 										tone="quiet"
@@ -2318,7 +2319,9 @@ export function ConversationScreen({
 											setComposerSetting(
 												controlsState.lastAction === "changeModel"
 													? "model"
-													: "reasoning",
+													: controlsState.lastAction === "setVisionModel"
+														? "vision"
+														: "reasoning",
 											);
 										}}
 									>

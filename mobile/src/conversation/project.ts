@@ -654,6 +654,7 @@ export function projectThread(thread: Thread): MobileConversation {
     name: thread.name,
     preview: thread.preview,
     modelProvider: thread.modelProvider,
+    visionModel: thread.evener.visionModel,
     status: thread.status.type,
     items,
     capabilities: projectCapabilities(thread.evener.capabilities),

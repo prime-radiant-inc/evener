@@ -847,6 +847,26 @@ describe("ConversationService", () => {
       });
     });
 
+    it.each(["", "off", "provider/model"])(
+      "sets the reviewed vision choice %j once for the bound session",
+      async (visionModel) => {
+        const { client, service } = setup();
+        client.on("thread/vision-model/set", () => EMPTY_RESPONSE);
+        await service.open("ref-1");
+        await service.setVisionModel(visionModel);
+        expect(
+          client.calls.filter(
+            (call) => call.method === "thread/vision-model/set",
+          ),
+        ).toEqual([
+          {
+            method: "thread/vision-model/set",
+            params: { ref: "ref-1", visionModel },
+          },
+        ]);
+      },
+    );
+
     it("rename calls evener/thread/name/set", async () => {
       const { client, service } = setup();
       client.on("evener/thread/name/set", () => EMPTY_RESPONSE);
@@ -1176,6 +1196,26 @@ describe("ConversationService", () => {
         client.calls.find((c) => c.method === "thread/model/set"),
       ).toBeUndefined();
     });
+
+    it.each(["", "off", "provider/model"])(
+      "setVisionModel rejects without dispatch when changeVisionModel is false (%j)",
+      async (visionModel) => {
+        const thread = makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, changeVisionModel: false },
+            queue: { revision: 0 },
+          },
+        });
+        const { client, service } = setup({ thread });
+        client.on("thread/vision-model/set", () => EMPTY_RESPONSE);
+        await service.open("ref-1");
+        await expect(service.setVisionModel(visionModel)).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "thread/vision-model/set"),
+        ).toBeUndefined();
+      },
+    );
 
     it("rename throws when capabilities.rename is false", async () => {
       const thread = makeThread({

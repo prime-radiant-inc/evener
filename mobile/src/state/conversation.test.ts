@@ -239,6 +239,7 @@ class FakeConversationService implements LiveConversationService {
   async shutdown(): Promise<void> {}
   async changeModel(_p: string, _m: string): Promise<void> {}
   async setReasoningEffort(_e: string): Promise<void> {}
+  async setVisionModel(_v: string): Promise<void> {}
   async rename(_n: string): Promise<void> {}
   async cancelQueued(
     _i: number,
@@ -655,6 +656,36 @@ describe("ConversationStore", () => {
   });
 
   describe("applyNotification", () => {
+    it.each(["", "off", "provider/model"])(
+      "updates the vision model %j for the matching session",
+      async (visionModel) => {
+        const store = createConversationStore();
+        const service = new FakeConversationService();
+        await store.getState().open(service, "ref-1");
+        store.getState().applyNotification({
+          method: "thread/vision-model/changed",
+          params: { threadId: "thread-1", ref: "ref-1", visionModel },
+        } as AnyNotification);
+        expect(store.getState().conversation?.visionModel).toBe(visionModel);
+      },
+    );
+
+    it("drops vision changes from another session or thread", async () => {
+      const store = createConversationStore();
+      const service = new FakeConversationService();
+      await store.getState().open(service, "ref-1");
+      const original = store.getState().conversation;
+      for (const params of [
+        { threadId: "other", ref: "ref-1" },
+        { threadId: "thread-1", ref: "other" },
+      ]) {
+        store.getState().applyNotification({
+          method: "thread/vision-model/changed",
+          params: { ...params, visionModel: "off" },
+        } as AnyNotification);
+      }
+      expect(store.getState().conversation).toBe(original);
+    });
     it("drops notifications that don't match current ref", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();

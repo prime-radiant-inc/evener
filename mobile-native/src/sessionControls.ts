@@ -15,6 +15,7 @@ type Operation =
   | "compact"
   | "shutdown"
   | "setReasoningEffort"
+  | "setVisionModel"
   | "changeModel";
 interface ControlsState {
   pending: Operation | null;
@@ -95,6 +96,11 @@ export class SessionControls {
       this.service.setReasoningEffort(effort),
     );
   }
+  setVisionModel(visionModel: string) {
+    return this.run("setVisionModel", () =>
+      this.service.setVisionModel(visionModel),
+    );
+  }
   async loadModels() {
     if (
       this.disposed ||
@@ -126,6 +132,20 @@ export class SessionControls {
       return Promise.resolve(false);
     return this.run("changeModel", () =>
       this.service.changeModel(provider, model),
+    );
+  }
+  changeVisionModel(provider: string, model: string): Promise<boolean> {
+    if (
+      !this.state.catalog?.data.some(
+        (entry) =>
+          entry.provider === provider &&
+          entry.model === model &&
+          entry.supportsVision !== false,
+      )
+    )
+      return Promise.resolve(false);
+    return this.run("setVisionModel", () =>
+      this.service.setVisionModel(`${provider}/${model}`),
     );
   }
   private async run(
@@ -167,13 +187,26 @@ export class SessionControls {
             ? "Compaction requested. Progress appears in the conversation."
             : kind === "setReasoningEffort"
               ? "Reasoning effort updated."
-              : kind === "changeModel"
-                ? "Model updated."
-                : "Session renamed.",
+              : kind === "setVisionModel"
+                ? "Vision model updated."
+                : kind === "changeModel"
+                  ? "Model updated."
+                  : "Session renamed.",
       });
       return true;
     } catch (cause) {
       if (this.disposed || !this.isCurrent()) return false;
+      if (
+        cause instanceof WireError &&
+        cause.evenerErrorInfo === "actionUnavailable"
+      ) {
+        try {
+          await this.refresh();
+        } catch {
+          // Preserve the original server rejection; refresh is confirmation only.
+        }
+        if (this.disposed || !this.isCurrent()) return false;
+      }
       this.publish({
         pending: null,
         notice: null,
