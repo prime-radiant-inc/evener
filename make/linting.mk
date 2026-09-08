@@ -23,8 +23,13 @@ secret-scan:
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain; deterministic, no provider calls.
 ## fails-when: Any TOML file has a non-snake_case key.
-lint-naming:
-	$(call run_quiet_lint,go run ./cmd/evener-dev/bin tomlcheck)
+# lint-naming, lint-internal, and lint-golangci run the prebuilt evener-dev
+# binary instead of `go run ./cmd/evener-dev/bin` so the serial LINT_TARGETS
+# chain pays one compile (via the build-dev prerequisite, which make runs
+# once per `make lint` since build-dev is .PHONY) instead of three. The
+# binary is built from the same source, so verdicts are identical.
+lint-naming: build-dev
+	$(call run_quiet_lint,./evener-dev tomlcheck)
 
 ## The compile floor for the //go:build evenerfuzz sources: host go vet and a
 ## host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on
@@ -87,8 +92,8 @@ lint-eval:
 ## requires: None beyond the Go toolchain.
 ## fails-when: cmd/evener-internalcheck finds an exported symbol naming an
 ##   internal type.
-lint-internal:
-	$(call run_quiet_lint,go run ./cmd/evener-dev/bin internalcheck)
+lint-internal: build-dev
+	$(call run_quiet_lint,./evener-dev internalcheck)
 
 # golangci-lint across every module (./... is per-module under go.work).
 # The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
@@ -116,8 +121,8 @@ lint-internal:
 ## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
 ##   the fuzz module's ordinary Go is covered too.
 ## fails-when: Either golangci-lint run fails for any module.
-lint-golangci:
-	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" go run ./cmd/evener-dev/bin dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
+lint-golangci: build-dev
+	$(call run_quiet_lint,MODULES="$(FUZZ_GO_MODULES)" GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" ./evener-dev dev module-lint && GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/...)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.

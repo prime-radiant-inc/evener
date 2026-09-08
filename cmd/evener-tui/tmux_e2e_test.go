@@ -48,6 +48,14 @@ const tuiE2EWaitTimeout = 60 * time.Second
 var tuiE2EPollInterval = 10 * time.Millisecond
 var tuiE2EDeadCheckInterval = 100 * time.Millisecond
 
+// tuiE2EPaneSizePollInterval paces waitForTmuxPaneSize only. A pane resize is
+// a slow monotonic settle (tmux applies it once and never un-applies it), so
+// 10ms granularity buys nothing there: each tick forks a display-message
+// subprocess, and 5x fewer forks during resize waits is pure CPU saved. The
+// 60s deadline is unchanged, and Resize still blocks until the size lands, so
+// no later assertion can race it.
+var tuiE2EPaneSizePollInterval = 50 * time.Millisecond
+
 // tmuxSessionCounter makes tmux session names unique even when parallel tests
 // start within the same nanosecond.
 var tmuxSessionCounter atomic.Int64
@@ -1383,7 +1391,7 @@ func waitForTmuxPaneSize(t *testing.T, socket, session string, width, height int
 				return
 			}
 		}
-		time.Sleep(tuiE2EPollInterval)
+		time.Sleep(tuiE2EPaneSizePollInterval)
 	}
 	t.Fatalf("tmux (socket %s) pane size for %s = %q, want %dx%d", socket, session, last, width, height)
 }

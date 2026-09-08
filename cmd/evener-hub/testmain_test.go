@@ -10,7 +10,9 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -102,6 +104,7 @@ func TestMain(m *testing.M) {
 	}
 
 	_ = os.Setenv("HOME", filepath.Join(root, "home"))
+	_ = os.Setenv("USERPROFILE", filepath.Join(root, "home")) // what os.UserHomeDir reads on Windows
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
@@ -117,6 +120,18 @@ func TestMain(m *testing.M) {
 	// TestHostEvenerEnvNeverReachesTheTestEnvironment is the guard.
 	for _, v := range productEvenerEnvVars() {
 		_ = os.Unsetenv(v.Name)
+	}
+	// Refuse to start when a default root still resolves outside the throwaway
+	// env: every test from here on would otherwise read and write the
+	// developer's own ~/.config/evener and ~/.local/state/evener, and a failing
+	// guard test cannot stop the tests that run beside it.
+	// TestHubDefaultRootsStayInsideTheTestEnvironment re-checks this mid-run.
+	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
+		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", root, strings.Join(escaped, "\n  "))
+		if !inherited {
+			_ = os.RemoveAll(root)
+		}
+		os.Exit(1)
 	}
 
 	code := m.Run()
@@ -158,6 +173,205 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 		if strings.HasPrefix(got, testEnvRoot) {
 			t.Fatalf("go env %s = %q, inside the throwaway test root %q; the cache it writes there outlives the run", key, got, testEnvRoot)
 		}
+	}
+}
+
+type namedPath struct{ name, path string }
+
+// hubDefaultRoots lists every filesystem root the hub falls back to when a
+// WebConfig field is left unset (the launch config root, the hub state root,
+// the plugin store root, the MCP config path), every path runMain opens when a
+// flag is unset (the config file, the state glob, the past-index DB, the
+// rendezvous run dir), plus the HOME and XDG bases they derive from.
+func hubDefaultRoots() []namedPath {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "(unresolved: " + err.Error() + ")"
+	}
+	return []namedPath{
+		{"os.UserHomeDir", home},
+		{envvars.XDGConfigHome.Name, envvars.XDGConfigHome.Getenv()},
+		{envvars.XDGStateHome.Name, envvars.XDGStateHome.Getenv()},
+		{envvars.XDGCacheHome.Name, envvars.XDGCacheHome.Getenv()},
+		{"hubLaunchConfigRoot with LaunchConfigRoot unset", hubLaunchConfigRoot(hubcore.WebConfig{})},
+		{"cmdutil.DefaultStateRoot", cmdutil.DefaultStateRoot()},
+		{"plugins.DefaultRoot", plugins.DefaultRoot()},
+		{"defaultMCPConfigPath", defaultMCPConfigPath()},
+		{"DefaultHubStateRoot", DefaultHubStateRoot()},
+		{"DefaultConfigPath", DefaultConfigPath()},
+		{"DefaultStateGlob", DefaultStateGlob()},
+		{"DefaultPastIndexDBPath", DefaultPastIndexDBPath()},
+		{"rendezvous.DefaultDir", rendezvous.DefaultDir()},
+	}
+}
+
+// rootsOutside reports every entry of roots that does not lie inside root. An
+// entry that is a glob is judged on its own path and on each current match,
+// so a symlinked project directory under the state root cannot point outside.
+func rootsOutside(root string, roots []namedPath) []string {
+	var escaped []string
+	for _, r := range roots {
+		paths := []string{r.path}
+		if strings.ContainsAny(r.path, "*?[") {
+			if matches, err := filepath.Glob(r.path); err == nil {
+				paths = append(paths, matches...)
+			}
+		}
+		for _, path := range paths {
+			if !containedIn(root, path) {
+				escaped = append(escaped, fmt.Sprintf("%s = %q", r.name, path))
+			}
+		}
+	}
+	return escaped
+}
+
+// defaultRootsOutsideTestEnv is rootsOutside over the hub's defaults and the
+// throwaway root TestMain built. Empty means the env contains them all.
+func defaultRootsOutsideTestEnv() []string {
+	return rootsOutside(testEnvRoot, hubDefaultRoots())
+}
+
+// canonicalizeExisting resolves symlinks through the deepest ancestor of path
+// that exists and rejoins the rest, so a default nothing has created yet still
+// compares against the real location of the tree it would land in. It fails
+// closed on a symlink it cannot resolve: a dangling link is where a write
+// would create its target, and that target may be anywhere.
+func canonicalizeExisting(path string) (string, bool) {
+	path = filepath.Clean(path)
+	var rest []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...), true
+		}
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", false
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(append([]string{path}, rest...)...), true
+		}
+		rest = append([]string{filepath.Base(path)}, rest...)
+		path = parent
+	}
+}
+
+// containedIn reports whether path lies strictly inside root once both are
+// resolved through canonicalizeExisting: a temp root reached through a symlink
+// (macOS /var is /private/var) compares equal to itself, and a link planted
+// under the root, dangling or not, cannot point a default outside it.
+func containedIn(root, path string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	realRoot, ok := canonicalizeExisting(root)
+	if !ok {
+		return false
+	}
+	realPath, ok := canonicalizeExisting(path)
+	if !ok {
+		return false
+	}
+	rel, err := filepath.Rel(realRoot, realPath)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+// TestHubDefaultRootsStayInsideTheTestEnvironment pins the other half of
+// TestMain's isolation: the hub's default roots resolve inside the throwaway
+// root, never in the developer's own home, for the whole run and not only at
+// startup. TestMain refuses to start when defaultRootsOutsideTestEnv reports
+// an escape; this catches one that opens mid-run, such as a test that swaps
+// configUserHomeDir or the XDG env without restoring it.
+//
+// TestHubRPCRegistersExpectedHandlerSet is why this has to be pinned. It
+// dispatches every registered method with empty params, and for a handler
+// where an empty request is a valid write (evener/launch/setLayer today; any
+// "set this file's content" handler tomorrow) the write happens for real,
+// against whichever root the fixture left unset. The HOME/XDG redirect in
+// TestMain is what keeps that write out of ~/.config/evener.
+func TestHubDefaultRootsStayInsideTheTestEnvironment(t *testing.T) {
+	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
+		t.Fatalf("default roots resolve outside the throwaway test root %q; a handler dispatched with empty params would read or write there for real:\n  %s", testEnvRoot, strings.Join(escaped, "\n  "))
+	}
+}
+
+// TestContainedInResolvesSymlinksAndTraversal pins the containment test the
+// guards above rely on: it must see through a symlinked root (a macOS temp
+// root lives under /var, which is /private/var), refuse a link planted under
+// the root that points outside it, refuse dot-dot traversal, and still accept
+// a default nothing has created yet.
+func TestContainedInResolvesSymlinksAndTraversal(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{realRoot, outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(realRoot, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(realRoot, "dangling")
+	if err := os.Symlink(filepath.Join(outside, "not-yet-created"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(os.PathSeparator)
+	cases := []struct {
+		name, root, path string
+		want             bool
+	}{
+		{"descendant nothing has created yet", realRoot, filepath.Join(realRoot, "config", "evener", "AGENTS.md"), true},
+		{"root reached through a symlink", link, filepath.Join(realRoot, "home"), true},
+		{"path reached through a symlink", realRoot, filepath.Join(link, "home"), true},
+		{"symlink planted under the root", realRoot, filepath.Join(escape, "AGENTS.md"), false},
+		{"dangling symlink planted under the root", realRoot, filepath.Join(dangling, "AGENTS.md"), false},
+		{"dot-dot traversal", realRoot, realRoot + sep + ".." + sep + "outside" + sep + "x", false},
+		{"the root itself", realRoot, realRoot, false},
+		{"sibling sharing the root as a prefix", realRoot, realRoot + "-sibling", false},
+		{"relative path", realRoot, "config" + sep + "evener", false},
+		{"empty path", realRoot, "", false},
+	}
+	for _, tc := range cases {
+		if got := containedIn(tc.root, tc.path); got != tc.want {
+			t.Errorf("%s: containedIn(%q, %q) = %v, want %v", tc.name, tc.root, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestRootsOutsideExpandsGlobs pins that a glob among the default roots is
+// judged by what it matches, not by its literal prefix: a symlinked project
+// directory planted under the state root and pointing outside it is reported,
+// and a pattern with no matches is judged on its own path.
+func TestRootsOutsideExpandsGlobs(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	projects := filepath.Join(root, "state", "evener", "projects")
+	if err := os.MkdirAll(projects, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(projects, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	roots := []namedPath{{"state glob", filepath.Join(projects, "*")}}
+	got := rootsOutside(root, roots)
+	if len(got) != 1 || !strings.Contains(got[0], escape) {
+		t.Fatalf("rootsOutside with an escaping match = %q, want exactly that match reported", got)
+	}
+	if err := os.Remove(escape); err != nil {
+		t.Fatal(err)
+	}
+	if got := rootsOutside(root, roots); len(got) != 0 {
+		t.Fatalf("rootsOutside with no matches = %q, want none", got)
 	}
 }
 

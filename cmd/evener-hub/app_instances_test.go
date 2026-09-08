@@ -560,6 +560,21 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveRejectsUnknownInstance: a name that resolves to no
+// instance is the caller's to fix, the same class Edit's unknown-instance
+// refusal carries (#717/#748) — InvalidParams, not an internal fault.
+func TestInstances_RemoveRejectsUnknownInstance(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "nowhere"})
+	if err == nil || !strings.Contains(err.Error(), "nowhere") {
+		t.Fatalf("Remove = %v, want an unknown-instance error", err)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
+	}
+}
+
 func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -617,8 +632,15 @@ func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	if !entry(t, f.ctl.List(), "groq").IsDefault {
 		t.Fatal("the reloaded list does not mark groq default")
 	}
-	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "nowhere"}); err == nil {
+	err = f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "nowhere"})
+	if err == nil {
 		t.Fatal("SetDefault accepted a name that is not an instance")
+	}
+	// Same class as Edit's unknown-instance refusal (#717/#748): the name the
+	// caller sent is theirs to fix, not a fault of the hub's own state.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("SetDefault = %v, want an InvalidParams wire error", err)
 	}
 }
 

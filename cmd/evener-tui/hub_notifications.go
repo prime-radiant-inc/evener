@@ -48,6 +48,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		return nil
 	}
 
+	// Streaming deltas dominate the hot path (one frame per chunk); fold each
+	// with a single params decode via the fast path below. The escalation
+	// frame above stays synchronous and untouched.
+	if m.applyHubStreamDeltaFast(notification) {
+		return nil
+	}
+
 	if m.mode != hubModeSession {
 		return nil
 	}
@@ -94,15 +101,9 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applyThreadItem(params.Item, true)
 		}
 	case appwire.NotifyAgentMessageDelta:
-		var params appwire.AgentMessageDeltaParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			m.applyAgentMessageDelta(params.TurnID, params.ItemID, params.Delta)
-		}
+		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
 	case appwire.NotifyReasoningSummaryDelta:
-		var params appwire.ReasoningSummaryDeltaParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			m.applyReasoningSummaryDelta(params.TurnID, params.ItemID, params.Delta)
-		}
+		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
 	case appwire.NotifyAgentMessageReset:
 		var params appwire.AgentMessageResetParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -111,12 +112,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySessionTranscriptReducer(reducer)
 		}
 	case appwire.NotifyToolOutputDelta:
-		var params appwire.ToolOutputDeltaParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			reducer := m.sessionTranscriptReducer()
-			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
-			m.applySessionTranscriptReducer(reducer)
-		}
+		// Folded by the single-decode fast path above (applyHubStreamDeltaFast).
 	case appwire.NotifyEvenerThreadResync:
 		// The hub is saying the model this session holds belongs to a daemon
 		// that has been replaced. A relaunched daemon seeds its live "turn_%d"
@@ -574,6 +570,137 @@ func runStillRunning(status string) bool {
 func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {
 	reducer := m.sessionTranscriptReducer()
 	reducer.ApplyAgentMessageDelta(turnID, itemID, delta)
+	m.applySessionTranscriptReducer(reducer)
+}
+
+// streamDeltaKind classifies one streaming-delta frame for the batch decoder:
+// every delta kind shares the same envelope (ref/threadId routing plus one
+// chunk of text), so one RawMessage probe extracts both without paying the
+// full typed unmarshal's throwaway allocation per frame.
+type streamDeltaKind int
+
+const (
+	streamDeltaNone streamDeltaKind = iota
+	streamDeltaAgentMessage
+	streamDeltaReasoningSummary
+	streamDeltaToolOutput
+)
+
+// streamDeltaForMethod maps a wire method to its delta kind. Anything else is
+// not a streaming delta and returns streamDeltaNone.
+func streamDeltaForMethod(method string) streamDeltaKind {
+	switch method {
+	case appwire.NotifyAgentMessageDelta:
+		return streamDeltaAgentMessage
+	case appwire.NotifyReasoningSummaryDelta:
+		return streamDeltaReasoningSummary
+	case appwire.NotifyToolOutputDelta:
+		return streamDeltaToolOutput
+	}
+	return streamDeltaNone
+}
+
+// streamDeltaChunk is the shared delta envelope: routing fields plus the one
+// text chunk the frame carries. All three delta params shapes decode into it
+// (unknown fields are ignored), so N chunks in one frame pay one unmarshal
+// each with no per-kind typed struct, and one reducer build + apply total.
+type streamDeltaChunk struct {
+	Ref      string `json:"ref"`
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+	ItemID   string `json:"itemId"`
+	CallID   string `json:"callId"`
+	Delta    string `json:"delta"`
+}
+
+// decodeStreamDeltaChunk extracts the shared delta envelope from raw params.
+// It reports false for malformed frames, mirroring the old per-kind behavior
+// of dropping a frame whose params fail to decode.
+func decodeStreamDeltaChunk(raw json.RawMessage) (streamDeltaChunk, bool) {
+	var chunk streamDeltaChunk
+	if len(raw) == 0 || json.Unmarshal(raw, &chunk) != nil {
+		return streamDeltaChunk{}, false
+	}
+	return chunk, true
+}
+
+// applyHubStreamDeltaFast folds one streaming-delta frame with a single params
+// decode into the shared delta envelope, then applies the reducer directly —
+// one unmarshal + one reducer build + one apply per frame, instead of the
+// route-decode (notificationMatchesCurrentSession) plus second typed decode
+// the generic path paid per delta. It reports whether it handled the frame.
+//
+// Ordering and filtering match the generic path exactly: the child-activity
+// check runs first (deltas never match it — it only handles item
+// started/completed — but the order is preserved so a future delta kind can
+// never slip past a rail frame), then the current-session filter on the same
+// ref/threadId fields, then the model-retry progress mark, then the viewport
+// refresh and pending reconciliation the generic tail performs. A malformed
+// frame is dropped after the same filters, as before. Non-delta methods
+// return false untouched.
+func (m *hubModel) applyHubStreamDeltaFast(notification appwire.Notification) bool {
+	kind := streamDeltaForMethod(notification.Method)
+	if kind == streamDeltaNone {
+		return false
+	}
+	if m.mode != hubModeSession {
+		return true
+	}
+	if cmd, handled := m.handleChildActivityFrame(notification); handled {
+		_ = cmd
+		return true
+	}
+	chunk, ok := decodeStreamDeltaChunk(notification.Params)
+	if !ok {
+		return true
+	}
+	if !m.streamChunkMatchesCurrentSession(chunk) {
+		return true
+	}
+	m.markModelRetryInProgress(notification)
+	switch kind {
+	case streamDeltaAgentMessage:
+		m.applyAgentMessageDelta(chunk.TurnID, chunk.ItemID, chunk.Delta)
+	case streamDeltaReasoningSummary:
+		m.applyReasoningSummaryDelta(chunk.TurnID, chunk.ItemID, chunk.Delta)
+	case streamDeltaToolOutput:
+		m.applyToolOutputDelta(chunk.ItemID, chunk.CallID, chunk.Delta)
+	}
+	m.session.refreshViewport()
+	if m.pending != nil {
+		reconcilePendingFromNotification(m.pending, notification)
+	}
+	return true
+}
+
+// streamChunkMatchesCurrentSession is notificationMatchesCurrentSession over
+// an already-decoded delta envelope: same comparisons, no second unmarshal.
+func (m *hubModel) streamChunkMatchesCurrentSession(chunk streamDeltaChunk) bool {
+	detailRef := strings.TrimSpace(m.detail.Ref)
+	if chunk.Ref != "" && detailRef != "" {
+		return chunk.Ref == detailRef
+	}
+	threadID := strings.TrimSpace(chunk.ThreadID)
+	if threadID == "" {
+		return true
+	}
+	if threadID == strings.TrimSpace(m.detail.SessionID) {
+		return true
+	}
+	if ref, err := appwire.ParseRef(detailRef); err == nil && ref.ThreadID != "" {
+		return threadID == ref.ThreadID
+	}
+	return false
+}
+
+func (m *hubModel) applyToolOutputDelta(itemID, callID, delta string) {
+	// CallID is the legacy alias for ItemID: prefer a non-empty ItemID, fall
+	// back to CallID so legacy frames still land on the right tool call.
+	if itemID == "" {
+		itemID = callID
+	}
+	reducer := m.sessionTranscriptReducer()
+	reducer.ApplyToolOutputDelta(itemID, delta)
 	m.applySessionTranscriptReducer(reducer)
 }
 
