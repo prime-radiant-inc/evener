@@ -1001,6 +1001,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	// between two non-empty sets still shows outstanding on both passes, and
 	// re-kicking a flap is exactly the backstop behavior to keep.
 	prevOutstanding := false
+	// wakePending carries a wake edge that waitDrainWake consumed at the bottom
+	// of the previous pass into this pass's skip decision. Without it the edge
+	// would vanish inside waitDrainWake and the next pass could read woke==false
+	// and skip the kick the wake arrived to trigger. It is consumed once, at the
+	// top of the loop, so a single wake buys exactly one full-rate pass.
+	wakePending := false
 	for {
 		// Take this pass's wake edge before it reads any state. treeHasOutstandingWork
 		// consults eight independent signals in sequence, so it is not a snapshot, and
@@ -1017,7 +1023,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// it below turns "I looked and saw nothing" into "I looked and saw nothing,
 		// and nothing moved while I looked" — the only claim that justifies letting
 		// Close() cancel the subtree.
-		woke := takeDrainWake(wake)
+		woke := takeDrainWake(wake) || wakePending
+		wakePending = false
 		if woke {
 			quietPasses = 0
 		}
@@ -1323,9 +1330,18 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// Work is still in flight in the subtree but this rail has not been
 		// signalled yet. Block until a completion wakes us, the periodic re-check
 		// fires, or the caller's context is cancelled; the next iteration re-kicks.
-		if err := waitDrainWake(ctx, wake, recheck); err != nil {
-			return lastResult, err
+		// A wake that releases the wait below is consumed by it, so take the
+		// edge back before parking: the next pass must treat the wake as its
+		// own and kick at full rate instead of skipping on a stale streak.
+		wokeByWait := false
+		select {
+		case <-wake:
+			wokeByWait = true
+		case <-recheck:
+		case <-ctx.Done():
+			return lastResult, ctx.Err()
 		}
+		wakePending = wokeByWait
 	}
 }
 
