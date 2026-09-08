@@ -1,0 +1,134 @@
+{
+  "schema": "evener.sdk.interrupt.outcomes.v1",
+  "status": "qualified",
+  "date": "2026-09-08",
+  "fixtureRoot": "/private/tmp/evener-sdk-interrupt-outcomes-160039-d",
+  "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+  "sourceHead": "090865a590476d08c104746c51316ea3129fd34d",
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distIndexSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "binaries": {
+    "evenerSha256": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evenerDevSha256": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65",
+    "providerSha256": "a7793bc0f4db4e3bbcad21e8a8b540991003f456ab8ab77a22993f8a7d396ba8"
+  },
+  "identity": {
+    "ref": "local:034LVFDe3EgtHk5W3rs4Da",
+    "instanceId": "034LVFDe3EgtHk5W3rs4Da",
+    "hubPort": 53102,
+    "providerPort": 53076
+  },
+  "turns": {
+    "interruptedTurnId": "turn_m1",
+    "interruptReceipt": {
+      "clientMutationId": "sdk-interrupt-success",
+      "disposition": "applied",
+      "threadId": "034LVFDe3EgtHk5W3rs4Da",
+      "instanceId": "034LVFDe3EgtHk5W3rs4Da",
+      "turnId": "turn_m1",
+      "projectionState": "reflected"
+    },
+    "interruptedReadback": {
+      "status": "interrupted"
+    },
+    "positiveTurnId": "turn_m2",
+    "positiveStatus": "completed",
+    "turnStatuses": [
+      {
+        "id": "turn_system",
+        "status": "completed"
+      },
+      {
+        "id": "turn_env_ALVVEA7RFERDNRALBAIACP6MEB",
+        "status": "completed"
+      },
+      {
+        "id": "turn_m1",
+        "status": "interrupted"
+      },
+      {
+        "id": "turn_m2",
+        "status": "completed"
+      }
+    ]
+  },
+  "rejections": {
+    "invalidParams": {
+      "code": -32602,
+      "message": "expectedInstanceId is required",
+      "data": {
+        "evenerErrorInfo": "invalidParams"
+      }
+    },
+    "staleInstance": {
+      "code": -32013,
+      "message": "appwire turn/interrupt: thread instance is stale",
+      "data": {
+        "clientMutationId": "sdk-interrupt-stale",
+        "evenerErrorInfo": "conflict",
+        "mutationOutcome": "notAccepted",
+        "retryDisposition": "none"
+      }
+    }
+  },
+  "provider": {
+    "requestCount": 4,
+    "interruptedRequest": {
+      "callId": "call_fakellm_1",
+      "previous": "",
+      "request": 1,
+      "seen": {
+        "after": false,
+        "cancelled": false,
+        "opening": true,
+        "survivor": false,
+        "unused": false
+      }
+    },
+    "cancellationObserved": true,
+    "positiveRequest": {
+      "callId": "call_fakellm_2",
+      "previous": "",
+      "request": 2,
+      "seen": {
+        "after": true,
+        "cancelled": false,
+        "opening": true,
+        "survivor": false,
+        "unused": false
+      }
+    }
+  },
+  "notifications": {
+    "eventCount": 19,
+    "methods": [
+      "thread/started",
+      "turn/completed",
+      "turn/started",
+      "item/completed",
+      "thread/status/changed",
+      "evener/thread/name/changed",
+      "evener/steering/injected",
+      "evener/navigation/invalidated",
+      "item/started",
+      "item/agentMessage/delta"
+    ]
+  },
+  "capture": {
+    "providerObservationSha256": "6699c4c159b300ad4072d67301c6f969a99ad56700c2ef29b895a46ec5ec0839",
+    "sourceFiles": {
+      "fixture": "2d97366229c18eec94a45612cdff7a582eef4f8879e781a1dfdde9852e3b4a4e",
+      "providerSource": "b08b340cf89659b83d00256e37666d32c048b77ac465b7fcc7d844014048bfc5",
+      "driver": "11b22e0fff451c6f45a961e44eeeea5f846b8cb33e371c4ec163bbc6a16daa50"
+    }
+  },
+  "scope": [
+    "Installed SDK through real hub and daemon with a scripted external provider; first provider request was held and canceled by turn/interrupt.",
+    "Success includes exact interrupted turn/readback and one later positive turn completed once.",
+    "Malformed params and literal stale expectedInstanceId rejections are qualified; stale value does not prove a replaced instance.",
+    "No warning-producer, lost-reply, reconnect, restart, concurrent mutation, native UI, or live-provider behavior claim."
+  ]
+}
