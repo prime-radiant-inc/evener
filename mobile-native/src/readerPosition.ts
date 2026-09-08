@@ -157,26 +157,34 @@ export type ReaderRestoreCommand =
 
 export class ReaderRestoreAttempts {
 	private approximateOffset: number | null = null;
+	private approximateMeasurementProgress: number | null = null;
 	private failures = 0;
 
 	reset() {
 		this.approximateOffset = null;
+		this.approximateMeasurementProgress = null;
 		this.failures = 0;
 	}
-	begin(command: ReaderRestoreCommand): boolean {
+	begin(command: ReaderRestoreCommand, measurementProgress = 0): boolean {
 		if (command.kind === "exact") {
 			// A measured row ends the search; reflow may require a fresh search later.
 			this.reset();
 			return true;
 		}
-		if (this.approximateOffset === command.offset) return false;
+		if (
+			this.approximateOffset === command.offset &&
+			(this.approximateMeasurementProgress ?? -1) >= measurementProgress
+		)
+			return false;
 		this.approximateOffset = command.offset;
+		this.approximateMeasurementProgress = measurementProgress;
 		return true;
 	}
 	retryUnmeasured(): boolean {
 		if (this.failures >= 3) return false;
 		this.failures += 1;
 		this.approximateOffset = null;
+		this.approximateMeasurementProgress = null;
 		return true;
 	}
 }
