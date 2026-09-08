@@ -219,12 +219,16 @@ const HTML_BLOCK_END = /<\/(?:pre|script|style|textarea)>|-->|\?>|\]\]>/i;
 
 // Splits a long live source into a settled head (ending on a blank line) and
 // the streaming tail after it, or null when there is no blank-line boundary
-// in range (one very long paragraph still streaming). Leading blank lines of
-// the tail are skipped - insignificant in both paths; a tail of nothing but
-// blanks likewise declines the windowed path.
+// whose tail is at most LIVE_TAIL_WINDOW (one very long paragraph still
+// streaming). The boundary is the FIRST at/after the window edge, so the tail
+// holds at most the window - taking the last boundary at/before the edge
+// instead would accept a tail holding the entire remainder of a long
+// paragraph. Leading blank lines of the tail are skipped - insignificant in
+// both paths; a tail of nothing but blanks likewise declines the windowed
+// path.
 function splitLiveSource(source: string): { head: string; tail: string } | null {
   const edge = source.length - LIVE_TAIL_WINDOW;
-  const blank = source.lastIndexOf("\n\n", edge);
+  const blank = source.indexOf("\n\n", edge);
   if (blank === -1) return null;
   let tailStart = blank + 2;
   while (source.charAt(tailStart) === "\n") tailStart += 1;

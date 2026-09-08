@@ -289,7 +289,10 @@ test("live matches settled when the definition sits in the tail", () => {
 test("live matches settled on a long definition-free source across tail-growth rerenders (windowed path)", () => {
   const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
   const head = `${sentence.repeat(12).trim()}\n\n${sentence.repeat(12).trim()}\n\n`;
-  const first = head + sentence.repeat(20).trim();
+  // The tail carries its own paragraph break inside the window, so the split
+  // boundary sits at most LIVE_TAIL_WINDOW from the end (see splitLiveSource:
+  // only the first boundary at/after the window edge engages the path).
+  const first = `${head + sentence.repeat(10).trim()}\n\n${sentence.repeat(5).trim()}`;
   expect(first.length).toBeGreaterThan(2000);
   const live = render(<Markdown source={first} live />);
   const settledFirst = render(<Markdown source={first} />);
