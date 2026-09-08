@@ -408,6 +408,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventGoalWaiting:
 		p.clearSkillCandidate()
 		data := eventData[events.GoalWaitingData](event.Data)
+		// Task-8 forward-pin (spec §7 emit-vs-project): stage-2 bounded
+		// auto-parks will set GoalWaitingData.AnnounceSilently and Task 8
+		// will project those silently (no announcement) while keeping the
+		// emit for the audit trail. Slice 1 never sets the flag, so every
+		// park announces.
 		return p.systemAnnouncement(appwire.ThreadItemEventKindGoalWaiting, "Goal", goalWaitingText(data))
 	case events.EventGoalResumed:
 		p.clearSkillCandidate()

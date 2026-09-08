@@ -831,6 +831,12 @@ type GoalWaitingData struct {
 	NearestLabel string `json:"nearest_label,omitempty"`
 	// NearestDeadlineUnixMilli is that wait's deadline as Unix epoch millis.
 	NearestDeadlineUnixMilli int64 `json:"nearest_deadline_unix_milli,omitempty"`
+	// AnnounceSilently is reserved for Task 8 (slice-3 graduation, spec
+	// §7 emit-vs-project): stage-2 bounded auto-parks still EMIT
+	// EventGoalWaiting (audit trail for replay consumers) but project
+	// silently (no announcement). Slice 1 always announces (false);
+	// Task 8 sets it for auto-park notices. No behavior keys on it yet.
+	AnnounceSilently bool `json:"announce_silently,omitempty"`
 }
 
 // GoalResumedData is the payload for an EventGoalResumed event: the wake turn

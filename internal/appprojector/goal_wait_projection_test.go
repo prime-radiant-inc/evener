@@ -75,6 +75,21 @@ func TestProject_GoalWaitingAnnounces(t *testing.T) {
 	}
 }
 
+// TestGoalWaitingDataAnnounceSilentlyReserved is the fix-1/4 finding-4 pin:
+// the Task-8 stage-2 suppression flag exists on the wire shape and defaults
+// off, so slice-1 parks always announce. Task 8 keys the silent-project
+// behavior on it; this only pins the marker.
+func TestGoalWaitingDataAnnounceSilentlyReserved(t *testing.T) {
+	var zero events.GoalWaitingData
+	if zero.AnnounceSilently {
+		t.Fatal("AnnounceSilently must default off (slice-1 parks always announce)")
+	}
+	set := events.GoalWaitingData{Count: 1, AnnounceSilently: true}
+	if !set.AnnounceSilently {
+		t.Fatal("AnnounceSilently must be settable for Task 8")
+	}
+}
+
 // TestProject_GoalResumedAnnounces pins §7: EventGoalResumed projects to a
 // goal_resumed system announcement naming the fired waits.
 func TestProject_GoalResumedAnnounces(t *testing.T) {

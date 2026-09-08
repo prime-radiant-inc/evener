@@ -87,10 +87,15 @@ func TestHubGoalStatusText(t *testing.T) {
 
 // TestHubGoalStatusTextWaiting pins the Task-5 slice-1 §7 status shape: a
 // parked goal shows what it waits on and when (labels + nearest deadline).
+// Fix 1/4 finding-5: the status carries used/max spend progress when the
+// wire provides it (Max>0), falling back to bare iterations for older
+// daemons; stage stays deferred to slice 3 (Task 8).
 func TestHubGoalStatusTextWaiting(t *testing.T) {
 	got := hubGoalStatusText(&appwire.GoalState{
-		Status:     "waiting",
-		Iterations: 2,
+		Status:            "waiting",
+		Iterations:        2,
+		UsedContinuations: 3,
+		MaxContinuations:  200,
 		WaitingOn: []appwire.GoalWaitState{
 			{WaitID: "wait_1", Label: "alpha", DeadlineUnixMilli: 2000},
 			{WaitID: "wait_2", Label: "beta", DeadlineUnixMilli: 3000},
@@ -98,9 +103,18 @@ func TestHubGoalStatusTextWaiting(t *testing.T) {
 		NearestLabel:             "alpha",
 		NearestDeadlineUnixMilli: 2000,
 	})
-	want := "Goal: waiting 2 · waiting on alpha, beta · 2000"
+	want := "Goal: waiting 3/200 · waiting on alpha, beta · 2000"
 	if got != want {
 		t.Fatalf("status=%q, want %q", got, want)
+	}
+	// Pre-progress daemons (Max==0, "unset") keep the bare iteration count.
+	legacy := hubGoalStatusText(&appwire.GoalState{Status: "active", Iterations: 2})
+	if legacy != "Goal: active 2" {
+		t.Fatalf("legacy status=%q, want Goal: active 2", legacy)
+	}
+	modern := hubGoalStatusText(&appwire.GoalState{Status: "active", Iterations: 2, UsedContinuations: 5, MaxContinuations: 200})
+	if modern != "Goal: active 5/200" {
+		t.Fatalf("modern status=%q, want Goal: active 5/200", modern)
 	}
 }
 

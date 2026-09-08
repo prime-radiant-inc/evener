@@ -212,13 +212,18 @@ func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
 // projection goalStateDataFromFull builds from the live store.
 func goalSeedData(goal *schema.GoalSnapshot) *events.GoalStateData {
 	out := &events.GoalStateData{
-		Objective:         goal.Objective,
-		Status:            goal.Status,
-		Iterations:        goal.Iterations,
-		UsedContinuations: goal.Budgets.UsedContinuations,
-		MaxContinuations:  goal.Budgets.MaxContinuations,
+		Objective:  goal.Objective,
+		Status:     goal.Status,
+		Iterations: goal.Iterations,
 	}
-	if goal.Budgets == nil {
+	// Budgets is nilable by design (v1 snapshots predate budgets): guard
+	// before touching it. A budgetless goal seeds used=iterations (measurable
+	// spend so far) and max=0 meaning "unset" (mirrors goalStateFromMeta) —
+	// never a silent zero-max presented as a real cap.
+	if goal.Budgets != nil {
+		out.UsedContinuations = goal.Budgets.UsedContinuations
+		out.MaxContinuations = goal.Budgets.MaxContinuations
+	} else {
 		out.UsedContinuations = goal.Iterations
 		out.MaxContinuations = 0
 	}

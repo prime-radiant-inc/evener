@@ -879,6 +879,16 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 		s.armGoalWaitTimer()
 		return
 	}
+	s.kickClaimedGoalWake(claimed, objective)
+}
+
+// kickClaimedGoalWake delivers the kick for a claim batch the caller already
+// consumed (spec section 3 superseded/drop routing). Extracted from
+// fireGoalWaitTimer so tests can drive the retarget-between-claim-and-kick
+// branch deterministically: pass the claim-time objective alongside a store
+// that has since been retargeted (carried Superseded batch) or cleared.
+// Call with no locks held; kicks fire outside all locks.
+func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective string) {
 	// Read kick/ask state AFTER the claim (never across it): the callback
 	// runs on the clock's goroutine, and the claim path plus a concurrent
 	// gate/settle may interleave - holding s.mu across the claim would
@@ -931,9 +941,11 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 		if kick == nil {
 			return
 		}
-		// The superseded no-op evaluation is still the wait-attributable turn
-		// for the claimed batch: announce the resume on the kick (spec §7).
-		s.emitGoalResumed(ids)
+		// No GoalResumed announcement here (fix round 1/4): the stale
+		// trigger is dropped context, not a resumed wait — the prompt
+		// frames it as superseded, so a "Goal resumed: <wait_id>"
+		// announcement identical to a real wake would mislead. The no-op
+		// evaluation still drives and still bypasses the fold.
 		kick(prompt)
 		return
 	}

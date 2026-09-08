@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // Slice-1 projection + interim judge tests (Task 5, spec §§7 wire, 9 slice-1
@@ -15,6 +16,36 @@ import (
 // autonomy treatment covers timer-parked goals, and the interim judge keeps the
 // v1 3/6 breaker armed for non-parked loops while wait-attributable turns
 // bypass RecordContinuation.
+
+// TestGoalSeedDataV1NilBudgetsDoesNotPanic is the fix-1/4 regression test: a
+// v1 (budgetless) snapshot — Budgets nilable by design
+// (schema/snapshot.go) — must seed without panicking, yielding
+// Used=Iterations and Max=0 (mirroring goalStateFromMeta), never a silent
+// zero-max presented as a real cap.
+func TestGoalSeedDataV1NilBudgetsDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	v1 := &schema.GoalSnapshot{
+		Objective:  "v1 goal",
+		Status:     "active",
+		Iterations: 4,
+		Budgets:    nil,
+	}
+	var data *events.GoalStateData
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("goalSeedData panicked on nil Budgets: %v", r)
+			}
+		}()
+		data = goalSeedData(v1)
+	}()
+	if data.UsedContinuations != 4 || data.MaxContinuations != 0 {
+		t.Fatalf("progress = %d/%d, want 4/0 (used=iterations, max unset)", data.UsedContinuations, data.MaxContinuations)
+	}
+	if data.Objective != "v1 goal" || data.Status != "active" || data.Iterations != 4 {
+		t.Fatalf("seed = %+v, want the v1 objective/status/iterations", data)
+	}
+}
 
 // drainGoalEvents discards buffered session events so the next read observes
 // only events emitted after this point.
@@ -204,6 +235,69 @@ func TestGoalResumedEventEmittedOnWake(t *testing.T) {
 	}
 	if len(d.WaitIDs) != 1 || d.WaitIDs[0] != w.Lease.WaitID {
 		t.Fatalf("GoalResumedData = %+v, want the fired wait_id", d)
+	}
+}
+
+// TestGoalResumedNotEmittedOnSupersededNoop is the fix-1/4 finding-2 pin: a
+// retarget-after-claim no-op evaluation drives (stale trigger as dropped
+// context) but must NOT announce "Goal resumed: <wait_id>" — the payload
+// carries only WaitIDs, so the announcement would be identical to a real
+// wake while the kick prompt frames the trigger as superseded.
+//
+// The seam is the timer callback's retarget-wins branch
+// (kickClaimedGoalWake's full.Objective != objective path, extracted from
+// fireGoalWaitTimer — the cited :936): the gate's own superseded branch
+// returns a prompt without kicking and never announced. The test drives the
+// extracted helper with the claim-time objective of the old goal while the
+// store already owns the new one.
+func TestGoalResumedNotEmittedOnSupersededNoop(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	var prompts []string
+	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("old objective", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now()); !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	claimed, objective := sess.claimGoalWaitExpiredWaits(clk.Now())
+	if len(claimed) == 0 {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	// Retarget between claim and kick: Set carries the batch marked
+	// Superseded onto the new objective — exactly the interleaving the
+	// timer callback's re-read observes.
+	store.Set("new objective", clk.Now())
+	drainGoalEvents(sess)
+	sess.kickClaimedGoalWake(claimed, objective)
+	if len(prompts) != 1 {
+		t.Fatalf("kicks = %d, want exactly the superseded no-op kick", len(prompts))
+	}
+	for _, ev := range drainGoalEventsToList(sess) {
+		if ev.Kind == events.EventGoalResumed {
+			t.Fatalf("superseded no-op emitted GOAL_RESUMED %+v: a dropped trigger must not announce a resume", ev.Data)
+		}
+	}
+}
+
+// drainGoalEventsToList drains buffered session events and returns them.
+func drainGoalEventsToList(sess *Session) []events.SessionEvent {
+	var out []events.SessionEvent
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				return out
+			}
+			out = append(out, ev)
+		default:
+			return out
+		}
 	}
 }
 

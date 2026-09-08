@@ -1102,16 +1102,31 @@ func (m *hubModel) runHubGoal(args string) tea.Cmd {
 }
 
 // hubGoalStatusText renders the `/goal status` line from the cached goal
-// snapshot. With no goal set it prints a minimal usage hint. A waiting goal
-// extends the shape with the wait list (spec §7): what it waits on and when.
+// snapshot (spec §7: "Goal: <status> <used/max> · waiting on <labels> ·
+// <nearest deadline> · <stage>"). With no goal set it prints a minimal usage
+// hint. Stage stays deferred to slice 3 (no graduation stages exist yet —
+// Task 8 owns the nudge/park/block stage machine and will extend this line);
+// used/max renders now because the wire already carries it.
 func hubGoalStatusText(goal *appwire.GoalState) string {
 	if goal == nil {
 		return "No goal set. Use /goal <objective> to set one."
 	}
+	progress := hubGoalProgressText(goal)
 	if goal.Status == "waiting" {
-		return fmt.Sprintf("Goal: %s %d · waiting on %s", goal.Status, goal.Iterations, hubGoalWaitingSummary(goal))
+		return fmt.Sprintf("Goal: %s %s · waiting on %s", goal.Status, progress, hubGoalWaitingSummary(goal))
 	}
-	return fmt.Sprintf("Goal: %s %d", goal.Status, goal.Iterations)
+	return fmt.Sprintf("Goal: %s %s", goal.Status, progress)
+}
+
+// hubGoalProgressText renders the spend progress half of `/goal status` as
+// "used/max" when the wire carries a max, falling back to the bare iteration
+// count for goals from daemons predating the progress pair (Max==0 means
+// "unset", never a real cap — cf. goalSeedData's v1 backfill).
+func hubGoalProgressText(goal *appwire.GoalState) string {
+	if goal.MaxContinuations > 0 {
+		return fmt.Sprintf("%d/%d", goal.UsedContinuations, goal.MaxContinuations)
+	}
+	return fmt.Sprintf("%d", goal.Iterations)
 }
 
 // hubGoalChipText aggregates the session-header goal chip (spec §6):
