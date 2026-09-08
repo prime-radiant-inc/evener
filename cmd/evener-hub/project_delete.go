@@ -28,7 +28,11 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s
 		hint := navigationChangeHint{Projects: []string{project}}
 		navigation = s.navigationAfterDeletion(ctx, hint)
 	}
-	return appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil
+	return appwire.ProjectDeleteResponse{
+		Deleted:    append([]string{}, deleted...),
+		Skipped:    append([]projectDeleteSkip{}, skipped...),
+		Navigation: navigation,
+	}, nil
 }
 
 // Roster and navigation refreshes do not undo committed artifact removal.
