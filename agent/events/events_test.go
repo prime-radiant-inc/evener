@@ -98,6 +98,8 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 		{"GoalContinuation", events.GoalContinuationData{Text: "continue"}, events.EventGoalContinuation},
 		{"GoalEnded", events.GoalEndedData{Status: "done", Iterations: 1}, events.EventGoalEnded},
 		{"GoalUpdated", events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: "ship", Status: "active"}}, events.EventGoalUpdated},
+		{"GoalWaiting", events.GoalWaitingData{Count: 1, NearestLabel: "alpha"}, events.EventGoalWaiting},
+		{"GoalResumed", events.GoalResumedData{WaitIDs: []string{"wait_1"}}, events.EventGoalResumed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

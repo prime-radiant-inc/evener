@@ -1102,12 +1102,52 @@ func (m *hubModel) runHubGoal(args string) tea.Cmd {
 }
 
 // hubGoalStatusText renders the `/goal status` line from the cached goal
-// snapshot. With no goal set it prints a minimal usage hint.
+// snapshot. With no goal set it prints a minimal usage hint. A waiting goal
+// extends the shape with the wait list (spec §7): what it waits on and when.
 func hubGoalStatusText(goal *appwire.GoalState) string {
 	if goal == nil {
 		return "No goal set. Use /goal <objective> to set one."
 	}
+	if goal.Status == "waiting" {
+		return fmt.Sprintf("Goal: %s %d · waiting on %s", goal.Status, goal.Iterations, hubGoalWaitingSummary(goal))
+	}
 	return fmt.Sprintf("Goal: %s %d", goal.Status, goal.Iterations)
+}
+
+// hubGoalChipText aggregates the session-header goal chip (spec §6):
+// "waiting on <n> · <nearest label> · <deadline>" for a parked goal, the
+// plain "status iterations" otherwise. The chip never implies more than the
+// waiting_on[] list it summarizes.
+func hubGoalChipText(goal *appwire.GoalState) string {
+	if goal == nil {
+		return ""
+	}
+	if goal.Status == "waiting" {
+		n := len(goal.WaitingOn)
+		if goal.NearestLabel == "" {
+			return fmt.Sprintf("waiting on %d", n)
+		}
+		return fmt.Sprintf("waiting on %d · %s · %d", n, goal.NearestLabel, goal.NearestDeadlineUnixMilli)
+	}
+	return fmt.Sprintf("%s %d", goal.Status, goal.Iterations)
+}
+
+// hubGoalWaitingSummary renders the waiting half of `/goal status`: the live
+// wait labels plus the nearest deadline. Labels + deadlines only — never full
+// predicate payloads.
+func hubGoalWaitingSummary(goal *appwire.GoalState) string {
+	labels := make([]string, 0, len(goal.WaitingOn))
+	for _, w := range goal.WaitingOn {
+		label := w.Label
+		if label == "" {
+			label = w.WaitID
+		}
+		labels = append(labels, label)
+	}
+	if len(labels) == 0 {
+		return "nothing"
+	}
+	return fmt.Sprintf("%s · %d", strings.Join(labels, ", "), goal.NearestDeadlineUnixMilli)
 }
 
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {

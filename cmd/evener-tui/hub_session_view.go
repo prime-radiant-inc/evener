@@ -75,7 +75,7 @@ func (m hubModel) sessionHeaderLines() []string {
 		addPart("failed", strconv.Itoa(*fc))
 	}
 	if m.detail.Goal != nil {
-		addPart("goal", fmt.Sprintf("%s %d", m.detail.Goal.Status, m.detail.Goal.Iterations))
+		addPart("goal", hubGoalChipText(m.detail.Goal))
 	}
 	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
 	meta := "  " + strings.Join(parts, sep)

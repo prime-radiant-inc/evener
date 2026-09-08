@@ -286,6 +286,16 @@ func boundsBreached(full goal.GoalSnapshot, now time.Time) bool {
 // non-parked loops per spec section 9; wait-attributable turns bypass
 // RecordContinuation entirely (zero stall accrual while parked).
 //
+// Interim judge, precisely (spec §9 slice-1 scope): the v1 3/6 mutation
+// breaker (RecordContinuation: NoProgressLimit=3 once advanced, else
+// NeverProgressedLimit=6) keeps stopping non-parked stalled loops. Parked
+// goals accrue nothing (the park branch returns before the fold), and
+// wait-attributable turns — the wake turn's own drive (pendingWake backlog
+// standing), the wake tail (delivered batch consumed), and the superseded
+// no-op evaluation — bypass the fold and re-arm the plain objective. The
+// notifying turn for a waited target IS the wake turn: no separate
+// notification turn folds, so there is no double-turn accounting.
+//
 // It returns (renderedPrompt, true) to continue, or ("", false) when there is
 // nothing to drive right now: no goal is set, the goal is terminal (the gate
 // owns the model-declared terminal stop path plus the spec section-1 rule-2/3/5
@@ -511,6 +521,10 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 			}
 			s.markGoalWakesDelivered(ids)
 			s.goalUpdateMu.Unlock()
+			// The notifying turn for a waited target IS the wake turn (spec
+			// §7: no double-turn accounting): announce the resume on the kick
+			// itself, after the store locks are released.
+			s.emitGoalResumed(ids)
 			// A non-continuation turn completed while wakes stood
 			// undelivered (e.g. a notification turn landing between claim
 			// and kick): the wake turn is due - drive it rather than the
@@ -917,6 +931,9 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 		if kick == nil {
 			return
 		}
+		// The superseded no-op evaluation is still the wait-attributable turn
+		// for the claimed batch: announce the resume on the kick (spec §7).
+		s.emitGoalResumed(ids)
 		kick(prompt)
 		return
 	}
@@ -930,6 +947,9 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	if kick == nil {
 		return
 	}
+	// The notifying turn for a waited target IS the wake turn (spec §7: no
+	// double-turn accounting): announce the resume on the kick itself.
+	s.emitGoalResumed(ids)
 	kick(prompt)
 }
 
@@ -947,8 +967,10 @@ func (s *Session) registerGoalWait(req goal.WaitKind, now time.Time) (goal.Wait,
 		return goal.Wait{}, false
 	}
 	snap, _ := s.getOrCreateGoalStore().Snapshot()
+	full, _ := s.getOrCreateGoalStore().GoalSnapshot()
 	s.goalUpdateMu.Unlock()
 	s.emitGoalUpdated(snap)
+	s.emitGoalWaiting(full)
 	s.armGoalWaitTimer()
 	return w, true
 }
@@ -988,6 +1010,35 @@ func (s *Session) reportGoalEnded() {
 	if snap, ok := s.getOrCreateGoalStore().TakeTerminalReport(); ok {
 		s.emitGoalEnded(snap)
 	}
+}
+
+// emitGoalWaiting publishes one EventGoalWaiting announcement for a freshly
+// parked goal (spec §7: the announcement channel for the park). Callers pass
+// the full-shape read taken at the parking commit; an empty live-wait set
+// emits nothing (a catch-up registration never parks). Must be called without
+// session locks held (emit reads provenance through s.mu).
+func (s *Session) emitGoalWaiting(full goal.GoalSnapshot) {
+	state := goalStateDataFromFull(full)
+	if len(state.WaitingOn) == 0 {
+		return
+	}
+	s.emit(events.EventGoalWaiting, events.GoalWaitingData{
+		Count:                    len(state.WaitingOn),
+		NearestLabel:             state.NearestLabel,
+		NearestDeadlineUnixMilli: state.NearestDeadlineUnixMilli,
+	})
+}
+
+// emitGoalResumed publishes one EventGoalResumed announcement for a wake turn
+// kick (spec §7): the notifying turn for a waited target IS the wake turn, so
+// the kick site — not a separate notification — owns the announcement. ids
+// names the claim batch the kick delivers. Empty batches emit nothing. Must be
+// called without session locks held.
+func (s *Session) emitGoalResumed(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	s.emit(events.EventGoalResumed, events.GoalResumedData{WaitIDs: append([]string(nil), ids...)})
 }
 
 // settleGoalOnIdle runs at the drain loop's idle transition — including the
@@ -1109,6 +1160,12 @@ func (s *Session) settleGoalOnIdle() bool {
 		// mark is idempotent, so a racing gate marking the same batch is
 		// harmless - exactly-once still holds via ClaimFire's lease consume.)
 		s.markGoalWakesDelivered(wakeIDs)
+		// A stale-park claim kick is the wait's wake turn (spec §7): announce
+		// the resume on the kick. A plain active-objective kick is not a
+		// wake and announces nothing.
+		if len(wakeIDs) > 0 {
+			s.emitGoalResumed(wakeIDs)
+		}
 		kick(prompt)
 		return true
 	}
@@ -1178,18 +1235,67 @@ func (s *Session) emitGoalEnded(snap goal.Snapshot) {
 }
 
 // goalStateData converts the internal goal snapshot into the public event
-// payload shared by every goal mutation boundary.
+// payload shared by every goal mutation boundary. The wait list carries
+// labels + deadlines only (spec §7 wire gap, M2); full predicate payloads
+// stay in the store/schema snapshot and never ride the wire. Nearest =
+// earliest deadline, tie → smallest wait_id (spec §6 chip rule).
 func goalStateData(snap goal.Snapshot) events.GoalStateData {
-	return events.GoalStateData{
+	return goalStateDataFromFull(goal.GoalSnapshot{
 		Objective:  snap.Objective,
-		Status:     string(snap.Status),
+		Status:     snap.Status,
 		Iterations: snap.Iterations,
+	})
+}
+
+// goalStateDataFromFull converts the full persisted-shape goal read into the
+// public event payload, including the live wait list, the nearest-deadline
+// summary, and the spend progress. Callers hold no store lock (GoalSnapshot
+// is a value copy).
+func goalStateDataFromFull(full goal.GoalSnapshot) events.GoalStateData {
+	out := events.GoalStateData{
+		Objective:         full.Objective,
+		Status:            string(full.Status),
+		Iterations:        full.Iterations,
+		UsedContinuations: full.Budgets.UsedContinuations,
+		MaxContinuations:  full.Budgets.MaxContinuations,
 	}
+	var nearestID string
+	var nearestDeadline time.Time
+	var haveNearest bool
+	for _, w := range full.Waits {
+		if !w.Live() {
+			continue
+		}
+		out.WaitingOn = append(out.WaitingOn, events.GoalWaitData{
+			WaitID:            w.Lease.WaitID,
+			Label:             w.Lease.Label,
+			DeadlineUnixMilli: w.Lease.Deadline.UnixMilli(),
+		})
+		// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
+		if !haveNearest || w.Lease.Deadline.Before(nearestDeadline) ||
+			(w.Lease.Deadline.Equal(nearestDeadline) && w.Lease.WaitID < nearestID) {
+			haveNearest = true
+			nearestID = w.Lease.WaitID
+			nearestDeadline = w.Lease.Deadline
+			out.NearestDeadlineUnixMilli = w.Lease.Deadline.UnixMilli()
+			out.NearestLabel = w.Lease.Label
+		}
+	}
+	return out
 }
 
 // emitGoalUpdated publishes one committed non-clear goal transition. Callers
 // invoke it only after the store mutation has released its own mutex.
 func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
+	// Re-read the full shape so the payload carries the live wait list,
+	// nearest summary, and spend progress (spec §7): the narrow Snapshot has
+	// none of those. A goal cleared between the mutation and this read emits
+	// the narrow form (no waits) rather than dropping the update.
+	if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok && full.Objective == snap.Objective && full.Status == snap.Status {
+		state := goalStateDataFromFull(full)
+		s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
+		return
+	}
 	state := goalStateData(snap)
 	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
 }
@@ -1199,8 +1305,9 @@ func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
 // This helper must never be called while Session.mu is held because emit reads
 // session provenance through the same mutex.
 func (s *Session) emitCurrentGoalState() {
-	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok {
-		s.emitGoalUpdated(snap)
+	if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok {
+		state := goalStateDataFromFull(full)
+		s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
 		return
 	}
 	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: nil})

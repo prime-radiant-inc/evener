@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -949,7 +950,9 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 					}
 					return
 				}
-				if params.Goal == nil || *params.Goal != *want {
+				// DeepEqual (not ==): GoalState now carries the WaitingOn
+				// slice, which is not comparable with ==.
+				if params.Goal == nil || !reflect.DeepEqual(*params.Goal, *want) {
 					t.Fatalf("%s goal = %+v, want %+v", name, params.Goal, want)
 				}
 				return
@@ -992,7 +995,7 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s thread/read after goal update: %v", reader.name, err)
 		}
-		if read.Thread.Evener.Goal == nil || *read.Thread.Evener.Goal != *wantSet {
+		if read.Thread.Evener.Goal == nil || !reflect.DeepEqual(*read.Thread.Evener.Goal, *wantSet) {
 			t.Fatalf("%s read goal = %+v, want %+v", reader.name, read.Thread.Evener.Goal, wantSet)
 		}
 	}

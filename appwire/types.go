@@ -713,6 +713,28 @@ type GoalState struct {
 	Objective  string `json:"objective,omitempty"`
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
+	// WaitingOn is the live wait list (spec §7): labels + deadlines only,
+	// mirroring events.GoalStateData. Empty when the goal is not parked.
+	WaitingOn []GoalWaitState `json:"waitingOn,omitempty"`
+	// NearestDeadlineUnixMilli is the earliest live wait deadline as Unix
+	// epoch milliseconds (0 when no live wait stands).
+	NearestDeadlineUnixMilli int64 `json:"nearestDeadlineUnixMilli,omitempty"`
+	// NearestLabel is the chip-rendered label of the earliest-deadline wait
+	// (tie → smallest wait_id, spec §6).
+	NearestLabel string `json:"nearestLabel,omitempty"`
+	// UsedContinuations/MaxContinuations is the spend progress
+	// (spec §7: progress{usedContinuations, maxContinuations}).
+	UsedContinuations int `json:"usedContinuations,omitempty"`
+	MaxContinuations  int `json:"maxContinuations,omitempty"`
+}
+
+// GoalWaitState is one wire-projected live wait: identity + chip label +
+// deadline only (never the full predicate payload).
+type GoalWaitState struct {
+	WaitID string `json:"waitId"`
+	Label  string `json:"label,omitempty"`
+	// DeadlineUnixMilli is the wait deadline as Unix epoch milliseconds.
+	DeadlineUnixMilli int64 `json:"deadlineUnixMilli,omitempty"`
 }
 
 // EvenerUsage carries a evener session's cumulative self-only token totals for
@@ -1159,10 +1181,16 @@ const (
 	ThreadItemEventKindTurnLimit         ThreadItemEventKind = "turn_limit"
 	ThreadItemEventKindLoopDetection     ThreadItemEventKind = "loop_detection"
 	ThreadItemEventKindGoalEnded         ThreadItemEventKind = "goal_ended"
-	ThreadItemEventKindForkSummary       ThreadItemEventKind = "fork_summary"
-	ThreadItemEventKindRoundTimings      ThreadItemEventKind = "round_timings"
-	ThreadItemEventKindToolRepair        ThreadItemEventKind = "tool_repair"
-	ThreadItemEventKindModelSwitch       ThreadItemEventKind = "model_switch"
+	// ThreadItemEventKindGoalWaiting marks the systemMessage item a parked
+	// goal's EventGoalWaiting projects to (spec §7).
+	ThreadItemEventKindGoalWaiting ThreadItemEventKind = "goal_waiting"
+	// ThreadItemEventKindGoalResumed marks the systemMessage item a wake
+	// turn's EventGoalResumed projects to (spec §7).
+	ThreadItemEventKindGoalResumed  ThreadItemEventKind = "goal_resumed"
+	ThreadItemEventKindForkSummary  ThreadItemEventKind = "fork_summary"
+	ThreadItemEventKindRoundTimings ThreadItemEventKind = "round_timings"
+	ThreadItemEventKindToolRepair   ThreadItemEventKind = "tool_repair"
+	ThreadItemEventKindModelSwitch  ThreadItemEventKind = "model_switch"
 	// ThreadItemEventKindError marks the systemMessage item a reloaded
 	// transcript renders for a turn that failed terminally. It lets clients
 	// find the failure by type rather than by reading the item's prose.
@@ -1188,6 +1216,8 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindTurnLimit),
 	string(ThreadItemEventKindLoopDetection),
 	string(ThreadItemEventKindGoalEnded),
+	string(ThreadItemEventKindGoalWaiting),
+	string(ThreadItemEventKindGoalResumed),
 	string(ThreadItemEventKindForkSummary),
 	string(ThreadItemEventKindRoundTimings),
 	string(ThreadItemEventKindToolRepair),

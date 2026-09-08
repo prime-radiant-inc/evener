@@ -278,6 +278,36 @@ type GoalPendingWakeSnapshot struct {
 	Superseded bool      `json:"superseded,omitempty"`
 }
 
+// LiveWaits returns the live (unfired, FiredEpoch == 0) leases in waits, in
+// order. Claim-consumed leases stay in the persisted slice only as fired
+// records for the pendingWake backlog; they never project to the wire.
+func LiveWaits(waits []GoalWaitSnapshot) []GoalWaitSnapshot {
+	var live []GoalWaitSnapshot
+	for _, w := range waits {
+		if w.FiredEpoch != 0 {
+			continue
+		}
+		live = append(live, w)
+	}
+	return live
+}
+
+// NearestWait resolves the chip summary over live waits (spec §6): earliest
+// deadline wins, ties break on the smallest wait_id. Reports nil when no
+// live wait stands.
+func NearestWait(waits []GoalWaitSnapshot) *GoalWaitSnapshot {
+	live := LiveWaits(waits)
+	var best *GoalWaitSnapshot
+	for i := range live {
+		w := &live[i]
+		if best == nil || w.Deadline.Before(best.Deadline) ||
+			(w.Deadline.Equal(best.Deadline) && w.WaitID < best.WaitID) {
+			best = w
+		}
+	}
+	return best
+}
+
 // GoalBudgetsSnapshot is the persisted spend-budget triple (spec section 5).
 // A nil Budgets on a decoded GoalSnapshot marks a v1 snapshot that predates
 // budgets and selects the section-7 backfill rule (never a silent zero).

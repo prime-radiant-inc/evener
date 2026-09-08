@@ -85,6 +85,8 @@ func (TurnStartedData) eventKind() EventKind        { return EventTurnStarted }
 func (GoalContinuationData) eventKind() EventKind   { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind          { return EventGoalEnded }
 func (GoalUpdatedData) eventKind() EventKind        { return EventGoalUpdated }
+func (GoalWaitingData) eventKind() EventKind        { return EventGoalWaiting }
+func (GoalResumedData) eventKind() EventKind        { return EventGoalResumed }
 func (SandboxEscalationRequestedData) eventKind() EventKind {
 	return EventSandboxEscalationRequested
 }
@@ -140,6 +142,8 @@ var (
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}
 	_ EventData = GoalUpdatedData{}
+	_ EventData = GoalWaitingData{}
+	_ EventData = GoalResumedData{}
 	_ EventData = SandboxEscalationRequestedData{}
 	_ EventData = SandboxEscalationResolvedData{}
 )

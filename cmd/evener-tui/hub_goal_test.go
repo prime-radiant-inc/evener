@@ -85,6 +85,46 @@ func TestHubGoalStatusText(t *testing.T) {
 	}
 }
 
+// TestHubGoalStatusTextWaiting pins the Task-5 slice-1 §7 status shape: a
+// parked goal shows what it waits on and when (labels + nearest deadline).
+func TestHubGoalStatusTextWaiting(t *testing.T) {
+	got := hubGoalStatusText(&appwire.GoalState{
+		Status:     "waiting",
+		Iterations: 2,
+		WaitingOn: []appwire.GoalWaitState{
+			{WaitID: "wait_1", Label: "alpha", DeadlineUnixMilli: 2000},
+			{WaitID: "wait_2", Label: "beta", DeadlineUnixMilli: 3000},
+		},
+		NearestLabel:             "alpha",
+		NearestDeadlineUnixMilli: 2000,
+	})
+	want := "Goal: waiting 2 · waiting on alpha, beta · 2000"
+	if got != want {
+		t.Fatalf("status=%q, want %q", got, want)
+	}
+}
+
+// TestHubGoalChipTextWaiting pins the Task-5 slice-1 §6 chip aggregation:
+// "waiting on <n> · <nearest label> · <deadline>".
+func TestHubGoalChipTextWaiting(t *testing.T) {
+	got := hubGoalChipText(&appwire.GoalState{
+		Status:     "waiting",
+		Iterations: 2,
+		WaitingOn: []appwire.GoalWaitState{
+			{WaitID: "wait_1", Label: "alpha", DeadlineUnixMilli: 2000},
+			{WaitID: "wait_2", Label: "beta", DeadlineUnixMilli: 3000},
+		},
+		NearestLabel:             "alpha",
+		NearestDeadlineUnixMilli: 2000,
+	})
+	if want := "waiting on 2 · alpha · 2000"; got != want {
+		t.Fatalf("chip=%q, want %q", got, want)
+	}
+	if got := hubGoalChipText(&appwire.GoalState{Status: "active", Iterations: 2}); got != "active 2" {
+		t.Fatalf("active chip=%q, want active 2", got)
+	}
+}
+
 // TestSessionHeaderShowsGoalChip asserts the in-session header meta strip
 // renders a goal part (status + turn count, no Max) when m.detail.Goal is set,
 // and omits it when no goal is present.

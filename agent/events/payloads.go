@@ -791,12 +791,53 @@ type GoalStateData struct {
 	Objective  string `json:"objective"`
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
+	// WaitingOn is the live wait list (spec §7 wire gap, M2): labels +
+	// deadlines only. Full predicate payloads persist in the store/schema
+	// snapshot and never ride the wire.
+	WaitingOn []GoalWaitData `json:"waiting_on,omitempty"`
+	// NearestDeadlineUnixMilli is the earliest live wait deadline as Unix
+	// epoch milliseconds (0 when no live wait stands). NearestLabel is its
+	// chip-rendered label (tie → smallest wait_id, spec §6).
+	NearestDeadlineUnixMilli int64  `json:"nearest_deadline_unix_milli,omitempty"`
+	NearestLabel             string `json:"nearest_label,omitempty"`
+	// UsedContinuations/MaxContinuations is the spend progress
+	// (spec §7: progress{usedContinuations, maxContinuations}).
+	UsedContinuations int `json:"used_continuations,omitempty"`
+	MaxContinuations  int `json:"max_continuations,omitempty"`
+}
+
+// GoalWaitData is one wire-projected live wait: identity + chip label +
+// deadline only (never the full predicate payload).
+type GoalWaitData struct {
+	WaitID string `json:"wait_id"`
+	Label  string `json:"label,omitempty"`
+	// DeadlineUnixMilli is the wait deadline as Unix epoch milliseconds.
+	DeadlineUnixMilli int64 `json:"deadline_unix_milli,omitempty"`
 }
 
 // GoalUpdatedData is the payload for EventGoalUpdated. Goal is deliberately
 // not omitempty: nil is an explicit clear and must serialize as "goal":null.
 type GoalUpdatedData struct {
 	Goal *GoalStateData `json:"goal"`
+}
+
+// GoalWaitingData is the payload for an EventGoalWaiting event: the session
+// parked its goal on live waits. Count is the live-wait count; NearestLabel
+// and NearestDeadlineUnixMilli name the earliest-deadline wait (tie →
+// smallest wait_id, spec §6) for the chip aggregation.
+type GoalWaitingData struct {
+	Count int `json:"count"`
+	// NearestLabel is the chip-rendered label of the earliest-deadline wait.
+	NearestLabel string `json:"nearest_label,omitempty"`
+	// NearestDeadlineUnixMilli is that wait's deadline as Unix epoch millis.
+	NearestDeadlineUnixMilli int64 `json:"nearest_deadline_unix_milli,omitempty"`
+}
+
+// GoalResumedData is the payload for an EventGoalResumed event: the wake turn
+// drove for the fired waits named by WaitIDs (one combined wake turn per
+// claim batch, spec §2).
+type GoalResumedData struct {
+	WaitIDs []string `json:"wait_ids,omitempty"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

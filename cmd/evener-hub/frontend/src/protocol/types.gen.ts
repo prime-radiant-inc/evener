@@ -463,12 +463,23 @@ export interface GoalState {
   objective?: string;
   status: string;
   iterations: number;
+  waitingOn?: GoalWaitState[];
+  nearestDeadlineUnixMilli?: number;
+  nearestLabel?: string;
+  usedContinuations?: number;
+  maxContinuations?: number;
 }
 
 export interface GoalUpdatedParams {
   threadId: string;
   ref: string;
   goal: GoalState | null;
+}
+
+export interface GoalWaitState {
+  waitId: string;
+  label?: string;
+  deadlineUnixMilli?: number;
 }
 
 export interface HarnessDescriptor {
@@ -2273,6 +2284,8 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "turn_limit",
   "loop_detection",
   "goal_ended",
+  "goal_waiting",
+  "goal_resumed",
   "fork_summary",
   "round_timings",
   "tool_repair",

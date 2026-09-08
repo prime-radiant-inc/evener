@@ -201,13 +201,40 @@ func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
 		seed.Tasks = &state
 	}
 	if goal := s.Meta().Goal; goal != nil {
-		seed.Goal = &events.GoalStateData{
-			Objective:  goal.Objective,
-			Status:     goal.Status,
-			Iterations: goal.Iterations,
-		}
+		seed.Goal = goalSeedData(goal)
 	}
 	return seed
+}
+
+// goalSeedData converts the persisted goal image into the session-start seed
+// payload (spec §7): objective, status, iterations, plus the live wait list
+// (labels + deadlines only), nearest summary, and spend progress — the same
+// projection goalStateDataFromFull builds from the live store.
+func goalSeedData(goal *schema.GoalSnapshot) *events.GoalStateData {
+	out := &events.GoalStateData{
+		Objective:         goal.Objective,
+		Status:            goal.Status,
+		Iterations:        goal.Iterations,
+		UsedContinuations: goal.Budgets.UsedContinuations,
+		MaxContinuations:  goal.Budgets.MaxContinuations,
+	}
+	if goal.Budgets == nil {
+		out.UsedContinuations = goal.Iterations
+		out.MaxContinuations = 0
+	}
+	for _, w := range schema.LiveWaits(goal.Waits) {
+		out.WaitingOn = append(out.WaitingOn, events.GoalWaitData{
+			WaitID:            w.WaitID,
+			Label:             w.Label,
+			DeadlineUnixMilli: w.Deadline.UnixMilli(),
+		})
+	}
+	// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
+	if nearest := schema.NearestWait(goal.Waits); nearest != nil {
+		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
+		out.NearestLabel = nearest.Label
+	}
+	return out
 }
 
 // emit sends data on the session's event stream. The kind argument is retained

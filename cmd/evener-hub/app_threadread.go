@@ -626,7 +626,26 @@ func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
 	if goal == nil {
 		return nil
 	}
-	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
+	out := &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
+	if goal.Budgets != nil {
+		out.UsedContinuations = goal.Budgets.UsedContinuations
+		out.MaxContinuations = goal.Budgets.MaxContinuations
+	} else {
+		out.UsedContinuations = goal.Iterations
+	}
+	for _, w := range schema.LiveWaits(goal.Waits) {
+		out.WaitingOn = append(out.WaitingOn, appwire.GoalWaitState{
+			WaitID:            w.WaitID,
+			Label:             w.Label,
+			DeadlineUnixMilli: w.Deadline.UnixMilli(),
+		})
+	}
+	// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
+	if nearest := schema.NearestWait(goal.Waits); nearest != nil {
+		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
+		out.NearestLabel = nearest.Label
+	}
+	return out
 }
 
 // pastTranscriptCache memoizes saved-transcript parsing by file identity. Past

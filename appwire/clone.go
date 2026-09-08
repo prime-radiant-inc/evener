@@ -148,6 +148,7 @@ func cloneGoalState(value *GoalState) *GoalState {
 		return nil
 	}
 	clone := *value
+	clone.WaitingOn = append([]GoalWaitState(nil), value.WaitingOn...)
 	return &clone
 }
 

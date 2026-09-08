@@ -74,15 +74,33 @@ func (s *Session) hasPendingStableDelegateAttention() bool {
 
 // autonomyInFlight reports whether autonomous work will move this session
 // without user input: pending job notifications, queued input, or live child
-// subagents. Reads take each signal's own lock sequentially — never nested —
-// per the settle lock discipline (spec v5). A restored-but-unkicked goal is
-// deliberately NOT autonomy: nothing will move until the user acts, and amber
-// is what surfaces that stall.
+// subagents, or a goal parked on live waits whose coalesced timer will kick
+// the wake turn (spec §7: timer-parked goals are autonomy-in-flight, never
+// "needs you" with nothing to answer). Reads take each signal's own lock
+// sequentially — never nested — per the settle lock discipline (spec v5). A
+// restored-but-unkicked ACTIVE goal is deliberately NOT autonomy: nothing
+// will move until the user acts, and amber is what surfaces that stall.
 func (s *Session) autonomyInFlight() bool {
 	if s.sessionWorkPending() {
 		return true
 	}
+	if s.goalWaitTimerArmed() {
+		return true
+	}
 	return len(s.liveSubagentSessions()) > 0
+}
+
+// goalWaitTimerArmed reports whether the session's coalesced goal-wait timer
+// is currently armed — i.e. a parked goal owns a live wait whose fire will
+// kick a wake turn without user input. Self-locking (s.mu only); safe on a
+// nil session.
+func (s *Session) goalWaitTimerArmed() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goalWaitTimer != nil
 }
 
 // cumulativeUsageSnapshot converts the context manager's llm.Usage total to

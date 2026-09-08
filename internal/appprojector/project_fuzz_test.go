@@ -111,6 +111,9 @@ var projectorCases = []struct {
 		return d
 	}},
 	{events.EventGoalEnded, func(b []byte) events.EventData { var d events.GoalEndedData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventGoalUpdated, func(b []byte) events.EventData { var d events.GoalUpdatedData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventGoalWaiting, func(b []byte) events.EventData { var d events.GoalWaitingData; _ = json.Unmarshal(b, &d); return d }},
+	{events.EventGoalResumed, func(b []byte) events.EventData { var d events.GoalResumedData; _ = json.Unmarshal(b, &d); return d }},
 }
 
 // FuzzProject drives the real AppEventProjector.Project state machine over a
