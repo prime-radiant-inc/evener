@@ -959,16 +959,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
-		// Still map[string]any, not appwire.EvenerSteeringInjectedParams (kcb5):
-		// images is nil whenever a steer carries no images (the common case) -
-		// this map always emits "images" anyway (as null), but Images is tagged
-		// `omitempty` on the struct, so a typed literal would drop the key
-		// entirely instead. Not provably byte-identical; left as a map.
 		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"text":     text,
-			"images":   images,
+		}
+		if len(images) > 0 {
+			params["images"] = images
 		}
 		// User-sent steering carries its provenance so the web UI renders it
 		// as a user message rather than a system steering divider (issue #24).
