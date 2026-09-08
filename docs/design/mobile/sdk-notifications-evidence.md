@@ -173,3 +173,27 @@ returns without emitting `EventError` or `EventWarning`. Root independently
 checked the actual interruption receipts, final status, provider cancellation
 and unchanged fixture-source hashes. This qualifies one interruption outcome
 and leaves warning producer coverage open; the distinct-name count stays 14.
+
+## Actual content-filter warning
+
+The [content-filter warning receipt](assets/sdk-contentfilter-warning-receipt.json)
+records a fresh owned direct-v4 hub run using the immutable `d2d5eedf9` binary
+pair and packaged SDK `58d1b079f` (139 tarball files compared; SHA-256
+`2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731`). A real
+scripted OpenAI-compatible provider returned request 3 as HTTP 503, request 4
+as HTTP 400 with `error.code=invalid_prompt`, and request 5 as HTTP 200. The
+actual SDK observer returned `read` and received one `warning` notification
+inside the started/completed window for `turn_m2`, with source `provider`, title
+`Provider error`, and message `Content filter hit — compacting context and
+retrying`. An independent final read reported the same turn completed. The
+warning payload has no `turnId` field; correlation is by the owned session and
+event window.
+
+This qualifies `warning` as the fifteenth distinct notification name with actual
+producer/readback evidence. The first cleanup pass left owned daemon PID 10532
+on port 60886; that daemon was subsequently terminated and a second proof found
+no owned processes or listeners, with the bearer token and private hub log
+removed. The fixture credentials file was verified empty and mode 0600, then removed. This remains a
+single warning-producer qualification and does not qualify the broader warning
+surface, reconnect/replay, native UI, devices, accessibility, or release
+acceptance.
