@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -75,11 +76,19 @@ func readAgentsDoc(path string) (appwire.AgentsDocResponse, error) {
 // have kept - then has no say in where the save goes or what it lands as,
 // and neither does the umask the hub happens to run under.
 func writeAgentsDoc(path, content string) error {
-	// EvalSymlinks fails on a file that is not there yet, leaving target at
-	// path: a first save creates the file where the config root says it is.
+	// Only a path with nothing at the end of it - no file yet, or a link whose
+	// target is gone - falls back to path itself, so a first save creates the
+	// file where the config root says it is and a broken link is replaced. A
+	// link that is there but unresolvable (a loop, a directory along the way the
+	// hub cannot search) is a real target the save cannot reach: renaming over
+	// it would sever the dotfiles link this writer follows in order to keep.
 	target := path
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	resolved, err := filepath.EvalSymlinks(path)
+	switch {
+	case err == nil:
 		target = resolved
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("AGENTS.md: resolve: %w", err)
 	}
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

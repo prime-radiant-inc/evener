@@ -443,6 +443,41 @@ func TestWriteAgentsDocDanglingSymlinkIsReplaced(t *testing.T) {
 	}
 }
 
+// A link that exists but cannot be resolved - a loop here, a permission error
+// on an intermediate directory in the field - is not a missing file, and
+// renaming over it would sever exactly the dotfiles link the symlink rule
+// exists to keep. The save refuses and leaves the link alone.
+func TestWriteAgentsDocRefusesAnUnresolvableSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
+	}
+	root := t.TempDir()
+	path := agentsDocPath(root)
+	other := path + ".other"
+	if err := os.Symlink(other, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, other); err != nil {
+		t.Fatal(err)
+	}
+
+	err := writeAgentsDoc(path, "new")
+	if err == nil {
+		t.Fatal("expected the save to fail on a symlink it cannot resolve")
+	}
+	if !strings.Contains(err.Error(), "AGENTS.md: resolve:") {
+		t.Fatalf("err = %v, want the failure to come from the resolve step", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("the link did not survive the refused save: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("mode = %v, want the symlink itself left as it was", info.Mode())
+	}
+	requireNoAgentsDocTempFiles(t, root)
+}
+
 func receiveAgentsDocChanged(t *testing.T, client *appwire.Client) appwire.AgentsDocResponse {
 	t.Helper()
 	select {
