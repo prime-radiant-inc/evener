@@ -2,8 +2,8 @@
 
 **Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
 
-A shared Expo / React Native client whose current release scope is iOS-only v1
-(iPhone and iPad). Android sources, build instructions and historical evidence
+A shared Expo / React Native client whose current release scope is iPhone v1.
+iPad work is paused. Android sources, build instructions and historical evidence
 are retained for later delivery and are explicitly deferred. It uses the shared
 AppWire client and selected services/state modules. The native UI is in this
 directory; the old Tauri UI is not loaded or used as feature authority. Current
