@@ -82,13 +82,13 @@ export function MobileSection() {
     <section aria-labelledby="mobile-app-pairing-heading">
       <h2 id="mobile-app-pairing-heading">Mobile app</h2>
       <p>Scan this code from the Evener mobile app to pair another device.</p>
-      <div role="img" aria-label="Mobile app pairing QR code">
-        <QRChunkBoundary>
-          <Suspense fallback={<Skeleton lines={1} />}>
+      <QRChunkBoundary>
+        <Suspense fallback={<Skeleton lines={1} />}>
+          <div role="img" aria-label="Mobile app pairing QR code">
             <QRCodeSVG value={state.authURL} includeMargin level="M" />
-          </Suspense>
-        </QRChunkBoundary>
-      </div>
+          </div>
+        </Suspense>
+      </QRChunkBoundary>
       <Button size="sm" variant="secondary" onClick={() => void copyText(state.authURL)}>
         Copy pairing link
       </Button>
