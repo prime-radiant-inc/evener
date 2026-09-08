@@ -203,6 +203,14 @@ var delegateQuietWatchHubs = struct {
 	hubs: make(map[*Session]*delegateQuietWatchHub),
 }
 
+// delegateQuietWatchTickDone observes one hub tick's completed lease work. It is
+// nil in production; tests set it to await tick completion deterministically
+// instead of polling. It fires after runDelegateQuietWatchdogTick returns, so
+// the tick's durable write is already visible to the observer; coalesced and
+// detached ticks do no work and never fire it. Observers must not block: the
+// call runs on the tick's worker goroutine.
+var delegateQuietWatchTickDone func(lease delegateLease)
+
 // delegateQuietWatchHubForSession returns the live hub for s, creating it on
 // first use. The ticker is created outside the registry lock so arming one
 // session's hub never blocks another session's attach/detach; a lost creation
@@ -233,7 +241,10 @@ func delegateQuietWatchHubForSession(s *Session) *delegateQuietWatchHub {
 }
 
 // delegateQuietWatchNext arms (or reuses) the shared hub for s and registers
-// lease on it. The returned CancelFunc detaches exactly this registration:
+// lease on it. Registration is atomic with the hub lookup under the registry
+// lock, so the entry always lands on the hub the registry points at and can
+// never strand on a stopped, unregistered hub.
+// The returned CancelFunc detaches exactly this registration:
 // the hub's single ticker keeps serving the remaining leases, and the hub
 // goroutine exits (stopping the shared ticker) only when the last
 // registration leaves, so no ticker leaks after a lease ends. Cancellation
@@ -245,28 +256,60 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 		ctx = context.Background()
 	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{})}
-	hub := delegateQuietWatchHubForSession(s)
+	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{}), busy: new(uint32)}
+	// Lookup-plus-insert is atomic under the registry lock: a lookup that ran
+	// before detach's delete would otherwise strand this entry on a stopped,
+	// unregistered hub that never ticks again. Lock order stays registry -> hub
+	// mu here and in detach, never the reverse.
+	delegateQuietWatchHubs.Lock()
+	hub := delegateQuietWatchHubs.hubs[s]
+	if hub == nil {
+		delegateQuietWatchHubs.Unlock()
+		ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
+		hub = &delegateQuietWatchHub{
+			ticker:  ticker,
+			done:    make(chan struct{}),
+			entries: make(map[delegateQuietWatchEntry]struct{}),
+		}
+		delegateQuietWatchHubs.Lock()
+		if existing := delegateQuietWatchHubs.hubs[s]; existing != nil {
+			delegateQuietWatchHubs.Unlock()
+			ticker.Stop()
+			hub = existing
+		} else {
+			delegateQuietWatchHubs.hubs[s] = hub
+			delegateQuietWatchHubs.Unlock()
+			go s.serveDelegateQuietWatchHub(hub)
+			delegateQuietWatchHubs.Lock()
+		}
+	}
 	hub.mu.Lock()
-	entry.busy = new(uint32)
 	hub.entries[entry] = struct{}{}
 	hub.mu.Unlock()
+	delegateQuietWatchHubs.Unlock()
 	var detachOnce sync.Once
 	stopped := make(chan struct{})
 	detach := func() {
 		detachOnce.Do(func() {
+			// The registry entry is removed only while it still points at this
+			// hub: detaching an entry must never delete a successor hub a later
+			// attach registered for the same session.
 			delegateQuietWatchHubs.Lock()
 			hub.mu.Lock()
 			delete(hub.entries, entry)
 			empty := len(hub.entries) == 0
-			if empty {
+			unregistered := empty && delegateQuietWatchHubs.hubs[s] == hub
+			if unregistered {
 				delete(delegateQuietWatchHubs.hubs, s)
 			}
 			hub.mu.Unlock()
 			delegateQuietWatchHubs.Unlock()
 			close(entry.stop)
 			close(stopped)
-			if empty {
+			// Stop-once rides on close.Do (not on empty): two detaches can both
+			// observe an empty hub while a concurrent attach is in flight, and a
+			// plain empty check would stop the ticker out from under it.
+			if unregistered {
 				hub.close.Do(func() {
 					close(hub.done)
 					hub.ticker.Stop()
@@ -321,6 +364,9 @@ func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 					default:
 					}
 					_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
+					if done := delegateQuietWatchTickDone; done != nil {
+						done(entry.lease)
+					}
 				}(entry)
 			}
 		case <-hub.done:
