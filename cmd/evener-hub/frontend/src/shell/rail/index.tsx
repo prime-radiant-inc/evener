@@ -39,7 +39,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY } from "./RailResizeHandle";
 import { noteRailWrapperMounted, noteRailWrapperUnmounted } from "./railController";
-import { loadRailHost } from "./railHostChunk";
+import { isStaleRailHostChunkError, loadRailHost } from "./railHostChunk";
 
 interface RailChunkBoundaryProps {
   // Swaps in a fresh lazy component to load the chunk again. The boundary
@@ -69,6 +69,12 @@ class RailChunkBoundary extends Component<RailChunkBoundaryProps, RailChunkBound
   state: RailChunkBoundaryState = { failure: null };
 
   static getDerivedStateFromError(error: unknown): RailChunkBoundaryState {
+    // A logic bug inside the resolved chunk (module init, render) surfaces
+    // through this same boundary as a chunk-fetch failure does. Only a stale
+    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
+    // anything else keeps unwinding to the next boundary above instead of
+    // being misreported - and retried - as a network fetch.
+    if (!isStaleRailHostChunkError(error)) throw error;
     return { failure: error instanceof Error ? error.message : String(error) };
   }
 
@@ -115,7 +121,11 @@ function RailFailureShell({
             <Button size="sm" onClick={retry}>
               Retry
             </Button>
-            {reloadAvailable && (
+            {/* reloadAvailable alone counts retries, so a logic bug that rode
+                in on a stale chunk URL would earn a page reload that cannot
+                fix it. The failed retry must itself name a stale hashed
+                asset (the DockRegion chunk-boundary pattern). */}
+            {reloadAvailable && isStaleRailHostChunkError(failure) && (
               <>
                 {" "}
                 <Button size="sm" variant="quiet" onClick={() => window.location.reload()}>

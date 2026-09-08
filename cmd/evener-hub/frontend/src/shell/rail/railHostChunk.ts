@@ -66,6 +66,15 @@ function railHostStylesheetURL(candidate: string): string | null {
   }
 }
 
+function railHostStylesheetURLFromError(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  for (const candidate of message.match(URL_IN_ERROR) ?? []) {
+    const url = railHostStylesheetURL(candidate);
+    if (url !== null) return url;
+  }
+  return null;
+}
+
 function linkPath(href: string): string {
   try {
     return new URL(href, window.location.href).pathname;
@@ -178,6 +187,10 @@ export function resetRailHostLoaderForTests(): void {
 function rememberError(error: unknown): never {
   rememberRailHostURL(error);
   throw error;
+}
+
+export function isStaleRailHostChunkError(error: unknown): boolean {
+  return railHostURLFromError(error) !== null || railHostStylesheetURLFromError(error) !== null;
 }
 
 export function loadRailHost(cacheBust = false): Promise<RailHostModule> {

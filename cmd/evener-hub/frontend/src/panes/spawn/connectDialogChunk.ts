@@ -67,6 +67,15 @@ function connectDialogStylesheetURL(candidate: string): string | null {
   }
 }
 
+function connectDialogStylesheetURLFromError(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  for (const candidate of message.match(URL_IN_ERROR) ?? []) {
+    const url = connectDialogStylesheetURL(candidate);
+    if (url !== null) return url;
+  }
+  return null;
+}
+
 function linkPath(href: string): string {
   try {
     return new URL(href, window.location.href).pathname;
@@ -179,6 +188,10 @@ export function resetConnectDialogLoaderForTests(): void {
 function rememberError(error: unknown): never {
   rememberConnectDialogURL(error);
   throw error;
+}
+
+export function isStaleConnectDialogChunkError(error: unknown): boolean {
+  return connectDialogURLFromError(error) !== null || connectDialogStylesheetURLFromError(error) !== null;
 }
 
 export function loadConnectDialog(cacheBust = false): Promise<ConnectDialogModule> {

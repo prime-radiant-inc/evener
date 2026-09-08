@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import {
   type ConnectDialogImporter,
   type ConnectDialogModule,
+  isStaleConnectDialogChunkError,
   loadConnectDialog,
   resetConnectDialogLoaderForTests,
   setConnectDialogImporterForTests,
@@ -129,4 +130,24 @@ test("a retry CSS error prevents cache-busted ConnectProviderDialog JS evaluatio
 
   await expect(retry).rejects.toThrow("Unable to preload ConnectDialog CSS");
   expect(evaluations).toBe(0);
+});
+
+test("a stale ConnectProviderDialog JS chunk error reads as a chunk-load failure", () => {
+  expect(
+    isStaleConnectDialogChunkError(
+      new Error("Failed to fetch dynamically imported module: /webassets/ConnectProviderDialog-a1b2c3.js"),
+    ),
+  ).toBe(true);
+});
+
+test("a stale ConnectProviderDialog stylesheet error reads as a chunk-load failure", () => {
+  expect(
+    isStaleConnectDialogChunkError(
+      new Error("Failed to fetch dynamically imported module: /webassets/ConnectProviderDialog-d4e5f6.css"),
+    ),
+  ).toBe(true);
+});
+
+test("a logic bug inside the resolved dialog is not a chunk-load failure", () => {
+  expect(isStaleConnectDialogChunkError(new Error("ConnectProviderDialog module initialization failed"))).toBe(false);
 });

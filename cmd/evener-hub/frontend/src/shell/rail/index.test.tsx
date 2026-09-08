@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Component, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { RailHost, resetRailChunkForTests } from "./index";
 import * as railHostChunk from "./railHostChunk";
@@ -150,4 +151,54 @@ test("a retry that fails again offers a page reload instead of stranding the sid
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadRailHost).mock.calls).toEqual([[false], [true]]);
+});
+
+test("an ordinary retry failure does not prescribe a page reload", async () => {
+  // A chunk fetch that fails WITHOUT naming a stale hashed asset (a 500
+  // page's HTML where the chunk bytes should be, a proxy error page) is not
+  // a chunk-load failure: the rail boundary declines it, so it lands on the
+  // next boundary above - never the rail failure state, and so never the
+  // Retry/Reload pair that could misreport it as a stale deploy.
+  vi.mocked(loadRailHost).mockRejectedValue(new Error("RailHost chunk request failed with status 500"));
+
+  render(
+    <RailTestOuterBoundary>
+      <RailHost />
+    </RailTestOuterBoundary>,
+  );
+
+  expect(await screen.findByText("outer boundary caught: RailHost chunk request failed with status 500")).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+});
+
+// A logic bug thrown by the RESOLVED chunk's own render is not a chunk-load
+// failure: the rail boundary must let it keep unwinding to the next boundary
+// above instead of misreporting it as a failed fetch with a Retry.
+class RailTestOuterBoundary extends Component<{ children: ReactNode }, { failure: string | null }> {
+  state = { failure: null as string | null };
+  static getDerivedStateFromError(error: unknown) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+  render(): ReactNode {
+    if (this.state.failure !== null) return <p>outer boundary caught: {this.state.failure}</p>;
+    return this.props.children;
+  }
+}
+
+test("a logic bug in the resolved chunk keeps unwinding past the rail boundary", async () => {
+  vi.mocked(loadRailHost).mockResolvedValue({
+    RailHost: () => {
+      throw new Error("RailHost render logic bug");
+    },
+  });
+
+  render(
+    <RailTestOuterBoundary>
+      <RailHost />
+    </RailTestOuterBoundary>,
+  );
+
+  expect(await screen.findByText("outer boundary caught: RailHost render logic bug")).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the sidebar")).toBeNull();
 });

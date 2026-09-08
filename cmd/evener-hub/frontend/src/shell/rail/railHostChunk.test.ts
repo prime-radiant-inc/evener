@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import {
+  isStaleRailHostChunkError,
   loadRailHost,
   type RailHostImporter,
   type RailHostModule,
@@ -127,4 +128,20 @@ test("a retry CSS error prevents cache-busted RailHost JS evaluation", async () 
 
   await expect(retry).rejects.toThrow("Unable to preload RailHost CSS");
   expect(evaluations).toBe(0);
+});
+
+test("a stale RailHost JS chunk error reads as a chunk-load failure", () => {
+  expect(
+    isStaleRailHostChunkError(new Error("Failed to fetch dynamically imported module: /webassets/RailHost-a1b2c3.js")),
+  ).toBe(true);
+});
+
+test("a stale RailHost stylesheet error reads as a chunk-load failure", () => {
+  expect(
+    isStaleRailHostChunkError(new Error("Failed to fetch dynamically imported module: /webassets/RailHost-d4e5f6.css")),
+  ).toBe(true);
+});
+
+test("a logic bug inside the resolved chunk is not a chunk-load failure", () => {
+  expect(isStaleRailHostChunkError(new Error("RailHost module initialization failed"))).toBe(false);
 });

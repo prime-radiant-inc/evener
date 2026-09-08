@@ -62,7 +62,7 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { loadConnectDialog } from "./connectDialogChunk";
+import { isStaleConnectDialogChunkError, loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -139,6 +139,12 @@ class ConnectProviderDialogBoundary extends Component<
   state: ConnectProviderDialogBoundaryState = { failure: null };
 
   static getDerivedStateFromError(error: unknown): ConnectProviderDialogBoundaryState {
+    // A logic bug inside the resolved dialog (module init, render) surfaces
+    // through this same boundary as a chunk-fetch failure does. Only a stale
+    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
+    // anything else keeps unwinding to the next boundary above instead of
+    // being misreported - and retried - as a network fetch.
+    if (!isStaleConnectDialogChunkError(error)) throw error;
     return { failure: error instanceof Error ? error.message : String(error) };
   }
 
@@ -162,7 +168,11 @@ class ConnectProviderDialogBoundary extends Component<
             <Button variant="primary" onClick={this.retry}>
               Retry
             </Button>
-            {this.props.reloadAvailable && (
+            {/* reloadAvailable alone counts retries, so a logic bug that rode
+                in on a stale chunk URL would earn a page reload that cannot
+                fix it. The failed retry must itself name a stale hashed
+                asset (the DockRegion chunk-boundary pattern). */}
+            {this.props.reloadAvailable && isStaleConnectDialogChunkError(this.state.failure) && (
               <Button variant="quiet" onClick={() => window.location.reload()}>
                 Reload page
               </Button>

@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Component, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { ClientProvider } from "../../shell/clientContext";
@@ -209,4 +210,69 @@ test("a retry that fails again offers a page reload instead of stranding the pro
 
   expect(reload).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
+});
+
+test("an ordinary retry failure does not prescribe a page reload", async () => {
+  // A chunk fetch that fails WITHOUT naming a stale hashed asset (a 500
+  // page's HTML where the chunk bytes should be) is not a chunk-load
+  // failure: the dialog boundary declines it, so it lands on the next
+  // boundary above - never the dialog failure state, and so never the
+  // Retry/Reload pair that could misreport it as a stale deploy.
+  vi.mocked(loadConnectDialog).mockRejectedValue(new Error("ConnectProviderDialog chunk request failed with 500"));
+  const client = missingCredentialsClient();
+  connectionStore.getState().connect(client);
+  const user = userEvent.setup();
+  render(
+    <ClientProvider client={client}>
+      <DialogTestOuterBoundary>
+        <Spawn params={{}} paneId="spawn-1" focused={true} />
+      </DialogTestOuterBoundary>
+      <Toast />
+    </ClientProvider>,
+  );
+
+  await openConnectDialog(user);
+
+  expect(
+    await screen.findByText("outer boundary caught: ConnectProviderDialog chunk request failed with 500"),
+  ).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
+});
+
+// A logic bug thrown by the RESOLVED dialog's own render is not a chunk-load
+// failure: the dialog boundary must let it keep unwinding to the next
+// boundary above instead of misreporting it as a failed fetch with a Retry.
+class DialogTestOuterBoundary extends Component<{ children: ReactNode }, { failure: string | null }> {
+  state = { failure: null as string | null };
+  static getDerivedStateFromError(error: unknown) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+  render(): ReactNode {
+    if (this.state.failure !== null) return <p>outer boundary caught: {this.state.failure}</p>;
+    return this.props.children;
+  }
+}
+
+test("a logic bug in the resolved dialog keeps unwinding past the dialog boundary", async () => {
+  function BuggyDialog() {
+    throw new Error("ConnectProviderDialog render logic bug");
+  }
+  vi.mocked(loadConnectDialog).mockResolvedValue({ ConnectProviderDialog: BuggyDialog } as never);
+  const user = userEvent.setup();
+  const client = missingCredentialsClient();
+  connectionStore.getState().connect(client);
+  render(
+    <ClientProvider client={client}>
+      <DialogTestOuterBoundary>
+        <Spawn params={{}} paneId="spawn-1" focused={true} />
+      </DialogTestOuterBoundary>
+      <Toast />
+    </ClientProvider>,
+  );
+
+  await openConnectDialog(user);
+
+  expect(await screen.findByText("outer boundary caught: ConnectProviderDialog render logic bug")).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
 });
