@@ -10,6 +10,8 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -18,6 +20,33 @@ import (
 func agentsDocPath(configRoot string) string {
 	return filepath.Join(configRoot, agent.UserDocFile)
 }
+
+// hubAgentsDocPath is the personal AGENTS.md this hub edits and hands to the
+// sessions it spawns, or "" when there is none to point at. The root has to be
+// absolute: a relative one - what cmdutil.DefaultConfigRoot() substitutes when
+// neither XDG_CONFIG_HOME nor a home directory resolves - would resolve against
+// whatever directory the process happens to sit in, and a repository's own
+// .config/evener/AGENTS.md must never become the user's standing instructions.
+// An empty result means "no personal doc": the spawn and resume builders then
+// omit --agents-doc and the settings handlers refuse, which is the rule
+// agent.personalDocPath already applies on the daemon side.
+func hubAgentsDocPath(cfg hubcore.WebConfig) string {
+	root := cfg.LaunchConfigRoot
+	if root == "" {
+		// userdirs, not cmdutil: this one reports an unresolvable root as
+		// empty instead of substituting a relative path.
+		root = userdirs.DefaultConfigRoot()
+	}
+	if root == "" || !filepath.IsAbs(root) {
+		return ""
+	}
+	return agentsDocPath(root)
+}
+
+// errNoAgentsDocPath is what the settings handlers answer when no user config
+// root resolves. Reading or writing a relative AGENTS.md instead would put the
+// process working directory in charge of the user's personal instructions.
+var errNoAgentsDocPath = errors.New("personal AGENTS.md is unavailable: no user config root could be resolved")
 
 // readAgentsDoc reports the file as it is on disk. A missing file is the
 // empty document, not an error: the settings section shows an empty editor
@@ -98,18 +127,24 @@ func writeTempAgentsDoc(tmp *os.File, content string) (err error) {
 // one unit: two clients saving at once could otherwise rename in one order
 // and broadcast in the other, leaving every client on content the file does
 // not hold. There is no revision check by design (spec 2026-09-07 §1) - the
-// last write wins, and every client hears about it.
-func registerAgentsDocHandlers(server *appserver.Server, configRoot string) {
-	path := agentsDocPath(configRoot)
+// last write wins, and every client hears about it. An empty path is a hub
+// with no user config root to edit under, and both methods refuse.
+func registerAgentsDocHandlers(server *appserver.Server, path string) {
 	var mu sync.Mutex
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsAgentsDocGet,
 		func(context.Context, appwire.EmptyParams) (appwire.AgentsDocResponse, error) {
+			if path == "" {
+				return appwire.AgentsDocResponse{}, errNoAgentsDocPath
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			return readAgentsDoc(path)
 		})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsAgentsDocSet,
 		func(_ context.Context, params appwire.AgentsDocSetParams) (appwire.AgentsDocResponse, error) {
+			if path == "" {
+				return appwire.AgentsDocResponse{}, errNoAgentsDocPath
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err := writeAgentsDoc(path, params.Content); err != nil {

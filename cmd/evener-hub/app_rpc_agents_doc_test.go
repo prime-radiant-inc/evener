@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -496,5 +497,84 @@ func TestThreadStartHandsSpawnedSessionsThePathSettingsEdits(t *testing.T) {
 	args := buildSpawnArgs(spawns[0])
 	if !slicesContainOrderedFlag(args, "--agents-doc", settings.Path) {
 		t.Fatalf("spawn args = %v, want --agents-doc %q", args, settings.Path)
+	}
+}
+
+// The hub's own path derivation has to be as strict as the daemon's
+// (agent.personalDocPath): a root that resolves to nothing, or to a relative
+// directory, yields no path at all.
+func TestHubAgentsDocPath_RefusesARelativeOrUnresolvableRoot(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	if got := hubAgentsDocPath(hubcore.WebConfig{}); got != "" {
+		t.Fatalf("hubAgentsDocPath = %q, want no path when no user config root resolves", got)
+	}
+	relative := filepath.Join(".", ".config", "evener")
+	if got := hubAgentsDocPath(hubcore.WebConfig{LaunchConfigRoot: relative}); got != "" {
+		t.Fatalf("hubAgentsDocPath = %q, want no path for the relative root %q", got, relative)
+	}
+	root := t.TempDir()
+	want := filepath.Join(root, "AGENTS.md")
+	if got := hubAgentsDocPath(hubcore.WebConfig{LaunchConfigRoot: root}); got != want {
+		t.Fatalf("hubAgentsDocPath = %q, want %q", got, want)
+	}
+}
+
+// Without a path there is no file to serve, and the handlers must say so
+// rather than fall back to a repository-relative AGENTS.md.
+func TestHubRPCAgentsDocRefusesWithoutAConfigRoot(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{HubStateRoot: t.TempDir(), PluginRoot: t.TempDir()})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var got appwire.AgentsDocResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{}, &got)
+	if err == nil || !strings.Contains(err.Error(), "no user config root") {
+		t.Fatalf("get error = %v, want one naming the unresolved user config root", err)
+	}
+	err = client.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: "# mine\n"}, &got)
+	if err == nil || !strings.Contains(err.Error(), "no user config root") {
+		t.Fatalf("set error = %v, want one naming the unresolved user config root", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".config", "evener", "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("stat of a working-directory AGENTS.md = %v, want it never created", err)
+	}
+}
+
+// A spawn with nothing to point at hands the child no --agents-doc rather
+// than a relative one; the daemon then resolves (or refuses) on its own.
+func TestThreadStartOmitsTheAgentsDocFlagWithoutAConfigRoot(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	spawner := &recordingSpawner{}
+	cfg := hubcore.WebConfig{PluginRoot: t.TempDir(), Spawner: spawner}
+
+	if _, err := hubThreadStart(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:   t.TempDir(),
+		Model: "openai/gpt-5",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	spawns := spawner.Spawns()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(spawns))
+	}
+	if spawns[0].AgentsDocPath != "" {
+		t.Fatalf("spawn AgentsDocPath = %q, want none when no user config root resolves", spawns[0].AgentsDocPath)
+	}
+	if args := buildSpawnArgs(spawns[0]); slices.Contains(args, "--agents-doc") {
+		t.Fatalf("spawn args = %v, want no --agents-doc", args)
 	}
 }
