@@ -27,7 +27,9 @@ SDK and gate summary, and the [remaining-work checklist](ios-v1-remaining.md)
 for execution order. Dated checkpoints below retain their original scope and
 counts; later identified evidence supersedes their outstanding-work statements.
 
-Native source `7944778e0` passes 685 tests in 74 files plus TypeScript and has
+The [parallel execution checkpoint](2026-09-08-iphone-execution-checkpoint.md) records `bc519b1c1`: existing-session vision controls, 692 native tests plus TypeScript, host-executed real-hub controller/readback checks, and an identified iPhone simulator install preserving every original draft table. Native vision interaction and the integrated Usable journey remain open; physical installation awaits device unlock.
+
+Earlier native source `7944778e0` passes 685 tests in 74 files plus TypeScript and has
 [repeated largest-text iPhone cold-restoration evidence](iphone-reader-upgrade-evidence.md).
 [Scoped iPad hub removal](ipad-reader-removal-evidence.md) preserves the other
 hub's exact anchor; the same current native artifact has [iPad startup, keyboard

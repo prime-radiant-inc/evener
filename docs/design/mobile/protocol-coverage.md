@@ -8,7 +8,7 @@ This inventory is generated from the authoritative `appwire.Methods` and `appwir
 
 ## Counts and interpretation
 
-The [audited notification receipts](sdk-notifications-evidence.md#queue-and-thread-close-producer-evidence) cover 27 distinct names with scoped producer/readback evidence across dated artifacts. This is separate from cookbook presence and complete outcome qualification.
+The [audited notification receipts](sdk-notifications-evidence.md#queue-and-thread-close-producer-evidence) cover 28 distinct names with scoped producer/readback evidence across dated artifacts. This is separate from cookbook presence and complete outcome qualification.
 
 The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **90 distinct methods** across **34 recipes** and explicitly handles all **36 notification names** in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
 

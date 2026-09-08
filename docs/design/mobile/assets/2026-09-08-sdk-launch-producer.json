@@ -1,0 +1,47 @@
+{
+  "schema": "evener.sdk.launch-producer.receipt.v1",
+  "status": "scoped-passed",
+  "date": "2026-09-08",
+  "scope": {
+    "qualified": ["evener/launch/updated"],
+    "excluded": {
+      "name": "thread/started",
+      "reason": "thread/start response was captured, but zero thread/started notifications appeared in the installed-SDK event capture"
+    },
+    "globalNotificationUnion": false
+  },
+  "fixture": {
+    "root": "/tmp/evener-task18-producers-TvgjbY",
+    "sessionRef": "local:034LOvY33d9w7kSdqY80JU",
+    "threadId": "034LOvY33d9w7kSdqY80JU",
+    "launchCwd": "/private/tmp/evener-task18-producers-TvgjbY/workspace",
+    "capture": {
+      "path": "/tmp/evener-task18-producers-TvgjbY/producer-evidence.json",
+      "sha256": "6c53c9c8a6c15447f57f483cdcf050497cb6431a042a97ed8cd79763110ce5d"
+    }
+  },
+  "observation": {
+    "eventName": "evener/launch/updated",
+    "eventCount": 2,
+    "filter": {"cwd": "/private/tmp/evener-task18-producers-TvgjbY/workspace", "layer": "project"},
+    "readback": {"method": "evener/launch/getLayer", "maxRounds": 7},
+    "restoredOriginalLayer": true
+  },
+  "artifacts": {
+    "backend": {
+      "path": "/tmp/evener-task18-producers-TvgjbY/bin/evener",
+      "sha256": "81603ee6330ba64b4646e3d24d06b1a705688266c6c003d8babb377dd763fa46",
+      "goVersion": "go1.27.0",
+      "moduleVersion": "v0.1.1-0.20260908104445-3284d6ac54e3+dirty"
+    },
+    "sdk": {
+      "package": "@evener/appwire-client",
+      "tarball": "/tmp/evener-notifications-pack.BJYrWl/evener-appwire-client-0.1.0.tgz",
+      "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+      "sourceCommit": "58d1b079f",
+      "installedPath": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+      "installedPathIsSymlink": false
+    }
+  },
+  "limitation": "The fixture provider exited before a successful model turn; this receipt does not claim successful-turn, whole-SDK, or native acceptance."
+}

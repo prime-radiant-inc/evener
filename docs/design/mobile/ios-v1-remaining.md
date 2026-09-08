@@ -6,13 +6,15 @@ This checklist follows Jesse's selected iOS-only v1 scope. **Current order: a us
 
 The [detailed Usable → Useful → Good implementation plan](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md) is the current execution authority. It defines 18 bounded tasks, dependencies, file ownership, focused tests, native journeys and parallel SDK work. This page remains the scope/remaining-work summary.
 
+The [parallel execution checkpoint](2026-09-08-iphone-execution-checkpoint.md) records the installed vision-control build, 692 native tests, real controller/SDK readback and preserved drafts. The integrated native journey and physical-device checks remain open.
+
 ## iPhone functionality milestone
 
 Complete every currently supported native workflow against real Evener behavior:
 
 1. Reading and composition: long/paged/live transcripts, authenticated images and attachments, copy/open/return, send/steer/queue/stop and durable drafts.
 2. Lifecycle and hubs: reconnect, background/cold launch, overlapping operations, credential changes and isolation between hubs, with no duplicate sends or lost drafts after uncertain replies.
-3. Creation and management: project/harness/model/vision/reasoning choices, launch options and trust, valid/invalid creation, rename/clear/compact/fork/delete, search/archive/favorites/pins and return navigation. Verify remaining vision-selection wiring against current contracts before implementation.
+3. Creation and management: project/harness/model/vision/reasoning choices, launch options and trust, valid/invalid creation, rename/clear/compact/fork/delete, search/archive/favorites/pins and return navigation. Existing-session vision selection is implemented in `bc519b1c1`; its on-device workflow remains open.
 4. Running work and decisions: goals/tasks/delegates and paged output, real approvals/questions, simultaneous updates and stale or interrupted decisions. Existing successful journeys do not need to be rediscovered; focus on outstanding cases and regressions.
 5. Administration: provider instances/sign-in/credential edits, plugin and marketplace lifecycle, inherited settings and stale-editor conflicts, preferences and hub upgrade/recovery.
 6. For every area, exercise supported actions on an identified iPhone build, retain authoritative backend results, and fix reproduced defects. SDK behavior used by these workflows must work; exhaustive standalone SDK qualification remains a separate project deliverable.
@@ -44,8 +46,8 @@ The retained detail below includes paused iPad/accessibility gaps. Only the func
 
 - The source audit finds the listed goal/task/activity, plugin/marketplace and hub-setting operations wired. Their remaining work is current-artifact workflow qualification, including nested delegate/output paging, marketplace lifecycle and two-hub settings conflicts. Native output line selection is implemented; its on-device behavior still needs verification. Recheck any newly discovered advertised-operation gap against current generated contracts.
 - The SDK cookbook has 90 of 91 catalog methods. Method 91 is the reserved, intentionally unsupported method; it is not an omitted supported feature. The cookbook count is recipe presence, not complete method outcome acceptance, and local package publication is separate.
-- SDK notification producer coverage is tracked separately: the audited receipt union covers 27 of 36 distinct notification names, including settings, credentials, navigation, queue change and current-source terminal close. The remaining nine names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
-- No whole-SDK readiness conclusion follows from the 90/91 recipe and 27/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
+- SDK notification producer coverage is tracked separately: the audited receipt union covers 28 of 36 distinct notification names, including settings, credentials, navigation, queue change, current-source terminal close and launch-layer updates. The remaining eight names need consolidated producer evidence or fresh qualification. Do not convert this into a claim that all 36 notifications, reconnect behavior or lifecycle outcomes are qualified. See [SDK notification evidence](sdk-notifications-evidence.md) and [SDK management evidence](sdk-management-evidence.md).
+- No whole-SDK readiness conclusion follows from the 90/91 recipe and 28/36 scoped producer counts. Complete the catalog-derived success/failure/disconnect matrix for supported methods and notifications, using independently installed packages and real producers where required.
 
 ## Paused work and later release qualification
 

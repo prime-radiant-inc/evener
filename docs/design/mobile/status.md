@@ -37,6 +37,8 @@ The audit found the advertised goal/task/activity, plugin and settings operation
 
 ## Latest verified changes
 
+**Parallel execution checkpoint:** `bc519b1c1` adds existing-session vision controls, capability-aware catalog choices, identity-scoped updates and controller-owned recovery without replay. The coordinator verified 692 native tests plus TypeScript, 494 shared tests, shared lint/typechecking and the Release simulator build. The installed iPhone app restored the original draft; all seven draft tables and the unrelated Apple edits were preserved. Actual native controller code passed host-executed real-hub/SDK checks. The new sheet's native interaction and the integrated Usable journey remain open. See the [execution checkpoint](2026-09-08-iphone-execution-checkpoint.md) and [receipt](assets/2026-09-08-iphone-execution.json).
+
 **Reader restoration:** `7944778e0` fixes the reproduced largest-text cold-launch failure. Restoration advances as virtualized rows become measurable and resets its bounded failure budget only when measurement progresses. An installed launch and two independent iPhone cold launches restored the complete saved turn-12 anchor at the exact observed endpoint. Earlier offset-only and partial retry candidates did not pass repeated launch and are excluded from the fix claim. See [iPhone evidence](iphone-reader-upgrade-evidence.md).
 
 **Hub-scoped cleanup:** the [iPad removal journey](ipad-reader-removal-evidence.md) removed one hub through the UI, confirmed its anchor was gone after cold launch, and preserved the other hub's complete anchor. The later iPhone cleanup preserved all seven original draft tables and the six other reader entries. These are scoped journeys with distinct artifact identities.
@@ -49,34 +51,35 @@ The audit found the advertised goal/task/activity, plugin and settings operation
 
 | Artifact | Identity and scope |
 | --- | --- |
-| Native Release simulator app | Native source `7944778e0`; installed on iPhone 17 Pro and iPad Pro 11-inch (M5), both iOS 26.5 |
-| Native JavaScript bundle | SHA-256 `af754632eef5f34e9b231e3cd9c30282d5aeb038003479e921993c42629d7c48` |
-| Native executable | SHA-256 `964c2bb36433c222362ad6ebc923229b441d613d9475abd8abe92e2930a8ab95` |
+| iPhone Release simulator app | Source `bc519b1c1`; installed and launched on iPhone 17 Pro, iOS 26.5; vision UI acceptance pending |
+| iPhone JavaScript bundle | SHA-256 `934a2359e3ab1dd4a7cd54bdb584a28c9212c99d12cbe4a3dbdceb49a9e3b9c1` |
+| iPhone executable | SHA-256 `b0266f0654924c04e4f4473beb390a395ed64ab745a027c419ca040a081fda5c` |
+| Paused iPad Release app | Source `7944778e0`, iPad Pro 11-inch (M5), iOS 26.5; unchanged historical artifact |
 | Packaged SDK used by producer fixtures | Source `58d1b079f`; package `@evener/appwire-client@0.1.0`; tarball SHA-256 `2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731`; all 139 regular tarball files matched the separate installed consumer |
 | Latest closed-event backend | Source `3284d6ac5`; executable hashes and exact target/readback/event evidence in the [receipt](assets/sdk-queue-close-receipt.json). This is separate from the native app identity |
 
 On iPhone, the reader result is qualified at largest text; code and link copying have earlier-artifact evidence. On the current iPad artifact, clean/cold launch, empty Hubs, keyboard reveal/dismiss and largest-text form reachability have [scoped evidence](ipad-final-artifact-qualification.md). Current-artifact iPad landscape, reader restoration and VoiceOver remain unqualified. A sideways simulator capture did not establish a layout defect.
 
-The original iPhone conversation and normal text size were restored, original drafts remained equal, owned test profiles and diagnostic state were removed, and the owned reader/SDK fixtures were shut down. The two pre-existing generated Tauri Apple edits remain preserved and unstaged. Private raw captures, tokens and process metadata are not release assets; committed receipts contain scoped assertions and hashes.
+The prior reader campaign restored the original iPhone conversation and normal text size and removed its owned profiles/fixtures. The latest vision installation again preserved all seven original draft tables and the original profile/session. Current fixture ownership and device limitations are recorded in the [execution checkpoint](2026-09-08-iphone-execution-checkpoint.md). The two pre-existing generated Tauri Apple edits remain preserved and unstaged. Private raw captures, tokens and process metadata are not release assets; committed receipts contain scoped assertions and hashes.
 
 ## TypeScript SDK status
 
 The SDK has an independently installable package with ESM/CommonJS entry points and declaration checking. The cookbook covers 90 of 91 cataloged methods; the remaining method is reserved and intentionally unsupported. All 36 notification names have recipes. These are documentation-presence counts, separate from executed producer/outcome coverage.
 
-The audited receipt union establishes scoped producer/readback evidence for **27 of 36 notification names**. It combines the dedicated notification series with separately recorded settings, credential and navigation runs, counting each name once. Queue change and terminal close now have coordinator-verified scoped outcomes. The nine names outside this union need consolidated producer evidence or fresh qualification; no all-outcome or single-artifact claim follows from the count. Complete method success/failure/disconnect coverage, remaining producer names, continuous reconnect/replay and broad lifecycle outcomes remain open. Package publication is separate from successful local build/pack/install tests. See [protocol inventory](protocol-coverage.md), [notification evidence](sdk-notifications-evidence.md) and [management evidence](sdk-management-evidence.md).
+The audited receipt union establishes scoped producer/readback evidence for **28 of 36 notification names**. It combines the dedicated notification series with separately recorded settings, credential, navigation and launch-layer runs, counting each name once. Queue change, terminal close and the new launch-layer update have coordinator-verified scoped outcomes. The eight names outside this union need consolidated producer evidence or fresh qualification; `thread/started` remains excluded because a start response is not its notification. No all-outcome or single-artifact claim follows from the count. Complete method success/failure/disconnect coverage, remaining producer names, continuous reconnect/replay and broad lifecycle outcomes remain open. Package publication is separate from successful local build/pack/install tests. See [protocol inventory](protocol-coverage.md), [notification evidence](sdk-notifications-evidence.md) and [management evidence](sdk-management-evidence.md).
 
 ## Verification record
 
-The native suite passed **685 tests across 74 files plus TypeScript** for the reader source. Root's four focused shutdown regressions and scoped Go lint passed at `fe403ee3a`.
+The current native suite passed **692 tests across 74 files plus TypeScript** at `bc519b1c1`; shared checks and simulator build/install details are in the [execution receipt](assets/2026-09-08-iphone-execution.json). The reader source passed 685 tests. Root's four focused shutdown regressions and scoped Go lint passed at `fe403ee3a`.
 
-The current `make merge-approval-gate` and separate `make vet` both exited **0** on 8 September. The canonical run passed lint, build, all Go modules, frontend checks, 685 native tests plus TypeScript, and outside-checkout SDK package qualification. Compiled source is `fe403ee3a`; the invocation head was `a35a5cfac`, and subsequent changes were documentation only. The [durable verification receipt](assets/2026-09-08-status-verification.json) records command results, timestamps, log hashes and preservation of the unrelated Apple diff.
+The last `make merge-approval-gate` and separate `make vet` both exited **0** on 8 September at compiled source `fe403ee3a`. The canonical run passed lint, build, all Go modules, frontend checks, 685 native tests plus TypeScript, and outside-checkout SDK package qualification. The invocation head was `a35a5cfac`; the later vision change has scoped checks above, not a new canonical-gate claim. The [durable verification receipt](assets/2026-09-08-status-verification.json) records the earlier command results, timestamps, log hashes and preservation of the unrelated Apple diff.
 
 Browser geometry and race checks have separate ownership and were not repeated for this documentation update. Their earlier evidence remains dated in the acceptance ledger. The canonical gate does not establish physical-device behavior, accessibility, performance or release readiness.
 
 ## Remaining delivery order
 
 1. **Usable:** connect/install, create/open/read/send/stop, answer questions/approvals and return safely after ordinary interruption. Physical-iPhone development installation starts here.
-2. **Useful:** finish navigation/management, media and active-turn controls, goals/delegates, the missing existing-session vision choice, provider/plugin administration, launch/preferences and upgrade. Qualify the joined native workflow.
+2. **Useful:** finish navigation/management, media and active-turn controls, goals/delegates, native qualification of the implemented vision choice, provider/plugin administration, launch/preferences and upgrade. Qualify the joined native workflow.
 3. **Good:** measure representative-data performance, refine coherent interaction, stress recovery combinations and verify physical install/update and delivery readiness. Correctness defects that block earlier milestones are fixed immediately.
 4. **SDK:** run independent installed-package outcome/producer work alongside the app, giving priority to contracts needed by the active native workflow.
 
