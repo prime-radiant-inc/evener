@@ -1,0 +1,92 @@
+{
+  "status": "qualified",
+  "qualification": "packaged CLI against root-owned disposable hub",
+  "tarball": {
+    "path": "/tmp/evener-maintenance-pkg.9dq88v/evener-appwire-client-0.1.0.tgz",
+    "sha256": "89bfc7445f3fbfe1f6a053b7f5c76dffdbcb0f715cf4f2f2cbe3ce2e1eeab2be"
+  },
+  "sourceBinaries": {
+    "source": "ccdde59b9",
+    "buildMetadata": "ccdde59b9-dirty (2026-09-08T02:29:38Z)",
+    "binaries": {
+      "evener": {
+        "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+      },
+      "evener-dev": {
+        "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+      }
+    }
+  },
+  "fixture": {
+    "hubPort": 53045,
+    "providerPort": 53044,
+    "marketplacesBefore": {},
+    "marketplacesAfter": {},
+    "cleanup": {
+      "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-innbwf8y",
+      "ports": [
+        53045,
+        53044
+      ],
+      "listenersRemaining": [],
+      "ownedExecutablesRemaining": [],
+      "tokenRemoved": true,
+      "privateHubLogRemoved": true
+    }
+  },
+  "operations": {
+    "ping": {
+      "stdout": "qual-ping.stdout",
+      "privateMode": "0600",
+      "privateOutput": {
+        "path": "/tmp/evener-maintenance-qual.HXkNWi/qual-ping.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+      },
+      "summary": {
+        "action": "ping",
+        "outcome": "read",
+        "execution": "unverified",
+        "outputWritten": true
+      }
+    },
+    "auth/test": {
+      "stdout": "qual-auth.stdout",
+      "privateMode": "0600",
+      "privateOutput": {
+        "path": "/tmp/evener-maintenance-qual.HXkNWi/qual-auth.json",
+        "sha256": "9c60247686ec9ef2b3433e2bac7118026bb405e9c2fd9c939fab06379e5a1c4c"
+      },
+      "summary": {
+        "action": "auth/test",
+        "outcome": "read",
+        "execution": "unverified",
+        "outputWritten": true
+      }
+    },
+    "plugin/checkNow": {
+      "stdout": "qual-plugin.stdout",
+      "privateMode": "0600",
+      "privateOutput": {
+        "path": "/tmp/evener-maintenance-qual.HXkNWi/qual-plugin.json",
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+      },
+      "summary": {
+        "action": "plugin/checkNow",
+        "outcome": "acknowledged",
+        "execution": "unverified",
+        "updatedCount": 0,
+        "errorCount": 0,
+        "outputWritten": true
+      }
+    }
+  },
+  "limitations": [
+    "auth/test qualifies auth=none fake model-list boundary, not account authentication",
+    "plugin result is an empty check and does not claim install or upgrade"
+  ],
+  "reproductionHelper": {
+    "path": "/tmp/evener-maintenance-qual.HXkNWi/reproduce-maintenance.mjs",
+    "sha256": "1ba0e17ca17f14259074fad82460342d3e77617c0d33a7ebf70d3de95eaf42dd",
+    "scope": "Post-run helper; exact original CLI invocation script was not retained."
+  }
+}

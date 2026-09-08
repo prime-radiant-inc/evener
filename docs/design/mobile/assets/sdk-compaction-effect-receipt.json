@@ -1,0 +1,306 @@
+{
+  "source": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o",
+    "source": "ccdde59b9",
+    "binaries": {
+      "evener": {
+        "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+      },
+      "evener-dev": {
+        "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+      }
+    },
+    "buildMetadata": "ccdde59b9-dirty (2026-09-08T02:29:38Z)"
+  },
+  "runtime": {
+    "hubPID": 55717,
+    "providerPID": 55682,
+    "hubPort": 59294,
+    "providerPort": 59293
+  },
+  "ref": "local:034L1gFg7EGowwgumbLAYN",
+  "instanceId": "034L1gFg7EGowwgumbLAYN",
+  "preCompact": {
+    "persistedEntries": 17,
+    "kinds": [
+      "header",
+      "ENVIRONMENT",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS"
+    ],
+    "completedTurns": 5,
+    "providerRequests": [
+      {
+        "index": 1,
+        "kind": "name",
+        "toolCount": 0,
+        "schemaProperties": [
+          "name"
+        ],
+        "messageCount": 2,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "4ff2e1733138112cbbec0ed2b928ffc87085936029e394635fdd9960a79c85f2"
+        }
+      },
+      {
+        "index": 2,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 3,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "1d9b4f5b1ad512695144a373693b043ad9c1d28b7131482c80eba188d73b4ad2"
+        }
+      },
+      {
+        "index": 3,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 6,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "8972672bbfcbcad03850d72a388e218e128949bea57d90b0cd368d3cb510fc30"
+        }
+      },
+      {
+        "index": 4,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 9,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "8d083b9e625a8a6816e032a8b6a619831f89efe8a100e80965337f8c2c6fafda"
+        }
+      },
+      {
+        "index": 5,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 12,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "1b8fa4f96e6673d76a5d757eb08c8dff3db1b7e304bc471cc6f69950d5f7126d"
+        }
+      },
+      {
+        "index": 6,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 15,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "a760b69f186d3aede9877f56e1a53c0b67bb4efca3aef588411db462a11098f2"
+        }
+      }
+    ],
+    "historyEntries": 16
+  },
+  "compact": {
+    "outcome": "acknowledged",
+    "recipeExecution": "unverified",
+    "persistedSummary": true,
+    "summaryCalls": 1,
+    "kinds": [
+      "header",
+      "ENVIRONMENT",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "USER_INPUT",
+      "ASSISTANT",
+      "TOOL_RESULTS",
+      "CHECKPOINT",
+      "SUMMARY"
+    ]
+  },
+  "postCompact": {
+    "nextModelSawSummary": true,
+    "providerRequests": [
+      {
+        "index": 1,
+        "kind": "name",
+        "toolCount": 0,
+        "schemaProperties": [
+          "name"
+        ],
+        "messageCount": 2,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "4ff2e1733138112cbbec0ed2b928ffc87085936029e394635fdd9960a79c85f2"
+        }
+      },
+      {
+        "index": 2,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 3,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "1d9b4f5b1ad512695144a373693b043ad9c1d28b7131482c80eba188d73b4ad2"
+        }
+      },
+      {
+        "index": 3,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 6,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "8972672bbfcbcad03850d72a388e218e128949bea57d90b0cd368d3cb510fc30"
+        }
+      },
+      {
+        "index": 4,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 9,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "8d083b9e625a8a6816e032a8b6a619831f89efe8a100e80965337f8c2c6fafda"
+        }
+      },
+      {
+        "index": 5,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 12,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "1b8fa4f96e6673d76a5d757eb08c8dff3db1b7e304bc471cc6f69950d5f7126d"
+        }
+      },
+      {
+        "index": 6,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 15,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "a760b69f186d3aede9877f56e1a53c0b67bb4efca3aef588411db462a11098f2"
+        }
+      },
+      {
+        "index": 7,
+        "kind": "summary",
+        "toolCount": 0,
+        "schemaProperties": [],
+        "messageCount": 1,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "5ba07182a9da818641b9387a6d0ca2343cfbe328eb0d57befc7d8f3c97d53a55"
+        }
+      },
+      {
+        "index": 8,
+        "kind": "name",
+        "toolCount": 0,
+        "schemaProperties": [
+          "name"
+        ],
+        "messageCount": 2,
+        "containsSummaryMarker": false,
+        "bodyHash": {
+          "sha256": "cdeee58e890400ef920fc9c830893fea5d45f784ed8cefb3b9ff19346dc8cf8b"
+        }
+      },
+      {
+        "index": 9,
+        "kind": "name",
+        "toolCount": 0,
+        "schemaProperties": [
+          "name"
+        ],
+        "messageCount": 2,
+        "containsSummaryMarker": true,
+        "bodyHash": {
+          "sha256": "7da7f9c4abde4645af18b4ddc256af554f9b36774c52da49929cc4fbddd54b6b"
+        }
+      },
+      {
+        "index": 10,
+        "kind": "turn",
+        "toolCount": 26,
+        "schemaProperties": [],
+        "messageCount": 11,
+        "containsSummaryMarker": true,
+        "bodyHash": {
+          "sha256": "ac62826df48a99abed485101937a02d2b7fe7bf9d60a53c4071979a113dacbaf"
+        }
+      }
+    ],
+    "independentReadbackThreadMatches": true
+  },
+  "transcript": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/state/evener/projects/907j150sqxn8b8y1c0000gn-T-evener-compaction-effect-02oikf0o-workspace-0A16jNk7lr/sessions/034L1gFg7EGowwgumbLAYN.transcript.jsonl",
+    "sha256": "9cef8292ae0343f0781aad76c1731cad566f8e7fbe3d3fcf10987fdeaf9af2d4"
+  },
+  "providerLog": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/provider-requests.json",
+    "sha256": "9e05dd98b9f9f2ab2c6853938b7bb984b7239381552c1d37b4f390b1d3d9b3a6"
+  },
+  "driver": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/driver.mjs",
+    "sha256": "6156aef6dcc2fb9187f4c69413cd7ae50d3f207d464af229024f025a9af2a49b"
+  },
+  "fixture": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o/fixture.py",
+    "sha256": "d2ed875793ea8c160c77e75cbd46ace8fa208ffbad96629bc505940549bcc489"
+  },
+  "limitations": [
+    "Scripted provider plumbing; summary quality and public provider behavior are not qualified.",
+    "SDK-only journey; native UI compaction acceptance remains separate."
+  ],
+  "cleanup": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-compaction-effect-02oikf0o",
+    "ports": [
+      59294,
+      59293
+    ],
+    "listenersRemaining": [],
+    "ownedExecutablesRemaining": [],
+    "tokenRemoved": true,
+    "privateHubLogRemoved": true
+  },
+  "reservedMethod": {
+    "rejected": true,
+    "code": -32601,
+    "evenerErrorInfo": "methodNotFound"
+  },
+  "sdk": {
+    "path": "/tmp/evener-maintenance-pkg.9dq88v/evener-appwire-client-0.1.0.tgz",
+    "sha256": "89bfc7445f3fbfe1f6a053b7f5c76dffdbcb0f715cf4f2f2cbe3ce2e1eeab2be"
+  }
+}

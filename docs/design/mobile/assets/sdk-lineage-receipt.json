@@ -1,0 +1,142 @@
+{
+  "source": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed",
+    "source": "ccdde59b9",
+    "binaries": {
+      "evener": {
+        "sha256": "156431a9c0ce2b899b76d414afb657b6e35cc3b82cc49e74a0e27169a932fe9d"
+      },
+      "evener-dev": {
+        "sha256": "08bfc5e4d4384053cb2b4060d3419f4cc3aa31500bc493364b84fbd82aed199c"
+      }
+    },
+    "buildMetadata": "ccdde59b9-dirty (2026-09-08T02:29:38Z)"
+  },
+  "sdk": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z",
+    "tarball": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/evener-appwire-client-0.1.0.tgz",
+      "sha256": "01e1a26e0fabc7bdba878ebd75140299b65c720b3fc47e9a8ead98e2c6c753a0"
+    },
+    "package": "@evener/appwire-client",
+    "baseCommit": "0410b2036dc649b7a52bbc051a90cc5fe89b15d0",
+    "recipeCommit": "a229b0c82"
+  },
+  "runtime": {
+    "hubPID": 20306,
+    "providerPID": 20236,
+    "hubPort": 56252,
+    "providerPort": 56251
+  },
+  "parentRef": "local:034L27U2RkDWkYfAXKrpe2",
+  "regularChild": "local:034L27UXq5Xsg941cPulTi",
+  "asideChild": "local:034L27UaZ6pu3I9BYQa1tX",
+  "sourceTranscriptEntry": 2,
+  "transcriptTargets": 1,
+  "previewItems": 5,
+  "previewTruncated": true,
+  "regularForkAcknowledged": true,
+  "originalInputRetained": true,
+  "asideForkAcknowledged": true,
+  "endedParentResumed": true,
+  "independentChildParentLinks": true,
+  "outputs": [
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/parent-completed.json",
+      "sha256": "80a7b8eed0a9b52135d84714950783f777a1a90ddd4cea34345ded30076971f6"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/transcripts.json",
+      "sha256": "c427294e4a080f5d6b205b7781b19bc9c2e3c971daf418dbc5603f6488ffc50c"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/preview.json",
+      "sha256": "2805eb4e8763d4dc08f6ecf250968c8f81779e47745132a01060b8b04dfb1d96"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/review-regular.json",
+      "sha256": "5822a5c181face764ebeee3e5d3a7f50f6f0b9b1a97324458074aaa006c4a3b6"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/regular-fork.json",
+      "sha256": "c75f0fe50ed9e60a3fcda4f6682d0192b54d5400e7e6bfe71b27a9432c66a4c5"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/review-aside.json",
+      "sha256": "5822a5c181face764ebeee3e5d3a7f50f6f0b9b1a97324458074aaa006c4a3b6"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/aside-fork.json",
+      "sha256": "3cb1f38e5e06bd8eb8dafeba2cf4040e41a66056ed4e6262c77e2d7b48f94b91"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/parent-ended.json",
+      "sha256": "229016b33e9818825c2ddc8eb34e088b5673f74ff8fe7267d7938e008c4d3c0a"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/review-resume.json",
+      "sha256": "6186bc6dfc28480f139c35c8a76dcbc03f482803487580a40d5d48049a95d8a4"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/resume.json",
+      "sha256": "3cb5ebecaac62e973c5e5e6881cff8cd4e5d743865d5de93925bb8a1a818bf7e"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/independent-parent.json",
+      "sha256": "90a4416603a13cdf72ec28bf86c31f3a0e444d403f9c6b5bf5d7be6768ca7967"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/independent-regular.json",
+      "sha256": "87ef9d70add4d117c831e29397d72f5a6b4c776f32e0288c0b3a62272bbc850f"
+    },
+    {
+      "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/independent-aside.json",
+      "sha256": "56045fe5e5af4a7350bcccd2204623b8cd247e937da966933e91e247e84f950c"
+    }
+  ],
+  "driver": {
+    "path": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/lineage.mjs",
+    "sha256": "041f20c12c0965509c9d8a91db8f16f160e49bc980225cefa84c9bd41261a301"
+  },
+  "limitations": [
+    "Reusable SDK logic qualified; CLI output runner is covered separately by deterministic tests.",
+    "Scripted model boundary; no public model service or native UI qualification.",
+    "No lost fork reply or competing-writer runtime scenario."
+  ],
+  "cleanup": {
+    "root": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed",
+    "ports": [
+      56252,
+      56251
+    ],
+    "listenersRemaining": [],
+    "ownedExecutablesRemaining": [],
+    "tokenRemoved": true,
+    "privateHubLogRemoved": true
+  },
+  "fixture": {
+    "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-lineage-root-78ehnbed/fixture.py",
+    "sha256": "d2ed875793ea8c160c77e75cbd46ace8fa208ffbad96629bc505940549bcc489"
+  },
+  "sourceEquivalence": {
+    "verifiedAgainstCommit": "a229b0c82",
+    "files": [
+      {
+        "path": "examples/session-lineage-logic.mjs",
+        "sha256": "c9476e8bce2815a61408864bbc451e890a811a75c886a60fd6cc097c9f826f83"
+      },
+      {
+        "path": "examples/session-lineage-cli.mjs",
+        "sha256": "732f66aa75266e312491562e6db3425964e9af78465d6ce527097f361a6610d8"
+      },
+      {
+        "path": "examples/session-lineage.mjs",
+        "sha256": "e8ee1f9c509237a4a7cf70ea0508a612353018612cfe0aebed11e51083e50192"
+      },
+      {
+        "path": "examples/session-lineage.contract.mjs",
+        "sha256": "0d55b1fc8f1e1ae252b66e125576f4f19930c48047b4fa4cb742d95def943c6c"
+      }
+    ]
+  }
+}
