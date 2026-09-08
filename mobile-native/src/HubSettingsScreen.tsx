@@ -224,10 +224,6 @@ function HubSettings({
 							<Detail label="Bearer token age" value={hub?.bearerTokenAge} />
 							<Detail label="Run directory" value={hub?.runDir} />
 							<Detail label="State directory" value={data.storage?.stateDir} />
-							<Detail
-								label="Default hub configuration location"
-								value="~/.config/evener/hub.toml"
-							/>
 							<Copy muted>These locations are on the hub.</Copy>
 							{hub?.pastIndex && (
 								<>
