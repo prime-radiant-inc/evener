@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11228,33 +11229,45 @@ func TestHubRPCTestServerRegistryIgnoresTheProcessCredentialsFile(t *testing.T) 
 // Auth / Instance / Launch / Plugin / Misc / PluginAutoUpgrade) in both
 // directions.
 //
-// Every named method is then dispatched over the wire and must not answer
-// methodNotFound — reachability the router set alone cannot show — except the
-// handlers listed in notDispatched, which act outside the process.
+// Two dispatches over the wire tie that set to what /rpc actually serves: a
+// registered read-only method (model/list, answered by a LiveModels stub so
+// it never asks a live provider) must not answer methodNotFound, and an
+// unregistered name must. Dispatching every named method instead adds no
+// reachability — /rpc serves the same appRPC whose router the set check
+// inspects — while running for real any handler for which empty params are a
+// valid write.
 func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
-	// A temp-dir-backed credentials store, shared with the registry below:
-	// the dispatch loop further down calls every expected method with empty
-	// params, including the credential-mutating evener/auth/* handlers
-	// (apiKey/set, logout, apiKey/clear). A nil CredsStore makes
-	// newHubAuthControllerWithStore fall back to the on-disk default under
-	// the ambient HOME/XDG env. TestMain redirects that env into a throwaway
-	// root and TestHubDefaultRootsStayInsideTheTestEnvironment pins the
-	// redirect, so an unset root cannot reach a developer's actual store;
-	// per-test temp dirs keep this test's writes out of the root the whole
-	// package shares as well.
+	// A temp-dir-backed credentials store, shared with the registry below: a
+	// nil CredsStore makes newHubAuthControllerWithStore fall back to the
+	// on-disk default store under the ambient HOME/XDG env. TestMain redirects
+	// that env into a throwaway root and
+	// TestHubDefaultRootsStayInsideTheTestEnvironment pins the redirect, so an
+	// unset root cannot reach a developer's actual store; a per-test temp dir
+	// keeps this test's store out of the root the whole package shares as
+	// well.
 	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
 	if loadErr != nil {
 		t.Fatalf("LoadStore: %v", loadErr)
 	}
+	var liveModelsCalled atomic.Bool
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 		CredsStore:          credsStore,
+		// model/list is the one registered method dispatched below. With
+		// LiveModels unset, NewWebServer falls back to fetchLiveModels, which
+		// loads the default client and asks every discovered provider,
+		// including the implicit Ollama endpoint. The stub keeps the probe
+		// offline and records that the dispatch reached it.
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			liveModelsCalled.Store(true)
+			return nil
+		},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -11362,51 +11375,29 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		t.Errorf("hub handler set differs from the set this test names:\n  named but NOT registered: %v\n  registered but NOT named: %v", missing, extra)
 	}
 
-	// notDispatched are named above but never called: their handlers act
-	// outside this process. evener/upgrade runs the real self-update (fetch and
-	// install over the running binary), and the marketplace, plugin and
-	// auto-upgrade handlers work against the plugin root — which, with no
-	// PluginRoot configured, is the developer's own plugins.DefaultRoot — and
-	// fetch its remote sources. app_plugins_test.go and
-	// app_plugin_autoupgrade_test.go drive those against fixture roots.
-	notDispatched := map[string]bool{
-		appwire.MethodEvenerUpgrade:              true,
-		appwire.MethodEvenerMarketplaceList:      true,
-		appwire.MethodEvenerMarketplaceAdd:       true,
-		appwire.MethodEvenerMarketplaceRemove:    true,
-		appwire.MethodEvenerMarketplaceRefresh:   true,
-		appwire.MethodEvenerMarketplaceBrowse:    true,
-		appwire.MethodEvenerPluginList:           true,
-		appwire.MethodEvenerPluginInstall:        true,
-		appwire.MethodEvenerPluginUpgrade:        true,
-		appwire.MethodEvenerPluginRemove:         true,
-		appwire.MethodEvenerPluginEnable:         true,
-		appwire.MethodEvenerPluginDisable:        true,
-		appwire.MethodEvenerPluginSetAutoUpgrade: true,
-		appwire.MethodEvenerPluginCheckNow:       true,
+	// Two dispatches tie the set above to what /rpc actually serves: /rpc
+	// serves this same appRPC, so landing on a registered method here is what
+	// shows the wire path reaches the router the set check inspected. model/list
+	// is the read-only pick — it answers from the offline registry this test
+	// configured and writes nothing. We only care about the dispatch outcome,
+	// not the response body, so pass a nil out: the handler may succeed or
+	// reject the empty params with some other error; what it must never return
+	// is methodNotFound.
+	registeredErr := client.Request(context.Background(), appwire.MethodModelList, appwire.EmptyParams{}, nil)
+	var registeredWire appwire.WireError
+	if errors.As(registeredErr, &registeredWire) && registeredWire.Code == appwire.CodeMethodNotFound {
+		t.Errorf("method %q is not registered (methodNotFound)", appwire.MethodModelList)
 	}
-
-	for _, method := range expected {
-		if notDispatched[method] {
-			continue
-		}
-		// We only care about the dispatch outcome, not the response body, so
-		// pass a nil out. A registered handler may succeed or reject the empty
-		// params with some other error; what it must never return is
-		// methodNotFound.
-		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
-		var wire appwire.WireError
-		if errors.As(err, &wire) && wire.Code == appwire.CodeMethodNotFound {
-			t.Errorf("method %q is not registered (methodNotFound)", method)
-		}
+	if !liveModelsCalled.Load() {
+		t.Errorf("model/list did not reach the LiveModels stub; the probe is no longer offline")
 	}
 
 	// Sanity check: an unregistered method must report methodNotFound, proving
 	// the assertion above is meaningful.
-	err := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
-		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	unknownErr := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	var unknownWire appwire.WireError
+	if !errors.As(unknownErr, &unknownWire) || unknownWire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", unknownErr, unknownErr)
 	}
 }
 
