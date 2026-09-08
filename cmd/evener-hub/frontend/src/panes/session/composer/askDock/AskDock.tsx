@@ -125,12 +125,11 @@ function focusBatchEntry(batchEl: HTMLElement): void {
   entry?.focus();
 }
 
-// useAskDockPending is the seam T2 (or any other composer-surface owner)
-// reads to decide whether to hide/inert the plain composer for `ref` -
-// see this file's own header.
-export function useAskDockPending(ref: string): boolean {
-  return useAskDockStore((s) => (s.byRef.get(ref)?.batches.length ?? 0) > 0);
-}
+// useAskDockPending (the hide/inert seam this file's own header points
+// composer-surface owners at) lives in askDockStore.ts, next to the store
+// it selects from, and is re-exported here so existing importers keep
+// working. See that definition for the contract.
+export { useAskDockPending } from "./askDockStore";
 
 // useAskDockActivationEpoch is the pending set's activation counter
 // (askDockStore's activationEpoch) - the signal the transcript's

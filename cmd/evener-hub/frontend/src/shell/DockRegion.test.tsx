@@ -159,6 +159,14 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   // state also stands exactly where the workspace stood - a sibling of the
   // rail inside the workspace row - so the rail keeps its own width instead
   // of being that row's only child and stretching across the window.
+  //
+  // The rail is itself a lazy chunk behind a null-fallback Suspense
+  // (rail/index.tsx), so it paints a tick after the dock failure state -
+  // await its arrival rather than asserting it is already there.
+  // Await the rail chunk first, THEN re-query the failure's parent: the
+  // lazy rail's arrival commits above the failure, so a parent captured
+  // before the await is stale and its contains() check flakes.
+  await screen.findByTestId("rail-search");
   const failure = screen.getByText("Couldn't load the workspace").closest("[data-testid='empty-state']");
   const workspaceRow = failure?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
@@ -238,16 +246,29 @@ test("an ordinary retry failure does not prescribe a page reload", async () => {
   expect(screen.queryByRole("button", { name: "Reload page" })).toBeNull();
 });
 
-test("a chunk still in flight leaves a visible workspace placeholder beside the rail", () => {
+test("a chunk still in flight leaves a visible workspace placeholder beside the rail", async () => {
   // Never settles: a request the hub never answers, with no wall clock in it.
   vi.mocked(loadDockHost).mockReturnValue(new Promise(() => {}));
 
   render(<AppShell client={new FakeClient("ready")} />);
 
+  // Same lazy-rail race as the rejected-chunk test above: the rail chunk
+  // arrives on its own tick, so await it instead of requiring it synchronously.
+  // Await the rail chunk first, THEN re-query the loading placeholder's
+  // parent: a parent captured before the await is stale and its contains()
+  // check flakes.
+  await screen.findByTestId("rail-search");
   const loading = screen.getByText("Loading the workspace…").closest("[data-testid='empty-state']");
   const workspaceRow = loading?.parentElement;
   expect(workspaceRow?.contains(screen.getByTestId("rail-search"))).toBe(true);
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  // The rail chunk arrives with its own empty-state Retry (a bare
+  // FakeClient("ready") scripts no navigation manifest, so the rail shows
+  // "Couldn't load sessions" with a Retry beside the dock's own loading
+  // placeholder), so scope the dock Retry to the loading empty-state rather
+  // than querying the whole shell.
+  // No jest-dom matchers in this tree (vite.config.ts setupFiles is empty),
+  // so read the scoped button's text directly.
+  expect(loading?.querySelector("button")?.textContent).toBe("Retry");
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
   // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
