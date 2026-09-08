@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,17 +14,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestItemTurnsFromEntriesLargeFixtureTiming times the file read against the
-// in-memory entries projection over a large synthetic transcript and gates
-// on a generous ratio floor: the file form (scan + decode + project) must be
-// at least 3x slower than the entries form (project only). The floor is
-// deliberately loose so machine load cannot flake it — a regression that
-// erases the entries form's win has to cost more than 3x before this fails.
-func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing measurement, not a correctness gate")
-	}
-	const entryCount = 20000
+const largeFixtureEntryCount = 20000
+
+func writeLargeTranscriptFixture(t testing.TB) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "large.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:    "th_large",
@@ -32,10 +26,10 @@ func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	// The measurement is the READ side; the fixture write only needs the
-	// bytes on disk, so skip the per-append fsync the durability default pays.
+	// The fixture write only needs the bytes on disk, so skip the per-append
+	// fsync the durability default pays.
 	w.SyncInterval = time.Hour
-	for i := range entryCount {
+	for i := range largeFixtureEntryCount {
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d with some body text to make the line realistic", i)))
 		turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
@@ -46,45 +40,70 @@ func TestItemTurnsFromEntriesLargeFixtureTiming(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
+	return path
+}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return []appwire.ThreadItem{{Type: "userMessage", ID: turnID, TurnID: turnID, Text: turn.Message.Content[0].Text}}
-	}
+func itemProjection(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	return []appwire.ThreadItem{{Type: "userMessage", ID: turnID, TurnID: turnID, Text: turn.Message.Content[0].Text}}
+}
 
-	// File form.
-	fileStart := time.Now()
-	fileTurns, err := ItemTurnsFromFile(path, 1<<30, project)
-	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
-	}
-	fileElapsed := time.Since(fileStart)
-
-	// Entries form: decode once the way resume does, then project.
+func openLargeTranscriptEntries(t testing.TB, path string) (transcript.Header, []transcript.Entry) {
+	t.Helper()
 	rw, entries, err := transcript.OpenWriterForSession(path, "th_large")
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
 	}
-	_ = rw.Close() //nolint:errcheck // measurement fixture
-	entriesStart := time.Now()
-	entryTurns, err := ItemTurnsFromEntries(rw.Header(), entries, project)
+	if err := rw.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	return rw.Header(), entries
+}
+
+// TestItemTurnsFromEntriesLargeFixture verifies that the file and entries
+// paths produce the same complete projection for a large transcript. Their
+// relative speed is reported by the benchmark below; wall-clock ratios are
+// too dependent on machine scheduling for a test assertion.
+func TestItemTurnsFromEntriesLargeFixture(t *testing.T) {
+	path := writeLargeTranscriptFixture(t)
+	header, entries := openLargeTranscriptEntries(t, path)
+	fileTurns, err := ItemTurnsFromFile(path, 1<<30, itemProjection)
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	entryTurns, err := ItemTurnsFromEntries(header, entries, itemProjection)
 	if err != nil {
 		t.Fatalf("ItemTurnsFromEntries: %v", err)
 	}
-	entriesElapsed := time.Since(entriesStart)
+	if len(fileTurns) != largeFixtureEntryCount+1 {
+		t.Fatalf("want header and %d user turns, got %d turns", largeFixtureEntryCount, len(fileTurns))
+	}
+	if !reflect.DeepEqual(fileTurns, entryTurns) {
+		t.Fatalf("file and entries projections diverge: file=%d entries=%d", len(fileTurns), len(entryTurns))
+	}
+}
 
-	t.Logf("fixture: %d entries, %d bytes (%.1f MB)", entryCount, info.Size(), float64(info.Size())/1024/1024)
-	t.Logf("file form (scan+decode+project): %v, turns=%d", fileElapsed, len(fileTurns))
-	t.Logf("entries form (project only):     %v, turns=%d", entriesElapsed, len(entryTurns))
-	ratio := float64(fileElapsed) / float64(entriesElapsed)
-	t.Logf("ratio: %.1fx", ratio)
-	if ratio < 3 {
-		t.Fatalf("file form was only %.1fx slower than the entries form; the entries projection's skip of the file I/O + decode pass is its entire reason to exist", ratio)
+func BenchmarkItemTurnsFromEntriesLargeFixture(b *testing.B) {
+	path := writeLargeTranscriptFixture(b)
+	header, entries := openLargeTranscriptEntries(b, path)
+	info, err := os.Stat(path)
+	if err != nil {
+		b.Fatal(err)
 	}
-	if len(fileTurns) != len(entryTurns) {
-		t.Fatalf("turn counts diverge: file=%d entries=%d", len(fileTurns), len(entryTurns))
-	}
+	b.ReportMetric(float64(info.Size()), "fixture-bytes")
+	b.Run("file", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, err := ItemTurnsFromFile(path, 1<<30, itemProjection); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("entries", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, err := ItemTurnsFromEntries(header, entries, itemProjection); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
