@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 
@@ -31,6 +32,11 @@ func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
 
 	var mu sync.Mutex
 	var continuations []events.GoalContinuationData
+	// The drain ConsumeEventsLossless registers delivers on its own goroutine
+	// (session_events.go), so nothing guarantees it has run by the time
+	// ProcessInputKind returns. Wait for the event rather than asserting on a
+	// slice the consumer may not have appended to yet.
+	sawContinuation := make(chan struct{}, 1)
 	drained := make(chan struct{})
 	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		if ev.Kind != events.EventGoalContinuation {
@@ -43,10 +49,24 @@ func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
 		mu.Lock()
 		continuations = append(continuations, data)
 		mu.Unlock()
+		select {
+		case sawContinuation <- struct{}{}:
+		default:
+		}
 	}, func() { close(drained) })
 
 	if _, err := s.ProcessInputKind(context.Background(), "keep going", nil, EntryContinuation); err != nil {
 		t.Fatalf("ProcessInputKind(EntryContinuation): %v", err)
+	}
+
+	select {
+	case <-sawContinuation:
+	// TRIPWIRE: the event is emitted synchronously by ProcessInputKind above
+	// and delivered by the in-process drain goroutine, so it normally arrives
+	// in well under a second. 30s only fires on a genuine delivery hang, not
+	// scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
+		t.Fatalf("timed out waiting for the EventGoalContinuation opening event")
 	}
 
 	mu.Lock()
