@@ -461,7 +461,6 @@ export function createConversationService(
   } | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
-  let recoveredOlderCursor: string | null = null;
   type PendingProjection = {
     ref: string;
     instanceId: string | null;
@@ -510,7 +509,6 @@ export function createConversationService(
     instanceId = null;
     threadId = null;
     capabilities = null;
-    recoveredOlderCursor = null;
     return epoch;
   }
 
@@ -657,7 +655,6 @@ export function createConversationService(
       );
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
-        recoveredOlderCursor = olderCursor;
         modelScope = readModelScope;
         instanceId = readInstanceId;
         threadId = response.thread.id;
@@ -677,6 +674,7 @@ export function createConversationService(
     },
 
     async loadOlder(cursor) {
+      let requestedCursor = cursor;
       const pending = pendingProjection;
       if (ref === null && pending !== null && pending.instanceId !== null) {
         // A same-session refresh closes mutation gates while validating its
@@ -684,8 +682,11 @@ export function createConversationService(
         const expected = pending;
         let projection: PendingProjection = pending;
         for (;;) {
-          await projection.read;
-          if (pendingProjection === projection) break;
+          const response = await projection.read;
+          if (pendingProjection === projection) {
+            requestedCursor = response.olderCursor ?? cursor;
+            break;
+          }
           const next: PendingProjection | null = pendingProjection;
           if (
             next === null ||
@@ -701,7 +702,6 @@ export function createConversationService(
         }
       }
       const threadRef = requireRef();
-      const requestedCursor = recoveredOlderCursor ?? cursor;
       let response: ThreadTurnsListResponse;
       try {
         response = await client.request("thread/turns/list", {
@@ -716,10 +716,6 @@ export function createConversationService(
         // cursor and visible projection are published together.
         throw error;
       }
-      // A successful page without a continuation has exhausted this
-      // transcript boundary. Clear the cached cursor for both omitted and
-      // explicit null wire values so direct callers cannot repeat the page.
-      recoveredOlderCursor = response.nextCursor ?? null;
       // Project the older turns into mobile items by projecting a minimal
       // Thread containing just these turns. projectThread handles empty/missing
       // turns gracefully; we only need the item projection, not the full
@@ -1134,7 +1130,6 @@ export function createConversationService(
       instanceId = null;
       threadId = null;
       capabilities = null;
-      recoveredOlderCursor = null;
     },
   };
 }
