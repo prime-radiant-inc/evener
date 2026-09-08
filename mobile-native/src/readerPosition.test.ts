@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	captureReaderAnchor,
 	comparePosition,
+	furthestMeasuredRowBeforeTarget,
 	isReaderAnchorLoaded,
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
@@ -234,6 +235,37 @@ describe("reader positions", () => {
 			true,
 		);
 		expect(attempts.begin(command, 0)).toBe(true);
+	});
+	it("restarts the failure budget only after measured progress advances", () => {
+		const attempts = new ReaderRestoreAttempts();
+		const command = { kind: "approximate", offset: 1868 } as const;
+		expect(attempts.begin(command, 4)).toBe(true);
+		expect(attempts.retryUnmeasured(4)).toBe(true);
+		expect(attempts.retryUnmeasured(4)).toBe(true);
+		expect(attempts.retryUnmeasured(4)).toBe(true);
+		expect(attempts.retryUnmeasured(4)).toBe(false);
+		expect(attempts.begin(command, 5)).toBe(true);
+		expect(attempts.retryUnmeasured(5)).toBe(true);
+		expect(attempts.retryUnmeasured(5)).toBe(true);
+		expect(attempts.retryUnmeasured(5)).toBe(true);
+		expect(attempts.retryUnmeasured(5)).toBe(false);
+	});
+	it("uses row index progress when a virtualization window keeps its size", () => {
+		const rows = [
+			row("a", { entry: 1, item: 0 }),
+			row("b", { entry: 2, item: 0 }),
+			row("c", { entry: 3, item: 0 }),
+		];
+		expect(
+			furthestMeasuredRowBeforeTarget(rows, 2, [
+				{ key: readerKey(rows[0]), y: 0, height: 40 },
+			]),
+		).toBe(0);
+		expect(
+			furthestMeasuredRowBeforeTarget(rows, 2, [
+				{ key: readerKey(rows[1]), y: 40, height: 40 },
+			]),
+		).toBe(1);
 	});
 	it("resolves an exact row or exact protocol position only", () => {
 		const anchor = {
