@@ -749,8 +749,11 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
   // stampThreadImageURLs (output_images.go) prefers the wire session id and
-  // falls back to the thread id; the client-side rebuild matches it exactly.
-  const imageSessionId = thread.sessionId || thread.id;
+  // falls back to the thread id, trimming both (strings.TrimSpace); the
+  // client-side rebuild matches it exactly — a whitespace-padded session id
+  // must not win the fallback and escape to a /s/%20.../images route the hub
+  // would 404 on while the trimmed thread id would have served.
+  const imageSessionId = thread.sessionId.trim() || thread.id.trim();
   const imageSessionRoute = imageSessionRouteForSession(imageSessionId);
   return {
     ref,

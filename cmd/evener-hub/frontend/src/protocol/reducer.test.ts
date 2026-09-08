@@ -2236,6 +2236,16 @@ test("imageSessionRouteForSession escapes the session id and rejects what cannot
   expect(imageSessionRouteForSession("proj/one")).toBeUndefined();
 });
 
+test("hydrateThread trims a whitespace-padded sessionId and falls back to the trimmed thread id", () => {
+  // stampThreadImageURLs (output_images.go) trims both (strings.TrimSpace):
+  // a padded-but-blank "  " session id must fall back to the thread id, and
+  // a clean thread id must survive — neither may escape to a /s/%20... route.
+  const blankPadded = testHydrate({ id: "thr_t", sessionId: "   " });
+  expect(blankPadded.imageSessionId).toBe("thr_t");
+  const padded = testHydrate({ id: "  thr_t  ", sessionId: "  sess_t  " });
+  expect(padded.imageSessionId).toBe("sess_t");
+});
+
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
 // the wire at each injection site, through to EvenerSteeringInjectedParams.kind
 // on the live notification. The model must carry it the last hop onto the
