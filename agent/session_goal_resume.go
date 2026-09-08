@@ -30,5 +30,5 @@ func (s *Session) GoalResumeFromWire(objective, extendBudget string, extendValue
 		}
 		req.Extend = &goal.ExtendRequest{Budget: budget, Value: extendValue}
 	}
-	return s.GoalResume(req, s.sclock().Now())
+	return s.goalResume(req, s.sclock().Now())
 }

@@ -118,7 +118,7 @@ func (s *Session) ClearGoal() {
 	s.goalUpdateMu.Unlock()
 }
 
-// GoalResume re-drives a terminal-blocked goal (spec §5): the store Resume
+// goalResume re-drives a terminal-blocked goal (spec §5): the store Resume
 // commits ledger-reset/waits-cleared/budgets-kept/autoReparks-reset plus the
 // renewal check (reject naming the exhausted budget without --extend; drive
 // with --extend). From "waiting lost" the same path applies with the cause
@@ -132,7 +132,12 @@ func (s *Session) ClearGoal() {
 // up; idle resumes kick the first continuation prompt immediately (outside
 // the lock) and return started=true. A resume error (no blocked goal, or a
 // renewal rejection) drives nothing and returns started=false.
-func (s *Session) GoalResume(req goal.ResumeRequest, now time.Time) (started bool, err error) {
+//
+// Unexported: the request names the internal goal.ResumeRequest type, which
+// must not leak through the agent library surface (lint-internal). External
+// callers resume via GoalResumeFromWire (plain wire types); tests call this
+// directly same-package.
+func (s *Session) goalResume(req goal.ResumeRequest, now time.Time) (started bool, err error) {
 	store := s.getOrCreateGoalStore()
 	s.goalUpdateMu.Lock()
 	// Capture the pre-resume verdict before Resume clears it: a "waiting

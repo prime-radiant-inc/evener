@@ -51,7 +51,7 @@ func TestGoalResumeNoProgressKeepsBudgetsResetsLedger(t *testing.T) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
 
-	started, err := sess.GoalResume(goal.ResumeRequest{}, clk.Now())
+	started, err := sess.goalResume(goal.ResumeRequest{}, clk.Now())
 	if err != nil {
 		t.Fatalf("GoalResume = %v, want nil on the no-progress path", err)
 	}
@@ -97,7 +97,7 @@ func TestGoalResumeBudgetBlockNeedsExtend(t *testing.T) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
 
-	_, err := sess.GoalResume(goal.ResumeRequest{}, clk.Now())
+	_, err := sess.goalResume(goal.ResumeRequest{}, clk.Now())
 	if err == nil || !strings.Contains(err.Error(), "maxContinuations") {
 		t.Fatalf("GoalResume err = %v, want a rejection naming maxContinuations", err)
 	}
@@ -124,7 +124,7 @@ func TestGoalResumeBudgetBlockWithExtendDrives(t *testing.T) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
 
-	started, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendContinuations, Value: 50}}, clk.Now())
+	started, err := sess.goalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendContinuations, Value: 50}}, clk.Now())
 	if err != nil {
 		t.Fatalf("GoalResume with --extend = %v, want nil", err)
 	}
@@ -157,7 +157,7 @@ func TestGoalResumeExtendClampsToCaps(t *testing.T) {
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictBudgetExhausted, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendContinuations, Value: 5000}}, clk.Now()); err != nil {
+	if _, err := sess.goalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendContinuations, Value: 5000}}, clk.Now()); err != nil {
 		t.Fatalf("clamped extend = %v, want nil", err)
 	}
 	after, _ := store.GoalSnapshot()
@@ -185,7 +185,7 @@ func TestGoalResumeExtendDeadlineClampsTo24h(t *testing.T) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
 	// 7 days of seconds: must clamp to the 24h cap, not apply verbatim.
-	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendDeadline, Value: 7 * 24 * 3600}}, clk.Now()); err != nil {
+	if _, err := sess.goalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendDeadline, Value: 7 * 24 * 3600}}, clk.Now()); err != nil {
 		t.Fatalf("clamped deadline extend = %v, want nil", err)
 	}
 	after, _ := store.GoalSnapshot()
@@ -219,7 +219,7 @@ func TestGoalResumeExtendParkedTotalClampsTo24h(t *testing.T) {
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictBudgetExhausted, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendParkedTotal, Value: int64((48 * time.Hour).Seconds())}}, clk.Now()); err != nil {
+	if _, err := sess.goalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendParkedTotal, Value: int64((48 * time.Hour).Seconds())}}, clk.Now()); err != nil {
 		t.Fatalf("clamped parked-total extend = %v, want nil", err)
 	}
 	after, _ := store.GoalSnapshot()
@@ -248,7 +248,7 @@ func TestGoalResumeDeadlineExtendResetsOneShot(t *testing.T) {
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictDeadlineExceeded, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	if _, err := sess.GoalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendDeadline, Value: 3600}}, clk.Now()); err != nil {
+	if _, err := sess.goalResume(goal.ResumeRequest{Extend: &goal.ExtendRequest{Budget: goal.ExtendDeadline, Value: 3600}}, clk.Now()); err != nil {
 		t.Fatalf("deadline extend = %v, want nil", err)
 	}
 	after, _ := store.GoalSnapshot()
@@ -278,7 +278,7 @@ func TestGoalResumeWaitingLostFollowsNoProgressPath(t *testing.T) {
 	if !store.SetTerminal(goal.StatusBlocked, goal.WaitingLostVerdict("restart without substrate"), clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	if _, err := sess.GoalResume(goal.ResumeRequest{}, clk.Now()); err != nil {
+	if _, err := sess.goalResume(goal.ResumeRequest{}, clk.Now()); err != nil {
 		t.Fatalf("GoalResume = %v, want nil on the waiting-lost path", err)
 	}
 	after, _ := store.GoalSnapshot()
@@ -307,7 +307,7 @@ func TestGoalResumeNoGoalErrors(t *testing.T) {
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
 
-	if _, err := sess.GoalResume(goal.ResumeRequest{}, clk.Now()); err == nil || !strings.Contains(err.Error(), "no blocked goal to resume") {
+	if _, err := sess.goalResume(goal.ResumeRequest{}, clk.Now()); err == nil || !strings.Contains(err.Error(), "no blocked goal to resume") {
 		t.Fatalf("GoalResume err = %v, want the no-blocked-goal error", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestGoalResumeStallBlockWithSpentBudgetRenews(t *testing.T) {
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictNoProgress, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	if _, err := sess.GoalResume(goal.ResumeRequest{}, clk.Now()); err == nil || !strings.Contains(err.Error(), "maxContinuations") {
+	if _, err := sess.goalResume(goal.ResumeRequest{}, clk.Now()); err == nil || !strings.Contains(err.Error(), "maxContinuations") {
 		t.Fatalf("GoalResume err = %v, want renewal rejection naming maxContinuations despite the stall verdict", err)
 	}
 }
