@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -762,4 +763,110 @@ func TestPluginAgentModelListingAttribution(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	assertSessionAPILogAttributed(t, stateDir, sess.ID())
+}
+
+// TestPluginAgentModelListingAttributionThroughTurn holds the hops
+// TestPluginAgentModelListingAttribution has to stamp by hand. The listing
+// resolvePluginAgentModel issues carries no attribution of its own, so it is
+// attributed only while processInputKindWithProvenance's turn stamp
+// (session_lifecycle.go) survives every hop down to it: execToolBatch, the
+// delegate tool handler, createDelegate, selectSubagentModel. So this drives a
+// real turn whose tool batch calls delegate with a plugin agent, and a hop that
+// dropped or replaced the ctx pushes the listing into the unattributed bucket
+// here even though the hand-stamped test above still passes.
+//
+// The call asks for fork_context, which createDelegate refuses on the first
+// check after the selection — so the turn stops at the far side of the seam
+// under test without spawning a child session onto the same scripted adapter.
+// The refusal is itself evidence the listing decided the model: fork_context is
+// refused only because the selection landed on the plugin's gpt-5.3 rather than
+// the session's own gpt-5.2.
+func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
+	stateDir := t.TempDir()
+	var listings atomic.Int64
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.3")
+	var delegateResult string
+	adapter := &fakeAdapter{
+		name: "openai",
+		liveModels: func(ctx context.Context) ([]registry.Model, error) {
+			listings.Add(1)
+			return listModels(ctx)
+		},
+		steps: []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(llm.ToolCallData{
+					ID:        "delegate_call",
+					Name:      "delegate",
+					Type:      "function",
+					Arguments: []byte(`{"prompt":"review the change","agent_type":"reviewer","fork_context":true}`),
+				})
+			},
+			func(req llm.Request) llm.Response {
+				delegateResult = requestToolResult(req, "delegate_call")
+				return toolCallResponse(communicateCall("c1", "done"))
+			},
+		},
+	}
+	client := registryClient(t, map[string]registry.Provider{
+		"openai": {Base: "openai", APIKey: "k", Models: modelRows("gpt-5.3")},
+	}, adapter)
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	client.Use(logger)
+
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         stateDir,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}
+	cfg.spawn.sessionID = identifier.MustNewSessionID()
+	// The session namer runs on its own scripted provider so the fake adapter's
+	// steps are exactly the turn's two model calls.
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	sess.pluginAgents = map[string]plugin.Agent{
+		"reviewer": {
+			Name:       "reviewer",
+			Model:      "gpt-5.3",
+			PluginName: "test-plugin",
+		},
+	}
+
+	listingsBefore := listings.Load()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hand the review to the reviewer agent", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !strings.Contains(delegateResult, "fork_context requires the parent's model") {
+		t.Fatalf("delegate tool result = %q, want the post-selection fork_context refusal", delegateResult)
+	}
+	if got := listings.Load() - listingsBefore; got != 1 {
+		t.Fatalf("live model listings during the turn = %d, want 1", got)
+	}
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	assertSessionAPILogAttributed(t, stateDir, sess.ID())
+}
+
+// requestToolResult returns req's tool result content for callID.
+func requestToolResult(req llm.Request, callID string) string {
+	for _, message := range req.Messages {
+		for _, part := range message.Content {
+			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				return fmt.Sprint(part.ToolResult.Content)
+			}
+		}
+	}
+	return ""
 }
