@@ -38,13 +38,18 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("do the impossible", time.Now())
-	// One progressed turn, then NoProgressLimit no-progress continuations: the last
-	// blocks the goal inside the gate.
-	if _, ok := sess.armGoalContinuation(true, true); !ok {
-		t.Fatal("first progressed continuation should keep the goal active")
-	}
-	for range goal.NoProgressLimit {
+	// Identical non-advancing continuations graduate nudge-then-block inside
+	// the gate (slice-2 ledger bound, K=6 fresh tier: the production digest
+	// never moves in this gate-only test). The block lands after
+	// processOneInput's defer-save, so only the gate's own save persists it.
+	for range goal.RepetitionThresholdFresh - 1 {
 		sess.armGoalContinuation(false, true)
+	}
+	if _, ok := sess.armGoalContinuation(false, true); !ok {
+		t.Fatal("K-th identical turn must nudge, not block")
+	}
+	if _, ok := sess.armGoalContinuation(false, true); ok {
+		t.Fatal("post-nudge identical turn must block inside the gate")
 	}
 
 	meta, err := schema.LoadSessionMeta(stateDir, sess.ID())

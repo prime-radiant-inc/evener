@@ -1,10 +1,9 @@
 // Progress ledger: fingerprints, novelty, tiers, backstop (spec §4).
 //
-// The ledger is a pure unit in this task: FoldLedger maps (prev summary,
-// TurnOutcome, waits-subgoal evidence) to the next summary, and the stall
-// predicates read the summary. Task 7 wires the fold into the gate; until
-// then the interim v1 judge stays armed and DecideGoalStep/RecordContinuation
-// are untouched.
+// FoldLedger maps (prev summary, TurnOutcome, waits-subgoal evidence) to the
+// next summary, and the stall predicates read the summary. Slice 2 wires the
+// fold into the gate (DecideGoalStep rules 6-7 + RecordContinuation); the
+// interim v1 judge is retired.
 //
 // Stall rule (exact): K consecutive turns with identical
 // (actionFingerprint, observationClass) AND no state-digest delta, with K=3
@@ -140,11 +139,9 @@ func CanonicalizeObservationHash(h string) string {
 }
 
 // FoldLedger folds one finished turn into the next ledger summary. It is
-// pure: prev is never mutated, the window is bounded to LedgerWindowSize, the
-// graduation stage passes through untouched (its owner is the Task-8 stage
-// machine — a restart after a nudge graduates, never re-nudges), and the
-// interim v1 judge it will retire stays armed until Task 7 wires this fold
-// into the gate.
+// pure: prev is never mutated, the window is bounded to LedgerWindowSize, and
+// the graduation stage passes through untouched (its owner is the Task-8
+// stage machine — a restart after a nudge graduates, never re-nudges).
 //
 // Advancement for this turn = observation-novelty (canonicalized hash unseen
 // in the last N entries; class-only fallback when the hash is empty) OR

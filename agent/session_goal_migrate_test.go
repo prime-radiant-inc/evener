@@ -70,12 +70,33 @@ func TestGoalMigrateV1_Streak5NudgesNotBlocks(t *testing.T) {
 	}
 
 	// Remaining-till-block is preserved exactly: the 1 remaining turn runs,
-	// and the bound fires on it — not before (allowance granted), not after.
+	// and the seeded run positions the ledger one identical turn short of K.
+	// Slice 2 retires the interim verdict: the stall graduates (nudge first,
+	// block after). Per the disclosed migration residual, a continuing
+	// identical-but-distinct real turn resets the run to 1 (the seeded
+	// "migrated" fingerprint never collides with a real action), granting at
+	// most K−1 extra turns once — K−1 further identical turns then nudge,
+	// and the next blocks. The seed table's shape (5 entries, tier 6, stage
+	// none) is pinned above; here the ledger behavior after it.
 	fresh := goal.NewStore()
 	fresh.RestoreSnapshot(persisted)
-	snap, active := fresh.RecordContinuation(false, restoreTime.Add(time.Minute))
-	if active || snap.Status != goal.StatusBlocked {
-		t.Fatalf("1 more non-advancing turn after streak-5 migration = (%v, %v), want the K bound to fire exactly now (slice-1 interim verdict; slice-3 graduates this hit to nudge)", snap.Status, active)
+	stall := goal.TurnOutcome{ActionFingerprint: "grep pattern=x", ObservationClass: "ok", ObservationHash: "same", StateDigest: "steady"}
+	for i := range goal.NeverProgressedLimit - 1 {
+		snap, active := fresh.RecordContinuation(stall, false, restoreTime.Add(time.Duration(i+1)*time.Minute))
+		if !active || snap.Status != goal.StatusActive {
+			t.Fatalf("residual turn %d = (%v, %v), want active (disclosed at-most-K−1 residual)", i+1, snap.Status, active)
+		}
+	}
+	snap, active := fresh.RecordContinuation(stall, false, restoreTime.Add(time.Duration(goal.NeverProgressedLimit)*time.Minute))
+	if !active || snap.Status != goal.StatusActive {
+		t.Fatalf("K-th residual turn = (%v, %v), want the nudge (still active)", snap.Status, active)
+	}
+	full, _ := fresh.GoalSnapshot()
+	if full.LedgerSummary.Stage != goal.StageNudged {
+		t.Fatalf("stage = %q, want nudged after the residual K trip", full.LedgerSummary.Stage)
+	}
+	if snap, active := fresh.RecordContinuation(stall, false, restoreTime.Add(time.Duration(goal.NeverProgressedLimit+1)*time.Minute)); active || snap.Status != goal.StatusBlocked {
+		t.Fatalf("post-nudge turn = (%v, %v), want blocked/no-progress", snap.Status, active)
 	}
 }
 
@@ -106,8 +127,20 @@ func TestGoalMigrateV1_OverBoundSeedsAtBound(t *testing.T) {
 	}
 	fresh := goal.NewStore()
 	fresh.RestoreSnapshot(persisted)
-	if snap, active := fresh.RecordContinuation(false, restoreTime.Add(time.Minute)); active || snap.Status != goal.StatusBlocked {
-		t.Fatalf("over-bound migration must enforce on the next turn, got (%v, %v)", snap.Status, active)
+	// The seeded window already sits AT K with stage nudged (never re-nudge
+	// after restart). Per the disclosed residual, a continuing real turn
+	// resets the run once — but the stage stays nudged, so K−1 further
+	// identical turns trip the bound and block immediately (never a second
+	// nudge).
+	stall := goal.TurnOutcome{ActionFingerprint: "grep pattern=x", ObservationClass: "ok", ObservationHash: "same", StateDigest: "steady"}
+	for i := range goal.NoProgressLimit - 1 {
+		snap, active := fresh.RecordContinuation(stall, false, restoreTime.Add(time.Duration(i+1)*time.Minute))
+		if !active || snap.Status != goal.StatusActive {
+			t.Fatalf("residual turn %d = (%v, %v), want active (stage already nudged, run rebuilding)", i+1, snap.Status, active)
+		}
+	}
+	if snap, active := fresh.RecordContinuation(stall, false, restoreTime.Add(time.Duration(goal.NoProgressLimit)*time.Minute)); active || snap.Status != goal.StatusBlocked {
+		t.Fatalf("over-bound migration must enforce at the rebuilt K with no second nudge, got (%v, %v)", snap.Status, active)
 	}
 }
 

@@ -25,7 +25,7 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 			if i < len(operations) {
 				op = operations[i]
 			}
-			snap, active := store.RecordContinuation(op&1 != 0, start.Add(time.Duration(i+1)*time.Second))
+			snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, op&1 != 0, start.Add(time.Duration(i+1)*time.Second))
 			if !active || snap.Status != StatusActive {
 				t.Fatalf("pre-terminal continuation %d unexpectedly stopped: %+v active=%v", i, snap, active)
 			}
@@ -58,7 +58,7 @@ func FuzzGoalStoreTerminalPersistence(f *testing.F) {
 			now := terminalAt.Add(time.Duration(i+1) * time.Second)
 			switch op % 3 {
 			case 0:
-				snap, active := store.RecordContinuation(op&0x80 != 0, now)
+				snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d"}, op&0x80 != 0, now)
 				if active || snap.Status != terminal {
 					t.Fatalf("terminal continuation reversed state: %+v active=%v", snap, active)
 				}

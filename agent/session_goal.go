@@ -275,36 +275,47 @@ func boundsBreached(full goal.GoalSnapshot, now time.Time) bool {
 // turn made a mutating tool call. It folds that signal into the goal under the
 // goal lock and decides whether to issue another continuation.
 //
-// Slice-1 gate (spec sections 1, 3): pre-reads (dependent wake predicate,
-// sclock instant) run before goalUpdateMu/s.mu; the atomic claim step converts
-// expired until_time leases into pendingWake before the pure DecideGoalStep
-// table; the mutator commits under goalUpdateMu; kicks fire outside all locks.
-// Waiting parks (skips every fold, arms nothing - only the coalesced wait
-// timer); undelivered pendingWake drives exactly one wake turn; budget,
-// deadline, and lost-wait rules block with their distinct verdicts. The
-// interim v1 judge (wake-pending hold + mutation breaker) stays armed for
-// non-parked loops per spec section 9; wait-attributable turns bypass
-// RecordContinuation entirely (zero stall accrual while parked).
-//
-// Interim judge, precisely (spec §9 slice-1 scope): the v1 3/6 mutation
-// breaker (RecordContinuation: NoProgressLimit=3 once advanced, else
-// NeverProgressedLimit=6) keeps stopping non-parked stalled loops. Parked
-// goals accrue nothing (the park branch returns before the fold), and
-// wait-attributable turns — the wake turn's own drive (pendingWake backlog
-// standing), the wake tail (delivered batch consumed), and the superseded
-// no-op evaluation — bypass the fold and re-arm the plain objective. The
-// notifying turn for a waited target IS the wake turn: no separate
-// notification turn folds, so there is no double-turn accounting.
+// Slice-2 gate (spec sections 1, 3, 4): pre-reads (dependent wake predicate,
+// sclock instant, pre-scoped state digest) run before goalUpdateMu/s.mu; the
+// atomic claim step converts expired until_time leases plus terminal-child
+// until_child matches into pendingWake before the pure DecideGoalStep table;
+// the plain-drive path folds the turn's TurnOutcome into the ledger
+// (FoldLedger via RecordContinuation — the slice-1 v1 mutation breaker is
+// retired, not bypassed); the mutator commits under goalUpdateMu; kicks fire
+// outside all locks. Waiting parks (skips every fold, arms nothing - only
+// the coalesced wait timer); undelivered pendingWake drives exactly one wake
+// turn; budget, deadline, lost-wait, and stall rules block with their
+// distinct verdicts. The wake-pending hold (dependents guaranteeing a future
+// wake) stays armed: a held turn skips the fold like a park. The wake turn's
+// own drive folds like any other turn (spec §5: wake turns count) — only the
+// wake tail (delivered batch consumed) and the superseded no-op evaluation
+// bypass the fold. The notifying turn for a waited target IS the wake turn:
+// no separate notification turn folds, so there is no double-turn accounting.
 //
 // It returns (renderedPrompt, true) to continue, or ("", false) when there is
 // nothing to drive right now: no goal is set, the goal is terminal (the gate
 // owns the model-declared terminal stop path plus the spec section-1 rule-2/3/5
-// budget/deadline/loss blocks and the interim no-progress breaker - and emits
+// budget/deadline/loss/stall blocks - and emits
 // exactly one EventGoalEnded on each so the user is told why the loop
 // stopped), or the goal parked until a wait's kick lands. There is no
 // iteration cap: a goal that keeps making progress runs until it is completed
 // or a stop rule fires.
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
+	// Production fold input: the turn's recorded evidence plus a fresh
+	// pre-scoped digest, built BEFORE goalUpdateMu (the digest's
+	// controller/job-manager reads are §3-top pre-reads). Tests and scripted
+	// gates that need exact outcomes call armGoalContinuationWithOutcome.
+	outcome := buildGoalTurnOutcome(s.takeGoalTurnEvidence(), s.goalStateDigest())
+	outcome.Mutated = outcome.Mutated || progressed
+	return s.armGoalContinuationInner(progressed, wasContinuation, &outcome)
+}
+
+// armGoalContinuationInner is the gate shared by the production entry point
+// (which builds the outcome from recorded evidence) and
+// armGoalContinuationWithOutcome (explicit outcomes for deterministic tests).
+// A nil outcome folds a bare {Mutated: progressed} turn — the pre-ledger
+// equivalent the old signature carried.
+func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, outcome *goal.TurnOutcome) (string, bool) {
 	// Lazy, and computed before goalUpdateMu: the query takes delegate-controller
 	// and job-manager locks, which must never be held under the goal serializer.
 	// Two short-circuits keep hot paths free of it: only a non-progressed
@@ -353,13 +364,13 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		return "", false // cleared between the reads
 	}
 	// Wake-turn tail fold (spec section 1: pendingWake clears in the same
-	// commit as the wake turn's tail fold, never at delivery): when the
+	// commit as the wake turn's tail drain, never at delivery): when the
 	// just-finished continuation was a wake turn - every backlog entry was
 	// marked delivered when its kick went out - consume the backlog now so a
 	// crash between kick and fold is the only path that re-drives. Fresh
 	// entries claimed mid-turn (never marked) are NOT consumed: they drive
-	// their own wake below. Wait-attributable turns bypass RecordContinuation
-	// entirely (spec section 9 slice-1 interim).
+	// their own wake below. The wake turn already folded at drive time (spec
+	// §5: wake turns count) — the tail drains and re-arms without re-folding.
 	wakeTail := false
 	if wasContinuation && len(full.PendingWake) > 0 {
 		s.mu.Lock()
@@ -386,29 +397,38 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		}
 	}
 	// Atomic fire step (spec section 3): convert expired until_time leases
-	// into persisted pendingWake claims before deciding. Each claim is the
+	// plus terminal-child until_child matches (§8 forward) into persisted
+	// pendingWake claims before deciding. Each claim is the
 	// claimWaitFireLocked analogue - ClaimFire removes the lease from waits[]
 	// into pendingWake atomically, so a repeat claim finds no live lease and
-	// returns false (fired_epoch dedupe: exactly one kick per fire). Slice 1
-	// claims timer expiry only; notification/attach-scan claims arrive with
-	// later tasks. Already-delivered wait_ids (a timer re-fire after a
-	// delivered claim) are skipped - the second claim would duplicate one
-	// fire's wake.
+	// returns false (fired_epoch dedupe: exactly one kick per fire).
+	// Already-delivered wait_ids (a timer re-fire after a delivered claim)
+	// are skipped - the second claim would duplicate one fire's wake.
 	s.mu.Lock()
 	delivered := s.goalWakeDelivered
 	latched := s.goalTerminalPending || full.TerminalPending
 	s.mu.Unlock()
 	var claimed []goal.PendingWake
 	for _, w := range full.Waits {
-		if w.Lease.Kind != goal.WaitUntilTime || !w.Live() {
+		if !w.Live() {
 			continue
 		}
-		if !now.Before(w.Lease.Deadline) {
-			if delivered[w.Lease.WaitID] {
+		if delivered[w.Lease.WaitID] {
+			continue
+		}
+		switch w.Lease.Kind {
+		case goal.WaitUntilTime:
+			if now.Before(w.Lease.Deadline) {
 				continue
 			}
 			if entry, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: "+w.Lease.Label, now); ok {
 				claimed = append(claimed, entry)
+			}
+		case goal.WaitUntilChild:
+			if trigger, ok := s.childTerminalTrigger(w.Lease.Predicate.Target); ok {
+				if entry, ok := store.ClaimFire(w.Lease.WaitID, trigger, now); ok {
+					claimed = append(claimed, entry)
+				}
 			}
 		}
 	}
@@ -420,13 +440,26 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		}
 	}
 	// Predicate truth is the section-3-top pre-read seam: evaluated outside
-	// the pure function (slice 1: timer-expiry truth only - live until_time
-	// leases read false, expired ones were just claimed above; richer
-	// substrate reads wire in with the notification path). Positional in
-	// Waits order.
+	// the pure function (timer-expiry truth only - live until_time leases
+	// read false, expired ones were just claimed above; until_child truth
+	// rides the attach-scan claim above). Positional in Waits order.
 	truth := make([]bool, len(full.Waits))
 	markers := goal.AdvancementMarkers{AdvancedSinceLoss: full.AdvancementSinceLoss}
-	outcome := goal.TurnOutcome{Mutated: progressed}
+	// Fold-before-decide (spec §§1, 4): the ledger folds the just-finished
+	// turn BEFORE the pure table reads the stall signals, so rules 6-7 act
+	// on the post-fold summary. The caller's outcome is authoritative (tests
+	// pass explicit outcomes; production passes the recorded-evidence
+	// outcome); a nil outcome folds a bare {Mutated: progressed} turn. The
+	// fold commits only on the paths that reach the plain drive below — park,
+	// hold, wake-drive, superseded, tails, and non-continuation resumes all
+	// return before it. waitAdvanced is true when this gate claimed any
+	// until_child terminal fire (waits-predicate evidence feeds the ledger).
+	foldOutcome := goal.TurnOutcome{Mutated: progressed}
+	if outcome != nil {
+		foldOutcome = *outcome
+		foldOutcome.Mutated = foldOutcome.Mutated || progressed
+	}
+	waitAdvanced := len(claimed) > 0 && claimedChildTerminal(claimed, full)
 	// Terminal-pending latch (spec section 1 R7 M-I1): while latched, rules
 	// 2/3 (plus the section-5 re-park graduation - a later task) evaluate
 	// before rule 1. The latch stays hidden from the pure table: a
@@ -448,7 +481,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 	if latched {
 		gated := full
 		gated.PendingWake = nil
-		if step, verdict := goal.DecideGoalStep(gated, outcome, truth, nil, markers, now); step == goal.StepBlock {
+		if step, verdict := goal.DecideGoalStep(gated, foldOutcome, truth, nil, markers, now); step == goal.StepBlock {
 			s.goalUpdateMu.Unlock()
 			s.dropLatchedWakes(full, verdict, now)
 			return s.blockGoalFromGate(verdict)
@@ -458,14 +491,21 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		s.goalTerminalPending = false
 		s.mu.Unlock()
 	}
-	step, verdict := goal.DecideGoalStep(full, outcome, truth, decidePending, markers, now)
+	// The decide reads the POST-fold ledger (spec §1 rules 6-7 key off the
+	// folded summary): fold the outcome onto a copy first and decide on the
+	// folded snapshot. The commit below persists the same fold — one fold
+	// per gate, never two.
+	folded := full
+	folded.LedgerSummary = goal.FoldLedger(full.LedgerSummary, foldOutcome, waitAdvanced)
+	step, verdict := goal.DecideGoalStep(folded, foldOutcome, truth, decidePending, markers, now)
 	switch step {
 	case goal.StepPark:
 		// Waiting branch: skip every fold, arm nothing (spec section 1 -
-		// only the coalesced wait timer). Preserve the interim wake-pending
+		// only the coalesced wait timer). Preserve the wake-pending
 		// hold's settle flag so the settle does not re-kick past the same
-		// wait, and keep the legacy hold working when no registry wait
-		// exists (its dependents still guarantee a future wake).
+		// wait, and keep the hold working when no registry wait exists (its
+		// dependents still guarantee a future wake). The pre-decide fold
+		// above is discarded — parked turns accrue zero stall signal.
 		if wakePending || len(full.Waits) > 0 {
 			s.mu.Lock()
 			s.goalDependentsHeld = true
@@ -474,14 +514,26 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		s.goalUpdateMu.Unlock()
 		s.armGoalWaitTimer()
 		return "", false
+	case goal.StepNudge:
+		// Stall-nudge (spec §§1, 6 stage 1): commit the fold (which trips the
+		// stage none → nudged transition), accrue the continuation, emit
+		// exactly one steering note naming the repetition evidence, and drive
+		// the objective — never block on the first trip.
+		snap := s.commitGoalLedgerFold(store, full, foldOutcome, waitAdvanced, now)
+		s.emitGoalUpdated(snap)
+		s.goalUpdateMu.Unlock()
+		s.appendTurn(schema.TurnSteering, llm.User("[goal-stall-nudge] "+stallNudgeText(full, folded)))
+		s.maybeAutoSave()
+		return goal.Render(snap.Objective), true
 	case goal.StepDrive:
 		if hasSupersededWake(full) {
 			// Superseded path (spec section 3): the goal was retargeted
 			// between claim and kick. Drive a single no-op evaluation on
 			// the CURRENT objective with the stale excerpt marked
 			// superseded - never the old objective's wake. The turn is
-			// wait-attributable: bypass the stall fold, consume the marked
-			// batch at this tail, and re-arm the current objective.
+			// wait-attributable: the pre-decide fold above is discarded,
+			// consume the marked batch at this tail, and re-arm the current
+			// objective.
 			prompt := s.renderGoalSupersededPrompt(full)
 			var ids []string
 			for _, p := range full.PendingWake {
@@ -503,8 +555,10 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		if len(full.PendingWake) > 0 || len(claimed) > 0 {
 			// Fired/expiry path: an undelivered wake batch drives exactly
 			// one resume turn carrying all coalesced triggers (spec section
-			// 2: one combined wake turn; the continuation charge accrues at
-			// the wake turn's own tail fold via the interim judge).
+			// 2: one combined wake turn). The wake turn's own drive folds
+			// via the ledger (spec §5: wake turns count — the drive
+			// commits; the tail only drains the delivered batch, never
+			// re-folds).
 			// Terminal-flagged when a budget is also exceeded: latch so the
 			// NEXT gate enforces bounds before rule 1 (no starvation by
 			// flapping predicates).
@@ -514,6 +568,8 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 				s.goalTerminalPending = true
 				s.mu.Unlock()
 			}
+			snap := s.commitGoalLedgerFold(store, full, foldOutcome, waitAdvanced, now)
+			s.emitGoalUpdated(snap)
 			prompt := s.renderGoalWakePrompt(full)
 			var ids []string
 			for _, p := range full.PendingWake {
@@ -531,17 +587,13 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 			// plain objective.
 			return prompt, true
 		}
-		// Plain drive: fall through to the interim fold below (active goal,
+		// Plain drive: fall through to the ledger fold below (active goal,
 		// no wakes). A waiting status with no live waits and no backlog is
 		// unreachable (the store returns to active on the last claim/cancel),
 		// but drive it rather than strand it.
 	case goal.StepBlock:
 		s.goalUpdateMu.Unlock()
 		return s.blockGoalFromGate(verdict)
-	default:
-		// StepNudge arrives with the ledger task; slice 1 never returns it
-		// (the pure table documents it as unreturned until then). Treat as a
-		// plain drive - never park, never block on an unknown step.
 	}
 	if !wasContinuation {
 		s.goalUpdateMu.Unlock()
@@ -592,7 +644,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// guaranteed to wake the session (a running delegate's report/terminal
 		// notification, a supervised background job's progress tick or terminal
 		// notification). Waiting on a guaranteed wake is not stalling, so the
-		// no-progress fold is skipped — three polling turns must not block a
+		// ledger fold is skipped — polling turns must not accrue stall signal on
 		// goal whose next phase starts when the last dependent reports — and no
 		// further continuation is armed: the notification machinery drives the
 		// session, and that turn's settle re-arms the goal. The settle flag
@@ -611,11 +663,18 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		s.goalUpdateMu.Unlock()
 		return "", false
 	}
-	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
+	// Plain-drive fold (spec §§1, 4): commit the same ledger fold the decide
+	// read, accrue the continuation, and apply the two-tier stall bound. The
+	// fold trips stage none → nudged on its first breach (the StepNudge arm
+	// above already returned); a further breach after the nudge blocks here
+	// with "no progress" and the single terminal note. Repetition/backstop
+	// verdicts below key off the COMMITTED summary (not the pre-fold read),
+	// so the block and the persisted stage agree on the same trip.
+	snap, stillActive := s.foldGoalLedgerTurn(store, foldOutcome, waitAdvanced, now)
 	s.emitGoalUpdated(snap)
 	s.goalUpdateMu.Unlock()
 	if !stillActive {
-		// The no-progress breaker fired this turn. Record it as a steering turn
+		// The ledger stall bound fired this turn. Record it as a steering turn
 		// (user-role, the channel the goal engine already speaks on): durable in
 		// the transcript and projected on reload, without becoming a mid-history
 		// system-role message provider adapters would fold into persistent
@@ -623,13 +682,109 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// processOneInput's defer-save, so without the save a blocked goal would
 		// be saved as still-active and resume on restart (/par A4).
 		s.appendTurn(schema.TurnSteering, llm.User(fmt.Sprintf(
-			"[goal-no-progress-breaker] Goal blocked: no mutating progress in %d consecutive goal-continuation turns. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
-			snap.NoProgressStreak)))
+			"[goal-no-progress] Goal blocked: %s. The goal engine has stopped driving the objective; it resumes only via /goal clear or a new /goal.",
+			stallBlockText(store))))
 		s.reportGoalEnded()
 		s.maybeAutoSave()
 		return "", false
 	}
 	return goal.Render(snap.Objective), true
+}
+
+// commitGoalLedgerFold persists the pre-decide ledger fold for the nudge arm:
+// same FoldLedger + continuation accrual as the plain-drive fold, plus the
+// stage none → nudged trip the nudge verdict implies. Call with goalUpdateMu
+// held; store methods self-lock.
+func (s *Session) commitGoalLedgerFold(store *goal.Store, full goal.GoalSnapshot, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) goal.Snapshot {
+	_ = full
+	snap, _ := store.RecordContinuation(outcome, waitAdvanced, now)
+	return snap
+}
+
+// foldGoalLedgerTurn persists one plain-drive ledger fold and applies the
+// two-tier stall bound (spec §§1, 4 rules 6-7). Call with goalUpdateMu held;
+// store methods self-lock.
+func (s *Session) foldGoalLedgerTurn(store *goal.Store, outcome goal.TurnOutcome, waitAdvanced bool, now time.Time) (goal.Snapshot, bool) {
+	return store.RecordContinuation(outcome, waitAdvanced, now)
+}
+
+// stallNudgeText names the repetition evidence for the stage-1 nudge note
+// (spec §6: the nudge names the evidence): the trailing action fingerprint
+// plus the run length and tier. Pure: no locks.
+func stallNudgeText(pre, folded goal.GoalSnapshot) string {
+	fp := ""
+	class := ""
+	if n := len(folded.LedgerSummary.Entries); n > 0 {
+		fp = folded.LedgerSummary.Entries[n-1].Fingerprint
+		class = folded.LedgerSummary.Entries[n-1].Class
+	}
+	k := folded.LedgerSummary.Tier
+	if k != goal.RepetitionThresholdAdvanced && k != goal.RepetitionThresholdFresh {
+		k = goal.RepetitionThresholdFresh
+	}
+	backstop := goal.BackstopStalled(folded.LedgerSummary)
+	if backstop {
+		return fmt.Sprintf("%d consecutive non-advancing turns (total non-advancement backstop); state your unblock condition or register the wait", goal.BackstopThreshold)
+	}
+	_ = pre
+	return fmt.Sprintf("%d turns of `%s` (%s) with no state change; state your unblock condition or register the wait", folded.LedgerSummary.Repetition, fp, class) +
+		fmt.Sprintf(" (tier K=%d)", k)
+}
+
+// stallBlockText names the committed stall evidence for the terminal note.
+// Call with no locks held (store methods self-lock).
+func stallBlockText(store *goal.Store) string {
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		return "no progress"
+	}
+	if goal.BackstopStalled(full.LedgerSummary) {
+		return fmt.Sprintf("no state advancement in the last %d continuation turns", goal.BackstopThreshold)
+	}
+	if n := len(full.LedgerSummary.Entries); n > 0 {
+		last := full.LedgerSummary.Entries[n-1]
+		return fmt.Sprintf("%d turns of `%s` (%s) with no state change", full.LedgerSummary.Repetition, last.Fingerprint, last.Class)
+	}
+	return "no progress"
+}
+
+// childTerminalTrigger reports the terminal trigger for a direct child target
+// (the §8 gate attach-scan): terminal-only — a non-terminal or unknown child
+// reads false and never claims. Controller reads are §3-top pre-reads
+// (acquire, read, release — never held across the claim).
+func (s *Session) childTerminalTrigger(childID string) (string, bool) {
+	if s == nil || s.subagents == nil || childID == "" {
+		return "", false
+	}
+	for _, sub := range s.subagents.directSubagents() {
+		if sub == nil || sub.sess == nil || sub.id != childID {
+			continue
+		}
+		sub.mu.Lock()
+		terminal := terminalStatus(sub.status)
+		result := sub.result
+		sub.mu.Unlock()
+		if !terminal {
+			return "", false
+		}
+		trigger := "child " + childID + " terminal"
+		if strings.TrimSpace(result) != "" {
+			trigger += ": " + strings.TrimSpace(result)
+		}
+		return trigger, true
+	}
+	return "", false
+}
+
+// claimedChildTerminal reports whether any claim in the batch carries a child
+// terminal trigger (waits-predicate evidence for the ledger fold). Pure.
+func claimedChildTerminal(claimed []goal.PendingWake, _ goal.GoalSnapshot) bool {
+	for _, c := range claimed {
+		if strings.HasPrefix(c.Trigger, "child ") && strings.Contains(c.Trigger, "terminal") {
+			return true
+		}
+	}
+	return false
 }
 
 // renderGoalWakePrompt renders the wait-attributable wake turn prompt (spec
@@ -1153,7 +1308,7 @@ func (s *Session) settleGoalOnIdle() bool {
 	// owns the resume, so the settle must not double-kick past the same wait.
 	// The exception is exactly-one kick for a stale park: a claim landed here
 	// means the wait already fired, so the wake turn is due now. A non-parked
-	// active goal kicks normally when no interim hold suppresses it.
+	// active goal kicks normally when no hold suppresses it.
 	// A delivered-but-unconsumed backlog (kick went out, wake turn not yet
 	// folded) also suppresses: the wake is already scheduled.
 	if kick != nil && !pendingAsk && !suppressHold && !backlogPending && (!preParked || len(claimed) > 0) {

@@ -24,10 +24,12 @@ const (
 	StatusBlocked  Status = "blocked"
 )
 
-// Interim stall-judge caps (v1 mutation-count breaker). Slice 1 keeps this
-// judge armed for non-parked loops (spec §9 rollout); the repetition ledger
-// (Task 6) retires it. GoalTurnMaxRounds bounds the tool rounds within a
-// single goal turn.
+// Migration-compat tier aliases (v1 mutation-count breaker K values). Slice 2
+// retires the v1 judge as a stall signal — the repetition ledger owns live
+// stopping — but the K=3/K=6 regimes survive as the ledger tiers
+// (RepetitionThresholdAdvanced/Fresh) and the §7 migration table still reads
+// these names. GoalTurnMaxRounds bounds the tool rounds within a single goal
+// turn.
 const (
 	NoProgressLimit      = 3
 	NeverProgressedLimit = 6
@@ -169,34 +171,36 @@ const (
 	StepBlock GoalStep = "block"
 )
 
-// DecideGoalStep is the pure goal-gate table (spec §1 rules 1-8, slice-1
-// scope): snapshot (the full persisted GoalSnapshot) × turnOutcome ×
-// per-lease predicateTruth (evaluated outside, in GoalSnapshot.Waits order —
-// the §3-top pre-read seam) × transient pendingWake claim batch × advancement
-// markers × now (the sclock instant; time is an explicit input so the function
-// stays pure).
+// DecideGoalStep is the pure goal-gate table (spec §1 rules 1-8): snapshot
+// (the full persisted GoalSnapshot) × turnOutcome × per-lease predicateTruth
+// (evaluated outside, in GoalSnapshot.Waits order — the §3-top pre-read seam)
+// × transient pendingWake claim batch × advancement markers × now (the sclock
+// instant; time is an explicit input so the function stays pure).
 //
-// Slice-1 rules implemented: 1 (undelivered pendingWake → drive), 2
+// Rules implemented: 1 (undelivered pendingWake → drive), 2
 // (continuations/parked-total spent → block "budget exhausted"), 3 (deadline
 // passed → block "deadline exceeded"), 4 (any live wait → park), 5 (lost this
 // turn ∧ no live waits ∧ no advancement since loss → block "waiting lost:
-// <cause>"), 8 (else drive). Rules 6-7 (stall-K graduation, total backstop)
-// arrive with the ledger in Task 6; StepNudge is declared for that table and
-// unreturned until then. The rule-1 terminal-flagged drive and the
-// terminalPending latch (spec §1 R7 M-I1) are Task-2 gate state, not pure
-// table: slice 1 returns a plain drive for undelivered wakes.
+// <cause>"), 6 (stall-K reached → nudge on first reaching, else block — the
+// stage-2 park arrives with the Task-8 stage machine, so the second trip
+// blocks), 7 (total backstop reached → same graduation as 6), 8 (else
+// drive). The stall read keys off the folded snapshot ledger: TurnOutcome is
+// the gate's pre-decide fold input (the gate folds first, decides on the
+// post-fold summary), so rules 6-7 and the caller never double-fold. The
+// rule-1 terminal-flagged drive and the terminalPending latch (spec §1 R7
+// M-I1) are Task-2 gate state, not pure table: this table returns a plain
+// drive for undelivered wakes.
 //
 // Ties break top-to-bottom. Terminal snapshots are outside the domain
 // (terminals short-circuit before the table); behavior on one is still total
 // (falls through to drive) but meaningless — callers must not feed terminals.
 func DecideGoalStep(snap GoalSnapshot, outcome TurnOutcome, predicateTruth []bool, pending []PendingWake, markers AdvancementMarkers, now time.Time) (GoalStep, string) {
-	_ = outcome
+	_ = predicateTruth
 	// predicateTruth is claim-routing input for the gate (Task 2 wires
 	// claim-before-decide so rule 1 always observes claimable fires);
 	// liveness here keys off FiredEpoch only. Unfired-but-expired leases
 	// still park: the Task-2/4 claim machinery converts expiry into a
 	// pendingWake entry, which rule 1 then drives exactly once.
-	_ = predicateTruth
 	// Rule 1: undelivered fire (transient claim batch or persisted backlog).
 	if len(pending) > 0 || len(snap.PendingWake) > 0 {
 		return StepDrive, ""
@@ -225,7 +229,21 @@ func DecideGoalStep(snap GoalSnapshot, outcome TurnOutcome, predicateTruth []boo
 	if markers.LossThisTurn && !markers.AdvancedSinceLoss {
 		return StepBlock, WaitingLostVerdict(markers.LossCause)
 	}
-	// Rule 8: else drive. (Rules 6-7: Task 6 ledger.)
+	// Rules 6-7: stall-K (repetition) and the total non-advancement backstop,
+	// read off the folded snapshot ledger (spec §§1, 4). The first trip nudges
+	// (stage none → nudged); a further breach after the nudge blocks. The
+	// pre-fold TurnOutcome is consumed by the gate's own fold and ignored
+	// here, so rules 6-7 and the caller never double-fold.
+	folded := snap.LedgerSummary
+	if len(folded.Entries) > 0 || folded.Repetition > 0 {
+		if RepetitionStalled(folded) || BackstopStalled(folded) {
+			if folded.Stage == StageNone {
+				return StepNudge, VerdictNoProgress
+			}
+			return StepBlock, VerdictNoProgress
+		}
+	}
+	// Rule 8: else drive.
 	return StepDrive, ""
 }
 
@@ -590,7 +608,7 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			}
 			norm.Baseline = baseline
 		case EventHTTPMatch:
-			if !validHTTPURL(norm.Target) || !sub.CheckURL(norm.Target, timeout) {
+			if !ValidHTTPURL(norm.Target) || !sub.CheckURL(norm.Target, timeout) {
 				s.lastRejectReason = fmt.Sprintf("rejected URL %q: must be well-formed with an explicit timeout under the session egress policy", norm.Target)
 				return Wait{}, false
 			}
@@ -683,6 +701,28 @@ func (s *Store) CancelWait(waitID string, now time.Time) bool {
 // (spec §7 "with the cancellation noted"): the wake turn's prompt carries
 // the note alongside the stale trigger.
 const CancelledWakeNote = "[wait cancelled after claim]"
+
+// ClaimChildWaits claims every live until_child lease naming childID with the
+// terminal trigger (spec §8 forward). ClaimFire's atomicity is the
+// exactly-once guarantee (double-claim collapses to one wake). Reports
+// whether any lease claimed. The session gate serializes it under
+// goalUpdateMu alongside the sibling expiry claims.
+func (s *Store) ClaimChildWaits(childID, trigger string, now time.Time) bool {
+	g := s.goal
+	if g == nil {
+		return false
+	}
+	claimed := false
+	for _, w := range append([]Wait(nil), g.Waits...) {
+		if !w.Live() || w.Lease.Kind != WaitUntilChild || w.Lease.Predicate.Target != childID {
+			continue
+		}
+		if _, ok := s.ClaimFire(w.Lease.WaitID, trigger, now); ok {
+			claimed = true
+		}
+	}
+	return claimed
+}
 
 // AnnotateCancelledWake appends CancelledWakeNote to the claimed pendingWake
 // entry naming waitID, so the wake turn that still drives once carries the
@@ -831,17 +871,26 @@ func (s *Store) TakeTerminalReport() (Snapshot, bool) {
 	return s.snapLocked(), true
 }
 
-// RecordContinuation folds one finished goal turn's progress signal into the
-// streak and accrues it against the continuation budget. Returns the
-// post-update snapshot and whether the goal is still active (i.e. whether the
-// gate should issue another continuation).
+// RecordContinuation folds one finished goal turn into the ledger and accrues
+// it against the continuation budget (spec §§1, 4-5). Returns the post-update
+// snapshot and whether the goal is still active (i.e. whether the gate should
+// issue another continuation). Slice 2 replaced the interim v1 mutation
+// breaker with this fold; TurnOutcome is the full ledger input. The legacy
+// NoProgressStreak counter is retired as a stall signal (it survives only as
+// a persisted display/migration field): the fold derives advancement from
+// the ledger entry it just appended (the entry's own Advancement flag —
+// novelty, digest delta, or waits evidence), never from a bare digest-empty
+// heuristic.
 //
 // A waiting goal skips every fold and burns zero budget (spec §1: parked goals
-// accrue zero stall signal) — the Task-2 gate routes wake/evaluation/expiry
-// turns around this fold entirely. An active goal folds the interim v1 judge
-// (two-tier mutation breaker, kept armed for non-parked loops in slice 1 per
-// spec §9); the Task-6 ledger retires it.
-func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bool) {
+// accrue zero stall signal). An active goal folds the outcome via FoldLedger
+// (observation-novelty, digest delta, waits-predicate evidence; junk writes
+// accrue), accrues one continuation, and consults the two-tier stall bound:
+// repetition-K or the B=12 backstop graduates nudge-then-block through the
+// persisted stage (stage none → nudged → blocked), exactly like the pure
+// table's rules 6-7. The Iterations counter keeps accruing for
+// display and migration compatibility, but they no longer decide the stop.
+func (s *Store) RecordContinuation(outcome TurnOutcome, waitAdvanced bool, now time.Time) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.goal == nil {
@@ -857,20 +906,25 @@ func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bo
 	g.Iterations++
 	g.Budgets.UsedContinuations++
 	g.UpdatedAt = now
-	if progressed {
+	g.LedgerSummary = FoldLedger(g.LedgerSummary, outcome, waitAdvanced)
+	if outcome.Mutated {
 		g.madeProgressOnce = true
+	}
+	if n := len(g.LedgerSummary.Entries); n > 0 && g.LedgerSummary.Entries[n-1].Advancement {
 		g.NoProgressStreak = 0
 	} else {
 		g.NoProgressStreak++
 	}
-	// Two-tier bound: stop quickly once the goal has worked then stalled
-	// (NoProgressLimit); give a never-progressing goal more leading room
-	// (NeverProgressedLimit) but still bound it so it cannot run forever.
-	limit := NoProgressLimit
-	if !g.madeProgressOnce {
-		limit = NeverProgressedLimit
-	}
-	if g.NoProgressStreak >= limit {
+	// Two-tier stall bound (spec §§1, 4 rules 6-7): repetition-K or the total
+	// backstop. The first trip nudges (stage none → nudged, goal stays
+	// active); a further breach after the nudge blocks with "no progress".
+	// Seeded summaries with <12 entries cannot backstop-stall until the
+	// window refills (BackstopStalled's consecutive definition).
+	if LedgerStalled(g.LedgerSummary) {
+		if g.LedgerSummary.Stage == StageNone {
+			g.LedgerSummary.Stage = StageNudged
+			return s.snapLocked(), true
+		}
 		g.Status = StatusBlocked
 		g.StopReason = VerdictNoProgress
 	}

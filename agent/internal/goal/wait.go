@@ -218,11 +218,11 @@ func defaultLabelFor(req WaitKind) string {
 	return string(req.Kind)
 }
 
-// validHTTPURL reports whether raw is a well-formed absolute http(s) URL.
+// ValidHTTPURL reports whether raw is a well-formed absolute http(s) URL.
 // This is the syntactic gate inside validation; the session egress policy
 // (deny link-local/loopback, redirect handling — spec §2) lives behind
 // Substrate.CheckURL, which validation additionally requires.
-func validHTTPURL(raw string) bool {
+func ValidHTTPURL(raw string) bool {
 	if len(raw) > MaxURLBytes || raw == "" {
 		return false
 	}

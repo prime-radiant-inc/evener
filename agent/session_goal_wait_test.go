@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -101,12 +102,15 @@ func TestGateExpiryRedrivesOnce(t *testing.T) {
 	if !strings.Contains(prompt, goalWaitWakeTrailerPrefix) {
 		t.Fatalf("wake prompt missing trailer %q\nprompt:\n%s", goalWaitWakeTrailerPrefix, prompt)
 	}
-	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
-		t.Fatalf("wake drive folded: snapshot = %+v, want zero fold (wait-attributable turns bypass RecordContinuation)", snap)
+	// Slice 2 retires the interim bypass: the wake turn's own drive folds
+	// into the ledger and accrues the continuation (spec §5: wake turns
+	// count — the drive commits; the tail only drains, never re-folds).
+	if snap, _ := store.Snapshot(); snap.Iterations != 1 {
+		t.Fatalf("wake drive folded: snapshot = %+v, want the wake-turn fold (Iterations=1)", snap)
 	}
 
 	// The wake turn's own tail consumes the backlog and re-arms the plain
-	// objective without folding stall signal.
+	// objective without re-folding (the drive already committed).
 	prompt, cont = sess.armGoalContinuation(false, true)
 	if !cont || prompt == "" {
 		t.Fatalf("wake-tail gate = (%q, %v), want the re-armed objective drive", prompt, cont)
@@ -117,16 +121,16 @@ func TestGateExpiryRedrivesOnce(t *testing.T) {
 	if gsnap, _ := store.GoalSnapshot(); len(gsnap.PendingWake) != 0 {
 		t.Fatalf("pendingWake after wake-tail = %+v, want drained in the same commit as the tail fold", gsnap.PendingWake)
 	}
-	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
-		t.Fatalf("wake-tail folded: snapshot = %+v, want zero fold", snap)
+	if snap, _ := store.Snapshot(); snap.Iterations != 1 {
+		t.Fatalf("wake-tail folded: snapshot = %+v, want no re-fold (still Iterations=1)", snap)
 	}
 
-	// The follow-up turn folds normally through the interim judge.
+	// The follow-up turn folds normally through the ledger.
 	if _, cont := sess.armGoalContinuation(false, true); !cont {
 		t.Fatal("follow-up gate should drive the active objective")
 	}
-	if snap, _ := store.Snapshot(); snap.Iterations != 1 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want the single post-wake fold (Iterations=1 streak=1)", snap)
+	if snap, _ := store.Snapshot(); snap.Iterations != 2 {
+		t.Fatalf("snapshot = %+v, want the post-wake fold (Iterations=2)", snap)
 	}
 }
 
@@ -300,8 +304,9 @@ func TestGateRetargetVoidsWaitsAndDisarms(t *testing.T) {
 // claim-vs-kick race (spec section 3 superseded): a claim that lands before a
 // retarget survives marked Superseded and drives a single no-op evaluation on
 // the CURRENT objective with the stale excerpt marked superseded - never the
-// old objective's wake, never a silent drop. The no-op turn consumes the
-// batch and re-arms the current objective without folding stall signal.
+// old objective's wake, never a silent drop. The superseded no-op drive
+// bypasses the fold (dropped context, never stall evidence); its tail
+// consumes the batch and re-arms the current objective without re-folding.
 func TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -342,7 +347,7 @@ func TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop(t *testing.T) {
 		t.Fatalf("no-op prompt must never pursue the old objective:\n%s", prompt)
 	}
 	// The no-op turn's own tail consumes the batch and re-arms the current
-	// objective with zero stall fold.
+	// objective without folding (superseded evaluations never fold).
 	prompt, cont = sess.armGoalContinuation(false, true)
 	if !cont || !strings.Contains(prompt, "new objective") {
 		t.Fatalf("no-op tail = (%q, %v), want the current objective re-armed", prompt, cont)
@@ -354,7 +359,7 @@ func TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop(t *testing.T) {
 		t.Fatalf("pendingWake after no-op tail = %+v, want drained", gsnap.PendingWake)
 	}
 	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
-		t.Fatalf("snapshot = %+v, want zero fold across the no-op turn", snap)
+		t.Fatalf("snapshot = %+v, want zero fold across the superseded no-op turn", snap)
 	}
 }
 
@@ -403,7 +408,7 @@ func TestGateSupersededThreeGateSequenceNoHang(t *testing.T) {
 			return
 		}
 		// Gate 3 (continuation tail, empty backlog): must NOT hang on a
-		// stale superseded flag - folds normally through the interim judge.
+		// stale superseded flag - folds normally through the ledger.
 		if _, cont = sess.armGoalContinuation(false, true); !cont {
 			t.Errorf("gate 3 must drive the active objective (stale flag must be consumed)")
 			return
@@ -417,8 +422,10 @@ func TestGateSupersededThreeGateSequenceNoHang(t *testing.T) {
 	case <-timer.C:
 		t.Fatal("three-gate superseded sequence hung: goalUpdateMu self-deadlock")
 	}
-	if snap, _ := store.Snapshot(); snap.Iterations != 1 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want exactly the gate-3 interim fold (Iterations=1 streak=1)", snap)
+	// Gates 1-2 bypass the fold (superseded no-op drive + tail drain); gate
+	// 3 commits the single ledger fold.
+	if snap, _ := store.Snapshot(); snap.Iterations != 1 {
+		t.Fatalf("snapshot = %+v, want exactly the gate-3 ledger fold (Iterations=1)", snap)
 	}
 }
 
@@ -597,7 +604,7 @@ func TestGateTerminalLatchBlocksAfterFlaggedDrive(t *testing.T) {
 	// Spend the continuation budget while ACTIVE (parked gates never fold):
 	// fold the interim judge to the cap first, then park the wait.
 	for i := 0; i < goal.DefaultMaxContinuations; i++ {
-		store.RecordContinuation(true, clk.Now())
+		store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "spend", ObservationClass: "ok", ObservationHash: "spend", StateDigest: fmt.Sprintf("spend-%d", i), Mutated: true}, false, clk.Now())
 	}
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now()); !ok {
 		t.Fatal("precondition: registration should succeed")
@@ -649,7 +656,7 @@ func TestGateLatchedDropNoticesFreshWake(t *testing.T) {
 	store := sess.getOrCreateGoalStore()
 	store.Set("latch drop", clk.Now())
 	for i := 0; i < goal.DefaultMaxContinuations; i++ {
-		store.RecordContinuation(true, clk.Now())
+		store.RecordContinuation(goal.TurnOutcome{ActionFingerprint: "spend", ObservationClass: "ok", ObservationHash: "spend", StateDigest: fmt.Sprintf("spend-%d", i), Mutated: true}, false, clk.Now())
 	}
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "first", Timeout: time.Minute}, clk.Now()); !ok {
 		t.Fatal("precondition: registration should succeed")
@@ -1076,9 +1083,11 @@ func (f *goalWaitToolSubstrate) LookupChild(id string) bool { return false }
 
 func (f *goalWaitToolSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
 
-// TestGoalWaitToolChildFromChildScopedOut pins the slice-1 honest boundary
-// (spec section 8): a child session registering until_child is rejected with
-// the scoped-out reason named - never parked on an unwired forward path.
+// TestGoalWaitToolChildFromChildScopedOut pins the slice-2 forward boundary
+// (spec section 8): the slice-1 scoped-out rejection is lifted — until_child
+// from a child session validates like any other registration. An unknown
+// target still rejects fail-closed (naming the child); a known descendant
+// parks (the parent→child forward in session_goal_ledger.go drives the wake).
 func TestGoalWaitToolChildFromChildScopedOut(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -1090,13 +1099,13 @@ func TestGoalWaitToolChildFromChildScopedOut(t *testing.T) {
 	store.Set("child wait", clk.Now())
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, goalWaitToolCall("gw1", "until_child", "child_1", 60, "", ""))
 	if !res.IsError {
-		t.Fatalf("until_child from a child session should be IsError, got output: %s", res.Output)
+		t.Fatalf("until_child on an unknown child should be IsError, got output: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "child waits scoped out in this slice") {
-		t.Fatalf("rejection %q must carry the scoped-out boundary reason", res.Output)
+	if !strings.Contains(res.Output, "child_1") {
+		t.Fatalf("rejection %q must name the unknown child target", res.Output)
 	}
 	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
-		t.Fatalf("status = %q, want active (a scoped-out registration must not park)", snap.Status)
+		t.Fatalf("status = %q, want active (a rejected registration must not park)", snap.Status)
 	}
 }
 

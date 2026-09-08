@@ -205,7 +205,7 @@ func TestGoalHoldIdleDelegateDoesNotHold(t *testing.T) {
 	}
 	snap := goalSnapshot(t, sess)
 	if snap.Iterations != 2 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want the no-progress turn folded (streak 1)", snap)
+		t.Fatalf("snapshot = %+v, want the no-progress turn folded (ledger) (Iterations=2, non-advancing streak 1)", snap)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestGoalHoldUnwatchedBackgroundJobDoesNotHold(t *testing.T) {
 		t.Fatal("non-progressed continuation with only an unwatched job must fold and re-arm (no hold)")
 	}
 	if snap := goalSnapshot(t, sess); snap.Iterations != 2 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want the no-progress turn folded (streak 1)", snap)
+		t.Fatalf("snapshot = %+v, want the no-progress turn folded (ledger) (Iterations=2, non-advancing streak 1)", snap)
 	}
 }
 
@@ -274,8 +274,11 @@ func TestGoalHoldNoNotifyFuncDoesNotHold(t *testing.T) {
 	if _, ok := sess.armGoalContinuation(false, true); !ok {
 		t.Fatal("with notifyFunc unset the gate must not hold")
 	}
-	if snap := goalSnapshot(t, sess); snap.Iterations != 1 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want the no-progress turn folded", snap)
+	// A single gate-only fold advances (first empty-class observation is
+	// novel), so the streak stays 0 — the fold happened (Iterations=1), it
+	// just was not stall evidence.
+	if snap := goalSnapshot(t, sess); snap.Iterations != 1 || snap.NoProgressStreak != 0 {
+		t.Fatalf("snapshot = %+v, want the no-progress turn folded (Iterations=1, advancing first fold)", snap)
 	}
 }
 
@@ -294,8 +297,11 @@ func TestGoalHoldNoKickFuncDoesNotHold(t *testing.T) {
 	if _, ok := sess.armGoalContinuation(false, true); !ok {
 		t.Fatal("with kickFunc unset the gate must not hold: the defer chain is the only driver")
 	}
-	if snap := goalSnapshot(t, sess); snap.Iterations != 1 || snap.NoProgressStreak != 1 {
-		t.Fatalf("snapshot = %+v, want the no-progress turn folded", snap)
+	// A single gate-only fold advances (first empty-class observation is
+	// novel), so the streak stays 0 — the fold happened (Iterations=1), it
+	// just was not stall evidence.
+	if snap := goalSnapshot(t, sess); snap.Iterations != 1 || snap.NoProgressStreak != 0 {
+		t.Fatalf("snapshot = %+v, want the no-progress turn folded (Iterations=1, advancing first fold)", snap)
 	}
 }
 
@@ -471,19 +477,21 @@ func TestGoalHoldNotificationTurnRearmsGoal(t *testing.T) {
 }
 
 // TestGoalBreakerSystemTurnAppendedOnce pins the visibility companion: when
-// the no-progress breaker fires, one steering turn records the stall in the
-// transcript (and the live context). Before this, the block existed only in
-// meta.json and the live event stream — the transcript showed a session that
-// simply stopped. The note rides the steering channel (user-role), not a
-// system-role message, so provider adapters cannot fold it into persistent
-// system instructions and the appwire projection carries it on reload.
+// the ledger stall bound fires, steering turns record the graduation in the
+// transcript (and the live context): one nudge naming the evidence plus one
+// terminal block note. Before this, the block existed only in meta.json and
+// the live event stream — the transcript showed a session that simply
+// stopped. The notes ride the steering channel (user-role), not a
+// system-role message, so provider adapters cannot fold them into persistent
+// system instructions and the appwire projection carries them on reload.
 func TestGoalBreakerSystemTurnAppendedOnce(t *testing.T) {
 	t.Parallel()
 	// One drive cascades: each communicate-only continuation folds and re-arms
-	// inline until the breaker trips. A goal that never made a mutating call
-	// gets the larger NeverProgressedLimit before blocking.
-	steps := make([]func(req llm.Request) llm.Response, 0, goal.NeverProgressedLimit+1)
-	for i := range goal.NeverProgressedLimit {
+	// inline until the ledger bound trips. Communicate-only turns share one
+	// fingerprint shape and one digest, so the fresh tier (K=6) trips: the
+	// 6th folds the nudge, the 7th blocks.
+	steps := make([]func(req llm.Request) llm.Response, 0, goal.RepetitionThresholdFresh+2)
+	for i := range goal.RepetitionThresholdFresh + 1 {
 		steps = append(steps, func(req llm.Request) llm.Response {
 			return toolCallResponse(communicateCall(fmt.Sprintf("c%d", i), "poll"))
 		})
@@ -504,17 +512,22 @@ func TestGoalBreakerSystemTurnAppendedOnce(t *testing.T) {
 
 	snap := goalSnapshot(t, sess)
 	if snap.Status != goal.StatusBlocked {
-		t.Fatalf("goal status = %q, want blocked after %d never-progressed continuations", snap.Status, goal.NeverProgressedLimit)
+		t.Fatalf("goal status = %q, want blocked after the nudge+block graduation", snap.Status)
 	}
 	sess.mu.Lock()
 	breakerNotes := 0
 	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "goal-no-progress-breaker") {
+		if turn.Kind != schema.TurnSteering {
+			continue
+		}
+		text := turn.Message.Text()
+		if strings.Contains(text, "goal-stall-nudge") || strings.Contains(text, "Goal blocked") {
 			breakerNotes++
 		}
 	}
 	sess.mu.Unlock()
-	if breakerNotes != 1 {
-		t.Fatalf("breaker steering notes in history = %d, want exactly 1", breakerNotes)
+	// Nudge (stage 1, names the evidence) + terminal block note: exactly 2.
+	if breakerNotes != 2 {
+		t.Fatalf("ledger stall steering notes in history = %d, want exactly 2 (nudge + block)", breakerNotes)
 	}
 }

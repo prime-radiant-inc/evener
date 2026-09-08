@@ -676,6 +676,16 @@ type Session struct {
 	// drive time (batch marked delivered), consumed at the turn's tail.
 	// Guarded by s.mu.
 	goalSupersededArmed bool
+	// goalTurnEvidence is the per-turn accumulator for the slice-2 ledger fold
+	// (spec §4): every tool round appends its per-call (fingerprint, class,
+	// hash) evidence here. The gate's plain-drive branch commits it under
+	// goalUpdateMu into the persisted ledger; the evidence is cleared when a
+	// turn starts, when a non-fold branch wins (park, hold, wait-attributable
+	// wake paths), and when no goal is current. Guarded by s.mu. The folded
+	// TurnOutcome is pre-scoped by construction: the state digest arrives from
+	// buildGoalTurnOutcome/goalStateDigest (job/delegate/watch/wait/file
+	// names+sizes+mtimes) — never history.
+	goalTurnEvidence []goalTurnCallEvidence
 	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
 	// loop immediately by feeding the first continuation prompt back into the
 	// serve loop's input channel. It is a callback because the agent module must

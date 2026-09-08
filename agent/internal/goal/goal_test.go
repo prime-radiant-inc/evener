@@ -24,75 +24,79 @@ func TestStoreSetGetClear(t *testing.T) {
 	}
 }
 
-// TestRecordContinuationNoProgressGrace: leading read-only turns accrue toward the
-// larger NeverProgressedLimit (not blocked early); a progressed turn resets the
-// streak and flips to the tighter NoProgressLimit, after which NoProgressLimit
-// consecutive no-progress turns block.
+// foldStallOutcome builds the identical non-advancing outcome the stall tests
+// fold: same fingerprint + class, no digest delta.
+func foldStallOutcome() TurnOutcome {
+	return TurnOutcome{
+		ActionFingerprint: "grep pattern=x",
+		ObservationClass:  "ok",
+		ObservationHash:   "same",
+		StateDigest:       "steady",
+	}
+}
+
+// TestRecordContinuationNoProgressGrace: leading identical non-advancing turns
+// accrue toward the K=6 fresh tier (not blocked early); the 6th nudges
+// (stage none → nudged, still active) and the 7th blocks with "no progress".
 func TestRecordContinuationNoProgressGrace(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
-	for i := range NeverProgressedLimit - 1 {
-		s.RecordContinuation(false /*progressed*/, clock())
+	for i := range RepetitionThresholdFresh - 1 {
+		s.RecordContinuation(foldStallOutcome(), false, clock())
 		snap, _ := s.Snapshot()
 		if snap.Status != StatusActive {
 			t.Fatalf("leading turn %d should stay active, got %v", i, snap.Status)
 		}
 	}
-	// G1: progress turn must (a) remain active, (b) reset NoProgressStreak to 0,
-	// and (c) increment Iterations.
-	snap, active := s.RecordContinuation(true, clock()) // progress: reset + flip to NoProgressLimit
+	// G1: the K-th identical turn must nudge (stay active, stage trips) and
+	// increment Iterations.
+	snap, active := s.RecordContinuation(foldStallOutcome(), false, clock())
 	if !active {
-		t.Fatal("progress turn must remain active")
+		t.Fatal("K-th identical turn must nudge, not block")
 	}
 	if snap.Status != StatusActive {
-		t.Fatalf("after progress turn: want StatusActive, got %v", snap.Status)
+		t.Fatalf("after nudge turn: want StatusActive, got %v", snap.Status)
 	}
-	if snap.NoProgressStreak != 0 {
-		t.Fatalf("after progress turn: want NoProgressStreak=0, got %d", snap.NoProgressStreak)
+	gsnap, _ := s.GoalSnapshot()
+	if gsnap.LedgerSummary.Stage != StageNudged {
+		t.Fatalf("after nudge turn: want stage nudged, got %q", gsnap.LedgerSummary.Stage)
 	}
-	// G5: NeverProgressedLimit-1 leading turns + 1 progress turn.
-	wantIters := NeverProgressedLimit
+	// G5: (K-1) leading turns + 1 nudge turn.
+	wantIters := RepetitionThresholdFresh
 	if snap.Iterations != wantIters {
-		t.Fatalf("after progress turn: want Iterations=%d, got %d", wantIters, snap.Iterations)
+		t.Fatalf("after nudge turn: want Iterations=%d, got %d", wantIters, snap.Iterations)
 	}
-	// G4: pin the exact turn at which blocking occurs — must be precisely
-	// NoProgressLimit consecutive no-progress turns after the reset.
-	for i := range NoProgressLimit {
-		snap, active := s.RecordContinuation(false, clock())
-		wantActive := i < NoProgressLimit-1
-		if active != wantActive {
-			t.Fatalf("no-progress turn %d: want active=%v, got %v", i, wantActive, active)
-		}
-		if wantActive && snap.Status != StatusActive {
-			t.Fatalf("no-progress turn %d: want StatusActive, got %v", i, snap.Status)
-		}
-		if !wantActive && (snap.Status != StatusBlocked || snap.StopReason != "no progress") {
-			t.Fatalf("no-progress turn %d: want blocked/no-progress, got %v/%q", i, snap.Status, snap.StopReason)
-		}
+	// G4: the next identical turn after the nudge blocks.
+	snap, active = s.RecordContinuation(foldStallOutcome(), false, clock())
+	if active || snap.Status != StatusBlocked || snap.StopReason != "no progress" {
+		t.Fatalf("post-nudge turn: want blocked/no-progress, got %v/%q active=%v", snap.Status, snap.StopReason, active)
 	}
 }
 
-// TestNeverProgressedBlocks pins the fix for the breaker hole: a goal that never
-// makes a mutating tool call must still stop (at NeverProgressedLimit), not run
-// forever (the /par Critical B1).
+// TestNeverProgressedBlocks pins the ledger bound for a never-advancing goal:
+// identical non-advancing turns nudge at K=6 then block on the next turn —
+// never run forever (the /par Critical B1, now closed by the ledger).
 func TestNeverProgressedBlocks(t *testing.T) {
 	s := NewStore()
 	s.Set("summarize the architecture", clock())
-	for i := range NeverProgressedLimit - 1 {
-		if _, active := s.RecordContinuation(false, clock()); !active {
-			t.Fatalf("turn %d: never-progressed goal blocked too early", i)
+	for i := range RepetitionThresholdFresh - 1 {
+		if _, active := s.RecordContinuation(foldStallOutcome(), false, clock()); !active {
+			t.Fatalf("turn %d: never-advanced goal nudged/blocked too early", i)
 		}
 	}
-	if _, active := s.RecordContinuation(false, clock()); active {
-		t.Fatal("never-progressed goal must block at NeverProgressedLimit")
+	if _, active := s.RecordContinuation(foldStallOutcome(), false, clock()); !active {
+		t.Fatal("K-th identical turn must nudge, not block")
+	}
+	if _, active := s.RecordContinuation(foldStallOutcome(), false, clock()); active {
+		t.Fatal("post-nudge identical turn must block")
 	}
 	snap, _ := s.Snapshot()
 	if snap.Status != StatusBlocked || snap.StopReason != "no progress" {
 		t.Fatalf("want blocked/no-progress, got %v/%q", snap.Status, snap.StopReason)
 	}
-	// G5: Iterations must equal NeverProgressedLimit after exactly that many turns.
-	if snap.Iterations != NeverProgressedLimit {
-		t.Fatalf("want Iterations=%d, got %d", NeverProgressedLimit, snap.Iterations)
+	// G5: Iterations counts every folded turn (K leading + nudge + block).
+	if snap.Iterations != RepetitionThresholdFresh+1 {
+		t.Fatalf("want Iterations=%d, got %d", RepetitionThresholdFresh+1, snap.Iterations)
 	}
 }
 
@@ -121,15 +125,18 @@ func TestSetTerminal(t *testing.T) {
 }
 
 // TestPersistSnapshotRestoreRoundTrip verifies that PersistSnapshot captures all
-// fields and Restore reconstitutes them faithfully, including madeProgressOnce.
-// The key behavioral invariant: a restored goal with prior progress must use
-// NoProgressLimit (not the larger NeverProgressedLimit).
+// fields and Restore reconstitutes them faithfully, including the ledger
+// window. The key behavioral invariant: a restored goal with a tightened
+// (advanced) tier keeps it — the next identical turns stall at K=3, not K=6.
 // G6: covers the previously untested PersistSnapshot/Restore path.
 func TestPersistSnapshotRestoreRoundTrip(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
-	// One progress turn so madeProgressOnce=true, NoProgressStreak=0, Iterations=1.
-	s.RecordContinuation(true, clock())
+	// Two advancing turns so tier=K=3 (the first fold has no previous digest
+	// to delta against, so tightening needs the second mutated-with-delta
+	// turn), repetition=1, Iterations=2.
+	s.RecordContinuation(TurnOutcome{ActionFingerprint: "seed", ObservationClass: "ok", ObservationHash: "h1", StateDigest: "d-seed", Mutated: true}, false, clock())
+	s.RecordContinuation(TurnOutcome{ActionFingerprint: "write file=x", ObservationClass: "ok", ObservationHash: "same", StateDigest: "steady", Mutated: true}, false, clock())
 
 	persisted, ok := s.PersistSnapshot()
 	if !ok {
@@ -138,26 +145,32 @@ func TestPersistSnapshotRestoreRoundTrip(t *testing.T) {
 	if persisted.Objective != "obj" || persisted.Status != StatusActive || persisted.StopReason != "" {
 		t.Fatalf("PersistSnapshot: unexpected values: obj=%q status=%q stopReason=%q", persisted.Objective, persisted.Status, persisted.StopReason)
 	}
-	if persisted.Iterations != 1 || persisted.NoProgressStreak != 0 || !persisted.MadeProgressOnce {
+	if persisted.Iterations != 2 || persisted.NoProgressStreak != 0 || !persisted.MadeProgressOnce {
 		t.Fatalf("PersistSnapshot: unexpected counters: iters=%d streak=%d madeProgressOnce=%v", persisted.Iterations, persisted.NoProgressStreak, persisted.MadeProgressOnce)
 	}
+	if persisted.LedgerSummary.Tier != RepetitionThresholdAdvanced {
+		t.Fatalf("PersistSnapshot: ledger tier = %d, want advanced K=%d", persisted.LedgerSummary.Tier, RepetitionThresholdAdvanced)
+	}
 
-	// Restore into a fresh store and verify the limit regime is NoProgressLimit
-	// (not NeverProgressedLimit), proving madeProgressOnce survived the round-trip.
+	// Restore into a fresh store and verify the advanced tier survived: two
+	// more identical non-advancing turns reach K=3 and nudge (not K=6).
 	s2 := NewStore()
 	s2.RestoreSnapshot(persisted)
 
-	for i := range NoProgressLimit - 1 {
-		if _, active := s2.RecordContinuation(false, clock()); !active {
-			t.Fatalf("restored goal: no-progress turn %d blocked too early (want NoProgressLimit=%d)", i, NoProgressLimit)
+	stalled := TurnOutcome{ActionFingerprint: "write file=x", ObservationClass: "ok", ObservationHash: "same", StateDigest: "steady"}
+	// Restored run sits at rep=1 (the pre-restore turn advanced): two more
+	// identical non-advancing turns reach K=3 and nudge (not K=6).
+	for i := range RepetitionThresholdAdvanced - 1 {
+		if _, active := s2.RecordContinuation(stalled, false, clock()); !active {
+			t.Fatalf("restored goal: stalled turn %d blocked too early (want K=%d)", i, RepetitionThresholdAdvanced)
 		}
 	}
-	if _, active := s2.RecordContinuation(false, clock()); active {
-		t.Fatal("restored goal: must block at NoProgressLimit after prior progress (not NeverProgressedLimit)")
-	}
 	snap, _ := s2.Snapshot()
-	if snap.Status != StatusBlocked || snap.StopReason != "no progress" {
-		t.Fatalf("restored goal: want blocked/no-progress, got %v/%q", snap.Status, snap.StopReason)
+	if snap.Status != StatusActive {
+		t.Fatalf("restored goal: want active after the nudge, got %v", snap.Status)
+	}
+	if gsnap, _ := s2.GoalSnapshot(); gsnap.LedgerSummary.Stage != StageNudged {
+		t.Fatalf("restored goal: want stage nudged, got %q", gsnap.LedgerSummary.Stage)
 	}
 	if snap.Objective != "obj" {
 		t.Fatalf("restored goal: objective changed to %q", snap.Objective)
@@ -193,7 +206,7 @@ func TestBudgetsDefaults(t *testing.T) {
 func TestBudgetsAccrueInFold(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
-	snap, active := s.RecordContinuation(true, clock())
+	snap, active := s.RecordContinuation(TurnOutcome{ActionFingerprint: "write file=x", ObservationClass: "ok", ObservationHash: "h1", StateDigest: "d1", Mutated: true}, false, clock())
 	if !active {
 		t.Fatal("progress turn must remain active")
 	}
@@ -212,7 +225,7 @@ func TestRecordContinuationSkipsFoldWhileWaiting(t *testing.T) {
 	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Minute}, clock()); !ok {
 		t.Fatal("register should succeed")
 	}
-	snap, active := s.RecordContinuation(false, clock())
+	snap, active := s.RecordContinuation(foldStallOutcome(), false, clock())
 	if active {
 		t.Fatal("RecordContinuation on a waiting goal must not drive")
 	}
@@ -246,7 +259,7 @@ func TestSetTerminalFromWaitingClearsWaits(t *testing.T) {
 func TestRetargetKeepsBudgetsClearsWaits(t *testing.T) {
 	s := NewStore()
 	s.Set("old", clock())
-	s.RecordContinuation(true, clock())
+	s.RecordContinuation(TurnOutcome{ActionFingerprint: "write file=x", ObservationClass: "ok", ObservationHash: "h1", StateDigest: "d1", Mutated: true}, false, clock())
 	if _, ok := s.RegisterWait(WaitKind{Kind: WaitUntilTime, Timeout: time.Minute}, clock()); !ok {
 		t.Fatal("register should succeed")
 	}
@@ -269,6 +282,24 @@ func TestDecideGoalStepSlice1(t *testing.T) {
 	mkWait := func() Wait {
 		return Wait{Lease: Lease{WaitID: "wait_1", Kind: WaitUntilTime, Deadline: now.Add(time.Minute), RegisteredAt: now, IdempotencyKey: "k"}}
 	}
+	mkStalled := func(rep, tier int, stage GraduationStage) LedgerSummary {
+		entries := make([]LedgerEntry, 0, rep)
+		for range rep {
+			entries = append(entries, LedgerEntry{Fingerprint: "grep pattern=x", Class: "ok", Hash: "same", Digest: "steady"})
+		}
+		return LedgerSummary{Entries: entries, Repetition: rep, Tier: tier, Stage: stage}
+	}
+	mkBackstopped := func(stage GraduationStage) LedgerSummary {
+		entries := make([]LedgerEntry, 0, BackstopThreshold)
+		for i := range BackstopThreshold {
+			fp := "poll-a"
+			if i%2 == 1 {
+				fp = "poll-b"
+			}
+			entries = append(entries, LedgerEntry{Fingerprint: fp, Class: "ok", Hash: "h", Digest: "steady"})
+		}
+		return LedgerSummary{Entries: entries, Repetition: 1, Tier: RepetitionThresholdFresh, Stage: stage}
+	}
 	cases := []struct {
 		name        string
 		snap        GoalSnapshot
@@ -288,6 +319,11 @@ func TestDecideGoalStepSlice1(t *testing.T) {
 		{"lost wait with advancement drives", GoalSnapshot{Budgets: full}, nil, AdvancementMarkers{LossThisTurn: true, LossCause: "disk gone", AdvancedSinceLoss: true}, StepDrive, ""},
 		{"unset budgets never block", GoalSnapshot{}, nil, AdvancementMarkers{}, StepDrive, ""},
 		{"active and idle drives", GoalSnapshot{Budgets: full}, nil, AdvancementMarkers{}, StepDrive, ""},
+		{"stall-K first trip nudges", GoalSnapshot{Budgets: full, LedgerSummary: mkStalled(RepetitionThresholdFresh, RepetitionThresholdFresh, StageNone)}, nil, AdvancementMarkers{}, StepNudge, VerdictNoProgress},
+		{"stall-K second trip blocks", GoalSnapshot{Budgets: full, LedgerSummary: mkStalled(RepetitionThresholdFresh, RepetitionThresholdFresh, StageNudged)}, nil, AdvancementMarkers{}, StepBlock, VerdictNoProgress},
+		{"below-K drives", GoalSnapshot{Budgets: full, LedgerSummary: mkStalled(RepetitionThresholdFresh-1, RepetitionThresholdFresh, StageNone)}, nil, AdvancementMarkers{}, StepDrive, ""},
+		{"backstop first trip nudges", GoalSnapshot{Budgets: full, LedgerSummary: mkBackstopped(StageNone)}, nil, AdvancementMarkers{}, StepNudge, VerdictNoProgress},
+		{"backstop second trip blocks", GoalSnapshot{Budgets: full, LedgerSummary: mkBackstopped(StageNudged)}, nil, AdvancementMarkers{}, StepBlock, VerdictNoProgress},
 	}
 	for _, tc := range cases {
 		step, verdict := DecideGoalStep(tc.snap, TurnOutcome{}, nil, tc.pending, tc.markers, now)

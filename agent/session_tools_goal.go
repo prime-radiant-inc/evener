@@ -266,12 +266,11 @@ func goalWaitTool(deps *toolDeps, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Spec section 8 slice-1 boundary: the parent->child forward path lands
-	// in a later slice, so until_child from a child is rejected here with
-	// the honest boundary reason - never parked on an unwired path.
-	if req.Kind == goal.WaitUntilChild && deps.goalGuard.IsChildSession() {
-		return nil, fmt.Errorf("goal_wait: child waits scoped out in this slice: until_child from a child session has no forward path yet")
-	}
+	// Spec section 8: the parent→child forward lands in slice 2, so the
+	// slice-1 scoped-out rejection is lifted — until_child registers on any
+	// session with a known-descendant target (fail-closed otherwise). A child
+	// waiting on its own sibling resolves through the shared controller's
+	// tracked set; cross-tree targets still reject at the store.
 	if err := checkGoalWaitRegistrable(deps); err != nil {
 		return nil, err
 	}

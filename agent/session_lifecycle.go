@@ -1427,6 +1427,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
 	s.askPending = nil
+	// Slice-2 ledger: a new turn starts a new evidence window — drop any
+	// residue the previous turn's gate did not consume (a non-fold branch
+	// already clears, so this is the backstop, not the mechanism).
+	s.goalTurnEvidence = nil
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -1819,6 +1823,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if persistErr := errors.Join(s.persistToolResults(ctx, calls, results), sessionLifecycleFault(ctx, "persist_tools")); persistErr != nil {
 			return "", progressed, persistErr
 		}
+
+		// Slice-2 ledger evidence (spec §4): every executed round appends
+		// its per-call (fingerprint, class, hash) evidence for the gate
+		// fold. Recorded regardless of persist outcome — evidence is about
+		// what the turn DID.
+		s.recordGoalTurnEvidence(calls, results)
 
 		timings.Persistence = time.Since(tPhaseStart)
 

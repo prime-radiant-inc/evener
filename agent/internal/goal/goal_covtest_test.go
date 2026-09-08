@@ -33,7 +33,7 @@ func TestCovTakeTerminalReport(t *testing.T) {
 }
 
 func TestCovRecordContinuationWithoutGoal(t *testing.T) {
-	snap, active := NewStore().RecordContinuation(true, time.Unix(123, 0).UTC())
+	snap, active := NewStore().RecordContinuation(TurnOutcome{Mutated: true}, false, time.Unix(123, 0).UTC())
 	if active || snap != (Snapshot{}) {
 		t.Fatalf("RecordContinuation() without goal = (%+v, %v), want zero snapshot and false", snap, active)
 	}

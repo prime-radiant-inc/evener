@@ -342,98 +342,13 @@ func TestTimerParkedGoalIsAutonomyInFlight(t *testing.T) {
 	}
 }
 
-// TestInterimJudgeStaysArmedForNonParkedLoops pins §9: the v1 3/6 mutation
-// breaker stays armed for non-parked loops in slice 1.
-func TestInterimJudgeStaysArmedForNonParkedLoops(t *testing.T) {
-	t.Parallel()
-	sess := newGoalMethodSession(t)
-	defer sess.Close()
-
-	sess.getOrCreateGoalStore().Set("stall out", time.Now())
-	if _, ok := sess.armGoalContinuation(true, true); !ok {
-		t.Fatal("first progressed continuation should keep the goal active")
-	}
-	for range goal.NoProgressLimit {
-		sess.armGoalContinuation(false, true)
-	}
-	snap, _ := sess.getOrCreateGoalStore().Snapshot()
-	if snap.Status != goal.StatusBlocked || snap.StopReason != goal.VerdictNoProgress {
-		t.Fatalf("snapshot = %+v, want the interim v1 breaker block (no progress)", snap)
-	}
-}
-
-// TestInterimWakeTurnsBypassRecordContinuation pins §9: slice-1
-// wake/evaluation/expiry turns bypass RecordContinuation exactly like parks —
-// wait-attributable, never stall evidence.
-//
-// The three wait-attributable shapes: the wake drive (backlog standing), the
-// wake tail (delivered batch consumed), and the superseded no-op evaluation
-// (retarget-after-claim). The expiry-evaluation turn IS the wake turn in
-// slice 1 (timer expiry claims into pendingWake and the gate drives one
-// combined wake) — pinned here through the timer-expiry path, not a bare
-// active drive.
-func TestInterimWakeTurnsBypassRecordContinuation(t *testing.T) {
-	t.Parallel()
-	clk := agenttest.NewFakeClock()
-	sess := newWaitGateSession(t, clk)
-	defer sess.Close()
-	wireKickAndNotify(sess)
-
-	store := sess.getOrCreateGoalStore()
-	store.Set("wake bypasses fold", clk.Now())
-	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now()); !ok {
-		t.Fatal("precondition: registration should succeed")
-	}
-	clk.Advance(2 * time.Minute)
-	if _, cont := sess.armGoalContinuation(false, true); !cont {
-		t.Fatal("precondition: expired gate must drive the wake turn")
-	}
-	// Wake (expiry-evaluation) drive + wake tail must both bypass the fold:
-	// Iterations and streak stay zero through them.
-	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
-		t.Fatalf("snapshot after wake drive = %+v, want zero fold", snap)
-	}
-	if _, cont := sess.armGoalContinuation(false, true); !cont {
-		t.Fatal("precondition: wake tail must re-arm")
-	}
-	if snap, _ := store.Snapshot(); snap.Iterations != 0 || snap.NoProgressStreak != 0 {
-		t.Fatalf("snapshot after wake tail = %+v, want zero fold", snap)
-	}
-	// Superseded no-op evaluation bypasses too: claim, then retarget, then
-	// drive the marked no-op and fold its tail — still zero fold.
-	//
-	// Drive the sequence the production path uses (cf.
-	// TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop): claim, then
-	// retarget (carries the claim marked Superseded), then drive the marked
-	// no-op from a non-continuation tail, then fold the no-op turn's own
-	// continuation tail. The no-op turn's kick marks the batch delivered, so
-	// its tail consumes via the wake-tail per-ID drain and bypasses the fold.
-	store2 := sess.getOrCreateGoalStore()
-	store2.Set("old objective", clk.Now())
-	w2, ok := store2.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Minute}, clk.Now())
-	if !ok {
-		t.Fatal("precondition: superseded registration should succeed")
-	}
-	clk.Advance(2 * time.Minute)
-	if _, ok := store2.ClaimFire(w2.Lease.WaitID, "wait expired: label", clk.Now()); !ok {
-		t.Fatal("precondition: claim should consume the expired lease")
-	}
-	store2.Set("retargeted objective", clk.Now())
-	before := func() (int, int) {
-		snap, _ := store2.Snapshot()
-		return snap.Iterations, snap.NoProgressStreak
-	}
-	prompt, cont := sess.armGoalContinuation(false, false)
-	if !cont || prompt == "" {
-		t.Fatal("precondition: superseded gate must drive the no-op evaluation")
-	}
-	if it, streak := before(); it != 0 || streak != 0 {
-		t.Fatalf("snapshot after superseded drive = iterations=%d streak=%d, want zero fold", it, streak)
-	}
-	if _, cont = sess.armGoalContinuation(false, true); !cont {
-		t.Fatal("precondition: superseded tail must re-arm")
-	}
-	if it, streak := before(); it != 0 || streak != 0 {
-		t.Fatalf("snapshot after superseded tail = iterations=%d streak=%d, want zero fold", it, streak)
-	}
-}
+// Slice-2 retirement note: the interim v1 judge (3/6 mutation breaker +
+// wait-attributable bypass) is REPLACED by the ledger fold in slice 2 — the
+// Task-7 brief forbids leaving both judges armed. The retired pins were
+// TestInterimJudgeStaysArmedForNonParkedLoops (v1 breaker armed) and
+// TestInterimWakeTurnsBypassRecordContinuation (wake/tail/superseded bypass
+// the fold). Their replacements: TestGoalLedgerFullTurnStallGraduates
+// (ledger nudge→block end to end), TestGoalWakeTurnFoldsLedgerAndAccruesBudget
+// (wake drive folds + accrues), and the superseded zero-fold pins inside
+// TestGateRetargetBetweenClaimAndKickDrivesSupersededNoop /
+// TestGateSupersededThreeGateSequenceNoHang (session_goal_wait_test.go).

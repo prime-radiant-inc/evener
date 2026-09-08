@@ -1488,6 +1488,12 @@ func (s *Session) taskStoreOwnerSessionID() string {
 func (s *Session) getOrCreateGoalStore() *goal.Store {
 	s.goalStoreOnce.Do(func() {
 		s.goalStore = goal.NewStore()
+		// Slice-2 production substrate (spec §2): RegisterWait validates
+		// substrate kinds against live session state. Test-injected
+		// substrates call SetSubstrate directly and never touch this path
+		// after creation — but creation-time wiring would clobber an inject
+		// that raced it, so restores re-wire explicitly (session_init.go).
+		s.goalStore.SetSubstrate(&goalSessionSubstrate{sess: s})
 	})
 	return s.goalStore
 }

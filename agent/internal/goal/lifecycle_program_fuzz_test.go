@@ -23,7 +23,7 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 		if store.SetTerminal(StatusComplete, reason, start) {
 			t.Fatal("SetTerminal succeeded without a goal")
 		}
-		if _, active := store.RecordContinuation(false, start); active {
+		if _, active := store.RecordContinuation(foldStallOutcome(), false, start); active {
 			t.Fatal("RecordContinuation stayed active without a goal")
 		}
 		if _, reported := store.TakeTerminalReport(); reported {
@@ -34,7 +34,7 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 		if _, reported := store.TakeTerminalReport(); reported {
 			t.Fatal("active goal emitted a terminal report")
 		}
-		if snap, active := store.RecordContinuation(true, start.Add(time.Second)); !active || snap.Status != StatusActive || snap.NoProgressStreak != 0 || snap.Iterations != 1 {
+		if snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d", Mutated: true}, true, start.Add(time.Second)); !active || snap.Status != StatusActive || snap.NoProgressStreak != 0 || snap.Iterations != 1 {
 			t.Fatalf("progress continuation = %+v active=%v", snap, active)
 		}
 		persisted, ok := store.PersistSnapshot()
@@ -49,11 +49,11 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 
 		neverProgressed := NewStore()
 		neverProgressed.Set(objective, start)
-		if snap, active := neverProgressed.RecordContinuation(false, start.Add(time.Second)); !active || snap.NoProgressStreak != 1 {
+		if snap, active := neverProgressed.RecordContinuation(foldStallOutcome(), false, start.Add(time.Second)); !active || snap.NoProgressStreak != 1 {
 			t.Fatalf("never-progress continuation = %+v active=%v", snap, active)
 		}
 		for i := 0; i < NoProgressLimit; i++ {
-			snap, active := store.RecordContinuation(false, start.Add(time.Duration(i+2)*time.Second))
+			snap, active := store.RecordContinuation(foldStallOutcome(), false, start.Add(time.Duration(i+2)*time.Second))
 			wantActive := i < NoProgressLimit-1
 			if active != wantActive {
 				t.Fatalf("no-progress turn %d active=%v, want %v", i, active, wantActive)
@@ -62,7 +62,7 @@ func FuzzGoalLifecycleProgram(f *testing.F) {
 				t.Fatalf("no-progress terminal snapshot = %+v", snap)
 			}
 		}
-		if snap, active := store.RecordContinuation(true, start.Add(10*time.Second)); active || snap.Status != StatusBlocked {
+		if snap, active := store.RecordContinuation(TurnOutcome{ActionFingerprint: "fuzz", ObservationClass: "ok", ObservationHash: "h", StateDigest: "d", Mutated: true}, true, start.Add(10*time.Second)); active || snap.Status != StatusBlocked {
 			t.Fatalf("terminal continuation changed state: %+v active=%v", snap, active)
 		}
 		if store.SetTerminal(StatusComplete, reason, start.Add(11*time.Second)) {

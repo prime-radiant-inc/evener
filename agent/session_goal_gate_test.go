@@ -100,9 +100,12 @@ func TestArmGoalContinuation(t *testing.T) {
 	}
 }
 
-// TestArmGoalContinuationNoProgressBlocks: after the goal's first progressed
-// turn, NoProgressLimit consecutive no-progress continuations flip it to blocked
-// with StopReason "no progress" and emit exactly one EventGoalEnded.
+// TestArmGoalContinuationNoProgressBlocks: identical non-advancing
+// continuations graduate nudge-then-block with StopReason "no progress" and
+// emit exactly one EventGoalEnded. Slice 2 replaces the v1 3/6 mutation
+// breaker with the ledger two-tier bound (K=6 fresh tier here: the
+// production digest never moves in this gate-only test, so every turn
+// accrues repetition).
 func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 	t.Parallel()
 	sess, stop := newGateSession(t)
@@ -110,19 +113,18 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 	store := sess.getOrCreateGoalStore()
 	store.Set("do the impossible", time.Now())
 
-	// First progressed turn establishes the grace baseline (streak accrues only
-	// after the first progressed turn).
-	if _, ok := sess.armGoalContinuation(true, true); !ok {
-		t.Fatal("first progressed continuation should keep the goal active")
+	// K−1 identical non-advancing turns stay active; the K-th nudges (still
+	// active); the next blocks.
+	for i := range goal.RepetitionThresholdFresh - 1 {
+		if _, ok := sess.armGoalContinuation(false, true); !ok {
+			t.Fatalf("identical turn %d should keep the goal active", i+1)
+		}
 	}
-
-	// NoProgressLimit no-progress continuations: the last one blocks.
-	var lastOK bool
-	for range goal.NoProgressLimit {
-		_, lastOK = sess.armGoalContinuation(false, true)
+	if _, ok := sess.armGoalContinuation(false, true); !ok {
+		t.Fatal("K-th identical turn must nudge, not block")
 	}
-	if lastOK {
-		t.Fatalf("after %d no-progress continuations the goal should be blocked (ok=false)", goal.NoProgressLimit)
+	if _, ok := sess.armGoalContinuation(false, true); ok {
+		t.Fatal("post-nudge identical turn must block (ok=false)")
 	}
 
 	snap, ok := store.Snapshot()
@@ -148,8 +150,13 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 
 // TestArmGoalContinuationNoIterationCap: a goal that keeps making progress runs
 // well past the old iteration limit (10) without any iteration-based stop. The
-// no-progress breaker is the sole automatic stop, so a progressing goal never
+// ledger stall bound is the sole automatic stop, so a progressing goal never
 // terminates on its own. Iterations keep incrementing for display/persistence.
+// Progress here means real ledger advancement: each turn records distinct
+// evidence directly (unique fingerprint + digest), so no stall signal
+// accrues. (Bare progressed=true gates share one production digest and would
+// read as repetition — that path is pinned by the Task-7 genuine-retry test
+// with explicit outcomes instead.)
 func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 	t.Parallel()
 	sess, stop := newGateSession(t)
@@ -160,7 +167,16 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 
 	const continuations = 50 // far past the old DefaultMaxIterations of 10
 	for i := range continuations {
-		prompt, ok := sess.armGoalContinuation(true, true)
+		outcome := goal.TurnOutcome{
+			ActionFingerprint: "advance step",
+			ObservationClass:  "ok",
+			ObservationHash:   "hash",
+			StateDigest:       "digest",
+			Mutated:           true,
+		}
+		outcome.ActionFingerprint += string(rune('a'+i%26)) + string(rune('a'+(i/26)%26))
+		outcome.StateDigest += string(rune('a'+i%26)) + string(rune('0'+(i/26)%10))
+		prompt, ok := sess.armGoalContinuationWithOutcome(true, true, outcome)
 		if !ok {
 			t.Fatalf("a progressing goal stopped at continuation %d; want no iteration cap", i+1)
 		}
