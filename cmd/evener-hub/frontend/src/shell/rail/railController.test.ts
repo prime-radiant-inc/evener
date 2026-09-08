@@ -1,10 +1,21 @@
 // @vitest-environment node
 import { afterEach, expect, test, vi } from "vitest";
-import { revealSessionInRail, setRailRevealHandler } from "./railController";
+import {
+  noteRailWrapperMounted,
+  noteRailWrapperUnmounted,
+  revealSessionInRail,
+  setRailRevealHandler,
+} from "./railController";
 
-afterEach(() => setRailRevealHandler(null));
+afterEach(() => {
+  setRailRevealHandler(null);
+  noteRailWrapperUnmounted();
+});
 
 test("revealSessionInRail queues across the lazy chunk; the next handler gets it", () => {
+  // The lazy wrapper is mounted with the chunk still in flight: a handler is
+  // on its way, so the reveal waits for it.
+  noteRailWrapperMounted();
   const handler = vi.fn();
   revealSessionInRail("local:abc123");
   expect(handler).not.toHaveBeenCalled();
@@ -21,6 +32,7 @@ test("revealSessionInRail dispatches the ref to the registered handler", () => {
 
 test("setRailRevealHandler(null) clears the handler; a queued reveal drops with the unmounted host", () => {
   // No rail mounted (the lazy chunk still in flight): the reveal waits.
+  noteRailWrapperMounted();
   revealSessionInRail("local:x");
   // The host goes away before the chunk arrives (its unmount cleanup
   // clears): the wait drops with it, so a later, unrelated mount does not
@@ -42,6 +54,7 @@ test("the most recently registered handler wins (a remounted RailHost supersedes
 });
 
 test("only the latest queued reveal waits (each reveal supersedes the last)", () => {
+  noteRailWrapperMounted();
   revealSessionInRail("local:stale");
   revealSessionInRail("local:fresh");
   const handler = vi.fn();
@@ -51,6 +64,7 @@ test("only the latest queued reveal waits (each reveal supersedes the last)", ()
 });
 
 test("a delivered queue does not redeliver to a later handler", () => {
+  noteRailWrapperMounted();
   revealSessionInRail("local:x");
   const first = vi.fn();
   setRailRevealHandler(first);
@@ -58,4 +72,26 @@ test("a delivered queue does not redeliver to a later handler", () => {
   const second = vi.fn();
   setRailRevealHandler(second);
   expect(second).not.toHaveBeenCalled();
+});
+
+test("a reveal with no wrapper mounted is a no-op (no handler is on its way)", () => {
+  // No lazy wrapper in the tree - the single-pane route, or the shell before
+  // the wrapper mounts. Nothing will ever register a handler for this, so
+  // queueing it would ambush whatever unrelated mount happens to come next.
+  revealSessionInRail("local:x");
+  const unrelated = vi.fn();
+  setRailRevealHandler(unrelated);
+  expect(unrelated).not.toHaveBeenCalled();
+});
+
+test("the wrapper's unmount drops a still-waiting reveal", () => {
+  // The wrapper mounts, the chunk lags, the palette fires - the reveal
+  // waits. Then the wrapper itself unmounts (route change, breakpoint
+  // crossing) before the chunk arrives: the wait drops with it.
+  noteRailWrapperMounted();
+  revealSessionInRail("local:x");
+  noteRailWrapperUnmounted();
+  const unrelated = vi.fn();
+  setRailRevealHandler(unrelated);
+  expect(unrelated).not.toHaveBeenCalled();
 });
