@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -156,6 +157,12 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 type delegateQuietWatchEntry struct {
 	lease delegateLease
 	stop  chan struct{}
+	// busy coalesces ticks while one tick for this registration is still
+	// running: the hub loop swaps it from 0 to 1 with CompareAndSwap, and a
+	// tick that loses the race is dropped rather than queued. *uint32 (not a
+	// plain field) so entries stay comparable as map keys while still
+	// sharing one atomic word per registration.
+	busy *uint32
 }
 
 // delegateQuietWatchHub multiplexes one ticker across every live
@@ -241,6 +248,7 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 	entry := delegateQuietWatchEntry{lease: lease, stop: make(chan struct{})}
 	hub := delegateQuietWatchHubForSession(s)
 	hub.mu.Lock()
+	entry.busy = new(uint32)
 	hub.entries[entry] = struct{}{}
 	hub.mu.Unlock()
 	var detachOnce sync.Once
@@ -298,7 +306,15 @@ func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 			}
 			hub.mu.Unlock()
 			for _, entry := range live {
+				// At most one tick runs per registration: a tick that arrives
+				// while the previous one for the same lease is still blocked
+				// is coalesced away instead of piling up a goroutine (and a
+				// redundant work burst on release) per tick.
+				if entry.busy == nil || !atomic.CompareAndSwapUint32(entry.busy, 0, 1) {
+					continue
+				}
 				go func(entry delegateQuietWatchEntry) {
+					defer atomic.StoreUint32(entry.busy, 0)
 					select {
 					case <-entry.stop:
 						return
