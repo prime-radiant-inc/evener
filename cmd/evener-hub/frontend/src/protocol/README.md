@@ -995,6 +995,52 @@ and are outside this example.
 EVENER_NAVIGATION_OUTPUT_FILE=/absolute/path/manifest.json node node_modules/@evener/appwire-client/examples/navigation-invalidation.mjs
 ```
 
+### Bounded session, work, streaming and hub notifications
+
+Four read-only recipes cover the remaining notification families. Each subscribes
+before its initial snapshot, observes for a finite window, and reads again. Full
+snapshots and retained events go to a new private mode-0600 file; stdout contains
+only observation metadata. Use a dedicated client for a programmatic run: the
+recipe owns its thread subscription, and the executable closes the client.
+
+| Recipe | Observed state | Output variable |
+| --- | --- | --- |
+| `session-notifications.mjs` | Session lifecycle, queue, name, model, reasoning and vision settings | `EVENER_SESSION_NOTIFICATIONS_OUTPUT_FILE` |
+| `work-notifications.mjs` | Jobs, delegates, task counts and goals, with task and activity readback | `EVENER_WORK_NOTIFICATIONS_OUTPUT_FILE` |
+| `streaming-notifications.mjs` | Reasoning/tool deltas, correlated warnings, model retries and steering | `EVENER_STREAMING_NOTIFICATIONS_OUTPUT_FILE` |
+| `hub-notifications.mjs` | Auth, attention, marketplaces, plugins, sandbox cards and display/keybinding settings | `EVENER_HUB_NOTIFICATIONS_OUTPUT_FILE` |
+
+Set `EVENER_THREAD_REF` to the exact current session ref, along with the shared
+connection variables. Each recipe supports its matching
+`EVENER_<SESSION|WORK|STREAMING|HUB>_NOTIFICATIONS_OBSERVE_MS` (default 1000,
+maximum 10000) and `..._MAX_EVENTS` (default and maximum 100). These controls
+bound the observation window and retained event count; normal SDK request
+timeouts still apply to initial and final reads. The optional
+`EVENER_HUB_NOTIFICATIONS_METHODS_FILE` contains a JSON array of supported hub
+notification names to limit its reads; a ref is needed when sandbox names are
+selected. The default includes all eight hub notification names.
+
+```sh
+EVENER_THREAD_REF=local:owned-session \
+EVENER_SESSION_NOTIFICATIONS_OUTPUT_FILE=/absolute/path/session-observation.json \
+node node_modules/@evener/appwire-client/examples/session-notifications.mjs
+```
+
+`outcome: "read"` means the requested snapshots were read, without a detected
+interruption or concurrent final-read event. It does not establish event history
+completeness, operation completion, or an atomic snapshot across multiple APIs.
+A disconnect/reconnect, event retention overflow, or notification during the
+final read produces `uncertain`; the executables exit 2 and retain their private
+result. An error exits 1 with a generic message. No recipe replays a mutation.
+Jobs pagination stops after ten pages and reports incomplete/failed/unavailable
+projection state separately. Global warnings without a session identity are
+ignored by the session-scoped streaming observer. A closed session can make the
+final read fail; that failure is not a successful shutdown receipt.
+
+These recipes handle all catalog notification names together with the existing
+recipes. Deterministic contract coverage and cookbook presence do not establish
+real producer, reconnect/replay, native UI, or release acceptance for every name.
+
 ### Session lineage and resume
 
 `session-lineage.mjs` defaults to read-only transcript-target discovery. Set
