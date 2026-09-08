@@ -31,6 +31,7 @@ import (
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -11027,12 +11028,59 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 			t.Fatalf("registry: %v", err)
 		}
 	}
+	// An unset root falls back to a HOME/XDG-derived default, which under this
+	// package's TestMain is the one throwaway root every test in the binary
+	// shares, so two parallel tests that both leave a root unset read each
+	// other's launch.toml, credentials.toml and plugin store. A test that means
+	// to exercise a seeded XDG environment passes the root explicitly.
+	for _, root := range []*string{&cfg.HubStateRoot, &cfg.LaunchConfigRoot, &cfg.PluginRoot} {
+		if *root == "" {
+			*root = t.TempDir()
+		}
+	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
 	web := NewWebServer(cfg)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
 	return srv, web
+}
+
+// TestHubRPCTestServerGivesEachTestItsOwnRoots pins the fixture's isolation
+// contract: a caller that leaves HubStateRoot, LaunchConfigRoot or PluginRoot
+// unset gets a directory of its own, not the package-wide throwaway root every
+// test in this binary shares. Without it two parallel tests both writing
+// launch.toml, credentials.toml or the plugin store read each other's writes.
+func TestHubRPCTestServerGivesEachTestItsOwnRoots(t *testing.T) {
+	t.Parallel()
+	first, firstWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer first.Close()
+	second, secondWeb := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+	defer second.Close()
+
+	for _, root := range []struct {
+		name   string
+		got    func(hubcore.WebConfig) string
+		shared string
+	}{
+		{"HubStateRoot", func(c hubcore.WebConfig) string { return c.HubStateRoot }, cmdutil.DefaultStateRoot()},
+		{"LaunchConfigRoot", func(c hubcore.WebConfig) string { return c.LaunchConfigRoot }, cmdutil.DefaultConfigRoot()},
+		{"PluginRoot", func(c hubcore.WebConfig) string { return c.PluginRoot }, plugins.DefaultRoot()},
+	} {
+		a, b := root.got(firstWeb.cfg), root.got(secondWeb.cfg)
+		if a == "" || b == "" {
+			t.Errorf("%s left empty (%q, %q); it falls back to the shared package root", root.name, a, b)
+			continue
+		}
+		if a == b {
+			t.Errorf("%s is %q for both servers; the fixture is not isolating them", root.name, a)
+		}
+		for _, got := range []string{a, b} {
+			if got == root.shared {
+				t.Errorf("%s resolved to the package-wide default %q", root.name, root.shared)
+			}
+		}
+	}
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
