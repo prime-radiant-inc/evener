@@ -15,6 +15,7 @@
     "expo-image-manipulator": "~57.0.16",
     "expo-image-picker": "~57.0.16",
     "expo-secure-store": "~57.0.3",
+    "expo-splash-screen": "57.0.8",
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.3",

@@ -1,0 +1,47 @@
+{
+  "sourceBase": "2e37bca74",
+  "jsBundleSha256": "e68e035436fb7012e6d6f957546036293487bd5a9c97bea428b3cdd1d5b34654",
+  "binarySha256": "eed8483c1053a62c46485285d54a6996d08ab7c513cbda5b37e4662382da13d3",
+  "inputHashes": {
+    "mobile-native/app.json": "baf6d291b162814936284f069fb193c10f3677ce282d0052f69288a600ded00f",
+    "mobile-native/package.json": "fbb62208f30f05015ad36a1de31395db6d5dcb959abbb29ab59ba38851cf4f48",
+    "mobile-native/package-lock.json": "cb772685685b67bfe0dc02af918e0f733958b69cffd7444f31236018b7daeeda",
+    "mobile-native/assets/evener-icon.png": "e25c17d290e8302388dee529834d9fd7c7be371073581764bb2a06d5cada1133"
+  },
+  "build": {
+    "status": "SUCCEEDED",
+    "durationMs": 29676
+  },
+  "storyboardSha256": "4499e64d3d950e7c17258d2f6f9b37ed404c6d03535667e0fc845cd306657dd8",
+  "launchPID": 39741,
+  "device": "iPad Pro 11-inch (M5), iOS26.5 simulator",
+  "observed": "Installed canonical blue-circle icon in SpringBoard; video frame shows same mark on dark launch background before Hubs screen",
+  "evidence": {
+    "branding-launch.mp4": {
+      "sha256": "8d92d8ddf0a1f741c53f52ccc278674d1adb4b6d1e62f0b20f32f7e0893aa11c",
+      "bytes": 4468775
+    },
+    "launch-frame-07.png": {
+      "sha256": "055e05725105f856bf1a5e16a9f2d444d4882f9681ca0816ee70b48fa018e02a",
+      "bytes": 48675
+    },
+    "branding-home.png": {
+      "sha256": "470023f65fdf077a9544ef912a43670cd65383941c0a8d27064e3671c80dba5a",
+      "bytes": 3611163
+    },
+    "branding-final-launch.json": {
+      "sha256": "6ec58eff9f0fafe4711a75dae319430002c79bb92ff563aafa70b9f2e5ff31cc",
+      "bytes": 5998
+    },
+    "branding-build-result.json": {
+      "sha256": "f8913dc92195bacde6462401f638f4db8943b4d89b67a00adb43ce76f7b3a7a5",
+      "bytes": 16754
+    }
+  },
+  "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-settings-root-2ld63dog",
+  "limitations": [
+    "Simulator qualification only; distribution signing, physical devices, app update and accessibility remain open.",
+    "First compile exceeded MCP reporting timeout; after compiler exit a fresh incremental build passed.",
+    "Expo57 image-less storyboard was regenerated from its template before the final build; app config remains the source of truth."
+  ]
+}
