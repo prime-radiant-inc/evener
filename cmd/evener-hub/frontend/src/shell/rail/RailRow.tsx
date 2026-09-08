@@ -37,16 +37,10 @@
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 
-import {
-  Badge,
-  Cadence,
-  type CadenceState,
-  Chevron,
-  IconButton,
-} from "../../widgets";
+import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import type { TreeRowInfo } from "../../widgets/tree";
-import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";

@@ -606,10 +606,10 @@ func streamDeltaForMethod(method string) streamDeltaKind {
 // each with no per-kind typed struct, and one reducer build + apply total.
 type streamDeltaChunk struct {
 	Ref      string `json:"ref"`
-	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	CallID   string `json:"callId"`
+	ThreadID string `json:"threadId"` //nolint:tagliatelle // mirrors the appwire delta params wire spelling (cmd/evener-hub/app_relay.go)
+	TurnID   string `json:"turnId"`   //nolint:tagliatelle // mirrors the appwire delta params wire spelling
+	ItemID   string `json:"itemId"`   //nolint:tagliatelle // mirrors the appwire delta params wire spelling
+	CallID   string `json:"callId"`   //nolint:tagliatelle // mirrors the appwire delta params wire spelling
 	Delta    string `json:"delta"`
 }
 
