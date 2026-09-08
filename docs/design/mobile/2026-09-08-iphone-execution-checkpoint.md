@@ -46,4 +46,14 @@ The paired physical iPhone 16 Pro is available, but Apple's developer tools repo
 
 The subsequent Release build for `generic/platform=iOS` succeeded at source `5307e8515`, with the existing team identity and cached provisioning profile. The coordinator verified the arm64 bundle's signature, embedded profile and application entitlement. The [device-build receipt](assets/2026-09-08-iphone-device-build.json) records its distinct artifact hashes. This closes development build/signature preparation, not physical install or TestFlight acceptance. The [distribution path](ios-build-distribution.md) now has a manual workflow, locked dependencies, iPhone-only source configuration, and locally verified delivery controls. The coordinator reran `make test-native test-api-package`: 692 native tests, TypeScript and the installed-package qualification passed. iOS distribution credentials and App Store Connect access still need verification; no workflow dispatch or upload is claimed.
 
+The next simulator Release artifact now builds and passes signature verification
+with the reasoning fix at code source `6a0278e36` and the portable CocoaPods
+configuration. Both arm64 and x86_64 slices target iPhone device family 1. The
+[build receipt](assets/2026-09-08-ios-pod-lock-portability.json) records two
+separate locked dependency installations and a fresh 692-test native gate. It
+has not been installed; the previous installed app and complete draft database
+are backed up. The rejected approval fixture was stopped after direct source
+inspection contradicted its handoff report; it contributes no native acceptance.
+Updated-artifact reasoning and approval interaction remain the next native steps.
+
 Tasks 1–4 therefore remain open as one integrated device journey. Task 8 has implementation, deterministic and host/controller real-hub evidence, with native selection/reconnect acceptance pending. Useful administration, actual nested work, performance, stress and physical update/distribution retain the gates in the plan. Neither iPhone functional completion nor release readiness is claimed.

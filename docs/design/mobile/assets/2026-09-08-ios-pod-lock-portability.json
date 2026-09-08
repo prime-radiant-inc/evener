@@ -1,0 +1,94 @@
+{
+  "schema": "evener.ios.pod-lock-portability.v1",
+  "status": "locked-installations-and-simulator-release-build-passed",
+  "recordedAt": "2026-09-08T22:52:43.660041+00:00",
+  "compiledCodeHead": "6a0278e3633190225f5ecb1eb64222dbd1a372c3",
+  "worktree": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate",
+  "secondRoot": "/tmp/evener-tf-review.yEVQBP/mobile-native",
+  "lockSha256": "b3ac266123ab00cf8b0aa9e48cc81ce3d9b6f4eabf3edb49b1649f48742ca52f",
+  "packageJsonSha256": "0f75ba89a8a82221070dc7c6c101079cbf663ae4c693511b0972a6ec5e67cb69",
+  "resolvedCoreSpecSha256": "5078fdc1dcf2460f900fe273dfe0afadeff81892668f1eef137f253280d9ea2d",
+  "toolchain": {
+    "ruby": "3.3.6",
+    "bundler": "2.7.2",
+    "cocoaPods": "1.16.2",
+    "localXcode": "26.6 (17F113)",
+    "workflowXcode": "26.4",
+    "localNode": "26.5.0",
+    "workflowNode": "22.13.1"
+  },
+  "checks": [
+    {
+      "name": "worktree pod install",
+      "exitCode": 0,
+      "log": "/tmp/evener-iphone-portable-pods.log",
+      "logSha256": "d913d7e3040cb3c1115add4a2062b4e3eb48360d7e2831722e715f984605e420"
+    },
+    {
+      "name": "worktree pod install --deployment",
+      "exitCode": 0,
+      "log": "/tmp/evener-iphone-portable-deployment.log",
+      "logSha256": "9324dc430d0c4d9361fe3f83592f680c02675c3f03c399ce0312fdfaec11df6d"
+    },
+    {
+      "name": "second-root pod install --deployment",
+      "exitCode": 0,
+      "log": "/tmp/evener-native-portable-second-root.log",
+      "logSha256": "eaa353962f8ae8928494131210c86a08ccf44ee3e04e0bb559fa46ce313272f4"
+    },
+    {
+      "name": "make test-native",
+      "exitCode": 0,
+      "log": "/tmp/evener-native-portable-gate.log",
+      "logSha256": "f5234af5b09b48e6405d767f5cbe2079fa54ed2c2206b94a7831136d8b0147f6"
+    },
+    {
+      "name": "distribution behavior checks",
+      "exitCode": 0,
+      "log": "/tmp/evener-native-portable-distribution-tests.log",
+      "logSha256": "dd5ee55286225b1d25472b6b50d885bcc1724b9080388ab7d4566590a045c162"
+    },
+    {
+      "name": "xcodebuild Release generic/platform=iOS Simulator",
+      "exitCode": 0,
+      "log": "/tmp/evener-native-portable-release.log",
+      "logSha256": "9ffe51e39ce633cd906e90c8d77136aaa8182e42d1fa6e597446edb67330a6a9"
+    },
+    {
+      "name": "codesign --verify --deep --strict simulator app",
+      "exitCode": 0
+    }
+  ],
+  "assertions": {
+    "independentPhysicalDependencyTrees": true,
+    "identicalTrackedAndGeneratedLocksInBothRoots": true,
+    "identicalResolvedCoreSpecsInBothRoots": true,
+    "coreSourceModePropagatesToConnectedExpoModules": true,
+    "reactNativeHermesAndExpoModulesJSIPrebuildsRetained": true,
+    "nativeTests": 692,
+    "nativeTestFiles": 74,
+    "nativeTypecheckPassed": true,
+    "unrelatedAppleChangesPreserved": true
+  },
+  "limits": [
+    "No signing credential or App Store Connect access qualification.",
+    "No workflow dispatch, distribution archive, upload, processed build, or TestFlight install/update.",
+    "Local Xcode and Node versions differ from workflow pins; actual CI run remains required.",
+    "Updated native app has not been installed; existing app and draft database are backed up."
+  ],
+  "simulatorArtifact": {
+    "path": "/tmp/evener-native-portable-release/Build/Products/Release-iphonesimulator/Evener.app",
+    "bundleIdentifier": "com.primeradiant.evener.native",
+    "deviceFamilies": [
+      1
+    ],
+    "architectures": [
+      "x86_64",
+      "arm64"
+    ],
+    "executableSha256": "b466bb73defbf2bfed923615f6390c220a4e42627b77015f4df1903e40e4bb9a",
+    "javaScriptBundleSha256": "5cfe4d2b06aa3afdfccc75d9fa7d5e7138dc1e84cc504e1ab04d4cf3184ae796",
+    "infoPlistSha256": "4fda4a2d405e6d6d471a79c341f3fd7690873ab3647304a9ac985ec86b34414b",
+    "installed": false
+  }
+}

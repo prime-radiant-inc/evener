@@ -2,6 +2,13 @@
   "name": "evener-native",
   "version": "0.1.0",
   "main": "index.ts",
+  "expo": {
+    "autolinking": {
+      "ios": {
+        "buildFromSource": ["expo-modules-core"]
+      }
+    }
+  },
   "dependencies": {
     "@react-navigation/elements": "^2.9.40",
     "@react-navigation/native": "^7.3.18",
