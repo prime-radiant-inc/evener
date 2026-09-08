@@ -220,7 +220,8 @@ describe("save", () => {
 
   // A reconnect refetch that started before a save can only land after it
   // holding the pre-save file, so a save fences older reads out the way a
-  // newer read does. A fetch started AFTER the save is fresher and still wins.
+  // newer read does. A read started after it may land, but the save's own
+  // response - the hub's view of the file after the write - lands over it.
   test("a save invalidates an older in-flight fetch", async () => {
     const fake = connectFakeClient();
     let finishReading!: (doc: AgentsDocResponse) => void;
@@ -241,6 +242,32 @@ describe("save", () => {
     finishReading({ ...DOC, content: "# old\n" });
     await reading;
     expect(agentsDocStore.getState().doc?.content).toBe("# new\n");
+  });
+
+  // The bump that fences a read out leaves nothing to turn `loading` off, so
+  // the save has to clear it itself - otherwise the section keeps drawing a
+  // load it will never see land.
+  test("a save clears the loading left behind by the fetch it fenced out", async () => {
+    const fake = connectFakeClient();
+    let finishReading!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishReading = resolve;
+        }),
+    );
+    const reading = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+    expect(agentsDocStore.getState().loading).toBe(true);
+
+    fake.on("evener/settings/agentsDoc/set", (params) => ({ ...DOC, content: params.content }));
+    await agentsDocStore.getState().save("x");
+    expect(agentsDocStore.getState().loading).toBe(false);
+
+    finishReading({ ...DOC, content: "# old\n" });
+    await reading;
+    expect(agentsDocStore.getState().doc?.content).toBe("x");
   });
 
   // The write did reach the hub, so the caller still gets its result - what
@@ -283,6 +310,48 @@ describe("changed notification", () => {
     await agentsDocStore.getState().fetch();
     const pushed: AgentsDocResponse = { ...DOC, content: "# elsewhere\n" };
     fake.emitNotification({ method: "evener/settings/agentsDoc/changed", params: pushed } as AnyNotification);
+    expect(agentsDocStore.getState().doc).toEqual(pushed);
+  });
+
+  // A broadcast is the hub's own view of the file, so a read that started
+  // before it can only land holding an older one.
+  test("a changed broadcast invalidates an older in-flight fetch", async () => {
+    const fake = connectFakeClient();
+    let finishReading!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishReading = resolve;
+        }),
+    );
+    const reading = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+
+    fake.emitNotification({
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "pushed" },
+    } as AnyNotification);
+
+    finishReading({ ...DOC, content: "old" });
+    await reading;
+    expect(agentsDocStore.getState().doc?.content).toBe("pushed");
+  });
+
+  // The section's reload notice ("saving would overwrite anything changed on
+  // disk since") is false the moment the hub pushes the current file, exactly
+  // as it is when a save lands.
+  test("a changed broadcast clears a stale fetch error", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/settings/agentsDoc/get", () => {
+      throw new WireError("hub unreachable", -1);
+    });
+    await agentsDocStore.getState().fetch();
+    expect(agentsDocStore.getState().error).toContain("hub unreachable");
+
+    const pushed: AgentsDocResponse = { ...DOC, content: "# elsewhere\n" };
+    fake.emitNotification({ method: "evener/settings/agentsDoc/changed", params: pushed } as AnyNotification);
+    expect(agentsDocStore.getState().error).toBeNull();
     expect(agentsDocStore.getState().doc).toEqual(pushed);
   });
 

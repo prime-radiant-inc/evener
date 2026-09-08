@@ -141,7 +141,18 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
         <p className={CLASS.error} role="alert">
           Couldn't reload AGENTS.md: {error}. The editor shows the last copy it loaded; saving would overwrite anything
           changed on disk since.
-          <Button size="sm" variant="quiet" onClick={() => void agentsDocStore.getState().fetch()}>
+          {/* The store lands its own failure in `error` above; the rejection is
+              caught only so it never surfaces as an unhandled one. */}
+          <Button
+            size="sm"
+            variant="quiet"
+            onClick={() =>
+              void agentsDocStore
+                .getState()
+                .fetch()
+                .catch(() => {})
+            }
+          >
             Reload
           </Button>
         </p>

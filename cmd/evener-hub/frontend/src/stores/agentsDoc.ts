@@ -72,9 +72,13 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set) => ({
     const client = requireClient();
     // Bumped before the request, not after it: a read already in flight can
     // only land holding the pre-save file, so the write fences it out the way
-    // a newer read does. A read started after this keeps a higher version and
-    // still wins, which is right - it is the fresher view.
+    // a newer read does. A read started after this one may land first, and the
+    // commit below then lands over it - which is right: the write's response
+    // is the hub's own view of the file after the write, never staler than a
+    // read that raced it. The bump leaves nothing to turn `loading` off, so
+    // the save does it, as the connection subscriber does for its own bump.
     ++requestVersion;
+    set({ loading: false });
     const doc = await client.request("evener/settings/agentsDoc/set", { content });
     // A write that landed is the freshest view of the file there is, so an
     // earlier read's error is moot - and the section's notice for one
@@ -101,7 +105,12 @@ let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/settings/agentsDoc/changed") agentsDocStore.setState({ doc: n.params });
+  if (n.method !== "evener/settings/agentsDoc/changed") return;
+  // A broadcast is the hub's own authoritative view of the file, so a read
+  // that started before it is stale by definition and any earlier reload
+  // failure is moot.
+  ++requestVersion;
+  agentsDocStore.setState({ doc: n.params, error: null });
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {
