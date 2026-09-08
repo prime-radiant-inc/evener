@@ -403,7 +403,16 @@ func validateGoalExpectArgs(args map[string]any) error {
 		switch goal.Kind(kind) {
 		case goal.WaitUntilJob, goal.WaitUntilDelegate, goal.WaitUntilApproval, goal.WaitUntilEvent, goal.WaitUntilChild:
 		default:
-			return fmt.Errorf("invalid_request: unknown condition kind %q (must be until_job | until_delegate | until_approval | until_event | until_child)", kind)
+			return fmt.Errorf("invalid_request: unknown condition kind %q (must be until_job | until_delegate | until_event)", kind)
+		}
+		// v1 restriction (fix-1/4 I1): registrable goal_expect kinds are
+		// file/job/delegate only. Approval/child reject here with a named
+		// reason; http/external-label reject on their subtype below.
+		switch goal.Kind(kind) {
+		case goal.WaitUntilApproval:
+			return fmt.Errorf("invalid_request: condition kind %q is not verifiable in v1: approval-answer records are out of scope (register a file, job, or delegate condition)", kind)
+		case goal.WaitUntilChild:
+			return fmt.Errorf("invalid_request: condition kind %q is not verifiable in v1: child-terminal queries are out of scope (register a file, job, or delegate condition)", kind)
 		}
 	}
 	target, err := goalWaitStringArg(args, "target")
@@ -422,9 +431,17 @@ func validateGoalExpectArgs(args map[string]any) error {
 	if goal.Kind(effKind) == goal.WaitUntilEvent && effSubtype == "" {
 		effSubtype = string(goal.EventFileModified)
 	}
-	if goal.Kind(effKind) == goal.WaitUntilEvent && goal.EventSubtype(effSubtype) == goal.EventExternalLabel {
-		// External labels carry no durable target; desc alone names them.
-	} else if strings.TrimSpace(target) == "" {
+	// v1 restriction (fix-1/4 I1): only file_modified is a registrable
+	// until_event subtype; http_match and external_label reject named.
+	if goal.Kind(effKind) == goal.WaitUntilEvent {
+		switch goal.EventSubtype(effSubtype) {
+		case goal.EventHTTPMatch:
+			return fmt.Errorf("invalid_request: condition subtype %q is not verifiable in v1: http fetch is out of scope (register a file, job, or delegate condition)", effSubtype)
+		case goal.EventExternalLabel:
+			return fmt.Errorf("invalid_request: condition subtype %q is not verifiable in v1: external labels carry no queryable state (register a file, job, or delegate condition)", effSubtype)
+		}
+	}
+	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for condition kind %q", effKind)
 	}
 	if _, err := goalWaitTimeoutArg(args); err != nil {

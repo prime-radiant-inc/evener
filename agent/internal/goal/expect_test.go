@@ -154,14 +154,36 @@ func TestRecordContinuationAutoParkBound(t *testing.T) {
 // expectTestSubstrate is the store-level deterministic substrate.
 type expectTestSubstrate struct {
 	files map[string]string
+	jobs  map[string]expectJobTarget
+	dlgs  map[string]expectDlgTarget
+}
+
+type expectJobTarget struct {
+	live     bool
+	retained bool
+	excerpt  string
+}
+
+type expectDlgTarget struct {
+	live     bool
+	retained bool
+	excerpt  string
 }
 
 func (f *expectTestSubstrate) LookupJob(id string) (bool, bool, string, bool) {
-	return false, false, "", false
+	t, ok := f.jobs[id]
+	if !ok {
+		return false, false, "", false
+	}
+	return t.live, t.retained, t.excerpt, true
 }
 
 func (f *expectTestSubstrate) LookupDelegate(id string) (bool, bool, string, bool) {
-	return false, false, "", false
+	t, ok := f.dlgs[id]
+	if !ok {
+		return false, false, "", false
+	}
+	return t.live, t.retained, t.excerpt, true
 }
 
 func (f *expectTestSubstrate) StatFile(path string) (string, bool) {
@@ -174,3 +196,46 @@ func (f *expectTestSubstrate) LookupApproval(contentKey, generation string) bool
 func (f *expectTestSubstrate) LookupChild(id string) bool { return false }
 
 func (f *expectTestSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
+
+// TestRegisterExpectKindRestriction pins fix-1/4 I1: only file/job/delegate
+// predicates register; approval/child/http/external-label reject with the
+// reason named (substrate extension is out of scope for v1).
+func TestRegisterExpectKindRestriction(t *testing.T) {
+	now := time.Unix(1000, 0).UTC()
+	newStore := func() *Store {
+		s := NewStore()
+		s.Set("obj", now)
+		s.SetSubstrate(&expectTestSubstrate{
+			files: map[string]string{"/work/f": "base-v1"},
+			jobs:  map[string]expectJobTarget{"job_1": {live: true}},
+			dlgs:  map[string]expectDlgTarget{"dlg_1": {live: true}},
+		})
+		return s
+	}
+	// Registrable: file, job, delegate.
+	for _, req := range []ExpectRequest{
+		{Desc: "f", Predicate: WaitKind{Kind: WaitUntilEvent, EventSubtype: EventFileModified, Target: "/work/f"}},
+		{Desc: "j", Predicate: WaitKind{Kind: WaitUntilJob, Target: "job_1"}},
+		{Desc: "d", Predicate: WaitKind{Kind: WaitUntilDelegate, Target: "dlg_1"}},
+	} {
+		s := newStore()
+		if _, ok := s.RegisterExpect(req, now); !ok {
+			t.Fatalf("kind %q must register: %q", req.Predicate.Kind, s.LastRejectReason())
+		}
+	}
+	// Rejected: approval, child, http, external-label — each names its reason.
+	for _, req := range []ExpectRequest{
+		{Desc: "a", Predicate: WaitKind{Kind: WaitUntilApproval, Target: "q?"}},
+		{Desc: "c", Predicate: WaitKind{Kind: WaitUntilChild, Target: "child_1"}},
+		{Desc: "h", Predicate: WaitKind{Kind: WaitUntilEvent, EventSubtype: EventHTTPMatch, Target: "https://example.com/hook"}},
+		{Desc: "e", Predicate: WaitKind{Kind: WaitUntilEvent, EventSubtype: EventExternalLabel, Target: ""}},
+	} {
+		s := newStore()
+		if _, ok := s.RegisterExpect(req, now); ok {
+			t.Fatalf("kind %q/%q must reject under the v1 restriction", req.Predicate.Kind, req.Predicate.EventSubtype)
+		}
+		if reason := s.LastRejectReason(); reason == "" {
+			t.Fatalf("kind %q/%q rejection must name its reason", req.Predicate.Kind, req.Predicate.EventSubtype)
+		}
+	}
+}

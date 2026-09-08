@@ -116,13 +116,14 @@ type LedgerSummary struct {
 	Stage      GraduationStage
 }
 
-// Watchdog bounds (spec §6): quiet threshold 30m (configurable at the session
-// layer), at most 2 notices per park stretch (park-start + one half-deadline
-// reminder), at most 4 watchdog notices per goal per 24h across stretches.
+// Watchdog bounds (spec §6): quiet threshold 30m, at most 2 notices per park
+// stretch (park-start + one half-deadline reminder), at most 4 watchdog
+// notices per goal per 24h across stretches. Single source: the session
+// watchdog reads these constants (fix-1/4 m1 — no session-local duplicate).
 const (
-	// DefaultWatchdogQuietThreshold is the quiet floor: no watchdog notice
-	// emits before the stretch crosses it (a 60s wait costs zero notices).
-	DefaultWatchdogQuietThreshold = 30 * time.Minute
+	// WatchdogQuietThreshold is the quiet floor: no watchdog notice emits
+	// before the stretch crosses it (a 60s wait costs zero notices).
+	WatchdogQuietThreshold = 30 * time.Minute
 	// MaxWatchdogNoticesPerStretch caps owner notices per park stretch.
 	MaxWatchdogNoticesPerStretch = 2
 	// MaxWatchdogNoticesPer24h caps watchdog notices per goal per 24h across

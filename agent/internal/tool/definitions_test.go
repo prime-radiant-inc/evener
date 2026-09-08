@@ -1073,4 +1073,15 @@ func TestDefGoalExpectShape(t *testing.T) {
 			t.Fatalf("kind enum = %v, want %q (no until_time: timers are waits, not claim conditions)", enum, want)
 		}
 	}
+	// v1 restriction (fix-1/4 I1): the schema enum keeps all kinds (validation
+	// rejects approval/child/http/external-label with named reasons), but the
+	// descriptions must state the restriction.
+	kindDesc, _ := kind["description"].(string)
+	if !strings.Contains(kindDesc, "until_approval and until_child reject") {
+		t.Fatalf("kind description %q must state the v1 restriction", kindDesc)
+	}
+	def2 := DefGoalExpect()
+	if !strings.Contains(def2.Description, "until_approval, until_child, http_match, and external_label are rejected") {
+		t.Fatalf("goal_expect description %q must state the v1 restriction", def2.Description)
+	}
 }

@@ -92,3 +92,100 @@ func TestGoalPersistV2_WaitsBudgetsPendingWakeRoundTrip(t *testing.T) {
 		t.Fatalf("restored budgets = %+v, want defaults carried", full.Budgets)
 	}
 }
+
+// TestGoalPersistV2_ConditionsAndWakeKindRoundTrip pins fix-1/4 m3: registered
+// Conditions and the structural PendingWake.Kind survive persist/restore
+// through the schema converters (Meta → store).
+func TestGoalPersistV2_ConditionsAndWakeKindRoundTrip(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	now := clk.Now()
+	store := sess.getOrCreateGoalStore()
+	store.Set("persist the conditions", now)
+	store.SetSubstrate(&goalPersistCondSubstrate{files: map[string]string{"/work/spec.md": "v1"}})
+	if _, ok := store.RegisterExpect(goal.ExpectRequest{
+		Desc:      "spec changed",
+		Predicate: goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/work/spec.md"},
+	}, now); !ok {
+		t.Fatalf("precondition: file condition must register: %q", store.LastRejectReason())
+	}
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Hour, Label: "timer"}, now)
+	if !ok {
+		t.Fatal("precondition: until_time registration should succeed")
+	}
+	firedAt := now.Add(time.Minute)
+	entry, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: timer", firedAt)
+	if !ok {
+		t.Fatal("precondition: claim should consume the lease")
+	}
+	if entry.Kind != goal.WaitUntilTime {
+		t.Fatalf("claim kind = %q, want until_time", entry.Kind)
+	}
+
+	meta := sess.Meta()
+	if meta.Goal == nil {
+		t.Fatal("Meta().Goal must not be nil")
+	}
+	g := meta.Goal
+	if len(g.Conditions) != 1 || g.Conditions[0].Desc != "spec changed" {
+		t.Fatalf("persisted conditions = %+v, want the one file condition", g.Conditions)
+	}
+	c := g.Conditions[0]
+	if c.Kind != string(goal.WaitUntilEvent) || c.Target != "/work/spec.md" || c.Baseline != "v1" {
+		t.Fatalf("persisted condition = %+v, want the full predicate + baseline", c)
+	}
+	if len(g.PendingWake) != 1 || g.PendingWake[0].Kind != string(goal.WaitUntilTime) {
+		t.Fatalf("persisted pendingWake = %+v, want the structural kind carried", g.PendingWake)
+	}
+
+	fresh := goal.NewStore()
+	fresh.RestoreSnapshot(goalRestoreToStore(g, firedAt))
+	full, ok := fresh.GoalSnapshot()
+	if !ok {
+		t.Fatal("restored store must have a goal")
+	}
+	if len(full.Conditions) != 1 || full.Conditions[0].Desc != "spec changed" {
+		t.Fatalf("restored conditions = %+v, want the file condition", full.Conditions)
+	}
+	if full.Conditions[0].Predicate.Target != "/work/spec.md" || full.Conditions[0].Baseline != "v1" {
+		t.Fatalf("restored condition = %+v, want predicate + baseline", full.Conditions[0])
+	}
+	if len(full.PendingWake) != 1 || full.PendingWake[0].Kind != goal.WaitUntilTime {
+		t.Fatalf("restored pendingWake = %+v, want the structural kind", full.PendingWake)
+	}
+	if len(full.Waits) != 0 {
+		t.Fatalf("restored waits = %d, want 0 (claimed lease left the registry)", len(full.Waits))
+	}
+}
+
+// goalPersistCondSubstrate is the persist-test file substrate.
+type goalPersistCondSubstrate struct {
+	files map[string]string
+}
+
+func (f *goalPersistCondSubstrate) LookupJob(id string) (bool, bool, string, bool) {
+	return false, false, "", false
+}
+
+func (f *goalPersistCondSubstrate) LookupDelegate(id string) (bool, bool, string, bool) {
+	return false, false, "", false
+}
+
+func (f *goalPersistCondSubstrate) StatFile(path string) (string, bool) {
+	b, ok := f.files[path]
+	return b, ok
+}
+
+func (f *goalPersistCondSubstrate) LookupApproval(contentKey, generation string) bool {
+	return false
+}
+
+func (f *goalPersistCondSubstrate) LookupChild(id string) bool { return false }
+
+func (f *goalPersistCondSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
+	return false
+}

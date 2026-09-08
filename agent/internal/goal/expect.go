@@ -3,13 +3,14 @@
 // goal_expect registers a (desc, predicate) stop-claim condition with the
 // identical §2 registration validation + attach-scan snapshot at registration
 // (hallucinated conditions rejected immediately with the reason named).
-// Expect-conditions evaluate check-on-claim only: update_goal("complete")
-// verifies iff the goal carries conditions (goals without conditions keep the
-// v1 self-declare path); with conditions the verifier evaluates the named
-// conditions and rejects with the failing condition named. Expect-conditions
-// never feed the ledger mid-episode (waits' flips are the only subgoal
-// evidence), so no expect polling exists and the re-park counter cannot be
-// laundered through trivial conditions.
+// Expect-conditions verify at claim time: update_goal("complete") verifies
+// iff the goal carries conditions (goals without conditions keep the v1
+// self-declare path); with conditions the verifier evaluates the named
+// conditions and rejects with the failing condition named. Reads are cheap
+// substrate re-reads (EvaluateExpectations) and never feed the ledger
+// mid-episode (waits' flips are the only subgoal evidence): the delta frame
+// on plain drives re-reads condition truth for display, and the re-park
+// counter cannot be laundered through trivial conditions.
 package goal
 
 import (
@@ -20,25 +21,58 @@ import (
 
 // ExpectRequest is a goal_expect registration: the condition description plus
 // the predicate it checks (same shape as a wait predicate: kind + target +
-// matcher + subtype + generation).
+// matcher + subtype + generation). Registrable kinds are file/job/delegate
+// only (fix-1/4 I1): approval/child/http/external-label reject with a named
+// reason — their substrates (child-terminal query, approval-answer record,
+// http fetch) are out of scope for v1.
 type ExpectRequest struct {
 	// Desc names the condition; the verifier names it on rejection.
 	Desc string
-	// Predicate is the condition query. Kind selects the source (until_job |
-	// until_delegate | until_approval | until_event | until_child; until_time
-	// is rejected — a bare timer is a wait, not a claim condition).
+	// Predicate is the condition query. Kind selects the source
+	// (until_job | until_delegate | until_event/file_modified only;
+	// until_time, until_approval, until_child, http_match, and
+	// external_label reject — a bare timer is a wait, not a claim
+	// condition, and the other substrates are out of scope for v1).
 	Predicate WaitKind
 }
 
-// validExpectKind reports whether k may serve as an expect predicate. Every
-// registry kind except the bare timer qualifies: a condition must query
-// durable or re-derivable state, not the passage of time.
+// validExpectKind reports whether k may serve as an expect predicate: file
+// (until_event/file_modified), job, and delegate only (fix-1/4 I1 —
+// restrict, don't extend: approval/child/http/external-label substrates are
+// out of scope for v1).
 func validExpectKind(k Kind) bool {
 	switch k {
-	case WaitUntilJob, WaitUntilDelegate, WaitUntilApproval, WaitUntilEvent, WaitUntilChild:
+	case WaitUntilJob, WaitUntilDelegate, WaitUntilEvent:
 		return true
 	}
 	return false
+}
+
+// expectKindRejected reports the named rejection for a non-registrable
+// condition kind/subtype (fix-1/4 I1). ok=false means registrable (or the
+// validExpectKind gate already passed — callers check this first for the
+// specific reason).
+func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
+	switch pred.Kind {
+	case WaitUntilApproval:
+		return fmt.Sprintf("condition kind %q is not verifiable in v1: approval-answer records are out of scope (register a file, job, or delegate condition)", pred.Kind), true
+	case WaitUntilChild:
+		return fmt.Sprintf("condition kind %q is not verifiable in v1: child-terminal queries are out of scope (register a file, job, or delegate condition)", pred.Kind), true
+	case WaitUntilEvent:
+		switch pred.EventSubtype {
+		case EventHTTPMatch:
+			return fmt.Sprintf("condition subtype %q is not verifiable in v1: http fetch is out of scope (register a file, job, or delegate condition)", pred.EventSubtype), true
+		case EventExternalLabel:
+			return fmt.Sprintf("condition subtype %q is not verifiable in v1: external labels carry no queryable state (register a file, job, or delegate condition)", pred.EventSubtype), true
+		case EventFileModified, "":
+			return "", false
+		default:
+			return fmt.Sprintf("unknown event subtype %q", pred.EventSubtype), true
+		}
+	case WaitUntilTime:
+		return fmt.Sprintf("condition kind %q is not verifiable (must query durable state, not time)", pred.Kind), true
+	}
+	return fmt.Sprintf("unknown condition kind %q", pred.Kind), true
 }
 
 // RegisterExpect validates and installs one stop-claim condition (spec §6),
@@ -65,8 +99,11 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 		return Condition{}, false
 	}
 	pred := req.Predicate
-	if !validExpectKind(pred.Kind) {
-		s.lastRejectReason = fmt.Sprintf("condition kind %q is not verifiable (must query durable state, not time)", pred.Kind)
+	registrable := pred.Kind == WaitUntilJob || pred.Kind == WaitUntilDelegate ||
+		(pred.Kind == WaitUntilEvent && (pred.EventSubtype == EventFileModified || pred.EventSubtype == ""))
+	if !registrable {
+		reason, _ := expectKindRejected(pred)
+		s.lastRejectReason = reason
 		return Condition{}, false
 	}
 	if !checkSizeCaps(WaitKind{Matcher: pred.Matcher, Target: pred.Target, Label: desc}) {

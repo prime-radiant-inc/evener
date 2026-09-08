@@ -686,3 +686,56 @@ func claimedChildTerminalUserspace(claimed []goal.PendingWake) bool {
 	}
 	return false
 }
+
+// TestGoalExpectKindRestrictionToolLevel pins fix-1/4 I1 at the tool: each
+// non-registrable kind (approval/child/http/external-label) rejects with its
+// reason named; file/job/delegate still register.
+func TestGoalExpectKindRestrictionToolLevel(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireTask8Files(sess, map[string]string{"/work/report.md": "v1"})
+
+	newGoal := func() {
+		t.Helper()
+		sess.getOrCreateGoalStore().Set("ship the report", clk.Now())
+		wireTask8Files(sess, map[string]string{"/work/report.md": "v1"})
+	}
+	// Registrable: default file check, explicit file, live-job stub is absent
+	// (production substrate) — file suffices here; job/delegate register at
+	// the store level (TestRegisterExpectKindRestriction).
+	newGoal()
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "ge-ok", Name: "goal_expect",
+		Arguments: task8Args(t, map[string]any{"desc": "report changed", "target": "/work/report.md"}),
+		Type:      "function",
+	})
+	if res.IsError {
+		t.Fatalf("file condition must register, got error: %s", res.Output)
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"approval", map[string]any{"desc": "a", "kind": "until_approval", "target": "q?"}, "until_approval"},
+		{"child", map[string]any{"desc": "c", "kind": "until_child", "target": "child_1"}, "until_child"},
+		{"http", map[string]any{"desc": "h", "kind": "until_event", "event_subtype": "http_match", "target": "https://example.com/hook"}, "http_match"},
+		{"external", map[string]any{"desc": "e", "kind": "until_event", "event_subtype": "external_label"}, "external_label"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID: "ge-" + tc.name, Name: "goal_expect",
+				Arguments: task8Args(t, tc.args),
+				Type:      "function",
+			})
+			if !res.IsError {
+				t.Fatalf("%s condition must reject under the v1 restriction, got success: %s", tc.name, res.Output)
+			}
+			if !strings.Contains(res.Output, tc.want) {
+				t.Fatalf("%s rejection %q must name %q", tc.name, res.Output, tc.want)
+			}
+		})
+	}
+}

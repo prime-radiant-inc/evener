@@ -93,7 +93,7 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 // ambiguous-by-construction. askQuestion carries no stable ask-call ID in
 // this slice, so a non-empty generation never matches (fail closed — a
 // dangling wait from an earlier same-text ask cannot validate against a
-// later generation). Tightened per Task-7 Minor-1: the pre-Tast-8 loose OR
+// later generation). Tightened per Task-7 Minor-1: the pre-Task-8 loose OR
 // (header==key || question==key) is replaced by this pair contract.
 func (g *goalSessionSubstrate) LookupApproval(contentKey, generation string) bool {
 	s := g.sess

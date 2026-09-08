@@ -53,9 +53,10 @@ type goalWatchdogState struct {
 	goalKey string
 }
 
-// goalWatchdogQuietThreshold is the quiet floor (spec §6, default 30m): no
-// watchdog notice emits before the stretch crosses it.
-const goalWatchdogQuietThreshold = 30 * time.Minute
+// goalWatchdogQuietThreshold aliases the single-source watchdog floor
+// (goal.WatchdogQuietThreshold, fix-1/4 m1): no watchdog notice emits before
+// the stretch crosses it.
+const goalWatchdogQuietThreshold = goal.WatchdogQuietThreshold
 
 // checkGoalWatchdog evaluates the quiet-goal watchdog at now (sclock) and
 // emits at most one EventGoalWatchdog notice. Deterministic: callers pass
@@ -129,7 +130,11 @@ func (s *Session) checkGoalWatchdog(now time.Time) {
 		ws.anchorDeadline = anchor
 		ws.anchorWaitID = anchorID
 	}
-	// Prune the rolling 24h window.
+	// Prune the rolling 24h window. Disclosure (fix-1/4 I3): the 24h
+	// ceiling lives in session-local state and is NOT persisted — a restart
+	// resets it (bounded cost: at most 4 extra notices per restart, and
+	// stretches still cap at 2 each). Persisting notice timestamps would
+	// trade a bounded repeat for clock-skew and migration complexity.
 	kept := ws.sentTimes[:0]
 	for _, t := range ws.sentTimes {
 		if now.Sub(t) < goal.WatchdogWindow {
@@ -142,6 +147,9 @@ func (s *Session) checkGoalWatchdog(now time.Time) {
 	switch kind {
 	case "park":
 		if quiet < goalWatchdogQuietThreshold {
+			break
+		}
+		if ws.stretchNotices >= goal.MaxWatchdogNoticesPerStretch {
 			break
 		}
 		if ws.stretchNotices == 0 {
