@@ -1906,6 +1906,37 @@ func TestLoadIgnoreSetSkipsADotDirectoryAncestor(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoreSetSkipsAScopeBeneathADotDirectory pins the mid-path half of
+// the dot-directory exclusion: a scope like a/.config/sub sits beneath a
+// dot-directory without naming one itself, so neither the basename ancestor
+// check nor the walk's own d.Name() check fires. isDotPath still drops every
+// candidate beneath .config before a rule from inside could apply, so walking
+// the scope and retaining its rules only spends the listing and rules budget
+// for nothing — and a large enough subtree under it can refuse a glob whose
+// answer is fixed (empty under the default exclusion) before it starts.
+func TestLoadIgnoreSetSkipsAScopeBeneathADotDirectory(t *testing.T) {
+	fsys := fstest.MapFS{
+		"a/.config/sub/.gitignore": &fstest.MapFile{Data: []byte("*.log\n")},
+		"a/.config/sub/keep.txt":   &fstest.MapFile{Data: []byte("x")},
+		"a/keep2.txt":              &fstest.MapFile{Data: []byte("x")},
+		".gitignore":               &fstest.MapFile{Data: []byte("root.log\n")},
+	}
+
+	budget := newGlobBudget("glob")
+	set, err := loadIgnoreSet(t.Context(), fsys, nil, budget, []ignoreScope{{prefix: "a/.config/sub", depth: 0, walk: true}})
+	if err != nil {
+		t.Fatalf("loadIgnoreSet scoped beneath a dot-directory: %v", err)
+	}
+	for _, d := range set.dirs {
+		if d.rel == "a/.config/sub" || d.rel == "a/.config" {
+			t.Fatalf("collected rules from %q beneath a dot-directory; every candidate below it is already dropped, so reading them only spends budget", d.rel)
+		}
+	}
+	if budget.listings != 0 {
+		t.Fatalf("discovery spent %d listings walking beneath a dot-directory whose candidates are all dropped", budget.listings)
+	}
+}
+
 // TestGlobAppliesRulesInsideAnEscapedMetacharacterDirectory pins the exclusion
 // path for a pattern whose literal prefix contains an escaped metacharacter,
 // so the directory it names is really called "*". The prefix has to reach that

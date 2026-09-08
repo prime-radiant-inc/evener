@@ -316,8 +316,11 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			// Dot-directories are skipped the same way the subtree walk skips
 			// them: isDotPath drops every candidate underneath one before a
 			// rule from it could apply, so reading it could not change an
-			// answer and would spend the rules budget for nothing.
-			if dir != "." && strings.HasPrefix(path.Base(dir), ".") {
+			// answer and would spend the rules budget for nothing. The check
+			// is on the full path, not the basename: a scope like
+			// a/.config/sub sits beneath a dot-directory without naming one
+			// itself, and reading under it is just as pointless.
+			if dir != "." && isDotPath(dir) {
 				continue
 			}
 			if dir != "." && skip != nil && skip(dir) {
@@ -362,6 +365,16 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 		if !sc.walk {
 			// The pattern names literal paths; its prefix was read above and
 			// listing it would be work the glob itself never does.
+			continue
+		}
+		// A scope beneath a dot-directory has no candidates to collect for:
+		// isDotPath drops every path under one before a rule from inside
+		// could apply, so walking it only spends the listing and rules
+		// budget — and a large enough subtree under it can refuse a glob
+		// whose answer is already fixed. The walk's own d.Name() check cannot
+		// see this: it only skips dot-named entries, never a scope already
+		// rooted under one.
+		if isDotPath(sc.prefix) {
 			continue
 		}
 		// Each scope's walk is its own traversal, so it starts holding
