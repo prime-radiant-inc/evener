@@ -104,6 +104,7 @@ type SpawnRequest struct {
 	StateDir      string
 	RunDir        string
 	PluginRoot    string // internal/plugins.Manager root handed to the child serve process; "" keeps the child's default root resolution
+	AgentsDocPath string // personal AGENTS.md handed to the child serve process; "" lets the child resolve it from its own environment
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
 	Provider      string   // instance the launch selected; gated against the registry before spawning
@@ -117,6 +118,7 @@ type ResumeRequest struct {
 	StateDir      string
 	Resolved      launchconfig.Resolved
 	RunDir        string
+	AgentsDocPath string // personal AGENTS.md handed to the child serve process; "" lets the child resolve it from its own environment
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning

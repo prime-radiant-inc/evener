@@ -18,6 +18,7 @@ import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
+import { AgentsDocSection } from "./sections/agentsDoc";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
@@ -69,6 +70,7 @@ const CLASS = {
 const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
   credentials: CredentialsSection,
   agents: AgentsSection,
+  "agents-md": AgentsDocSection,
   "launch-evener": LaunchServerSection,
   inrepo: InRepoSection,
   project: ProjectSection,

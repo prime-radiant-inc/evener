@@ -376,7 +376,7 @@ async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
     } as AnyNotification);
     fake.emitNotification({
       method: "turn/completed",
-      params: { threadId: THREAD_ID, ref: REF, turnId: id, turn: { id, itemsView: "", status: "completed" } },
+      params: { threadId: THREAD_ID, ref: REF, turn: { id, itemsView: "", status: "completed" } },
     } as AnyNotification);
   }
   const deadline = performance.now() + 8_000;

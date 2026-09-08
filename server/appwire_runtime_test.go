@@ -310,11 +310,11 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 
 func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1"}`)}},
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress"}}`)}},
 		{Notification: appwire.Notification{Method: "item/started", Params: []byte(`{"turnId":"turn_1","item":{"type":"reasoning","id":"item_reasoning_1","turnId":"turn_1","status":"inProgress"}}`)}},
 		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":"Let me think"}`)}},
 		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":" about this."}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"status":"completed"}}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed"}}`)}},
 	}
 	turns := appTurnsFromNotifications(records)
 	if len(turns) != 1 {
@@ -327,6 +327,12 @@ func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	if items[0].Type != "reasoning" || items[0].Text != "Let me think about this." {
 		t.Fatalf("reasoning item=%+v", items[0])
 	}
+	// The settle stamp names its turn the way the wire does, in turn.id, which
+	// is the only name appTurnsFromNotifications reads: a frame naming it
+	// anywhere else is dropped and leaves the turn open.
+	if turns[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("turn status = %q, want %q", turns[0].Status, appwire.TurnStatusCompleted)
+	}
 }
 
 // TestAppTurnsFromNotificationsCarriesTurnTiming verifies that replaying a
@@ -336,8 +342,8 @@ func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 // ItemsView/Status off the wire Turn and silently drops the timing fields.
 func TestAppTurnsFromNotificationsCarriesTurnTiming(t *testing.T) {
 	records := []appserver.SequencedNotification{
-		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
-		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress","startedAt":1700000000}}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turn":{"id":"turn_1","status":"completed","completedAt":1700000042,"durationMs":4200}}`)}},
 	}
 	turns := appTurnsFromNotifications(records)
 	if len(turns) != 1 {

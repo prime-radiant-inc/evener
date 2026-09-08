@@ -122,6 +122,13 @@ type SessionConfig struct {
 	// Useful for A/B testing to match Docker container behavior (no project prompts).
 	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
 
+	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
+	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
+	// from the process environment; a hub passes its own concrete path so
+	// Settings and the sessions it spawns agree on the file even when a launch
+	// overrides XDG_CONFIG_HOME.
+	AgentsDocPath string `json:"agents_doc_path,omitempty"`
+
 	// NonInteractive indicates no human is available for questions or confirmation.
 	// The task prompt is the complete specification; the agent must make all decisions
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
@@ -752,6 +759,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
 		NoProjectPrompts:            c.NoProjectPrompts,
+		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
@@ -794,6 +802,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
 		NoProjectPrompts:            s.NoProjectPrompts,
+		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,

@@ -217,7 +217,7 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-2", TurnID: "turn_2", Text: built.String(), Status: "completed"},
 	})})
 	apply("turn-completed", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-		Ref: nxq6SessionRef, TurnID: "turn_2", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusCompleted},
+		Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusCompleted},
 	})})
 	apply("status-idle", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
@@ -271,7 +271,7 @@ func nxq6FuzzSteps(t *testing.T) []tea.Msg {
 			Ref: nxq6SessionRef, TurnID: "turn_f", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-f", TurnID: "turn_f", Text: "final streamed text", Status: "completed"},
 		})},
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", Turn: appwire.Turn{ID: "turn_f", Status: appwire.TurnStatusCompleted},
+			Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_f", Status: appwire.TurnStatusCompleted},
 		})},
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 			Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},

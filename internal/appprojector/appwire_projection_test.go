@@ -2822,9 +2822,8 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 
 // notificationTurn reads the "turn" payload off either shape a producer might
 // use: appwire.TurnStartedParams (turn/started, converted - kcb5) or a bare
-// map[string]any (turn/completed, deliberately left unconverted - kcb5's own
-// TurnCompletedParams declaration doesn't match what producers send, see
-// appwire_projection.go's own comment on its turn/completed sites).
+// map[string]any (turn/completed, deliberately left unconverted - see
+// appwire_projection.go's own comment on its turn/completed sites for why).
 func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
 	t.Helper()
 	for _, item := range items {
