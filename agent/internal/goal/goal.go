@@ -1204,11 +1204,9 @@ func (s *Store) DropLostWait(waitID, cause string, now time.Time) bool {
 	}
 	g.Waits = kept
 	g.LossCause = cause
-	// Check-before-reset (spec §1 rule 5): the drop must NOT clear
-	// AdvancementSinceLoss — the gate's rule-5 read observes the pre-reset
-	// window (advancement followed by this loss still notifies + re-drives).
-	// The flag clears when the loss is consumed: the non-rule-5 notice path
-	// via the gate's TakeLossCause consume loop, the resume path via Resume.
+	// No AdvancementSinceLoss reset here (spec §1 rule 5 check-before-reset):
+	// the gate's rule-5 read observes the pre-reset window. The flag clears
+	// when the loss is consumed (TakeLossCause, Resume).
 	if !hasLiveWait(kept) && g.Status == StatusWaiting {
 		g.Status = StatusActive
 	}
@@ -1219,12 +1217,9 @@ func (s *Store) DropLostWait(waitID, cause string, now time.Time) bool {
 
 // RecordLoss records a same-turn loss notice (spec §2 non-rule-5 path): the
 // cause persists for the terminal verdict while the gate re-drives with the
-// honest notice this turn. It does NOT reset AdvancementSinceLoss: the
-// check-before-reset ordering (spec §1 rule 5) belongs to the gate's rule-5
-// read — clearing it here would erase the pre-reset window a same-gate loss
-// must observe (advancement followed by a loss in one pass still notifies +
-// re-drives). The flag clears when the loss is consumed (gate consume loop,
-// resume).
+// honest notice this turn. It leaves AdvancementSinceLoss for the gate's
+// rule-5 read (spec §1 rule 5 check-before-reset); the flag clears when the
+// loss is consumed (TakeLossCause, Resume).
 // Reports whether a goal was present.
 func (s *Store) RecordLoss(cause string, now time.Time) bool {
 	s.mu.Lock()
@@ -1240,9 +1235,8 @@ func (s *Store) RecordLoss(cause string, now time.Time) bool {
 
 // MarkAdvanced records subgoal advancement evidence (spec §1 rule 5 window):
 // a waits-predicate flip since the last loss. The next loss check reads this
-// pre-reset flag; the flag clears when the loss is consumed (gate consume
-// loop, resume) — never on the record path, so a same-gate advancement+loss
-// still observes the window.
+// pre-reset flag; it clears only when the loss is consumed (TakeLossCause,
+// Resume), never on the record path.
 func (s *Store) MarkAdvanced(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

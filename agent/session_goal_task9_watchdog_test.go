@@ -40,12 +40,9 @@ func TestGoalWatchdogTimerPiggybacksParkStretch(t *testing.T) {
 		t.Fatalf("park gate = (%q, %v), want a park", prompt, cont)
 	}
 	// Determinism: the park gate armed the coalesced wait timer, and Advance
-	// dispatches its callback on a clock goroutine (Advance returns before
-	// the callback runs). The callback evaluates the watchdog on the same
-	// stretch: the losing evaluation observes stretchNotices=1 and
-	// suppresses, so the first emission always carries park-start. Drain
-	// after the assertion so a late second evaluation cannot leak events
-	// into a later test's stream.
+	// dispatches its callback on a clock goroutine, so the first emission
+	// always carries park-start. Drain after the assertion so a late second
+	// evaluation cannot leak events into a later test's stream.
 	clk.Advance(31 * time.Minute)
 	ev := nextGoalEventOfKind(t, sess, events.EventGoalWatchdog)
 	clk.Drain()

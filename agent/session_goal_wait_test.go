@@ -153,11 +153,9 @@ func TestGateStaleParkKicksOnce(t *testing.T) {
 		t.Fatalf("live park gate = (%q, %v), want held", prompt, ok)
 	}
 	// Determinism: the park gate armed the coalesced wait timer, and Advance
-	// dispatches its callback on a clock goroutine (Advance returns before the
-	// callback runs). Disarm before advancing so the settle below is the only
-	// claimant — otherwise the timer and the settle race on the same expiry
-	// (both claim paths are exactly-once, but the winner is unscheduled: the
-	// settle may return false when the callback's kick lands first).
+	// dispatches its callback on a clock goroutine — disarm before advancing
+	// so the settle below is the only claimant (both paths are exactly-once,
+	// but the winner is otherwise unscheduled and the settle may return false).
 	sess.stopGoalWaitTimer()
 
 	clk.Advance(2 * time.Minute)
@@ -777,6 +775,24 @@ func countSteeringNotes(sess *Session, substr string) int {
 		}
 	}
 	return n
+}
+
+// requireSingleLossNotice pins the exactly-once honest-loss notice: exactly
+// one steering note names the cause.
+func requireSingleLossNotice(t *testing.T, sess *Session) {
+	t.Helper()
+	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
+		t.Fatalf("loss notices = %d, want exactly 1", n)
+	}
+}
+
+// requirePersistedLossCause pins the claim-side persistence: the drop stood
+// the cause for the next gate's TakeLossCause/rule-5 read.
+func requirePersistedLossCause(t *testing.T, store *goal.Store) {
+	t.Helper()
+	if full, _ := store.GoalSnapshot(); full.LossCause == "" {
+		t.Fatalf("LossCause empty after the loss, want the cause persisted: %+v", full)
+	}
 }
 
 // Slice-1 tool tests (spec sections 2, 7): goal_wait registers through the
@@ -1663,11 +1679,10 @@ func TestFixWaveLiveLossNoticesOnce(t *testing.T) {
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("live plus lost", clk.Now())
-	liveSub := &fixStubSubstrate{jobs: map[string]fixStubTarget{
+	store.SetSubstrate(&fixStubSubstrate{jobs: map[string]fixStubTarget{
 		"job_live": {live: true},
 		"job_gone": {live: true},
-	}}
-	store.SetSubstrate(liveSub)
+	}})
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_live", Timeout: time.Hour}, clk.Now()); !ok {
 		t.Fatalf("precondition: live job must park: %q", store.LastRejectReason())
 	}
@@ -1810,9 +1825,9 @@ func TestFixWaveAdvancementSoftensLaterLoss(t *testing.T) {
 	if snap, _ := store.Snapshot(); snap.Status == goal.StatusBlocked {
 		t.Fatalf("snapshot = %+v, want no block while advancement stands", snap)
 	}
-	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
-		t.Fatalf("loss notices = %d, want exactly 1", n)
-	}
+	// The notice+re-drive gate consumed the persisted cause (TakeLossCause),
+	// so only the exactly-once note stands — no LossCause remains.
+	requireSingleLossNotice(t, sess)
 }
 
 // TestFixWaveTimerLossesKickNotice pins the timer-path losses strand (spec
@@ -1825,14 +1840,11 @@ func TestFixWaveTimerLossesKickNotice(t *testing.T) {
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
-	var prompts []string
-	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
-	sess.SetNotifyFunc(func() {})
+	kicks := wireKickAndNotify(sess)
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("timer loss", clk.Now())
-	sub := &fixStubSubstrate{jobs: map[string]fixStubTarget{"job_gone": {live: true}}}
-	store.SetSubstrate(sub)
+	store.SetSubstrate(&fixStubSubstrate{jobs: map[string]fixStubTarget{"job_gone": {live: true}}})
 	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_gone", Timeout: time.Hour}, clk.Now()); !ok {
 		t.Fatalf("precondition: live job must park: %q", store.LastRejectReason())
 	}
@@ -1845,13 +1857,11 @@ func TestFixWaveTimerLossesKickNotice(t *testing.T) {
 	store.SetSubstrate(&fixStubSubstrate{})
 	clk.Advance(61 * time.Second)
 	clk.Drain()
-	if len(prompts) != 1 {
-		t.Fatalf("timer loss kicks = %d, want exactly 1 (honest notice + re-drive)", len(prompts))
+	if *kicks != 1 {
+		t.Fatalf("timer loss kicks = %d, want exactly 1 (honest notice + re-drive)", *kicks)
 	}
-	if full, _ := store.GoalSnapshot(); full.LossCause == "" {
-		t.Fatalf("LossCause empty after the timer loss, want the cause persisted: %+v", full)
-	}
-	if n := countSteeringNotes(sess, goalWaitNoticePrefix); n != 1 {
-		t.Fatalf("loss notices = %d, want exactly 1", n)
-	}
+	// No gate has run since the timer's drop, so the cause still stands for
+	// the next gate's TakeLossCause/rule-5 read.
+	requirePersistedLossCause(t, store)
+	requireSingleLossNotice(t, sess)
 }

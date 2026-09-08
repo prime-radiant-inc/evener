@@ -74,11 +74,10 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// timer re-claim the same wait_ids. Claimed entries survive in the store
 	// marked Superseded and drive a single no-op evaluation on the current
 	// objective, never the old one. The session-level synthetic deadline id
-	// is kept with them: a carried synthetic entry drives via the superseded
-	// no-op (dropped context), and the new objective's own final turn claims
-	// fresh against the reset store marker — the kept mark suppresses only
-	// same-id lease re-claims, never the synthetic path (which keys on the
-	// marker and the standing backlog).
+	// is kept with them: a carried synthetic entry still drives via the
+	// superseded no-op, while the new objective's own final turn claims
+	// fresh against the reset store marker (the kept mark suppresses only
+	// same-id lease re-claims, never the synthetic path).
 	s.stopGoalWaitTimerLocked()
 	s.getOrCreateGoalStore().SetTerminalPending(false, s.sclock().Now())
 	s.goalTerminalPending = false
@@ -326,6 +325,20 @@ const goalWaitNoticePrefix = "[goal-wait-lost]"
 // is a hint, state is re-read).
 const goalWaitWakeTrailerPrefix = "[goal-wait-wake]"
 
+// goalWaitLossNotice frames the honest-loss notice (spec section 2): every
+// lost wait produces an exactly-once notice naming the cause.
+func goalWaitLossNotice(losses []string) string {
+	return goalWaitNoticePrefix + " " + strings.Join(losses, "; ") + "; re-arm or proceed without the wait."
+}
+
+// goalKickState reads the idle-kick state (kick callback + pending ask) under
+// s.mu. Call with no locks held.
+func (s *Session) goalKickState() (kick func(prompt string), pendingAsk bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kickFunc, len(s.askPending) > 0
+}
+
 // boundsBreached reports whether any spec section-1 rule-2/3 spend bound is
 // exceeded for full at now: maxContinuations consumed, maxParkedTotal
 // exhausted, or the wall-clock deadline passed. The terminal-pending latch
@@ -515,17 +528,11 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	}
 	if len(gateLosses) > 0 {
 		if goal.HasLiveWait(full.Waits) || full.AdvancementSinceLoss {
-			// Non-rule-5 loss: notice + re-drive, then CONSUME the
-			// persisted cause without re-arming it. The drop persisted it
-			// (DropLostWait at claim time) so TakeLossCause could join it
-			// to this batch — but delivering the notice consumes it: a
-			// re-persist (or leaving it stood) would let every later gate
-			// re-consume it into a duplicate notice — one loss, unbounded
-			// transcript notes. A later terminal loss arrives with its own
-			// fresh cause via its own drop.
-			for range gateLosses {
-				store.TakeLossCause()
-			}
+			// Non-rule-5 loss: notice + re-drive, then consume the cause
+			// the drop persisted at claim time — otherwise every later gate
+			// re-consumes it into a duplicate notice. A later terminal loss
+			// arrives with its own fresh cause via its own drop.
+			store.TakeLossCause()
 			full, ok = store.GoalSnapshot()
 			if !ok {
 				s.goalUpdateMu.Unlock()
@@ -534,7 +541,7 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			markers = goal.AdvancementMarkers{AdvancedSinceLoss: full.AdvancementSinceLoss}
 			s.goalUpdateMu.Unlock()
 			s.appendTurn(schema.TurnSteering, llm.User(
-				goalWaitNoticePrefix+" "+strings.Join(gateLosses, "; ")+"; re-arm or proceed without the wait."))
+				goalWaitLossNotice(gateLosses)))
 			s.maybeAutoSave()
 			// Re-drive below via the fresh read: fall through to a plain
 			// drive of the current objective (the loss notice is delivered;
@@ -597,10 +604,9 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	waitAdvanced := claimedPredicateFire(claimed)
 	if waitAdvanced {
 		// Waits-predicate flips are the only subgoal evidence (spec §4):
-		// persist the advancement window the NEXT loss's rule-5 read checks
+		// persist the advancement window the next loss's rule-5 read checks
 		// (spec §1 rule 5 check-before-reset). Expiry-only batches skip it —
-		// timer refires must not launder the re-park counter or soften a
-		// later genuine loss into a re-drive.
+		// timer refires must not soften a later genuine loss into a re-drive.
 		store.MarkAdvanced(now)
 	}
 	// Terminal-pending latch (spec section 1 R7 M-I1): while latched, rules
@@ -1211,10 +1217,10 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 // into persisted pendingWake claims (the claimWaitFireLocked analogue at
 // session scope) and reports the claims with the owning objective, plus the
 // loss causes dropped this pass (persisted via DropLostWait + RecordLoss for
-// the gate's TakeLossCause/rule-5 read). It
-// sequences s.mu and goalUpdateMu sections without nesting either (the
-// established SetGoal order is goalUpdateMu-then-s.mu; this helper never
-// holds one while taking the other). ClaimFire's atomicity is the
+// the gate's TakeLossCause/rule-5 read). It sequences s.mu and goalUpdateMu
+// sections without nesting either (the established SetGoal order is
+// goalUpdateMu-then-s.mu; this helper never holds one while taking the
+// other). ClaimFire's atomicity is the
 // exactly-once guarantee: concurrent claimants race on the lease, exactly
 // one wins. Covers ALL kinds (spec §§1-2: predicate truth plus expiry for
 // every kind), not timer expiry alone: the coalesced timer's poll leg is the
@@ -1329,16 +1335,15 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 	// next fire instant (four-way min) keeps the evaluation live until the
 	// stretch ends. kickClaimedGoalWake re-arms on the claim path below.
 	s.evalGoalWatchdogForTimer(now)
+	// Losses-only fire (spec §2: never a silent strand): the drop already
+	// persisted the cause for the gate's TakeLossCause/rule-5 read — deliver
+	// the honest notice now and kick the current objective so the re-drive
+	// (or the rule-5 terminal verdict) runs promptly.
+	if len(claimed) == 0 && len(losses) > 0 {
+		s.kickGoalWaitLosses(losses, objective)
+		return
+	}
 	if len(claimed) == 0 {
-		if len(losses) > 0 {
-			// Losses-only fire (spec §2: never a silent strand): the drop
-			// already persisted the cause for the gate's TakeLossCause/rule-5
-			// read — deliver the honest notice now and kick the current
-			// objective so the re-drive (or the rule-5 terminal verdict)
-			// runs promptly instead of waiting on arbitrary future input.
-			s.kickGoalWaitLosses(losses, objective)
-			return
-		}
 		s.armGoalWaitTimer()
 		return
 	}
@@ -1356,10 +1361,7 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 	// runs on the clock's goroutine, and the claim path plus a concurrent
 	// gate/settle may interleave - holding s.mu across the claim would
 	// deadlock against a gate holding goalUpdateMu and wanting s.mu.
-	s.mu.Lock()
-	kick := s.kickFunc
-	pendingAsk := len(s.askPending) > 0
-	s.mu.Unlock()
+	kick, pendingAsk := s.goalKickState()
 	if pendingAsk {
 		// Arm, don't kick past an unanswered ask: the claim persists and
 		// the reply turn's gate drives the wake.
@@ -1432,18 +1434,13 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 	kick(prompt)
 }
 
-// kickGoalWaitLosses delivers the honest notice + re-drive kick for a
-// timer fire that dropped leases but claimed none (spec §2: never a silent
-// strand). The drop already persisted the cause (claim helper), so the next
-// gate's TakeLossCause/rule-5 read owns the verdict — this kick only
-// schedules that evaluation promptly. Loss delivery is watchdog activity
-// (spec §6 signal 2): the stretch resets like any wake. Call with no locks
-// held; kicks fire outside all locks.
+// kickGoalWaitLosses notices + kicks a losses-only fire (spec §2: never a
+// silent strand). The claim already persisted the cause, so the next gate's
+// TakeLossCause/rule-5 read owns the verdict — this only schedules that
+// evaluation promptly, and resets the watchdog stretch like any wake (spec
+// §6 signal 2). Call with no locks held; kicks fire outside all locks.
 func (s *Session) kickGoalWaitLosses(losses []string, objective string) {
-	s.mu.Lock()
-	kick := s.kickFunc
-	pendingAsk := len(s.askPending) > 0
-	s.mu.Unlock()
+	kick, pendingAsk := s.goalKickState()
 	if pendingAsk {
 		// Arm, don't kick past an unanswered ask: the cause persists and
 		// the reply turn's gate delivers the notice.
@@ -1462,7 +1459,7 @@ func (s *Session) kickGoalWaitLosses(losses []string, objective string) {
 	}
 	prompt := goal.Render(full.Objective)
 	s.appendTurn(schema.TurnSteering, llm.User(
-		goalWaitNoticePrefix+" "+strings.Join(losses, "; ")+"; re-arm or proceed without the wait."))
+		goalWaitLossNotice(losses)))
 	s.maybeAutoSave()
 	s.noteGoalWatchdogActivity(s.sclock().Now())
 	s.armGoalWaitTimer()
@@ -1740,9 +1737,8 @@ func (s *Session) settleGoalOnIdle() bool {
 	}
 	s.mu.Unlock()
 	// Losses-only settle (spec §2: never a silent strand): the claim dropped
-	// leases but claimed none — deliver the honest notice and kick the
-	// current objective through the shared loss path (which re-checks
-	// clear/retarget/ask under its own locks) instead of returning false.
+	// leases but claimed none — notice + kick through the shared loss path
+	// (which re-checks clear/retarget/ask under its own locks).
 	if prompt == "" && len(claimed) == 0 && len(settleLosses) > 0 {
 		s.goalUpdateMu.Lock()
 		full, ok := s.getOrCreateGoalStore().GoalSnapshot()
