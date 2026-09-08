@@ -1,0 +1,48 @@
+{
+  "schema": "evener.ipad.reader-removal.v1",
+  "status": "qualified-scoped-simulator",
+  "date": "2026-09-08",
+  "sourceHead": "f510762cbfa410032da953c32e0f8ecab1ce82d3",
+  "platform": {
+    "device": "iPad Pro 11-inch (M5)",
+    "os": "iOS 26.5 Simulator",
+    "udid": "6462A0FC-A190-4F08-A0CC-9B7E6C792AEC",
+    "physicalDevice": false,
+    "bundleId": "com.primeradiant.evener.native",
+    "installedBinarySha256": "e2386bcca4d94cec2d78b2f3190eb6287009b9a14382b6ee30142f3482d6072e",
+    "coldLaunchPid": 796
+  },
+  "profiles": {
+    "A": {
+      "localProfileId": "866d1730-3b70-47c0-b8b1-72a3618b32b0",
+      "sessionRef": "local:034LBrqk6BgGPJvHsh4x34",
+      "origin": "http://127.0.0.1:59220"
+    },
+    "B": {
+      "localProfileId": "c0ba7d8f-ece8-443b-a2e5-7c89106bad15",
+      "sessionRef": "local:034LBrshAbM01wZVdNC1l4",
+      "origin": "http://127.0.0.1:59221"
+    }
+  },
+  "storage": {
+    "key": "evener.reader-positions",
+    "beforeRawJson": "/tmp/evener-ipad-reader-positions-beforeAremove.json",
+    "beforeRawJsonSha256": "26e77d809b8d5ea5045ef57dbe3a36bd34662651035e435452f49979cee363bb",
+    "afterRawJson": "/tmp/evener-ipad-reader-positions-afterAremove.json",
+    "afterRawJsonSha256": "0fbef272ead620d2e9ea5b3fe5082f2196ed3a240d250ace5124d962429a0683",
+    "beforeEntryCount": 2,
+    "afterEntryCount": 1,
+    "removedProfile": "A",
+    "preservedProfile": "B",
+    "preservedBValueSha256": "411079416c9a8d65277be3f1f3a544baa83b2606ea54c2b8467ebe91a9950df7",
+    "preservedBValueByteEqual": true,
+    "removedAEntryAbsent": true
+  },
+  "screenshots": [
+    {"name": "A-anchor", "path": "ipad-reader-removal-A-anchor.png", "sha256": "782e32fcb0ecb5e7927051dfc66d74b5a2d7ea1e6448c8368788aad388c2669a"},
+    {"name": "B-anchor", "path": "ipad-reader-removal-B-anchor.png", "sha256": "69ca7c044a789aaeb4589945f0ff5c91a31540acffe8467a76623a7e4f4c9154"},
+    {"name": "after-A-removal", "path": "ipad-reader-removal-after-A.png", "sha256": "c5d740109153d497640d7be7d7b1238ad61ba8682bbdf0e0092d76fc42aae788"},
+    {"name": "cold-launch", "path": "ipad-reader-removal-cold.png", "sha256": "2a9abb5e75191baf02e917c6bddd7bb582fb3dae06990ef732dfbafb85babc7f"}
+  ],
+  "notClaimed": ["draft cleanup", "physical-device qualification", "release signing or distribution", "rich media, live tail, rotation, VoiceOver, or performance"]
+}
