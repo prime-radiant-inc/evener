@@ -299,3 +299,400 @@ func TestDecideGoalStepSlice1(t *testing.T) {
 		t.Fatal("verdict strings must match spec §1 verbatim")
 	}
 }
+
+// --- Slice-2 progress ledger (spec §4): pure tables. ---
+//
+// The ledger is a pure unit in this task: FoldLedger maps (prev summary,
+// TurnOutcome, waits-subgoal evidence) to the next summary, and the stall
+// predicates read the summary. Task 7 wires the fold into the gate; the
+// interim v1 judge stays armed until then.
+
+// ledgerOutcome builds a TurnOutcome test input.
+func ledgerOutcome(fp, class, hash, digest string, mutated bool) TurnOutcome {
+	return TurnOutcome{
+		ActionFingerprint: fp,
+		ObservationClass:  class,
+		ObservationHash:   hash,
+		StateDigest:       digest,
+		Mutated:           mutated,
+	}
+}
+
+// foldLedgerTurns folds n identical turns onto prev.
+func foldLedgerTurns(prev LedgerSummary, n int, o TurnOutcome, waitAdvanced bool) LedgerSummary {
+	s := prev
+	for range n {
+		s = FoldLedger(s, o, waitAdvanced)
+	}
+	return s
+}
+
+// TestLedgerIdenticalThreePostEvidenceStalls pins K=3 after first
+// mutation-or-subgoal evidence: three identical no-delta turns stall.
+func TestLedgerIdenticalThreePostEvidenceStalls(t *testing.T) {
+	var s LedgerSummary
+	s = FoldLedger(s, ledgerOutcome("read f", "ok", "h0", "d0", false), false)
+	s = FoldLedger(s, ledgerOutcome("write f", "ok", "h1", "d1", true), false)
+	if s.Tier != RepetitionThresholdAdvanced {
+		t.Fatalf("mutated-with-delta turn must tighten tier to %d, got %+v", RepetitionThresholdAdvanced, s)
+	}
+	if s.Repetition != 1 {
+		t.Fatalf("digest delta must reset repetition to 1, got %+v", s)
+	}
+	same := ledgerOutcome("write f", "ok", "h1", "d1", false)
+	s = FoldLedger(s, same, false)
+	if s.Repetition != 2 || LedgerStalled(s) {
+		t.Fatalf("rep=2 at K=3 must not stall yet: %+v", s)
+	}
+	s = FoldLedger(s, same, false)
+	if s.Repetition != 3 || !RepetitionStalled(s) || !LedgerStalled(s) {
+		t.Fatalf("rep=3 at K=3 must stall: %+v", s)
+	}
+	s = FoldLedger(s, same, false)
+	if !LedgerStalled(s) {
+		t.Fatalf("rep=4 must stay stalled: %+v", s)
+	}
+	if BackstopStalled(s) {
+		t.Fatalf("short run must stall via repetition, not the backstop: %+v", s)
+	}
+}
+
+// TestLedgerFreshOpeningNotStalledBeforeSix pins K=6 while never-advanced:
+// a read-heavy opening accrues without stalling until the 6th identical turn.
+func TestLedgerFreshOpeningNotStalledBeforeSix(t *testing.T) {
+	var s LedgerSummary
+	same := ledgerOutcome("read f", "ok", "h", "d", false)
+	s = foldLedgerTurns(s, 5, same, false)
+	if s.Repetition != 5 {
+		t.Fatalf("rep = %d, want 5", s.Repetition)
+	}
+	if LedgerStalled(s) || RepetitionStalled(s) || BackstopStalled(s) {
+		t.Fatalf("5 identical pre-evidence turns must not stall: %+v", s)
+	}
+	if s.Tier != RepetitionThresholdFresh {
+		t.Fatalf("fresh tier = %d, want %d", s.Tier, RepetitionThresholdFresh)
+	}
+	s = FoldLedger(s, same, false)
+	if s.Repetition != 6 || !RepetitionStalled(s) || !LedgerStalled(s) {
+		t.Fatalf("6th identical turn must stall at K=6: %+v", s)
+	}
+	if BackstopStalled(s) {
+		t.Fatalf("K=6 stall must be repetition, not backstop: %+v", s)
+	}
+}
+
+// TestLedgerPeriodTwoRotationReachesBackstop pins B=12: alternating
+// fingerprints never trip repetition, but 12 consecutive non-advancing turns
+// trip the total backstop. The opening pair is novel (advancing), so the
+// backstop lands on the 14th turn, not the 12th.
+func TestLedgerPeriodTwoRotationReachesBackstop(t *testing.T) {
+	var s LedgerSummary
+	a := ledgerOutcome("poll a", "external-unchanged", "ha", "d", false)
+	b := ledgerOutcome("poll b", "external-unchanged", "hb", "d", false)
+	for i := range 13 {
+		o := a
+		if i%2 == 1 {
+			o = b
+		}
+		s = FoldLedger(s, o, false)
+	}
+	if s.Repetition != 1 || RepetitionStalled(s) {
+		t.Fatalf("alternation must never trip repetition: %+v", s)
+	}
+	if BackstopStalled(s) || LedgerStalled(s) {
+		t.Fatalf("13 alternating turns (11 trailing non-advancing) must not trip B=12: %+v", s)
+	}
+	s = FoldLedger(s, b, false)
+	if !BackstopStalled(s) || !LedgerStalled(s) {
+		t.Fatalf("14th alternating turn (12 trailing non-advancing) must trip B=12: %+v", s)
+	}
+	if RepetitionStalled(s) {
+		t.Fatalf("backstop stall must not trip repetition: %+v", s)
+	}
+}
+
+// TestLedgerCanonicalizeObservationHash pins timestamp/id redaction: outputs
+// differing only in timestamps and request ids canonicalize equal, while
+// genuinely different content stays distinct. Empty stays empty (the
+// class-only fallback signal — never novel by default).
+func TestLedgerCanonicalizeObservationHash(t *testing.T) {
+	a := CanonicalizeObservationHash("fetched 3 rows at 2026-09-08T04:00:00Z req_id=abc123 trace_id=9f2c11aa-1234-5678-9abc-def012345678")
+	b := CanonicalizeObservationHash("fetched 3 rows at 2026-09-08T04:05:00Z req_id=xyz789 trace_id=00000000-0000-0000-0000-000000000000")
+	if a == "" || a != b {
+		t.Fatalf("timestamp/id noise must canonicalize equal: %q vs %q", a, b)
+	}
+	c := CanonicalizeObservationHash("fetched 4 rows at 2026-09-08T04:00:00Z req_id=abc123 trace_id=9f2c11aa-1234-5678-9abc-def012345678")
+	if c == a {
+		t.Fatalf("genuinely different content must stay distinct: %q", c)
+	}
+	if got := CanonicalizeObservationHash(""); got != "" {
+		t.Fatalf("empty hash must stay empty, got %q", got)
+	}
+}
+
+// TestLedgerTimestampNoiseStillStalls pins the §9 evasion case at fold level:
+// identical (action, class) with no digest delta stalls even when every raw
+// observation hash carries fresh timestamp noise.
+func TestLedgerTimestampNoiseStillStalls(t *testing.T) {
+	var s LedgerSummary
+	s = FoldLedger(s, ledgerOutcome("read f", "ok", "seed at 2026-09-08T03:00:00Z", "d0", false), false)
+	s = FoldLedger(s, ledgerOutcome("write f", "ok", "seed at 2026-09-08T03:01:00Z", "d1", true), false)
+	for i := range 3 {
+		o := ledgerOutcome("write f", "ok", "poll failed at 2026-09-08T04:00:0"+string(rune('0'+i))+"Z", "d1", false)
+		s = FoldLedger(s, o, false)
+	}
+	if !RepetitionStalled(s) || !LedgerStalled(s) {
+		t.Fatalf("timestamp-noisy identical no-delta turns must still stall at K=3: %+v", s)
+	}
+}
+
+// TestLedgerGenuineRetryWithDeltaStaysLive pins that a same-action retry loop
+// with a state-digest delta every turn never accrues: repetition resets and
+// every entry advances.
+func TestLedgerGenuineRetryWithDeltaStaysLive(t *testing.T) {
+	var s LedgerSummary
+	s = FoldLedger(s, ledgerOutcome("test ./...", "error", "h0", "d0", true), false)
+	for _, d := range []string{"d1", "d2", "d3"} {
+		s = FoldLedger(s, ledgerOutcome("test ./...", "error", "h0", d, true), false)
+	}
+	if s.Repetition != 1 {
+		t.Fatalf("every-delta retry must hold repetition at 1, got %+v", s)
+	}
+	if LedgerStalled(s) || RepetitionStalled(s) || BackstopStalled(s) {
+		t.Fatalf("genuine retry with delta must stay live: %+v", s)
+	}
+	for i, e := range s.Entries {
+		if i > 0 && !e.Advancement {
+			t.Fatalf("delta turn %d must be marked advancing: %+v", i, e)
+		}
+	}
+}
+
+// TestLedgerJunkWriteAccrues pins that a mutating turn with no digest delta
+// (junk write) still accrues repetition under the fresh tier — it is not
+// mutation evidence and does not tighten to K=3.
+func TestLedgerJunkWriteAccrues(t *testing.T) {
+	var s LedgerSummary
+	junk := ledgerOutcome("write f", "ok", "h", "d", true)
+	s = foldLedgerTurns(s, 3, junk, false)
+	if LedgerStalled(s) {
+		t.Fatalf("3 junk writes must not stall under the fresh tier: %+v", s)
+	}
+	if s.Tier != RepetitionThresholdFresh {
+		t.Fatalf("junk writes must not tighten the tier: %+v", s)
+	}
+	s = foldLedgerTurns(s, 3, junk, false)
+	if s.Repetition != 6 || !LedgerStalled(s) {
+		t.Fatalf("6 junk writes must stall at K=6: %+v", s)
+	}
+}
+
+// TestLedgerMutatedDeltaResetsBothTiers pins that a mutating turn with a
+// digest delta resets the repetition run and tightens the tier to K=3, so a
+// subsequent identical pair stalls sooner than a fresh opening would.
+func TestLedgerMutatedDeltaResetsBothTiers(t *testing.T) {
+	var s LedgerSummary
+	s = foldLedgerTurns(s, 2, ledgerOutcome("read f", "ok", "h0", "d0", false), false)
+	if s.Repetition != 2 {
+		t.Fatalf("precondition rep = %d, want 2", s.Repetition)
+	}
+	s = FoldLedger(s, ledgerOutcome("write f", "ok", "h1", "d1", true), false)
+	if s.Tier != RepetitionThresholdAdvanced || s.Repetition != 1 {
+		t.Fatalf("mutated-with-delta must reset rep to 1 and tighten tier: %+v", s)
+	}
+	if LedgerStalled(s) {
+		t.Fatalf("evidence turn itself must not stall: %+v", s)
+	}
+	same := ledgerOutcome("write f", "ok", "h1", "d1", false)
+	s = FoldLedger(s, same, false)
+	if s.Repetition != 2 || LedgerStalled(s) {
+		t.Fatalf("rep=2 at K=3 must not stall: %+v", s)
+	}
+	s = FoldLedger(s, same, false)
+	if !LedgerStalled(s) {
+		t.Fatalf("rep=3 at K=3 must stall: %+v", s)
+	}
+}
+
+// TestLedgerWaitEvidenceAdvancesButExpectChecksAccrue pins waits-only
+// advancement: a condition check with no wait flip, no delta, and no novelty
+// accrues like any other non-advancing turn (goal_expect never feeds the
+// ledger), while a waits-predicate flip advances and tightens the tier.
+func TestLedgerWaitEvidenceAdvancesButExpectChecksAccrue(t *testing.T) {
+	var s LedgerSummary
+	s = foldLedgerTurns(s, 2, ledgerOutcome("read f", "ok", "h", "d", false), false)
+	s = FoldLedger(s, ledgerOutcome("read f", "ok", "h", "d", false), false)
+	if s.Repetition != 3 || s.Tier != RepetitionThresholdFresh {
+		t.Fatalf("condition check without wait evidence must accrue under the fresh tier: %+v", s)
+	}
+	if LedgerStalled(s) {
+		t.Fatalf("rep=3 under the fresh tier must not stall: %+v", s)
+	}
+	if last := s.Entries[len(s.Entries)-1]; last.Advancement {
+		t.Fatalf("non-advancing check must be marked non-advancing: %+v", last)
+	}
+
+	var w LedgerSummary
+	w = foldLedgerTurns(w, 2, ledgerOutcome("read f", "ok", "h", "d", false), false)
+	w = FoldLedger(w, ledgerOutcome("eval wake", "ok", "h2", "d2", false), true)
+	if w.Tier != RepetitionThresholdAdvanced || w.Repetition != 1 {
+		t.Fatalf("waits-predicate flip must advance, reset rep, tighten tier: %+v", w)
+	}
+	if LedgerStalled(w) {
+		t.Fatalf("wait-evidence turn must not stall: %+v", w)
+	}
+	if last := w.Entries[len(w.Entries)-1]; !last.Advancement {
+		t.Fatalf("wait-evidence turn must be marked advancing: %+v", last)
+	}
+}
+
+// TestLedgerMigratedResidualAtMostKMinusOne pins the disclosed migration
+// residual: seeded "migrated" entries are distinct from all real
+// fingerprints, so a post-migration different first turn resets the run to 1
+// (granting at most K−1 extra turns once); K−1 further identical turns then
+// stall. The B=12 backstop still bites longer evasions.
+func TestLedgerMigratedResidualAtMostKMinusOne(t *testing.T) {
+	created := time.Unix(1_700_000_000, 0).UTC()
+	restore := created.Add(time.Hour)
+	for _, tc := range []struct {
+		name         string
+		streak       int
+		madeProgress bool
+		wantTier     int
+		wantSeeded   int
+	}{
+		{"progressed streak-2", 2, true, RepetitionThresholdAdvanced, 2},
+		{"never-advanced streak-5", 5, false, RepetitionThresholdFresh, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := MigrateV1ToPersisted("obj", "active", "", 4, tc.streak, tc.madeProgress, created, created, restore)
+			s := p.LedgerSummary
+			if s.Tier != tc.wantTier || s.Repetition != tc.wantSeeded {
+				t.Fatalf("precondition summary = %+v, want tier=%d rep=%d", s, tc.wantTier, tc.wantSeeded)
+			}
+			s = FoldLedger(s, ledgerOutcome("other tool", "ok", "h", "d", false), false)
+			if s.Repetition != 1 || LedgerStalled(s) {
+				t.Fatalf("different post-migration turn must reset rep to 1 without stalling: %+v", s)
+			}
+			same := ledgerOutcome("other tool", "ok", "h", "d", false)
+			extra := tc.wantTier - 1
+			for i := 1; i < extra; i++ {
+				s = FoldLedger(s, same, false)
+				if LedgerStalled(s) {
+					t.Fatalf("identical turn %d of %d must not stall yet: %+v", i+1, extra, s)
+				}
+			}
+			s = FoldLedger(s, same, false)
+			if s.Repetition != tc.wantTier || !LedgerStalled(s) {
+				t.Fatalf("K−1 further identical turns must stall at K=%d: %+v", tc.wantTier, s)
+			}
+		})
+	}
+	if got := CanonicalizeActionFingerprint(MigratedFingerprint); got == MigratedFingerprint {
+		t.Fatalf("canonicalizer must keep real fingerprints distinct from %q", MigratedFingerprint)
+	}
+}
+
+// TestLedgerWindowBoundedToTwelve pins the 12-entry shape: the window keeps
+// the last max(N,B)=12 entries with fingerprint/class/hash/digest/advancement
+// populated, dropping the oldest.
+func TestLedgerWindowBoundedToTwelve(t *testing.T) {
+	var s LedgerSummary
+	for i := range 15 {
+		fp := "tool-" + string(rune('a'+i))
+		s = FoldLedger(s, ledgerOutcome(fp, "ok", "hash-"+string(rune('a'+i)), "digest-"+string(rune('a'+i)), false), false)
+	}
+	if len(s.Entries) != LedgerWindowSize {
+		t.Fatalf("window = %d entries, want %d", len(s.Entries), LedgerWindowSize)
+	}
+	if got, want := s.Entries[0].Fingerprint, CanonicalizeActionFingerprint("tool-d"); got != want {
+		t.Fatalf("oldest kept entry = %q, want %q (turns 1-3 dropped)", got, want)
+	}
+	for i, e := range s.Entries {
+		if e.Fingerprint == "" || e.Class == "" || e.Hash == "" || e.Digest == "" {
+			t.Fatalf("entry %d missing fields: %+v", i, e)
+		}
+		if !e.Advancement {
+			t.Fatalf("every-delta entry %d must be marked advancing: %+v", i, e)
+		}
+	}
+}
+
+// TestLedgerFoldPreservesStage pins that folding sets the tier but leaves the
+// graduation stage to its owner (Task 8): a restart after a nudge graduates,
+// never re-nudges, so the fold must not clear it.
+func TestLedgerFoldPreservesStage(t *testing.T) {
+	prev := LedgerSummary{Stage: StageNudged}
+	s := FoldLedger(prev, ledgerOutcome("read f", "ok", "h", "d", false), false)
+	if s.Stage != StageNudged {
+		t.Fatalf("fold must preserve stage, got %q", s.Stage)
+	}
+	if s.Tier != RepetitionThresholdFresh {
+		t.Fatalf("fresh fold must set tier %d, got %+v", RepetitionThresholdFresh, s)
+	}
+}
+
+// TestLedgerCanonicalizeActionFingerprint pins the normalization rules: tool
+// case/whitespace collapse, path cleaning, volatile-token redaction, and the
+// migrated-fingerprint guard — without merging refining greps (different args
+// stay distinct).
+func TestLedgerCanonicalizeActionFingerprint(t *testing.T) {
+	a := CanonicalizeActionFingerprint("Grep  pattern=x   path=/a//b/")
+	b := CanonicalizeActionFingerprint("grep pattern=x path=/a/b")
+	if a == "" || a != b {
+		t.Fatalf("normalization must converge: %q vs %q", a, b)
+	}
+	refining := CanonicalizeActionFingerprint("grep pattern=y path=/a/b")
+	if refining == a {
+		t.Fatalf("refining grep must stay distinct: %q", refining)
+	}
+	nonceA := CanonicalizeActionFingerprint("run job_id=3f9a2c1e-4b5d-6e7f-8a9b-0c1d2e3f4a5b")
+	nonceB := CanonicalizeActionFingerprint("run job_id=00000000-0000-0000-0000-000000000000")
+	if nonceA == "" || nonceA != nonceB {
+		t.Fatalf("volatile ids must redact: %q vs %q", nonceA, nonceB)
+	}
+	if got := CanonicalizeActionFingerprint("  "); got != "" {
+		t.Fatalf("blank fingerprint must stay blank, got %q", got)
+	}
+}
+
+// TestLedgerClassOnlyFallback pins the unhashable-observation rule: with an
+// empty hash the class carries novelty — a repeated class accrues, a new
+// class advances — and emptiness never counts as novel by default.
+func TestLedgerClassOnlyFallback(t *testing.T) {
+	var s LedgerSummary
+	s = foldLedgerTurns(s, 5, ledgerOutcome("read f", "ok", "", "d", false), false)
+	if s.Repetition != 5 || LedgerStalled(s) {
+		t.Fatalf("5 empty-hash identical turns must accrue without stalling: %+v", s)
+	}
+	s = FoldLedger(s, ledgerOutcome("read f", "ok", "", "d", false), false)
+	if !LedgerStalled(s) {
+		t.Fatalf("6th empty-hash identical turn must stall: %+v", s)
+	}
+	s = FoldLedger(s, ledgerOutcome("read f", "error", "", "d", false), false)
+	if s.Repetition != 1 {
+		t.Fatalf("class change must reset the run, got %+v", s)
+	}
+	if last := s.Entries[len(s.Entries)-1]; !last.Advancement {
+		t.Fatalf("unseen class must advance via the class-only fallback: %+v", last)
+	}
+}
+
+// TestLedgerLongRotationDisclosed pins the disclosed residual: a rotation with
+// period > N=8 presents a novel hash every turn, so every turn advances and
+// neither signal fires — the maxContinuations=200 outer bound (Task 7
+// wiring), not the ledger, closes this loop.
+func TestLedgerLongRotationDisclosed(t *testing.T) {
+	var s LedgerSummary
+	fps := []string{"poll a", "poll b"}
+	for i := range BackstopThreshold {
+		fp := fps[i%len(fps)]
+		s = FoldLedger(s, ledgerOutcome(fp, "external-unchanged", "unique-hash-"+string(rune('a'+i)), "d", false), false)
+	}
+	if LedgerStalled(s) || RepetitionStalled(s) || BackstopStalled(s) {
+		t.Fatalf("novelty-every-turn rotation must not stall the ledger: %+v", s)
+	}
+	if last := s.Entries[len(s.Entries)-1]; !last.Advancement {
+		t.Fatalf("novel-hash turn must be marked advancing: %+v", last)
+	}
+}
