@@ -4,7 +4,7 @@ This inventory is generated from the authoritative `appwire.Methods` and `appwir
 
 ## Counts and interpretation
 
-The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **83 distinct methods** across **26 recipes** and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
+The structured catalog contains **91 methods** and **36 notifications**. The cookbook inventory names **89 distinct methods** across **28 recipes** and explicitly observes three notification names in `coverage.mjs`; these are inventory counts, not outcome or branch coverage. “Actual acceptance” means the cited artifact reports a real owned hub or native run for that surface; it does not mean every branch or platform is qualified. `thread/turns/items/list` is cataloged but explicitly `unimplemented` and remains the one reserved unsupported entry.
 
 The discovery and session-management recipes add eleven method names with
 21 deterministic logic/CLI contracts. The discovery reads also have a current owned-hub run in the [upgrade receipt](assets/ios-upgrade-receipt.json); management command receipts remain scoped in [SDK evidence](sdk-management-evidence.md#sdk-discovery-and-compaction-command-receipts--7-september). Completed compaction remains unqualified.
@@ -13,6 +13,11 @@ Session-lineage and maintenance-check recipes add seven methods and 25 focused
 contracts, including fork-child readback, ended-session resume, private output
 and deliberate provider/plugin checks. These new recipes have deterministic
 package qualification only; actual mutation outcomes remain unqualified.
+
+Hub-setup and saved-items recipes add six methods with 18 focused contracts.
+They require explicit actions and private outputs; deletion confirmations are
+client-side target review, not atomic server preconditions. Only `evener/upgrade`
+and the reserved unsupported method still lack cookbook recipes.
 
 ## Methods
 
@@ -49,16 +54,16 @@ package qualification only; actual mutation outcomes remain unqualified.
 | `evener/thread/transcripts/list` | `hub` | `session-lineage.mjs` | deterministic logic/CLI contracts; no new real-hub acceptance | server/live acceptance + native qualification |
 | `evener/subagentPreview` | `hub` | `session-lineage.mjs` | deterministic logic/CLI contracts; no new real-hub acceptance | server/live acceptance + native qualification |
 | `evener/paths/complete` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
-| `evener/dirs/create` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/dirs/create` | `hub` | `hub-setup.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
 | `evener/projects/recent` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/path/validate` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
 | `evener/git/head` | `hub` | `discovery.mjs` | deterministic logic/CLI contract `discovery.contract.mjs` | server/live acceptance + native qualification |
-| `evener/mobile/pairing` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/mobile/pairing` | `hub` | `hub-setup.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
 | `evener/navigation/read` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
-| `evener/favorite/set` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/archive/set` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/project/delete` | `hub` | — | — | server/live acceptance + native qualification |
-| `evener/session/delete` | `hub` | — | — | server/live acceptance + native qualification |
+| `evener/favorite/set` | `hub` | `saved-items.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
+| `evener/archive/set` | `hub` | `saved-items.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
+| `evener/project/delete` | `hub` | `saved-items.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
+| `evener/session/delete` | `hub` | `saved-items.mjs` | deterministic logic/CLI contracts | server/live acceptance + native qualification |
 | `evener/pin-section/rename` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
 | `evener/pin-section/delete` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |
 | `evener/session-pin/assign` | `hub` | `organization.mjs` | recipe + deterministic logic contract `organization.contract.mjs` | server/live acceptance + native qualification |

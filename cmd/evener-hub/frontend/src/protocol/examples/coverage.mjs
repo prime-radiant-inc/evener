@@ -2,6 +2,14 @@ import { METHOD_NAMES, NOTIFICATION_NAMES } from "@evener/appwire-client";
 
 // A listed recipe exercises these requests; this is not branch/outcome coverage.
 const recipes = {
+  "hub-setup.mjs": ["initialize", "evener/dirs/create", "evener/mobile/pairing"],
+  "saved-items.mjs": [
+    "initialize",
+    "evener/favorite/set",
+    "evener/archive/set",
+    "evener/project/delete",
+    "evener/session/delete",
+  ],
   "session-lineage.mjs": [
     "initialize",
     "thread/read",

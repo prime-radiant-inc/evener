@@ -1003,6 +1003,64 @@ uncertain check and exit 1 means invalid input, unavailable ping or an output
 failure. These contracts are exercised with deterministic SDK-boundary fakes;
 they do not qualify live credentials or plugin downloads.
 
+### Hub setup and pairing links
+
+`hub-setup.mjs` requires `EVENER_HUB_SETUP_ACTION=dirs` or `pairing`,
+`EVENER_HUB_SETUP_PARAMS_FILE`, and a new absolute `EVENER_HUB_SETUP_OUTPUT_FILE`.
+The private output is reserved with mode 0600 before connecting. Directory
+parameters are `{ "path": "/owned/workspace/new-directory" }`; the hub resolves
+and validates the path, creates missing parents, and returns its canonical path
+and whether it created the directory. This action requires
+`EVENER_HUB_SETUP_MUTATION=1` and `EVENER_HUB_SETUP_OWNED_HUB` equal to
+`EVENER_RPC_URL`.
+
+Pairing parameters are `{ "origin": "https://your-hub.example" }`. The hub
+validates its reachable origin and may use its configured mobile base URL.
+This is the hub-side handoff generator, not an iPhone scanner: the returned
+`/auth/<token>` link carries the hub credential. The recipe writes it only to
+the requested private output and never opens it. Treat that file as a
+credential. Stdout contains outcome metadata only. Neither action retries;
+an absent or malformed reply produces an uncertain result and exit 2. Exit 1
+covers input, connection and output failures. A directory acknowledgment is not
+an independent filesystem check, and a generated pairing link is not proof
+that a phone can reach the hub.
+
+### Saved projects and sessions
+
+`saved-items.mjs` requires an explicit `EVENER_SAVED_ITEMS_ACTION` of `favorite`,
+`archive`, `projectDelete`, or `sessionDelete`. Supply
+`EVENER_SAVED_ITEMS_PARAMS_FILE`, a new absolute `EVENER_SAVED_ITEMS_OUTPUT_FILE`,
+`EVENER_SAVED_ITEMS_MUTATION=1`, and `EVENER_SAVED_ITEMS_OWNED_HUB` equal to
+`EVENER_RPC_URL`. These are deliberate changes; no action runs by default.
+
+Parameters follow the generated method contract and add a client-only
+`reviewed` object identifying the exact target:
+
+| Action | Wire fields | `reviewed` identity |
+| --- | --- | --- |
+| `favorite` | `kind: "project"`, `id`, `favorited` boolean | `kind`, `id` |
+| `archive` project | `kind: "project"`, `id`, `workingDir`, `archived` boolean | `kind`, `id`, `workingDir` |
+| `archive` session | `kind: "session"`, `id`, `archived` boolean | `kind`, `id` |
+| `projectDelete` | `key`, `workingDir` | `key`, `workingDir` |
+| `sessionDelete` | `ref` with local source | `ref` |
+
+Deletion additionally requires `confirmTarget` equal to that same identity.
+For example, a session deletion uses
+`{ "ref": "local:owned-session-id", "reviewed": { "ref": "local:owned-session-id" }, "confirmTarget": { "ref": "local:owned-session-id" } }`.
+Use the actual canonical IDs and paths from navigation or thread readback.
+The hub validates project/path agreement and live-session deletion rules.
+`reviewed` and `confirmTarget` are operator checkpoints; they are not sent to
+the server and cannot atomically prevent concurrent changes.
+
+The recipe preserves the navigation receipt and exact `deleted`/`skipped`
+results in private JSON. An acknowledged deletion can still have skipped
+targets; inspect those results before removing anything from your UI. There is
+no automatic follow-up navigation refresh in this bounded recipe. Stdout
+contains outcome/count metadata, and `execution` remains `unverified`. A lost
+or malformed reply is uncertain, exits 2 and is never replayed. Exit 1 covers
+invalid input, connection or output failure; inspect the current hub state
+before deliberately issuing another action.
+
 ### Management mutation recovery
 
 These management and approval recipes require an explicit mutation opt-in and a separately
@@ -1013,7 +1071,8 @@ Preflight reads are not atomic with writes; use fixtures without concurrent
 writers. These methods have no mutation-ID or revision precondition in their
 current contracts.
 
-After one mutation attempt the recipe performs one fresh list or thread read. A
+Management recipes with a separate readback step perform one fresh list or
+thread read after one mutation attempt. A
 valid acknowledgment followed by readback reports `acknowledged`. A rejected or
 lost reply reports `uncertain` even if readback shows the desired state. The
 recipes never replay mutations, restore configuration, or attribute a concurrent
