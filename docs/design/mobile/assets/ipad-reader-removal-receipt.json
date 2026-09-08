@@ -44,5 +44,24 @@
     {"name": "after-A-removal", "path": "ipad-reader-removal-after-A.png", "sha256": "c5d740109153d497640d7be7d7b1238ad61ba8682bbdf0e0092d76fc42aae788"},
     {"name": "cold-launch", "path": "ipad-reader-removal-cold.png", "sha256": "2a9abb5e75191baf02e917c6bddd7bb582fb3dae06990ef732dfbafb85babc7f"}
   ],
+  "artifactUpgrade": {
+    "artifact": "mobile-native/ios/build/Build/Products/Release-iphonesimulator/Evener.app",
+    "mainJsBundleSha256": "1d5f0061f1b644928124358436bd7313565d2ed231dd56ff44ac015ce4b7ac7e",
+    "binarySha256": "7e1e295075aa7ceec32fc667b5079028b086c9253017dc9aec6f524036e25040",
+    "beforeRawJson": "/tmp/evener-ipad-progress-before-install.json",
+    "beforeRawJsonSha256": "0fbef272ead620d2e9ea5b3fe5082f2196ed3a240d250ace5124d962429a0683",
+    "afterRawJson": "/tmp/evener-ipad-progress-after-install.json",
+    "afterRawJsonSha256": "0fbef272ead620d2e9ea5b3fe5082f2196ed3a240d250ace5124d962429a0683",
+    "anchorItemKey": "apptranscript-item-v1:turn_m3:4:0",
+    "anchorOffset": 61.5,
+    "preservedBValueByteEqual": true,
+    "screenshots": {
+      "afterInstall": {"path": "ipad-reader-progress-after-install.png", "sha256": "56e6b4343b65cfdf790bc3d22ca5cba05c8637d2e3aea02ba8b4fe0461473ead"},
+      "removeDialog": {"path": "ipad-reader-progress-remove-B.png", "sha256": "395171f7e0b5c4d33c288769236ef4729eee55cc100ec2396c9a2879a7933751"},
+      "emptyAfterColdLaunch": {"path": "ipad-reader-progress-empty.png", "sha256": "4fcb7ceda13ef0cf75575565a79b58ecb6424b4d77ac85d25b8d2f506e8bb4dd"}
+    },
+    "finalReaderPositionRowAbsent": true,
+    "scope": "preservation and profile removal only; broader reader restoration remains unqualified"
+  },
   "notClaimed": ["draft cleanup", "physical-device qualification", "release signing or distribution", "rich media, live tail, rotation, VoiceOver, or performance"]
 }
