@@ -561,6 +561,20 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	client := appwire.NewClient(transport)
 	client.Start(context.WithoutCancel(ctx))
 	defer client.Close()
+	threadClosed := make(chan struct{})
+	var notificationMethods []string
+	var notificationMu sync.Mutex
+	go func() {
+		for notification := range client.Notifications() {
+			notificationMu.Lock()
+			notificationMethods = append(notificationMethods, notification.Method)
+			notificationMu.Unlock()
+			if notification.Method == appwire.NotifyThreadClosed {
+				close(threadClosed)
+				return
+			}
+		}
+	}()
 
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo: appwire.ClientInfo{Name: "serve-shutdown-test", Version: "test"},
@@ -569,6 +583,11 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: false, Subscribe: true,
+	}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID:   "shutdown-in-flight",
 		ExpectedInstanceID: entry.SessionID,
@@ -609,6 +628,16 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServe did not exit after in-flight input was released")
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	select {
+	case <-threadClosed:
+	case <-deadline.C:
+		notificationMu.Lock()
+		got := append([]string(nil), notificationMethods...)
+		notificationMu.Unlock()
+		t.Fatalf("subscribed client did not receive thread/closed before serve shutdown; methods=%v", got)
 	}
 }
 

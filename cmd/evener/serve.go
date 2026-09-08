@@ -671,7 +671,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		liveSessionClosed = true
 		live := currentSess
 		currentMu.Unlock()
-		live.Close()
+		live.CloseForShutdown()
 	}
 	// shutdownClosedTheLiveSession reports whether that pass has already run.
 	// Read it only AFTER the session in question is the current one, which is

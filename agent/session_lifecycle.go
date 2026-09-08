@@ -85,6 +85,16 @@ func (s *Session) Close() {
 	s.close(context.Background(), true)
 }
 
+// CloseForShutdown closes the session with a terminal lifecycle boundary.
+// A cancelled in-flight turn may already have published an interrupted idle
+// boundary; that boundary must not suppress the session's closed notification.
+func (s *Session) CloseForShutdown() {
+	s.mu.Lock()
+	s.sessionEndEmitted = false
+	s.mu.Unlock()
+	s.close(context.Background(), true)
+}
+
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
 // budget expires and saying so. The joins it replaces exist for DELIVERY
 // ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
@@ -338,7 +348,10 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
-		emitEnd := !s.sessionEndEmitted
+		// An active turn may already have emitted an interrupted idle boundary
+		// while shutdown is cancelling it. That boundary does not describe the
+		// session's terminal state, so shutdown must still publish closed.
+		emitEnd := !s.sessionEndEmitted || s.state == SessionProcessing
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
