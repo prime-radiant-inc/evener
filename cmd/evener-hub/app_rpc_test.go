@@ -11205,8 +11205,7 @@ func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	statuses := map[string]appwire.AuthStatusResponse{}
-	for name, srv := range map[string]*httptest.Server{"first": first, "second": second} {
+	codexStatus := func(name string, srv *httptest.Server) appwire.AuthStatusResponse {
 		client := dialHubRPC(t, srv)
 		defer client.Close()
 		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
@@ -11216,12 +11215,12 @@ func TestHubRPCTestServerGivesEachTestItsOwnOAuthState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s AuthStatus: %v", name, err)
 		}
-		statuses[name] = status
+		return status
 	}
-	if got := statuses["first"]; !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
+	if got := codexStatus("first", first); !got.SignedIn || got.ActiveSource != authopenai.AuthSourceOAuth {
 		t.Errorf("first status=%+v, want signed in from the record under its own state root %s", got, firstWeb.cfg.HubStateRoot)
 	}
-	if got := statuses["second"]; got.SignedIn || got.HasStoredOAuth {
+	if got := codexStatus("second", second); got.SignedIn || got.HasStoredOAuth {
 		t.Errorf("second status=%+v, want signed out: the first server's record must not be visible to it", got)
 	}
 }
