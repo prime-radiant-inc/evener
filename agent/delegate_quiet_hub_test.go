@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,9 +80,7 @@ func awaitQuietTicks(t *testing.T, want map[delegateLease]int) []delegateLease {
 	t.Cleanup(restore)
 	var got []delegateLease
 	remaining := make(map[delegateLease]int, len(want))
-	for lease, n := range want {
-		remaining[lease] = n
-	}
+	maps.Copy(remaining, want)
 	left := 0
 	for _, n := range want {
 		left += n

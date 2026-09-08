@@ -237,35 +237,6 @@ func setQuietWatchTickDone(hook func(lease delegateLease)) (restore func()) {
 	}
 }
 
-// delegateQuietWatchHubForSession returns the live hub for s, creating it on
-// first use. The ticker is created outside the registry lock so arming one
-// session's hub never blocks another session's attach/detach; a lost creation
-// race stops the spare ticker and reuses the winner.
-func delegateQuietWatchHubForSession(s *Session) *delegateQuietWatchHub {
-	delegateQuietWatchHubs.Lock()
-	if hub := delegateQuietWatchHubs.hubs[s]; hub != nil {
-		delegateQuietWatchHubs.Unlock()
-		return hub
-	}
-	delegateQuietWatchHubs.Unlock()
-	ticker := s.sclock().NewTicker(delegateQuietCheckInterval)
-	hub := &delegateQuietWatchHub{
-		ticker:  ticker,
-		done:    make(chan struct{}),
-		entries: make(map[delegateQuietWatchEntry]struct{}),
-	}
-	delegateQuietWatchHubs.Lock()
-	if existing := delegateQuietWatchHubs.hubs[s]; existing != nil {
-		delegateQuietWatchHubs.Unlock()
-		ticker.Stop()
-		return existing
-	}
-	delegateQuietWatchHubs.hubs[s] = hub
-	delegateQuietWatchHubs.Unlock()
-	go s.serveDelegateQuietWatchHub(hub)
-	return hub
-}
-
 // delegateQuietWatchNext arms (or reuses) the shared hub for s and registers
 // lease on it. Registration is atomic with the hub lookup under the registry
 // lock, so the entry always lands on the hub the registry points at and can
