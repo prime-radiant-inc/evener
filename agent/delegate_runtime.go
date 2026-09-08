@@ -260,7 +260,12 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 	// mu here and in detach, never the reverse. A creation loser that finds a
 	// hub after stopping its spare ticker re-verifies the registry still points
 	// at that hub before landing on it: a detach-plus-replace in the gap means
-	// retrying the lookup instead of registering on the stale hub.
+	// retrying the lookup instead of registering on the stale hub. The creation
+	// winner re-verifies the same way after starting the serve goroutine: the
+	// freshly published hub is observable (empty) while the lock is released,
+	// so another watchdog can register on it and detach in that window,
+	// unregistering and stopping it; landing unconditionally would strand this
+	// entry on the stopped, unregistered hub.
 	delegateQuietWatchHubs.Lock()
 	var hub *delegateQuietWatchHub
 	for {
@@ -282,6 +287,15 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 			delegateQuietWatchHubs.Unlock()
 			go s.serveDelegateQuietWatchHub(fresh)
 			delegateQuietWatchHubs.Lock()
+			// The winner-published hub was observable while the lock was
+			// released to start its goroutine: a register-plus-detach in the
+			// gap unregisters and stops it, so only land on it while the
+			// registry still points at it, otherwise loop back and retry the
+			// lookup (or a fresh creation) instead of stranding this entry
+			// on the stopped, unregistered hub.
+			if delegateQuietWatchHubs.hubs[s] != fresh {
+				continue
+			}
 			hub = fresh
 			break
 		}
