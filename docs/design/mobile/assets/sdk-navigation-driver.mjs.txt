@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {AppwireClient} from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/ws/index.js';
+import {runNavigationInvalidation} from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/@evener/appwire-client/examples/navigation-invalidation-logic.mjs';
+import {runNavigationInvalidationCLI} from '/tmp/evener-navigation-retained-Fzh8wO/consumer/node_modules/@evener/appwire-client/examples/navigation-invalidation-cli.mjs';
+const root=process.cwd(),rt=JSON.parse(readFileSync('runtime.json')),token=readFileSync('state/evener/auth-token','utf8').trim();
+const makeClient=()=>new AppwireClient({url:`ws://127.0.0.1:${rt.hubPort}/rpc`,clientInfo:{name:'navigation-qualification',version:'1'},socketFactory:u=>new WebSocket(u,{headers:{Authorization:`Bearer ${token}`}})});
+const reader=makeClient(),writer=makeClient();
+const outcomes=[];
+const privateFile=(name,v)=>{const p=`${root}/run/${name}.json`;writeFileSync(p,JSON.stringify(v)+'\n',{flag:'wx',mode:0o600});return {file:name,sha256:createHash('sha256').update(readFileSync(p)).digest('hex'),mode:(statSync(p).mode&0o777).toString(8)}};
+try{
+ await writer.connect();
+ const catalog=await writer.request('evener/navigation/read',{representationVersion:2,resource:'catalog',catalog:'projects',offset:0,limit:100});
+ const project=catalog.data.entities.find(e=>e.kind==='project' && e.value.working_dir.endsWith('/evener-saved-items-fixed-u18cvov7/throwaway-v2')).value;
+ assert.equal(project.favorite??false,false);
+ for(const favorited of [true,false]){
+  let target;const observed=[];let wake;
+  const matching=()=>target&&observed.some(e=>e.generationId===target.navigation.generation_id&&e.targets.some(t=>t.kind==='catalog'&&t.catalog==='projects'&&t.revision>=target.navigation.targets.find(t=>t.kind==='catalog'&&t.catalog==='projects').revision));
+  const stop=reader.onNotification(n=>{if(n.method==='evener/navigation/invalidated'){observed.push(n.params);if(matching())wake?.()}});
+  let timer;
+  try{
+   const result=await runNavigationInvalidation(reader,{observe:async()=>{
+    target=await writer.request('evener/favorite/set',{kind:'project',id:project.key,favorited});assert.equal(target.ok,true);
+    if(!matching())await new Promise((resolve,reject)=>{wake=resolve;timer=setTimeout(()=>reject(new Error('Matching invalidation missing')),10000)});
+   }});
+   assert.equal(result.outcome,'read');assert.equal(result.reconciled,true);assert(result.eventCount>0);
+   assert.equal(result.readback.generationId,target.navigation.generation_id);
+   const manifestTarget=target.navigation.targets.find(t=>t.kind==='manifest');
+   if(manifestTarget)assert(result.readback.revision>=manifestTarget.revision);
+   const independent=makeClient();let check;
+   try{await independent.connect();const r=await independent.request('evener/navigation/read',{representationVersion:2,resource:'catalog',catalog:'projects',offset:0,limit:100});check=r.data.entities.find(e=>e.value?.key===project.key).value.favorite??false;assert.equal(check,favorited);}finally{independent.close()}
+   outcomes.push({favorited,outcome:result.outcome,reconciled:result.reconciled,eventCount:result.eventCount,generationId:result.readback.generationId,revision:result.readback.revision,independentFavorite:check,privateOutput:privateFile(`navigation-${favorited}`,result)});
+  }finally{clearTimeout(timer);stop()}
+ }
+ const quiet=makeClient(),lines=[];let result;
+ try{result=await runNavigationInvalidationCLI({EVENER_NAVIGATION_OUTPUT_FILE:`${root}/run/navigation-cli.json`,EVENER_NAVIGATION_OBSERVE_MS:'0'},quiet,{log:s=>lines.push(JSON.parse(s))});}finally{quiet.close()}
+ assert.equal(result.outcome,'read');assert.equal(lines.length,1);assert.deepEqual(Object.keys(lines[0]).sort(),['events','generationId','outcome','outputWritten','overflow','reconciled','revision']);assert.equal(statSync(`${root}/run/navigation-cli.json`).mode&0o777,0o600);
+ const receipt={status:'passed',runtime:{hubPID:rt.hubPID,providerPID:rt.providerPID,hubPort:rt.hubPort,providerPort:rt.providerPort},projectKey:project.key,outcomes,cli:lines[0],restoredFavorite:false,limitations:['Real single-hub favorite invalidations qualify manifest readback only.','Generation changes, sequence gaps, permanent stale reads and overflow are deterministic contracts, not injected live faults.','No socket proxy, frame dropping or mutation retry; no native acceptance.']};
+ privateFile('navigation-receipt',receipt);console.log(JSON.stringify({status:receipt.status,observations:outcomes.length,restoredFavorite:false,cliMetadataOnly:true}));
+}finally{reader.close();writer.close()}

@@ -1,0 +1,17 @@
+set -euo pipefail
+ROOT=/tmp/evener-upgrade-verified.$$
+mkdir -m 700 "$ROOT"
+PKG=/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples
+CONTROL=http://127.0.0.1:59577
+RPC=ws://127.0.0.1:59576/rpc
+TOKEN=/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness753252391/001/hub-state/auth-token
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=review EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/review-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/review.stdout"
+cat "$ROOT/review-output.json" >"$ROOT/review.identity.json"
+node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1],JSON.stringify({requested:"snapshot",reviewed:JSON.parse(fs.readFileSync(process.argv[2]))}))' "$ROOT/upgrade-params.json" "$ROOT/review.identity.json"
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=upgrade EVENER_HUB_UPGRADE_PARAMS_FILE="$ROOT/upgrade-params.json" EVENER_HUB_UPGRADE_MUTATION=1 EVENER_HUB_UPGRADE_OWNED_HUB=$RPC EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/upgrade-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/upgrade.stdout"
+PREFIX=$(jq -r '.prefix' "$ROOT/upgrade-output.json")
+curl -fsS "$CONTROL/status" >"$ROOT/status.json"
+for name in evener evener-dev; do sha256sum "$PREFIX/share/evener/bin/$name" | awk '{print $1}' >"$ROOT/installed-$name.sha256"; readlink "$PREFIX/bin/$name" >"$ROOT/symlink-$name.txt"; done
+for file in "$ROOT"/*output.json; do stat -f '%Mp%Lp' "$file" >"$file.mode"; sha256sum "$file" | awk '{print $1}' >"$file.sha256"; done
+curl -fsS -X POST "$CONTROL/stop" >/dev/null
+printf 'ROOT=%s\n' "$ROOT"

@@ -495,3 +495,97 @@ The setup and saved-item implementation at `a229b0c82` passed 18 focused
 contracts, the canonical frontend gate and outside-checkout package qualification.
 The full canonical gate and separate vet last exited zero at `ccdde59b9`.
 The added runtime receipts do not imply a newer full-gate or iOS release pass.
+
+
+## Packaged hub upgrade — 7 September
+
+The guarded upgrade recipe is committed at `64c707aeb`. It defaults to private
+read-only review and accepts development builds without commit metadata. Eight
+contracts cover ownership, input capture, reviewed identity, lost/malformed
+replies and private output. Root verified that all four installed recipe files
+in tarball `2ebffa16390f6b106825770abde7704222897df23b6c049003996b2145e5bd13`
+match committed source byte-for-byte.
+
+The [SDK upgrade receipt](assets/sdk-upgrade-receipt.json) keeps two separate
+Luna-run manual `TestNativeUpgradeHarness` fixtures distinct. Both used actual
+AppWire and self-update handlers with an owned install prefix and a scripted
+loopback release service. The immutable installer inputs are the previously
+qualified `ccdde59b9-dirty` binaries; this does not describe the running Go test
+harness as an installed production hub.
+
+In the first fixture, private review preceded a deliberate successful request,
+a scripted download failure and a separate explicit retry. Retained status
+snapshots show archive request counts one, two and three. The failed call was
+uncertain; no extra request appeared in the observed interval. Root verified
+private output modes, outcomes and the retained status metadata. This run's
+[helper](assets/sdk-upgrade-failure-helper.sh.txt) records the CLI/control flow.
+
+The second fixture performed review and one successful upgrade, then retained
+checksums read from both installed files and targets read from both bin symlinks
+before cleanup. Root checked those retained values against the immutable inputs
+and the expected share paths, verified the private result checksums and mode
+`0600`, and inspected the harness PASS log. The
+[installed-byte helper](assets/sdk-upgrade-installed-helper.sh.txt) records those
+file reads. This run did not repeat failure/retry; the worker's composite receipt
+had incorrectly included the earlier run's operations, which are separated in
+the archived receipt. The originally claimed in-directory driver copy was absent;
+the archived helper comes from its verified actual temporary path.
+
+All six owned listener ports were absent afterward, and both fixture token files
+and installation prefixes had been removed. The recipe does not restart the hub;
+these SDK fixtures do not qualify the identity running after installation.
+The separate native restart evidence remains in [hub upgrade evidence](hub-upgrade-evidence.md#actual-ios-installation-and-recovery--7-september-2026).
+There is no public release service, production install, native UI or complete
+upgrade failure-matrix claim in these SDK runs.
+
+## Packaged saved-item outcomes — 7 September 2026
+
+The [saved-item receipt](assets/sdk-saved-items-receipt.json) records a complete
+owned-hub run using the externally installed package. The coordinator verified
+project favorite on/off, project archive/unarchive (both the flag and exclusive
+catalog membership), and session archive/unarchive (canonical session ID and
+location tier) with separate SDK connections. Session and project deletion each
+returned exactly the one intended session ID and an empty skipped array. An
+independent deleted-session read returned `-32014/sessionUnavailable`; the
+deleted project was absent from both project catalogs.
+
+The real run exposed a server contract defect: successful project deletion
+returned `skipped: null`, so the strict SDK decoder correctly reported an
+uncertain outcome despite the deletion. `projectDeleteResult` now normalizes
+both lists to arrays, matching the existing session deletion response. The
+existing file-removal regression failed before the fix; the focused
+project/session deletion tests passed with the race detector afterward.
+
+Two earlier driver attempts are diagnostic evidence only. One expected the
+wrong deleted-session error code; another requested deletion while the roster
+still considered the just-shut-down session live, receiving a safe skipped
+result. The passing run used fresh projects/sessions and waited for both
+`notLoaded` and a non-live navigation projection. It did not replay either
+earlier mutation. A shutdown acknowledgment alone does not guarantee deletion
+eligibility; callers must inspect skipped results and review a later attempt.
+
+The receipt records immutable rebuilt backend hashes, the exact Go source patch,
+installed recipe byte equivalence, eight private readback hashes/modes and the
+actual setup/driver/fixture sources. These are SDK and server outcomes, separate
+from native acceptance, lost replies, partial deletion and overlapping hubs.
+
+## Packaged navigation invalidation — 7 September 2026
+
+The [navigation receipt](assets/sdk-navigation-receipt.json) records the current
+externally installed recipe against the same owned hub as the saved-item run.
+A separate writer toggled one fixture project favorite on and off. Each operation
+produced a matching real navigation invalidation; the recipe returned a current
+manifest and an independent client checked the favorite value. The original
+false value was restored. A separate zero-duration CLI read wrote mode `0600`
+output and printed metadata only.
+
+Fourteen deterministic contracts cover initial-subscription timing, sequence
+and generation changes, readback races, bounded retry exhaustion, malformed
+normalized snapshots/targets, listener cleanup, output reservation, missing
+output and forbidden empty selector keys. The live run qualifies ordinary
+single-hub invalidations and manifest readback. Generation changes, gaps,
+overflow and permanent stale reads were not injected into real connections.
+The recipe does not reconcile project/section/catalog resources or implement a
+continuous navigation store. Inventory is now 30 recipes, 90/91 catalog methods
+and nine explicit notification observers out of 36; outcome coverage remains
+separate from those counts.

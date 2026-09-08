@@ -1,0 +1,330 @@
+{
+  "status": "passed",
+  "runtime": {
+    "hubPID": 64453,
+    "providerPID": 64419,
+    "hubPort": 54938,
+    "providerPort": 54937
+  },
+  "projectKey": "j150sqxn8b8y1c0000gn-T-evener-saved-items-fixed-u18cvov7-workspace-v3-socGwB03O0",
+  "sessionRef": "local:034L3AsTEEpQVPO0arpm2S",
+  "sessionId": "034L3AsTEEpQVPO0arpm2S",
+  "throwawayKey": "j150sqxn8b8y1c0000gn-T-evener-saved-items-fixed-u18cvov7-throwaway-v3-HJpZy15Roo",
+  "actions": [
+    {
+      "name": "favorite-on-readback",
+      "sha256": "5c1f94e9fc20765d5cf5496e7d55966ac561270b638b8792eee1a085dfeea1be",
+      "mode": "600"
+    },
+    {
+      "name": "favorite-on",
+      "action": "favorite",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 3
+    },
+    {
+      "name": "favorite-on-readback",
+      "favorite": true
+    },
+    {
+      "name": "favorite-off-readback",
+      "sha256": "215a72f1a6bd0c5b13f744942f42a225f7ee4347a32dd047dd6506fa613762d8",
+      "mode": "600"
+    },
+    {
+      "name": "favorite-off",
+      "action": "favorite",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 3
+    },
+    {
+      "name": "favorite-off-readback",
+      "favorite": false
+    },
+    {
+      "name": "project-archive-on-readback",
+      "sha256": "13e398be908ff2a921bf01559ebbe04e6019cf762c416c44d3c194be6bd07b43",
+      "mode": "600"
+    },
+    {
+      "name": "project-archive-on",
+      "action": "archive",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 6
+    },
+    {
+      "name": "project-archive-on-readback",
+      "active": false,
+      "archived": true
+    },
+    {
+      "name": "project-archive-off-readback",
+      "sha256": "2ca4057d951b5ffe0f8ba35097c0e860f1af7fef8535367306bba95bc855abed",
+      "mode": "600"
+    },
+    {
+      "name": "project-archive-off",
+      "action": "archive",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 6
+    },
+    {
+      "name": "project-archive-off-readback",
+      "active": true,
+      "archived": false
+    },
+    {
+      "name": "session-archive-on-readback",
+      "sha256": "80f108fcb52be05e984944f8a57640e4bc262a0994ccdc3e46089f31a7d857a6",
+      "mode": "600"
+    },
+    {
+      "name": "session-archive-on",
+      "action": "archive",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 7
+    },
+    {
+      "name": "session-archive-on-readback",
+      "tier": "archived",
+      "sessionId": "034L3AsTEEpQVPO0arpm2S"
+    },
+    {
+      "name": "session-archive-off-readback",
+      "sha256": "220b31cfc68b1d3ad2f790ad13f023e90e2565da2fac4e6217d1e895493af794",
+      "mode": "600"
+    },
+    {
+      "name": "session-archive-off",
+      "action": "archive",
+      "deleted": null,
+      "skipped": null,
+      "navigationTargets": 7
+    },
+    {
+      "name": "session-archive-off-readback",
+      "tier": "current",
+      "sessionId": "034L3AsTEEpQVPO0arpm2S"
+    },
+    {
+      "name": "session-delete-readback",
+      "sha256": "cdeed5b1340103809d1f7ad649b4615d2fa912fa52c9bcf96c7972566a2a5354",
+      "mode": "600"
+    },
+    {
+      "name": "session-delete",
+      "action": "sessionDelete",
+      "deleted": 1,
+      "skipped": 0,
+      "navigationTargets": 0
+    },
+    {
+      "name": "session-delete-independent-read",
+      "code": -32014
+    },
+    {
+      "name": "project-delete-readback",
+      "sha256": "4fb1281f4e194d286bc0f3686514ad0e64e5c0bddc5bf9010d4ff4b7dd4a6181",
+      "mode": "600"
+    },
+    {
+      "name": "project-delete",
+      "action": "projectDelete",
+      "deleted": 1,
+      "skipped": 0,
+      "navigationTargets": 4
+    }
+  ],
+  "privateOutputs": [
+    {
+      "name": "favorite-on-readback",
+      "sha256": "5c1f94e9fc20765d5cf5496e7d55966ac561270b638b8792eee1a085dfeea1be",
+      "mode": "600"
+    },
+    {
+      "name": "favorite-off-readback",
+      "sha256": "215a72f1a6bd0c5b13f744942f42a225f7ee4347a32dd047dd6506fa613762d8",
+      "mode": "600"
+    },
+    {
+      "name": "project-archive-on-readback",
+      "sha256": "13e398be908ff2a921bf01559ebbe04e6019cf762c416c44d3c194be6bd07b43",
+      "mode": "600"
+    },
+    {
+      "name": "project-archive-off-readback",
+      "sha256": "2ca4057d951b5ffe0f8ba35097c0e860f1af7fef8535367306bba95bc855abed",
+      "mode": "600"
+    },
+    {
+      "name": "session-archive-on-readback",
+      "sha256": "80f108fcb52be05e984944f8a57640e4bc262a0994ccdc3e46089f31a7d857a6",
+      "mode": "600"
+    },
+    {
+      "name": "session-archive-off-readback",
+      "sha256": "220b31cfc68b1d3ad2f790ad13f023e90e2565da2fac4e6217d1e895493af794",
+      "mode": "600"
+    },
+    {
+      "name": "session-delete-readback",
+      "sha256": "cdeed5b1340103809d1f7ad649b4615d2fa912fa52c9bcf96c7972566a2a5354",
+      "mode": "600"
+    },
+    {
+      "name": "project-delete-readback",
+      "sha256": "4fb1281f4e194d286bc0f3686514ad0e64e5c0bddc5bf9010d4ff4b7dd4a6181",
+      "mode": "600"
+    }
+  ],
+  "limitations": [
+    "Scripted external provider; no public provider or native UI qualification.",
+    "No automatic mutation replay, lost-reply, partial-project-deletion or overlapping hub qualification.",
+    "Fixture includes leftover diagnostic sessions in separate projects, never targeted by the passing run.",
+    "Driver and setup retain original isolated fixture/consumer paths; reusable with explicit path adaptation."
+  ],
+  "sdk": {
+    "package": "@evener/appwire-client@0.1.0",
+    "installedConsumer": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-setup-30uuyw3z/node_modules/@evener/appwire-client",
+    "tarballSHA256": "01e1a26e0fabc7bdba878ebd75140299b65c720b3fc47e9a8ead98e2c6c753a0",
+    "recipeSourceCommit": "a229b0c82",
+    "currentByteEquivalence": [
+      {
+        "file": "saved-items.mjs",
+        "sha256": "47f8e54c0f80571de73eb3e3374f4331271e09edc42af3547bb6a5c2b1ede688"
+      },
+      {
+        "file": "saved-items-cli.mjs",
+        "sha256": "e6b75ec48ca7c3c9a20b21371d553057a7d884f1da0a8dfd0c3feece01c94402"
+      },
+      {
+        "file": "saved-items-logic.mjs",
+        "sha256": "a85fc81c5083ba6ff9c39e7d9d8096178cfb1d0c901d911e8da427459abf7dc3"
+      },
+      {
+        "file": "saved-items.contract.mjs",
+        "sha256": "86e64e36a79e7df43e9bc00cd209809697e3ae06e6fa4ff4a98f43b09d720f47"
+      }
+    ]
+  },
+  "backend": {
+    "sourceHead": "dc9a9aaa33d6ca0d8cd00c6c7a63b8c67bba331c",
+    "uncommittedFix": "cmd/evener-hub/project_delete.go normalizes deleted/skipped arrays",
+    "sourceFiles": [
+      {
+        "file": "cmd/evener-hub/project_delete.go",
+        "sha256": "8d71dd6d742c76b0a6693b7cf77ac4b3da3d6543593f56fbd448ccbb826d5a00"
+      },
+      {
+        "file": "cmd/evener-hub/project_delete_test.go",
+        "sha256": "5a4f0f185d062951ae8a7d2c7f1b19fb8516e5814d237c1cc9ecba31cb6f30fa"
+      }
+    ],
+    "binarySHA256": {
+      "evener": "1f79cf2fecf5bb3cba9090270d41d7e480ff13d45af7ed228c7c23c9146eef94",
+      "evener-dev": "ffdbdfe0fda350978a6261795e3a232f7806019e59837ad686738c071108b27a"
+    },
+    "sourcePatch": "diff --git a/cmd/evener-hub/project_delete.go b/cmd/evener-hub/project_delete.go\nindex dbb249f6a..20dbe006a 100644\n--- a/cmd/evener-hub/project_delete.go\n+++ b/cmd/evener-hub/project_delete.go\n@@ -31,7 +31,11 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s\n \t\t\treturn appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())\n \t\t}\n \t}\n-\treturn appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil\n+\treturn appwire.ProjectDeleteResponse{\n+\t\tDeleted:    append([]string{}, deleted...),\n+\t\tSkipped:    append([]projectDeleteSkip{}, skipped...),\n+\t\tNavigation: navigation,\n+\t}, nil\n }\n \n var (\ndiff --git a/cmd/evener-hub/project_delete_test.go b/cmd/evener-hub/project_delete_test.go\nindex f1e4d1d18..e24cfe9f4 100644\n--- a/cmd/evener-hub/project_delete_test.go\n+++ b/cmd/evener-hub/project_delete_test.go\n@@ -312,6 +312,9 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {\n \tif len(resp.Deleted) != 1 {\n \t\tt.Fatalf(\"want 1 deleted ref, got %+v\", resp)\n \t}\n+\tif resp.Skipped == nil || len(resp.Skipped) != 0 {\n+\t\tt.Fatalf(\"successful deletion must return an empty skipped array, got %#v\", resp.Skipped)\n+\t}\n \tfor _, suffix := range []string{\".meta.json\", \".transcript.jsonl\", \".log.jsonl\", \".api.jsonl\", \".future-artifact\"} {\n \t\tif _, err := os.Stat(filepath.Join(stateDir, \"sessions\", webTestSessionID+suffix)); !os.IsNotExist(err) {\n \t\t\tt.Fatalf(\"%s should be removed\", suffix)\n@@ -1630,7 +1633,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {\n \tif err != nil {\n \t\tt.Fatalf(\"project delete: %v\", err)\n \t}\n-\tif len(got.Deleted) != 0 {\n-\t\tt.Fatalf(\"expected nothing actually deleted (session skipped), got %+v\", got.Deleted)\n+\tif got.Deleted == nil || len(got.Deleted) != 0 {\n+\t\tt.Fatalf(\"skipped deletion must return an empty deleted array, got %#v\", got.Deleted)\n \t}\n }\n"
+  },
+  "helpers": [
+    {
+      "file": "sdk-saved-items-fixture.py.txt",
+      "sha256": "d2ed875793ea8c160c77e75cbd46ace8fa208ffbad96629bc505940549bcc489"
+    },
+    {
+      "file": "sdk-saved-items-setup.mjs.txt",
+      "sha256": "65823325634341f1450ca7f6e709a745d979d90d120849343a10e40038095db2"
+    },
+    {
+      "file": "sdk-saved-items-driver.mjs.txt",
+      "sha256": "5575cde051a2326dda59c8c118acf98574aeb21474a0fa2dee92823a55697b10"
+    }
+  ],
+  "independentAssertions": [
+    "Project favorite true and false (omitted false field interpreted using documented optional boolean).",
+    "Project archive flag plus exclusive active/archived catalog membership in both directions.",
+    "Session archive identity and current/archived location tier in both directions.",
+    "Both shutdowns wait for notLoaded and non-live navigation projection before deletion.",
+    "Each deletion returns the exact one owned session ID and an empty skipped array.",
+    "Deleted session read returns -32014/sessionUnavailable; deleted project absent from both project catalogs."
+  ],
+  "diagnosticAttempts": [
+    {
+      "run": "old ccdd hub",
+      "outcome": "Project files deleted but skipped:null makes strict SDK decoder return uncertain; root captured wire result. No successful SDK deletion acknowledgment claimed."
+    },
+    {
+      "run": "fixed hub first attempt",
+      "outcome": "Favorite/archive/session-delete passed before driver incorrectly expected -32602. Actual deleted read is -32014/sessionUnavailable. No passing complete receipt."
+    },
+    {
+      "run": "fixed hub v2",
+      "outcome": "Favorite/archive passed; immediate post-shutdown session deletion safely skipped with reason resumed live. No mutation replay. V3 uses fresh sessions/projects and waits for authoritative non-live navigation."
+    }
+  ],
+  "cleanup": {
+    "ownedDaemonPIDsTerminated": [
+      14487,
+      78433
+    ],
+    "remainingOwnedDaemons": 0,
+    "listenerPortsAbsent": [
+      54937,
+      54938,
+      58231,
+      58232,
+      58367,
+      58368
+    ],
+    "privateHubLogsRemoved": true,
+    "originalHubPID": 67518,
+    "originalHubPort": 54211,
+    "authTokenFilesRemoved": true,
+    "fixturePaths": [
+      {
+        "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7",
+        "config": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/config/evener",
+        "state": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/state/evener",
+        "removedAuthToken": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/hub.log"
+      },
+      {
+        "root": "/private/tmp/evener-native-pairing-lan-osyBAM",
+        "config": "/private/tmp/evener-native-pairing-lan-osyBAM/config/evener",
+        "state": "/private/tmp/evener-native-pairing-lan-osyBAM/state/evener",
+        "removedAuthToken": "/private/tmp/evener-native-pairing-lan-osyBAM/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/tmp/evener-native-pairing-lan-osyBAM/hub.log"
+      },
+      {
+        "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6",
+        "config": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/config/evener",
+        "state": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/state/evener",
+        "removedAuthToken": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-root-sai0zfe6/hub.log"
+      },
+      {
+        "root": "/private/tmp/saved-items-e2e.NYGUTl",
+        "config": "/private/tmp/saved-items-e2e.NYGUTl/config/evener",
+        "state": "/private/tmp/saved-items-e2e.NYGUTl/state/evener",
+        "removedAuthToken": "/private/tmp/saved-items-e2e.NYGUTl/state/evener/auth-token",
+        "removedPrivateHubLog": "/private/tmp/saved-items-e2e.NYGUTl/hub.log"
+      }
+    ],
+    "credentialScope": "Hub bearer auth-token files were removed. Empty auth-none scripted-provider credentials.toml configuration is retained."
+  },
+  "beforeFix": {
+    "rawResponseSHA256": "1e9d45506b467afa682d36d901792e17da6a05e6daefc1ff2750b5eec6799373",
+    "deletedCount": 1,
+    "skipped": null
+  },
+  "runtimeFixture": {
+    "root": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7",
+    "config": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/config/evener",
+    "state": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-saved-items-fixed-u18cvov7/state/evener"
+  }
+}

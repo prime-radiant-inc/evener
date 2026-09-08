@@ -1,0 +1,31 @@
+set -euo pipefail
+ROOT=/tmp/evener-upgrade-qualify.$$
+mkdir -m 700 "$ROOT"
+PKG=/tmp/evener-upgrade-consumer.fc81fe/node_modules/@evener/appwire-client/examples
+CONTROL=http://127.0.0.1:51243
+RPC=ws://127.0.0.1:51242/rpc
+TOKEN=/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/TestNativeUpgradeHarness74725591/001/hub-state/auth-token
+printf '%s' '{}' >"$ROOT/review-params.json"
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=review EVENER_HUB_UPGRADE_PARAMS_FILE="$ROOT/review-params.json" EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/review-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/review.stdout" 2>"$ROOT/review.stderr"
+cat "$ROOT/review.stdout"
+cp "$ROOT/review-output.json" "$ROOT/review.identity.json"
+printf '%s' '{"requested":"snapshot","reviewed":{"version":"dev","commit":""}}' >"$ROOT/upgrade-params.json"
+# Replace reviewed identity with exact observed identity.
+node -e 'const fs=require("fs");const p=process.argv[1],r=JSON.parse(fs.readFileSync(process.argv[2])); fs.writeFileSync(p,JSON.stringify({requested:"snapshot",reviewed:r}));' "$ROOT/upgrade-params.json" "$ROOT/review.identity.json"
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=upgrade EVENER_HUB_UPGRADE_PARAMS_FILE="$ROOT/upgrade-params.json" EVENER_HUB_UPGRADE_MUTATION=1 EVENER_HUB_UPGRADE_OWNED_HUB=$RPC EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/upgrade-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/upgrade.stdout" 2>"$ROOT/upgrade.stderr"
+cat "$ROOT/upgrade.stdout"
+cat "$ROOT/upgrade-output.json"
+curl -fsS "$CONTROL/status" >"$ROOT/status-success.json"
+cat "$ROOT/status-success.json"
+curl -fsS -X POST "$CONTROL/mode/fail" >/dev/null
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=upgrade EVENER_HUB_UPGRADE_PARAMS_FILE="$ROOT/upgrade-params.json" EVENER_HUB_UPGRADE_MUTATION=1 EVENER_HUB_UPGRADE_OWNED_HUB=$RPC EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/fail-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/fail.stdout" 2>"$ROOT/fail.stderr" || test $? -eq 2
+cat "$ROOT/fail.stdout"
+cat "$ROOT/fail-output.json"
+curl -fsS "$CONTROL/status" >"$ROOT/status-fail.json"
+curl -fsS -X POST "$CONTROL/mode/success" >/dev/null
+EVENER_RPC_URL=$RPC EVENER_TOKEN_FILE=$TOKEN EVENER_CWD=/tmp EVENER_HUB_UPGRADE_ACTION=upgrade EVENER_HUB_UPGRADE_PARAMS_FILE="$ROOT/upgrade-params.json" EVENER_HUB_UPGRADE_MUTATION=1 EVENER_HUB_UPGRADE_OWNED_HUB=$RPC EVENER_HUB_UPGRADE_OUTPUT_FILE="$ROOT/retry-output.json" node "$PKG/hub-upgrade.mjs" >"$ROOT/retry.stdout" 2>"$ROOT/retry.stderr"
+cat "$ROOT/retry.stdout"
+cat "$ROOT/retry-output.json"
+curl -fsS "$CONTROL/status" >"$ROOT/status-retry.json"
+chmod -R u+rwX,go-rwx "$ROOT"
+echo "ROOT=$ROOT"
