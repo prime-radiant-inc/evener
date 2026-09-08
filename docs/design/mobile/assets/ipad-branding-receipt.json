@@ -40,8 +40,54 @@
   },
   "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-settings-root-2ld63dog",
   "limitations": [
-    "Simulator qualification only; distribution signing, physical devices, app update and accessibility remain open.",
+    "Simulator qualification only; distribution signing, physical devices and wider accessibility remain open. Existing-install simulator update is recorded separately below.",
     "First compile exceeded MCP reporting timeout; after compiler exit a fresh incremental build passed.",
     "Expo57 image-less storyboard was regenerated from its template before the final build; app config remains the source of truth."
-  ]
+  ],
+  "iphoneExistingInstallUpdate": {
+    "observedAt": "2026-09-08T07:49:09.414354+00:00",
+    "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "sourceHead": "edbd5ada9f4008145448295ab348eaeac8714500",
+    "launchPid": 50518,
+    "beforeFiles": {
+      "main.jsbundle": {
+        "sha256": "e833dd2b8c4c5f173e5c96212499a8461cae97db26a4e61ad8ec65938350f71c",
+        "bytes": 4148908
+      },
+      "Evener": {
+        "sha256": "76433131bbb52c982396a56e125cdba5009575f9477fdff323efc64a99afff78",
+        "bytes": 37783392
+      }
+    },
+    "afterFiles": {
+      "main.jsbundle": "e68e035436fb7012e6d6f957546036293487bd5a9c97bea428b3cdd1d5b34654",
+      "Evener": "eed8483c1053a62c46485285d54a6996d08ab7c513cbda5b37e4662382da13d3"
+    },
+    "retainedDraftsVerifiedByExistingBaselineHelpers": 7,
+    "draftRowsObservedAfter": 9,
+    "sameAXTargetsAndText": true,
+    "privateEvidence": [
+      {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-upgrade-root-9ra92k00/after-ax.json",
+        "sha256": "52f362bda24b390695fa8a12f647aae81edc978799c382c7ed5696f1c242d940"
+      },
+      {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-upgrade-root-9ra92k00/after.json",
+        "sha256": "77b160a5298c52549f049e53e778bfff0b1b9635e50f542103b67f684f540592"
+      },
+      {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-upgrade-root-9ra92k00/before-ax.json",
+        "sha256": "77f32c7aeea3350fd14a798cd49393f4554fb88e381e8e9ba6b62c3fba76ae30"
+      },
+      {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-upgrade-root-9ra92k00/before.json",
+        "sha256": "efa85453a1b5ad0a7ee2904651b70f6902e3efea8975537724545c12ed619c4d"
+      },
+      {
+        "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-iphone-upgrade-root-9ra92k00/launch.json",
+        "sha256": "4b81bc665b306246a8a7cff57c0ef2d22e61ec24e6f321b0d0b2797fac49f804"
+      }
+    ],
+    "limits": "Simulator install over existing app data. Does not qualify distribution signing or physical-device updates."
+  }
 }

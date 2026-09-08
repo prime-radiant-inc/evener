@@ -29,4 +29,16 @@ image and named background color. No generated native patch is required for
 a fresh prebuild from the committed app configuration.
 
 This is simulator branding evidence. Physical devices, distribution signing,
-installed-app updates and the wider accessibility/release matrix remain open.
+physical-device updates and the wider accessibility/release matrix remain open.
+
+## Existing iPhone installation — 8 September 2026
+
+Root installed the same branded Release artifact over the retained iPhone 17
+Pro simulator installation, then cold-launched it as PID 50518. Both installed
+executable and JavaScript hashes matched the branding receipt. The existing
+connected conversation and its unsent composer text returned; all seven retained
+drafts passed their independent content and pending-send checks before and after
+installation. The original hub and unrelated Apple patch were preserved.
+
+This qualifies a simulator installation update without clearing app data.
+Distribution signing and physical-device installation/update remain open.

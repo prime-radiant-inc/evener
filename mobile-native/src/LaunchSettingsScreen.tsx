@@ -226,33 +226,42 @@ function LaunchDefaults({
             { color: colors.text, borderColor: colors.border },
           ]}
         />
-        {options.map((option, index) => (
-          <View key={option.wireField}>
-            {(index === 0 || options[index - 1]?.group !== option.group) && (
-              <View style={{ paddingTop: 14, paddingBottom: 4 }}>
-                <Copy muted>{option.group}</Copy>
-              </View>
-            )}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Edit ${option.label}`}
-              disabled={state.loading || state.saving}
-              onPress={() => setSelected(option)}
-              style={{
-                minHeight: 48,
-                paddingVertical: 7,
-                borderBottomWidth: 0.5,
-                borderColor: colors.border,
-              }}
-            >
-              <Copy>{option.label}</Copy>
-              <Copy muted numberOfLines={2}>
-                {scalarValue(state.draft, option.wireField) ||
-                  `Inherited · ${scalarValue(state.resolved?.effective ?? null, option.wireField) || "Default"}`}
-              </Copy>
-            </Pressable>
-          </View>
-        ))}
+        {options.map((option, index) => {
+          const displayValue =
+            scalarValue(state.draft, option.wireField) ||
+            `Inherited · ${scalarValue(state.resolved?.effective ?? null, option.wireField) || "Default"}`;
+          return (
+            <View key={option.wireField}>
+              {(index === 0 || options[index - 1]?.group !== option.group) && (
+                <View style={{ paddingTop: 14, paddingBottom: 4 }}>
+                  <Copy muted>{option.group}</Copy>
+                </View>
+              )}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${option.label}`}
+                accessibilityValue={{ text: displayValue }}
+                accessibilityHint="Opens the setting editor"
+                accessibilityState={{
+                  disabled: state.loading || state.saving,
+                }}
+                disabled={state.loading || state.saving}
+                onPress={() => setSelected(option)}
+                style={{
+                  minHeight: 48,
+                  paddingVertical: 7,
+                  borderBottomWidth: 0.5,
+                  borderColor: colors.border,
+                }}
+              >
+                <Copy>{option.label}</Copy>
+                <Copy muted numberOfLines={2}>
+                  {displayValue}
+                </Copy>
+              </Pressable>
+            </View>
+          );
+        })}
       </ScrollView>
       {selected && (
         <LaunchFieldEditor

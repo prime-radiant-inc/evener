@@ -1,0 +1,71 @@
+{
+  "device": "iPad Pro 11-inch (M5), iOS26.5 simulator",
+  "simulatorId": "6462A0FC-A190-4F08-A0CC-9B7E6C792AEC",
+  "contentSize": "accessibility-extra-extra-extra-large",
+  "artifact": {
+    "sourceHead": "edbd5ada9",
+    "workingSourceFiles": {
+      "mobile-native/src/screens.tsx": "9bb55506855d31fa8a6cf66431b5f3206d3df1c9a2afe29835e16cd479f09e94",
+      "mobile-native/src/LaunchSettingsScreen.tsx": "6f02719d998bd31a084dd4b4a5c0c96fed1ff5a4da92f064c53d07ed4509802b"
+    },
+    "appFiles": {
+      "main.jsbundle": "5873dadde355e22aac1ebe7febad292efea0bd0356ebe0802f19dab93806e9e5",
+      "Evener": "c734379b66e613d32bc45144c2d0c20ba4b7243dd1616f92cd76ed083e67a552"
+    }
+  },
+  "launchPid": 22057,
+  "build": {
+    "status": "SUCCEEDED",
+    "durationMs": 12147
+  },
+  "observed": {
+    "headingHeightBefore": 26.5,
+    "headingHeightAfter": 100,
+    "headings": [
+      "Saved hubs",
+      "Add hub"
+    ],
+    "headingTraitAfter": "Header",
+    "settingValues": {
+      "Edit Agent": "Inherited \u00b7 default",
+      "Edit Model": "Inherited \u00b7 Default"
+    }
+  },
+  "evidence": [
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/accessibility-artifact.json",
+      "sha256": "8526e1dece9e31b3b01f0a76e212143e08d49e952118937b61922675ea74f7ed",
+      "bytes": 476
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/hubs-largest.json",
+      "sha256": "bfeeba4f9b135b24173206cb7b8a64aa022480f2678bc88eeea60208da81d3d0",
+      "bytes": 5213
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/hubs-fixed-largest.json",
+      "sha256": "185c88e796d0bc816cfa56fd8d74770eea29803455c24138daa3596f2bec723b",
+      "bytes": 6025
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-reader-root-jkr2v0z9/launch-settings-values-largest.json",
+      "sha256": "7d2f01c32dc990995b42ccf9adc70c549ded14cf814d5c79d96fc43b28d6c78f",
+      "bytes": 18695
+    },
+    {
+      "path": "docs/design/mobile/assets/ipad-largest-headings-before.jpg",
+      "sha256": "dfedf9568418bb397bf241b2c102457f051fb43fef72917354c221a638a865dd",
+      "bytes": 62421
+    },
+    {
+      "path": "docs/design/mobile/assets/ipad-largest-headings-after.jpg",
+      "sha256": "8649cf0897cdea9fb844012155aa2b473ba9193830467a1f1a816bc0573acd45",
+      "bytes": 69709
+    }
+  ],
+  "limitations": [
+    "Native accessibility tree and screenshot inspection; no complete VoiceOver speech, focus-order or gesture audit.",
+    "Reader changes made after this artifact are not included.",
+    "Simulator only; broader Dynamic Type screens and physical devices remain open."
+  ]
+}
