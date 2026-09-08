@@ -222,9 +222,15 @@ func fuzzScenarioLocalDaemonSourceReadThreadMapsIOTimeoutToSessionUnavailable(t 
 			}
 			// Hold the connection open without responding so the websocket
 			// handshake stalls. The caller's ctx deadline ends the dial.
+			// Event-driven hold: the dial abort closes the client side, which
+			// surfaces here as EOF/RST and releases this goroutine at the
+			// ~200ms ctx deadline instead of after a fixed sleep. The read
+			// deadline keeps the previous 2s bound so a stalled conn can
+			// never outlive it.
 			go func(c net.Conn) {
 				defer c.Close()
-				time.Sleep(2 * time.Second)
+				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				_, _ = io.Copy(io.Discard, c)
 			}(conn)
 		}
 	}()
