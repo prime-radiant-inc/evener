@@ -384,6 +384,25 @@ test("duplicate markers across unnamed attachments refuse the images", async () 
   expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
 });
 
+test("a repeated unnamed marker over one attachment retries with the image", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  const text = "(attached image 1) and (attached image 1)";
+  const turn = failedTurn({
+    items: [item({ text, images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }] })],
+  });
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] and (attached image 1)", [
+      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==" },
+    ]),
+  );
+  const sentCall = sendSpy.mock.calls[0];
+  if (!sentCall) throw new Error("send was not called");
+  const [, sentText, sentAttachments] = sentCall;
+  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
+});
+
 test("the re-attach note pluralizes for several unavailable images", () => {
   seedThread("ref_a", [
     {

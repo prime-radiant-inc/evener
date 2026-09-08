@@ -346,11 +346,29 @@ function planRetryImages(
   if (needsPositionalPairing && hasForeignMention) {
     positionalAmbiguous = true;
   }
-  const unnamedMarkers = pendingUnnamed.map(
+  // Repeated copies of one unnamed marker are the same anchor restated, not
+  // a new pairing: the marker translator maps every "[image N]" to the one
+  // attachment staged under N, so both copies round-trip through a single
+  // assignment (the named-repeat test pins the same shape). Collapse repeats
+  // to their first copy before the order/cardinality checks, so "(attached
+  // image 1) and (attached image 1)" over one unnamed image pairs instead of
+  // tripping the non-increasing check. Distinct-marker sequences still refuse
+  // exactly as before, and the round-trip guard below backstops the result.
+  // Extra copies stay unpaired (verbatim prose) rather than consuming further
+  // images under a duplicate marker.
+  const seenUnnamed = new Set<number>();
+  const distinctUnnamed: number[] = [];
+  pendingUnnamed.forEach((occurrenceIndex) => {
+    const marker = (occurrences[occurrenceIndex] as ImageOccurrence).marker;
+    if (seenUnnamed.has(marker)) return;
+    seenUnnamed.add(marker);
+    distinctUnnamed.push(occurrenceIndex);
+  });
+  const distinctMarkers = distinctUnnamed.map(
     (occurrenceIndex) => (occurrences[occurrenceIndex] as ImageOccurrence).marker,
   );
-  unnamedMarkers.forEach((marker, position) => {
-    if (position > 0 && unnamedMarkers[position - 1] !== undefined && marker <= (unnamedMarkers[position - 1] ?? 0)) {
+  distinctMarkers.forEach((marker, position) => {
+    if (position > 0 && distinctMarkers[position - 1] !== undefined && marker <= (distinctMarkers[position - 1] ?? 0)) {
       positionalAmbiguous = true;
     }
   });
@@ -364,15 +382,16 @@ function planRetryImages(
   // attachments as 1 and 2, and the round-trip cannot see it — every
   // "[image N]" re-translates to identical "(attached image N)" prose. Only
   // provably repeated copies of an already-paired marker are harmless, and
-  // those never reach this path: the by-name claim above consumes the first
-  // copy, and a repeated UNNAMED marker trips the non-increasing check above.
-  if (!positionalAmbiguous && pendingUnnamed.length > 0 && pendingUnnamed.length !== unclaimedUnnamed.length) {
+  // those never reach this path twice: the by-name claim above consumes the
+  // first copy of a named repeat, and a repeated UNNAMED marker collapses to
+  // its first copy above.
+  if (!positionalAmbiguous && distinctUnnamed.length > 0 && distinctUnnamed.length !== unclaimedUnnamed.length) {
     positionalAmbiguous = true;
   }
   if (positionalAmbiguous) {
     ambiguous = true;
   } else {
-    pendingUnnamed.forEach((occurrenceIndex, position) => {
+    distinctUnnamed.forEach((occurrenceIndex, position) => {
       const imageIndex = unclaimedUnnamed[position];
       if (imageIndex === undefined) return;
       const occurrence = occurrences[occurrenceIndex];
