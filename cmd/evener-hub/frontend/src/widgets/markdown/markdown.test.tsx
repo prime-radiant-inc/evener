@@ -277,6 +277,31 @@ test("live matches settled when the definition sits in the tail", () => {
   expectLiveMatchesSettled(source, "/url");
 });
 
+// Companion to the link-definition fallback cases above: this source is
+// paragraphs-only, balanced, and definition-free past the live-window
+// threshold, so the live path takes the windowed branch (settled head served
+// from cache, tail window re-parsed) instead of the full-parse fallback each
+// of the cases above forces. Rerendering the same mounted component with a
+// tail-only append keeps the split head byte-identical, so the second render
+// serves the head from cache (a hit) while re-parsing just the grown tail -
+// and each render asserts the live output is byte-identical to the settled
+// full parse, so the test cannot pass vacuously on a degraded path.
+test("live matches settled on a long definition-free source across tail-growth rerenders (windowed path)", () => {
+  const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
+  const head = `${sentence.repeat(12).trim()}\n\n${sentence.repeat(12).trim()}\n\n`;
+  const first = head + sentence.repeat(20).trim();
+  expect(first.length).toBeGreaterThan(2000);
+  const live = render(<Markdown source={first} live />);
+  const settledFirst = render(<Markdown source={first} />);
+  expect(live.container.innerHTML).toBe(settledFirst.container.innerHTML);
+  // Tail-only growth: no new blank line crosses the split, so the head is
+  // unchanged and the cached head HTML is reused.
+  const second = `${first} ${sentence.trim()}`;
+  live.rerender(<Markdown source={second} live />);
+  const settledSecond = render(<Markdown source={second} />);
+  expect(live.container.innerHTML).toBe(settledSecond.container.innerHTML);
+});
+
 // The table chrome lives in the stylesheet, not on a class the component
 // writes, so - like the ink/font-size assertions above - this reads the
 // stylesheet's own source. Guards the table styling contract: a header band
