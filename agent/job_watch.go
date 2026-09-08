@@ -248,7 +248,7 @@ type watchArgs struct {
 	Every              int
 	EventFilter        *watchEventFilter
 	// AfterSeconds and RepeatSeconds are the timer triggers (self only);
-	// Note rides every timer fire. All three are create-only.
+	// Note rides every fire of any watch. All three are create-only.
 	AfterSeconds         int
 	RepeatSeconds        int
 	Note                 string
@@ -330,9 +330,9 @@ type watchResult struct {
 	Events             []string
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
-	// TimerSeconds, OneShot, and Note describe a timer watch; a timer reports
-	// its interval in seconds and leaves ProgressIntervalMS zero so the result
-	// speaks in the units the model asked in.
+	// TimerSeconds and OneShot describe a timer watch; a timer reports its
+	// interval in seconds and leaves ProgressIntervalMS zero so the result
+	// speaks in the units the model asked in. Note labels any watch.
 	TimerSeconds     int
 	OneShot          bool
 	Note             string
@@ -819,17 +819,17 @@ func watchArgsIsTimer(a watchArgs) bool {
 // output_match condition and NO other trigger source — the only shape eligible
 // for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
 // terminal target can never fire, so they still fail target_terminal. Clear
-// requests are never catch-up. A time field or a note is excluded too: catch-up
-// runs before validateWatchTriggerShape, so admitting those shapes would serve a
-// scan instead of the timer rules' correction.
+// requests are never catch-up. A time field is excluded too: catch-up runs
+// before validateWatchTriggerShape, so admitting that shape would serve a scan
+// instead of the timer rules' correction. A note is not a trigger — it is the
+// watch's prose payload — so it rides the scan's notification like any other.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 	return !a.Clear &&
 		a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
 		a.ProgressIntervalMS == 0 &&
-		!watchArgsIsTimer(a) &&
-		a.Note == ""
+		!watchArgsIsTimer(a)
 }
 
 func validateWatchEventArgs(a watchArgs) error {
@@ -908,8 +908,6 @@ func validateWatchTriggerShape(a watchArgs) error {
 				return fmt.Errorf("invalid_request: %s and %s are mutually exclusive", name, other.name)
 			}
 		}
-	} else if a.Note != "" {
-		return errors.New("invalid_request: note applies to timers")
 	}
 	if a.Operation == "create" && a.ProgressIntervalMS > 0 && a.Source != "" && a.Source != a.Target && isWatchSessionTarget(a.Target) {
 		return errors.New("invalid_request: progress_interval_ms is a job progress trigger; for a timer use repeat_seconds")
@@ -2473,7 +2471,7 @@ func watchConditionSummary(cfg *watchConfig) string {
 	// The note is bounded where it is stored, not at the tighter output_match
 	// bound: job_list, formatJobWatch, and the tool description's verbatim claim
 	// must agree on what the model gets back.
-	if cfg.timer && cfg.note != "" {
+	if cfg.note != "" {
 		parts = append(parts, "note: "+limitWatchText(cfg.note, watchMessageMaxChars))
 	}
 	if cfg.wildcardEvents {
@@ -3425,7 +3423,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		}
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
 		if cfg.timer {
-			n.WatchID, n.Fires, n.Note, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.note, cfg.timerSeconds, cfg.oneShot
+			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
 		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
@@ -3491,6 +3489,7 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg == nil {
 		return n
 	}
+	n.Note = cfg.note
 	visibleSessionID := cfg.receiverSessionID
 	if visibleSessionID == "" {
 		visibleSessionID = jm.sessionID

@@ -356,7 +356,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete job source only: periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
 				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "Fire once this many seconds from now (60 to 86400); source self only."},
 				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Fire every this many seconds until cleared (60 to 3600); source self only."},
-				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of a timer; use it to say why and, for a loop, where you are."},
+				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Delivered with every fire of any watch; use it to say why you armed it and, for a loop, where you are."},
 				"events": map[string]any{
 					"type":        []string{"array", "null"},
 					"items":       map[string]any{"type": "string"},
