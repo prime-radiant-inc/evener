@@ -158,11 +158,13 @@ export type ReaderRestoreCommand =
 export class ReaderRestoreAttempts {
 	private approximateOffset: number | null = null;
 	private approximateMeasurementProgress: number | null = null;
+	private highWaterMeasurementProgress = -1;
 	private failures = 0;
 
 	reset() {
 		this.approximateOffset = null;
 		this.approximateMeasurementProgress = null;
+		this.highWaterMeasurementProgress = -1;
 		this.failures = 0;
 	}
 	begin(command: ReaderRestoreCommand, measurementProgress = 0): boolean {
@@ -176,17 +178,37 @@ export class ReaderRestoreAttempts {
 			(this.approximateMeasurementProgress ?? -1) >= measurementProgress
 		)
 			return false;
+		if (measurementProgress > this.highWaterMeasurementProgress) {
+			this.highWaterMeasurementProgress = measurementProgress;
+			this.failures = 0;
+		}
 		this.approximateOffset = command.offset;
 		this.approximateMeasurementProgress = measurementProgress;
 		return true;
 	}
-	retryUnmeasured(): boolean {
+	retryUnmeasured(measurementProgress = -1): boolean {
+		if (measurementProgress > this.highWaterMeasurementProgress) {
+			this.highWaterMeasurementProgress = measurementProgress;
+			this.failures = 0;
+		}
 		if (this.failures >= 3) return false;
 		this.failures += 1;
 		this.approximateOffset = null;
 		this.approximateMeasurementProgress = null;
 		return true;
 	}
+}
+
+export function furthestMeasuredRowBeforeTarget(
+	rows: readonly TimelineRow[],
+	targetIndex: number,
+	measurements: readonly ReaderMeasurement[],
+) {
+	const measured = new Set(measurements.map((measurement) => measurement.key));
+	let furthest = -1;
+	for (let index = 0; index < targetIndex; index += 1)
+		if (measured.has(readerKey(rows[index]))) furthest = index;
+	return furthest;
 }
 
 export function shouldApplyExactRestore(

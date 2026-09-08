@@ -79,6 +79,7 @@ import {
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
+	furthestMeasuredRowBeforeTarget,
 	isReaderAnchorLoaded,
 	type ReaderAnchor,
 	type ReaderMeasurement,
@@ -1229,15 +1230,9 @@ export function ConversationScreen({
 		const measurementProgress =
 			targetIndex === null
 				? -1
-				: timelineRows
-						.slice(0, targetIndex)
-						.reduce(
-							(furthest, row, index) =>
-								readerMeasurements.current.has(readerKey(row))
-									? index
-									: furthest,
-							-1,
-						);
+				: furthestMeasuredRowBeforeTarget(timelineRows, targetIndex, [
+						...readerMeasurements.current.values(),
+					]);
 		if (
 			!command ||
 			!readerRestoreAttempts.current.begin(command, measurementProgress)
@@ -1939,7 +1934,24 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
-								if (!readerRestoreAttempts.current.retryUnmeasured()) return;
+								const anchor = readerAnchor.current;
+								const targetIndex = anchor
+									? resolveReaderAnchor(anchor, timelineRows)
+									: null;
+								const measurementProgress =
+									targetIndex === null
+										? -1
+										: furthestMeasuredRowBeforeTarget(
+												timelineRows,
+												targetIndex,
+												[...readerMeasurements.current.values()],
+											);
+								if (
+									!readerRestoreAttempts.current.retryUnmeasured(
+										measurementProgress,
+									)
+								)
+									return;
 								appliedReaderRestore.current = null;
 								restoreFrame.current = requestAnimationFrame(() => {
 									restoreFrame.current = null;
