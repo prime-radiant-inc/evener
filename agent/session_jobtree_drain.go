@@ -1087,6 +1087,10 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			return lastResult, err
 		}
 		if !outstanding {
+			// This pass saw nothing outstanding: forget the previous verdict
+			// so a set that appears later reads as newly-appeared and resets
+			// the streak below instead of extending it.
+			prevOutstanding = false
 			// Nothing pending and nothing outstanding anywhere in the subtree — but the
 			// scan above is not a snapshot. A wake raised since this pass took its edge
 			// means the tree moved while the scan ran, so re-run the pass instead of
