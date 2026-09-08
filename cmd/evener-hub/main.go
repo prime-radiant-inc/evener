@@ -267,7 +267,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RunDir:              runDir,
 		HubToken:            hubToken,
 		Registry:            hubReg,
-		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
 		CredentialsPath:     credentialsPath,
 		NoUserLayer:         noUserLayer,
