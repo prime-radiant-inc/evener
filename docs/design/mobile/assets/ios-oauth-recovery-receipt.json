@@ -1,0 +1,238 @@
+{
+  "date": "2026-09-07",
+  "scope": "iOS OAuth interrupted completion and read-only status recovery",
+  "source": {
+    "commit": "759e7b10fa82fb4d4c47ef4cb1560de064ee4158",
+    "nativeChangesDuringRun": false
+  },
+  "native": {
+    "simulator": "iPhone 17 Pro",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "configuration": "Release",
+    "bundleId": "com.primeradiant.evener.native",
+    "mainJSBundleSHA256": "bda26fddce4ffd9dc46d1c8205de61a1413483ef21f96b0db828c84a3cbbed0c",
+    "buildDurationMs": 29553
+  },
+  "fixture": {
+    "test": "TestNativeAuthHarness",
+    "origin": "http://127.0.0.1:62256",
+    "boundary": "Only external OAuth requests and clock are scripted; AppWire handlers, provider registry and credential storage are real.",
+    "transport": "Direct native client to loopback hub, no proxy."
+  },
+  "checks": {
+    "deviceRestart": {
+      "beforeProcessId": 22544,
+      "afterProcessId": 22595,
+      "exchangeHeldBeforeBackground": true,
+      "nativeSocketClosedBeforeRelease": true,
+      "credentialStoredAfterDisconnect": true,
+      "configuredAfterRestart": true
+    },
+    "deviceForeground": {
+      "processIdBeforeAndAfter": 22595,
+      "exchangeHeldBeforeBackground": true,
+      "nativeSocketClosedBeforeRelease": true,
+      "credentialStoredAfterDisconnect": true,
+      "uncertainAttemptRetained": true,
+      "sameDeviceCodeAfterStatusRead": true,
+      "statusReadConfigured": true,
+      "attemptRemainsUncertain": true
+    },
+    "browserForeground": {
+      "processIdBeforeAndAfter": 22595,
+      "actualAuthorizationPageOpened": true,
+      "callbackReadFromActualFixturePage": true,
+      "callbackEnteredViaNativeAccessibility": true,
+      "redirectClearedOnSubmission": true,
+      "exchangeHeldBeforeBackground": true,
+      "nativeSocketClosedBeforeRelease": true,
+      "credentialStoredAfterDisconnect": true,
+      "browserPhaseRetained": true,
+      "statusReadConfigured": true
+    },
+    "cancelThenSwitch": {
+      "pendingDeviceFlowCancelled": true,
+      "originalHubOpened": true,
+      "abandonedFlowApprovedWhileAway": true,
+      "fixtureHubReopenedWithoutSignInSheet": true,
+      "providerRemainedSignedOut": true
+    }
+  },
+  "limits": [
+    "OAuth service is scripted; no live provider account acceptance.",
+    "Native mutation dispatch counts were not instrumented.",
+    "Browser callback was read from the actual fixture page using HTTP after opening its URL in Safari; keyboard paste was not qualified.",
+    "Cancelled-sheet then hub-switch coverage does not prove switching hubs with an active sheet.",
+    "Physical devices, iPad, VoiceOver, large text and distribution remain open."
+  ],
+  "cleanup": {
+    "nativeFixtureProfileRemoved": true,
+    "bothProviderCredentialsCleared": true,
+    "fixtureExitCode": 0,
+    "portClosed": true,
+    "testCredentialDirectoryRemoved": true,
+    "originalHubAndConversationRestored": true,
+    "preservedDrafts": 7,
+    "originalDraftSHA256": "f1d3b8c830d4b9369cdaabdc6eb7a44cbfbfa625dbeb0bb96d8dc1f2fc701d71",
+    "simulatorClipboardRestored": true,
+    "privateInputFilesRemoved": true,
+    "unrelatedApplePatchPreserved": true
+  },
+  "captures": {
+    "deviceInterrupted": {
+      "sequence": 1131,
+      "screenHash": "1vj4y7l",
+      "targets": [
+        "e35|tap|button|ollama. No key set · optional||",
+        "e39|tap|button|work, default. Configured via OAuth||",
+        "e40|tap|button|work-secondary. Not configured||",
+        "e14|tap|button|Hub settings||BackButton",
+        "e29|tap|button|Add provider instance||",
+        "e60|tap|button|Cancel||",
+        "e75|tap|button|Copy code||",
+        "e76|tap|button|Open authorization page||",
+        "e79|tap|button|Retry status check||",
+        "e80|tap|button|Check credential status||"
+      ],
+      "text": [
+        "e61|text|text|oauth recovery||",
+        "e62|text|text|oauth recovery||",
+        "e27|text|text|oauth recovery||",
+        "e28|text|text|oauth recovery||",
+        "e67|text|text|Sign in to work||",
+        "e68|text|text|Sign in to work||",
+        "e69|text|text|Sign-in could not be confirmed before the connection changed. Check credential status before trying again.||",
+        "e70|text|text|Sign-in could not be confirmed before the connection changed. Check credential status before trying again.||",
+        "e71|text|text|Copy the code, then authorize in your browser.||",
+        "e72|text|text|Copy the code, then authorize in your browser.||",
+        "e73|text|text|[fixture code]||",
+        "e74|text|text|[fixture code]||",
+        "e33|text|text|ollama||",
+        "e34|text|text|ollama||",
+        "e77|text|text|Waiting for authorization. You can return here after approving it.||",
+        "e78|text|text|Waiting for authorization. You can return here after approving it.||",
+        "e37|text|text|openai-codex||",
+        "e38|text|text|openai-codex||"
+      ]
+    },
+    "deviceReadback": {
+      "sequence": 1132,
+      "screenHash": "0u87om3",
+      "targets": [
+        "e35|tap|button|ollama. No key set · optional||",
+        "e39|tap|button|work, default. Configured via OAuth||",
+        "e40|tap|button|work-secondary. Not configured||",
+        "e14|tap|button|Hub settings||BackButton",
+        "e29|tap|button|Add provider instance||",
+        "e60|tap|button|Cancel||",
+        "e77|tap|button|Copy code||",
+        "e78|tap|button|Open authorization page||",
+        "e81|tap|button|Retry status check||",
+        "e82|tap|button|Check credential status||"
+      ],
+      "text": [
+        "e61|text|text|oauth recovery||",
+        "e62|text|text|oauth recovery||",
+        "e27|text|text|oauth recovery||",
+        "e28|text|text|oauth recovery||",
+        "e67|text|text|Sign in to work||",
+        "e68|text|text|Sign in to work||",
+        "e69|text|text|Sign-in status could not be confirmed. Check credential status before trying again.||",
+        "e70|text|text|Sign-in status could not be confirmed. Check credential status before trying again.||",
+        "e71|text|text|Current OAuth sign-in is configured.||",
+        "e72|text|text|Current OAuth sign-in is configured.||",
+        "e73|text|text|Copy the code, then authorize in your browser.||",
+        "e74|text|text|Copy the code, then authorize in your browser.||",
+        "e33|text|text|ollama||",
+        "e34|text|text|ollama||",
+        "e75|text|text|[fixture code]||",
+        "e76|text|text|[fixture code]||",
+        "e37|text|text|openai-codex||",
+        "e38|text|text|openai-codex||",
+        "e79|text|text|Waiting for authorization. You can return here after approving it.||",
+        "e80|text|text|Waiting for authorization. You can return here after approving it.||"
+      ]
+    },
+    "browserInterrupted": {
+      "sequence": 1140,
+      "screenHash": "0jgwc1o",
+      "targets": [
+        "e35|tap|button|ollama. No key set · optional||",
+        "e39|tap|button|work, default. Configured via OAuth||",
+        "e40|tap|button|work-secondary. Configured via OAuth||",
+        "e75|typeText|text-field|Redirect URL|[cleared on submission]|",
+        "e14|tap|button|Hub settings||BackButton",
+        "e29|tap|button|Add provider instance||",
+        "e60|tap|button|Cancel||",
+        "e73|tap|button|Open authorization page||",
+        "e77|tap|button|Check credential status||"
+      ],
+      "text": [
+        "e61|text|text|oauth recovery||",
+        "e62|text|text|oauth recovery||",
+        "e27|text|text|oauth recovery||",
+        "e28|text|text|oauth recovery||",
+        "e67|text|text|Sign in to work-secondary||",
+        "e68|text|text|Sign in to work-secondary||",
+        "e69|text|text|Sign-in could not be confirmed before the connection changed. Check credential status before trying again.||",
+        "e70|text|text|Sign-in could not be confirmed before the connection changed. Check credential status before trying again.||",
+        "e71|text|text|Authorize in your browser, then paste the full redirect URL here.||",
+        "e72|text|text|Authorize in your browser, then paste the full redirect URL here.||",
+        "e33|text|text|ollama||",
+        "e34|text|text|ollama||",
+        "e37|text|text|openai-codex||",
+        "e38|text|text|openai-codex||"
+      ]
+    },
+    "browserReadback": {
+      "sequence": 1141,
+      "screenHash": "0ow2utv",
+      "targets": [
+        "e35|tap|button|ollama. No key set · optional||",
+        "e39|tap|button|work, default. Configured via OAuth||",
+        "e40|tap|button|work-secondary. Configured via OAuth||",
+        "e75|typeText|text-field|Redirect URL|[cleared on submission]|",
+        "e14|tap|button|Hub settings||BackButton",
+        "e29|tap|button|Add provider instance||",
+        "e60|tap|button|Cancel||",
+        "e73|tap|button|Open authorization page||",
+        "e77|tap|button|Check credential status||"
+      ],
+      "text": [
+        "e61|text|text|oauth recovery||",
+        "e62|text|text|oauth recovery||",
+        "e27|text|text|oauth recovery||",
+        "e28|text|text|oauth recovery||",
+        "e67|text|text|Sign in to work-secondary||",
+        "e68|text|text|Sign in to work-secondary||",
+        "e69|text|text|Current OAuth sign-in is configured.||",
+        "e70|text|text|Current OAuth sign-in is configured.||",
+        "e71|text|text|Authorize in your browser, then paste the full redirect URL here.||",
+        "e72|text|text|Authorize in your browser, then paste the full redirect URL here.||",
+        "e33|text|text|ollama||",
+        "e34|text|text|ollama||",
+        "e37|text|text|openai-codex||",
+        "e38|text|text|openai-codex||"
+      ]
+    },
+    "cancelReentry": {
+      "sequence": 1154,
+      "screenHash": "1jy6f3r",
+      "targets": [
+        "e33|typeText|text-field|Search sessions|Search sessions|",
+        "e13|tap|button|Hubs||",
+        "e15|tap|button|New session||",
+        "e29|tap|button|Hub settings||",
+        "e30|tap|button|Browse projects||",
+        "e31|tap|button|Pinned sections||",
+        "e34|tap|button|Search||"
+      ],
+      "text": [
+        "e27|text|text|oauth recovery · Connected||",
+        "e28|text|text|oauth recovery · Connected||",
+        "e35|text|text|No sessions on this hub yet.||",
+        "e36|text|text|No sessions on this hub yet.||"
+      ]
+    }
+  }
+}

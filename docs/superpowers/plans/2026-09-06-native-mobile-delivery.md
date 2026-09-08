@@ -1028,3 +1028,31 @@ file diffs remain byte-identical and unstaged. Android release work is deferred
 for iOS-only v1. The overall delivery goal remains active: credential rotation,
 native pending-RPC/uncertain-write cases and the complete accessibility/device/
 signing/update matrix remain open. No push, merge or publication.
+
+## OAuth recovery and SDK steering checkpoint — 7 September 2026
+
+Progress: native source `759e7b10f` was rebuilt as iPhone Release and qualified
+against fresh direct hub auth handlers with a scripted external OAuth service.
+Held device and browser exchanges completed after the app's actual connection
+closed; same-process foreground and read-only credential status recovery
+passed. A separate restart and cancel-then-switch passed. The receipt in
+`docs/design/mobile/assets/ios-oauth-recovery-receipt.json` records exact scope,
+native identity and cleanup. All seven original drafts, the original hub and
+conversation, and the unrelated Apple patch remain preserved.
+
+SDK source `5429db421` adds direct steering and drain composer input. Luna
+medium implemented/tested the recipes, prepared the isolated runtime and
+reviewed evidence; Bot integrated corrections, checked the actual transcript
+and reviewed artifact boundaries. Thirteen queue contracts and independent
+package qualification passed. A fresh real hub with a scripted model produced
+correlated receipts and transcript entries for steer and appended drain text.
+The cookbook now contains 22 recipes covering 65/91 method names and 3/36
+notification names. Remaining catalog workflows, broader reconnect recovery,
+real-account OAuth and the iOS device/accessibility/performance/signing matrix
+remain open. Android release qualification remains deferred beyond iOS v1.
+
+`make merge-approval-gate` and `make vet` exited zero for the code committed
+as `5429db421`, including all Go modules, web, 663 native tests/73 files,
+native TypeScript and external package qualification. Only acceptance
+documentation changed after this code checkpoint. Runtime fixtures are stopped
+and their owned credential files removed. No push, merge or publication.

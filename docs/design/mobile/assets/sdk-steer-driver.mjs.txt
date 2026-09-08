@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { clientFromEnvironment } from "./node_modules/@evener/appwire-client/examples/connection.mjs";
+import { runQueue } from "./node_modules/@evener/appwire-client/examples/queue-logic.mjs";
+const root = "/tmp/evener-sdk-steer-N2Is3k";
+const fixture = JSON.parse(await fs.readFile(root + "/fixture.json", "utf8"));
+const save = (name, data) => fs.writeFile(root + "/" + name + ".json", JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+const { hub } = clientFromEnvironment();
+try {
+  await hub.connect();
+  const { thread } = await hub.request("thread/start", { cwd: fixture.cwd, modelProvider: fixture.provider, model: "fake-test-model", nonInteractive: false, launchOverrides: { noProjectPrompts: true, maxRounds: 8 } });
+  const ref = thread.evener.ref, instanceId = thread.evener.instanceId;
+  assert.ok(instanceId);
+  await save("binding", { ref, instanceId, threadId: thread.id });
+  await hub.request("turn/start", { ref, expectedInstanceId: instanceId, clientMutationId: randomUUID(), input: [{ type: "text", text: "SDK opening turn" }] });
+  const steerText = "SDK-STEER-AUTHORED-20260907";
+  const steer = await runQueue(hub, { action: "steer", params: { ref, expectedInstanceId: instanceId, clientMutationId: randomUUID(), input: [{ type: "text", text: steerText }] }, ownedHub: process.env.EVENER_RPC_URL });
+  assert.equal(steer.outcome, "acknowledged");
+  const q1 = await runQueue(hub, { action: "queue", params: { ref, expectedInstanceId: instanceId, clientMutationId: randomUUID(), input: [{ type: "text", text: "SDK-CANCEL-AUTHORED-20260907" }] }, ownedHub: process.env.EVENER_RPC_URL });
+  const q2 = await runQueue(hub, { action: "queue", params: { ref, expectedInstanceId: instanceId, clientMutationId: randomUUID(), input: [{ type: "text", text: "SDK-DRAIN-AUTHORED-20260907" }] }, ownedHub: process.env.EVENER_RPC_URL });
+  const before = await runQueue(hub, { action: "list", params: { ref } });
+  const ids = before.readback.thread.evener.queue.ids;
+  assert.equal(ids.length, 2);
+  const drainText = "SDK-DRAIN-COMPOSER-AUTHORED-20260907";
+  const drain = await runQueue(hub, { action: "drain", params: { ref, expectedInstanceId: instanceId, expectedQueueRevision: before.readback.thread.evener.queue.revision, clientMutationId: randomUUID(), input: [{ type: "text", text: drainText }] }, ownedHub: process.env.EVENER_RPC_URL });
+  assert.equal(drain.outcome, "acknowledged");
+  assert.deepEqual(drain.receipt.queueEntryIds, ids);
+  await save("actions", { ref, instanceId, steer: steer.receipt, queued: [q1.receipt, q2.receipt], drain: drain.receipt, preDrainIds: ids, postDrain: drain.readback.thread.evener.queue });
+  console.log(JSON.stringify({ ref, instanceId, steer: steer.receipt, drain: drain.receipt, preDrainIds: ids, depth: drain.readback.thread.evener.queue.depth }));
+} finally { hub.close(); }

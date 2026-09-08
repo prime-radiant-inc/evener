@@ -1,0 +1,26 @@
+[
+  {
+    "callId": "call_fakellm_1",
+    "previous": "",
+    "request": 1,
+    "seen": {
+      "cancel": false,
+      "draft": false,
+      "drain1": false,
+      "drain2": false,
+      "promote": true
+    }
+  },
+  {
+    "callId": "call_fakellm_2",
+    "previous": "call_fakellm_1",
+    "request": 2,
+    "seen": {
+      "cancel": true,
+      "draft": false,
+      "drain1": true,
+      "drain2": true,
+      "promote": true
+    }
+  }
+]
