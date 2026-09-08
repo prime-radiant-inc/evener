@@ -294,14 +294,18 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
 // just src. src keeps preferring url — the field the legacy web client
 // (cmd/evener-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — then a sha-addressed /s/{route}/images/{sha}
-// route rebuilt from metadata["sha"] when the serving session is known (the
-// wire Thread.sessionId, mirroring stampThreadImageURLs' sessionID-over-ID
-// preference in output_images.go; imageSessionRoute undefined keeps that
-// branch dark), then the inline data-URI bytes, then path or name, exactly as
-// before; name/path/source ride alongside src unresolved so a renderer can
-// caption the image instead of losing everything but whichever field happened
-// to win that fallback (kata byq2).
+// treats as the <img src> — then the inline data-URI bytes, then a
+// sha-addressed /s/{route}/images/{sha} route rebuilt from metadata["sha"]
+// when the serving session is known (the wire Thread.sessionId, mirroring
+// stampThreadImageURLs' sessionID-over-ID preference in output_images.go;
+// imageSessionRoute undefined keeps that branch dark), then path or name,
+// exactly as before; name/path/source ride alongside src unresolved so a
+// renderer can caption the image instead of losing everything but whichever
+// field happened to win that fallback (kata byq2). Bytes beat the
+// synthesized route because they render unconditionally while the route 404s
+// whenever the session is absent from the hub's Past index
+// (handleSessionImage, image_serve.go) — so the route only ever fires for
+// sha-only replay descriptors that carry no bytes at all.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -313,7 +317,7 @@ function imagesToItemImagesForSession(
   // through to the bare name gave the browser a relative URL that 404s, and
   // ImageGallery drops an unloadable src — no thumbnail at all (kata w53n).
   return images.map((img) => ({
-    src: img.url ?? metadataShaImageSrc(img, imageSessionRoute) ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
+    src: img.url ?? inlineImageSrc(img) ?? metadataShaImageSrc(img, imageSessionRoute) ?? img.path ?? img.name ?? "",
     name: img.name,
     path: img.path,
   }));
@@ -326,14 +330,16 @@ function imagesToItemImagesForSession(
 // (handleSessionImage). A live or paged payload that reaches the client
 // without that stamp (older-producer frames, page fits the read path didn't
 // re-stamp) still names fetchable bytes by sha, so the short route is the src
-// here too — the browser fetches and caches by URL instead of holding a
-// ~33%-inflated base64 copy in the model heap and the DOM. Strict lowercase-
-// hex only (imageShaRegexp): a non-sha metadata value is never URL-shaped,
-// so it falls through to the inline-bytes fallback below rather than
-// producing a src the hub would 400 on. imageSessionRoute is undefined
-// wherever the wire named no serving session (absent/blank sessionId — the
-// same gap stampThreadImageURLs patches with the thread id); without it there
-// is nothing fetchable to prefer and the data-URI fallback stands.
+// when — and only when — no inline bytes are present: the browser fetches and
+// caches by URL instead of holding a ~33%-inflated base64 copy in the model
+// heap and the DOM, but payload bytes render unconditionally while the route
+// 404s for any session absent from the hub's Past index, so bytes stay first.
+// Strict lowercase-hex only (imageShaRegexp): a non-sha metadata value is
+// never URL-shaped, so it falls through to path/name rather than producing a
+// src the hub would 400 on. imageSessionRoute is undefined wherever the wire
+// named no serving session (absent/blank sessionId — the same gap
+// stampThreadImageURLs patches with the thread id); without it there is
+// nothing fetchable to prefer and the data-URI fallback stands.
 function metadataShaImageSrc(img: InputItem, imageSessionRoute?: string): string | undefined {
   const sha = img.metadata?.sha;
   if (sha === undefined || sha === "" || imageSessionRoute === undefined || imageSessionRoute === "") {
@@ -391,9 +397,10 @@ function itemTextPresence(item: ItemModel): ItemTextPresence {
 // stampThreadImageURLs in output_images.go), item pages and live
 // notifications' model.imageSessionId, carried on the model from hydrate —
 // so a sha-bearing input image that arrived WITHOUT its stamped url still
-// folds to the short /s/{route}/images/{sha} src instead of a base64
-// data-URI. Undefined on the paths that cannot name it — the sha branch then
-// stays dark and every image resolves exactly as before.
+// folds to the short /s/{route}/images/{sha} src when it carries no inline
+// bytes — otherwise the bytes stay the src. Undefined on the paths that
+// cannot name it — the sha branch then stays dark and every image resolves
+// exactly as before.
 function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemModel {
   const model: ItemModel & { clientMutationId?: string } = {
     id: item.id,

@@ -2128,6 +2128,21 @@ test("a stamped url wins over the rebuilt sha route", () => {
   expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: stamped, name: "photo.png", path: undefined }]);
 });
 
+test("inline bytes win over the rebuilt sha route (bytes render when the Past index cannot serve the route)", () => {
+  // A sha+bytes payload (legacy/live frames the hub never stripped) resolves
+  // to the bytes: the route 404s for any session absent from the hub's Past
+  // index (handleSessionImage, image_serve.go), while the bytes render
+  // unconditionally. Sha-only replay descriptors still resolve to the route
+  // (the test above).
+  const model = hydrateWithShaImage({
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
 test("a non-hex metadata sha falls back to the inline data-URI, never a hub-400 route", () => {
   const model = hydrateWithShaImage({
     metadata: { sha: "not-a-sha" },
