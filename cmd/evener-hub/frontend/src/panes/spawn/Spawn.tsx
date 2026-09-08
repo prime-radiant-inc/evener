@@ -1,7 +1,20 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
-import { type JSX, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Component,
+  type JSX,
+  type LazyExoticComponent,
+  lazy,
+  memo,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
   HarnessDescriptor,
@@ -20,6 +33,7 @@ import {
   Chevron,
   ConfirmDialog,
   chordLabel,
+  Dialog,
   Dropzone,
   FormRow,
   IconButton,
@@ -78,13 +92,93 @@ import { useProviderSetup } from "./useProviderSetup";
 // provider" (connectingProvider state), never on first paint. The chunk -
 // the dialog plus its instance-credential editors (instanceDialogs,
 // oauthDialogs, oauthFlow) - stays out of the spawn pane's initial bundle
-// and loads on first open; the fallback is null because the dialog owns
-// its own loading affordance once mounted.
-const ConnectProviderDialog = lazy(() =>
-  import("../settings/sections/credentials/ConnectProviderDialog").then((m) => ({
-    default: m.ConnectProviderDialog,
-  })),
-);
+// and loads on first open.
+//
+// A rejected chunk lands on ConnectProviderDialogBoundary below, scoped to
+// the dialog: without it the lazy() rethrow would bubble into whatever
+// boundary happens to sit above this pane (on desktop the dock's
+// workspace-failure state - misleading, the workspace is fine - and on
+// mobile StackHost mounts panes with no boundary at all, so the whole app).
+// Retry swaps in a fresh lazy component - a rejected payload rethrows
+// forever, so re-rendering the old one could never recover. The Suspense
+// fallback is a real dialog reading "Loading…": a null fallback would leave
+// the click that opened the dialog with no visible response while the chunk
+// fetches, and the boundary below renders the same Dialog shell on failure
+// so the pending/failure states share one frame.
+interface ConnectProviderDialogBoundaryProps {
+  // Swaps in a fresh lazy component to load the chunk again. The boundary
+  // clears its own failure state alongside it - both halves are needed, and
+  // neither is any use without the other.
+  onRetry: () => void;
+  onClose: () => void;
+  children: ReactNode;
+}
+
+interface ConnectProviderDialogBoundaryState {
+  // The failed chunk's own message ("Failed to fetch dynamically imported
+  // module: ..."), shown verbatim - a stated failure is worth more to
+  // whoever hits it than a generic apology.
+  failure: string | null;
+}
+
+class ConnectProviderDialogBoundary extends Component<
+  ConnectProviderDialogBoundaryProps,
+  ConnectProviderDialogBoundaryState
+> {
+  state: ConnectProviderDialogBoundaryState = { failure: null };
+
+  static getDerivedStateFromError(error: unknown): ConnectProviderDialogBoundaryState {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+
+  private retry = () => {
+    this.setState({ failure: null });
+    this.props.onRetry();
+  };
+
+  render(): ReactNode {
+    if (this.state.failure === null) return this.props.children;
+    return (
+      <Dialog
+        open
+        onClose={this.props.onClose}
+        title="Couldn't load the connect dialog"
+        footer={
+          <>
+            <Button variant="quiet" onClick={this.props.onClose}>
+              Close
+            </Button>
+            <Button variant="primary" onClick={this.retry}>
+              Retry
+            </Button>
+          </>
+        }
+      >
+        {this.state.failure}
+      </Dialog>
+    );
+  }
+}
+
+type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(): void }) => JSX.Element;
+type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
+
+function lazyConnectProviderDialog(): ConnectProviderDialogChunk {
+  // ConnectProviderDialog is a named export, so the import() promise is
+  // adapted the same way App.tsx's own DevHarnessRoute does for
+  // dev/DevHarness.tsx.
+  return lazy(() =>
+    import("../settings/sections/credentials/ConnectProviderDialog").then((m) => ({
+      default: m.ConnectProviderDialog,
+    })),
+  );
+}
+
+// Module scope, not per mount: a lazy() component caches its resolved
+// module on its own payload, so one shared component means the chunk is
+// fetched once per page load and every later open renders the dialog
+// straight away instead of suspending again.
+let connectProviderDialog = lazyConnectProviderDialog();
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -179,6 +273,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setConnectingProvider(false);
     void providerSetup.retry();
   }, [providerSetup.retry]);
+  // A retry needs a NEW lazy component, not a re-render of the old one:
+  // React.lazy stores the rejection on its payload and rethrows that same
+  // error on every subsequent render, forever.
+  const [ProviderDialog, setProviderDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
+  const retryProviderDialog = useCallback(() => {
+    const nextDialog = lazyConnectProviderDialog();
+    // Publish the new payload before it resolves so a remount during the
+    // retry shares the in-flight request instead of restoring the rejected
+    // payload that caused the boundary.
+    connectProviderDialog = nextDialog;
+    setProviderDialog(() => nextDialog);
+  }, []);
 
   const [prompt, setPrompt] = useState("");
   const [harness, setHarness] = useState("");
@@ -1087,9 +1193,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
         {connectingProvider && (
-          <Suspense fallback={null}>
-            <ConnectProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
-          </Suspense>
+          <ConnectProviderDialogBoundary onRetry={retryProviderDialog} onClose={closeProviderSetup}>
+            <Suspense
+              fallback={
+                <Dialog open onClose={closeProviderSetup} title="Connect provider">
+                  <Loader label="Loading…" />
+                </Dialog>
+              }
+            >
+              <ProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
+            </Suspense>
+          </ConnectProviderDialogBoundary>
         )}
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
