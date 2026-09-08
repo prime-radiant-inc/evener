@@ -370,25 +370,25 @@ type Server struct {
 	// (plain types — the server package must not import agent internals) and
 	// routes to Session.GoalResume via the daemon wiring. Separate from
 	// goalFunc so a resume never flows through SetGoal's retarget semantics.
-	goalResumeFunc func(objective, extendBudget string, extendValue int64) (bool, error)
-	drainSteerFunc                  func() error
-	drainSteerInputFunc             func(string, []ImageAttachment) error
-	promoteSteerFunc                func(int, string) error
-	cancelQueuedFunc                func(int, string) (string, int, error)
-	compactFunc                     func(context.Context) error
-	clearFunc                       func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath                string
-	clearRecords                    map[string]threadClearRecord
-	clearJournalErr                 error
-	modelFunc                       func(string) error
-	visionModelFunc                 func(string) error
-	nameFunc                        func(string)
-	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
-	tasksFn                         func() any
-	jobsFn                          func(appwire.JobsListParams) (any, error)
-	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc                    func()
+	goalResumeFunc      func(objective, extendBudget string, extendValue int64) (bool, error)
+	drainSteerFunc      func() error
+	drainSteerInputFunc func(string, []ImageAttachment) error
+	promoteSteerFunc    func(int, string) error
+	cancelQueuedFunc    func(int, string) (string, int, error)
+	compactFunc         func(context.Context) error
+	clearFunc           func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath    string
+	clearRecords        map[string]threadClearRecord
+	clearJournalErr     error
+	modelFunc           func(string) error
+	visionModelFunc     func(string) error
+	nameFunc            func(string)
+	reasoningEffortFunc func(string)
+	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
+	tasksFn             func() any
+	jobsFn              func(appwire.JobsListParams) (any, error)
+	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
+	shutdownFunc        func()
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent

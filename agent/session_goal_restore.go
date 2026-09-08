@@ -43,31 +43,41 @@ func (s *Session) seedRestoredGoalLatch() {
 }
 
 // restoreGoalAttachScan re-validates every restored wait predicate immediately
-// (spec §7 attach-scan at restore). Slice 1 evaluates timer expiry only —
-// substrate reads (job/delegate/file/approval/child) wire in with the
-// notification path: an already-expired until_time lease claims into
-// pendingWake before any kick-or-arm decision, so a restart never silently
-// strands a fired wait. Reports the claims made.
+// (spec §7 attach-scan at restore): classify every live lease — predicate
+// truth across ALL kinds (job/delegate retained-terminal catch-up, approval
+// liveness, child terminality, file baseline delta, HTTP match at the poll
+// leg) plus expiry for EVERY kind — and claim fires into pendingWake before
+// any kick-or-arm decision, so a restart never silently strands a fired
+// wait. Substrate validation failures (job gone, file unstatable, child
+// unknown) drop the lease with the cause persisted: the restored backlog (or
+// the next turn tail when nothing else stands) delivers the honest loss
+// notice (spec §2). A live-but-already-true predicate that fires here arms
+// the §5 same-target cooldown like any predicate fire.
 func (s *Session) restoreGoalAttachScan() {
 	now := s.sclock().Now()
 	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
 	full, ok := store.GoalSnapshot()
-	s.goalUpdateMu.Unlock()
 	if !ok || (full.Status != goal.StatusWaiting && full.Status != goal.StatusActive) {
+		s.goalUpdateMu.Unlock()
 		return
 	}
+	var live []goal.Wait
 	for _, w := range full.Waits {
-		if w.Lease.Kind != goal.WaitUntilTime || !w.Live() {
-			continue
+		if w.Live() {
+			live = append(live, w)
 		}
-		if now.Before(w.Lease.Deadline) {
-			continue
-		}
-		s.goalUpdateMu.Lock()
-		store.ClaimFire(w.Lease.WaitID, "wait expired: "+w.Lease.Label, now)
-		s.goalUpdateMu.Unlock()
 	}
+	// Lock discipline: ClassifyWaits copies the substrate field out under the
+	// store lock and evaluates outside it (never held across Substrate
+	// calls); the claim loop below runs serialized under goalUpdateMu. The
+	// child-terminal pre-read is itself a controller read outside both.
+	batch := store.ClassifyWaits(live, now, s.childTerminalTrigger)
+	_, losses := store.ClaimClassified(batch, now)
+	for _, cause := range losses {
+		store.RecordLoss(cause, now)
+	}
+	s.goalUpdateMu.Unlock()
 }
 
 // goalWaitNextFire computes the single coalesced fire instant (spec §2

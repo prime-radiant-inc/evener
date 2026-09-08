@@ -354,8 +354,8 @@ func TestServerAppWireGoalSetResumeWithoutFuncIsUnavailable(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
-		Ref:     "local:th_1",
-		Resume:  true,
+		Ref:    "local:th_1",
+		Resume: true,
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v, want error when goalResumeFunc unwired", resp.Kind())

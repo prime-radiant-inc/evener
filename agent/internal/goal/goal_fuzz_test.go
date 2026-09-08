@@ -3,6 +3,7 @@
 package goal
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -101,7 +102,7 @@ func restoreFuzzGoal(store *Store, persisted fuzzGoalPersistence) {
 
 func assertFuzzGoalPersistence(t *testing.T, phase string, got, want fuzzGoalPersistence) {
 	t.Helper()
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%s persistence = %+v, want %+v", phase, got, want)
 	}
 }

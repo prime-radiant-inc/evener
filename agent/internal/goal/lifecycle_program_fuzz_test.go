@@ -4,6 +4,7 @@ package goal
 
 import (
 	"html"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func assertFuzzGoalAbsent(t *testing.T, store *Store, phase string) {
 	if snap, ok := store.Snapshot(); ok || snap != (Snapshot{}) {
 		t.Fatalf("%s Snapshot = %+v ok=%v, want no goal", phase, snap, ok)
 	}
-	if persisted, ok := store.PersistSnapshot(); ok || persisted != (PersistedGoal{}) {
+	if persisted, ok := store.PersistSnapshot(); ok || !reflect.DeepEqual(persisted, PersistedGoal{}) {
 		t.Fatalf("%s PersistSnapshot returned goal data: %+v", phase, persisted)
 	}
 }

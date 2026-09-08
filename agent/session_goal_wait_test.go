@@ -697,9 +697,13 @@ func TestGateLatchedDropNoticesFreshWake(t *testing.T) {
 	}
 }
 
-// TestGateDeadlineBlocksWithDistinctVerdict pins rule 3 (spec section 1): a
-// goal past its wall-clock deadline blocks with "deadline exceeded" - never
-// collapsed into the stall or budget verdicts.
+// TestGateDeadlineBlocksWithDistinctVerdict pins rule 3 (spec §1): a goal
+// past its wall-clock deadline first drives one final evaluation turn
+// carrying "deadline exceeded" (the synthetic expiry wake through the same
+// exactly-once claim machinery, with DeadlineFinalDelivered set at claim
+// time so rule 3 cannot loop final turns), and the FOLLOWING gate blocks
+// with "deadline exceeded" - never collapsed into the stall or budget
+// verdicts, never an immediate silent block.
 func TestGateDeadlineBlocksWithDistinctVerdict(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -710,9 +714,33 @@ func TestGateDeadlineBlocksWithDistinctVerdict(t *testing.T) {
 	store := sess.getOrCreateGoalStore()
 	store.Set("deadline goal", clk.Now())
 	clk.Advance(5 * time.Hour) // past the 4h default deadline
+	// Gate 1: the final evaluation turn drives (rule 1 on the synthetic
+	// wake), carrying the deadline verdict text.
 	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || prompt == "" {
+		t.Fatalf("deadline gate 1 = (%q, %v), want the final evaluation drive carrying the synthetic wake", prompt, cont)
+	}
+	if !strings.Contains(prompt, goal.DeadlineExpiryTrigger) {
+		t.Fatalf("final-turn prompt must carry %q\nprompt:\n%s", goal.DeadlineExpiryTrigger, prompt)
+	}
+	if !strings.Contains(prompt, goalWaitWakeTrailerPrefix) {
+		t.Fatalf("final-turn prompt must carry the wake trailer %q\nprompt:\n%s", goalWaitWakeTrailerPrefix, prompt)
+	}
+	full, _ := store.GoalSnapshot()
+	if !full.DeadlineFinalDelivered {
+		t.Fatalf("DeadlineFinalDelivered = false after the synthetic claim, want true (set at claim time): %+v", full)
+	}
+	if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != goal.DeadlineWakeID {
+		t.Fatalf("pendingWake after gate 1 = %+v, want exactly the synthetic deadline entry", full.PendingWake)
+	}
+	// Gate 2: the final turn ran while the deadline was also exceeded, so it
+	// latched terminal-pending (spec §1 R7 M-I1) — the next gate evaluates
+	// rules 2/3 before rule 1, blocks with the distinct verdict, and drops
+	// the fresh synthetic wake with the honest loss notice instead of
+	// driving it again (no second final turn: the one-shot marker holds).
+	prompt, cont = sess.armGoalContinuation(false, true)
 	if cont || prompt != "" {
-		t.Fatalf("deadline gate = (%q, %v), want (\"\", false)", prompt, cont)
+		t.Fatalf("deadline gate 2 = (%q, %v), want (\"\", false): the latched gate blocks", prompt, cont)
 	}
 	snap, _ := store.Snapshot()
 	if snap.Status != goal.StatusBlocked {
@@ -720,6 +748,15 @@ func TestGateDeadlineBlocksWithDistinctVerdict(t *testing.T) {
 	}
 	if snap.StopReason != goal.VerdictDeadlineExceeded {
 		t.Fatalf("StopReason = %q, want %q (distinct from budget/stall)", snap.StopReason, goal.VerdictDeadlineExceeded)
+	}
+	if gsnap, _ := store.GoalSnapshot(); len(gsnap.PendingWake) != 0 {
+		t.Fatalf("pendingWake after the latched block = %+v, want drained with the notice", gsnap.PendingWake)
+	}
+	// The latched block carries the terminal deadline note (blockGoalFromGate
+	// verdict routing) and drains the synthetic backlog exactly once — the
+	// one-shot marker holds, so no second final turn exists to drive.
+	if n := countSteeringNotes(sess, "deadline exceeded"); n != 1 {
+		t.Fatalf("deadline notes = %d, want exactly 1 terminal note", n)
 	}
 }
 
@@ -1238,5 +1275,370 @@ func TestGoalWaitToolsRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
 		if !found {
 			t.Errorf("%s not advertised in ToolDefinitions()", name)
 		}
+	}
+}
+
+// --- Fix-wave regression: C1/I2/I3/I4/I5 (spec §§1-2, 5, 7) ---
+//
+// Deterministic: FakeClock advance + store-direct substrate stubs, never
+// wall-clock sleep or live I/O.
+
+// fixStubSubstrate is a deterministic in-memory predicate substrate for the
+// fix-wave regression tests (spec §2). Absent entries model hallucinated
+// targets; present-but-terminal job/delegate entries model retained-terminal
+// catch-up; files map to baselines; approvals to live asks; children to known
+// descendants; urls to match results.
+type fixStubSubstrate struct {
+	jobs      map[string]fixStubTarget
+	delegates map[string]fixStubTarget
+	files     map[string]string
+	approvals map[string]bool
+	children  map[string]bool
+	// urls models http_match reachability (registration validation); matched
+	// models the matcher truth at the poll leg (the fire). Split because one
+	// map cannot mean both "well-formed under policy" and "currently
+	// matching" — registration must succeed while the predicate reads
+	// false, then flip true at the tick.
+	urls    map[string]bool
+	matched map[string]bool
+}
+
+type fixStubTarget struct {
+	live     bool
+	retained bool
+	excerpt  string
+}
+
+func (f *fixStubSubstrate) LookupJob(id string) (bool, bool, string, bool) {
+	t, ok := f.jobs[id]
+	if !ok {
+		return false, false, "", false
+	}
+	return t.live, t.retained, t.excerpt, true
+}
+
+func (f *fixStubSubstrate) LookupDelegate(id string) (bool, bool, string, bool) {
+	t, ok := f.delegates[id]
+	if !ok {
+		return false, false, "", false
+	}
+	return t.live, t.retained, t.excerpt, true
+}
+
+func (f *fixStubSubstrate) StatFile(path string) (string, bool) {
+	b, ok := f.files[path]
+	return b, ok
+}
+
+func (f *fixStubSubstrate) LookupApproval(contentKey, generation string) bool {
+	return f.approvals[contentKey+"\x00"+generation]
+}
+
+func (f *fixStubSubstrate) LookupChild(id string) bool { return f.children[id] }
+
+func (f *fixStubSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	// Registration validation (RegisterWait) passes the lease timeout
+	// (minutes); the poll-leg truth check passes the fixed per-fetch
+	// timeout (seconds). Route on it so one stub serves both.
+	if timeout >= time.Minute {
+		return f.urls[rawURL]
+	}
+	return f.matched[rawURL]
+}
+
+// TestFixWaveC1AllKindsFire pins C1 (spec §§1-2): every non-timer kind fires
+// through the gate claim — register, make true/expire, assert exactly-one
+// wake drive with no strand (no live lease left, exactly one pending entry,
+// wake prompt carries the trigger).
+func TestFixWaveC1AllKindsFire(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		req  goal.WaitKind
+		sub  *fixStubSubstrate
+		// mutate flips the substrate from park-state to fire-state between
+		// registration and the gate (nil = fires via expiry instead).
+		mutate func(sub *fixStubSubstrate)
+		// wantTrigger is the excerpt substring the wake prompt must carry.
+		wantTrigger string
+	}{
+		{
+			name: "until_job retained-terminal",
+			req:  goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_1", Timeout: time.Hour},
+			sub:  &fixStubSubstrate{jobs: map[string]fixStubTarget{"job_1": {live: true}}},
+			mutate: func(sub *fixStubSubstrate) {
+				sub.jobs["job_1"] = fixStubTarget{retained: true, excerpt: "job job_1 exited 0"}
+			},
+			wantTrigger: "exited 0",
+		},
+		{
+			name: "until_delegate retained-terminal",
+			req:  goal.WaitKind{Kind: goal.WaitUntilDelegate, Target: "dlg_1", Timeout: time.Hour},
+			sub:  &fixStubSubstrate{delegates: map[string]fixStubTarget{"dlg_1": {live: true}}},
+			mutate: func(sub *fixStubSubstrate) {
+				sub.delegates["dlg_1"] = fixStubTarget{retained: true, excerpt: "delegate dlg_1 completed"}
+			},
+			wantTrigger: "completed",
+		},
+		{
+			name:        "until_approval answered",
+			req:         goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", AskGeneration: "gen1", Timeout: time.Hour},
+			sub:         &fixStubSubstrate{approvals: map[string]bool{"ship it?\x00gen1": true}},
+			mutate:      func(sub *fixStubSubstrate) { delete(sub.approvals, "ship it?\x00gen1") },
+			wantTrigger: "approval answered",
+		},
+		{
+			name:        "file_modified delta",
+			req:         goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour},
+			sub:         &fixStubSubstrate{files: map[string]string{"/sandbox/plan.md": "base-1"}},
+			mutate:      func(sub *fixStubSubstrate) { sub.files["/sandbox/plan.md"] = "base-2" },
+			wantTrigger: "file modified",
+		},
+		{
+			name:        "http_match at poll leg",
+			req:         goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.com/hook", Timeout: time.Hour},
+			sub:         &fixStubSubstrate{urls: map[string]bool{"https://example.com/hook": true}, matched: map[string]bool{"https://example.com/hook": false}},
+			mutate:      func(sub *fixStubSubstrate) { sub.matched["https://example.com/hook"] = true },
+			wantTrigger: "http match",
+		},
+		{
+			name:        "until_child terminal",
+			req:         goal.WaitKind{Kind: goal.WaitUntilChild, Target: "child_1", Timeout: time.Hour},
+			sub:         &fixStubSubstrate{children: map[string]bool{"child_1": true}},
+			mutate:      nil, // terminality arrives via the tracked child below
+			wantTrigger: "child_1",
+		},
+		{
+			name:        "non-timer expiry for every kind",
+			req:         goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_slow", Timeout: time.Minute},
+			sub:         &fixStubSubstrate{jobs: map[string]fixStubTarget{"job_slow": {live: true}}},
+			mutate:      nil, // no predicate flip: the lease deadline fires it
+			wantTrigger: "wait expired:",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clk := agenttest.NewFakeClock()
+			sess := newWaitGateSession(t, clk)
+			defer sess.Close()
+			wireKickAndNotify(sess)
+			store := sess.getOrCreateGoalStore()
+			store.Set("c1 "+tc.name, clk.Now())
+			store.SetSubstrate(tc.sub)
+			w, ok := store.RegisterWait(tc.req, clk.Now())
+			if !ok {
+				t.Fatalf("precondition: registration should succeed: %q", store.LastRejectReason())
+			}
+			if tc.name == "until_child terminal" {
+				trackSyntheticChild(t, sess, "child_1", SubagentCompleted, false, false, clk.Now(), false)
+			}
+			if tc.mutate != nil {
+				tc.mutate(tc.sub)
+			}
+			if strings.Contains(tc.wantTrigger, "expired:") {
+				clk.Advance(2 * time.Minute)
+			}
+			prompt, cont := sess.armGoalContinuation(false, true)
+			if !cont || prompt == "" {
+				t.Fatalf("gate = (%q, %v), want exactly one wake drive", prompt, cont)
+			}
+			if !strings.Contains(prompt, tc.wantTrigger) {
+				t.Fatalf("wake prompt must carry %q\nprompt:\n%s", tc.wantTrigger, prompt)
+			}
+			full, _ := store.GoalSnapshot()
+			if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != w.Lease.WaitID {
+				t.Fatalf("pendingWake = %+v, want exactly the fired lease %q (no strand, no pile-up)", full.PendingWake, w.Lease.WaitID)
+			}
+			if goal.HasLiveWait(full.Waits) {
+				t.Fatalf("live leases remain after the fire: %+v (stranded)", full.Waits)
+			}
+			// Exactly-once: the wake tail consumes the backlog; the next
+			// gate must not re-drive the same fire.
+			sess.armGoalContinuation(false, true)
+			if full, _ := store.GoalSnapshot(); len(full.PendingWake) != 0 {
+				t.Fatalf("pendingWake after wake-tail = %+v, want drained (exactly one wake)", full.PendingWake)
+			}
+		})
+	}
+}
+
+// TestFixWaveI2DeadlineFinalTurnThenBlock pins I2 (spec §1 rule 3): deadline
+// expiry drives the synthetic final evaluation turn carrying "deadline
+// exceeded" with the marker set at claim, then the latched gate blocks with
+// the distinct verdict (never an immediate silent block, never a verdict
+// collapse, never a second final turn).
+func TestFixWaveI2DeadlineFinalTurnThenBlock(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	store := sess.getOrCreateGoalStore()
+	store.Set("i2 deadline", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "t", Timeout: time.Hour, Label: "hour-timer"}, clk.Now()); !ok {
+		t.Fatal("precondition: timer registration should succeed")
+	}
+	clk.Advance(5 * time.Hour) // past the 4h goal deadline, timer also expired
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, goal.DeadlineExpiryTrigger) {
+		t.Fatalf("gate 1 = (%v, %.80q...), want the final turn carrying %q", cont, prompt, goal.DeadlineExpiryTrigger)
+	}
+	if !strings.Contains(prompt, "hour-timer") {
+		t.Fatalf("final-turn prompt must carry the wait labels:\n%s", prompt)
+	}
+	if full, _ := store.GoalSnapshot(); !full.DeadlineFinalDelivered {
+		t.Fatalf("marker must be set at claim time: %+v", full)
+	}
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if cont || prompt != "" {
+		t.Fatalf("gate 2 = (%q, %v), want the latched block", prompt, cont)
+	}
+	snap, _ := store.Snapshot()
+	if snap.Status != goal.StatusBlocked || snap.StopReason != goal.VerdictDeadlineExceeded {
+		t.Fatalf("snapshot = %+v, want blocked/deadline exceeded", snap)
+	}
+	// No second final turn: a further gate stays blocked.
+	if prompt, cont := sess.armGoalContinuation(false, true); cont || prompt != "" {
+		t.Fatalf("gate 3 = (%q, %v), want still blocked (one-shot)", prompt, cont)
+	}
+}
+
+// TestFixWaveI3ParkedTotalBinds pins I3 (spec §5): wall-clock park time
+// accrues entry→wake deltas so a tight parked cap below the deadline binds
+// with "budget exhausted" (not the deadline verdict — the §5 layering).
+func TestFixWaveI3ParkedTotalBinds(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	store := sess.getOrCreateGoalStore()
+	store.Set("i3 parked cap", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	// Tighten the parked cap below the lease deadline: 30m parked of a 1h
+	// lease must bind first.
+	full, _ := store.GoalSnapshot()
+	persisted, _ := goal.PersistedFromSnapshot(full)
+	persisted.Budgets.MaxParkedTotal = 30 * time.Minute
+	store.RestoreSnapshot(persisted)
+	store.NoteParkEnter(clk.Now())
+	clk.Advance(time.Hour) // lease expires; the claim accrues 60m > 30m cap
+	prompt, cont := sess.armGoalContinuation(false, true)
+	full, _ = store.GoalSnapshot()
+	if full.Budgets.ParkedTotal < 30*time.Minute {
+		t.Fatalf("ParkedTotal = %v, want ≥30m accrued at the claim: %+v", full.Budgets.ParkedTotal, full.Budgets)
+	}
+	// The wake drove terminal-flagged (parked bound also exceeded): the next
+	// gate blocks budget-exhausted, not deadline-exceeded.
+	_ = prompt
+	_ = cont
+	prompt, cont = sess.armGoalContinuation(false, true)
+	if cont || prompt != "" {
+		t.Fatalf("post-wake gate = (%q, %v), want the parked-total block", prompt, cont)
+	}
+	snap, _ := store.Snapshot()
+	if snap.StopReason != goal.VerdictBudgetExhausted {
+		t.Fatalf("StopReason = %q, want %q (parked-total binds as budget)", snap.StopReason, goal.VerdictBudgetExhausted)
+	}
+}
+
+// TestFixWaveI4RestoreSubstrateLoss pins I4 (spec §2): a restart after the
+// substrate disappeared (job aged out, file gone, child unknown) produces
+// the persisted loss + honest waiting-lost notice + re-drive — never a
+// silent re-park on a dead substrate.
+func TestFixWaveI4RestoreSubstrateLoss(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	store := sess.getOrCreateGoalStore()
+	store.Set("i4 loss", clk.Now())
+	store.SetSubstrate(&fixStubSubstrate{jobs: map[string]fixStubTarget{"job_gone": {live: true}}})
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_gone", Timeout: time.Hour}, clk.Now())
+	if !ok {
+		t.Fatalf("precondition: live job must park: %q", store.LastRejectReason())
+	}
+	_ = w
+	// Restart: the substrate the lease validated against is gone.
+	store.SetSubstrate(&fixStubSubstrate{})
+	sess.restoreGoalAttachScan()
+	full, _ := store.GoalSnapshot()
+	if goal.HasLiveWait(full.Waits) {
+		t.Fatalf("dead lease still live after restore scan: %+v (silent re-park)", full.Waits)
+	}
+	if full.LossCause == "" {
+		t.Fatalf("LossCause empty after the restore loss, want the cause persisted: %+v", full)
+	}
+	// The next gate surfaces the honest notice and re-drives (single live
+	// goal, no live waits, advancement window empty → rule 5 blocks with the
+	// waiting-lost verdict. The honest notice text rides the terminal report
+	// (blockGoalFromGate verdict routing), not a separate re-drive — the
+	// loss is terminal because nothing remains to wait on.
+	prompt, cont := sess.armGoalContinuation(false, true)
+	snap, _ := store.Snapshot()
+	if snap.Status != goal.StatusBlocked || !strings.HasPrefix(snap.StopReason, "waiting lost:") {
+		t.Fatalf("snapshot = %+v prompt=(%.60q..., %v), want the rule-5 waiting-lost block", snap, prompt, cont)
+	}
+	if !strings.Contains(snap.StopReason, "job_gone") {
+		t.Fatalf("StopReason = %q, want the cause naming the lost substrate", snap.StopReason)
+	}
+	if n := countSteeringNotes(sess, "waiting lost:"); n < 1 {
+		t.Fatalf("waiting-lost notes = %d, want at least 1 terminal notice", n)
+	}
+}
+
+// TestFixWaveI5AttachScanAndCooldown pins I5 (spec §5): attach-scan-true at
+// registration drives immediately (claim + no park) and the same target may
+// not re-park for 30s.
+func TestFixWaveI5AttachScanAndCooldown(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+	store := sess.getOrCreateGoalStore()
+	store.Set("i5 attach", clk.Now())
+	sub := &fixStubSubstrate{files: map[string]string{"/sandbox/plan.md": "base-1"}}
+	store.SetSubstrate(sub)
+	// Already-changed file: mutate the baseline the lease would snapshot is
+	// impossible pre-registration — instead register, flip, re-register: the
+	// second registration's attach-scan sees the delta and fires at once.
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: first registration should park: %q", store.LastRejectReason())
+	}
+	sub.files["/sandbox/plan.md"] = "base-2"
+	w2, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour}, clk.Now())
+	if !ok {
+		t.Fatalf("precondition: attach-scan-true registration should succeed: %q", store.LastRejectReason())
+	}
+	full, _ := store.GoalSnapshot()
+	if goal.HasLiveWait(full.Waits) {
+		t.Fatalf("attach-scan-true must not park: %+v", full.Waits)
+	}
+	if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != w2.Lease.WaitID {
+		t.Fatalf("pendingWake = %+v, want the immediate attach-scan fire for %q", full.PendingWake, w2.Lease.WaitID)
+	}
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, "file modified") {
+		t.Fatalf("gate = (%v, %.80q...), want the immediate evaluation drive", cont, prompt)
+	}
+	// Same-target re-park inside 30s rejects with the cooldown named.
+	sub.files["/sandbox/plan.md"] = "base-3"
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour}, clk.Now()); ok {
+		t.Fatal("same-target re-park inside the cooldown must reject")
+	}
+	if reason := store.LastRejectReason(); !strings.Contains(reason, "cooldown") {
+		t.Fatalf("reject reason %q must name the cooldown", reason)
+	}
+	clk.Advance(31 * time.Second)
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("re-park after the cooldown should succeed: %q", store.LastRejectReason())
 	}
 }

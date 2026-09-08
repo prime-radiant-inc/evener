@@ -137,6 +137,58 @@ const (
 // §5): at most 3, then the 4th consecutive stall graduates to block.
 const MaxConsecutiveAutoReparks = 3
 
+// AttachScanCooldown is the §5 same-predicate cooldown (spec §2 defaults
+// table, §5): after an attach-scan-true immediate drive, the same target
+// identity may not re-park for this long — the re-park rejects with the
+// cooldown named instead of closing a tight park/wake loop. Keyed by target
+// identity (path / URL / job id / delegate id / approval key / child id),
+// not full payload. Poll ticks (60s floor) never trigger it: only
+// registration/restore attach-scan and notification races consult it.
+const AttachScanCooldown = 30 * time.Second
+
+// DeadlineExpiryTrigger is the trigger excerpt prefix for the synthetic
+// deadline-expiry wake (spec §1 rule 3): the final evaluation turn carries
+// this plus the wait labels, then the following gate blocks with the
+// distinct "deadline exceeded" verdict.
+const DeadlineExpiryTrigger = "deadline exceeded"
+
+// DeadlineWakeID is the synthetic pendingWake wait_id for the deadline-expiry
+// wake (spec §1 rule 3). It never collides with registry ids ("wait_N") and
+// flows through the same exactly-once backlog (delivered-set dedupe, wake-tail
+// drain) as lease claims.
+const DeadlineWakeID = "deadline"
+
+// WaitDisposition is one lease's classification at an evaluation tick (spec
+// §§1-2): park (still waiting), fire (predicate true or lease expired — claim
+// into pendingWake), or lost (substrate re-validation fails — honest notice,
+// never a silent strand).
+type WaitDisposition int
+
+const (
+	// WaitPark keeps the live lease parked.
+	WaitPark WaitDisposition = iota
+	// WaitFire claims the lease into pendingWake exactly once via ClaimFire.
+	WaitFire
+	// WaitLost drops the lease with the honest loss notice (spec §2).
+	WaitLost
+)
+
+// WaitClassification is one live lease's evaluation at a tick: the fire/loss
+// decision plus the claim/notice payload. Expiry marks a deadline-passed fire
+// (never arms the §5 cooldown); predicate fires arm it.
+type WaitClassification struct {
+	WaitID      string
+	Target      string
+	Kind        Kind
+	Disposition WaitDisposition
+	// Trigger is the pendingWake excerpt for a fire.
+	Trigger string
+	// Expiry is true when the fire is a lease-deadline expiry (any kind).
+	Expiry bool
+	// Cause is the loss reason for a loss.
+	Cause string
+}
+
 // Spend budgets (spec §5). Every park, wake, re-park, and resume path accrues
 // against a budget or a bound — no goal is unbounded.
 const (
@@ -326,6 +378,10 @@ func hasLiveWait(waits []Wait) bool {
 	return false
 }
 
+// HasLiveWait reports whether any lease is unfired (FiredEpoch == 0).
+// Exported for the session gate's loss routing (spec §2 non-rule-5 path).
+func HasLiveWait(waits []Wait) bool { return hasLiveWait(waits) }
+
 // Goal is the per-session objective. Guarded by Store.mu.
 type Goal struct {
 	Objective        string
@@ -426,10 +482,171 @@ type Store struct {
 	// after a success or Clear). Tests assert it names the failed check;
 	// the Task-3 tool surface propagates it as the validation error.
 	lastRejectReason string
+	// cooldownUntil records the §5 same-predicate cooldown per target
+	// identity (spec §2 defaults table): an attach-scan-true immediate drive
+	// arms it, and a same-target re-park before it lapses rejects with the
+	// cooldown named. Keyed by target identity, not full payload.
+	cooldownUntil map[string]time.Time
+	// parkEnter records the sclock instant of the latest transition into
+	// waiting (registration park or gate park). ParkedTotal accrues
+	// entry→wake/claim deltas under the serializer (spec §5: parked time
+	// accrues toward maxParkedTotal). Zero when not parked.
+	parkEnter time.Time
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store { return &Store{} }
+
+// waitHTTPTimeout resolves the http_match per-fetch timeout (spec §2: default
+// 15s): the lease timeout bounds the registration TTL separately, so the
+// fetch uses the fixed default here. Pure.
+func waitHTTPTimeout() time.Duration { return 15 * time.Second }
+
+// ClassifyWaits evaluates every live lease against the live substrate at one
+// tick (spec §§1-2: the predicateTruth seam plus the expiry/loss routing).
+// Returned in GoalSnapshot.Waits order. Expiry (any kind's lease deadline
+// passed) classifies as a fire with Expiry=true; predicate truth classifies
+// as a fire with the terminal excerpt or liveness trigger; a substrate
+// re-validation failure classifies as a loss with the cause named (spec §2
+// honest notice, never a silent strand). A nil substrate reads every
+// substrate kind false (fail-closed) without loss — validation-time state,
+// not a restart disappearance. Kind-by-kind truth:
+//   - until_time: deadline-passed only.
+//   - until_job/until_delegate: retained-terminal → fire with the terminal
+//     excerpt; live-but-unfinished → park; unknown/unowned → loss.
+//   - until_approval: live ask still matching → park (the answer arrives as
+//     the reply turn, which the gate claims); consumed/missing ask → fire
+//     with the answered excerpt (the approval resolved while parked).
+//   - until_child: terminal status → fire; known non-terminal → park;
+//     unknown → loss.
+//   - file_modified: baseline delta → fire; unchanged → park; unstatable →
+//     loss. http_match: matcher true at the poll leg → fire; else park.
+//     external_label: never true via evaluation (notification/expiry only).
+//
+// Pure over the store read: takes the store lock internally, never held
+// across Substrate calls (the substrate field is copied out first).
+func (s *Store) ClassifyWaits(waits []Wait, now time.Time, childTerminal func(childID string) (string, bool)) []WaitClassification {
+	s.mu.Lock()
+	sub := s.substrate
+	s.mu.Unlock()
+	out := make([]WaitClassification, 0, len(waits))
+	for _, w := range waits {
+		if !w.Live() {
+			continue
+		}
+		c := WaitClassification{WaitID: w.Lease.WaitID, Target: w.Lease.Predicate.Target, Kind: w.Lease.Kind}
+		// Expiry binds every kind (spec §1 rule 1): a passed lease deadline
+		// fires exactly once via ClaimFire regardless of predicate truth.
+		if !now.Before(w.Lease.Deadline) {
+			c.Disposition = WaitFire
+			c.Trigger = "wait expired: " + w.Lease.Label
+			c.Expiry = true
+			out = append(out, c)
+			continue
+		}
+		fire, trigger, lost, cause := waitPredicateTruth(sub, w, childTerminal)
+		switch {
+		case lost:
+			c.Disposition = WaitLost
+			c.Cause = cause
+		case fire:
+			c.Disposition = WaitFire
+			c.Trigger = trigger
+		default:
+			c.Disposition = WaitPark
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// waitPredicateTruth evaluates one live, unexpired lease against the substrate
+// (spec §2). Reports fire (with the claim trigger), or loss (with the cause
+// named). Neither means park. Pure over (sub, w): no store locks; the caller
+// passes the session's child-terminal reader (nil = unknown, parks).
+func waitPredicateTruth(sub Substrate, w Wait, childTerminal func(childID string) (string, bool)) (fire bool, trigger string, lost bool, cause string) {
+	switch w.Lease.Kind {
+	case WaitUntilTime:
+		return false, "", false, ""
+	case WaitUntilJob:
+		if sub == nil {
+			return false, "", false, ""
+		}
+		live, retained, excerpt, ok := sub.LookupJob(w.Lease.Predicate.Target)
+		if !ok {
+			return false, "", true, fmt.Sprintf("job %q has no record in this session tree", w.Lease.Predicate.Target)
+		}
+		if retained {
+			return true, excerpt, false, ""
+		}
+		if !live {
+			return false, "", true, fmt.Sprintf("job %q is neither running nor retained-terminal", w.Lease.Predicate.Target)
+		}
+		return false, "", false, ""
+	case WaitUntilDelegate:
+		if sub == nil {
+			return false, "", false, ""
+		}
+		live, retained, excerpt, ok := sub.LookupDelegate(w.Lease.Predicate.Target)
+		if !ok {
+			return false, "", true, fmt.Sprintf("delegate %q has no record in this session tree", w.Lease.Predicate.Target)
+		}
+		if retained {
+			return true, excerpt, false, ""
+		}
+		if !live {
+			return false, "", true, fmt.Sprintf("delegate %q is neither running/settling/stopping nor retained-terminal", w.Lease.Predicate.Target)
+		}
+		return false, "", false, ""
+	case WaitUntilApproval:
+		if sub == nil {
+			return false, "", false, ""
+		}
+		if sub.LookupApproval(w.Lease.Predicate.Target, w.Lease.Predicate.AskGeneration) {
+			return false, "", false, ""
+		}
+		// The live ask the lease bound is gone: the approval resolved while
+		// parked (consumed answers never match by design, spec §2). Fire
+		// with the answered excerpt — the reply turn is the wake's
+		// re-validation read.
+		return true, "approval answered: " + w.Lease.Label, false, ""
+	case WaitUntilChild:
+		if childTerminal != nil {
+			if trigger, ok := childTerminal(w.Lease.Predicate.Target); ok {
+				return true, trigger, false, ""
+			}
+		}
+		if sub != nil && !sub.LookupChild(w.Lease.Predicate.Target) {
+			return false, "", true, fmt.Sprintf("unknown child session %q: not a known descendant", w.Lease.Predicate.Target)
+		}
+		return false, "", false, ""
+	case WaitUntilEvent:
+		if sub == nil {
+			return false, "", false, ""
+		}
+		switch w.Lease.Predicate.EventSubtype {
+		case EventFileModified:
+			live, ok := sub.StatFile(w.Lease.Predicate.Target)
+			if !ok {
+				return false, "", true, fmt.Sprintf("unstatable file %q: not inside the session sandbox or missing", w.Lease.Predicate.Target)
+			}
+			if live != w.Lease.Predicate.Baseline {
+				return true, "file modified: " + w.Lease.Predicate.Target, false, ""
+			}
+			return false, "", false, ""
+		case EventHTTPMatch:
+			if ValidHTTPURL(w.Lease.Predicate.Target) && sub.CheckURL(w.Lease.Predicate.Target, waitHTTPTimeout()) {
+				return true, "http match: " + w.Lease.Predicate.Target, false, ""
+			}
+			return false, "", false, ""
+		case EventExternalLabel:
+			return false, "", false, ""
+		default:
+			return false, "", true, fmt.Sprintf("unknown event subtype %q", w.Lease.Predicate.EventSubtype)
+		}
+	}
+	return false, "", true, fmt.Sprintf("unknown wait kind %q", w.Lease.Kind)
+}
 
 // SetSubstrate wires the session-owned predicate substrate consulted by
 // RegisterWait validation. It must be called before any substrate-kind
@@ -475,6 +692,9 @@ func (s *Store) Set(objective string, now time.Time) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	// Retarget clears waits: any parked stretch ends here (the anchor
+	// invariant folds it); the fresh objective starts active with no anchor.
+	s.settleParkAnchorLocked(now)
 }
 
 // Clear removes the current goal.
@@ -482,6 +702,7 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goal = nil
+	s.parkEnter = time.Time{}
 }
 
 // Snapshot returns a value copy of the current goal, or (zero, false) if no goal is set.
@@ -584,12 +805,29 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		if w.Live() && w.Lease.IdempotencyKey == key {
 			s.lastRejectReason = ""
 			g.Status = StatusWaiting
+			s.settleParkAnchorLocked(now)
 			return w, true
 		}
 	}
+	// §5 same-predicate cooldown (spec §2 defaults table): a same-target
+	// re-park before the attach-scan-true drive's cooldown lapses rejects
+	// with the cooldown named instead of closing a tight park/wake loop.
+	// Poll ticks never consult it — registration does.
+	if until, ok := s.cooldownUntil[norm.Target]; ok && norm.Target != "" && now.Before(until) {
+		s.lastRejectReason = fmt.Sprintf("same-predicate cooldown for %q until %s: attach-scan drove an evaluation turn; re-park after the cooldown", norm.Target, until.UTC().Format(time.RFC3339))
+		return Wait{}, false
+	}
 	kept := make([]Wait, 0, len(g.Waits))
+	replacedBaseline := ""
 	for _, w := range g.Waits {
 		if w.Live() && w.Lease.Kind == norm.Kind && w.Lease.Predicate.Target == norm.Target {
+			// Same-target re-register replaces the old lease: keep its file
+			// baseline as the attach-scan reference below, so a change since
+			// the replaced lease snapshots fires immediately instead of
+			// parking until expiry (spec §2 already-true).
+			if w.Lease.Kind == WaitUntilEvent && w.Lease.Predicate.EventSubtype == EventFileModified {
+				replacedBaseline = w.Lease.Predicate.Baseline
+			}
 			continue // same-target re-register replaces the old lease
 		}
 		kept = append(kept, w)
@@ -623,6 +861,7 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		g.Waits = append(kept, w)
 		g.Status = StatusWaiting
 		g.UpdatedAt = now
+		s.settleParkAnchorLocked(now)
 		s.lastRejectReason = ""
 		return w, true
 	}
@@ -710,6 +949,7 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			if w.Live() && w.Lease.IdempotencyKey == key {
 				s.lastRejectReason = ""
 				g.Status = StatusWaiting
+				s.settleParkAnchorLocked(now)
 				return w, true
 			}
 		}
@@ -733,12 +973,41 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		g.Waits = kept
 		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: catchUp, FiredAt: now, Kind: w.Lease.Kind})
 		g.UpdatedAt = now
+		s.settleParkAnchorLocked(now)
+		s.lastRejectReason = ""
+		return w, true
+	}
+	// Attach-scan at registration (spec §2: already-true predicates do not
+	// park): evaluate the fresh lease against the substrate now. Already-true
+	// (file already modified, approval already answered, HTTP already
+	// matching) fires immediately with the §5 cooldown armed — the evaluation
+	// turn drives at once instead of parking until expiry. Job/delegate
+	// retained-terminal already routed to catchUp above; live ones park. A
+	// same-target replacement compares against the REPLACED lease's file
+	// baseline (not the just-snapshotted one, which would swallow the delta
+	// the re-register means to observe).
+	scanWait := w
+	if replacedBaseline != "" {
+		scanWait.Lease.Predicate.Baseline = replacedBaseline
+	}
+	if fire, trigger, _, _ := waitPredicateTruth(sub, scanWait, nil); fire {
+		g.Waits = kept
+		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: trigger, FiredAt: now, Kind: w.Lease.Kind})
+		g.UpdatedAt = now
+		s.settleParkAnchorLocked(now)
+		if s.cooldownUntil == nil {
+			s.cooldownUntil = make(map[string]time.Time)
+		}
+		if norm.Target != "" {
+			s.cooldownUntil[norm.Target] = now.Add(AttachScanCooldown)
+		}
 		s.lastRejectReason = ""
 		return w, true
 	}
 	g.Waits = append(kept, w)
 	g.Status = StatusWaiting
 	g.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
 	s.lastRejectReason = ""
 	return w, true
 }
@@ -775,6 +1044,7 @@ func (s *Store) ParkAutoWait(timeout time.Duration, now time.Time) (Wait, bool) 
 		if w.Live() && w.Lease.IdempotencyKey == key {
 			g.Status = StatusWaiting
 			g.UpdatedAt = now
+			s.settleParkAnchorLocked(now)
 			return w, true
 		}
 	}
@@ -806,6 +1076,7 @@ func (s *Store) ParkAutoWait(timeout time.Duration, now time.Time) (Wait, bool) 
 	g.Waits = append(kept, w)
 	g.Status = StatusWaiting
 	g.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
 	s.lastRejectReason = ""
 	return w, true
 }
@@ -841,6 +1112,7 @@ func (s *Store) CancelWait(waitID string, now time.Time) bool {
 		g.Status = StatusActive
 	}
 	g.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
 	return true
 }
 
@@ -869,6 +1141,286 @@ func (s *Store) ClaimChildWaits(childID, trigger string, now time.Time) bool {
 		}
 	}
 	return claimed
+}
+
+// ClaimClassified consumes one classification batch (spec §§1-3): fires claim
+// exactly once via ClaimFire; losses drop the lease and persist the cause.
+// Expired fires and predicate fires share the path; predicate fires arm the
+// §5 same-target cooldown, expired fires never do. A predicate fire with
+// Expiry set is impossible (ClassifyWaits routes passed deadlines to expiry
+// first) and claims as an expiry. Reports the claimed entries (in batch
+// order) and the loss causes (in batch order). Callers serialize under
+// goalUpdateMu alongside the gate's other claims.
+func (s *Store) ClaimClassified(batch []WaitClassification, now time.Time) (claimed []PendingWake, losses []string) {
+	for _, c := range batch {
+		switch c.Disposition {
+		case WaitFire:
+			if entry, ok := s.ClaimFire(c.WaitID, c.Trigger, now); ok {
+				claimed = append(claimed, entry)
+				if !c.Expiry {
+					s.mu.Lock()
+					if s.cooldownUntil == nil {
+						s.cooldownUntil = make(map[string]time.Time)
+					}
+					s.cooldownUntil[c.Target] = now.Add(AttachScanCooldown)
+					s.mu.Unlock()
+				}
+			}
+		case WaitLost:
+			if s.DropLostWait(c.WaitID, c.Cause, now) {
+				losses = append(losses, c.Cause)
+			}
+		}
+	}
+	return claimed, losses
+}
+
+// DropLostWait removes one live lease as lost (spec §2): the substrate the
+// lease validated against is gone, so the lease leaves the registry with the
+// cause persisted for the honest notice — never a silent strand. Records
+// loss evidence via RecordLossLocked ordering (check-before-reset belongs to
+// the gate's rule-5 read; here the persisted cause + flag reset). Reports
+// whether a live lease was dropped. If the drop clears the last live lease
+// the goal returns to active like a claim (the notice + re-drive owns the
+// next turn).
+func (s *Store) DropLostWait(waitID, cause string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil {
+		return false
+	}
+	found := false
+	kept := make([]Wait, 0, len(g.Waits))
+	for _, w := range g.Waits {
+		if w.Live() && w.Lease.WaitID == waitID {
+			found = true
+			continue
+		}
+		kept = append(kept, w)
+	}
+	if !found {
+		return false
+	}
+	g.Waits = kept
+	g.LossCause = cause
+	g.AdvancementSinceLoss = false
+	if !hasLiveWait(kept) && g.Status == StatusWaiting {
+		g.Status = StatusActive
+	}
+	g.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
+	return true
+}
+
+// RecordLoss records a same-turn loss notice (spec §2 non-rule-5 path): the
+// cause persists for the terminal verdict while the gate re-drives with the
+// honest notice this turn. Check-before-reset ordering (spec §1 rule 5): the
+// decider reads markers BEFORE this reset — recording a loss clears the
+// persisted AdvancementSinceLoss after the check, so a loss with advancement
+// in the pre-reset window notifies + re-drives once, while a lone loss with
+// no advancement blocks. Reports whether a goal was present.
+func (s *Store) RecordLoss(cause string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil {
+		return false
+	}
+	g.LossCause = cause
+	g.AdvancementSinceLoss = false
+	g.UpdatedAt = now
+	return true
+}
+
+// MarkAdvanced records subgoal advancement evidence (spec §1 rule 5 window):
+// a waits-predicate flip since the last loss. The next loss check reads this
+// pre-reset flag; RecordLoss clears it after the check.
+func (s *Store) MarkAdvanced(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return
+	}
+	s.goal.AdvancementSinceLoss = true
+	s.goal.UpdatedAt = now
+}
+
+// TakeLossCause consumes the persisted loss cause written by a restore-scan
+// (or any out-of-gate) loss (spec §2): reports the cause and whether one
+// stood. The gate calls this when its own batch carried no loss, so a loss
+// that landed between scans still reaches the rule-5 read exactly once —
+// never a silent strand, never a repeated verdict. Consuming clears the
+// cause but keeps AdvancementSinceLoss for the check-before-reset read.
+func (s *Store) TakeLossCause() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil || s.goal.LossCause == "" {
+		return "", false
+	}
+	cause := s.goal.LossCause
+	s.goal.LossCause = ""
+	return cause, true
+}
+
+// AccrueParkedAtRegistration folds one parked stretch ending at a
+// same-target replacement registration (spec §5): the replaced lease's
+// entry→now delta accrues toward maxParkedTotal under the store lock, and
+// the park anchor re-stamps to now for the fresh lease. Reports the accrued
+// delta. A zero anchor accrues nothing (no stretch stands).
+func (s *Store) AccrueParkedAtRegistration(now time.Time) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil || s.parkEnter.IsZero() {
+		return 0
+	}
+	d := now.Sub(s.parkEnter)
+	if d < 0 {
+		d = 0
+	}
+	s.goal.Budgets.ParkedTotal += d
+	s.parkEnter = now
+	s.goal.UpdatedAt = now
+	return d
+}
+
+// ClaimDeadlineExpiry consumes the synthetic deadline-expiry wake (spec §1
+// rule 3): one-shot — the first call after the deadline sets persisted
+// DeadlineFinalDelivered=true at claim time and appends the synthetic
+// pendingWake entry carrying "deadline exceeded" + the live wait labels, so
+// rule 1 drives it as the final evaluation turn; later calls return false
+// (the following gate lands on rule 3 and blocks). Reports the synthetic
+// entry. Like ClaimFire, the backlog write is one atomic mutation; repeat
+// claims collapse. Terminal goals never claim (post-terminal late claims
+// drop with no notice — the terminal verdict already stands).
+func (s *Store) ClaimDeadlineExpiry(now time.Time) (PendingWake, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := s.goal
+	if g == nil || g.DeadlineFinalDelivered {
+		return PendingWake{}, false
+	}
+	if g.Status != StatusActive && g.Status != StatusWaiting {
+		return PendingWake{}, false
+	}
+	if g.Budgets.Deadline.IsZero() || now.Before(g.Budgets.Deadline) {
+		return PendingWake{}, false
+	}
+	g.DeadlineFinalDelivered = true
+	trigger := DeadlineExpiryTrigger
+	var labels []string
+	for _, w := range g.Waits {
+		if w.Live() && w.Lease.Label != "" {
+			labels = append(labels, w.Lease.Label)
+		}
+	}
+	if len(labels) > 0 {
+		trigger += " (waiting on " + strings.Join(labels, ", ") + ")"
+	}
+	entry := PendingWake{WaitID: DeadlineWakeID, Trigger: trigger, FiredAt: now}
+	g.PendingWake = append(g.PendingWake, entry)
+	if g.Status == StatusWaiting {
+		g.Status = StatusActive
+	}
+	g.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
+	return entry, true
+}
+
+// SetDeadlineFinalDelivered sets the persisted one-shot marker directly
+// (spec §1 R7 M-I2 test seam): tests pin the post-claim state without
+// driving the full gate. Production sets the marker at claim time inside
+// ClaimDeadlineExpiry.
+func (s *Store) SetDeadlineFinalDelivered(v bool, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return
+	}
+	s.goal.DeadlineFinalDelivered = v
+	s.goal.UpdatedAt = now
+}
+
+// CheckCooldown reports whether target identity is inside the §5 same-predicate
+// cooldown at now (spec §2 defaults table, §5): a same-target re-park before
+// the instant lapses rejects with the cooldown named instead of closing a
+// tight park/wake loop. Poll ticks never consult it.
+func (s *Store) CheckCooldown(target string, now time.Time) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.cooldownUntil[target]
+	if !ok || !now.Before(until) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// NoteParkEnter records the sclock instant of a transition into waiting (spec
+// §5): registration parks and gate parks both stamp it, so ParkedTotal
+// accrues entry→wake deltas. Caller must hold no store lock (self-locking).
+func (s *Store) NoteParkEnter(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return
+	}
+	s.parkEnter = now
+}
+
+// settleParkAnchorLocked folds the parked stretch into ParkedTotal and
+// maintains the anchor invariant (spec §5): the anchor is set iff status is
+// waiting. Every status-changing mutator calls this before returning, so
+// entry→wake/claim/cancel/retarget/block deltas accrue exactly once per
+// segment — a same-target replacement folds the replaced lease's stretch
+// before the fresh lease re-stamps, and a partial claim (goal still waiting)
+// folds elapsed and re-stamps instead of dropping the remainder. Caller must
+// hold s.mu.
+func (s *Store) settleParkAnchorLocked(now time.Time) {
+	if s.goal == nil {
+		s.parkEnter = time.Time{}
+		return
+	}
+	if !s.parkEnter.IsZero() {
+		d := now.Sub(s.parkEnter)
+		if d < 0 {
+			d = 0
+		}
+		s.goal.Budgets.ParkedTotal += d
+	}
+	if s.goal.Status == StatusWaiting {
+		s.parkEnter = now
+	} else {
+		s.parkEnter = time.Time{}
+	}
+}
+
+// AccrueParked folds one parked stretch into ParkedTotal (spec §5): the wall
+// interval since the last NoteParkEnter, accrued at each wake/claim under
+// the serializer so maxParkedTotal binds. parkEnter clears whether or not a
+// goal stands (a stretch ends exactly once). Reports the accrued delta.
+func (s *Store) AccrueParked(now time.Time) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	enter := s.parkEnter
+	s.parkEnter = time.Time{}
+	if enter.IsZero() || s.goal == nil {
+		return 0
+	}
+	d := now.Sub(enter)
+	if d < 0 {
+		d = 0
+	}
+	s.goal.Budgets.ParkedTotal += d
+	s.goal.UpdatedAt = now
+	return d
+}
+
+// ParkEnterForTest exposes the park anchor for deterministic tests. Pure
+// read under the store lock.
+func (s *Store) ParkEnterForTest() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.parkEnter
 }
 
 // AnnotateCancelledWake appends CancelledWakeNote to the claimed pendingWake
@@ -926,6 +1478,7 @@ func (s *Store) ClaimFire(waitID, trigger string, now time.Time) (PendingWake, b
 			g.Status = StatusActive
 		}
 		g.UpdatedAt = now
+		s.settleParkAnchorLocked(now)
 		return entry, true
 	}
 	return PendingWake{}, false
@@ -946,6 +1499,7 @@ func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	s.goal.StopReason = reason
 	s.goal.Waits = nil
 	s.goal.UpdatedAt = now
+	s.settleParkAnchorLocked(now)
 	return true
 }
 
@@ -1431,6 +1985,15 @@ func (s *Store) RestoreSnapshot(p PersistedGoal) {
 		UpdatedAt:              p.UpdatedAt,
 	}
 	s.nextWaitID = maxNextWaitID(p.Waits, p.PendingWake, p.NextWaitID)
+	// Restore re-anchors the parked stretch to the persisted UpdatedAt (the
+	// last instant the pre-restart process accounted): the post-restart
+	// claim folds persisted-UpdatedAt→claim, so a crash cannot hide parked
+	// time. A non-waiting restore holds no anchor.
+	if st == StatusWaiting {
+		s.parkEnter = p.UpdatedAt
+	} else {
+		s.parkEnter = time.Time{}
+	}
 }
 
 // maxNextWaitID returns a wait-id counter that keeps restored ids unique:

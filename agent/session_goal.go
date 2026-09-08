@@ -463,55 +463,108 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			wakeTail = true
 		}
 	}
-	// Atomic fire step (spec section 3): convert expired until_time leases
-	// plus terminal-child until_child matches (§8 forward) into persisted
-	// pendingWake claims before deciding. Each claim is the
-	// claimWaitFireLocked analogue - ClaimFire removes the lease from waits[]
-	// into pendingWake atomically, so a repeat claim finds no live lease and
-	// returns false (fired_epoch dedupe: exactly one kick per fire).
-	// Already-delivered wait_ids (a timer re-fire after a delivered claim)
-	// are skipped - the second claim would duplicate one fire's wake.
+	// Atomic fire step (spec section 3): classify every live lease and convert
+	// fires into persisted pendingWake claims before deciding (spec §§1-2:
+	// job/delegate retained-terminal catch-up, approval liveness, child
+	// terminality, file baseline delta, HTTP match at the poll leg, plus
+	// expiry for EVERY kind when its lease deadline passes). Each claim is
+	// the claimWaitFireLocked analogue - ClaimFire removes the lease from
+	// waits[] into pendingWake atomically, so a repeat claim finds no live
+	// lease and returns false (fired_epoch dedupe: exactly one kick per
+	// fire). Already-delivered wait_ids (a timer re-fire after a delivered
+	// claim) are skipped - the second claim would duplicate one fire's wake.
+	// Substrate reads run before goalUpdateMu/s.mu (the §3-top pre-read
+	// discipline); the claim loop below holds goalUpdateMu only.
 	s.mu.Lock()
 	delivered := s.goalWakeDelivered
 	latched := s.goalTerminalPending || full.TerminalPending
 	s.mu.Unlock()
-	var claimed []goal.PendingWake
+	var liveForClassify []goal.Wait
 	for _, w := range full.Waits {
-		if !w.Live() {
-			continue
-		}
-		if delivered[w.Lease.WaitID] {
-			continue
-		}
-		switch w.Lease.Kind {
-		case goal.WaitUntilTime:
-			if now.Before(w.Lease.Deadline) {
-				continue
-			}
-			if entry, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: "+w.Lease.Label, now); ok {
-				claimed = append(claimed, entry)
-			}
-		case goal.WaitUntilChild:
-			if trigger, ok := s.childTerminalTrigger(w.Lease.Predicate.Target); ok {
-				if entry, ok := store.ClaimFire(w.Lease.WaitID, trigger, now); ok {
-					claimed = append(claimed, entry)
-				}
-			}
+		if w.Live() && !delivered[w.Lease.WaitID] {
+			liveForClassify = append(liveForClassify, w)
 		}
 	}
-	if len(claimed) > 0 {
+	batch := store.ClassifyWaits(liveForClassify, now, s.childTerminalTrigger)
+	claimed, gateLosses := store.ClaimClassified(batch, now)
+	if len(claimed) > 0 || len(gateLosses) > 0 {
 		full, ok = store.GoalSnapshot()
 		if !ok {
 			s.goalUpdateMu.Unlock()
 			return "", false
 		}
 	}
-	// Predicate truth is the section-3-top pre-read seam: evaluated outside
-	// the pure function (timer-expiry truth only - live until_time leases
-	// read false, expired ones were just claimed above; until_child truth
-	// rides the attach-scan claim above). Positional in Waits order.
-	truth := make([]bool, len(full.Waits))
+	// Non-rule-5 losses (spec §2): the substrate disappeared but live waits
+	// remain or advancement followed — honest notice + re-drive, never a
+	// silent strand and never a terminal lie. Rule-5 losses (no live waits,
+	// no advancement) flow to the pure table via markers below. A persisted
+	// cause from an out-of-gate scan (restore attach-scan) with no fresh
+	// same-gate loss joins the batch exactly once via TakeLossCause, so a
+	// loss that landed between scans still reaches the rule-5 read — never
+	// a silent strand.
 	markers := goal.AdvancementMarkers{AdvancedSinceLoss: full.AdvancementSinceLoss}
+	if len(gateLosses) == 0 {
+		if cause, ok := store.TakeLossCause(); ok {
+			gateLosses = []string{cause}
+		}
+	}
+	if len(gateLosses) > 0 {
+		if goal.HasLiveWait(full.Waits) || full.AdvancementSinceLoss {
+			for _, cause := range gateLosses {
+				store.RecordLoss(cause, now)
+			}
+			full, ok = store.GoalSnapshot()
+			if !ok {
+				s.goalUpdateMu.Unlock()
+				return "", false
+			}
+			markers = goal.AdvancementMarkers{AdvancedSinceLoss: full.AdvancementSinceLoss}
+			s.goalUpdateMu.Unlock()
+			s.appendTurn(schema.TurnSteering, llm.User(
+				goalWaitNoticePrefix+" "+strings.Join(gateLosses, "; ")+"; re-arm or proceed without the wait."))
+			s.maybeAutoSave()
+			// Re-drive below via the fresh read: fall through to a plain
+			// drive of the current objective (the loss notice is delivered;
+			// the evaluation turn itself runs next).
+			s.goalUpdateMu.Lock()
+			full, ok = store.GoalSnapshot()
+			if !ok {
+				s.goalUpdateMu.Unlock()
+				return "", false
+			}
+		} else {
+			markers = goal.AdvancementMarkers{LossThisTurn: true, LossCause: gateLosses[0], AdvancedSinceLoss: full.AdvancementSinceLoss}
+		}
+	}
+	// Predicate truth is the section-3-top pre-read seam: evaluated outside
+	// the pure function (claims above consumed every fireable lease, so the
+	// survivors read false). Positional in Waits order.
+	truth := make([]bool, len(full.Waits))
+	// Deadline-expiry synthetic claim (spec §1 rule 3): past the wall-clock
+	// deadline with the one-shot unspent, claim the synthetic wake through
+	// the same exactly-once backlog BEFORE the pure table — rule 1 drives it
+	// as the final evaluation turn carrying "deadline exceeded" + the wait
+	// labels (a same-tick deadline never swallows a fired result), and the
+	// marker set at claim time keeps rule 3 from looping final turns. The
+	// following gate lands on rule 3 and blocks with the distinct verdict.
+	// Delivered-set dedupe shares the path: a re-drive after delivery never
+	// re-claims. Terminal-pending latch reads below stay ordered after it.
+	s.mu.Lock()
+	deadlineDelivered := delivered[goal.DeadlineWakeID]
+	s.mu.Unlock()
+	if !deadlineDelivered && !full.DeadlineFinalDelivered &&
+		!full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline) {
+		if _, ok := store.ClaimDeadlineExpiry(now); ok {
+			full, ok = store.GoalSnapshot()
+			if !ok {
+				s.goalUpdateMu.Unlock()
+				return "", false
+			}
+			// Refresh the claim batch the latch pre-decide withholds: the
+			// synthetic entry must ride decidePending like any lease fire.
+			claimed = append([]goal.PendingWake(nil), full.PendingWake...)
+		}
+	}
 	// Fold-before-decide (spec §§1, 4): the ledger folds the just-finished
 	// turn BEFORE the pure table reads the stall signals, so rules 6-7 act
 	// on the post-fold summary. The caller's outcome is authoritative (tests
@@ -520,17 +573,15 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	// fold commits only on the paths that reach the plain drive below — park,
 	// hold, wake-drive, superseded, tails, and non-continuation resumes all
 	// return before it. waitAdvanced is true when this gate claimed any
-	// until_child terminal fire (waits-predicate evidence feeds the ledger).
+	// waits-predicate fire (waits' predicate flips are the only subgoal
+	// evidence, spec §4 — expiry claims accrue as ordinary non-advancing
+	// turns so the re-park counter cannot be laundered through refires).
 	foldOutcome := goal.TurnOutcome{Mutated: progressed}
 	if outcome != nil {
 		foldOutcome = *outcome
 		foldOutcome.Mutated = foldOutcome.Mutated || progressed
 	}
-	// waitAdvanced is waits-predicate evidence (spec §4): only until_child
-	// terminal claims flip the ledger (Task-7 Minor-2 confirmed — expiry and
-	// other claims accrue as ordinary non-advancing turns, so the re-park
-	// counter cannot be laundered through timer refires).
-	waitAdvanced := len(claimed) > 0 && claimedChildTerminal(claimed, full)
+	waitAdvanced := claimedPredicateFire(claimed)
 	// Terminal-pending latch (spec section 1 R7 M-I1): while latched, rules
 	// 2/3 (plus the section-5 re-park graduation - a later task) evaluate
 	// before rule 1. The latch stays hidden from the pure table: a
@@ -984,22 +1035,27 @@ func (s *Session) childTerminalTrigger(childID string) (string, bool) {
 	return "", false
 }
 
-// claimedChildTerminal reports whether any claim in the batch carries
-// until_child waits-predicate evidence for the ledger fold (spec §4:
-// waits' predicate flips are the only subgoal evidence). Structural: keys on
-// the claim-time Kind recorded in the pending entry (Task-7 Minor-5), with
-// the legacy trigger-prefix check as fallback for entries claimed before
-// the Kind field existed (zero Kind on restored pre-Task-8 backlogs). Pure.
-func claimedChildTerminal(claimed []goal.PendingWake, _ goal.GoalSnapshot) bool {
+// claimedPredicateFire reports whether any claim in the batch carries
+// waits-predicate evidence for the ledger fold (spec §4: waits' predicate
+// flips are the only subgoal evidence — any non-expiry fire across all
+// kinds, not just until_child). Expiry claims (the "wait expired:" trigger
+// prefix) accrue as ordinary non-advancing turns, so the re-park counter
+// cannot be laundered through timer refires. Structural: expiry marks ride
+// the trigger prefix every claim site writes uniformly. Pure.
+func claimedPredicateFire(claimed []goal.PendingWake) bool {
 	for _, c := range claimed {
-		if c.Kind == goal.WaitUntilChild {
-			return true
-		}
-		if c.Kind == "" && strings.HasPrefix(c.Trigger, "child ") && strings.Contains(c.Trigger, "terminal") {
+		if !strings.HasPrefix(c.Trigger, "wait expired: ") {
 			return true
 		}
 	}
 	return false
+}
+
+// claimedChildTerminal is the legacy until_child-only evidence check, kept
+// for the Task-8 userspace mirror (session_goal_task8_test.go): production
+// folds on claimedPredicateFire (all predicate kinds).
+func claimedChildTerminal(claimed []goal.PendingWake, _ goal.GoalSnapshot) bool {
+	return claimedPredicateFire(claimed)
 }
 
 // renderGoalWakePrompt renders the wait-attributable wake turn prompt (spec
@@ -1130,14 +1186,16 @@ func (s *Session) blockGoalFromGate(verdict string) (string, bool) {
 	return "", false
 }
 
-// claimGoalWaitExpiredWaits converts expired until_time leases into persisted
-// pendingWake claims (the claimWaitFireLocked analogue at session scope) and
-// reports the claims with the owning objective. It sequences s.mu and
-// goalUpdateMu sections without nesting either (the established SetGoal order
-// is goalUpdateMu-then-s.mu; this helper never holds one while taking the
-// other). ClaimFire's atomicity is the exactly-once guarantee: concurrent
-// claimants race on the lease, exactly one wins. Timer-expiry claims only in
-// slice 1; notification/attach-scan claims arrive with later tasks.
+// claimGoalWaitExpiredWaits classifies every live lease and converts fires
+// into persisted pendingWake claims (the claimWaitFireLocked analogue at
+// session scope) and reports the claims with the owning objective. It
+// sequences s.mu and goalUpdateMu sections without nesting either (the
+// established SetGoal order is goalUpdateMu-then-s.mu; this helper never
+// holds one while taking the other). ClaimFire's atomicity is the
+// exactly-once guarantee: concurrent claimants race on the lease, exactly
+// one wins. Covers ALL kinds (spec §§1-2: predicate truth plus expiry for
+// every kind), not timer expiry alone: the coalesced timer's poll leg is the
+// evaluation tick for file/HTTP predicates.
 func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, string) {
 	s.mu.Lock()
 	delivered := make(map[string]bool, len(s.goalWakeDelivered))
@@ -1152,20 +1210,16 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 	if !ok {
 		return nil, ""
 	}
-	var claimed []goal.PendingWake
+	var live []goal.Wait
 	for _, w := range full.Waits {
-		if w.Lease.Kind != goal.WaitUntilTime || !w.Live() {
-			continue
+		if w.Live() && !delivered[w.Lease.WaitID] {
+			live = append(live, w)
 		}
-		if now.Before(w.Lease.Deadline) {
-			continue
-		}
-		if delivered[w.Lease.WaitID] {
-			continue
-		}
-		if entry, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: "+w.Lease.Label, now); ok {
-			claimed = append(claimed, entry)
-		}
+	}
+	batch := store.ClassifyWaits(live, now, s.childTerminalTrigger)
+	claimed, losses := store.ClaimClassified(batch, now)
+	for _, cause := range losses {
+		store.RecordLoss(cause, now)
 	}
 	return claimed, full.Objective
 }
