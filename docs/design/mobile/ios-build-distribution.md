@@ -4,7 +4,7 @@ Status checked 8 September 2026. Jesse confirmed that `prime-radiant-inc` alread
 
 ## Verified starting point
 
-- Evener already runs native TypeScript tests and SDK package checks in GitHub Actions. It has no iOS archive or TestFlight workflow yet.
+- Evener already runs native TypeScript tests and SDK package checks in GitHub Actions. The manual iOS archive/TestFlight workflow is documented below; it has not yet been dispatched.
 - The [Clipfan release workflow at `093f37e9`](https://github.com/prime-radiant-inc/clipfan/blob/093f37e9b56e5d1c4faa42e217a7c595abc53aa8/.github/workflows/release.yml) uses `macos-26`, shared Apple secret references, a temporary signing keychain and cleanup. Its Developer ID Application certificate and notarization steps serve Mac distribution; they do not establish iOS distribution signing.
 - The current Evener iPhone Release development build succeeded and its signature verified. The [build receipt](assets/2026-09-08-iphone-device-build.json) records the source, generated-project and artifact hashes, team and embedded provisioning profile. This is an arm64 device build, separate from the installed simulator artifact.
 - The paired phone still reports locked. Physical installation, keychain/network behavior and updating remain unqualified. No App Store Connect upload has been made.
@@ -18,6 +18,67 @@ Status checked 8 September 2026. Jesse confirmed that `prime-radiant-inc` alread
 4. Install from TestFlight on the physical iPhone and complete the hub/credential/draft smoke journey. Deliver a second build and verify update, launch and data preservation. This is the completion gate for the automation, beyond a successful upload command.
 5. Add external testers when needed, including beta test information and review access to a usable hub. Apple's first external-testing build requires review; later builds of the same version may not require a full review. [External testing](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers)
 
-Before the first store archive, finalize the iPhone-only device-family setting and build-number source. The current generated app still advertises iPhone and iPad; paused iPad qualification must not be mistaken for a reviewed iPad release. App Store processing requirements, including the app's encryption declaration, also need to be settled for unattended delivery.
+The source configuration now generates an iPhone-only app (`supportsTablet: false`), and the distribution helper sets device family 1 on the Evener Release target. Previously generated and installed artifacts retain their recorded device families. The first manual run requires an unused build number; automatic allocation remains pending. App Store processing requirements, including the app's encryption declaration, also need to be settled for unattended delivery.
 
-The proposed route is GitHub Actions plus Fastlane, using the existing organization infrastructure. EAS remains an available alternative, not a prerequisite. This document records the delivery path; the workflow, credentials and TestFlight end-to-end gate are not yet implemented or qualified.
+The proposed route is GitHub Actions plus Fastlane, using the existing organization infrastructure. EAS remains an available alternative, not a prerequisite.
+
+## Implemented workflow
+
+`.github/workflows/ios-testflight.yml` is manual-only. It uses the
+`macos-26` runner family, whose image can change, with explicitly selected
+Xcode 26.4, Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2,
+CocoaPods 1.16.2 and Fastlane 2.228.0. It installs the shared monorepo
+dependencies, runs `make test-native test-api-package`, generates the iOS
+project with Expo prebuild, copies the tracked CocoaPods lock and installs in
+deployment mode, imports a temporary App Store
+distribution certificate and provisioning profile, archives and exports an IPA,
+retains archive/log/source/hash artifacts, then uploads with an App Store
+Connect API key, waits for processing, and explicitly assigns the processed
+build to the configured internal TestFlight group. The temporary keychain and profile
+are removed in an always-run cleanup step.
+
+The repository must have access to these values before dispatch, through
+existing organization secrets where available or repository configuration:
+
+- Secrets: `IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64` (base64 PKCS#12),
+  `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` (PKCS#12 password),
+  `IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64` (base64 App Store
+  distribution profile), `APPLE_TEAM_ID`, `APP_STORE_CONNECT_API_KEY_ID`, `APP_STORE_CONNECT_API_ISSUER_ID`,
+  and `APP_STORE_CONNECT_API_KEY_CONTENT` (base64 `.p8` contents).
+- Variables: `IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME` and
+  `IOS_INTERNAL_TESTFLIGHT_GROUP`.
+
+These names describe required types and do not assert that the organization or
+repository currently has them. Repository-level secret and variable listings
+currently return empty; inherited organization values are separate and their
+metadata remains inaccessible to the current account. App Store Connect
+app-record, API-key, distribution certificate and profile access remain
+unverified. The workflow therefore fails closed during credential preflight and
+has not been dispatched or uploaded. Automatic build-number allocation from
+App Store Connect is intentionally still pending; the first manual setup
+requires an unused build number for the app version.
+
+## Local verification and remaining delivery gate
+
+The pinned Ruby, Bundler and locked gems installed successfully. Independent
+review and coordinator checks passed workflow linting and the distribution
+behavior checks. Those checks execute the real Fastlane lanes, API-key action,
+IPA reader and Xcode project helper against a fake App Store Connect/upload
+boundary with network access disabled. They exercise authentication order,
+duplicate rejection, iPhone artifact identity, internal-group selection,
+processed-build membership and receipt hashes, plus preservation of Debug and
+unrelated Xcode targets. They do not test Apple's service or system signing.
+
+A fresh scratch copy completed Expo iOS prebuild and CocoaPods deployment
+installation using Ruby 3.3.6, Bundler 2.7.2 and CocoaPods 1.16.2. Its lock
+matches the tracked `mobile-native/Podfile.lock` (SHA-256
+`6885a8f0633c5be7ca895a2dcf39b11b5a9015125299c2d81463710a5f8fc6c2`).
+The existing generated project and installed app were preserved.
+
+The remaining external setup is the App Store Connect app/team and internal
+group, access to the iOS distribution certificate/profile and API key, and the
+first unused build number. The Mac signing certificate cannot sign the iPhone
+app; the existing Apple account may have suitable App Store Connect access,
+which has not been verified. No signed distribution archive, upload, processed
+TestFlight build, or TestFlight install/update has been verified. The setup is
+complete only after the physical iPhone completes the delivery sequence above.

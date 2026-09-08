@@ -55,7 +55,7 @@ The retained detail below includes paused iPad/accessibility gaps. Only the func
 - **Later release qualification:** iPhone appearance, landscape and hardware keyboard behavior beyond the ordinary keyboard/navigation checks needed for usable workflows.
 - Representative large transcripts and live streaming/image reflow with measured scroll/input latency and memory/leak observations.
 - Physical iPhone networking and pairing, including signed install, update/relaunch and credential/keychain behavior. Simulator screenshots do not close these gates.
-- Development build/signature preparation now passes; physical install and TestFlight remain open. Follow the [organization build/distribution path](ios-build-distribution.md), including iPhone-only release configuration and a verified second-build update.
+- Development build/signature preparation passes. The manual TestFlight workflow, locked dependencies, iPhone-only source configuration and local delivery-control checks are implemented. Credential access, distribution archive/upload, physical install and second-build update remain open in the [organization build/distribution path](ios-build-distribution.md).
 - Final current-head iPhone Release artifact identity, installation receipts, cold-launch/restart evidence and preservation checks for unrelated Apple files.
 
 ## Exit record
