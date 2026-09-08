@@ -18,6 +18,8 @@ remain active; full SDK qualification and physical-device/performance/signed
 install-update release evidence are tracked separately. Historical Android
 entries are not claims of current acceptance.
 
+Execution now follows [Usable → Useful → Good](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md). Basic creation, questions/approvals and ordinary interruption recovery belong in Usable; full functional coverage closes Useful. Quality/distribution and complete SDK qualification remain separately reported.
+
 ## Current snapshot — 8 September 2026
 
 Use the [project status](status.md) for the current implementation, artifact,

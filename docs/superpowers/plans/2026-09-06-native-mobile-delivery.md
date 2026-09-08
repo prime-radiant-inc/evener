@@ -15,6 +15,8 @@ The [current project status](../../design/mobile/status.md) and
 verified progress and current gates. The dated checkpoints below preserve
 implementation history.
 
+The [8 September Usable → Useful → Good plan](2026-09-08-iphone-usable-useful-good.md) supersedes this document's execution order. Retain the capability requirements and dated checkpoints here as scope/history. The new plan brings physical-iPhone setup and basic decisions into the first usable milestone and separates full functionality, quality/delivery and independent SDK completion.
+
 ## V1 platform scope
 
 Jesse explicitly selected **iOS-only v1** during takeover continuation. Android
