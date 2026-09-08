@@ -134,11 +134,16 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
       {/* A refetch that failed leaves `doc` where it was, so the editor is
           showing a copy it can no longer confirm. Save stays enabled: a
           reload that failed because the hub is unreachable fails a save the
-          same way, and disabling it would only trap the draft. */}
+          same way, and disabling it would only trap the draft. The way out
+          rides the notice, as "Load current" does above: the next read often
+          succeeds, and waiting for a reconnect to fire one is not a fix. */}
       {error !== null && (
         <p className={CLASS.error} role="alert">
           Couldn't reload AGENTS.md: {error}. The editor shows the last copy it loaded; saving would overwrite anything
           changed on disk since.
+          <Button size="sm" variant="quiet" onClick={() => void agentsDocStore.getState().fetch()}>
+            Reload
+          </Button>
         </p>
       )}
       {saveError !== null && (

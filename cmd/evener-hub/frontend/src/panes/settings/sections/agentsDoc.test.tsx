@@ -282,6 +282,30 @@ test("a failed reload after a successful load shows a reload notice and keeps th
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+// The notice is the only sign the copy on screen is unconfirmed, so it carries
+// the way out of that state: a reload that failed because the hub blinked
+// succeeds on the next try, and the user should not have to reach a refetch
+// through a reconnect to get one.
+test("Reload in the reload notice re-reads the file", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+
+  act(() => {
+    fake.on("evener/settings/agentsDoc/get", () => {
+      throw new WireError("hub unreachable", -1);
+    });
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Couldn't reload AGENTS.md"));
+
+  fake.on("evener/settings/agentsDoc/get", () => ({ ...DOC, content: "# back\n" }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(editor().value).toBe("# back\n"));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test("a reconnect while the draft is dirty keeps the draft and offers Load current", async () => {
   connectFakeClient();
   renderSection();

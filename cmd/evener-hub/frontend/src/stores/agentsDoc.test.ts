@@ -217,6 +217,63 @@ describe("save", () => {
     expect(agentsDocStore.getState().error).toBeNull();
     expect(agentsDocStore.getState().doc?.content).toBe("x");
   });
+
+  // A reconnect refetch that started before a save can only land after it
+  // holding the pre-save file, so a save fences older reads out the way a
+  // newer read does. A fetch started AFTER the save is fresher and still wins.
+  test("a save invalidates an older in-flight fetch", async () => {
+    const fake = connectFakeClient();
+    let finishReading!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishReading = resolve;
+        }),
+    );
+    const reading = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+
+    fake.on("evener/settings/agentsDoc/set", (params) => ({ ...DOC, content: params.content }));
+    await agentsDocStore.getState().save("# new\n");
+    expect(agentsDocStore.getState().doc?.content).toBe("# new\n");
+
+    finishReading({ ...DOC, content: "# old\n" });
+    await reading;
+    expect(agentsDocStore.getState().doc?.content).toBe("# new\n");
+  });
+
+  // The write did reach the hub, so the caller still gets its result - what
+  // it may not do is speak for a socket the store has already replaced.
+  test("a save response from a replaced client is not committed", async () => {
+    const first = connectFakeClient();
+    first.on("evener/settings/agentsDoc/get", () => DOC);
+    await agentsDocStore.getState().fetch();
+
+    const written: AgentsDocResponse = { ...DOC, content: "# from the dead socket\n" };
+    let finishWriting!: (doc: AgentsDocResponse) => void;
+    first.on(
+      "evener/settings/agentsDoc/set",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          finishWriting = resolve;
+        }),
+    );
+    const writing = agentsDocStore.getState().save(written.content);
+    await Promise.resolve();
+
+    // Scripted before connecting: the replacement's own reconnect refetch
+    // fires the moment it becomes the store's client.
+    const second = new FakeClient("ready");
+    second.on("evener/settings/agentsDoc/get", () => DOC);
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    finishWriting(written);
+    await expect(writing).resolves.toEqual(written);
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
 });
 
 describe("changed notification", () => {
