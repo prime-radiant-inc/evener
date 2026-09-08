@@ -174,6 +174,8 @@ export function HubsScreen({
 	} = useConnection();
 	const colors = useColors();
 	const headerHeight = useHeaderHeight();
+	const { fontScale } = useWindowDimensions();
+	const textScale = Platform.OS === "ios" ? fontScale : 1;
 	const [editing, setEditing] = useState<HubProfile | null>(null);
 	const [name, setName] = useState("");
 	const [origin, setOrigin] = useState("");
@@ -264,7 +266,20 @@ export function HubsScreen({
 					keyboardShouldPersistTaps="handled"
 					contentContainerStyle={styles.padded}
 				>
-					<Text style={[styles.title, { color: colors.text }]}>Saved hubs</Text>
+					<Text
+						accessibilityRole="header"
+						allowFontScaling={Platform.OS !== "ios"}
+						style={[
+							styles.title,
+							{
+								color: colors.text,
+								fontSize: 22 * textScale,
+								lineHeight: 28 * textScale,
+							},
+						]}
+					>
+						Saved hubs
+					</Text>
 					{loading ? (
 						<ActivityIndicator accessibilityLabel="Loading saved hubs" />
 					) : profiles.length === 0 ? (
@@ -314,7 +329,19 @@ export function HubsScreen({
 							</View>
 						</View>
 					))}
-					<Text style={[styles.title, { color: colors.text, marginTop: 16 }]}>
+					<Text
+						accessibilityRole="header"
+						allowFontScaling={Platform.OS !== "ios"}
+						style={[
+							styles.title,
+							{
+								color: colors.text,
+								fontSize: 22 * textScale,
+								lineHeight: 28 * textScale,
+								marginTop: 16,
+							},
+						]}
+					>
 						Add hub
 					</Text>
 					<Copy muted>
