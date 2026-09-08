@@ -987,6 +987,14 @@ does not prove that a tool resumed. Unknown/already-resolved cards can conflict;
 the recipe never resubmits them. Question answers use a separate turn contract
 and are outside this example.
 
+### Bounded navigation invalidation
+
+`navigation-invalidation.mjs` reads the manifest with representation version 2 and observes a bounded window for `evener/navigation/invalidated`. It reconciles a current snapshot after a generation change or sequence gap; if a bounded retry cannot establish current metadata, it reports `uncertain` and writes the full response only to the reserved private output file. Set `EVENER_NAVIGATION_OUTPUT_FILE` to a new absolute path and optionally set `EVENER_NAVIGATION_OBSERVE_MS` (default 1000, maximum 10000). Standard output contains metadata only.
+
+```sh
+EVENER_NAVIGATION_OUTPUT_FILE=/absolute/path/manifest.json node node_modules/@evener/appwire-client/examples/navigation-invalidation.mjs
+```
+
 ### Session lineage and resume
 
 `session-lineage.mjs` defaults to read-only transcript-target discovery. Set
@@ -1100,6 +1108,14 @@ Deletion additionally requires `confirmTarget` equal to that same identity.
 For example, a session deletion uses
 `{ "ref": "local:owned-session-id", "reviewed": { "ref": "local:owned-session-id" }, "confirmTarget": { "ref": "local:owned-session-id" } }`.
 Use the actual canonical IDs and paths from navigation or thread readback.
+Session archive `id` is the navigation session's `session_id`, without the
+`local:` source prefix. Session deletion instead takes the complete local `ref`.
+An archive acknowledgment alone cannot detect a wrong ID because the server
+stores that decision by the supplied key. Check the session's navigation location
+and tier afterward. For deletion, wait for authoritative `notLoaded` state and
+a non-live navigation projection after shutdown. A shutdown acknowledgment alone
+does not establish deletion eligibility. Inspect `skipped` even after an
+acknowledgment and review a later attempt explicitly; do not replay automatically.
 The hub validates project/path agreement and live-session deletion rules.
 `reviewed` and `confirmTarget` are operator checkpoints; they are not sent to
 the server and cannot atomically prevent concurrent changes.
