@@ -572,7 +572,7 @@ func awaitThread(ctx context.Context, t *testing.T, client *appwire.Client, ref,
 	deadline := time.Now().Add(30 * time.Second)
 	var last appwire.Thread
 	for time.Now().Before(deadline) {
-		read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+		read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
 		if err == nil {
 			last = read.Thread
 			if ok(last) {

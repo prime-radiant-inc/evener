@@ -836,7 +836,18 @@ func (a *subprocessShutdownAdapter) Name() string { return "openai" }
 func (a *subprocessShutdownAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = os.WriteFile(a.enteredPath, []byte("entered\n"), 0o600)
 	if os.Getenv("EVENER_SERVE_SUBPROCESS_IDLE") == "1" {
-		return llm.Response{Provider: req.Provider, Model: req.Model, Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}, nil
+		return llm.Response{
+			Provider: req.Provider,
+			Model:    req.Model,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID: "shutdown-complete", Name: "communicate",
+					Arguments: json.RawMessage(`{"message":"done","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
+				},
+			}}},
+			Finish: llm.FinishReason{Reason: llm.FinishReasonToolCalls},
+		}, nil
 	}
 	<-ctx.Done()
 	_ = os.WriteFile(a.cancelledPath, []byte("cancelled\n"), 0o600)
@@ -988,8 +999,11 @@ func runSubprocessShutdownCase(t *testing.T, idle bool) {
 	if idle {
 		deadline := time.Now().Add(10 * time.Second)
 		completed := false
+		var last appwire.Thread
+		var lastErr error
 		for time.Now().Before(deadline) {
 			read, readErr := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, Subscribe: false})
+			last, lastErr = read.Thread, readErr
 			if readErr == nil && read.Thread.Status.Type == appwire.ThreadStatusAwaiting {
 				for _, turn := range read.Thread.Turns {
 					if turn.ID == started.Turn.ID && turn.Status == appwire.TurnStatusCompleted {
@@ -1004,7 +1018,14 @@ func runSubprocessShutdownCase(t *testing.T, idle bool) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		if !completed {
-			t.Fatal("idle shutdown test never observed the started turn completed with awaiting thread status")
+			turns := make(map[string]string, len(last.Turns))
+			for _, turn := range last.Turns {
+				turns[turn.ID] = turn.Status
+				if turn.Error != nil {
+					t.Logf("turn %q error: %+v", turn.ID, turn.Error)
+				}
+			}
+			t.Fatalf("idle shutdown never observed completed turn %q: status=%q turns=%v read error=%v", started.Turn.ID, last.Status.Type, turns, lastErr)
 		}
 	}
 	if err := client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
