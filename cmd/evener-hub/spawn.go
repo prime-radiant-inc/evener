@@ -48,7 +48,6 @@ type HubSpawner struct {
 	RunDir              string
 	HubToken            string
 	Registry            *hubcore.ProviderRegistry // live registry the credential gate reads
-	StateRoot           string                    // hub-level state root; used for resolving
 	ProvidersConfigPath string                    // providers.toml the child reads as its user layer
 	CredentialsPath     string                    // credentials.toml the child resolves keys from
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
