@@ -1,7 +1,7 @@
 // Session creation keeps the project directory above the prompt and the
 // less frequently changed launch settings below it. The directory picker
 // commits once, so browsing does not churn directory-dependent configuration.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 import type {
   HarnessDescriptor,
@@ -144,6 +144,20 @@ const CLASS = {
 // ("model is required", app_threadlifecycle.go).
 const MODEL_CHOOSE_LABEL = "Choose a model";
 
+// StartingLoader owns the busy elapsed clock: it ticks its own `now` once a
+// second while mounted and renders the SAME Loader the pane rendered inline
+// (label "Starting", startedAt as stamped by the submit). Mounted only while
+// `busy`, so the interval exists exactly as long as the old pane-level effect
+// ran it - but a tick re-renders this leaf alone, never the whole pane.
+const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: number }): JSX.Element {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <Loader label="Starting" startedAt={startedAt} now={now} />;
+});
+
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const client = useClient();
   const toasts = useToasts();
@@ -176,10 +190,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
-  // flips busy true; the 1s ticker effect below feeds it a fresh `now` for
-  // as long as busy stays true, and stops the instant it doesn't.
+  // flips busy true; StartingLoader below owns the 1s tick and mounts only
+  // while busy, so no interval runs with nothing on screen reading it.
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
@@ -467,15 +480,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
-
-  // Feeds the busy Loader's elapsed readout a fresh `now` once a second -
-  // only while busy, so the wait for a resolved cwd/model spawn never runs a
-  // timer with nothing on screen reading it.
-  useEffect(() => {
-    if (!busy) return undefined;
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [busy]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -1044,7 +1048,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
                 >
                   {busy ? (
-                    <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
+                    <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
                   ) : (
                     <span className={CLASS.submitLabel}>Start</span>
                   )}
