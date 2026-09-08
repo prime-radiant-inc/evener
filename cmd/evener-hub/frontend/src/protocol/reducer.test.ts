@@ -12,6 +12,7 @@ import {
   chunkViewBackingForTests,
   collectAuthoritativeMutationIds,
   hydrateThread,
+  imageSessionRouteForSession,
   mergeOlderItemPage,
   notificationTargetsThread,
   pendingTextJoined,
@@ -21,6 +22,7 @@ import {
 import { hydrateStreamingAgentMessage } from "./testing/tokenFlood";
 import type {
   AnyNotification,
+  InputItem,
   QueueState,
   SandboxEscalationRequested,
   Thread,
@@ -28,6 +30,7 @@ import type {
   ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  Turn,
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 
@@ -2082,6 +2085,143 @@ test("item/completed resolves a sha-routed tool-result image's src from its url"
       source: "tool-result",
     },
   ]);
+});
+
+const SHA_IMAGE =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+function hydrateWithShaImage(imageOverrides: Partial<InputItem> = {}): ThreadModel {
+  // The default fixture's wire session ("sess_t") differs from its ref
+  // ("ref_t") on purpose: the sha route must be built from the serving
+  // session, never the ref — a stable workspace alias (e.g. local:stable)
+  // names no Past.Find entry and its /s/{ref}/images/{sha} 404s.
+  const turns: Turn[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      itemsView: "full",
+      items: [
+        {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE }, ...imageOverrides }],
+        },
+      ],
+    },
+  ];
+  return testHydrate({ turns });
+}
+
+test("hydrateThread resolves a sha-bearing image without a stamped url to the serving session's image route", () => {
+  const model = hydrateWithShaImage();
+  expect(model.imageSessionId).toBe("sess_t");
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a stamped url wins over the rebuilt sha route", () => {
+  const stamped = `/s/sess_t/images/${SHA_IMAGE}`;
+  const model = hydrateWithShaImage({ url: stamped });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: stamped, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a non-hex metadata sha falls back to the inline data-URI, never a hub-400 route", () => {
+  const model = hydrateWithShaImage({
+    metadata: { sha: "not-a-sha" },
+    mediaType: "image/png",
+    data: "iVBORw0KGgo=",
+  });
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a sha+bytes image with no known session keeps the data-URI (unknown-session fallback)", () => {
+  // Blank wire ids name no fetchable route (imageSessionRoute undefined keeps
+  // the branch dark), so the same sha+bytes payload that resolves to a route
+  // above resolves to the usable bytes here instead of a broken src.
+  const model = hydrateWithShaImage({});
+  const wireModel = { ...model, imageSessionId: "", threadId: "" };
+  const page: ThreadTurnsListResponse = {
+    data: [
+      {
+        id: "turn_0",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "userMessage",
+            id: "item_paged",
+            turnId: "turn_0",
+            text: "older",
+            status: "completed",
+            images: [
+              {
+                type: "image",
+                name: "photo.png",
+                mediaType: "image/png",
+                data: "iVBORw0KGgo=",
+                metadata: { sha: SHA_IMAGE },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  };
+  const paged = mergeOlderItemPage(wireModel, page);
+  expect(itemAt(turnAt(paged, 0), 0).images).toEqual([
+    { src: "data:image/png;base64,iVBORw0KGgo=", name: "photo.png", path: undefined },
+  ]);
+});
+
+test("a live item/completed with sha but no stamped url resolves to the hydrated session's route", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", name: "photo.png", metadata: { sha: SHA_IMAGE } }],
+        },
+      },
+    },
+    1002,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+    { src: `/s/sess_t/images/${SHA_IMAGE}`, name: "photo.png", path: undefined },
+  ]);
+});
+
+test("imageSessionRouteForSession escapes the session id and rejects what cannot serve", () => {
+  expect(imageSessionRouteForSession("sess_t")).toBe("sess_t");
+  expect(imageSessionRouteForSession("")).toBeUndefined();
+  expect(imageSessionRouteForSession("proj/one")).toBeUndefined();
 });
 
 // Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
