@@ -9,6 +9,31 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
+// waitDrainBackoffKicks blocks until the drain's kick stub has run want times
+// (failing if the drain returns first or the deadline passes). A recheck send
+// completing proves only that waitDrainWake consumed the tick, not that the
+// released pass ran its kick gate — so tests must synchronize on this
+// observable count before asserting or cancelling, never straight after the
+// send loop.
+func waitDrainBackoffKicks(t *testing.T, done <-chan struct{}, kicks *atomic.Int32, want int32, what string) {
+	t.Helper()
+	// TRIPWIRE: awaits the kick count, the test's real completion signal;
+	// 30s only fires on a genuine hang.
+	deadline := time.Now().Add(30 * time.Second)
+	for kicks.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: kicks = %d, want at least %d after 30s: the loop never ran its kick gate", what, kicks.Load(), want)
+		}
+		select {
+		case <-done:
+			t.Fatalf("%s: drain returned early with kicks = %d, want at least %d", what, kicks.Load(), want)
+		// TRIPWIRE: not a completion-signal wait — the kick count above is the
+		// signal; 10ms only yields instead of busy-spinning.
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // TestDrainIdleBackoffKickCadence pins the adaptive kick schedule added for
 // perf(drain-dirty): a drain that stays quiet (outstanding work remains but
 // nothing moves) kicks every pass for the first drainIdleBackoffFullRatePasses
@@ -41,27 +66,6 @@ func TestDrainIdleBackoffKickCadence(t *testing.T) {
 	// Drive exactly drainIdleBackoffDeepAfter+2*drainIdleBackoffDeepEvery quiet
 	// passes and count the kicks the schedule allowed.
 	const passes = drainIdleBackoffDeepAfter + 2*drainIdleBackoffDeepEvery
-	for range passes {
-		select {
-		case recheck <- time.Now():
-		case <-done:
-			t.Fatal("drain returned early; want it to keep waiting on live residue")
-		}
-		// Let the released pass run its kick (or skip it) and park again.
-		// A skipped kick parks immediately; an executed one still returns at
-		// once (the test kick never blocks). Poll for the park by feeding the
-		// next tick only once this one is consumed: the send above blocks
-		// until the loop receives, which happens after the kick gate ran.
-	}
-	cancel()
-	select {
-	case <-done:
-	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal; cancel()
-	// above guarantees it. 30s only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("drain did not return after context cancel")
-	}
-
 	// Expected kicks: full-rate prefix (one per pass) + slow tier (passes
 	// 16..47 kick when quietPasses%4==0) + deep tier (passes 48..87 kick when
 	// quietPasses%20==0). quietPasses equals the pass index (0-based) at the
@@ -77,6 +81,30 @@ func TestDrainIdleBackoffKickCadence(t *testing.T) {
 			want++
 		}
 	}
+	for range passes {
+		select {
+		case recheck <- time.Now():
+		case <-done:
+			t.Fatal("drain returned early; want it to keep waiting on live residue")
+		}
+		// Each send releases exactly one parked pass and the next send blocks
+		// until that pass parks again, so the send count equals the completed
+		// pass count. A completed send proves only that the tick was consumed,
+		// not that the released pass ran its kick gate — the final count is
+		// awaited on kicks below instead of assumed here.
+	}
+	// Synchronize on the observable kick count before cancelling: asserting
+	// straight after the send loop can miss the last pass's kick gate.
+	waitDrainBackoffKicks(t, done, &kicks, want, "kick cadence")
+	cancel()
+	select {
+	case <-done:
+	// TRIPWIRE: awaits done, drainJobTreeWith's own return signal; cancel()
+	// above guarantees it. 30s only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("drain did not return after context cancel")
+	}
+
 	if got := kicks.Load(); got != want {
 		t.Fatalf("kicks over %d quiet passes = %d, want %d (full-rate %d + throttled cadence)", passes, got, want, drainIdleBackoffFullRatePasses)
 	}
@@ -104,7 +132,12 @@ func TestDrainIdleBackoffWakeResetsToFullRate(t *testing.T) {
 		_, _ = sess.drainJobTreeWith(ctx, recheck, kick, stallProcess)
 	}()
 
-	// Push past the full-rate prefix into the throttled tier.
+	// Push past the full-rate prefix into the throttled tier. Each send
+	// releases one parked pass, so the send count equals the completed pass
+	// count — but a completed send proves only that the tick was consumed, not
+	// that the released pass ran its kick gate. Wait for the observable count
+	// before reading it.
+	wantEntering := int32(drainIdleBackoffFullRatePasses) + 1
 	for range drainIdleBackoffFullRatePasses + 2 {
 		select {
 		case recheck <- time.Now():
@@ -112,25 +145,35 @@ func TestDrainIdleBackoffWakeResetsToFullRate(t *testing.T) {
 			t.Fatal("drain returned during backoff entry")
 		}
 	}
+	waitDrainBackoffKicks(t, done, &kicks, wantEntering, "backoff entry")
 	before := kicks.Load()
-	if before != int32(drainIdleBackoffFullRatePasses)+1 {
-		t.Fatalf("kicks entering backoff = %d, want %d (prefix full-rate plus first slow-tier kick)", before, drainIdleBackoffFullRatePasses+1)
+	if before != wantEntering {
+		t.Fatalf("kicks entering backoff = %d, want %d (prefix full-rate plus first slow-tier kick)", before, wantEntering)
 	}
 
-	// New work: a wake edge. The next pass must kick despite the backoff.
+	// New work: a wake edge. Fire it with no recheck in flight — the wake
+	// channel is buffered, so the edge waits until the loop's next park (or
+	// its next top-edge read) instead of racing a concurrent recheck send in
+	// waitDrainWake's select. The next pass must kick despite the backoff.
 	sess.notify()
-	select {
-	case recheck <- time.Now():
-	case <-done:
-		t.Fatal("drain returned after wake; want another pass")
-	}
-	// The wake pass runs a notification turn only if something is queued; a
-	// bare notify edge resets the streak at the top of the loop regardless.
-	// Give the loop one more tick so the post-wake pass's kick is observable.
-	select {
-	case recheck <- time.Now():
-	case <-done:
-		t.Fatal("drain returned after post-wake tick")
+	// Release further passes until the wake-triggered full-rate kick is
+	// observable. A released pass either consumes the edge at the top (kicking
+	// at full rate) or parks into it and carries it to the next pass, so the
+	// edge cannot be lost; the deadline only guards a genuine hang.
+	wakeDeadline := time.Now().Add(30 * time.Second)
+	for kicks.Load() < before+1 {
+		if time.Now().After(wakeDeadline) {
+			t.Fatalf("kicks after wake = %d, want at least %d: a wake must return the loop to full-rate kicks", kicks.Load(), before+1)
+		}
+		select {
+		case recheck <- time.Now():
+		case <-done:
+			t.Fatal("drain returned after wake; want another pass")
+		// TRIPWIRE: not a completion-signal wait — kicks reaching before+1 is
+		// the signal (checked above); 10ms only yields while a pass runs with
+		// the recheck send unconsumed instead of busy-spinning.
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	cancel()
 	select {
