@@ -157,3 +157,19 @@ names, bringing this document's actual producer/readback evidence to fourteen.
 The retry name appearing in both receipts is one notification name, not two.
 They qualify one transient retry and one reasoning-delta path only; warning
 producers, broader retry policy and continuous reconnect/replay remain open.
+
+## Actual interruption without a warning
+
+The [cancellation receipt](assets/sdk-cancellation-receipt.json) records an
+applied `turn/start`, an applied/reflected `turn/interrupt`, and a final
+`turn_m2` status of `interrupted` on the same session. The external HTTP
+provider observed cancellation of its held request. The packaged observer
+finished with `read` and received zero warning events.
+
+The original runner expected a warning and failed that assertion; that failure
+is retained. Source inspection explains the outcome: the `modelErrorCancel`
+branch in `agent/session_model_call.go` settles the interrupted round and
+returns without emitting `EventError` or `EventWarning`. Root independently
+checked the actual interruption receipts, final status, provider cancellation
+and unchanged fixture-source hashes. This qualifies one interruption outcome
+and leaves warning producer coverage open; the distinct-name count stays 14.

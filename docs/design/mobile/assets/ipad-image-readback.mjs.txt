@@ -1,0 +1,19 @@
+import { AppwireClient } from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js';
+import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+const root='/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-ipad-image-root-3dl6po76';
+const token=(await readFile('/tmp/evener-native-image-fixture-01a07a02-1788848688/state/evener/auth-token','utf8')).trim();
+const c=new AppwireClient({url:'ws://127.0.0.1:58211/rpc',clientInfo:{name:'native-image-root-read',version:'1'},socketFactory:u=>new WebSocket(u,{headers:{Authorization:`Bearer ${token}`}})});
+try {
+ await c.connect();
+ const result=await c.request('thread/read',{ref:'local:034L6zkRET9JUqnUDlpclX',includeTurns:true,itemLimit:40,itemsView:'full',subscribe:false});
+ await writeFile(`${root}/${process.argv[2]}-thread-read.json`,JSON.stringify(result,null,2),{mode:0o600,flag:'wx'});
+ function compact(value,key) {
+  if(typeof value==='string' && value.length>1000) return {characters:value.length,sha256:createHash('sha256').update(value).digest('hex')};
+  if(Array.isArray(value))return value.map(v=>compact(v));
+  if(value && typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,compact(v,k)]));
+  return value;
+ }
+ console.log(JSON.stringify(compact(result)));
+} finally {c.close();}

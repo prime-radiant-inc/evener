@@ -1,0 +1,70 @@
+{
+  "scope": "Observed real SDK interruption; original warning assertion failed",
+  "ref": "local:034L6vL3aUh8GXFtXPzmUf",
+  "threadId": "034L6vL3aUh8GXFtXPzmUf",
+  "turnId": "turn_m2",
+  "startDisposition": "applied",
+  "interruptDisposition": "applied",
+  "interruptProjection": "reflected",
+  "finalTurnStatus": "interrupted",
+  "observerOutcome": "read",
+  "warningEvents": 0,
+  "providerRequest": {
+    "index": 3,
+    "heldForCancellation": true,
+    "cancelledByClient": true
+  },
+  "backendSource": "d2d5eedf9",
+  "binaryHashes": {
+    "evener": "dc25eb0354fa5c7e979fc67cfa7860940b887c5f26082d21a405ed217cda4980",
+    "evener-dev": "d14e2fc4fa06dcf11f5081f24e5342e5cc12997ab1a01bfe29e133b5257d02d4"
+  },
+  "sdkSource": "58d1b079f6329aaee7e4584cc5c833adc3819bab",
+  "sdkTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+  "sdkTarballFilesCompared": 139,
+  "fixtureHelperHashes": {
+    "fixture.py": "9f4b1fc8a0fb31b3050489cfc017c876c0d378e404976d6856ea12b1ddc3e2a6",
+    "setup.mjs": "8521658ee614557f7c9e96466a810a4374be43e2a68361809fd1e8e8730e90e1",
+    "run.mjs": "b52f08e3096343ddbc1a393a72ed09ae0ab5c68cef23a346e85676135ed204e0"
+  },
+  "privateEvidenceRoot": "/tmp/evener-cancel-warning-acceptance-01a07a02/run/qualification",
+  "receipts": {
+    "initial-read.json": {
+      "sha256": "316a9eb9fbd091fba35b0c4a9f4e73f6655e80936acd2ed970f217414ccea4d3",
+      "bytes": 4447
+    },
+    "active-read.json": {
+      "sha256": "b9104e70d9f437c4beb3267ee608cb1bb63e9aa1d1b5c1e6f52a6abdc3e72f5b",
+      "bytes": 4884
+    },
+    "turn-start.json": {
+      "sha256": "2a4a9f07290b9e21c98bcac94d7a8e94cfe9755912931b85fe10188e331c1e1c",
+      "bytes": 336
+    },
+    "turn-interrupt.json": {
+      "sha256": "5d089c07fbbe2ac25163d57664d6aee6acac7a80207f6392d977cabde9ae1be6",
+      "bytes": 256
+    },
+    "final-read.json": {
+      "sha256": "0da7c50b6c3ca715f6af4ad0bd3c9f5812fa467ebdc6b7864193a455560feaf9",
+      "bytes": 53158
+    },
+    "observer-result.json": {
+      "sha256": "ea73aa7ff65cbd8fbf050b3a541c4137b00af8b0696d2cd763f43f398c90098d",
+      "bytes": 108132
+    },
+    "raw-events.json": {
+      "sha256": "7849fc8dc3a7fe95e1cf21bac74362fe7bfdf26c33da090048be2c6a06cbdf5d",
+      "bytes": 2852
+    },
+    "provider-http-evidence.json": {
+      "sha256": "8bfc82fb7c4c031ef235fff154952131c88185c20d51f2e65a48b5d9a504e613",
+      "bytes": 81529
+    },
+    "failure.json": {
+      "sha256": "c8ed7ca6a0ef46912e76e29f505c9e5e9610fe19ae6c09489103b0a4a478b45f",
+      "bytes": 98
+    }
+  },
+  "limitation": "The original runner expected one warning and failed that assertion; source review and these independent assertions confirm interruption without warning. This adds no warning producer coverage."
+}
