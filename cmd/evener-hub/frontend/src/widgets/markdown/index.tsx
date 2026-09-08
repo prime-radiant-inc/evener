@@ -350,30 +350,36 @@ export function Markdown({ source, live = false }: MarkdownProps) {
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
     }
     // The windowed path is sound only when NOTHING spans the split. Its
-    // keystone is whole-source balance: closeOpenMarkdown is identity exactly
-    // when the live input has no construct left open, so no fence, code span,
-    // or emphasis can still be awaiting its closer in the tail - had one been
-    // severed, the whole would not be identity. The head must be closed at
-    // the boundary too (a fence opened in the head and closed in the tail is
-    // whole-balanced but still spans the split - the tail's fence run trips
-    // TAIL_BLOCK_MARKER for that shape, and this check backstops it). The
-    // only cross-boundary structure a balanced whole can otherwise carry is
-    // forward references (link definitions, table delimiters) and blank-line-
-    // spanning HTML blocks, excluded by HEAD_SPLIT_HAZARD and the HTML gates;
-    // the tail must be paragraphs-only on fresh content (TAIL_BLOCK_MARKER,
-    // tailStartsIndented). Anything else takes the full-parse fallback, which
-    // is exactly the pre-throttle behavior for every input. The tail keeps
-    // the full block parse - never an inline-only one. Head-side verdicts come
-    // from the per-head cache above, so a settled head pays its scans once per
-    // distinct head text; the residual per-render cost is the whole-source
-    // balance scan, the window-bounded tail scans/lexes (TAIL_BLOCK_MARKER,
-    // tailStartsIndented, tail lexer, HTML_BLOCK_END), and the tail re-parse -
-    // all O(tail), plus the whole-source re-parse on fallback.
+    // keystone is whole-source balance, derived WITHOUT re-walking the whole
+    // source: the split sits on a blank line, and closeOpenMarkdown resets
+    // every non-fence state (emphasis, code spans) at blank lines, while a
+    // fence left open at the boundary would leave the head itself unbalanced -
+    // so given a balanced head, the whole is balanced exactly when the tail
+    // scanned standalone is balanced. The head must be closed at the boundary
+    // too (a fence opened in the head and closed in the tail is
+    // whole-balanced but still spans the split - the head-balance arm
+    // backstops that shape, and the tail's fence run trips TAIL_BLOCK_MARKER
+    // for it as well). The only cross-boundary structure a balanced whole can
+    // otherwise carry is forward references (link definitions, table
+    // delimiters) and blank-line-spanning HTML blocks, excluded by
+    // HEAD_SPLIT_HAZARD and the HTML gates; the tail must be paragraphs-only
+    // on fresh content (TAIL_BLOCK_MARKER, tailStartsIndented). Anything else
+    // takes the full-parse fallback, which is exactly the pre-throttle
+    // behavior for every input. The tail keeps the full block parse - never
+    // an inline-only one. Head-side verdicts come from the per-head cache
+    // above, so a settled head pays its scans once per distinct head text;
+    // the residual per-render cost on the engaged path is the window-bounded
+    // tail scans/lexes/close (TAIL_BLOCK_MARKER, tailStartsIndented, tail
+    // lexer, HTML_BLOCK_END, tail balance) and the tail re-parse - all
+    // O(tail) - plus the whole-source re-parse on fallback. closedTail is
+    // hoisted so the gate's balance arm and the tail parse share one scan.
     const split = splitLiveSource(source);
     const headVerdict = split === null ? null : headGateVerdict(split.head, headGateCacheRef);
+    const closedTail = split === null ? null : closeOpenMarkdown(split.tail);
     if (
       split === null ||
       headVerdict === null ||
+      closedTail === null ||
       !headVerdict.balanced ||
       headVerdict.hazard ||
       headVerdict.hasDef ||
@@ -382,7 +388,7 @@ export function Markdown({ source, live = false }: MarkdownProps) {
       HTML_BLOCK_END.test(split.tail) ||
       TAIL_BLOCK_MARKER.test(split.tail) ||
       tailStartsIndented(split.tail) ||
-      closeOpenMarkdown(source) !== source
+      closedTail !== split.tail
     ) {
       const rawHtml = md.parse(closeOpenMarkdown(source), { async: false });
       return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
@@ -395,7 +401,7 @@ export function Markdown({ source, live = false }: MarkdownProps) {
     if (cached === null || cached.headSource !== split.head) {
       headCacheRef.current = { headSource: split.head, headHtml };
     }
-    const tailHtml = DOMPurify.sanitize(md.parse(closeOpenMarkdown(split.tail), { async: false }), SANITIZE_CONFIG);
+    const tailHtml = DOMPurify.sanitize(md.parse(closedTail, { async: false }), SANITIZE_CONFIG);
     return headHtml + tailHtml;
   }, [source, live]);
 
