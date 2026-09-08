@@ -616,6 +616,22 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 }
 
+func TestServerAppWireInitializeReportsBuildVersion(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	conn := srv.AppServer().NewConnection("test")
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.InitializeResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if strings.TrimSpace(data.ServerInfo.Version) == "" {
+		t.Fatal("initialize must report a build version so strict AppWire clients can connect")
+	}
+}
+
 func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	conn := srv.AppServer().NewConnection("test")
