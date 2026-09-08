@@ -110,6 +110,7 @@ run(
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/saved-items.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-lineage.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/maintenance-checks.contract.mjs"),
+    join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-upgrade.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/discovery.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-management.contract.mjs"),
     join(fixtureDir, "node_modules/@evener/appwire-client/examples/credentials.contract.mjs"),

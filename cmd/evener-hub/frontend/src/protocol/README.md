@@ -97,8 +97,60 @@ launch schema and effective launch configuration. It prints counts and status,
 not credentials or environment values. It performs no mutation. This is the
 read-only recipe, **not full protocol coverage**. The recipes below cover selected
 management and recovery paths, including activity-tree traversal. Additional
-creation cases, continuous reconnect recovery and hub upgrades
-remain to be added.
+creation cases, continuous reconnect recovery and notification outcomes
+remain to be qualified.
+
+### Reviewing and upgrading a hub
+
+`hub-upgrade.mjs` defaults to the read-only `review` action, which reads the
+authoritative `evener/settings/overview` hub version and commit. Set
+`EVENER_HUB_UPGRADE_ACTION=upgrade` and `EVENER_HUB_UPGRADE_PARAMS_FILE`
+with a JSON file containing the reviewed
+identity and optional generated `requested` release to perform one upgrade
+request. Upgrades require `EVENER_HUB_UPGRADE_MUTATION=1` and
+`EVENER_HUB_UPGRADE_OWNED_HUB` equal to `EVENER_RPC_URL`.
+
+The recipe captures the reviewed identity and wire parameters before connect,
+reads the running identity again before dispatch, and refuses a changed
+identity. It sends only generated `UpgradeParams` fields. A valid upgrade
+response acknowledges installation while reporting execution as unverified:
+installed paths do not prove which binary is currently running, and the recipe
+does not restart or retry the hub. Lost or malformed replies are uncertain and
+are never replayed. Set `EVENER_HUB_UPGRADE_OUTPUT_FILE` to a new absolute
+filename for mode-0600 private output; stdout contains metadata only.
+
+With the connection environment above set, first write the private identity:
+
+```sh
+EVENER_HUB_UPGRADE_OUTPUT_FILE=/private/path/running-hub.json \
+node node_modules/@evener/appwire-client/examples/hub-upgrade.mjs
+```
+
+Review that file, then prepare a new private params file with this structure,
+using the actual reviewed values:
+
+```json
+{ "reviewed": { "version": "0.1.0", "commit": "reviewed-commit" }, "requested": "latest" }
+```
+
+An omitted or empty commit is valid for development builds. The version/commit
+check cannot distinguish different builds with identical metadata and is not an
+atomic server precondition. To perform the deliberate operation, set the action,
+params file, mutation opt-in, owned endpoint and a fresh output path:
+
+```sh
+EVENER_HUB_UPGRADE_ACTION=upgrade \
+EVENER_HUB_UPGRADE_PARAMS_FILE=/private/path/reviewed-upgrade.json \
+EVENER_HUB_UPGRADE_MUTATION=1 \
+EVENER_HUB_UPGRADE_OWNED_HUB="$EVENER_RPC_URL" \
+EVENER_HUB_UPGRADE_OUTPUT_FILE=/private/path/upgrade-result.json \
+node node_modules/@evener/appwire-client/examples/hub-upgrade.mjs
+```
+
+Exit 2 means an uncertain mutation; preserve its output and inspect the running
+hub before preparing any further deliberate action. Exit 1 covers validation,
+connection and output errors. An output failure after dispatch also needs
+reconciliation; it is not proof that installation failed.
 
 Run `node node_modules/@evener/appwire-client/examples/coverage.mjs` to inspect
 recipe coverage against the generated catalog. It lists every uncovered request

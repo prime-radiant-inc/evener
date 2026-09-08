@@ -19,6 +19,7 @@ const recipes = {
     "evener/subagentPreview",
   ],
   "maintenance-checks.mjs": ["initialize", "ping", "evener/auth/test", "evener/plugin/checkNow"],
+  "hub-upgrade.mjs": ["initialize", "evener/settings/overview", "evener/upgrade"],
   "oauth.mjs": [
     "initialize",
     "evener/auth/status",
@@ -139,7 +140,16 @@ const recipes = {
   ],
   "inspect.mjs": ["initialize", "model/list", "thread/list", "evener/launch/schema", "evener/launch/resolve"],
 };
-const coveredNotifications = ["evener/launch/updated", "turn/started", "turn/completed"];
+const coveredNotifications = [
+  "evener/launch/updated",
+  "turn/started",
+  "turn/completed",
+  "item/started",
+  "item/completed",
+  "item/agentMessage/delta",
+  "item/agentMessage/reset",
+  "evener/thread/resync",
+];
 const covered = new Set(Object.values(recipes).flat());
 for (const method of covered) {
   if (!METHOD_NAMES.includes(method)) throw new Error(`Unknown recipe method: ${method}`);
@@ -153,7 +163,7 @@ console.log(
       missingMethods: METHOD_NAMES.filter((method) => !covered.has(method)),
       missingNotifications: NOTIFICATION_NAMES.filter((name) => !coveredNotifications.includes(name)),
       coveredNotifications,
-      note: "Catalog includes reserved methods; classify support and expected rejection when adding recipes. Notification coverage verifies project launch updates and turn lifecycle; it does not cover transcript deltas or replay.",
+      note: "Catalog includes reserved methods; classify support and expected rejection when adding recipes. Notification coverage records names handled by bounded recipes; it does not claim continuous reducer, ordering, outcome, or replay coverage.",
     },
     null,
     2,
