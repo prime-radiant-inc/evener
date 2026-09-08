@@ -312,6 +312,39 @@ it("keeps missing-description tool calls critical when full details are disabled
 	});
 });
 
+it.each([
+	["completed", "wrote 26 bytes to /tmp/request-16.txt", "Write"],
+	["failed", "permission denied", "Write"],
+	["running", undefined, "Write"],
+] as const)(
+	"derives a bounded write_file action summary from its target path when description is absent (%s)",
+	(state, output, label) => {
+		const result = projectNativeTranscript(
+			conversation([
+				{
+					kind: "activity",
+					id: "write",
+					label: "write_file",
+					family: "tool",
+					state,
+					detail: {
+						arguments: JSON.stringify({
+							file_path: "/tmp/request-16.txt",
+							content: "private file contents",
+						}),
+						...(output ? { output } : {}),
+						error: state === "failed" ? output : undefined,
+					},
+				},
+			]),
+			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
+		);
+		const presentation = result.activityPresentation.get("write");
+		expect(presentation?.summary).toBe(`${label} /tmp/request-16.txt`);
+		expect(presentation?.summary).not.toContain("private file contents");
+	},
+);
+
 it("keeps each member attachment adjacent while messages and unkeyed warnings retain order", () => {
 	const items: MobileTimelineItem[] = [
 		{
@@ -387,4 +420,81 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 		"image-b",
 		"reply",
 	]);
+});
+
+it("falls back safely for malformed or empty write_file arguments", () => {
+	for (const argumentsValue of [
+		"{",
+		"null",
+		"{}",
+		JSON.stringify({ file_path: "   " }),
+		JSON.stringify({ file_path: 42 }),
+		JSON.stringify({ path: "/tmp/unsupported-field.txt" }),
+		JSON.stringify({ content: "private" }),
+	]) {
+		const result = projectNativeTranscript(
+			conversation([
+				{
+					kind: "activity",
+					id: argumentsValue,
+					label: "write_file",
+					family: "tool",
+					state: "completed",
+					detail: { arguments: argumentsValue },
+				},
+			]),
+			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
+		);
+		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe(
+			"Action summary unavailable",
+		);
+	}
+});
+
+it("bounds a derived write_file target without exposing its content", () => {
+	const target = `/tmp/${"a".repeat(300)}`;
+	const result = projectNativeTranscript(
+		conversation([
+			{
+				kind: "activity",
+				id: "write-long",
+				label: "write_file",
+				family: "tool",
+				state: "completed",
+				detail: {
+					arguments: JSON.stringify({ file_path: target, content: "private" }),
+				},
+			},
+		]),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
+	);
+	const summary = result.activityPresentation.get("write-long")?.summary;
+	expect(summary).toHaveLength("Write ".length + 256);
+	expect(summary?.endsWith("...")).toBe(true);
+	expect(summary).not.toContain("private");
+});
+
+it("keeps an authoritative write_file description ahead of derived details", () => {
+	const result = projectNativeTranscript(
+		conversation([
+			{
+				kind: "activity",
+				id: "write-described",
+				label: "write_file",
+				family: "tool",
+				state: "completed",
+				detail: {
+					description: "Save the fixture",
+					arguments: JSON.stringify({
+						file_path: "/tmp/request.txt",
+						content: "private",
+					}),
+				},
+			},
+		]),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
+	);
+	expect(result.activityPresentation.get("write-described")?.summary).toBe(
+		"Save the fixture",
+	);
 });
