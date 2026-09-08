@@ -2412,12 +2412,32 @@ export function createConversationStore() {
               projectedRaw === null
                 ? null
                 : decorateLifecycleItem(projectedRaw, params.item);
-            if (projected !== null) {
+            const existing = conv.items.find(
+              (candidate) => candidate.id === params.item.id,
+            );
+            const preservesReasoningOutput =
+              projected?.kind === "activity" &&
+              projected.family === "reasoning" &&
+              existing?.kind === "activity" &&
+              existing.family === "reasoning" &&
+              params.item.text === undefined;
+            const projectedWithReasoning = preservesReasoningOutput
+              ? {
+                  ...projected,
+                  detail: {
+                    ...projected.detail,
+                    output: existing.detail.output,
+                  },
+                }
+              : projected;
+            if (projectedWithReasoning !== null) {
               // Lifecycle events replace the whole source item, including any
               // companion attachment row. An empty image list removes it.
-              truncatedItemIds.delete(params.item.id);
+              if (!preservesReasoningOutput) {
+                truncatedItemIds.delete(params.item.id);
+              }
               const replacement: MobileTimelineItem[] = [
-                truncateAndRecordSingle(projected),
+                truncateAndRecordSingle(projectedWithReasoning),
               ];
               const attachmentId = `${params.item.id}:attachments`;
               const attachments = projectItemAttachments(params.item);
