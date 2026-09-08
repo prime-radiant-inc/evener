@@ -56,7 +56,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
-import { useAskDockPending } from "./askDock";
+import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
