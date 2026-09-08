@@ -68,6 +68,13 @@ fuzz-seeds:
 # (primeradiant.com/evener/invariant) are live: a tripped invariant panics and the
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
+# Steps 2-4 run every NON-Fuzz test, skipping the FuzzXxx corpus: the
+# FUZZ_SEED_REPLAY step below replays exactly that set (proven by
+# `go test -tags evenerfuzz --list '^Fuzz'` per module — the replay list is
+# identical to the skipped set), so running it twice would double the ~144s
+# native replay at no added coverage. The skip keeps each survivor:
+# invariant's TestFuzzBuildEnforces, the fuzz toolkit's 55 TestXxx, and the
+# fuzzcov/harvest CLIs' 40 TestXxx.
 ## Replay every native FuzzXxx target's seed corpus plus saved crashers, and
 ## every registered Rapid property surface, as ordinary deterministic tests
 ## — the CI fuzz gate.
@@ -84,9 +91,9 @@ fuzz-seeds:
 ##   nonzero.
 fuzz:
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd agent && go test -run "^$$" -tags evenerfuzz -count=1 ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -tags evenerfuzz ./...'
-	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd invariant && go test -skip "^Fuzz" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'cd fuzz && go test -skip "^Fuzz" -tags evenerfuzz -count=1 ./...'
+	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c 'go test -skip "^Fuzz" ./cmd/evener-fuzzcov ./cmd/evener-fuzz-harvest'
 	@$(FUZZ_SEED_REPLAY)
 	@scripts/fuzz/rapid-replay.sh
 	@GOENV=off GOFLAGS= GOWORK="$(FUZZ_GOWORK)" sh -c "go test -run '^Test.*Golden\$$' ./appwire"
