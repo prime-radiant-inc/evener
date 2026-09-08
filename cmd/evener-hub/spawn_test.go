@@ -18,6 +18,7 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -1102,9 +1103,16 @@ func TestResolveEvenerStateDirNotInRepoFallsBackToWorkDir(t *testing.T) {
 
 // newSpawnGateRegistry builds a hermetic registry holding exactly the named
 // instances, resolved against an env and a state root the test owns, and
-// wraps it in the holder the spawn gate reads.
-func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string, instances map[string]registry.Provider) *hubcore.ProviderRegistry {
+// wraps it in the holder the spawn gate reads. A caller that hands this
+// registry to a hub fixture passes the store that fixture writes through
+// evener/auth/apiKey, so the two resolve the same credentials; the spawn-gate
+// callers that read no store at all pass none.
+func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string, instances map[string]registry.Provider, creds ...*credentials.Store) *hubcore.ProviderRegistry {
 	t.Helper()
+	var store *credentials.Store
+	if len(creds) > 0 {
+		store = creds[0]
+	}
 	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		opts := []registry.Option{
 			registry.WithOffline(true),
@@ -1117,8 +1125,11 @@ func newSpawnGateRegistry(t *testing.T, stateRoot string, env map[string]string,
 			}),
 			registry.WithInstances(instances),
 		}
+		if store != nil {
+			opts = append(opts, registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}))
+		}
 		r, err := registry.Load(append(opts, extra...)...)
-		return r, nil, err
+		return r, store, err
 	})
 	if err := holder.Reload(); err != nil {
 		t.Fatalf("registry: %v", err)

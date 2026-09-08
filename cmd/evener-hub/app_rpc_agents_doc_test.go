@@ -561,7 +561,13 @@ func TestHubAgentsDocPath_RefusesARelativeOrUnresolvableRoot(t *testing.T) {
 func TestHubRPCAgentsDocRefusesWithoutAConfigRoot(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{HubStateRoot: t.TempDir(), PluginRoot: t.TempDir()})
+	// startHubRPCTestServer, not the fixture: this test is about there being
+	// no launch config root at all, and the fixture would default one.
+	hub, _ := startHubRPCTestServer(t, hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		PluginRoot:   t.TempDir(),
+		CredsStore:   newTestCredentialsStore(t),
+	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()

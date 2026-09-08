@@ -21,11 +21,8 @@ import (
 )
 
 func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -40,7 +37,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, nil))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -64,12 +61,26 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	}
 }
 
+// stateRootAuthConfig is a hub config whose registry and auth controller
+// both keep OAuth records under stateRoot, and whose registry reads env. A
+// test that seeds auth/<instance>.json itself passes the root it seeded; the
+// default fixture would mint a fresh one. The default fixture registry is
+// also hermetic - it reads no environment at all - so a test about
+// env-vs-OAuth precedence passes the variables it is about.
+func stateRootAuthConfig(t *testing.T, stateRoot string, env map[string]string) hubcore.WebConfig {
+	t.Helper()
+	store := newTestCredentialsStore(t)
+	return hubcore.WebConfig{
+		Past:         hubcore.NewPastIndex(""),
+		HubStateRoot: stateRoot,
+		Registry:     newTestRegistry(t, stateRoot, "", store, env),
+		CredsStore:   store,
+	}
+}
+
 func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -84,7 +95,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -99,6 +110,17 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth || !status.HasStoredOAuth || status.StoredEmail != "stored@example.com" || status.Email != "stored@example.com" {
 		t.Fatalf("status=%+v, want stored OAuth to win over env-token", status)
 	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
+	}
 }
 
 // TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance is spec §5.1: the
@@ -106,12 +128,9 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 // OPENAI_API_KEY in the environment leaves it signed out rather than claiming
 // a sign-in the child could never use.
 func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, map[string]string{"OPENAI_API_KEY": "env-token"}))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -125,6 +144,17 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	}
 	if status.SignedIn || status.ActiveSource != "none" || status.HasStoredOAuth || status.EnvVar != "" {
 		t.Fatalf("status=%+v, want signed out with source none: an API key is not a Codex credential", status)
+	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
 	}
 }
 
@@ -239,11 +269,8 @@ func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
 }
 
 func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -257,7 +284,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, stateRootAuthConfig(t, stateRoot, nil))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -272,8 +299,8 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	if !resp.Removed || resp.Status.ActiveSource != "none" {
 		t.Fatalf("logout=%+v, want removed and source none", resp)
 	}
-	if _, err := authopenai.LoadAuth(userStateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
-		t.Fatalf("LoadAuth() err=%v, want ErrAuthNotFound", err)
+	if _, err := authopenai.LoadAuth(stateRoot, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("LoadAuth(%s) err=%v, want ErrAuthNotFound after logout", stateRoot, err)
 	}
 }
 
