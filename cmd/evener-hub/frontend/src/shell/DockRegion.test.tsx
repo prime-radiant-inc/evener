@@ -253,7 +253,12 @@ test("a chunk still in flight leaves a visible workspace placeholder beside the 
   // Same lazy-rail race as the rejected-chunk test above: the rail chunk
   // arrives on its own tick, so await it instead of requiring it synchronously.
   expect(workspaceRow?.contains(await screen.findByTestId("rail-search"))).toBe(true);
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  // The rail chunk arrives with its own empty-state Retry (a bare
+  // FakeClient("ready") scripts no navigation manifest, so the rail shows
+  // "Couldn't load sessions" with a Retry beside the dock's own loading
+  // placeholder), so scope the dock Retry to the loading empty-state rather
+  // than querying the whole shell.
+  expect(loading?.querySelector("button")).toHaveTextContent("Retry");
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
   // An unanswered request is not a failure and must not retry on its own.
   expect(vi.mocked(loadDockHost)).toHaveBeenCalledTimes(1);
