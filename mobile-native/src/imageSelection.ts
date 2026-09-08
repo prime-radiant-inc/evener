@@ -25,6 +25,11 @@ export interface ImagePicker {
   id(): string;
 }
 
+function base64ByteLength(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return (data.length * 3) / 4 - padding;
+}
+
 /** Owns selection and encoding for one draft, including late native results. */
 export class ImageSelection {
   private snapshot: SelectionSnapshot = {
@@ -110,13 +115,23 @@ export class ImageSelection {
           if (generation !== this.generation) return;
           if (!this.snapshot.pending.some((item) => item.id === image.id))
             continue;
-          this.document.addImage({
-            id: image.id,
-            marker: image.marker,
-            mediaType: "image/png",
-            name: image.name,
-            data,
-          });
+          const reason = rejectionReason(
+            {
+              type: "image/png",
+              size: base64ByteLength(data),
+              name: image.name,
+            },
+            0,
+          );
+          if (reason) errors.push(reason);
+          else
+            this.document.addImage({
+              id: image.id,
+              marker: image.marker,
+              mediaType: "image/png",
+              name: image.name,
+              data,
+            });
         } catch {
           if (
             generation === this.generation &&
