@@ -1036,9 +1036,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// most passes. The ticker still fires every 250ms, every tick is still
 		// consumed by waitDrainWake below, and the abandonment/staleness verdicts
 		// after this gate run every pass — only the kick is throttled. A skipped
-		// kick is always followed by a verdict assembled from fresh reads that
-		// same pass, so skipping can only delay drive-down of already-known
-		// stranded work, never a quiescence return.
+		// kick is always followed by verdicts assembled from fresh reads that
+		// same pass, but the quiescence scan below deliberately excludes
+		// forwarded terminal/watch records for unreachable children — those
+		// surface only via renderUnreachableChildPendings inside the kick — so
+		// a pass that would return quiescent re-kicks once before trusting the
+		// verdict. Skipping otherwise only delays drive-down of already-known
+		// stranded work.
 		skipKick := false
 		if !woke && quietPasses >= drainIdleBackoffFullRatePasses {
 			every := drainIdleBackoffSlowEvery
@@ -1090,6 +1094,22 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// is only raised by a real state change, and a quiescent subtree raises
 			// none, so the confirming pass finds the edge clear and returns.
 			if takeDrainWake(wake) {
+				quietPasses = 0
+				continue
+			}
+			// The outstanding scan deliberately excludes forwarded records for
+			// unreachable children (see outstandingDrainJobIDsByBackground):
+			// those surface only via renderUnreachableChildPendings inside the
+			// kick. A pass that skipped its kick must therefore run one final
+			// unthrottled kick and re-scan instead of returning on a verdict
+			// the skip may have produced. A confirming full-kick pass that
+			// still sees nothing quiet returns here with skipKick false, so
+			// this fires at most once per quiescence — verdict timing for
+			// abandonment, grace, and stall paths is unchanged.
+			if skipKick {
+				if err := kick(ctx); err != nil {
+					return lastResult, err
+				}
 				quietPasses = 0
 				continue
 			}
