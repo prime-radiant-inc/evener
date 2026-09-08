@@ -31,7 +31,11 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s
 			return appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())
 		}
 	}
-	return appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil
+	return appwire.ProjectDeleteResponse{
+		Deleted:    append([]string{}, deleted...),
+		Skipped:    append([]projectDeleteSkip{}, skipped...),
+		Navigation: navigation,
+	}, nil
 }
 
 var (
