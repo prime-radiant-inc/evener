@@ -29,7 +29,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `thread/shutdown` | both | U | U | U | U | U | U |
 | `turn/start` | both | RECORDED — [message reset](assets/2026-09-08-sdk-message-reset-producer.json): exact returned turn_m1 completes after scripted partial-response retry; replacement present and stale text absent in SDK readback. | U | U | U | U | U |
 | `turn/steer` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.steer, exactMarkerCounts, turnCompletedReadback. | U | U | U | U | U |
-| `turn/interrupt` | both | U | U | U | U | U | U |
+| `turn/interrupt` | both | RECORDED — [interrupt outcomes](assets/2026-09-08-sdk-interrupt-outcomes.json): matching applied receipt and interrupted turn; provider cancellation and one completed later turn. | RECORDED — same receipt: missing expectedInstanceId returns -32602/invalidParams. | U | RECORDED — same receipt: literal wrong instance returns -32013/notAccepted/none; no replaced-instance lifecycle claim. | U | U |
 | `turn/queue` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.queued and preDrainIds; consumed by drain in this scenario. | U | U | U | U | U |
 | `turn/drainAsSteer` | both | RECORDED — [sdk-steer-receipt](assets/sdk-steer-receipt.json): receipts.drain, postDrainDepth=0, exact combined transcript marker. | U | U | U | U | U |
 | `turn/promoteQueuedAsSteer` | both | U | U | U | U | U | U |
@@ -104,7 +104,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 ## Review progress and next order
 
-This index has 42 narrowly recorded success/effect cells. The other 48 supported methods and remaining failure/lifecycle cells still need indexing or qualification. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
+This index has 43 narrowly recorded success/effect cells. The other 47 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
 
 1. Index existing receipts and raw assertions before creating duplicate fixtures. Verify actual installed SDK execution, exact target/operation and authoritative effect.
 2. Review mutation identity, stale binding and lost-reply outcomes for send, queue, decisions and lifecycle operations needed by the active iPhone journey.

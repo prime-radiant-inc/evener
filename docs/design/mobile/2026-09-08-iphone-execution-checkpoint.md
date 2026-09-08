@@ -51,9 +51,33 @@ with the reasoning fix at code source `6a0278e36` and the portable CocoaPods
 configuration. Both arm64 and x86_64 slices target iPhone device family 1. The
 [build receipt](assets/2026-09-08-ios-pod-lock-portability.json) records two
 separate locked dependency installations and a fresh 692-test native gate. It
-has not been installed; the previous installed app and complete draft database
-are backed up. The rejected approval fixture was stopped after direct source
+was subsequently installed and launched; the previous installed app and complete draft database
+remain backed up. The rejected approval fixture was stopped after direct source
 inspection contradicted its handoff report; it contributes no native acceptance.
-Updated-artifact reasoning and approval interaction remain the next native steps.
+
+The [updated-artifact native journey](assets/2026-09-08-native-joined-journey.json)
+records native connection to an owned hub, an ordinary prompt entered entirely
+through software-keyboard taps, and a completed Markdown response. Reasoning
+retains its exact text with completed status in authoritative readback, and the
+native transcript no longer shows a lingering running indicator. Completed
+reasoning text was not expanded in the native UI. Native Allow once created the
+exact pending write target; native Deny left a different target absent after its
+turn completed. A question option and note were sent through the native panel,
+with Send answers visible above the software keyboard. Every original row in all
+seven draft tables remains preserved; one owned question-draft row was added.
+
+Native Stop produced an Interrupted notice and matching interrupted readback.
+The provider controller was then found absent, with no retained cancellation
+confirmation or known exit cause, so provider cancellation and a later response
+are not qualified by this updated-artifact case. The hub remains live and fixture
+cleanup is incomplete. Separate ordinary draft coexistence with a question,
+second-client stale decisions, cold launch, reader restoration and reconnect
+remain open for this artifact.
+
+The approval journey exposed an unhelpful file-action label. Commit `bfe632f44`
+derives a bounded, neutral `Write <path>` summary from the current tool argument
+without exposing file contents or claiming that a denied write succeeded. The
+coordinator reviewed the Luna change and passed 698 native tests plus TypeScript
+and formatting. This source fix has not yet been rebuilt into the installed app.
 
 Tasks 1–4 therefore remain open as one integrated device journey. Task 8 has implementation, deterministic and host/controller real-hub evidence, with native selection/reconnect acceptance pending. Useful administration, actual nested work, performance, stress and physical update/distribution retain the gates in the plan. Neither iPhone functional completion nor release readiness is claimed.
