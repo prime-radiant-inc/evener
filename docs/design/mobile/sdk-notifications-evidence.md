@@ -197,3 +197,12 @@ removed. The fixture credentials file was verified empty and mode 0600, then rem
 single warning-producer qualification and does not qualify the broader warning
 surface, reconnect/replay, native UI, devices, accessibility, or release
 acceptance.
+
+## Turn and item lifecycle producer evidence
+
+The [additional producer receipt](sdk-additional-producers-evidence.md) qualifies
+six names through actual status transitions, turn lifecycle, and a correlated
+agent item start/delta/completion. The evidence series now covers 21 distinct
+notification names. The delta is correlated by wire item ID; stable transcript
+key and position are verified on started/completed items and canonical readback.
+This is scoped producer evidence, with remaining outcomes and recovery open.
