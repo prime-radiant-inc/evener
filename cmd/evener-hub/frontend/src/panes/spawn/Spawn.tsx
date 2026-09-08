@@ -62,6 +62,7 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
+import { loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
@@ -105,6 +106,11 @@ import { useProviderSetup } from "./useProviderSetup";
 // the click that opened the dialog with no visible response while the chunk
 // fetches, and the boundary below renders the same Dialog shell on failure
 // so the pending/failure states share one frame.
+//
+// The fresh component loads over loadConnectDialog's cache-busted URL -
+// Chrome retains a failed module fetch by URL (see connectDialogChunk.ts),
+// so a same-URL retry would replay the cached failure instead of reaching
+// the network.
 interface ConnectProviderDialogBoundaryProps {
   // Swaps in a fresh lazy component to load the chunk again. The boundary
   // clears its own failure state alongside it - both halves are needed, and
@@ -163,15 +169,11 @@ class ConnectProviderDialogBoundary extends Component<
 type ConnectProviderDialogComponent = (props: { onClose(): void; onConnected(): void }) => JSX.Element;
 type ConnectProviderDialogChunk = LazyExoticComponent<ConnectProviderDialogComponent>;
 
-function lazyConnectProviderDialog(): ConnectProviderDialogChunk {
+function lazyConnectProviderDialog(cacheBust = false): ConnectProviderDialogChunk {
   // ConnectProviderDialog is a named export, so the import() promise is
   // adapted the same way App.tsx's own DevHarnessRoute does for
   // dev/DevHarness.tsx.
-  return lazy(() =>
-    import("../settings/sections/credentials/ConnectProviderDialog").then((m) => ({
-      default: m.ConnectProviderDialog,
-    })),
-  );
+  return lazy(() => loadConnectDialog(cacheBust).then((m) => ({ default: m.ConnectProviderDialog })));
 }
 
 // Module scope, not per mount: a lazy() component caches its resolved
@@ -179,6 +181,15 @@ function lazyConnectProviderDialog(): ConnectProviderDialogChunk {
 // fetched once per page load and every later open renders the dialog
 // straight away instead of suspending again.
 let connectProviderDialog = lazyConnectProviderDialog();
+
+// A payload caches its outcome for the life of the module, success or
+// failure, so one test's failed chunk would otherwise be every later test's
+// failed chunk. Mirrors the resetXForTests precedent every other module
+// singleton here follows (stores/navigation/store.ts's own note); no production code
+// should ever call it.
+export function resetConnectDialogChunkForTests(): void {
+  connectProviderDialog = lazyConnectProviderDialog();
+}
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -278,7 +289,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // error on every subsequent render, forever.
   const [ProviderDialog, setProviderDialog] = useState<ConnectProviderDialogChunk>(connectProviderDialog);
   const retryProviderDialog = useCallback(() => {
-    const nextDialog = lazyConnectProviderDialog();
+    const nextDialog = lazyConnectProviderDialog(true);
     // Publish the new payload before it resolves so a remount during the
     // retry shares the in-flight request instead of restoring the rejected
     // payload that caused the boundary.
