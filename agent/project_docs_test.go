@@ -359,6 +359,44 @@ func TestPersonalDocPath_RefusesARelativeConfiguredPath(t *testing.T) {
 	}
 }
 
+// A hub hands over its own concrete config root, and stray whitespace around
+// it must not switch the personal doc off: RestoreSessionFromMetaWithConfig
+// trims the override it stores and LoadUserDoc trims the path it reads, so
+// the resolver trims too.
+func TestPersonalDocPath_TrimsSurroundingWhitespace(t *testing.T) {
+	t.Parallel()
+	if got := personalDocPath("  /hub/AGENTS.md  "); got != "/hub/AGENTS.md" {
+		t.Fatalf("personalDocPath = %q, want the trimmed absolute path", got)
+	}
+}
+
+// The default newSession fixture must read no ambient personal doc: with no
+// explicit cfg it points AgentsDocPath at an isolated path that does not
+// exist, so a <config root>/AGENTS.md in the test environment can never leak
+// into the session's cached instruction docs.
+func TestNewSession_DefaultIsolatesThePersonalDoc(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "evener"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "evener", UserDocFile), []byte("AMBIENT\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sess := newSession(t)
+	if got := personalDocPath(sess.cfg.AgentsDocPath); got == "" {
+		t.Fatal("default AgentsDocPath resolves to no path, want an isolated path")
+	}
+	if _, ok := LoadUserDoc(personalDocPath(sess.cfg.AgentsDocPath)); ok {
+		t.Fatalf("default AgentsDocPath %q loads a personal doc, want an absent one", sess.cfg.AgentsDocPath)
+	}
+	for _, doc := range sess.projectDocs {
+		if doc.Content == "AMBIENT\n" {
+			t.Fatalf("cached project docs contain the ambient personal doc: %+v", sess.projectDocs)
+		}
+	}
+}
+
 // The budget is counted in bytes, so it can land inside a multi-byte rune: a
 // doc of two-byte runes cut at an odd byte would put half a rune into the
 // system prompt. The cut keeps whole runes and never invalid UTF-8.

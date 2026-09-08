@@ -64,7 +64,10 @@ export const agentsDocStore = createStore<AgentsDocStoreState>((set, get) => ({
     try {
       const doc = await client.request("evener/settings/agentsDoc/get", {});
       if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ doc, loading: false });
+      // A fetch that lands has the hub's fresh document, so an earlier
+      // reload's error is moot - as when a save lands and when a `changed`
+      // broadcast arrives.
+      set({ doc, loading: false, error: null });
     } catch (err) {
       if (version !== requestVersion || connectionStore.getState().client !== client) return;
       set({ loading: false, error: errorText(err) });

@@ -39,7 +39,10 @@ const UserDocFile = "AGENTS.md"
 // an absolute path, and LoadUserDoc already reports an empty path as an absent
 // doc.
 func personalDocPath(configured string) string {
-	path := configured
+	// Trimmed to match RestoreSessionFromMetaWithConfig, which trims the
+	// override it stores, and LoadUserDoc, which trims the path it reads: a
+	// hub's concrete root with stray whitespace still names the same file.
+	path := strings.TrimSpace(configured)
 	if path == "" {
 		path = userdirs.Subdir(userdirs.DefaultConfigRoot(), UserDocFile)
 	}

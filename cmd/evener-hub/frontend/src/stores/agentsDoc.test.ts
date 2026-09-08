@@ -60,6 +60,32 @@ describe("fetch", () => {
     expect(agentsDocStore.getState().loading).toBe(false);
   });
 
+  // A fetch that lands has the hub's fresh document, so whatever error was
+  // recorded before it landed is moot - exactly as save() and the changed
+  // broadcast already clear it. The stale error is seeded after the retry
+  // starts (a plain failed-then-retried sequence would clear at the retry's
+  // own start instead), so only the success branch itself can take it away.
+  test("a successful retry clears a stale fetch error", async () => {
+    const fake = connectFakeClient();
+    let land!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          land = resolve;
+        }),
+    );
+    const retry = agentsDocStore.getState().fetch();
+    await Promise.resolve();
+    expect(agentsDocStore.getState().loading).toBe(true);
+
+    agentsDocStore.setState({ error: "hub unreachable" });
+    land(DOC);
+    await retry;
+    expect(agentsDocStore.getState().error).toBeNull();
+    expect(agentsDocStore.getState().doc).toEqual(DOC);
+  });
+
   test("throws when no client is connected", async () => {
     await expect(agentsDocStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
