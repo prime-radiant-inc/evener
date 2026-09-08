@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
