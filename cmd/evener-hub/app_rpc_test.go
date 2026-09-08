@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11044,7 +11045,8 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 // directions.
 //
 // Two dispatches over the wire tie that set to what /rpc actually serves: a
-// registered read-only method must not answer methodNotFound, and an
+// registered read-only method (model/list, answered by a LiveModels stub so
+// it never asks a live provider) must not answer methodNotFound, and an
 // unregistered name must. Dispatching every named method instead adds no
 // reachability — /rpc serves the same appRPC whose router the set check
 // inspects — while running for real any handler for which empty params are a
@@ -11065,12 +11067,22 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("LoadStore: %v", loadErr)
 	}
+	var liveModelsCalled atomic.Bool
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
 		CredsStore:          credsStore,
+		// model/list is the one registered method dispatched below. With
+		// LiveModels unset, NewWebServer falls back to fetchLiveModels, which
+		// loads the default client and asks every discovered provider,
+		// including the implicit Ollama endpoint. The stub keeps the probe
+		// offline and records that the dispatch reached it.
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			liveModelsCalled.Store(true)
+			return nil
+		},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -11190,6 +11202,9 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	var registeredWire appwire.WireError
 	if errors.As(registeredErr, &registeredWire) && registeredWire.Code == appwire.CodeMethodNotFound {
 		t.Errorf("method %q is not registered (methodNotFound)", appwire.MethodModelList)
+	}
+	if !liveModelsCalled.Load() {
+		t.Errorf("model/list did not reach the LiveModels stub; the probe is no longer offline")
 	}
 
 	// Sanity check: an unregistered method must report methodNotFound, proving
