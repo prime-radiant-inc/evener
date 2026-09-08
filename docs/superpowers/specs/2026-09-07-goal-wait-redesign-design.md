@@ -13,7 +13,7 @@ Replace the mutation-count breaker (`NoProgressLimit=3` / `NeverProgressedLimit=
 1. A goal legitimately waiting on any source (timer, job, delegate, approval, file/HTTP/external condition, child session) parks with zero continuation turns and zero stall accrual, and wakes exactly once on fire or expiry.
 2. A genuinely stalled goal (repetition without state movement, or total non-advancement past the backstop) is nudged, then parked, then blocked — with the evidence named — without false-blocking read-heavy investigation openings.
 3. No goal is unbounded: every park, wake, re-park, and resume path accrues against a budget or a bound.
-4. No silent strands: every lost wait, restart, overflow, or budget clear produces an honest, exactly-once notice.
+4. No silent strands: every lost wait produces an honest, exactly-once notice.
 5. Clean-slate store/gate with a truthful one-way v1 migration (terminals stay dropped; seeding preserves remaining-till-block).
 
 ## Non-goals
@@ -142,7 +142,7 @@ The child gap is closed by mechanism, not assertion: a child persists its wait r
 - R3 E-I1 = R3 F-I1 (pendingWake promised-but-absent + no kick source) → §7 (pendingWake in v2 schema, atomic claim+snapshot write, kick-immediately restore rule).
 - R3 E-I2 (claim-vs-gate race, missing one-shot marker) → §1 (claim-before-decide ordering; persisted `deadlineFinalDelivered`; post-terminal late-claim drop).
 - R3 F-I2 (migration budget backfill + deadline anchor) → §7 (defaults/used/deadline/parked/autoReparks backfill; graduation-aware nudge test).
-- R3 F-I3 (restore timer omits goal deadline) → §7 (`min(wait, deadline, poll)` re-arm) + §2 (re-arm rule includes goal deadline).
+- R3 F-I3 (restore timer omits goal deadline) → §7 (four-way re-arm) + §2 (re-arm rule includes goal deadline).
 - R3 minors: ledger restart shape → §7 (12-entry shape); registration key/replace → §2; superseded-clear → §3 (retarget drives, clear drops); migration×graduation → §7; expect-ledger feed → §4 (waits-only); loss taxonomy → §2 (restart + disarm races only); watchdog anchor/ceiling → §6 (earliest-deadline, 4-per-24h); 24h-test config → §6/§9 (threshold-gated stretches, deadline-override surface named at plan time); same-ms test → §9 (serialized double-claim); harness tags → §9 (FakeClock/restore-inject/pure labels); child tests → §9 (new bullet); cooldown/poll/timeout → §5 (floor, domain, layering); parked-vs-deadline tie → §5; rotation > N → §4 (200-bound fallback); invariant suspension → §1 (outside-claim wording); approval turn-ID → §2 (stable ID); wire holes/goldens → §§6–7/§9; slice-1 interim → §9 (RecordContinuation bypass).
 - R4 G-I1 (timer omits parked-total projection) → §7 (`min()` gains projected cap-crossing) + §2 (re-arm rule).
 - R4 G-I2 (pendingWake cleared-at-delivery crash window) → §7 (clear at tail-fold commit; restore re-drives).
