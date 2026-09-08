@@ -197,6 +197,7 @@ class ScriptedConversationService implements LiveConversationService {
   async shutdown(): Promise<void> {}
   async changeModel(_provider: string, _model: string): Promise<void> {}
   async setReasoningEffort(_effort: string): Promise<void> {}
+  async setVisionModel(_visionModel: string): Promise<void> {}
   async rename(_name: string): Promise<void> {}
   async cancelQueued(
     _index: number,

@@ -97,6 +97,7 @@ export interface ConversationService {
   compact(): Promise<void>;
   shutdown(): Promise<void>;
   changeModel(modelProvider: string, model: string): Promise<void>;
+  setVisionModel(visionModel: string): Promise<void>;
   setReasoningEffort(effort: string): Promise<void>;
   rename(name: string): Promise<void>;
   cancelQueued(
@@ -1005,6 +1006,17 @@ export function createConversationService(
           ref: threadRef,
           modelProvider,
           model,
+        }),
+      );
+    },
+
+    async setVisionModel(visionModel) {
+      requireCap("changeVisionModel", "setVisionModel");
+      const threadRef = requireRef();
+      await withCapabilityRefresh("setVisionModel", () =>
+        client.request("thread/vision-model/set", {
+          ref: threadRef,
+          visionModel,
         }),
       );
     },

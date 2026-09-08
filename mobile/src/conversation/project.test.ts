@@ -1188,6 +1188,16 @@ describe("projectThread", () => {
   });
 
   describe("usage projection", () => {
+    it.each([undefined, "", "off", "provider/model"])(
+      "preserves the wire vision model value %j",
+      (visionModel) => {
+        const t = thread([], {
+          evener: evenerThread({ visionModel }),
+        });
+        expect(projectThread(t).visionModel).toBe(visionModel);
+      },
+    );
+
     it("projects usage from EvenerThread", () => {
       const t = thread([], {
         evener: evenerThread({
@@ -1224,6 +1234,7 @@ describe("projectThread", () => {
       const c = projectThread(t);
       expect(c.reasoningEffort).toBe("high");
       expect(c.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
+      expect(c.visionModel).toBeUndefined();
       expect(c.supportsReasoning).toBe(true);
     });
   });

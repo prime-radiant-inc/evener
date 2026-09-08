@@ -13,7 +13,7 @@ import {
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import { useColors } from "./ui";
 
-export type ComposerSetting = "model" | "reasoning";
+export type ComposerSetting = "model" | "reasoning" | "vision";
 
 /** Visible session choices share the input footer with the send action. */
 export function ComposerSettings({
@@ -36,6 +36,7 @@ export function ComposerSettings({
   );
   const reasoning = levels.length > 0;
   const currentEffort = effortLabel(conversation.reasoningEffort ?? "", levels);
+  const vision = conversation.capabilities.changeVisionModel;
   return (
     <View
       style={{
@@ -104,6 +105,37 @@ export function ComposerSettings({
             style={{ fontSize: 13 * scale, color: colors.secondary }}
           >
             {currentEffort}
+          </Text>
+          <Text
+            allowFontScaling={false}
+            style={{ fontSize: 12, color: colors.secondary }}
+          >
+            ⌄
+          </Text>
+        </Pressable>
+      ) : null}
+      {vision ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Vision model: ${conversation.visionModel || "session model"}. Change vision model`}
+          accessibilityState={{ disabled }}
+          disabled={disabled}
+          onPress={() => open("vision")}
+          style={({ pressed }) => ({
+            minHeight: Platform.OS === "ios" ? 44 : 48,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            opacity: pressed ? 0.6 : 1,
+          })}
+        >
+          <Text
+            allowFontScaling={Platform.OS !== "ios"}
+            style={{ fontSize: 13 * scale, color: colors.secondary }}
+          >
+            {conversation.visionModel === "off"
+              ? "Vision off"
+              : conversation.visionModel || "Vision"}
           </Text>
           <Text
             allowFontScaling={false}

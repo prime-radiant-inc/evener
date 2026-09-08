@@ -107,6 +107,7 @@ class FakeConversationService implements ConversationService {
   async shutdown(): Promise<void> {}
   async changeModel(): Promise<void> {}
   async setReasoningEffort(): Promise<void> {}
+  async setVisionModel(): Promise<void> {}
   async rename(): Promise<void> {}
   async cancelQueued(): Promise<{
     removedText: string;

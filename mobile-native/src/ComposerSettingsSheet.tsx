@@ -41,7 +41,7 @@ export function ComposerSettingsSheet({
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
-  const model = setting === "model";
+  const model = setting === "model" || setting === "vision";
   const levels = sessionEffortLevels(
     conversation.reasoningEffortLevels,
     conversation.supportsReasoning,
@@ -114,7 +114,13 @@ export function ComposerSettingsSheet({
               ]}
             >
               <View style={styles.fill}>
-                <Copy>{model ? "Model" : "Reasoning effort"}</Copy>
+                <Copy>
+                  {setting === "vision"
+                    ? "Vision model"
+                    : model
+                      ? "Model"
+                      : "Reasoning effort"}
+                </Copy>
                 <Copy muted>{hubName}</Copy>
               </View>
               <Action onPress={close}>Done</Action>
@@ -122,8 +128,18 @@ export function ComposerSettingsSheet({
             {model ? (
               <ModelPicker
                 controls={controls}
-                currentModel={conversation.modelProvider}
-                ready={ready && conversation.capabilities.changeModel}
+                currentModel={
+                  setting === "vision"
+                    ? (conversation.visionModel ?? "")
+                    : conversation.modelProvider
+                }
+                setting={setting === "vision" ? "vision" : "model"}
+                ready={
+                  ready &&
+                  (setting === "vision"
+                    ? conversation.capabilities.changeVisionModel
+                    : conversation.capabilities.changeModel)
+                }
                 done={close}
               />
             ) : (

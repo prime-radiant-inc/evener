@@ -203,6 +203,7 @@ export interface MobileConversation {
   name?: string;
   preview: string;
   modelProvider: string;
+  visionModel?: string;
   status: string;
   items: MobileTimelineItem[];
   capabilities: MobileCapabilities;
