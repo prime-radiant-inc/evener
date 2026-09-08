@@ -251,29 +251,47 @@ func buildGoalTurnOutcome(evidence []goalTurnCallEvidence, digest string) goal.T
 // unreadable scope contributes its absence marker, never a fabricated digest.
 func (s *Session) goalStateDigest() string {
 	var b strings.Builder
-	// Job phases: running job ids + statuses.
+	// Job phases: running job ids + statuses, sorted by job id (map
+	// iteration order is nondeterministic — an unsorted render would emit
+	// spurious digest deltas that reset repetition and deaden the breaker).
 	if jm := s.jobManager; jm != nil {
 		jm.mu.Lock()
-		for id, r := range jm.running {
+		ids := make([]string, 0, len(jm.running))
+		for id := range jm.running {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
 			status := ""
-			if r != nil && r.rec != nil {
+			if r := jm.running[id]; r != nil && r.rec != nil {
 				status = string(r.rec.Status)
 			}
 			fmt.Fprintf(&b, "job %s %s\n", id, status)
 		}
+		keys := make([]string, 0, len(jm.watches))
 		for key := range jm.watches {
-			fmt.Fprintf(&b, "watch %s %s\n", key.Target, key.VisibleSessionID)
+			keys = append(keys, key.Target+"\x00"+key.VisibleSessionID+"\x00"+key.SendTo+"\x00"+key.ReceiverSessionID+"\x00"+key.ReceiverDelegateID+"\x00"+key.Slot)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "watch %s\n", k)
 		}
 		jm.mu.Unlock()
 	}
-	// Delegate phases: delegate id + phase.
+	// Delegate phases: delegate id + phase, sorted by delegate id (same
+	// map-order discipline as above).
 	if c := s.delegateController; c != nil {
 		c.mu.Lock()
-		for id, agg := range c.durable {
-			if agg == nil {
+		ids := make([]string, 0, len(c.durable))
+		for id := range c.durable {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if agg := c.durable[id]; agg == nil {
 				continue
 			}
-			fmt.Fprintf(&b, "delegate %s %s\n", id, agg.Phase)
+			fmt.Fprintf(&b, "delegate %s %s\n", id, c.durable[id].Phase)
 		}
 		c.mu.Unlock()
 	}
@@ -355,21 +373,52 @@ func (s *Session) forwardChildTerminalToWaits(done *subagent) {
 	// Parent's own waits (the common until_child-on-my-child shape).
 	s.claimChildWaitsForTerminal(doneID, trigger)
 	// Sibling waiters: live direct children holding until_child on doneID.
-	// Gate checks key on the subagent id (the tracked record key) — the
-	// child session id is a distinct identity.
+	// Gate checks use the production key domains (mirroring
+	// driveChildIfNotStopGated): childStopGated/childFatalRunGated take the
+	// child SESSION id. childStopGated matches stable-delegate descriptor
+	// ChildSessionIDs; in-process children without a stable row read
+	// ungated there (fail-open toward delivery), while childFatalRunGated
+	// resolves the tracked record by subagent id — so the forward consults
+	// BOTH domains: the session id for the stable stop gate and the
+	// subagent id for the fatal-run gate.
 	for _, sub := range s.subagents.directSubagents() {
 		if sub == nil || sub.sess == nil || sub.sess == s {
 			continue
 		}
-		if s.childStopGated(sub.id) || s.childFatalRunGated(sub.id) {
+		if goalWaitSiblingStopGated(s, sub) || s.childFatalRunGated(sub.id) {
 			// Gate-before-claim: never consume what cannot be driven. The
 			// lease stays live; the honest loss notice routes to the
 			// waiter's next turn tail.
 			sub.sess.appendTurn(schema.TurnSteering, llm.User(goalWaitTerminalForwardNote(doneID)))
 			continue
 		}
-		claimChildWaitsForTerminalOn(sub.sess, doneID, trigger, s.sclock().Now())
+		if !claimChildWaitsForTerminalOn(sub.sess, doneID, trigger, s.sclock().Now()) {
+			continue
+		}
+		// Claimed: drive the waiter's wake turn through the delegate-drive
+		// seam (spec §8: the forward drives the child's wake turn through
+		// the existing delegate-drive path). Delegate children own no
+		// kickFunc, so the waiter's coalesced timer alone would strand the
+		// backlog — the drive is what delivers it. A refused drive (busy,
+		// gated, at budget) leaves the claim persisted: the waiter's next
+		// gate/settle drives the wake inline from the backlog, so the claim
+		// is never lost, only deferred.
+		s.driveSubagentNotificationTurn(sub)
 	}
+}
+
+// goalWaitSiblingStopGated reports the stable stop gate for a sibling waiter,
+// honoring the test hook like the production re-drive path
+// (redriveChildIfAttentionRemains): childStopGated over the child session id,
+// overridden by cfg.testOnly.subagentStopGated when handled.
+func goalWaitSiblingStopGated(s *Session, sub *subagent) bool {
+	gated := s.childStopGated(sub.sess.id)
+	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
+		if stopped, handled := hook(s, sub.sess.id); handled {
+			gated = stopped
+		}
+	}
+	return gated
 }
 
 // claimChildWaitsForTerminal claims s's own until_child leases on a terminal
@@ -387,14 +436,16 @@ func (s *Session) claimChildWaitsForTerminal(childID, trigger string) {
 
 // claimChildWaitsForTerminalOn claims one waiter session's until_child leases.
 // The waiter's delivered-set mark is the cross-session single-wake collapse:
-// a wait already marked delivered collapses instead of re-kicking.
-func claimChildWaitsForTerminalOn(waiter *Session, childID, trigger string, now time.Time) {
+// a wait already marked delivered collapses instead of re-kicking. Reports
+// whether any lease claimed (the caller drives the wake turn on true).
+func claimChildWaitsForTerminalOn(waiter *Session, childID, trigger string, now time.Time) bool {
 	waiter.goalUpdateMu.Lock()
 	claimed := waiter.getOrCreateGoalStore().ClaimChildWaits(childID, trigger, now)
 	waiter.goalUpdateMu.Unlock()
 	if claimed {
 		waiter.armGoalWaitTimer()
 	}
+	return claimed
 }
 
 // goalWaitTerminalForwardNote is the loss-notice text for a gated forward.

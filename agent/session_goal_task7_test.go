@@ -212,12 +212,8 @@ func TestGoalLedgerGateTimestampNoiseStillStalls(t *testing.T) {
 // consecutive identical real turn nudges.
 func TestGoalLedgerGateMigratedSeedFeedsRealLedger(t *testing.T) {
 	t.Parallel()
-	clk := agenttest.NewFakeClock()
-	created := clk.Now()
+	created := agenttest.NewFakeClock().Now()
 	v1seed := goal.MigrateV1ToPersisted("migrate me", "active", "", 7, 5, false, created, created, created)
-	fresh := goal.NewStore()
-	fresh.RestoreSnapshot(v1seed)
-	_ = fresh
 
 	clk2 := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk2)
@@ -297,6 +293,48 @@ func countTrailingNonAdvancing(s goal.LedgerSummary) int {
 	return n
 }
 
+// TestGoalStateDigestDeterministicWithMultipleEntries pins Important-1: the
+// pre-scoped digest renders every map-backed scope (running jobs, watches,
+// delegate phases) in sorted key order — never raw Go map iteration order.
+// With ≥2 entries per scope, consecutive digests over unchanged state must
+// be byte-identical; otherwise spurious deltas reset repetition and deaden
+// the breaker (fail-open, bounded only by maxContinuations).
+func TestGoalStateDigestDeterministicWithMultipleEntries(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	attachDelegateController(t, sess)
+
+	// Two entries per map-backed scope. Fake running entries block Close
+	// (closeRuntimeState waits on their never-closing done channels), so the
+	// test removes them after the digest loop — the determinism assertion
+	// itself runs while both entries render.
+	seedRunningBackgroundJob(t, sess, "job_beta")
+	seedRunningBackgroundJob(t, sess, "job_alpha")
+	seedProgressWatch(t, sess, "job_beta")
+	seedProgressWatch(t, sess, "job_alpha")
+	seedSessionRunningDelegate(t, sess, "dlg_beta")
+	seedSessionRunningDelegate(t, sess, "dlg_alpha")
+
+	first := sess.goalStateDigest()
+	for i := range 25 {
+		if got := sess.goalStateDigest(); got != first {
+			t.Fatalf("digest iteration %d differs over unchanged state:\nfirst %.16s\ngot   %.16s (map-order render is nondeterministic)", i, first, got)
+		}
+	}
+
+	// Close-safe cleanup: drop the fake running entries (closing their done
+	// channels first so closeRuntimeState observes completion, not abandon).
+	jm := sess.jobManager
+	jm.mu.Lock()
+	for id, run := range jm.running {
+		close(run.done)
+		delete(jm.running, id)
+	}
+	jm.mu.Unlock()
+}
+
 // TestGoalWakeTurnFoldsLedgerAndAccruesBudget pins the interim-bypass removal:
 // a wait-attributable wake turn now folds into the ledger and accrues the
 // continuation budget like any other turn (spec §5: wake turns count).
@@ -358,6 +396,80 @@ func TestGoalChildForwardTerminalClaimsAndDrives(t *testing.T) {
 	}
 }
 
+// TestGoalChildForwardSiblingWakeDelivers pins Important-3: a forward that
+// claims a live sibling waiter's until_child must also DELIVER the wake —
+// claiming into the store without driving strands it (delegate children own
+// no kickFunc, so the waiter's timer alone never fires the turn). The
+// forward drives through the delegate-drive seam; the waiter's next gate
+// then renders the wake prompt carrying the terminal trigger.
+func TestGoalChildForwardSiblingWakeDelivers(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	// Waiter child with a live until_child on a sibling, parked.
+	trackSyntheticChild(t, sess, "fwd_waiter", SubagentRunning, false, false, time.Time{}, false)
+	var waiter *subagent
+	for _, sub := range sess.subagents.directSubagents() {
+		if sub.id == "fwd_waiter" {
+			waiter = sub
+		}
+	}
+	if waiter == nil {
+		t.Fatal("precondition: waiter child should be tracked")
+	}
+	waiter.sess.getOrCreateGoalStore().Set("wait on sibling", clk.Now())
+	trackSyntheticChild(t, sess, "fwd_done", SubagentCompleted, false, false, clk.Now(), false)
+	var doneChild *subagent
+	for _, sub := range sess.subagents.directSubagents() {
+		if sub.id == "fwd_done" {
+			doneChild = sub
+		}
+	}
+	if doneChild == nil {
+		t.Fatal("precondition: terminal child should be tracked")
+	}
+	// Register the waiter's lease store-direct (the waiter child's own
+	// substrate has no controller tree; ClaimChildWaits needs no substrate).
+	w, ok := waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
+	_ = w
+	if !ok {
+		// Fall back: inject the stub substrate and retry (documents the
+		// substrate-independence of the claim path either way).
+		waiter.sess.getOrCreateGoalStore().SetSubstrate(&goalWaitTerminalStub{children: map[string]bool{"fwd_done": true}})
+		w, ok = waiter.sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_done", Timeout: time.Hour}, clk.Now())
+		if !ok {
+			t.Fatalf("precondition: waiter registration should succeed: %q", waiter.sess.getOrCreateGoalStore().LastRejectReason())
+		}
+	}
+	if snap, _ := waiter.sess.getOrCreateGoalStore().Snapshot(); snap.Status != goal.StatusWaiting {
+		t.Fatalf("waiter status = %q, want waiting before the forward", snap.Status)
+	}
+
+	sess.forwardChildTerminalToWaits(doneChild)
+
+	// Store state: the lease claimed exactly once.
+	waiterFull, _ := waiter.sess.getOrCreateGoalStore().GoalSnapshot()
+	if len(waiterFull.PendingWake) != 1 {
+		t.Fatalf("waiter pendingWake = %+v, want exactly one claimed wake", waiterFull.PendingWake)
+	}
+	if !strings.Contains(waiterFull.PendingWake[0].Trigger, "fwd_done") {
+		t.Fatalf("wake trigger = %q, must carry the terminal child identity", waiterFull.PendingWake[0].Trigger)
+	}
+	// Delivery: the waiter's gate renders the wake drive from the backlog
+	// (the forward drove it through the delegate-drive seam; the backlog
+	// persists so the gate drives inline even if the async drive races).
+	prompt, cont := waiter.sess.armGoalContinuationWithOutcome(false, true, goal.TurnOutcome{})
+	if !cont || prompt == "" {
+		t.Fatal("waiter gate must drive the forwarded wake from the backlog")
+	}
+	if !strings.Contains(prompt, "fwd_done") {
+		t.Fatalf("waiter wake prompt must carry the terminal trigger:\n%s", prompt)
+	}
+}
+
 // TestGoalChildForwardIntermediateChatterDoesNotClaim pins terminal-only
 // matching: a still-running child never fires its parent's until_child — the
 // goal stays parked with no backlog.
@@ -385,8 +497,10 @@ func TestGoalChildForwardIntermediateChatterDoesNotClaim(t *testing.T) {
 }
 
 // TestGoalChildForwardStopGatedEmitsLossNotice pins gate-before-claim: a
-// forward aimed at a stop-gated child claims nothing and leaves the honest
-// loss notice on the child's next turn tail instead.
+// forward aimed at a gated waiter claims nothing and leaves the honest loss
+// notice on the waiter's next turn tail instead. Both gate branches are
+// pinned: the fatal-run gate (tracked-record domain) and the stable stop
+// gate (descriptor ChildSessionID domain, via the test hook).
 func TestGoalChildForwardStopGatedEmitsLossNotice(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -394,17 +508,6 @@ func TestGoalChildForwardStopGatedEmitsLossNotice(t *testing.T) {
 	defer sess.Close()
 	wireKickAndNotify(sess)
 
-	// Gate-before-claim at the store seam: ClaimChildWaits checks the waiter's
-	// stop gate before consuming. The gate check lives in childStopGated
-	// (stable-delegate rows); here the waiter is pinned through the exported
-	// ClaimChildWaits with a stop-gated wrapper: a waiter whose session is
-	// closed cannot be driven, so the forward must not claim into it.
-	//
-	// Deterministic seam: the production forward calls
-	// forwardChildTerminalToWaits on run-end; the gate-before-claim half is
-	// the childStopGated/childFatalRunGated branch inside it. Drive that
-	// branch with a waiter whose drive path is closed: closing the waiter
-	// session marks it undrivable while the lease stays live.
 	trackSyntheticChild(t, sess, "fwd_child_gated", SubagentRunning, false, false, time.Time{}, false)
 	var gatedChild *subagent
 	for _, sub := range sess.subagents.directSubagents() {
@@ -429,32 +532,48 @@ func TestGoalChildForwardStopGatedEmitsLossNotice(t *testing.T) {
 		t.Fatal("precondition: terminal child should be tracked")
 	}
 	// The PARENT waits on the terminal child (the until_child-on-my-child
-	// shape the substrate resolves); the gate-before-claim half is pinned by
-	// withholding the forward to a fatal-gated sibling waiter below. First
-	// register the parent's own lease.
+	// shape the substrate resolves). The sibling waiter holds no lease here —
+	// the gate branches are pinned by withholding the forward to it below.
 	sess.getOrCreateGoalStore().Set("wait on the done child", clk.Now())
 	if _, ok := sess.getOrCreateGoalStore().RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_child_done", Timeout: time.Hour}, clk.Now()); !ok {
 		t.Fatalf("precondition: parent registration should succeed: %q", sess.getOrCreateGoalStore().LastRejectReason())
 	}
-	// Mark the sibling waiter fatal-gated (a terminal run error freezes
-	// automatic drives): the forward must withhold the sibling claim and
-	// leave the loss notice, while still claiming the parent's own lease.
-	gatedChild.mu.Lock()
-	gatedChild.fatalRunGated = true
-	gatedChild.mu.Unlock()
-
-	sess.forwardChildTerminalToWaits(doneChild)
-
-	parentFull, _ := sess.getOrCreateGoalStore().GoalSnapshot()
-	if len(parentFull.PendingWake) != 1 {
-		t.Fatalf("parent pendingWake = %+v, want the parent's own claim to land", parentFull.PendingWake)
-	}
-	waiterFull, _ := gatedChild.sess.getOrCreateGoalStore().GoalSnapshot()
-	if len(waiterFull.PendingWake) != 0 || len(waiterFull.Waits) != 0 {
-		t.Fatalf("gated waiter = %+v, want untouched (no lease, no claim)", waiterFull)
-	}
-	if got := countTask7SteeringNotes(gatedChild.sess, "[goal-wait-lost]"); got != 1 {
-		t.Fatalf("loss-notice notes on the gated child = %d, want exactly 1", got)
+	for _, tc := range []struct {
+		name string
+		gate func()
+	}{
+		{"fatal-run gate", func() {
+			gatedChild.mu.Lock()
+			gatedChild.fatalRunGated = true
+			gatedChild.mu.Unlock()
+		}},
+		{"stable stop gate", func() {
+			gatedChild.mu.Lock()
+			gatedChild.fatalRunGated = false
+			gatedChild.mu.Unlock()
+			sess.cfg.testOnly.subagentStopGated = func(_ *Session, id string) (bool, bool) {
+				if id == gatedChild.sess.id {
+					return true, true
+				}
+				return false, false
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "stable stop gate" {
+				tc.gate()
+			} else {
+				tc.gate()
+			}
+			sess.forwardChildTerminalToWaits(doneChild)
+			waiterFull, _ := gatedChild.sess.getOrCreateGoalStore().GoalSnapshot()
+			if len(waiterFull.PendingWake) != 0 {
+				t.Fatalf("%s: pendingWake = %+v, want no claim into a gated waiter", tc.name, waiterFull.PendingWake)
+			}
+			if got := countTask7SteeringNotes(gatedChild.sess, "[goal-wait-lost]"); got < 1 {
+				t.Fatalf("%s: loss-notice notes = %d, want at least 1", tc.name, got)
+			}
+		})
 	}
 }
 

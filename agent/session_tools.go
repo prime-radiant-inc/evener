@@ -1490,9 +1490,9 @@ func (s *Session) getOrCreateGoalStore() *goal.Store {
 		s.goalStore = goal.NewStore()
 		// Slice-2 production substrate (spec §2): RegisterWait validates
 		// substrate kinds against live session state. Test-injected
-		// substrates call SetSubstrate directly and never touch this path
-		// after creation — but creation-time wiring would clobber an inject
-		// that raced it, so restores re-wire explicitly (session_init.go).
+		// substrates call SetSubstrate directly on the store after creation
+		// (creation wiring runs once via goalStoreOnce, so no race and no
+		// re-wire anywhere else).
 		s.goalStore.SetSubstrate(&goalSessionSubstrate{sess: s})
 	})
 	return s.goalStore
