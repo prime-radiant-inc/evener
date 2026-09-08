@@ -131,6 +131,16 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
           </Button>
         </p>
       )}
+      {/* A refetch that failed leaves `doc` where it was, so the editor is
+          showing a copy it can no longer confirm. Save stays enabled: a
+          reload that failed because the hub is unreachable fails a save the
+          same way, and disabling it would only trap the draft. */}
+      {error !== null && (
+        <p className={CLASS.error} role="alert">
+          Couldn't reload AGENTS.md: {error}. The editor shows the last copy it loaded; saving would overwrite anything
+          changed on disk since.
+        </p>
+      )}
       {saveError !== null && (
         <p className={CLASS.error} role="alert">
           Save failed: {saveError}

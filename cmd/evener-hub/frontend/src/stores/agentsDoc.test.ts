@@ -139,6 +139,32 @@ describe("reconnect", () => {
     expect(agentsDocStore.getState().doc).toEqual(away);
   });
 
+  // A drop the fence catches mid-fetch drops that response, so nothing is
+  // left to turn `loading` off - and a drop that never recovers would leave
+  // the section drawing its Skeleton over a document it will never get.
+  test("a drop mid-fetch clears loading", async () => {
+    const fake = connectFakeClient();
+    let land!: (doc: AgentsDocResponse) => void;
+    fake.on(
+      "evener/settings/agentsDoc/get",
+      () =>
+        new Promise<AgentsDocResponse>((resolve) => {
+          land = resolve;
+        }),
+    );
+    const interrupted = agentsDocStore.getState().fetch();
+    await Promise.resolve(); // the fake defers its handler by a microtask
+    expect(agentsDocStore.getState().loading).toBe(true);
+
+    fake.emitStateChange("reconnecting");
+    expect(agentsDocStore.getState().loading).toBe(false);
+
+    land(DOC);
+    await interrupted;
+    expect(agentsDocStore.getState().doc).toBeNull();
+    expect(agentsDocStore.getState().loading).toBe(false);
+  });
+
   test("a reconnect before anything was requested fetches nothing", async () => {
     const fake = connectFakeClient();
     fake.on("evener/settings/agentsDoc/get", () => DOC);

@@ -250,6 +250,31 @@ test("a reconnect refetches the file", async () => {
   await waitFor(() => expect(editor().value).toBe("# while we were away\n"));
 });
 
+// A refetch that fails leaves `doc` where it was, so the editor goes on
+// showing a copy it can no longer confirm - and a Save from there would push
+// that over whatever is on disk now. Save stays enabled anyway: a reload that
+// failed because the hub is unreachable fails a save the same way, and
+// disabling it would only trap the draft.
+test("a failed reload after a successful load shows a reload notice and keeps the editor", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const saveDisabledBefore = saveButton().disabled;
+
+  act(() => {
+    fake.on("evener/settings/agentsDoc/get", () => {
+      throw new WireError("hub unreachable", -1);
+    });
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Couldn't reload AGENTS.md"));
+  expect(screen.getByRole("alert").textContent).toContain("hub unreachable");
+  expect(editor().value).toBe("# hi\n");
+  expect(saveButton().disabled).toBe(saveDisabledBefore);
+});
+
 test("a reconnect while the draft is dirty keeps the draft and offers Load current", async () => {
   connectFakeClient();
   renderSection();

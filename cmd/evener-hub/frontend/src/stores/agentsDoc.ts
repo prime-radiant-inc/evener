@@ -107,6 +107,10 @@ function attachNotifications(client: AppwireClientLike | null): void {
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
     requestVersion += 1;
+    // The bump just dropped whatever read was in flight, so nothing is left
+    // to turn `loading` off - and a drop that never recovers would leave the
+    // section on its Skeleton forever (stores/credentials.ts does the same).
+    agentsDocStore.setState({ loading: false });
   }
   attachNotifications(state.client);
   // Once a view has read the file, every reconnect has to re-read it - an
