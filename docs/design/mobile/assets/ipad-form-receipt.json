@@ -1,0 +1,94 @@
+{
+  "status": "scoped-form-geometry-passed",
+  "device": {
+    "udid": "6462A0FC-A190-4F08-A0CC-9B7E6C792AEC",
+    "model": "iPad Pro 11-inch (M5)",
+    "runtime": "iOS26.5"
+  },
+  "nativeSourceCommit": "8d2297116",
+  "finalCheckoutCommit": "401eddc95479c21ac2c71ce42657efaaab38b10d",
+  "compiledSourceEquivalentToCanonicalGate": "d2d5eedf9",
+  "installedBundleSHA256": "e833dd2b8c4c5f173e5c96212499a8461cae97db26a4e61ad8ec65938350f71c",
+  "candidate": {
+    "commit": "1e0533ce1",
+    "bundleSHA256": "9f2665e9d9d1f95ffdf2c91af801da7a91506b94c6277c87b72b0081635370df",
+    "revertedBy": "401eddc95",
+    "reason": "Initial worker failure was caused by invalid landscape touch coordinates. Both original and candidate scroll correctly with the transformed gesture; native changes were unnecessary."
+  },
+  "gesture": {
+    "orientation": "LANDSCAPE_LEFT",
+    "appAXBounds": [
+      1210,
+      834
+    ],
+    "naturalTouchBounds": [
+      834,
+      1210
+    ],
+    "screenGesture": [
+      [
+        600,
+        350
+      ],
+      [
+        600,
+        150
+      ]
+    ],
+    "naturalGesture": [
+      [
+        350,
+        610
+      ],
+      [
+        150,
+        610
+      ]
+    ],
+    "command": "idb ui swipe 350 610 150 610 --duration 0.6 --udid 6462A0FC-A190-4F08-A0CC-9B7E6C792AEC"
+  },
+  "results": {
+    "originalLandscapeSaveFrame": {
+      "x": 16,
+      "y": 337.5,
+      "width": 1178,
+      "height": 44
+    },
+    "landscapeKeyboardToolbarY": 407,
+    "originalPortraitSaveFrame": {
+      "x": 16,
+      "y": 553,
+      "width": 802,
+      "height": 44
+    },
+    "portraitKeyboardToolbarY": 871,
+    "keyboardDismissedAndReopened": true,
+    "finalKeyboardHidden": true,
+    "finalSaveDisabled": true,
+    "profileSaved": false,
+    "networkAttempted": false
+  },
+  "evidence": [
+    {
+      "screenshot": "docs/design/mobile/assets/evener-ipad-original-after-swipe.png",
+      "screenshotSHA256": "3d6147de481383592cabdecaf4f9e9bbc6588def55ad0abe7a66242648f03c55",
+      "privateAXPath": "/tmp/evener-ipad-original-after-swipe.json",
+      "privateAXSHA256": "f72ceb4d88e335af3d82a9b7aab83a450b2c86fc0d0f49bd4f0fcb4117450714"
+    },
+    {
+      "screenshot": "docs/design/mobile/assets/evener-ipad-original-portrait-keyboard.png",
+      "screenshotSHA256": "315ff99e15116229ecbef3953813311e9bd6ab8ae2d63171202897bc5b48b94f",
+      "privateAXPath": "/tmp/evener-ipad-original-portrait-keyboard.json",
+      "privateAXSHA256": "6ac11c0265cf64712cd7f217bfaa788f46ca0014ce0122050658a17636bf97c5"
+    },
+    {
+      "screenshot": "docs/design/mobile/assets/evener-ipad-root-final-clean.png",
+      "screenshotSHA256": "e43e38c1472b999f236ac34a614028ad3b8df7161afc7663613a578c889907b6",
+      "privateAXPath": "/tmp/evener-ipad-root-final-clean.json",
+      "privateAXSHA256": "3f5a2d23481d1f8df8f9d08d3839f542244b95a5ac28019b3cacbeaba6562ec7"
+    }
+  ],
+  "limitations": [
+    "Default-size empty hub form only; no connected hub/profile lifecycle, Save network action, split view, Dynamic Type, VoiceOver, hardware keyboard, physical device or release signing qualification."
+  ]
+}

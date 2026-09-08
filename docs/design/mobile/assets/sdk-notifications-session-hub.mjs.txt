@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
+const packageRoot=process.env.NOTIFICATION_SDK_ROOT;
+assert(packageRoot,'Set retained package root');
+const {AppwireClient}=await import(join(packageRoot,'dist/index.js'));
+const {default:WebSocket}=await import(join(packageRoot,'../../ws/index.js'));
+const {runSessionNotifications}=await import(join(packageRoot,'examples/session-notifications-logic.mjs'));
+const {runHubNotifications}=await import(join(packageRoot,'examples/hub-notifications-logic.mjs'));
+const {runWorkNotifications}=await import(join(packageRoot,'examples/work-notifications-logic.mjs'));
+const root=process.cwd(),runtime=JSON.parse(readFileSync('runtime.json')),session=JSON.parse(readFileSync('session.json')),token=readFileSync('state/evener/auth-token','utf8').trim();
+const makeClient=()=>new AppwireClient({url:`ws://127.0.0.1:${runtime.hubPort}/rpc`,clientInfo:{name:'notification-runtime-qualification',version:'1'},socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+const records=[];
+function privateFile(name,value){const file=join(root,'run',name+'.json');writeFileSync(file,JSON.stringify(value)+'\n',{flag:'wx',mode:0o600});return {file,sha256:createHash('sha256').update(readFileSync(file)).digest('hex'),mode:statSync(file).mode&0o777};}
+function watch(hub){const events=[],waiters=new Set();const off=hub.onNotification(n=>{events.push(n);for(const w of waiters)w();});return {events,off,until:predicate=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>{waiters.delete(check);reject(new Error('bounded notification wait expired'));},15000);function check(){const event=events.find(predicate);if(event){clearTimeout(timer);waiters.delete(check);resolve(event);}}waiters.add(check);check();})};}
+const writer=makeClient();
+await writer.connect();
+async function independentThread(){const hub=makeClient();try{await hub.connect();return await hub.request('thread/read',{ref:session.ref,includeTurns:false,subscribe:false});}finally{hub.close();}}
+async function sessionChange(name,method,params,eventMethod,check){const observer=makeClient(),seen=watch(observer);try{let ack;const result=await runSessionNotifications(observer,{ref:session.ref,observe:async()=>{ack=await writer.request(method,{ref:session.ref,...params});await seen.until(n=>n.method===eventMethod && n.params.ref===session.ref);}});assert.equal(result.outcome,'read');assert(result.events.some(e=>e.method===eventMethod));check(result.readback.thread);check((await independentThread()).thread);records.push({name,status:'passed',events:result.events.map(e=>e.method),result:privateFile(name,result),ack:privateFile(name+'-ack',ack)});}finally{seen.off();observer.close();}}
+async function hubChange(name,methods,mutate,eventMatches,check){const observer=makeClient(),seen=watch(observer);try{let ack;const result=await runHubNotifications(observer,{ref:session.ref,methods,observe:async()=>{ack=await mutate();await seen.until(eventMatches);}});assert.equal(result.outcome,'read');assert(result.events.length>0);check(result.readback);records.push({name,status:'passed',events:result.events.map(e=>e.method),result:privateFile(name,result),ack:privateFile(name+'-ack',ack)});}finally{seen.off();observer.close();}}
+try{
+ const initial=(await independentThread()).thread;
+ assert.equal(typeof initial.name,'string');
+ await sessionChange('session-name-set','evener/thread/name/set',{name:'Notification qualification name'},'evener/thread/name/changed',thread=>assert.equal(thread.name,'Notification qualification name'));
+ await sessionChange('session-name-restored','evener/thread/name/set',{name:initial.name},'evener/thread/name/changed',thread=>assert.equal(thread.name,initial.name));
+ assert.equal(initial.evener.visionModel??'','');
+ await sessionChange('vision-off','thread/vision-model/set',{visionModel:'off'},'thread/vision-model/changed',thread=>assert.equal(thread.evener.visionModel,'off'));
+ await sessionChange('vision-restored-empty','thread/vision-model/set',{visionModel:''},'thread/vision-model/changed',thread=>assert.equal(thread.evener.visionModel??'',''));
+ const display=await writer.request('evener/settings/transcriptDisplay/get',{});const originalDisplay=structuredClone(display.mobile.config);const changedDisplay=structuredClone(originalDisplay);changedDisplay.advanced.roundTimings=!changedDisplay.advanced.roundTimings;
+ for(const [name,config] of [['display-changed',changedDisplay],['display-restored',originalDisplay]]){
+  await hubChange(name,['evener/settings/transcriptDisplay/changed'],async()=>{const current=await writer.request('evener/settings/transcriptDisplay/get',{});return writer.request('evener/settings/transcriptDisplay/patch',{layout:'mobile',expectedRevision:current.mobile.revision,config});},n=>n.method==='evener/settings/transcriptDisplay/changed'&&n.params.layout==='mobile',read=>assert.deepEqual(read.transcriptDisplay.mobile.config,config));
+  const independent=makeClient();try{await independent.connect();assert.deepEqual((await independent.request('evener/settings/transcriptDisplay/get',{})).mobile.config,config);}finally{independent.close();}
+ }
+ const originalKeys=await writer.request('evener/settings/keybindings/get',{});const originalConfig={version:originalKeys.version,rules:originalKeys.rules};const changedKeys={version:originalKeys.version,rules:[...originalKeys.rules.filter(r=>r.action!=='palette.open'),{action:'palette.open',chord:null}]};
+ for(const [name,config] of [['keybinding-unbound',changedKeys],['keybinding-restored',originalConfig]]){
+  await hubChange(name,['evener/settings/keybindings/changed'],async()=>{const current=await writer.request('evener/settings/keybindings/get',{});return writer.request('evener/settings/keybindings/patch',{expectedRevision:current.revision,config});},n=>n.method==='evener/settings/keybindings/changed',read=>assert.deepEqual(read.keybindings.rules,config.rules));
+  const independent=makeClient();try{await independent.connect();assert.deepEqual((await independent.request('evener/settings/keybindings/get',{})).rules,config.rules);}finally{independent.close();}
+ }
+ const workObserver=makeClient(),seen=watch(workObserver);try{const result=await runWorkNotifications(workObserver,{ref:session.ref},{observe:async()=>{const ack=await writer.request('goal/set',{ref:session.ref,objective:''});assert.equal(ack.started,false);await seen.until(n=>n.method==='evener/goal/updated'&&n.params.ref===session.ref&&n.params.goal===null);}});assert.equal(result.outcome,'read');assert(result.events.some(e=>e.method==='evener/goal/updated'&&e.goal===null));assert.equal(result.readback.thread.evener.goal??null,null);assert.equal((await independentThread()).thread.evener.goal??null,null);records.push({name:'goal-cleared-absent',status:'passed',scope:'Clearing an already absent owned goal emits null; no new goal or continuation was created.',result:privateFile('goal-cleared-absent',result)});}finally{seen.off();workObserver.close();}
+ const receipt={status:'passed',sourceCommit:'58d1b079f',packageRoot,runtime:{...runtime,environment:undefined},session,actions:records,limitations:['Scripted external provider and owned hub only.','No new goal lifecycle, full streaming replay, native UI or public service acceptance.','Notification windows are scoped; all36producer outcomes are not qualified.']};
+ privateFile('session-hub-qualification-receipt',receipt);console.log(JSON.stringify({status:receipt.status,actions:records.length,eventNames:[...new Set(records.flatMap(r=>r.events??[]))]}));
+}catch(error){privateFile('session-hub-qualification-failure',{message:error.message,actions:records});console.error('Notification qualification failed; see private failure receipt.');process.exitCode=1;}finally{writer.close();}

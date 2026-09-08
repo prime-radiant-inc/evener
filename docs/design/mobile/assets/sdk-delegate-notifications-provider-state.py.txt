@@ -1,0 +1,15 @@
+"""Pure provider stage selection used by the unstarted delegate fixture."""
+
+
+def choose_stage(qualifying, has_delegate, parent_delegate_sent, child_result_sent):
+    if not qualifying:
+        return "ordinary-result"
+    if has_delegate and not parent_delegate_sent:
+        return "parent-delegate"
+    if not has_delegate and not child_result_sent:
+        return "child-result"
+    if has_delegate and parent_delegate_sent and not child_result_sent:
+        return "parent-wait-child"
+    if has_delegate and parent_delegate_sent and child_result_sent:
+        return "parent-result"
+    raise RuntimeError("unexpected delegate qualification stage")

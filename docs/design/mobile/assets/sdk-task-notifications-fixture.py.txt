@@ -1,0 +1,161 @@
+import hashlib
+import json
+import os
+import pathlib
+import signal
+import socket
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+root = pathlib.Path(__file__).resolve().parent
+records = []
+lock = threading.Lock()
+stop = threading.Event()
+summary_marker = 'fixture-summary-8fa2c019'
+task_id_ready = threading.Event()
+qualification_task_id = None
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def send_json(self, value):
+        data = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == '/v1/models':
+            self.send_json({'object':'list','data':[{'id':'fixture-model','object':'model'}]})
+        elif self.path == '/status':
+            with lock:
+                self.send_json({'requests':list(records)})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        global qualification_task_id
+        if self.path == '/task-id':
+            value = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            assert isinstance(value['taskId'],int) and value['taskId'] > 0
+            qualification_task_id = value['taskId']
+            task_id_ready.set()
+            self.send_json({'accepted':True})
+            return
+        if self.path == '/shutdown':
+            self.send_json({'stopping':True})
+            stop.set()
+            return
+        if self.path != '/v1/chat/completions':
+            self.send_error(404)
+            return
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        schema = body.get('response_format',{}).get('json_schema',{}).get('schema',{})
+        props = sorted(schema.get('properties',{}))
+        tools = body.get('tools',[])
+        kind = 'turn' if tools else ('name' if props == ['name'] else 'summary')
+        qualification = kind == 'turn' and 'task-notification-acceptance-c82f' in json.dumps(body.get('messages', []))
+        with lock:
+            index = len(records)+1
+            records.append({'index':index,'kind':kind,'qualification':qualification,'toolCount':len(tools),'schemaProperties':props,
+                            'messageCount':len(body.get('messages',[])),
+                            'containsSummaryMarker':summary_marker in json.dumps(body.get('messages',[])),
+                            'bodyHash':{'sha256':hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()}})
+            (root/'provider-requests.pending').write_text(json.dumps(records,indent=2)+'\n')
+            (root/'provider-requests.pending').replace(root/'provider-requests.json')
+        finish = 'stop'
+        message = {'role':'assistant'}
+        if kind == 'turn':
+            offered = {t.get('function',{}).get('name'): t.get('function',{}) for t in tools}
+            assert 'communicate' in offered
+            with lock:
+                step = sum(1 for r in records if r.get('qualification')) if qualification else 0
+            function_name = 'communicate'
+            arguments = {'message':'fixture complete','end_turn':True,'output':{'message':'','data':{},'artifacts':[]}}
+            if step in (1,2):
+                assert 'task_list' in offered
+                schema = offered['task_list']['parameters']
+                required_key = 'add' if step == 1 else 'update'
+                assert required_key in schema['properties']
+                function_name = 'task_list'
+                if step == 1:
+                    arguments = {'add':[{'type':'implement','description':'task-notification-acceptance-c82f','prompt':'complete owned task notification check'}]}
+                else:
+                    if not task_id_ready.wait(timeout=30): raise RuntimeError('No SDK-authored task ID received')
+                    arguments = {'update':[{'id':qualification_task_id,'status':'done'}]}
+            elif step > 3:
+                raise RuntimeError('Unexpected additional qualification provider request')
+            with lock:
+                records[index-1]['authoredTool'] = function_name
+                records[index-1]['authoredTaskId'] = qualification_task_id if step == 2 else None
+                (root/'provider-requests.pending').write_text(json.dumps(records,indent=2)+'\n')
+                (root/'provider-requests.pending').replace(root/'provider-requests.json')
+            message['tool_calls'] = [{'index':0,'id':f'call_fixture_{index}','type':'function',
+                'function':{'name':function_name,'arguments':json.dumps(arguments)}}]
+            finish = 'tool_calls'
+        else:
+            message['content'] = json.dumps({'name':'Notification fixture'}) if kind == 'name' else summary_marker
+        base = {'id':f'fixture-{index}','model':'fixture-model'}
+        usage = {'prompt_tokens':100,'completion_tokens':10,'total_tokens':110}
+        if body.get('stream'):
+            self.send_response(200)
+            self.send_header('Content-Type','text/event-stream')
+            self.end_headers()
+            chunks = [{**base,'choices':[{'index':0,'delta':message,'finish_reason':None}]},
+                      {**base,'choices':[{'index':0,'delta':{},'finish_reason':finish}],'usage':usage}]
+            for chunk in chunks:
+                self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
+                self.wfile.flush()
+            self.wfile.write(b'data: [DONE]\n\n')
+        else:
+            self.send_json({**base,'choices':[{'index':0,'message':message,'finish_reason':finish}],'usage':usage})
+
+server = ThreadingHTTPServer(('127.0.0.1',0), Handler)
+threading.Thread(target=server.serve_forever,daemon=True).start()
+provider_port=server.server_port
+with socket.socket() as probe:
+    probe.bind(('127.0.0.1',0))
+    hub_port=probe.getsockname()[1]
+providers=root/'config/evener/providers.toml'
+providers.write_text(f'''schema = 2
+default = "fixture"
+[providers.fixture]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:{provider_port}/v1"
+auth = "none"
+protocol = "openai-chat"
+cheap_model = "fixture-model"
+''')
+config=root/'config/evener/hub.toml'
+config.write_text(f'addr = "127.0.0.1:{hub_port}"\nplugin_auto_upgrade = false\n')
+env={'PATH':'/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin','USER':'jesse','LANG':'en_US.UTF-8',
+     'TMPDIR':str(root/'run'),
+     'XDG_CONFIG_HOME':str(root/'config'),'XDG_STATE_HOME':str(root/'state'),
+     'XDG_CACHE_HOME':str(root/'cache'),'XDG_DATA_HOME':str(root/'data'),'XDG_RUNTIME_DIR':str(root/'run'),
+     'EVENER_OFFLINE':'1','EVENER_PROVIDERS_CONFIG':str(providers),'EVENER_CREDENTIALS_CONFIG':str(root/'config/evener/credentials.toml')}
+binary=str(root/'bin/evener')
+with (root/'hub.log').open('xb') as log:
+    os.chmod(root/'hub.log',0o600)
+    process=subprocess.Popen([binary,'hub','--config',str(config),'--evener',binary],cwd=root/'workspace',env=env,stdout=log,stderr=log,start_new_session=True)
+record={'root':str(root),'providerPID':os.getpid(),'hubPID':process.pid,'hubPort':hub_port,'providerPort':provider_port,'environment':env}
+(root/'runtime.json').write_text(json.dumps(record,indent=2)+'\n')
+print(json.dumps({k:v for k,v in record.items() if k != 'environment'}),flush=True)
+signal.signal(signal.SIGTERM,lambda *_:stop.set())
+signal.signal(signal.SIGINT,lambda *_:stop.set())
+try:
+    stop.wait()
+finally:
+    process.terminate()
+    try: process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    server.shutdown()
+    server.server_close()
+    token=root/'state/evener/auth-token'
+    if token.exists():token.unlink()
+    print(json.dumps({'hubExit':process.returncode,'credentialRemoved':not token.exists()}),flush=True)

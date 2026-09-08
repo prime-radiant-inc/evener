@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {AppwireClient} from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/ws/index.js';
+import {runStreamingNotifications} from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/examples/streaming-notifications-logic.mjs';
+import {runWorkNotifications} from '/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/examples/work-notifications-logic.mjs';
+const rt=JSON.parse(readFileSync('runtime.json')),session=JSON.parse(readFileSync('session.json')),token=readFileSync('state/evener/auth-token','utf8').trim();
+const make=()=>new AppwireClient({url:`ws://127.0.0.1:${rt.hubPort}/rpc`,clientInfo:{name:'task-notification-root-qualification',version:'1'},socketFactory:url=>new WebSocket(url,{headers:{Authorization:`Bearer ${token}`}})});
+const actor=make(),streamClient=make(),workClient=make();const events=[],waiters=new Set(),files=[];
+function save(name,value){const file='run/'+name+'.json';writeFileSync(file,JSON.stringify(value)+'\n',{flag:'wx',mode:0o600});const rec={file,sha256:createHash('sha256').update(readFileSync(file)).digest('hex'),mode:statSync(file).mode&0o777};files.push(rec);return rec;}
+const off=streamClient.onNotification(n=>{events.push(n);for(const w of waiters)w();});
+const until=predicate=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>{waiters.delete(check);reject(new Error('bounded notification deadline'));},15000);function check(){const value=events.find(predicate);if(value){clearTimeout(timer);waiters.delete(check);resolve(value);}}waiters.add(check);check();});
+let releaseReady,releaseDone,failDone;let readyCount=0;const ready=new Promise(r=>{releaseReady=r;});const done=new Promise((resolve,reject)=>{releaseDone=resolve;failDone=reject;});
+const observe=async()=>{if(++readyCount===2)releaseReady();await done;};
+const streamingRun=runStreamingNotifications(streamClient,{ref:session.ref},{observe});
+const workRun=runWorkNotifications(workClient,{ref:session.ref},{observe});
+const observed=Promise.allSettled([streamingRun,workRun]);
+try{
+ await actor.connect();await ready;
+ const initial=await actor.request('thread/read',{ref:session.ref,includeTurns:true,subscribe:false});save('initial-independent',initial);
+ const started=await actor.request('turn/start',{ref:session.ref,clientMutationId:'task-notification-acceptance-c82f',expectedInstanceId:initial.thread.evener.instanceId,input:[{type:'text',text:'task-notification-acceptance-c82f'}]});save('turn-start',started);
+ const turnId=started.turn.id;
+ await until(n=>n.method==='evener/task/updated'&&n.params.ref===session.ref&&n.params.total===1);
+ const tasks=await actor.request('evener/tasks/list',{ref:session.ref});save('added-task-readback',tasks);assert.equal(tasks.data.length,1);const taskId=tasks.data[0].id;assert.equal(tasks.data[0].status,'open');assert(Number.isSafeInteger(taskId)&&taskId>0);
+ const response=await fetch(`http://127.0.0.1:${rt.providerPort}/task-id`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({taskId})});assert.equal(response.status,200);
+ await until(n=>n.method==='evener/task/updated'&&n.params.ref===session.ref&&n.params.done===1);
+ const completed=await until(n=>n.method==='turn/completed'&&n.params.ref===session.ref&&(n.params.turnId===turnId||n.params.turn?.id===turnId));assert.equal(completed.params.turn.status,'completed');save('completion-notification',completed);
+ const final=await actor.request('thread/read',{ref:session.ref,includeTurns:true,subscribe:false});save('final-independent',final);assert(final.thread.turns.some(t=>t.id===turnId&&t.status==='completed'));
+ const finalTasks=await actor.request('evener/tasks/list',{ref:session.ref});save('completed-task-readback',finalTasks);assert.equal(finalTasks.data.find(t=>t.id===taskId).status,'done');
+ releaseDone();const results=await observed;for(const [index,r] of results.entries())if(r.status==='rejected')throw new Error(['streaming','work'][index]+': '+r.reason.message);const [streaming,work]=results.map(r=>r.value);
+ assert.equal(streaming.outcome,'read');assert.equal(work.outcome,'read');assert(streaming.events.some(e=>e.method==='item/toolOutput/delta'&&e.ref===session.ref&&e.turnId===turnId));assert(work.events.some(e=>e.method==='evener/task/updated'&&e.done===1));assert.equal(work.readback.tasks.find(t=>t.id===taskId).status,'done');save('streaming-result',streaming);save('work-result',work);save('raw-events',events);
+ const receipt={status:'passed',sdkSourceCommit:'58d1b079f',packageRoot:'/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client',fixture:JSON.parse(readFileSync('inputs.json')),session,turnId,taskId,completionTurnId:completed.params.turnId??completed.params.turn.id,taskStatus:'done',streaming:{outcome:streaming.outcome,eventCount:streaming.eventCount,eventNames:[...new Set(streaming.events.map(e=>e.method))]},work:{outcome:work.outcome,eventCount:work.eventCount,eventNames:[...new Set(work.events.map(e=>e.method))]},privateFiles:files,limitations:['One scripted add/update/communicate turn. No jobs, delegates, model retry, reasoning or user-authored steering acceptance; only the automatic tasks-done steering is exercised.']};save('receipt',receipt);console.log(JSON.stringify({status:'passed',turnId,taskId,streaming:receipt.streaming,work:receipt.work}));
+}catch(error){failDone(error);await observed;save('failure',{message:error.message,events,files});console.error('Task notification qualification failed; private evidence retained.');process.exitCode=1;}finally{off();streamClient.close();workClient.close();actor.close();}

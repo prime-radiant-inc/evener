@@ -1,0 +1,19 @@
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync,statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
+const root=process.cwd(),rt=JSON.parse(readFileSync('runtime.json')),session=JSON.parse(readFileSync('session.json')),packageRoot='/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client';
+const outcomes=[];
+for(const name of ['session','work','streaming','hub']){
+ const prefix='EVENER_'+name.toUpperCase()+'_NOTIFICATIONS';
+ const output=join(root,'run',name+'-cli.json');
+ const env={PATH:process.env.PATH,LANG:'en_US.UTF-8',EVENER_RPC_URL:`ws://127.0.0.1:${rt.hubPort}/rpc`,EVENER_CWD:join(root,'workspace'),EVENER_TOKEN_FILE:join(root,'state/evener/auth-token'),EVENER_THREAD_REF:session.ref,[prefix+'_OUTPUT_FILE']:output,[prefix+'_OBSERVE_MS']:'0'};
+ const stdout=execFileSync(process.execPath,[join(packageRoot,'examples',name+'-notifications.mjs')],{env,encoding:'utf8',timeout:30000});
+ const summary=JSON.parse(stdout);assert.equal(summary.outcome,'read');assert.equal(summary.eventCount,0);assert.equal(summary.outputWritten,true);
+ const allowed=new Set(['outcome','eventCount','overflow','connectionInterrupted','changedDuringReadback','outputWritten','ref','jobState','taskAvailable']);assert(Object.keys(summary).every(key=>allowed.has(key)));
+ const receipt=JSON.parse(readFileSync(output));assert.equal(receipt.outcome,'read');assert(receipt.initial&&receipt.readback);assert.equal(statSync(output).mode&0o777,0o600);
+ outcomes.push({name,exitCode:0,summary,privateOutput:{file:output,mode:statSync(output).mode&0o777,sha256:createHash('sha256').update(readFileSync(output)).digest('hex')}});
+}
+writeFileSync('run/cli-receipt.json',JSON.stringify({status:'passed',sourceCommit:'58d1b079f',packageRoot,outcomes},null,2)+'\n',{flag:'wx',mode:0o600});
+console.log(JSON.stringify({status:'passed',cliCount:outcomes.length,allExitedZero:true,allOutputsPrivate:true}));
