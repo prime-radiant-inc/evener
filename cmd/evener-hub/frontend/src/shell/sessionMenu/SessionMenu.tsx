@@ -13,8 +13,8 @@
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { Button, Dialog, Input } from "../../widgets";
-import { Menu, type MenuEntry } from "../../widgets/menu";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import styles from "./sessionmenu.module.css";
 
