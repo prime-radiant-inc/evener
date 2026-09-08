@@ -249,10 +249,12 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	}()
 
 	// Phase 1: drive passes 0..drainIdleBackoffFullRatePasses (17 sends).
-	// Pass 16 is the last full-rate pass; pass 17 (quietPasses=17, 17%4!=0)
-	// is the first pass that SKIPS its kick. Each send blocks until the
-	// loop receives it in waitDrainWake at the end of a pass, so the send
-	// count equals the completed pass count and the quiet streak is exact.
+	// The drain runs its first pass (pass 0) before parking, so 17 sends
+	// release passes 1..17: passes 0..16 kick at full rate (17 kicks) and
+	// pass 17 (quietPasses=17, 17%4!=0) is the first pass that SKIPS its
+	// kick. A completed send proves only that the tick was consumed, not
+	// that the released pass ran its kick gate — so the streak below is
+	// pinned on the observable kick count, not the send count.
 	for range drainIdleBackoffFullRatePasses + 1 {
 		select {
 		case recheck <- time.Now():
@@ -260,6 +262,12 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 			t.Fatal("drain returned before reaching a skipped-kick pass")
 		}
 	}
+	// Await the 17 full-rate kicks before seeding: this proves passes 0..16
+	// all ran their kick gates, so the loop is parked awaiting pass 17 (or
+	// running it) and Phase 2's seeding cannot land in an earlier pass's
+	// scan. Without the fix this wait still terminates — the prefix always
+	// kicks — and the turn assertion below still fails.
+	waitDrainBackoffKicks(t, done, &kicks, int32(drainIdleBackoffFullRatePasses)+1, "full-rate prefix")
 	// Phase 2: while the loop is parked awaiting pass 17, seed a forwarded
 	// terminal pending owned by a child that is nowhere in the live tree —
 	// not a live direct subagent, no delegate descriptor, so childResumable
@@ -287,18 +295,46 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	jm.stableWatchSettlementRetrying = false
 	jm.mu.Unlock()
 	// The scan excludes the forwarded copy by design, so the tree now reads
-	// quiescent apart from the kick-only render — the hole under test.
-	if outstanding, err := sess.treeHasOutstandingWork(); err != nil || outstanding {
-		t.Fatalf("precondition: tree must read quiescent after residue clear, got outstanding=%v err=%v", outstanding, err)
+	// quiescent apart from the kick-only render — the hole under test. Poll
+	// read-only (no recheck ticks: every tick releases another parked pass
+	// and disturbs the kick count asserted at the tail) until the quiet scan
+	// is observable. A quiet scan here cannot be a stale read racing pass
+	// 17's own verdict: the loop is parked awaiting it, and the seeding
+	// above raised no wake, so the next pass still skips its kick.
+	quietDeadline := time.Now().Add(30 * time.Second)
+	for {
+		outstanding, err := sess.treeHasOutstandingWork()
+		if err != nil {
+			t.Fatalf("quiescence poll: %v", err)
+		}
+		if !outstanding {
+			break
+		}
+		if time.Now().After(quietDeadline) {
+			t.Fatalf("precondition: tree must read quiescent after residue clear, got outstanding=true after 30s")
+		}
+		// TRIPWIRE: not a completion-signal wait — a quiet scan above is
+		// the signal; 10ms only yields instead of busy-spinning.
+		select {
+		case <-done:
+			t.Fatalf("drain returned during quiescence poll with turns = %d, want the skipped-kick pass to run first", turns.Load())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	// Phase 3: release pass 17. Without the fix it returns quiescent with
-	// the pending undelivered (turns stays 0); with the fix the final kick
-	// renders it and the loop runs exactly one notification turn.
-	select {
-	case recheck <- time.Now():
-	case <-done:
-		t.Fatal("drain returned without running its skipped-kick pass")
-	}
+	// the pending undelivered (turns stays 0 and done closes); with the fix
+	// the final kick renders it onto the rail and the loop runs exactly one
+	// notification turn for it.
+	//
+	// The render itself raises no wake (enqueueJobNotification queues
+	// without notifying), so after a skipped pass's re-kick the loop parks
+	// with the work queued but no edge set. A recheck tick is what releases
+	// the confirming pass that runs the turn — and a test tick sent while
+	// the loop is still inside the re-kick waits for that park instead of
+	// racing it (the recheck channel is unbuffered). Keep sending until the
+	// turn is observable; the turn count, not the send count, is the signal.
+	// If done closes first with turns==0, that IS the bug under test: the
+	// drain returned quiescent on a skipped kick without rendering.
 	deadline := time.Now().Add(30 * time.Second)
 	for turns.Load() != 1 {
 		if time.Now().After(deadline) {
@@ -307,6 +343,9 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 		select {
 		case recheck <- time.Now():
 		case <-done:
+			if turns.Load() != 1 {
+				t.Fatalf("drain returned quiescent with notification turns = %d, want 1: a throttled pass stranded the unreachable child's pending", turns.Load())
+			}
 		// TRIPWIRE: not a completion-signal wait -- this is the poll tick inside
 		// a loop whose real completion signal is turns==1 (the 30s deadline
 		// above is the hang guard). 10ms only yields while the recheck send
@@ -328,5 +367,14 @@ func TestDrainBackoffFinalKickDeliversUnreachableChildPending(t *testing.T) {
 	}
 	if got := sess.peekNotifications(); got != 0 {
 		t.Fatalf("queued notifications after drain = %d, want 0: the turn must have consumed the render", got)
+	}
+	// At least the full-rate prefix (17) plus the skipped pass's re-kick ran:
+	// without the fix the drain returns quiescent with turns==0 and exactly
+	// the prefix count, so a shortfall here and the turn assertion above both
+	// fail. No exact upper bound: release ticks sent while the loop parks
+	// each run one more pass, so the confirming turn pass and any further
+	// re-kicks only add kicks past this floor.
+	if got, want := kicks.Load(), int32(drainIdleBackoffFullRatePasses)+2; got < want {
+		t.Fatalf("kicks = %d, want at least %d (full-rate prefix plus the skipped pass's re-kick)", got, want)
 	}
 }
