@@ -256,7 +256,11 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 }
 
 // serveDelegateQuietWatchHub is the hub's single goroutine: each shared tick
-// fans out to every registered lease whose stop channel is still open.
+// fans out to every registered lease whose stop channel is still open. Each
+// lease's tick runs on its own goroutine so one lease blocked on durable
+// transcript I/O (or armDelegateAttention's reservation path) cannot stall
+// the remaining leases or delay hub shutdown: the loop never waits on tick
+// work and keeps selecting on hub.done.
 func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 	for {
 		select {
@@ -272,12 +276,14 @@ func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
 			}
 			delegateQuietWatchHubs.Unlock()
 			for _, entry := range live {
-				select {
-				case <-entry.stop:
-					continue
-				default:
-				}
-				_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
+				go func(entry delegateQuietWatchEntry) {
+					select {
+					case <-entry.stop:
+						return
+					default:
+					}
+					_ = s.runDelegateQuietWatchdogTick(entry.lease, now)
+				}(entry)
 			}
 		case <-hub.done:
 			return
