@@ -259,9 +259,11 @@ export function HubsScreen({
 				style={styles.fill}
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
+				enabled={Platform.OS !== "ios"}
 			>
 				<ScrollView
 					keyboardShouldPersistTaps="handled"
+					automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
 					contentContainerStyle={styles.padded}
 				>
 					<Text style={[styles.title, { color: colors.text }]}>Saved hubs</Text>
