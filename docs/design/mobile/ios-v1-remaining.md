@@ -2,7 +2,9 @@
 
 Updated 8 September 2026. See the [current project status](status.md) for implemented behavior, artifact identities and verified checks.
 
-This checklist follows Jesse's selected iOS-only v1 scope. **Current milestone: full iPhone functionality. iPad and accessibility work are paused as of 8 September 2026.** Preserve their implementation and evidence; do not assign those tasks or require them to close this functional milestone. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
+This checklist follows Jesse's selected iOS-only v1 scope. **Current order: a usable daily iPhone loop, then full functionality, then quality and delivery. iPad and accessibility work are paused as of 8 September 2026.** Preserve their implementation and evidence; do not assign those tasks or require them to close this functional milestone. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
+
+The [detailed Usable → Useful → Good implementation plan](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md) is the current execution authority. It defines 18 bounded tasks, dependencies, file ownership, focused tests, native journeys and parallel SDK work. This page remains the scope/remaining-work summary.
 
 ## iPhone functionality milestone
 
@@ -19,11 +21,11 @@ A source route or passing unit suite is not enough. Functional completion means 
 
 ## Dependency order
 
-1. Freeze the intended source head and build the iPhone Release artifact from that head. Record source, bundle, binary and SDK hashes.
-2. Preserve the [verified 8 September integration baseline](assets/2026-09-08-status-verification.json); rerun affected checks and canonical gates after source changes. Keep unrelated generated Apple changes intact.
-3. Re-run real-daemon workflows against isolated authenticated v4 hubs with a scripted provider at the LLM boundary. Capture direct API readback and persisted state before native claims.
-4. Qualify iPhone functionality on the current Release artifact: lifecycle, hubs, workflows, reader, keyboard, gestures and failure recovery. Independent real-hub fixtures and SDK checks can run in parallel; shared artifact installation, hub mutations and final evidence identity remain coordinator-owned gates. Repeat required cases after cold launch where persistence is part of the contract.
-5. Complete physical-device, signing, install/update and performance checks, then make the final release decision from one identity-matched record.
+1. **Usable:** establish authenticated connection and early physical-iPhone installation, then close create/open → read → send/stop → answer/approve → leave/return. Preserve drafts, reader position and hub identity through ordinary interruption.
+2. **Useful:** complete navigation/session management, rich media and queue operations, goals/delegates, vision selection, providers, plugins, launch/preferences and hub upgrade. Integrate them into one full functional journey.
+3. **Good:** measure representative-data performance, refine whole-screen interaction, stress cross-workflow recovery and qualify physical install/update and distribution readiness.
+4. **Independent SDK:** prioritize contracts required by the active iPhone task, then complete the full method/outcome and notification producer matrix alongside native work.
+5. Preserve the [verified 8 September integration baseline](assets/2026-09-08-status-verification.json), repeat affected checks after source changes and run canonical gates at converged milestones. Documentation-only updates do not require new app artifacts. Keep unrelated generated Apple changes intact.
 
 Source and deterministic gates can run in parallel with independent SDK recipe work and isolated fixture preparation. Interactions on the same device, shared-hub mutations, artifact installation and final integration remain serialized; separate devices and isolated fixtures can run in parallel. Up to three bounded Luna workers can own disjoint lanes; one coordinator must own artifact identity, shared-device lifecycle and final gates.
 

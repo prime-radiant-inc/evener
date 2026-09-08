@@ -2,7 +2,7 @@
 
 Updated 8 September 2026. Owner: Bot; product direction: Jesse.
 
-**The native app has substantial implementation and verified end-to-end slices. iOS v1 is not release-ready.** The immediate milestone is full iPhone functionality: complete the remaining supported actions and verify usable workflows, lifecycle recovery and data preservation. Jesse paused iPad and accessibility work on 8 September; those items are retained for later resumption. Performance, physical-device and distribution qualification remain separate from feature coverage, and the complete SDK outcome matrix remains project work. Passing a build or finding a screen in source does not close a workflow.
+**The native app has substantial implementation and verified end-to-end slices. iOS v1 is not release-ready.** The execution order is **Usable → Useful → Good**: first a dependable daily conversation loop, then full iPhone functionality, then fluency, performance and delivery quality. Ordinary lifecycle recovery and data preservation belong in the first milestone. Jesse paused iPad and accessibility work on 8 September; those items are retained for later resumption. Performance, physical-device and distribution qualification remain separate from feature coverage, and the complete SDK outcome matrix remains project work. Passing a build or finding a screen in source does not close a workflow.
 
 ## Scope and architecture
 
@@ -12,7 +12,7 @@ Updated 8 September 2026. Owner: Bot; product direction: Jesse.
 - The authoritative worktree is `live-concepts-plan2-integrate` under the external Evener worktree directory named in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md). The default checkout is not the implementation workspace.
 - Routine choices and parallel Luna-medium implementation/testing are authorized. A coordinator owns integration and artifact identity; separate workers can own functional areas, independent fixtures and SDK checks without sharing mutations. Do not assign new iPad or accessibility work while paused.
 
-This page is the current summary. The [acceptance ledger](acceptance.md) defines each workflow's evidence boundary; the [remaining-work checklist](ios-v1-remaining.md) defines execution order. The [backlog](backlog.md) retains issue IDs and feedback. Dated feature receipts and the original coverage spec remain historical evidence, not a competing current status.
+The [detailed implementation plan](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md) governs task order, dependencies, worker ownership and milestone exits. This page is the current summary. The [acceptance ledger](acceptance.md) defines each workflow's evidence boundary; the [remaining-work checklist](ios-v1-remaining.md) defines execution order. The [backlog](backlog.md) retains issue IDs and feedback. Dated feature receipts and the original coverage spec remain historical evidence, not a competing current status.
 
 ## Implementation and acceptance by area
 
@@ -75,11 +75,9 @@ Browser geometry and race checks have separate ownership and were not repeated f
 
 ## Remaining delivery order
 
-1. Keep the verified integration baseline intact; repeat affected gates when source changes and retain native/backend/SDK artifact identities separately.
-2. Run the remaining iPhone workflows using isolated authenticated v4 hubs and scripted providers, preserving authoritative API/state readback. Fix reproduced defects before closing each workflow.
-3. Complete the SDK's catalog-derived success/failure/disconnect and notification producer matrix through the installed package.
-4. Qualify cross-cutting native behavior: simultaneous hubs, pending operations, cold/background recovery, live/paged/image reflow, stale decisions, gestures, keyboard and usable content presentation. Dedicated accessibility and iPad qualification are paused.
-5. Measure representative data performance and memory, then verify physical iPhone networking/pairing, signed installation and update/relaunch.
-6. Record iPhone functional completion when every supported workflow is usable through the native app with correct backend results and recovery. Keep the broader release record, paused iPad/accessibility work and independent SDK completion visible as separate milestones.
+1. **Usable:** connect/install, create/open/read/send/stop, answer questions/approvals and return safely after ordinary interruption. Physical-iPhone development installation starts here.
+2. **Useful:** finish navigation/management, media and active-turn controls, goals/delegates, the missing existing-session vision choice, provider/plugin administration, launch/preferences and upgrade. Qualify the joined native workflow.
+3. **Good:** measure representative-data performance, refine coherent interaction, stress recovery combinations and verify physical install/update and delivery readiness. Correctness defects that block earlier milestones are fixed immediately.
+4. **SDK:** run independent installed-package outcome/producer work alongside the app, giving priority to contracts needed by the active native workflow.
 
-No percentage-complete or ship-date estimate is supported by the remaining acceptance work. The [full to-do list](ios-v1-remaining.md) and [workflow ledger](acceptance.md) define completion.
+The [detailed plan](../../superpowers/plans/2026-09-08-iphone-usable-useful-good.md) defines milestone exit criteria and source-appropriate verification. iPad and accessibility remain paused; Android and voice remain outside current delivery. No percentage-complete or ship-date estimate is supported by the remaining acceptance work.
