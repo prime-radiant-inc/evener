@@ -8980,10 +8980,11 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 		got = req
 		return rendezvous.Entry{PID: 301, ThreadID: "th_orclaude", SessionID: "th_orclaude"}, nil
 	}
+	credsStore := newTestCredentialsStore(t)
 	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENROUTER_API_KEY": "k"}, map[string]registry.Provider{
 		"orclaude": {Base: "openrouter", Protocol: registry.ProtocolAnthropic},
-	})
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg})
+	}, credsStore)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex(""), Registry: reg, CredsStore: credsStore})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -10795,11 +10796,13 @@ func TestLaunchInstanceExists_AcceptsAProviderTheContractDidNotEnumerate(t *test
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10848,11 +10851,13 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10885,11 +10890,13 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10922,11 +10929,13 @@ func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -10960,11 +10969,13 @@ func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
-		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, nil, nil),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
+		CredsStore:          credsStore,
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -11006,6 +11017,19 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	return srv
 }
 
+// newTestCredentialsStore loads a credentials store over a file of this test's
+// own, so writes through evener/auth/apiKey never reach the developer's
+// credentials.toml or another test's.
+func newTestCredentialsStore(t *testing.T) *credentials.Store {
+	t.Helper()
+	credsPath := filepath.Join(t.TempDir(), "credentials.toml")
+	store, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credsPath, err)
+	}
+	return store
+}
+
 // newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
 // returns the constructed *WebServer, for tests that need to wire an
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
@@ -11031,12 +11055,15 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 	// same file, as in production (main.go loads the store from
 	// cmdutil.CredentialsPath and hands children that path).
 	if cfg.CredsStore == nil {
-		credsPath := filepath.Join(t.TempDir(), "credentials.toml")
-		store, err := credentials.LoadStore(credsPath)
-		if err != nil {
-			t.Fatalf("LoadStore(%s): %v", credsPath, err)
+		// A caller that brings its own registry has already chosen where that
+		// registry resolves credentials from, and a store minted here would
+		// not be it: evener/auth/apiKey/set would write a file the registry
+		// never reads, so Reload and every status answer would keep reporting
+		// the credential the registry's own source holds.
+		if cfg.Registry != nil {
+			t.Fatalf("newHubRPCTestServerWithWeb: an injected Registry must come with the CredsStore it resolves from; without it evener/auth/apiKey/set writes a store the registry never reads")
 		}
-		cfg.CredsStore = store
+		cfg.CredsStore = newTestCredentialsStore(t)
 	}
 	if cfg.CredentialsPath == "" {
 		cfg.CredentialsPath = cfg.CredsStore.Path()
@@ -11236,18 +11263,10 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[providers.my-openai]\nbase = \"openai\"\napi_key = \"sk-inline\"\n")
-	// A temp-dir-backed credentials store, shared with the registry below: a
-	// nil CredsStore makes newHubAuthControllerWithStore fall back to the
-	// on-disk default store under the ambient HOME/XDG env. TestMain redirects
-	// that env into a throwaway root and
-	// TestHubDefaultRootsStayInsideTheTestEnvironment pins the redirect, so an
-	// unset root cannot reach a developer's actual store; a per-test temp dir
-	// keeps this test's store out of the root the whole package shares as
-	// well.
-	credsStore, loadErr := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	if loadErr != nil {
-		t.Fatalf("LoadStore: %v", loadErr)
-	}
+	// One store for the registry and the auth controller both: a nil CredsStore
+	// makes newHubAuthControllerWithStore fall back to the on-disk default
+	// store under the ambient HOME/XDG env, which the whole package shares.
+	credsStore := newTestCredentialsStore(t)
 	var liveModelsCalled atomic.Bool
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),

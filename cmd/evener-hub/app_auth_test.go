@@ -64,12 +64,25 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	}
 }
 
+// envRegistryAuthConfig is a hub config whose registry resolves OAuth records
+// under stateRoot and reads OPENAI_API_KEY from an explicit env map. The
+// default fixture registry is hermetic - it reads no environment at all - so a
+// test about env-vs-OAuth precedence has to bring its own registry or it
+// asserts nothing about the environment.
+func envRegistryAuthConfig(t *testing.T, stateRoot string) hubcore.WebConfig {
+	t.Helper()
+	store := newTestCredentialsStore(t)
+	return hubcore.WebConfig{
+		Past:         hubcore.NewPastIndex(""),
+		HubStateRoot: stateRoot,
+		Registry:     newTestRegistry(t, stateRoot, "", store, map[string]string{"OPENAI_API_KEY": "env-token"}),
+		CredsStore:   store,
+	}
+}
+
 func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai-codex", authopenai.AuthRecord{
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -84,7 +97,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, envRegistryAuthConfig(t, stateRoot))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -99,6 +112,17 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	if !status.SignedIn || status.ActiveSource != authopenai.AuthSourceOAuth || !status.HasStoredOAuth || status.StoredEmail != "stored@example.com" || status.Email != "stored@example.com" {
 		t.Fatalf("status=%+v, want stored OAuth to win over env-token", status)
 	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
+	}
 }
 
 // TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance is spec §5.1: the
@@ -106,12 +130,9 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 // OPENAI_API_KEY in the environment leaves it signed out rather than claiming
 // a sign-in the child could never use.
 func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	t.Setenv("OPENAI_API_KEY", "env-token")
-	xdgStateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", xdgStateHome)
+	stateRoot := oaitest.IsolateOpenAIAuth(t)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, envRegistryAuthConfig(t, stateRoot))
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -125,6 +146,17 @@ func TestHubRPCAuthStatusIgnoresAPIKeyForTheCodexInstance(t *testing.T) {
 	}
 	if status.SignedIn || status.ActiveSource != "none" || status.HasStoredOAuth || status.EnvVar != "" {
 		t.Fatalf("status=%+v, want signed out with source none: an API key is not a Codex credential", status)
+	}
+
+	// Positive control: the plain API-key provider is the one that does read
+	// the environment, so an env layer that never reaches the registry fails
+	// here instead of making the Codex assertion above vacuously true.
+	envStatus, err := client.AuthStatus(context.Background(), appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("AuthStatus(openai): %v", err)
+	}
+	if !envStatus.SignedIn || envStatus.ActiveSource != "env:OPENAI_API_KEY" || envStatus.EnvVar != "OPENAI_API_KEY" {
+		t.Fatalf("status(openai)=%+v, want OPENAI_API_KEY to resolve from the environment", envStatus)
 	}
 }
 
