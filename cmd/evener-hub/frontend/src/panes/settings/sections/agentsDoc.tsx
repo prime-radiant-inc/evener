@@ -7,7 +7,8 @@
 //
 // `baseline` is the content the draft was last synced to; `dirty` is
 // draft !== baseline. A hub push (the `doc` subscription) syncs the draft
-// only while it is clean. A push whose content matches neither the baseline
+// while it is clean, and adopts a document that already equals the draft as
+// the new baseline. A push whose content matches neither the baseline
 // nor the draft while dirty is someone else's write, and flips `stale` -
 // this client's own save lands with content equal to the draft, so it never
 // reads as stale.
@@ -56,6 +57,13 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
     if (doc === null) return;
     if (baseline === null || draft === baseline) {
       setDraft(doc.content);
+      setBaseline(doc.content);
+      setStale(false);
+      return;
+    }
+    // A document that equals the draft is what the editor already holds, so
+    // there is nothing to warn about and nothing left to save.
+    if (doc.content === draft) {
       setBaseline(doc.content);
       setStale(false);
       return;

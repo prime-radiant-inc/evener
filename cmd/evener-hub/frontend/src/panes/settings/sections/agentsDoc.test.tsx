@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { AgentsDocResponse, AnyNotification } from "../../../protocol/types.gen";
-import { resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
+import { agentsDocStore, resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
 import { connectionStore } from "../../../stores/connection";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -270,6 +270,55 @@ test("a save superseded by a broadcast keeps the changed-on-disk note", async ()
   expect(getToasts().some((t) => t.text === "Saved AGENTS.md")).toBe(false);
   expect(screen.getByRole("status").textContent).toContain("changed on disk");
   expect(screen.getByRole("button", { name: "Load current" })).toBeTruthy();
+  expect(editor().value).toBe("# hi\nmore");
+});
+
+// The read that superseded the save then lands - holding exactly what the
+// editor has, because the save it fenced out is what put it there. The file
+// on disk IS the draft, so there is nothing to warn about and nothing to save.
+test("a read landing after a superseded save re-syncs a draft that matches disk", async () => {
+  const fake = connectFakeClient();
+  renderSection();
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  const user = userEvent.setup();
+  await user.type(editor(), "more");
+
+  let finishWriting!: (doc: AgentsDocResponse) => void;
+  fake.on(
+    "evener/settings/agentsDoc/set",
+    () =>
+      new Promise<AgentsDocResponse>((resolve) => {
+        finishWriting = resolve;
+      }),
+  );
+  await user.click(saveButton());
+
+  // A read started behind the write fences it out: the store resolves the
+  // save with the document it still holds, which is the pre-save file.
+  let finishReading!: (doc: AgentsDocResponse) => void;
+  fake.on(
+    "evener/settings/agentsDoc/get",
+    () =>
+      new Promise<AgentsDocResponse>((resolve) => {
+        finishReading = resolve;
+      }),
+  );
+  act(() => {
+    void agentsDocStore.getState().fetch();
+  });
+
+  const sent: AgentsDocResponse = { ...DOC, content: "# hi\nmore" };
+  await act(async () => {
+    finishWriting(sent);
+  });
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("changed on disk"));
+  expect(saveButton().disabled).toBe(false);
+
+  await act(async () => {
+    finishReading(sent);
+  });
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect(saveButton().disabled).toBe(true);
   expect(editor().value).toBe("# hi\nmore");
 });
 
