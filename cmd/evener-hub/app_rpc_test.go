@@ -11015,19 +11015,6 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 // starts serving requests.
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
-	if cfg.Registry == nil {
-		// Every auth and instance answer comes from the registry, so a hub
-		// fixture without one answers nothing. Offline, uncached and with no
-		// user layer: what the test's own environment and state root say, and
-		// nothing from the developer's providers.toml.
-		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-			return cmdutil.LoadRegistry(append(extra,
-				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer())...)
-		})
-		if err := cfg.Registry.Reload(); err != nil {
-			t.Fatalf("registry: %v", err)
-		}
-	}
 	// An unset root falls back to a HOME/XDG-derived default, which under this
 	// package's TestMain is the one throwaway root every test in the binary
 	// shares, so two parallel tests that both leave a root unset read each
@@ -11055,6 +11042,25 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 	}
 	if cfg.CredentialsPath == "" {
 		cfg.CredentialsPath = cfg.CredsStore.Path()
+	}
+	if cfg.Registry == nil {
+		// Every auth and instance answer comes from the registry, so a hub
+		// fixture without one answers nothing. Offline, uncached and with no
+		// user layer: what the test's own environment and state root say, and
+		// nothing from the developer's providers.toml. Its credential and
+		// state layers are this server's own, not cmdutil.LoadRegistry's
+		// process-wide pair, so the store the auth handlers write is the one
+		// the registry resolves from and stray OAuth records come from this
+		// server's state root.
+		cfg.Registry = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+			return cmdutil.LoadRegistry(append(extra,
+				registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+				registry.WithCredentials(cmdutil.StoreCredentialSource{Store: cfg.CredsStore}),
+				registry.WithStateRoot(cfg.HubStateRoot))...)
+		})
+		if err := cfg.Registry.Reload(); err != nil {
+			t.Fatalf("registry: %v", err)
+		}
 	}
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
@@ -11131,6 +11137,50 @@ func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
 	}
 	if len(paths) == 2 && paths[0] == paths[1] {
 		t.Errorf("both servers keep credentials at %q; the fixture is not isolating them", paths[0])
+	}
+}
+
+// TestHubRPCTestServerRegistryReadsItsOwnCredentials pins the other half of
+// credential isolation: the store the auth handlers write has to be the store
+// the registry resolves from. A default registry loaded through
+// cmdutil.LoadRegistry reads the process-wide credentials.toml instead, so a
+// key set through evener/auth/apiKey/set lands in the server's own store while
+// the reload behind that same call resolves from the shared file: the caller
+// is told "none" for the key it just stored, and a parallel test's registry
+// answers from whatever the shared file happens to hold.
+func TestHubRPCTestServerRegistryReadsItsOwnCredentials(t *testing.T) {
+	t.Parallel()
+	first := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer first.Close()
+	second := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer second.Close()
+
+	firstClient := dialHubRPC(t, first)
+	defer firstClient.Close()
+	secondClient := dialHubRPC(t, second)
+	defer secondClient.Close()
+	for _, client := range []*appwire.Client{firstClient, secondClient} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+
+	var stored appwire.AuthStatusResponse
+	if err := firstClient.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet,
+		appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-first-server"}, &stored); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	if stored.ActiveSource != "store" {
+		t.Fatalf("first server resolved %q right after storing a key; its registry is not reading the store its handlers write", stored.ActiveSource)
+	}
+
+	var other appwire.AuthStatusResponse
+	if err := secondClient.Request(context.Background(), appwire.MethodEvenerAuthStatus,
+		appwire.AuthStatusParams{Provider: "anthropic"}, &other); err != nil {
+		t.Fatalf("evener/auth/status: %v", err)
+	}
+	if other.ActiveSource == "store" {
+		t.Fatalf("second server resolved a stored key for anthropic; it is reading the first server's credentials")
 	}
 }
 
