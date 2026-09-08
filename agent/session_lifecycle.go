@@ -82,17 +82,14 @@ type retryTracker struct {
 // for the root session, removes any embedded skills directory, waits for
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(context.Background(), true)
+	s.close(context.Background(), true, false)
 }
 
 // CloseForShutdown closes the session with a terminal lifecycle boundary.
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
 func (s *Session) CloseForShutdown() {
-	s.mu.Lock()
-	s.sessionEndEmitted = false
-	s.mu.Unlock()
-	s.close(context.Background(), true)
+	s.close(context.Background(), true, true)
 }
 
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
@@ -325,8 +322,13 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool) {
+func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminal bool) {
 	s.closeOnce.Do(func() {
+		// A shutdown close is a terminal lifecycle boundary even when an
+		// interrupted turn already emitted its idle SessionEnd. Keep this
+		// decision inside closeOnce so repeated or concurrent closes cannot
+		// reopen the emission gate.
+		emitTerminal := forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
 		// close(budgetCtx, false) reuse it rather than minting their own.
@@ -348,10 +350,9 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
-		// An active turn may already have emitted an interrupted idle boundary
-		// while shutdown is cancelling it. That boundary does not describe the
-		// session's terminal state, so shutdown must still publish closed.
-		emitEnd := !s.sessionEndEmitted || s.state == SessionProcessing
+		// An interrupted idle boundary does not describe the session's terminal
+		// state, so the explicit shutdown close still publishes closed.
+		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)

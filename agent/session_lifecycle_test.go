@@ -216,6 +216,47 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.CloseForShutdown()
+	sess.CloseForShutdown()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	var inputComplete, closed int
+	for _, ev := range *eventsPtr {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		d, ok := ev.Data.(events.SessionEndData)
+		if !ok {
+			continue
+		}
+		if d.Reason == "input_complete" {
+			inputComplete++
+		}
+		if d.State == string(SessionClosed) {
+			closed++
+		}
+	}
+	if inputComplete != 1 || closed != 1 {
+		t.Fatalf("session end boundaries = input_complete:%d closed:%d, want one each; events=%+v", inputComplete, closed, *eventsPtr)
+	}
+}
+
 // TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus covers kata
 // hen0: kata r6y9 already made a genuine (non-cancelled) turn failure correct
 // the session's own State() to idle, but processInputKindWithProvenance's
