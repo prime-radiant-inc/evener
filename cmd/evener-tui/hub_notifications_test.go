@@ -318,14 +318,20 @@ func TestStreamDeltaChunkDecodesAppWireCamelCaseParams(t *testing.T) {
 // TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField drives
 // the real dispatcher over the shapes appwire.WarningParams permits: the hint
 // has to reach the rendered line, and the message can arrive as `message`, as a
-// bare-string `warning`, or as an object `warning`. Narrowing `warning` to an
-// object costs the whole frame rather than that one field — the decode fails and
-// the nil guard drops message, title, source and cause with it.
+// bare-string `warning`, or as an object `warning`. A frame carrying one field
+// the contract cannot type still has to render what it did carry, and a frame
+// carrying no message anywhere has to render itself rather than a bare title.
 func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *testing.T) {
+	// A frame the reader could not read at all is rendered verbatim, and every
+	// frame here contains the text its case is looking for, so a substring
+	// assertion alone would pass on that dump. rawFrame says which case wants
+	// it: the others additionally require the line to carry no JSON punctuation,
+	// so recovering the message is the only way to satisfy them.
 	tests := []struct {
-		name   string
-		params string
-		want   []string
+		name     string
+		params   string
+		want     []string
+		rawFrame bool
 	}{
 		{
 			name:   "object form with hint",
@@ -348,9 +354,10 @@ func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *te
 			want:   []string{"real message", "retry"},
 		},
 		{
-			name:   "no message anywhere renders the frame itself, not a bare title",
-			params: `{"warning":42}`,
-			want:   []string{`{"warning":42}`},
+			name:     "no message anywhere renders the frame itself, not a bare title",
+			params:   `{"warning":42}`,
+			want:     []string{`{"warning":42}`},
+			rawFrame: true,
 		},
 	}
 
@@ -373,6 +380,9 @@ func TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField(t *te
 				if !strings.Contains(last.Text, want) {
 					t.Fatalf("rendered warning line = %q, want substring %q", last.Text, want)
 				}
+			}
+			if !tc.rawFrame && strings.ContainsAny(last.Text, "{}") {
+				t.Fatalf("rendered warning line = %q, want the recovered message, not the raw frame", last.Text)
 			}
 		})
 	}

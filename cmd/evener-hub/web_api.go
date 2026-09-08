@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/hubapi"
@@ -105,38 +104,4 @@ func (s *WebServer) apiStateGlob() string {
 		return ""
 	}
 	return s.cfg.Past.StateGlob()
-}
-
-func warningPayload(raw json.RawMessage) map[string]any {
-	params, message := appwire.DecodeWarningParams(raw)
-	payload := map[string]any{"message": message}
-	if params.Source != "" {
-		payload["source"] = params.Source
-	}
-	if params.Title != "" {
-		payload["title"] = params.Title
-	}
-	if params.Hint != "" {
-		payload["hint"] = params.Hint
-	}
-	addDiagnosticDefaults(payload, message)
-	return payload
-}
-
-func addDiagnosticDefaults(payload map[string]any, message string) {
-	info := diagnostic.Classify(message)
-	if _, ok := payload["source"]; !ok {
-		payload["source"] = string(info.Source)
-	}
-	if _, ok := payload["title"]; !ok {
-		payload["title"] = info.Title
-	}
-	if _, ok := payload["hint"]; !ok {
-		payload["hint"] = info.Hint
-	}
-}
-
-func warningMessage(raw json.RawMessage) string {
-	_, message := appwire.DecodeWarningParams(raw)
-	return message
 }
