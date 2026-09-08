@@ -10,6 +10,7 @@
 package hubtestenv
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,7 +87,7 @@ func Redirect(prefix string) *Env {
 	// and the RemoveAll in Discard reports but cannot undo it.
 	// TestGoSubprocessesCacheOutsideTheTestRoot is the guard.
 	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
-		out, err := exec.Command("go", "env", key).Output()
+		out, err := exec.CommandContext(context.Background(), "go", "env", key).Output()
 		if err != nil {
 			continue
 		}
