@@ -61,6 +61,10 @@ func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
 
 	select {
 	case <-sawContinuation:
+	// TRIPWIRE: the event is emitted synchronously by ProcessInputKind above
+	// and delivered by the in-process drain goroutine, so it normally arrives
+	// in well under a second. 30s only fires on a genuine delivery hang, not
+	// scheduler contention under a loaded suite.
 	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for the EventGoalContinuation opening event")
 	}
