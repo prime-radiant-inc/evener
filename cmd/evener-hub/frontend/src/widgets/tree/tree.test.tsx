@@ -148,6 +148,27 @@ test("ArrowLeft on an expanded branch collapses it via onToggle and does not mov
   expect(document.activeElement).toBe(row("b"));
 });
 
+// Alt/Ctrl/Meta mean the key belongs to a GLOBAL chord (Alt+Arrow pane
+// cycling, Alt+Shift+Arrow live-session navigation and transcript scroll,
+// Alt+Home/End): a blanket preventDefault here would swallow all of them
+// while a rail row has focus (same trap RailResizeHandle.tsx's own guard
+// documents). Shift stays tree-owned: no global chord is Shift+Arrow without
+// Alt.
+test("arrow keys with Alt/Ctrl/Meta held are left for global chords (no preventDefault, no tree action)", () => {
+  const { onToggle } = renderTree();
+  act(() => row("b").focus());
+  for (const mod of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true, shiftKey: true }]) {
+    // b is an expanded branch: without the guard, ArrowRight would move focus
+    // into b1 and ArrowLeft would collapse via onToggle.
+    const right = fireEvent.keyDown(row("b"), { key: "ArrowRight", ...mod });
+    expect(right).toBe(true); // fireEvent returns false when the event was preventDefaulted
+    expect(document.activeElement).toBe(row("b"));
+    const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", ...mod });
+    expect(left).toBe(true);
+    expect(onToggle).not.toHaveBeenCalled();
+  }
+});
+
 test("ArrowLeft on a leaf child moves focus to its parent", () => {
   const { onToggle } = renderTree();
   act(() => row("b1").focus());
