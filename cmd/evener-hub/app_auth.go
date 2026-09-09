@@ -344,10 +344,11 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	if err := c.credentialWrite(func() error {
 		codex = c.instanceIsCodex(name)
 		if !codex {
+			_, hadFile := c.creds.Get(name)
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return clrErr
 			}
-			removed = true
+			removed = hadFile
 			return nil
 		}
 		// The Codex transport: clear the effective layer only. An OAuth record
