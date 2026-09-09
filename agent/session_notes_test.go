@@ -59,7 +59,7 @@ func TestAddSessionURLRejectsOverCapAndBadScheme(t *testing.T) {
 	if _, err := s.addSessionURL("gopher://x.test/y", ""); err == nil {
 		t.Fatalf("bad scheme accepted")
 	}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if _, err := s.addSessionURL(fmt.Sprintf("https://x.test/%d", i), ""); err != nil {
 			t.Fatalf("fill %d: %v", i, err)
 		}

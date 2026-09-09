@@ -48,7 +48,7 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			deps.notesGuard.save()
 			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(deps.notesGuard.SnapshotURLs()))
 			return tool.StateResult{
-				Output: fmt.Sprintf("URL added: %s", entry.URL),
+				Output: "URL added: " + entry.URL,
 				State:  entry,
 			}, nil
 		},

@@ -29,7 +29,7 @@ func newNotesToolSession(t *testing.T) *Session {
 }
 
 // notesToolExec invokes a notes tool through the session registry.
-func notesToolExec(t *testing.T, s *Session, ctx context.Context, id, name string, args map[string]any) string {
+func notesToolExec(ctx context.Context, t *testing.T, s *Session, id, name string, args map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestNotesAgentSetTool(t *testing.T) {
 	t.Parallel()
 	s := newNotesToolSession(t)
 	ctx := context.Background()
-	out := notesToolExec(t, s, ctx, "n1", "notes_agent_set", map[string]any{"note": "agent says hi"})
+	out := notesToolExec(ctx, t, s, "n1", "notes_agent_set", map[string]any{"note": "agent says hi"})
 	if out == "" {
 		t.Fatalf("output = %q, want non-empty", out)
 	}
@@ -99,7 +99,7 @@ func TestUrlsAddRemoveTool(t *testing.T) {
 	t.Parallel()
 	s := newNotesToolSession(t)
 	ctx := context.Background()
-	added := notesToolExec(t, s, ctx, "u1", "urls_add", map[string]any{"url": "https://x.test/y", "label": "why"})
+	added := notesToolExec(ctx, t, s, "u1", "urls_add", map[string]any{"url": "https://x.test/y", "label": "why"})
 	if added == "" {
 		t.Fatalf("urls_add output = %q, want non-empty", added)
 	}
@@ -115,7 +115,7 @@ func TestUrlsAddRemoveTool(t *testing.T) {
 		t.Fatal("URLS_UPDATED payload has wrong type")
 	}
 	// Entry id must round-trip into remove.
-	removed := notesToolExec(t, s, ctx, "u2", "urls_remove", map[string]any{"id": entry.ID})
+	removed := notesToolExec(ctx, t, s, "u2", "urls_remove", map[string]any{"id": entry.ID})
 	if removed == "" {
 		t.Fatalf("urls_remove output = %q, want non-empty", removed)
 	}
@@ -135,7 +135,7 @@ func TestNotesReadTool(t *testing.T) {
 	if _, err := s.addSessionURL("https://x.test/y", "x"); err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	out := notesToolExec(t, s, ctx, "r1", "notes_read", map[string]any{})
+	out := notesToolExec(ctx, t, s, "r1", "notes_read", map[string]any{})
 	for _, want := range []string{"human hello", "agent hello", "https://x.test/y"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("notes_read output = %q, want it to contain %q", out, want)

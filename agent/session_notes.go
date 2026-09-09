@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -139,7 +140,7 @@ func (s *Session) notesCWD() string {
 func canonicalSessionURL(raw, cwd string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return "", fmt.Errorf("urls/add: empty URL")
+		return "", errors.New("urls/add: empty URL")
 	}
 	if len([]rune(trimmed)) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
@@ -247,7 +248,7 @@ func canonicalFilePath(path, cwd, raw string) (string, error) {
 // tool uses for cwd validation.
 func notesRootBoundary(cwd string) (execenv.RootBoundary, bool) {
 	env := execenv.NewLocalExecutionEnvironment(cwd)
-	rb, ok := interface{}(env).(execenv.RootBoundary)
+	rb, ok := any(env).(execenv.RootBoundary)
 	return rb, ok
 }
 
