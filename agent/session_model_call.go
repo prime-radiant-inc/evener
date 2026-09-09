@@ -1518,12 +1518,8 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			} else {
 				history = append(history, t.Message)
 			}
-		case schema.TurnEnvironment:
-			// Environment context only ever lands at a turn boundary, so no
-			// mid-tool-round deferral: pass the message straight through.
-			history = append(history, t.Message)
-		case schema.TurnNotesContext:
-			// Shared-notes context only ever lands at a turn boundary, so no
+		case schema.TurnEnvironment, schema.TurnNotesContext:
+			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)
 		case schema.TurnToolResults:

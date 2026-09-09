@@ -521,8 +521,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				// backing array must not alias the installed state.
 				var urls []appwire.SessionURL
 				if len(params.URLs) > 0 {
-					urls = make([]appwire.SessionURL, 0, len(params.URLs))
-					urls = append(urls, params.URLs...)
+					urls = append([]appwire.SessionURL(nil), params.URLs...)
 				}
 				s.appEnvelope.SessionURLs = urls
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})

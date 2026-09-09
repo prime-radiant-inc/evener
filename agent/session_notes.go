@@ -40,24 +40,31 @@ func normalizeNote(text string) string {
 // the stored value with whether it changed (clamp-then-compare: re-saving an
 // identical over-length note is a no-op).
 func (s *Session) setHumanNote(note string) (stored string, changed bool) {
-	normalized := normalizeNote(note)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.humanNote == normalized {
-		return s.humanNote, false
-	}
-	s.humanNote = normalized
-	return s.humanNote, true
+	return s.storeNote(note, true)
 }
 
 // setAgentNote normalizes and clamps note, stores it on change, and reports
 // the stored value with whether it changed.
 func (s *Session) setAgentNote(note string) (stored string, changed bool) {
+	return s.storeNote(note, false)
+}
+
+// storeNote normalizes note and stores it on the human (human=true) or agent
+// whiteboard, reporting the stored value with whether it changed.
+func (s *Session) storeNote(note string, human bool) (stored string, changed bool) {
 	normalized := normalizeNote(note)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.agentNote == normalized {
-		return s.agentNote, false
+	current := s.agentNote
+	if human {
+		current = s.humanNote
+	}
+	if current == normalized {
+		return current, false
+	}
+	if human {
+		s.humanNote = normalized
+		return s.humanNote, true
 	}
 	s.agentNote = normalized
 	return s.agentNote, true
@@ -160,10 +167,7 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 		return canonicalFilePath(parsed.Path, cwd, raw)
 	default:
 		if strings.Contains(trimmed, "://") {
-			scheme := trimmed
-			if i := strings.Index(scheme, "://"); i >= 0 {
-				scheme = scheme[:i]
-			}
+			scheme := trimmed[:strings.Index(trimmed, "://")]
 			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
 		}
 		return canonicalFilePath(trimmed, cwd, raw)

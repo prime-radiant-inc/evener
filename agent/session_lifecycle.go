@@ -1940,14 +1940,12 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	}
 
 	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
-	if !preseededInput {
-		s.maybeAppendEnvironmentContext()
-	}
 	// Shared-notes context rides beside the goal continuation-prompt rendering
 	// at turn start: the current notes plus URL list enter the model context
 	// as a fresh projection of the persisted source of truth. Empty state
 	// appends nothing, so a fresh session's history is byte-identical.
 	if !preseededInput {
+		s.maybeAppendEnvironmentContext()
 		s.maybeAppendNotesContext()
 	}
 

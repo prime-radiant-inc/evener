@@ -103,29 +103,35 @@ func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 // the shared-notes capability so an old daemon with a new hub fails closed
 // instead of dropping writes.
 func setNotesHumanWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.NotesHumanSetResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
-		if err != nil {
-			return appwire.NotesHumanSetResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shared-notes"); err != nil {
-			return appwire.NotesHumanSetResponse{}, err
-		}
-		return source.NotesHumanSet(ctx, params)
-	})
+	return relayWithResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, "shared-notes",
+		func(source appsource.Source) (appwire.NotesHumanSetResponse, error) {
+			return source.NotesHumanSet(ctx, params)
+		})
 }
 
 // removeURLWithResume relays urls/remove to the owning source, resuming an
 // exited session first like goal/set, gated on the shared-notes capability.
 func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.UrlsRemoveResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+	return relayWithResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, "shared-notes",
+		func(source appsource.Source) (appwire.UrlsRemoveResponse, error) {
+			return source.UrlsRemove(ctx, params)
+		})
+}
+
+// relayWithResume resolves the owning source for ref, gates on the named
+// thread action, and runs call — the shared shape behind the notes/urls
+// resume relays above.
+func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
+	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, func() (R, error) {
+		source, err := sourceForThread(sources, ref, "")
 		if err != nil {
-			return appwire.UrlsRemoveResponse{}, err
+			var zero R
+			return zero, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shared-notes"); err != nil {
-			return appwire.UrlsRemoveResponse{}, err
+		if err := ensureThreadActionAvailable(ctx, source, ref, "", action); err != nil {
+			var zero R
+			return zero, err
 		}
-		return source.UrlsRemove(ctx, params)
+		return call(source)
 	})
 }

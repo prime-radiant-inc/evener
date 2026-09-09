@@ -41,11 +41,9 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 	human, agentNote := s.notesSnapshot()
 	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
 	s.maybeAutoSave()
-	var text string
+	text := "human updated their whiteboard: " + stored
 	if stored == "" {
 		text = "human updated their whiteboard: (whiteboard cleared)"
-	} else {
-		text = "human updated their whiteboard: " + stored
 	}
 	// The steer rides the durable client-mutation path (Reuse the steering
 	// path; do not fork it): the mutation store dedupes a hub retry on the
@@ -104,17 +102,15 @@ func (s *Session) annotateSteeringKind(clientMutationID, kind string) {
 }
 
 // notesSnapshot reads the human and agent notes under s.mu.
-func (s *Session) notesSnapshot() (human, agent string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.humanNote, s.agentNote
+func (s *Session) notesSnapshot() (human, agentNote string) {
+	human, agentNote, _ = s.notesSnapshotAll()
+	return human, agentNote
 }
 
 // snapshotSessionURLs reads a copy of the session URL list under s.mu.
 func (s *Session) snapshotSessionURLs() []schema.SessionURL {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]schema.SessionURL(nil), s.sessionURLs...)
+	_, _, urls := s.notesSnapshotAll()
+	return urls
 }
 
 // notesContextBlock renders the current notes plus URL list for agent context
@@ -123,6 +119,9 @@ func (s *Session) snapshotSessionURLs() []schema.SessionURL {
 // renders nothing, so a fresh session's context is byte-identical to today.
 func (s *Session) notesContextBlock() string {
 	human, agentNote, urls := s.notesSnapshotAll()
+	if human == "" && agentNote == "" && len(urls) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("<shared-notes>\n")
 	if human != "" {
@@ -132,17 +131,19 @@ func (s *Session) notesContextBlock() string {
 		b.WriteString("Agent: " + agentNote + "\n")
 	}
 	for _, u := range urls {
-		line := "Link: " + u.URL
-		if u.Label != "" {
-			line = fmt.Sprintf("Link: %s (%s)", u.Label, u.URL)
-		}
-		b.WriteString(line + "\n")
+		b.WriteString(formatNotesLinkLine(u) + "\n")
 	}
 	b.WriteString("</shared-notes>")
-	if b.String() == "<shared-notes>\n</shared-notes>" {
-		return ""
-	}
 	return b.String()
+}
+
+// formatNotesLinkLine renders one session URL list entry for the model
+// context block and the notes_read tool output.
+func formatNotesLinkLine(u schema.SessionURL) string {
+	if u.Label != "" {
+		return fmt.Sprintf("Link: %s (%s)", u.Label, u.URL)
+	}
+	return "Link: " + u.URL
 }
 
 // notesSnapshotAll reads human note, agent note, and URL list together.

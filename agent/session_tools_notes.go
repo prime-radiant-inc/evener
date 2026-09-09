@@ -85,11 +85,7 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 				lines = append(lines, "Agent: "+agent)
 			}
 			for _, u := range urls {
-				line := "Link: " + u.URL
-				if u.Label != "" {
-					line = fmt.Sprintf("Link: %s (%s)", u.Label, u.URL)
-				}
-				lines = append(lines, line)
+				lines = append(lines, formatNotesLinkLine(u))
 			}
 			out := strings.Join(lines, "\n")
 			if out == "" {

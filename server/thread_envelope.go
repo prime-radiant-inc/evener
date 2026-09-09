@@ -380,10 +380,10 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			next.Name = strings.TrimSpace(meta.Name)
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
 		}
-		if facets&facetGoal != 0 && meta.Goal != nil {
-			next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
-		}
 		if facets&facetGoal != 0 {
+			if meta.Goal != nil {
+				next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
+			}
 			next.HumanNote = strings.TrimSpace(meta.HumanNote)
 			next.AgentNote = strings.TrimSpace(meta.AgentNote)
 			if len(meta.SessionURLs) > 0 {

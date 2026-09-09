@@ -1168,10 +1168,11 @@ func (m *hubModel) runHubNotes(args string) tea.Cmd {
 		m.addSessionSystem("Session ref is invalid.")
 		return nil
 	}
+	note := arg
 	if strings.EqualFold(arg, "clear") {
-		return sendHubNotes(m.client, ref, "", mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+		note = ""
 	}
-	return sendHubNotes(m.client, ref, arg, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+	return sendHubNotes(m.client, ref, note, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 }
 
 // sendHubURLRemove issues urls/remove to remove one session URL list entry by

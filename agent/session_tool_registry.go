@@ -293,22 +293,10 @@ func newToolDeps(s *Session) *toolDeps {
 			setAgentNote: s.setAgentNote,
 			addURL:       s.addSessionURL,
 			removeURL:    s.removeSessionURL,
-			snapshot: func() (string, string) {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				return s.humanNote, s.agentNote
-			},
-			snapshotURLs: func() []schema.SessionURL {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				return append([]schema.SessionURL(nil), s.sessionURLs...)
-			},
-			snapshotAll: func() (string, string, []schema.SessionURL) {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				return s.humanNote, s.agentNote, append([]schema.SessionURL(nil), s.sessionURLs...)
-			},
-			save: s.maybeAutoSave,
+			snapshot:     s.notesSnapshot,
+			snapshotURLs: s.snapshotSessionURLs,
+			snapshotAll:  s.notesSnapshotAll,
+			save:         s.maybeAutoSave,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,
