@@ -1,0 +1,98 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { AppwireClient } from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js';
+import WebSocket from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/ws/index.js';
+import { runSessionSettings, safeSessionSettingsSummary } from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/examples/session-settings-logic.mjs';
+
+const root = '/private/tmp/evener-sdk-settings-cluster-r2-1788950326';
+const runtime = JSON.parse(await readFile(`${root}/provider-fixture/runtime.json`, 'utf8'));
+const token = (await readFile(`${root}/provider-fixture/state/evener/auth-token`, 'utf8')).trim();
+const out = `${root}/qualification`;
+await mkdir(out, { recursive: true });
+const endpoint = `ws://127.0.0.1:${runtime.hubPort}/rpc`;
+const hub = new AppwireClient({ url: endpoint, clientInfo: { name: 'settings-cluster-r2', version: '1' }, socketFactory: (u) => new WebSocket(u, { headers: { Authorization: `Bearer ${token}` } }) });
+const requests = [], responses = [];
+const setterMethods = new Set(['thread/model/set', 'thread/reasoning-effort/set', 'thread/vision-model/set']);
+const request = async (method, params) => {
+  requests.push({ method, params });
+  try { const value = await hub.request(method, params); responses.push({ method, ok: true, value }); return value; }
+  catch (error) { responses.push({ method, ok: false, error: { name: error.name, code: error.code, message: error.message, info: error.evenerErrorInfo } }); throw error; }
+};
+const sha = (value) => createHash('sha256').update(value).digest('hex');
+const save = async (name, value) => { const path = `${out}/${name}.json`; await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); return { path, sha256: sha(await readFile(path)) }; };
+const projected = (thread) => ({ modelProvider: thread.modelProvider, ...(Object.hasOwn(thread.evener, 'reasoningEffort') ? { reasoningEffort: thread.evener.reasoningEffort } : {}), ...(Object.hasOwn(thread.evener, 'visionModel') ? { visionModel: thread.evener.visionModel } : {}) });
+const readSettings = async (ref) => { const value = await request('thread/read', { ref, includeTurns: false, subscribe: false }); return { value, settings: projected(value.thread) }; };
+let writes = 0;
+const counted = { connect: () => hub.connect(), request: (method, params) => { if (setterMethods.has(method)) writes += 1; return request(method, params); } };
+const run = (setting, ref, instance, reviewed, fields) => runSessionSettings(counted, { setting, params: { ref, expectedInstanceId: instance, reviewed, ...fields }, ownedHub: endpoint });
+const direct = async (method, params) => request(method, params);
+const expectInvalid = async (name, method, params, message) => {
+  const before = (await readSettings(ref)).settings;
+  let error;
+  try { await direct(method, params); } catch (caught) { error = caught; }
+  assert.ok(error, `${name}: request unexpectedly succeeded`);
+  assert.equal(error.code, -32602, `${name}: unexpected error code`);
+  assert.equal(error.evenerErrorInfo, 'invalidParams', `${name}: unexpected error info`);
+  assert.match(error.message, message, `${name}: unexpected error message`);
+  const after = (await readSettings(ref)).settings;
+  assert.deepEqual(after, before, `${name}: invalid request mutated settings`);
+  return { case: name, method, expectedCode: -32602, expectedInfo: 'invalidParams', rejected: true, before, after };
+};
+
+let ref, instance, threadId, before, modelAlt, modelRestored, high, reasoningReset, visionOff, visionReset, finalRead;
+try {
+  process.env.EVENER_SESSION_SETTINGS_MUTATION = '1';
+  process.env.EVENER_RPC_URL = endpoint;
+  await hub.connect();
+  const started = await request('thread/start', { cwd: `${root}/provider-fixture/workspace`, modelProvider: 'fixture', model: 'fixture-model', nonInteractive: false, launchOverrides: { noProjectPrompts: true, maxRounds: 1 } });
+  ref = started.thread.evener.ref;
+  const initialRead = await readSettings(ref);
+  instance = initialRead.value.thread.evener.instanceId;
+  threadId = initialRead.value.thread.id;
+  before = initialRead.settings;
+  assert.equal(before.modelProvider, 'fixture-model');
+
+  modelAlt = await run('model', ref, instance, before, { modelProvider: '', model: 'fixture-model-alt' });
+  assert.equal(modelAlt.settings.modelProvider, 'fixture-model-alt');
+  modelRestored = await run('model', ref, instance, modelAlt.settings, { modelProvider: '', model: 'fixture-model' });
+  assert.equal(modelRestored.settings.modelProvider, 'fixture-model');
+  high = await run('reasoning-effort', ref, instance, modelRestored.settings, { reasoningEffort: 'high' });
+  assert.equal(high.settings.reasoningEffort, 'high');
+  reasoningReset = await run('reasoning-effort', ref, instance, high.settings, { reasoningEffort: '' });
+  assert.equal(Object.hasOwn(reasoningReset.settings, 'reasoningEffort'), false);
+  visionOff = await run('vision-model', ref, instance, reasoningReset.settings, { visionModel: 'off' });
+  assert.equal(visionOff.settings.visionModel, 'off');
+  visionReset = await run('vision-model', ref, instance, visionOff.settings, { visionModel: '' });
+  assert.equal(Object.hasOwn(visionReset.settings, 'visionModel'), false);
+
+  const writesBeforeStale = writes;
+  await assert.rejects(() => runSessionSettings(counted, { setting: 'reasoning-effort', params: { ref, expectedInstanceId: 'synthetic-stale-instance', reviewed: visionReset.settings, reasoningEffort: 'high' }, ownedHub: endpoint }), /Thread instance changed/);
+  assert.equal(writes, writesBeforeStale);
+
+  const invalid = [];
+  invalid.push(await expectInvalid('missing-model', 'thread/model/set', { ref, modelProvider: '' }, /model is required/));
+  invalid.push(await expectInvalid('numeric-reasoning-effort', 'thread/reasoning-effort/set', { ref, reasoningEffort: 12 }, /cannot unmarshal number/));
+  invalid.push(await expectInvalid('numeric-vision-model', 'thread/vision-model/set', { ref, visionModel: 12 }, /cannot unmarshal number/));
+  invalid.push(await expectInvalid('unconfigured-vision-provider', 'thread/vision-model/set', { ref, visionModel: 'provider/not-a-real-model' }, /not configured/));
+
+  finalRead = await readSettings(ref);
+  assert.deepEqual(finalRead.settings, before);
+  const receipt = {
+    status: 'passed', sourceCommit: 'd683abe21e949173f431201cda9ec169a1e9d349', refHash: sha(Buffer.from(ref)), instanceHash: sha(Buffer.from(instance)), threadIdHash: sha(Buffer.from(threadId)),
+    settings: { before, after: finalRead.settings },
+    positive: [safeSessionSettingsSummary(modelAlt), safeSessionSettingsSummary(modelRestored), safeSessionSettingsSummary(high), safeSessionSettingsSummary(reasoningReset), safeSessionSettingsSummary(visionOff), safeSessionSettingsSummary(visionReset)],
+    invalid,
+    stalePreflight: { kind: 'client preflight', setting: 'reasoning-effort', syntheticExpectedInstanceId: true, rejectedBeforeSetterDispatch: true, notServerStaleInstanceOutcome: true, setterWritesBefore: writesBeforeStale, setterWritesAfter: writes },
+    requestCount: requests.length, writeCount: writes,
+    identities: { sdkSha256: sha(await readFile('/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js')), hubSha256: sha(await readFile('/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener')), packageTarballSha256: sha(await readFile('/private/tmp/evener-sdk-completion-ahdo59zq/evener-appwire-client-0.1.0.tgz')) },
+  };
+  const requestFile = await save('requests', requests);
+  const responseFile = await save('responses', responses);
+  const receiptFile = await save('receipt', receipt);
+  console.log(JSON.stringify({ status: receipt.status, positiveCount: receipt.positive.length, invalidCount: invalid.length, writeCount: writes, staleRejected: true, settingsRestored: true, requestFile, responseFile, receiptFile }));
+} catch (error) {
+  await save('failure', { message: error.message, code: error.code, info: error.evenerErrorInfo });
+  console.error(error);
+  process.exitCode = 1;
+} finally { hub.close(); }

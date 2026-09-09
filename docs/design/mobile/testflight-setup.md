@@ -3,6 +3,29 @@
 Checked 8 September 2026 from `live-concepts-plan2-integrate`. This documents
 setup and acceptance gates. The first signed beta `0.1.0 (1)` is processed and Testing in the internal group. Apple now reports Jesse’s copy Installed on iPhone 16 Pro; the device smoke and update gates remain open.
 
+## Current delivery
+
+Build **0.1.0 (3)**, native source `f866b2a80`, is `VALID` and `IN_BETA_TESTING`
+and belongs to Evener Internal. The [build 3 receipt](assets/2026-09-09-testflight-polish-update.json)
+records the exact signed archive/IPA identities and independent Apple API reads.
+It includes the browser/reader, running/recovery, media-caption and reviewed
+search-destination improvements. Both archive and export explicitly use build 3.
+The original keychain settings and generated project files were restored.
+
+The upload succeeded. The local lane's final single availability check ran too
+early during Apple's post-compliance transition and exited 1; separate reads
+37 seconds later verified the exact build and group. No reupload was attempted.
+The readiness correction is separate from the already uploaded application.
+Builds 1, 2 and 3 already exist; a future upload must select another unused number.
+
+PR #1039 was updated onto current main at `e0c10be42`; all checks are green,
+but repository review is still required. Default-branch workflow registration
+and a real CI TestFlight run remain open. Once registered, dispatch the native
+source branch `codex/evener-iphone-v1`. Physical iPhone update/smoke and Drew's
+external beta review remain open. The paired iOS 27 phone is visible, but Xcode
+still cannot mount its developer disk image; no physical smoke is claimed.
+
+
 ## Sources and current evidence
 
 - The checked-in [TestFlight workflow](../../../.github/workflows/ios-testflight.yml) is manual-only. Local source inspection does not establish its availability on a remote dispatch branch.
@@ -13,8 +36,8 @@ setup and acceptance gates. The first signed beta `0.1.0 (1)` is processed and T
 - Internal group **Evener Internal**, ID `7ea9cf9b-bb33-46ca-a975-208903052b56`, has automatic distribution enabled. Jesse remains its sole internal tester. Drew was subsequently added to the separate Evener Demo external group, as requested; his invitation remains blocked by external beta review.
 - Jesse reaffirmed authorization to complete all TestFlight setup. **Evener TestFlight CI**, an App Manager Team key, was generated, downloaded and validated. The private key and signing material are protected outside Git under `~/.local/state/evener/apple-distribution/87WJ58S66M` (directory 0700, credential files 0600). Real API authentication returned the exact app/group and confirmed version `0.1.0`, build `1` was unused immediately before upload. The existing individual API key was left untouched.
 - Apple Distribution certificate `35DH6R89C7` and active App Store profile **Evener TestFlight Distribution**, UUID `c16d95a4-4cbd-4799-9820-cb232be3ac9a`, were issued for team `87WJ58S66M`. The profile has the exact native bundle ID, matching certificate and `get-task-allow: false`. Local export used an isolated signing keychain; the original keychain search list and default were restored afterward.
-- The seven repository secrets and two variables below were configured and verified by metadata in `prime-radiant-inc/evener`. Existing organization secrets were not changed. The workflow is not registered remotely, and the current `origin/main` tree has no native app subtree; [PR #1039](https://github.com/prime-radiant-inc/evener/pull/1039) registers only the workflow on the default branch. The native source is pushed at `codex/evener-iphone-v1`, including delivery fix `213a21131`. Dispatch must select that source branch because `main` has no native app subtree. All GitHub checks, including RoboRev, passed on the initial PR head. The PR was updated to main `6c8c5be56` at head `1f1bd61353`; all fresh checks have now passed. One approving review remains required before merge; no protection bypass or dispatch is claimed.
-- The checked-in Fastlane preflight passed with real Apple credentials. The [first-demo receipt](assets/2026-09-08-testflight-first-demo.json) records upload completion at 19:16:40 PDT on 8 September and processing completion at 19:27:17 PDT. Build `ff84c49d-a983-4811-8cff-60a64d0f326b` is `VALID`, `IN_BETA_TESTING`, and a verified member of Evener Internal. The original lane then exited 1 because Fastlane attempted an unsupported manual assignment of an internal group. Fix `213a21131` relies on automatic internal distribution and verifies the exact processed build afterward; root and an independent Luna reviewer passed its behavior regressions. A new live upload through the fixed lane has not yet run. Do not upload build `1` again.
+- The seven repository secrets and two variables below were configured and verified by metadata in `prime-radiant-inc/evener`. Existing organization secrets were not changed. The workflow is not registered remotely, and the current `origin/main` tree has no native app subtree; [PR #1039](https://github.com/prime-radiant-inc/evener/pull/1039) registers only the workflow on the default branch. The native source is pushed at `codex/evener-iphone-v1`, including delivery fix `213a21131`. Dispatch must select that source branch because `main` has no native app subtree. All GitHub checks, including RoboRev, passed on the initial PR head. The PR was updated to main `6c8c5be56` at head `e0c10be42`; all fresh checks have now passed. One approving review remains required before merge; no protection bypass or dispatch is claimed.
+- The checked-in Fastlane preflight passed with real Apple credentials. The [first-demo receipt](assets/2026-09-08-testflight-first-demo.json) records upload completion at 19:16:40 PDT on 8 September and processing completion at 19:27:17 PDT. Build `ff84c49d-a983-4811-8cff-60a64d0f326b` is `VALID`, `IN_BETA_TESTING`, and a verified member of Evener Internal. The original lane then exited 1 because Fastlane attempted an unsupported manual assignment of an internal group. Fix `213a21131` relies on automatic internal distribution and verifies the exact processed build afterward; root and an independent Luna reviewer passed its behavior regressions. The fixed lane completed the later build 2 upload. Build 3 is also available, with its separate final-readiness timing failure recorded in the current delivery receipt. Do not upload an existing build again.
 - The own-tester invitation request returned HTTP 201 at 19:41:30 PDT. Native Safari initially showed Jesse as **Invited**, with a conflicting group row. Apple now reports Jesse’s `0.1.0 (1)` as Installed on iPhone 16 Pro, iOS 27.0; the prior No Builds Available row has cleared. The [installation and tester receipt](assets/2026-09-08-testflight-install-and-drew.json) records this Apple-reported physical install. Device smoke and second-build update acceptance remain open. Test information, feedback email and What to Test were saved. [Apple invitation API](https://developer.apple.com/documentation/appstoreconnectapi/beta-tester-invitations)
 - The dedicated Luna distribution preflight and coordinator rerun of `bundle exec ruby scripts/test-ios-distribution.rb` passed under Ruby 3.3.6. These are deterministic local behavior checks for app/group selection, revision/build validation, IPA identity, processing and receipt logic; the Apple boundary is scripted. Those earlier scripted checks remain separate from the real authentication, export and upload now recorded above.
 

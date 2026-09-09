@@ -424,6 +424,8 @@ npm --prefix mobile-native test -- src/hubUpgrade.test.ts src/hubUpgradeReposito
 - [ ] Verify portrait/landscape, ordinary software keyboard, light/dark appearance, touch targets, gestures and copy/open/return on iPhone. Do not add an iPad or dedicated accessibility qualification lane while paused.
 - [ ] Capture the complete before/after journeys and verify the touched behavior. Avoid string/screenshot snapshots that merely pin incidental markup.
 
+**9 September search follow-through:** [same-basename destination context](../../design/mobile/2026-09-09-search-destinations.md) is implemented and independently confirmed in the signed Release simulator. Five real sessions, exact target selection, retained search/return placement and original-state preservation pass at `f866b2a80`. This closes one panel finding, not the complete Task 15 specimen.
+
 **Exit:** the working app has consistent hierarchy, understandable state and comfortable interaction across its full workflows. Existing accessibility labels/scaling remain preserved without claiming completed accessibility qualification.
 
 ### Task 16: Stress combinations and close remaining recovery defects

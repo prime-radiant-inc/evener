@@ -165,4 +165,11 @@ that specimen; it does not close the gate. Apply agreed findings in one bounded
 batch, then confirm the affected journeys. Performance measurements remain
 Task 14 with their own dataset and device identity.
 
+The [search destination confirmation](2026-09-09-search-destinations.md) closes the
+panel's same-basename search presentation issue on native source `f866b2a80`.
+Five real sessions across three projects preserve their raw destinations while
+showing distinguishing context only where needed. Light/dark review, exact
+session selection, return/query/position and original-state preservation pass.
+This is a bounded confirmation; the full Task 15 journey remains open.
+
 The [9 September running-work panel](2026-09-09-iphone-running-panel.md) adds a second independent two-person review of actual running, queue, question, approval and connection-recovery states on `b9990e5c1`, with executed outcomes and preservation evidence. Its fixes are now implemented and have [bounded native confirmation](assets/2026-09-09-native-running-correction.json): readable busy settings/actions, local reconnect without moving the reader, and one stale notice per expanded project. The [independent confirmation review](assets/2026-09-09-native-running-confirmation-review.md) records what passed. Full Task 15 acceptance remains open.
