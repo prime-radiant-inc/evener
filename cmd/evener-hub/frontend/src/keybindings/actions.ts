@@ -13,6 +13,8 @@ export const ACTIONS = {
   selectionQuote: "selection.quote",
   sessionNext: "session.next",
   sessionPrevious: "session.previous",
+  sessionLiveNext: "session.liveNext",
+  sessionLivePrevious: "session.livePrevious",
   transcriptLineUp: "transcript.lineUp",
   transcriptLineDown: "transcript.lineDown",
   transcriptPageUp: "transcript.pageUp",

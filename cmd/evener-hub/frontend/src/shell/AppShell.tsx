@@ -4,6 +4,7 @@
 // place for a path urlToPane() can't resolve at all.
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ACTIONS } from "../keybindings/actions";
+import { isEditableTarget } from "../keybindings/dispatcher";
 import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
@@ -13,6 +14,7 @@ import { rpcURLFromLocation } from "../protocol/transport";
 import type { NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
+  selectLiveRows,
   selectLocation,
   selectNeedsYouRows,
   selectNextSectionOffset,
@@ -33,6 +35,7 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
+import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { navigate, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
@@ -511,6 +514,24 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       .catch(() => undefined);
   }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
   const isMobile = useIsMobile();
+  // Route-change epoch for in-flight live demands (roborev PR #1044 round-9
+  // medium 4): leaving the session (to settings, the dashboard, another
+  // session) and returning BEFORE a demand resolves can restore an identical
+  // focused pane id and session ref, so the press-time pane/ref guards alone
+  // cannot tell that round trip apart from "never left" - and the stale
+  // completion then navigates under a user who has since re-entered the app.
+  // A monotonic epoch bumped on every pathname change closes it: the demand
+  // completes only onto the route it was pressed on. Bumped during render
+  // (not in an effect) so it lands in the same commit as the navigation
+  // itself - the same render-phase-ref precedent as renderTimePanesRef
+  // below. StrictMode's double render only double-bumps; monotonicity is all
+  // the check needs.
+  const liveNavRouteEpochRef = useRef(0);
+  const liveNavSeenPathnameRef = useRef<string | null>(null);
+  if (pathname !== liveNavSeenPathnameRef.current) {
+    liveNavSeenPathnameRef.current = pathname;
+    liveNavRouteEpochRef.current++;
+  }
   // Alt+ArrowLeft/Right cycle focus through the open session panes (Phase 3;
   // cycling semantics live in sessionCycle.ts). Desktop only, following
   // RailHost's rail.toggle pattern: with no action registered on mobile the
@@ -529,12 +550,203 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     if (isMobile) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
+    // The live section paginates like needs_you (limit 50 per page). At the
+    // last LOADED live row, next demand-loads the following page and
+    // continues into it rather than wrapping over the loaded subset, which
+    // would skip every live session behind the remaining count (roborev PR
+    // #1044 finding 1; the needs-you handler's openDemandedPage pattern
+    // above). previous wraps within loaded rows: pages only page forward,
+    // so the true last live row is unknowable until every page is in; the
+    // exception is an UNLOADED section, where previous demand-loads through
+    // the remaining pages to the tail (round-4 medium 1).
+    //
+    // Lifecycle rules (PR #1044 rounds 2 and 4): the demanded-page registry
+    // maps page+direction to the press that owns the in-flight load; it
+    // clears on a client generation change and on load failure (the
+    // revalidator resolves with an error state rather than rejecting);
+    // starting a NEW demand or navigating directly bumps the intent counter,
+    // but a press that dedupes against a still-fresh in-flight demand does
+    // NOT - it is the same intent, and bumping would make the demand's own
+    // completion go inert (round-4 medium 2). A press against an owner whose
+    // guards have gone STALE (the user left and returned, the client
+    // reconnected) does not dedupe: it ADOPTS the pending load by rebinding
+    // fresh guards, so its completion navigates when the load lands instead
+    // of riding the dead one into inertia (round-11 medium 1). The dedupe
+    // key is page AND direction: an opposite-direction press against the
+    // same in-flight page is a NEW intent - it must bump and supersede, not
+    // ride the stale continuation (round-6 medium). A completing demand
+    // goes inert when the press that started it no longer owns the intent,
+    // the focused session or pane moved on, or a palette/modal is open.
+    // A completing demand also goes inert when the client generation changed
+    // mid-flight (reconnect): the rows it resolved with belong to the previous
+    // generation, and the handlers' press-time reset only covers new presses.
+    let liveNavMounted = true;
+    let liveNavIntent = 0;
+    let liveNavGeneration = navigationStore.getState().clientGenerationID;
+    interface LiveDemandOwner {
+      intent: number;
+      generation: string;
+      pane: string | null;
+      ref: string | null;
+      routeEpoch: number;
+      beforeRefs: ReadonlySet<string>;
+    }
+    const demandedLivePages = new Map<string, LiveDemandOwner>();
+    // A press-time freshness check for the recorded owner: the guards the
+    // owner captured still match the current world. Palette/modal are not
+    // part of it - the dispatcher does not deliver the chord while either is
+    // open; they stay completion-only checks.
+    const liveDemandOwnerFresh = (owner: LiveDemandOwner): boolean =>
+      navigationStore.getState().clientGenerationID === owner.generation &&
+      liveNavRouteEpochRef.current === owner.routeEpoch &&
+      workspaceStore.getState().focusedPaneId === owner.pane &&
+      focusedSessionRef() === owner.ref;
+    // Opens (or re-focuses) a live session by URL, then guarantees the
+    // session pane holds focus even when the URL already named the target -
+    // navigate() no-ops on an unchanged pathname, so a secondary panel or
+    // another pane holding focus would otherwise survive the press
+    // (roborev PR #1044 round-8 medium 3). replacePrimary both opens the
+    // pane and focuses it (workspace.ts), making it the URL-change and
+    // URL-equal paths' shared seam.
+    const openLiveSession = (ref: string): void => {
+      openNeedsYouSession(ref);
+      const workspace = workspaceStore.getState();
+      const main = workspace.mainPane();
+      if (main === null || main.type !== "session" || sessionRefFromRouteParams(main.params) !== ref) {
+        openTopLevelSession(ref);
+        return;
+      }
+      if (workspace.focusedPaneId !== main.id) workspace.focusPane(main.id);
+    };
+    const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
+      const state = navigationStore.getState();
+      const offset = selectNextSectionOffset("live", state);
+      const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
+      const demandKey = `${pageID}:${direction}`;
+      const existing = demandedLivePages.get(demandKey);
+      if (existing && liveDemandOwnerFresh(existing)) return; // same intent, still fresh: waiting on this page
+      liveNavIntent++;
+      const owner: LiveDemandOwner = {
+        intent: liveNavIntent,
+        generation: state.clientGenerationID,
+        pane: workspaceStore.getState().focusedPaneId,
+        ref: focusedSessionRef(),
+        routeEpoch: liveNavRouteEpochRef.current,
+        beforeRefs,
+      };
+      demandedLivePages.set(demandKey, owner);
+      void state
+        .loadSection("live", offset)
+        .then((page) => {
+          // A newer press adopted this load by rebinding the record: only
+          // the current owner's completion acts; the displaced one no-ops.
+          if (demandedLivePages.get(demandKey) !== owner) return;
+          if (page.error !== null || page.data === null) {
+            demandedLivePages.delete(demandKey); // failed load: allow the next press to retry
+            return;
+          }
+          if (
+            !liveNavMounted ||
+            owner.intent !== liveNavIntent ||
+            navigationStore.getState().clientGenerationID !== owner.generation ||
+            liveNavRouteEpochRef.current !== owner.routeEpoch ||
+            workspaceStore.getState().focusedPaneId !== owner.pane ||
+            focusedSessionRef() !== owner.ref ||
+            paletteStore.getState().open ||
+            document.querySelector('[aria-modal="true"]') !== null ||
+            isEditableTarget(document.activeElement)
+          ) {
+            // Went inert: this demand is no longer in flight, so the set
+            // must not retain its key (the set tracks in-flight demands
+            // only - same invariant as the success and error paths).
+            // Roborev PR #1044 round-9 medium 3. The editable re-check is
+            // the press-time suppression's completion half: focus moving
+            // into the composer mid-flight means the keydown was swallowed
+            // then, so the navigation would surprise a typing user
+            // (round-13 low 5).
+            demandedLivePages.delete(demandKey);
+            return;
+          }
+          const rows = selectLiveRows(navigationStore.getState());
+          demandedLivePages.delete(demandKey); // completed: the set tracks in-flight only (round-8 low 1)
+          if (direction === "next") {
+            const newlyLoaded = rows.find((row) => !owner.beforeRefs.has(row.ref));
+            if (newlyLoaded) openLiveSession(newlyLoaded.ref);
+            return;
+          }
+          // previous: the tail sits behind any remaining pages.
+          if (selectSectionRemaining("live", navigationStore.getState()) > 0) {
+            demandLivePage("previous", owner.beforeRefs);
+            return;
+          }
+          const last = rows[rows.length - 1];
+          if (last) openLiveSession(last.ref);
+        })
+        .catch(() => {
+          if (demandedLivePages.get(demandKey) === owner) demandedLivePages.delete(demandKey);
+        });
+    };
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
+      // Live-session navigation: unlike session.next/previous (pane focus),
+      // these open the adjacent session from the rail's live section in
+      // server order, wrapping. openNeedsYouSession is the shared
+      // session-URL navigation seam (needsYouCycle.ts).
+      registry.registerAction(ACTIONS.sessionLiveNext, () => {
+        const state = navigationStore.getState();
+        if (state.clientGenerationID !== liveNavGeneration) {
+          liveNavGeneration = state.clientGenerationID;
+          demandedLivePages.clear();
+        }
+        const refs = selectLiveRows(state).map((row) => row.ref);
+        const current = focusedSessionRef();
+        const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
+        // Empty loaded set: selectSectionRemaining reads only loaded pages,
+        // so it is 0 while the initial read is in flight or failed. The
+        // manifest's live count is the authority there (the needs-you
+        // handler's bootstrap) - the demand dedupes against an in-flight
+        // initial read and retries a failed one.
+        const unloaded = refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0;
+        if (unloaded || (atLastLoaded && selectSectionRemaining("live", state) > 0)) {
+          demandLivePage("next", new Set(refs));
+          return;
+        }
+        liveNavIntent++; // a direct navigation supersedes an in-flight demand
+        const next = adjacentLiveSessionRef(refs, current, "next");
+        if (next !== null) openLiveSession(next);
+      }),
+      registry.registerAction(ACTIONS.sessionLivePrevious, () => {
+        const state = navigationStore.getState();
+        if (state.clientGenerationID !== liveNavGeneration) {
+          liveNavGeneration = state.clientGenerationID;
+          demandedLivePages.clear();
+        }
+        const refs = selectLiveRows(state).map((row) => row.ref);
+        const current = focusedSessionRef();
+        if (refs.length === 0) {
+          if ((state.manifest?.data?.sections.live.count ?? 0) > 0) {
+            demandLivePage("previous", new Set(refs));
+          }
+          return;
+        }
+        // A previous wrap targets the tail; with more pages on the server the
+        // tail is not loaded, so demand through to it rather than landing on
+        // the last loaded row (round-5 medium 1). Mid-list steps need nothing
+        // loaded beyond the loaded rows themselves.
+        const index = current === null ? -1 : refs.indexOf(current);
+        if (index <= 0 && selectSectionRemaining("live", state) > 0) {
+          demandLivePage("previous", new Set(refs));
+          return;
+        }
+        liveNavIntent++;
+        const previous = adjacentLiveSessionRef(refs, current, "previous");
+        if (previous !== null) openLiveSession(previous);
+      }),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
+      liveNavMounted = false;
       for (const dispose of unregister) dispose();
     };
   }, [isMobile]);

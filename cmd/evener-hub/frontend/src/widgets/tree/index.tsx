@@ -23,6 +23,13 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
   onActivate: (node: T) => void;
   onToggle: (node: T) => void;
   renderRow: (node: T, info: TreeRowInfo) => ReactNode;
+  // Alt-held arrows (and Alt+Home/End) belong to the desktop global chords
+  // (Alt+Arrow pane cycling, Alt+Shift+Arrow live-session navigation and
+  // transcript scroll, Alt+Home/End); releasing them lets those chords fire
+  // while a row has focus. Desktop-only consumers set this: on mobile the
+  // bindings are not installed, and Alt+ArrowLeft/Right are the browser's
+  // history navigation - the tree keeps them tree-owned instead.
+  releaseModifierKeys?: boolean;
 }
 
 const CLASS = {
@@ -80,7 +87,13 @@ function flattenVisible<T extends TreeNode>(nodes: T[], depth = 0, parent: T | n
  * currently the roving-tabindex target" state, the same way a native
  * `<select>`'s highlighted option isn't state the parent owns.
  */
-export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggle, renderRow }: TreeProps<T>) {
+export function Tree<T extends TreeNode = TreeNode>({
+  nodes,
+  onActivate,
+  onToggle,
+  renderRow,
+  releaseModifierKeys = false,
+}: TreeProps<T>) {
   const flat = flattenVisible(nodes);
   const indexById = new Map(flat.map((entry, i) => [entry.node.id, i]));
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -157,6 +170,33 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
     // practice - but that's an invariant between two separate functions,
     // not something the type system enforces, so it's worth a real check.
     if (index === undefined) return;
+    // Alt-held arrows and Alt+Home/End belong to the desktop global chords
+    // (Alt+Arrow session pane cycling, Alt+Shift+Arrow live-session
+    // navigation and transcript scroll, Alt+Home/End); a blanket
+    // preventDefault below would swallow all of them while a rail row has
+    // focus - the same trap RailResizeHandle's own guard (roborev PR #884
+    // round 3) names. Opt-in via releaseModifierKeys: only a desktop
+    // consumer, where the bindings are installed - on mobile the chords
+    // are inert and Alt+ArrowLeft/Right would fall through to the
+    // browser's history navigation, so the tree keeps them tree-owned
+    // (roborev PR #1044 round-9 medium 1). No global chord binds a
+    // modifier+Enter, so activation stays tree-owned (round-2 low).
+    // Shift, Ctrl and Meta stay tree-owned: the defaults map binds no
+    // Ctrl/Meta arrow chord, so releasing them to the tree keeps its
+    // navigation working where nothing else would handle them (round-8
+    // low 2). Home/End release too: Alt+Home/End are global chords while
+    // plain Home/End stay tree-owned (round-9 medium 2).
+    // The release is exact-CHORD (round-13 low 6): arrows release with Alt
+    // alone or Alt+Shift - Alt+Shift+Arrow is the live-session chord - but
+    // Home/End release ONLY on plain Alt, because the transcript-scroll
+    // chords (Alt+Home/End) bind no Shift: an Alt+Shift+Home matches neither
+    // a global binding nor, released, a tree handler, and would be a dead
+    // key. Ctrl/Meta never stack onto the release either - no global chord
+    // stacks them onto Alt (round-11 low).
+    if (releaseModifierKeys && event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (event.key.startsWith("Arrow")) return;
+      if ((event.key === "Home" || event.key === "End") && !event.shiftKey) return;
+    }
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 
@@ -191,6 +231,18 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
         } else if (parent) {
           moveTo(parent.id);
         }
+        break;
+      }
+      case "Home": {
+        event.preventDefault();
+        const first = flat[0];
+        if (first) moveTo(first.node.id);
+        break;
+      }
+      case "End": {
+        event.preventDefault();
+        const last = flat[flat.length - 1];
+        if (last) moveTo(last.node.id);
         break;
       }
       case "Enter": {

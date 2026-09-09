@@ -251,7 +251,37 @@ type hubModel struct {
 	// from main.go via setSend after tea.NewProgram constructs the
 	// program reference.
 	pending *pendingpkg.PendingCoordinator
+
+	// liveNavPendingRef is the target of the latest live-session cycling
+	// read still in flight; while set, further alt+shift+arrow presses step
+	// FROM it rather than from the stale detail.Ref (roborev PR #1044
+	// finding 2). liveNavSeq is the per-press high-water counter tagged onto
+	// each cycling read's hubSessionMsg so Update can drop a read a newer
+	// press has superseded.
+	liveNavPendingRef string
+	liveNavSeq        int
+	// liveNavNeedsReconcile records that a stale recovery response was
+	// dropped while a newer read was still pending: its server-side
+	// replacement may have landed after the newer read's, so once the newest
+	// navigation settles (its response applies and clears the pending state)
+	// the displayed session's subscription must be re-established (roborev
+	// PR #1044 round-15 medium 1). Cleared when the reconcile issues, on
+	// reconnect (its own resub), and by any direct re-establish.
+	liveNavNeedsReconcile bool
+	// liveNavRecoveryRetries counts consecutive failed recovery reads
+	// (reestablishDisplayedSubscription). A persistent RPC failure must not
+	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure
+	// surfaces as the model's error and the loop stops. Reset whenever a
+	// fresh drop-driven recovery starts (a new event, not the same failure
+	// again) or a recovery response succeeds (roborev PR #1044 round-13
+	// medium 2).
+	liveNavRecoveryRetries int
 }
+
+// hubLiveNavRecoveryMaxRetries bounds consecutive recovery-read retries: the
+// first failure is likely transient (the connection settled mid-cull), the
+// next two give a flaky RPC its chance; past that, surfacing beats spinning.
+const hubLiveNavRecoveryMaxRetries = 3
 
 const hubCtrlCQuitWindow = time.Second
 

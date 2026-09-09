@@ -482,6 +482,31 @@ var hubCommandRegistry = []hubCommandDefinition{
 			return nil
 		},
 	},
+
+	{
+		Name:          "next-live-session",
+		Summary:       "Switch to the next live session",
+		PaletteLabel:  "/next-live-session",
+		PaletteDetail: "switch to the next live session (alt+shift+right)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(1)
+			*m = next
+			return cmd
+		},
+	},
+	{
+		Name:          "previous-live-session",
+		Summary:       "Switch to the previous live session",
+		PaletteLabel:  "/previous-live-session",
+		PaletteDetail: "switch to the previous live session (alt+shift+left)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(-1)
+			*m = next
+			return cmd
+		},
+	},
 	{
 		Name:          "quit",
 		Summary:       "Exit evener-tui",
@@ -510,7 +535,11 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		return nil
 	}
 	m.sessionDetailsRequested = true
-	return fetchHubSession(m.frames, m.client, ref)
+	// The read targets the displayed ref: a navigation that applies while
+	// it is in flight supersedes it, so its response must be droppable
+	// rather than processed as an ordinary session entry (roborev PR #1044
+	// round-18 medium).
+	return m.tagLiveNavRefresh(fetchHubSession(m.frames, m.client, ref), ref.String(), true)
 }
 
 func fetchCurrentHubStatus(m *hubModel, _ string) tea.Cmd {
@@ -586,6 +615,8 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 	}
 	lines = append(lines,
 		"  ctrl+o           Go to live dashboard",
+		"  alt+shift+right  Next live session",
+		"  alt+shift+left   Previous live session",
 		"  tab / enter      Expand/collapse focused tool call",
 	)
 	return strings.Join(lines, "\n")
