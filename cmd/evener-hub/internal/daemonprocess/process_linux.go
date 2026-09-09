@@ -40,8 +40,18 @@ func (p *linuxProcess) kill() error {
 	return err
 }
 func (p *linuxProcess) exited() (bool, error) {
+	return p.exitedWith(unix.Poll)
+}
+
+func (p *linuxProcess) exitedWith(poll func([]unix.PollFd, int) (int, error)) (bool, error) {
 	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}
-	_, err := unix.Poll(fds, 0)
+	var err error
+	for {
+		_, err = poll(fds, 0)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
 	if err != nil {
 		return false, err
 	}
