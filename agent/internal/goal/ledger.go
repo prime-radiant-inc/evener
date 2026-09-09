@@ -122,21 +122,37 @@ func redactVolatileToken(f string) string {
 	return f
 }
 
+// CanonicalizeObservationOutput redacts volatile observation content
+// (timestamps, request ids, UUIDs) and collapses whitespace, so
+// timestamp-noise-only outputs canonicalize equal while genuinely different
+// content stays distinct. Applied BEFORE hashing at the evidence seam:
+// hashing the raw output then canonicalizing the hex digest would redact
+// the digest itself (a 64-char hex token) to "<id>", collapsing every
+// non-empty output to one hash and suppressing novelty entirely.
+func CanonicalizeObservationOutput(out string) string {
+	if out == "" {
+		return ""
+	}
+	out = ledgerTimestampRe.ReplaceAllString(out, "<ts>")
+	out = ledgerVolatileKey.ReplaceAllString(out, "$1=<id>")
+	out = ledgerUUIDRe.ReplaceAllString(out, "<id>")
+	out = strings.Join(strings.Fields(out), " ")
+	return out
+}
+
 // CanonicalizeObservationHash redacts volatile observation content
 // (timestamps, request ids, RNG) over the stated scope and collapses
 // whitespace. Timestamp-noise-only outputs canonicalize equal; genuinely
 // different content stays distinct. Empty stays empty — the class-only
-// fallback signal (never novel by default).
+// fallback signal (never novel by default). Shared with
+// CanonicalizeObservationOutput (which additionally redacts long hex: raw
+// outputs may carry hashes, while the evidence seam hashes canonicalized
+// output and must never redact the digest it is about to compare).
 func CanonicalizeObservationHash(h string) string {
 	if h == "" {
 		return ""
 	}
-	h = ledgerTimestampRe.ReplaceAllString(h, "<ts>")
-	h = ledgerVolatileKey.ReplaceAllString(h, "$1=<id>")
-	h = ledgerUUIDRe.ReplaceAllString(h, "<id>")
-	h = ledgerLongHexRe.ReplaceAllString(h, "<id>")
-	h = strings.Join(strings.Fields(h), " ")
-	return h
+	return ledgerLongHexRe.ReplaceAllString(CanonicalizeObservationOutput(h), "<id>")
 }
 
 // FoldLedger folds one finished turn into the next ledger summary. It is

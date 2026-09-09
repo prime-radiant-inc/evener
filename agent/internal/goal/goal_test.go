@@ -518,6 +518,18 @@ func TestLedgerCanonicalizeObservationHash(t *testing.T) {
 	}
 }
 
+// TestLedgerCanonicalizedOutputsStayDistinct pins the novelty hash: two
+// different canonicalized outputs must hash differently (hashing the raw
+// output then canonicalizing the hex digest would redact every digest to
+// "<id>" and suppress novelty entirely).
+func TestLedgerCanonicalizedOutputsStayDistinct(t *testing.T) {
+	a := CanonicalizeObservationOutput("fetched 3 rows at 2026-09-08T04:00:00Z")
+	b := CanonicalizeObservationOutput("fetched 4 rows at 2026-09-08T04:00:00Z")
+	if a == "" || a == b {
+		t.Fatalf("canonicalized outputs must stay distinct: %q vs %q", a, b)
+	}
+}
+
 // TestLedgerTimestampNoiseStillStalls pins the §9 evasion case at fold level:
 // identical (action, class) with no digest delta stalls even when every raw
 // observation hash carries fresh timestamp noise.

@@ -1134,6 +1134,8 @@ const CancelledWakeNote = "[wait cancelled after claim]"
 // whether any lease claimed. The session gate serializes it under
 // goalUpdateMu alongside the sibling expiry claims.
 func (s *Store) ClaimChildWaits(childID, trigger string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	g := s.goal
 	if g == nil {
 		return false
@@ -1143,7 +1145,7 @@ func (s *Store) ClaimChildWaits(childID, trigger string, now time.Time) bool {
 		if !w.Live() || w.Lease.Kind != WaitUntilChild || w.Lease.Predicate.Target != childID {
 			continue
 		}
-		if _, ok := s.ClaimFire(w.Lease.WaitID, trigger, now); ok {
+		if _, ok := s.claimFireLocked(w.Lease.WaitID, trigger, now); ok {
 			claimed = true
 		}
 	}
@@ -1502,6 +1504,12 @@ func (s *Store) AnnotateCancelledWake(waitID string, now time.Time) bool {
 func (s *Store) ClaimFire(waitID, trigger string, now time.Time) (PendingWake, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.claimFireLocked(waitID, trigger, now)
+}
+
+// claimFireLocked is the ClaimFire consume step with the store lock held by
+// the caller (ClaimChildWaits batches several consumes under one hold).
+func (s *Store) claimFireLocked(waitID, trigger string, now time.Time) (PendingWake, bool) {
 	g := s.goal
 	if g == nil {
 		return PendingWake{}, false

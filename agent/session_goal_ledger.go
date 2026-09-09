@@ -185,7 +185,11 @@ func (s *Session) recordGoalTurnEvidence(calls []llm.ToolCallData, results []too
 		if i < len(results) {
 			class = goalObservationClass(call.Name, results[i])
 			if out := strings.TrimSpace(results[i].Output); out != "" {
-				sum := sha256.Sum256([]byte(out))
+				// Hash the CANONICALIZED output (volatile tokens redacted
+				// first): hashing the raw output then canonicalizing the
+				// hex digest redacts the digest itself to "<id>", so every
+				// non-empty output compares equal and novelty never fires.
+				sum := sha256.Sum256([]byte(goal.CanonicalizeObservationOutput(out)))
 				hash = hex.EncodeToString(sum[:])
 			}
 		}
