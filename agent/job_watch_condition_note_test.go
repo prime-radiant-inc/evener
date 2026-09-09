@@ -58,6 +58,40 @@ func TestConditionWatchNote_RidesTheFiredNotification(t *testing.T) {
 	}
 }
 
+// TestConditionWatchNote_LiteralEntityTextSurvivesTheBodyCodec proves the
+// watch-note lane composes into the "&"-first order the frontend card's
+// single full decode inverts exactly (RoboRev combined review of 5c202de,
+// MEDIUM): watchNotificationFromWatch pre-escapes "&", and
+// withNotificationNote's escapeNotificationBody then escapes "<", so a note
+// literally containing "&lt;" rides the wire as "&amp;lt;" — unambiguous
+// with a literal "<" (which rides as "&lt;"). Decoding "&amp;lt;" once
+// restores the literal "&lt;" text, never "<".
+func TestConditionWatchNote_LiteralEntityTextSurvivesTheBodyCodec(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	const note = `watch for &lt;tag&gt; &amp; &quot;q&quot;`
+	if _, err := jm.configureWatch(watchArgs{Operation: "create", Target: rec.JobID, OutputMatch: "ready", Note: note}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"), 13)
+	if len(notified) != 1 {
+		t.Fatalf("match must fire once; got %d: %+v", len(notified), notified)
+	}
+	block := formatJobNotificationBlock(notified[0], notificationExcerpt{}, false)
+	// The literal "&lt;" must ride double-escaped ("&amp;lt;"): a single decode
+	// then restores the literal text instead of collapsing it to "<".
+	if !strings.Contains(block, "Note: watch for &amp;lt;tag&amp;gt; &amp;amp; &amp;quot;q&amp;quot;") {
+		t.Fatalf("note literal entity text must ride &amp;-first escaped:\n%s", block)
+	}
+	if strings.Contains(block, "Note: watch for &lt;tag") {
+		t.Fatalf("literal &lt; must not ride single-escaped (ambiguous with a literal <):\n%s", block)
+	}
+}
+
 // TestSessionConditionWatchNote_RidesTheFiredNotification covers the
 // session-target rail, whose watch block is rendered by its own branch.
 func TestSessionConditionWatchNote_RidesTheFiredNotification(t *testing.T) {

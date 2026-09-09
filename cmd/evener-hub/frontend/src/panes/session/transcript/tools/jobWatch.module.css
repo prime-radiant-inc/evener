@@ -56,16 +56,45 @@
 }
 
 /* §C: list rows — the one place watch ids stay visible, beside the
-   per-row watching/ended chip. */
+   per-row watching/ended chip. Rows after the first are separated by a top
+   border: rows are direct children of the list container (no per-row
+   wrappers — a wrapper would make every row a first child and erase all
+   separators), and only row elements take the border, never expanded
+   detail sections. */
+.list > [data-testid="job-watch-row"]:not(:first-child) {
+  border-top: 1px solid var(--edge);
+}
+
 .row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: 9px var(--space-4);
-  border-top: 1px solid var(--edge);
-  font-size: var(--font-size-ui);
   width: 100%;
   text-align: left;
+  /* Native <button> reset (toolcallitem.module.css idiom): the row draws
+     its own surfaces — hover wash, focus ring — never the platform chrome.
+     The font shorthand runs before font-size (a shorthand after the
+     longhand would reset it — noShorthandPropertyOverrides). */
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--font-size-ui);
+  appearance: none;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+  border-radius: var(--radius-control);
+}
+
+.row:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
 }
 
 /* The 44px tap floor lives under the coarse-pointer media query in
@@ -76,10 +105,6 @@
   .row {
     min-height: var(--tap-min);
   }
-}
-
-.row:first-child {
-  border-top: none;
 }
 
 /* §C: a row that cannot expand is not a control — same layout as a row, no
@@ -93,13 +118,8 @@
   align-items: center;
   gap: var(--space-2);
   padding: 9px var(--space-4);
-  border-top: 1px solid var(--edge);
   font-size: var(--font-size-ui);
   width: 100%;
-}
-
-.rowStatic:first-child {
-  border-top: none;
 }
 
 .rowId {

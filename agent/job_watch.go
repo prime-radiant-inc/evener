@@ -2148,6 +2148,7 @@ type watchHistoryEntry struct {
 	source             string
 	target             string
 	condition          string
+	note               string
 	sendTo             string
 	receiverSessionID  string
 	receiverDelegateID string
@@ -2172,6 +2173,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 		source:             cfg.sourcePublic,
 		target:             cfg.target,
 		condition:          watchConditionSummary(cfg),
+		note:               cfg.note,
 		sendTo:             sendTo,
 		receiverSessionID:  cfg.receiverSessionID,
 		receiverDelegateID: cfg.receiverDelegateID,
@@ -2346,6 +2348,7 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 		Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
 		Watching:   true,
 		Condition:  watchConditionSummary(cfg),
+		Note:       cfg.note,
 		Deliveries: cfg.deliveries,
 		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 	}
@@ -2363,6 +2366,7 @@ func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResul
 		Source:     watchPublicSource(h.source, h.target),
 		Watching:   false,
 		Condition:  h.condition,
+		Note:       h.note,
 		Deliveries: h.deliveries,
 		EndReason:  h.endReason,
 		EndedAt:    h.endedAt.Format(time.RFC3339Nano),
@@ -3501,7 +3505,21 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg == nil {
 		return n
 	}
-	n.Note = cfg.note
+	// The note rides the notification body through withNotificationNote
+	// (agent/job_notify.go), whose escapeNotificationBody escapes only "<"
+	// (kata 72kp): body text is not inside a quoted attribute, so "&" is not
+	// a structural hazard there and passes through verbatim. The frontend
+	// card (NotificationCard.tsx) decodes the full entity set (& < > " ')
+	// on every prose/excerpt, so a note that literally contains "&lt;",
+	// "&amp;", "&quot;" or "&#39;" would decode and display wrong.
+	// Pre-escaping "&" here composes with the body's "<"-only escaping into
+	// the same "&"-first order escapeNotificationText uses for attribute
+	// values, which the card's single decode inverts exactly — a literal
+	// "&lt;" in the note renders "&lt;", not "<". The pre-escape runs here
+	// (not in escapeNotificationBody, which job output and other body text
+	// also share) so only the watch-note lane changes encoding; cfg.note
+	// itself stays raw for list/inspect/frame readers.
+	n.Note = strings.ReplaceAll(cfg.note, "&", "&amp;")
 	// The originating watch rides a display-only field, never WatchID: the
 	// session drops a non-terminal WatchID-bearing entry whose timer key no
 	// longer resolves, and a condition watch's key slot is not its id — so a

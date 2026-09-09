@@ -196,15 +196,35 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
 export function NotificationCard({
   notification,
   sessionRef,
+  disclosureId,
 }: {
   notification: ParsedNotification;
   sessionRef?: string;
+  // Stable per-delivery discriminator (transcript item id + fragment index,
+  // threaded from SteeringItem). Byte-identical repeat deliveries share
+  // watch id and raw text; without this they share one disclosure key and
+  // toggle together. Optional for backward compatibility — existing callers
+  // render without it and keep today's keys.
+  disclosureId?: string;
 }) {
   const context = useTranscriptRenderContext();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const notificationId = notification.delegateId ?? notification.jobId ?? notification.rawText;
-  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}`;
+  // The disclosure identity prefers the watch id for watch cards: two
+  // watches on the same job share a jobId, and keying by it couples their
+  // expand/collapse state. Content joins identity — repeat firings of one
+  // watch (timer repeats especially) are distinct deliveries that expand
+  // independently; keying by watch id alone re-collapses them into one.
+  // Legacy frames without a watch id fall back to the job id, then the raw
+  // text, exactly as before. Non-watch cards keep delegate → job → raw
+  // identity untouched.
+  const notificationId =
+    notification.type === "watch"
+      ? notification.watchId
+        ? `${notification.watchId}:${notification.rawText}`
+        : (notification.jobId ?? notification.rawText)
+      : (notification.delegateId ?? notification.jobId ?? notification.rawText);
+  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}${disclosureId ? `:${disclosureId}` : ""}`;
   const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);

@@ -570,3 +570,116 @@ test("a delivery-failure card earns a warning chip and failure title", () => {
   expect(screen.getByTestId("notification-card").textContent).toContain("warning");
   expect(screen.getByTestId("notification-card").textContent).toContain("Watch delivery failed");
 });
+
+test("two watch cards on the same job expand independently (combined review: disclosure key)", () => {
+  // The disclosure identity prefers the watch id: two watches on one job
+  // must not share a key, or expanding one expands both.
+  const cardA = notif({
+    type: "watch",
+    title: "Output matched on job_a1b2",
+    tone: "neutral",
+    jobId: "job_a1b2",
+    watchId: "watch_aaa",
+    prose: "Matched output_match: ready on job_a1b2.",
+    rawText: "raw-a",
+  });
+  const cardB = notif({
+    type: "watch",
+    title: "Output matched on job_a1b2",
+    tone: "neutral",
+    jobId: "job_a1b2",
+    watchId: "watch_bbb",
+    prose: "Matched output_match: done on job_a1b2.",
+    rawText: "raw-b",
+  });
+  renderTools(
+    <>
+      <NotificationCard notification={cardA} />
+      <NotificationCard notification={cardB} />
+    </>,
+  );
+  const rows = screen.getAllByTestId("notification-card");
+  expect(rows).toHaveLength(2);
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
+  fireEvent.click(rows[0]!);
+  const roots = screen.getAllByTestId("notification-card-root");
+  expect(roots).toHaveLength(1);
+  expect(roots[0]!.textContent).toContain("ready");
+});
+
+test("a legacy watch card without a watch id still expands by job id", () => {
+  renderTools(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: "Output matched on job_a1b2",
+        tone: "neutral",
+        jobId: "job_a1b2",
+        prose: "Matched output_match: ready on job_a1b2.",
+        rawText: "raw-legacy",
+      })}
+    />,
+  );
+  expect(screen.queryByTestId("notification-card-root")).toBeNull();
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect(screen.getByTestId("notification-card-root").textContent).toContain("ready");
+});
+
+test("repeat firings of one watch expand independently (combined review: disclosure key)", () => {
+  // Same watch id, different bodies: content joins identity so repeats do
+  // not share a disclosure key (timer repeats previously diverged via
+  // rawText; the watchId-first key regressed them into one).
+  const first = notif({
+    type: "watch",
+    title: "Timer fired",
+    tone: "neutral",
+    watchId: "w1",
+    prose: "Timer fired (every 300s).",
+    rawText: "raw-first",
+  });
+  const second = notif({
+    type: "watch",
+    title: "Timer fired",
+    tone: "neutral",
+    watchId: "w1",
+    prose: "Timer fired (every 300s), 3 times since your last turn.",
+    rawText: "raw-second",
+  });
+  renderTools(
+    <>
+      <NotificationCard notification={first} />
+      <NotificationCard notification={second} />
+    </>,
+  );
+  const rows = screen.getAllByTestId("notification-card");
+  expect(rows).toHaveLength(2);
+  fireEvent.click(rows[0]!);
+  expect(screen.getAllByTestId("notification-card-root")).toHaveLength(1);
+});
+
+test("byte-identical repeat frames expand independently via disclosure id (L2)", () => {
+  // Same watch id AND same raw text (a repeated delivery renders the same
+  // frame twice): without a per-delivery discriminator the two cards share
+  // one disclosure key and toggle together.
+  const repeat = (rawText: string) =>
+    notif({
+      type: "watch",
+      title: "Timer fired",
+      tone: "neutral",
+      watchId: "w1",
+      prose: "Timer fired (every 300s).",
+      rawText,
+    });
+  const shared =
+    '<job-notification job_id="" event="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w1">Timer fired (every 300s).</job-notification>';
+  renderTools(
+    <>
+      <NotificationCard notification={repeat(shared)} disclosureId="item_1:0" />
+      <NotificationCard notification={repeat(shared)} disclosureId="item_1:1" />
+    </>,
+  );
+  const rows = screen.getAllByTestId("notification-card");
+  expect(rows).toHaveLength(2);
+  fireEvent.click(rows[0]!);
+  expect(screen.getAllByTestId("notification-card-root")).toHaveLength(1);
+});

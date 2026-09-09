@@ -742,3 +742,220 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.title).toBe("Watch delivery failed");
   expect(n.tone).toBe("warning");
 });
+
+// --- RoboRev combined review (322f7aa): job-targeted notes (M2) -------------
+// The producer appends the watch note to every fire body
+// (withNotificationNote). Synthesized job-targeted prose must preserve the
+// trailing Note: section instead of replacing the whole body.
+
+test("a job-targeted fire preserves the trailing note (M2)", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+Note: check the build
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("ready");
+  expect(n.prose).toContain("Note: check the build");
+  // The note arrives with its prefix and the synthesizer adds exactly one —
+  // a doubled "Note: Note:" means the section kept the prefix it must strip
+  // (RoboRev PR #954 combined review of 9e38707).
+  expect(n.prose).not.toContain("Note: Note:");
+  expect(n.prose?.match(/Note:/g)?.length).toBe(1);
+  expect(n.prose).not.toContain("Job job_a1b2 watch.");
+});
+
+test("a teardown notice with a note keeps body and note whole (M2)", () => {
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="watch cleared: job_a1b2 matched 50 times; re-arm" output_bytes="0">
+watch cleared: job_a1b2 matched 50 times; re-arm
+Note: tighten the pattern
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.title).toBe("Watch auto-cleared");
+  expect(n.prose).toContain("watch cleared: job_a1b2 matched 50 times; re-arm");
+  expect(n.prose).toContain("Note: tighten the pattern");
+});
+
+// --- RoboRev combined review (322f7aa): dot-all reasons (L1) ---------------
+// Matched output can contain newlines, and the reason attr carries raw text
+// (only entity-escaped). A multiline pattern must title and synthesize, not
+// fall back to generic.
+
+test("a multiline output_match reason titles and synthesizes (L1)", () => {
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: line1
+line2" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.title).toBe("Output matched on job_a1b2");
+  expect(n.prose).toContain("line1");
+  expect(n.prose).toContain("line2");
+});
+
+test("an attach-scan skip titles Watch delivery failed with warning tone", () => {
+  // completeAttachScan emits this when the retained-output read fails: the
+  // watch installs live but its level-trigger is lost — a monitoring
+  // failure, never a firing.
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match attach scan skipped: read failed" output_bytes="0" watch_id="watch_09QmWzRtNvxK">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch delivery failed");
+  expect(n.tone).toBe("warning");
+});
+
+// --- RoboRev combined review of 5c202de (MEDIUM): body entity symmetry -----
+// The producer escapes attribute values fully (&, <, >, " — kata 77sf) but
+// notification bodies only for "<" (kata 72kp) — except the watch-note lane,
+// which pre-escapes "&" (agent/job_watch.go's watchNotificationFromWatch), so
+// a note body carries the same "&"-first order as attribute values. A note
+// literally containing "&lt;" rides the wire as "&amp;lt;" and the card's
+// single full decode must restore the literal "&lt;" text — never "<".
+// escapeNoteLikeProducer mirrors that lane: "&"-first pre-escape composed
+// with the body's "<"-only escaping.
+
+// escapeNoteLikeProducer mirrors the watch-note producer lane:
+// watchNotificationFromWatch's "&" pre-escape composed with
+// escapeNotificationBody's "<"-only escaping.
+function escapeNoteLikeProducer(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+test("a note containing literal entity text round-trips to the literal text, not a decode (MEDIUM)", () => {
+  const note = "watch for &lt;tag&gt; &amp; &quot;q&quot; &#39;done&#39;";
+  const block = `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="repeat" output_bytes="0" watch_id="w1">
+Timer fired (every 300s).
+Note: ${escapeNoteLikeProducer(note)}
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  // Prose stays escaped-form in the parse (passthrough bodies arrive escaped);
+  // the card decodes exactly once at render.
+  expect(n.prose).toContain(`Note: ${escapeNoteLikeProducer(note)}`);
+  expect(decodeNotificationEntities(n.prose ?? "")).toContain(`Note: ${note}`);
+  expect(decodeNotificationEntities(n.prose ?? "")).not.toContain("Note: <tag>");
+});
+
+test("a job-targeted fire preserves a note containing literal entity text (MEDIUM)", () => {
+  const note = "escalate when output has &lt;done&gt;";
+  const block = `<job-notification job_id="job_a1b2" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Job job_a1b2 watch. Output is available through read_transcript if needed.
+Note: ${escapeNoteLikeProducer(note)}
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.prose).toContain("ready");
+  expect(n.prose).toContain(`Note: ${escapeNoteLikeProducer(note)}`);
+  expect(decodeNotificationEntities(n.prose ?? "")).toContain(`Note: ${note}`);
+  expect(decodeNotificationEntities(n.prose ?? "")).not.toContain("Note: <done>");
+});
+
+// --- RoboRev combined review of 51bb12b (MEDIUM): watch_id reclassification -
+// A self/parent job.notification watch IS a watch notification
+// (watchNotificationFromWatch stamps OriginWatchID), but when the event
+// carries finished-job data, jobFinishedEventIdentity (agent/job_notify.go)
+// overwrites Status+Reason with the completed job's own values. The rendered
+// frame therefore carries event/status "completed" WITH a watch_id attr, and
+// the parser must key the watch type off the attr — not off event/status
+// "watch" alone — or the delivery renders as an ordinary job card. The
+// enriched reason is the COMPLETION reason ("exit_zero"), never a trigger, so
+// the card must read it verbatim and never synthesize trigger prose from it.
+
+test("a completed-status frame with a watch_id classifies as a watch delivery (51bb12b MEDIUM)", () => {
+  // Exact post-enrichment producer shape: formatJobNotificationBlock's
+  // fallthrough branch (completed status, terminal body + real excerpt) with
+  // the OriginWatchID emit (agent/job_notify.go).
+  const block = `<job-notification job_id="job_x" event="completed" job_type="shell" description="Run tests" status="completed" reason="exit_zero" output_bytes="80" exit_code="0" transcript_ref="job:job_x" watch_id="watch_09QmWzRtNvxK">
+Job job_x completed. Output is available through read_transcript(transcript_ref="job:job_x") if needed.
+excerpt:
+all tests passed
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.watchId).toBe("watch_09QmWzRtNvxK");
+  expect(n.jobId).toBe("job_x");
+  // A fired watch is the expected outcome: neutral, never a success/error
+  // chip off the completed job's own disposition.
+  expect(n.tone).toBe("neutral");
+  // The delivery titles as a watch firing on the job — never a trigger the
+  // completion reason does not name.
+  expect(n.title).toBe("Watch fired on job_x");
+  expect(n.title).not.toContain("Output matched");
+  // The completion reason surfaces verbatim as the honest fallback, never
+  // reworded into trigger prose.
+  expect(n.secondary).toBe("exit_zero");
+  // The terminal sentence is genuine producer content, kept — and the real
+  // result excerpt is kept too, not dropped the way trigger-watch frames drop
+  // theirs.
+  expect(n.prose).toContain("Job job_x completed.");
+  expect(n.excerpt).toBe("all tests passed");
+});
+
+test("a failed-status frame with a watch_id is still a watch delivery, not a job failure (51bb12b MEDIUM)", () => {
+  const block = `<job-notification job_id="job_x" event="failed" job_type="shell" description="Run tests" status="failed" reason="nonzero exit" output_bytes="12" exit_code="2" transcript_ref="job:job_x" watch_id="watch_09QmWzRtNvxK">
+Job job_x failed. Output is available through read_transcript(transcript_ref="job:job_x") if needed.
+excerpt:
+boom
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  // The watched job failing is card content (excerpt), not card chrome: the
+  // delivery itself is expected, so no error chip.
+  expect(n.tone).toBe("neutral");
+  expect(n.title).toBe("Watch fired on job_x");
+  expect(n.excerpt).toBe("boom");
+});
+
+test("an empty watch_id does not reclassify a completed frame (51bb12b MEDIUM)", () => {
+  const block = `<job-notification job_id="job_x" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="0" exit_code="0" watch_id="">
+Job job_x completed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("job");
+  expect(n.watchId).toBeUndefined();
+  expect(n.tone).toBe("success");
+});
+
+test("a watch_send frame keeps its own type even with a watch_id attr (51bb12b MEDIUM)", () => {
+  // The producer never emits this combination (watch_send frames carry
+  // delivery_id/trigger, no watch_id); the reclassification runs after the
+  // watch_send check so the send rail can never be absorbed into watch type.
+  const block = `<job-notification job_id="job_x" event="watch_send" delivery_id="wd_1" trigger="event: job.notification" watch_id="watch_09QmWzRtNvxK">
+frame text
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch-send");
+});
+
+// --- combined RoboRev review (6bdc9ed): self job ids in watch titles --------
+// watchNotificationFromWatch always sets JobID, and a self-source watch fires
+// with job_id="self" — internal vocabulary NotificationCard already
+// suppresses in the job-id field. Titles must use the same human label the
+// job_watch renderer uses ("this session"), never the raw "self".
+
+test("a self output_match fire titles this session, not self", () => {
+  const block = `<job-notification job_id="self" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Job self watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Output matched on this session");
+});
+
+test("a self event fire titles this session, not self", () => {
+  const block = `<job-notification job_id="self" event="watch" job_type="watch" status="watch" reason="event: job.notification" output_bytes="0">
+Job self watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Event on this session: job.notification");
+});
+
+test("a self watch-fired fallthrough titles this session, not self", () => {
+  const block = `<job-notification job_id="self" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="0" watch_id="watch_09QmWzRtNvxK">
+Job self completed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.type).toBe("watch");
+  expect(n.title).toBe("Watch fired on this session");
+});

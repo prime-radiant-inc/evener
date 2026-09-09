@@ -26,6 +26,7 @@ import styles from "./jobWatch.module.css";
 
 const CLASS = {
   card: requireClass(styles.card, "jobWatch.module.css", "card"),
+  list: requireClass(styles.list, "jobWatch.module.css", "list"),
   section: requireClass(styles.section, "jobWatch.module.css", "section"),
   note: requireClass(styles.note, "jobWatch.module.css", "note"),
   noteClamped: requireClass(styles.noteClamped, "jobWatch.module.css", "noteClamped"),
@@ -83,16 +84,24 @@ function strArrayField(object: JsonObject, key: string): string[] {
 }
 
 // humanizeSeconds renders a caller-supplied duration in the units the model
-// asked in: sub-minute stays in seconds ("in 45s"); whole minutes collapse
-// ("in 5m", "in 1m"); leftover seconds are kept ("in 1m30s", never a lossy
-// "in 1m" — RoboRev PR #954); an hour or more names hours and leftover
-// minutes ("in 1h05m"). Zero/negative never reaches here (numField filters
-// it) — the caller falls back to the raw footer text instead of inventing
-// one.
+// asked in: sub-minute stays in seconds ("in 45s", fractional "in 1.5s" for
+// sub-second producer precision such as progress_interval_ms 1500);
+// whole minutes collapse ("in 5m", "in 1m"); leftover seconds are kept
+// ("in 1m30s", never a lossy "in 1m" — RoboRev PR #954); an hour or more
+// names hours and leftover minutes ("in 1h05m"). Rounding happens FIRST, so
+// a 60s carry can never surface ("in 1m60s" — combined RoboRev review):
+// the seconds path runs iff the rounded value is below 60, and the minute
+// path divides the rounded value, whose remainder is always below 60.
+// Zero/negative never reaches here (numField filters it) — the caller falls
+// back to the raw footer text instead of inventing one.
 export function humanizeSeconds(totalSeconds: number): string {
-  if (totalSeconds < 60) return `in ${Math.round(totalSeconds)}s`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const leftoverSeconds = Math.round(totalSeconds % 60);
+  const rounded = Math.round(totalSeconds);
+  if (rounded < 60) {
+    if (Number.isInteger(totalSeconds)) return `in ${rounded}s`;
+    return `in ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
+  }
+  const totalMinutes = Math.floor(rounded / 60);
+  const leftoverSeconds = rounded % 60;
   if (totalMinutes < 60) {
     return leftoverSeconds === 0
       ? `in ${totalMinutes}m`
@@ -104,13 +113,17 @@ export function humanizeSeconds(totalSeconds: number): string {
 }
 
 // humanizeInterval renders a caller-supplied cadence: sub-minute stays in
-// seconds ("every 45s"), whole minutes collapse ("every 2m"), leftover
-// seconds are kept ("every 1m30s"); hours name hours ("every 1h"). Same
-// zero/negative contract as humanizeSeconds.
+// seconds ("every 45s", fractional "every 1.5s"), whole minutes collapse
+// ("every 2m"), leftover seconds are kept ("every 1m30s"); hours name hours
+// ("every 1h"). Same round-first carry contract as humanizeSeconds.
 export function humanizeInterval(totalSeconds: number): string {
-  if (totalSeconds < 60) return `every ${Math.round(totalSeconds)}s`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const leftoverSeconds = Math.round(totalSeconds % 60);
+  const rounded = Math.round(totalSeconds);
+  if (rounded < 60) {
+    if (Number.isInteger(totalSeconds)) return `every ${rounded}s`;
+    return `every ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
+  }
+  const totalMinutes = Math.floor(rounded / 60);
+  const leftoverSeconds = rounded % 60;
   if (totalMinutes < 60) {
     return leftoverSeconds === 0
       ? `every ${totalMinutes}m`
@@ -156,10 +169,24 @@ interface ConditionSpec {
   every?: number;
   filterToolName?: string;
   filterStatus?: string;
+  // Any watch carries a note (backend #995), delivered as raw.note on the
+  // create result — not only timers. The create body renders it as a full
+  // section alongside the condition sentence.
+  note?: string;
 }
 
 function numArg(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
+// everyArg reads the create-args throttle the way the backend stores it:
+// every==1 is the semantic default (fire on each occurrence), normalized to
+// unset everywhere downstream (normalizeWatchArgs), so the renderer treats
+// every<=1 as absent — otherwise the same watch reads throttled in create
+// but unthrottled in list/inspect. numArg's other callers keep raw numerics.
+function everyArg(value: unknown): number | undefined {
+  const n = numArg(value);
+  return n !== undefined && n > 1 ? n : undefined;
 }
 
 function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec | undefined {
@@ -168,14 +195,29 @@ function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec | unde
   const events = strArrayField(raw, "events");
   // `every` rides the create ARGS (DefJobWatch), not the result state —
   // read args first, falling back to the raw in case a producer echoes it.
-  const every = (args ? numArg(args.every) : undefined) ?? numField(raw, "every");
+  // Both sides normalize every<=1 to unset (see everyArg); the Condition
+  // string itself never carries every:1 (the producer zeroes it before the
+  // summary renders), only model-written args can.
+  const every = (args ? everyArg(args.every) : undefined) ?? everyArg(raw.every);
   const filter = asJsonObject(raw.event_filter);
   const filterToolName = filter ? strField(filter, "tool_name") : undefined;
   const filterStatus = filter ? strField(filter, "status") : undefined;
-  if (outputMatch === undefined && progressIntervalMS === undefined && events.length === 0 && !filter) {
+  // The note rides raw.note on every create result (backend #995) — it is
+  // the watch's own prose, rendered as a full section, never folded into
+  // the condition sentence. A note alone still yields a spec: a valid watch
+  // may carry only a note and no trigger, and the create body renders the
+  // note section even without a trigger clause.
+  const note = strField(raw, "note");
+  if (
+    outputMatch === undefined &&
+    progressIntervalMS === undefined &&
+    events.length === 0 &&
+    !filter &&
+    note === undefined
+  ) {
     return undefined;
   }
-  return { outputMatch, progressIntervalMS, events, every, filterToolName, filterStatus };
+  return { outputMatch, progressIntervalMS, events, every, filterToolName, filterStatus, note };
 }
 
 // The heartbeat phrase a condition sentence ends with, if the watch carries
@@ -194,7 +236,16 @@ function cadenceSuffix(spec: ConditionSpec): string | undefined {
 }
 
 function sourceLabel(source: string | undefined): string {
-  return source ?? "this session";
+  // The producer's self source is internal vocabulary (watchPublicSource):
+  // readers see "this session" (mockups 23-job-watch), never a bare "self".
+  return source === undefined || source === "self" ? "this session" : source;
+}
+
+// eventDisplayName renders one watched event kind in words. The producer's
+// wildcard "*" reads as "any event" everywhere — rows, summaries, sentences,
+// details — never as a bare "*" (combined RoboRev review).
+function eventDisplayName(name: string): string {
+  return name === "*" ? "any event" : name;
 }
 
 function noteHead(note: string): string {
@@ -262,7 +313,27 @@ function jobWatchOperation(item: ItemModel, raw: JsonObject | undefined): string
   if (typeof raw.deliveries === "number" || typeof raw.created_at === "string" || typeof raw.end_reason === "string") {
     return "inspect";
   }
-  if (raw.watching === false && typeof raw.watch_id === "string") return "clear";
+  // A send-branch terminal catch-up carries watch_id + watching:false AND
+  // terminal_catchup:true (runTerminalCatchup builds from the live config),
+  // so the catch-up check runs before the clear fallback below — otherwise
+  // an arg-less catch-up misreads as "Cleared …" and drops the terminal
+  // outcome. Catch-up is a create serving mode; the default branches handle
+  // it from here.
+  if (boolField(raw, "terminal_catchup")) return "create";
+  // The clear inference needs a create/clear marker beyond watching:false +
+  // watch_id: a legacy or current inspect-miss is exactly that shape
+  // ({watch_id, watching:false}, no other markers) and must read as an
+  // inspect rendering "not found", never "Cleared …". Genuine clear/create
+  // results carry replaced_existing/fired explicitly (marshalWatchResult
+  // serializes both with no omitempty, even when false — key presence, not
+  // truthiness, is the test). Source is NOT a marker: a pending inspect
+  // carries watching:false + source with no end_reason (a detached watch on
+  // the terminal-flush rail), and must read as an inspect rendering pending,
+  // never "Cleared …".
+  if (raw.watching === false && typeof raw.watch_id === "string") {
+    if ("replaced_existing" in raw || "fired" in raw) return "clear";
+    return "inspect";
+  }
   if (raw.watching === true || typeof raw.note === "string" || typeof raw.output_match === "string") {
     return "create";
   }
@@ -301,6 +372,18 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   const source = sourceLabel(strField(raw, "source"));
   const condition = conditionSpec(raw, asJsonObject(parseArgs(item.argumentsJSON)));
   if (!condition) return `Watch ${source}`;
+  // A note-only watch arms no trigger: there are no clauses to name, but the
+  // note heads the summary so the note is never lost. Mirrors the timer-note
+  // shape ("Remind me in 5m · <head>") minus the cadence.
+  if (
+    condition.outputMatch === undefined &&
+    condition.progressIntervalMS === undefined &&
+    condition.events.length === 0 &&
+    condition.filterToolName === undefined &&
+    condition.filterStatus === undefined
+  ) {
+    return condition.note ? `Watch ${source} · ${noteHead(condition.note)}` : `Watch ${source}`;
+  }
   // Trigger clauses compose: output_match, events (+every throttle, filter),
   // and the progress heartbeat combine freely on a live watch (only timer
   // fields are mutually exclusive with conditions — the producer's own
@@ -311,7 +394,7 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   if (condition.outputMatch) clauses.push(`“${condition.outputMatch}”`);
   if (condition.events.length > 0) {
     const throttle = condition.every !== undefined ? ` (every ${condition.every})` : "";
-    clauses.push(`${condition.events.join(", ")}${throttle}`);
+    clauses.push(`${condition.events.map(eventDisplayName).join(", ")}${throttle}`);
   }
   if (condition.filterStatus || condition.filterToolName) {
     // An event-filter watch names the watched shape in words — both
@@ -351,6 +434,10 @@ interface WatchRow {
   watching: boolean;
   source?: string;
   condition?: string;
+  // The structured note field beside the Condition string (verbatim even
+  // when the note contains delimiter-looking text). Preferred over the
+  // note: clause embedded in the Condition string.
+  note?: string;
   endReason?: string;
   deliveries?: number;
 }
@@ -365,6 +452,7 @@ function normalizeRow(value: unknown): WatchRow | undefined {
     watching: row.watching === true,
     source: strField(row, "source"),
     condition: strField(row, "condition"),
+    note: strField(row, "note"),
     endReason: strField(row, "end_reason"),
     deliveries,
   };
@@ -377,7 +465,10 @@ function normalizeRow(value: unknown): WatchRow | undefined {
 // / `progress_interval_ms: N`; `note: …`; `events: [*]` or
 // `events: [a, b]` with optional `every N` and `where tool_name=X,
 // status=Y`. The reader parses that embedded grammar back — inventing
-// nothing, since inspect's raw carries no separate structured fields.
+// nothing. The note: clause is the fallback source for the note: the raw
+// also carries the note in its own structured field (verbatim, immune to
+// delimiter-looking text), which readers prefer; this parse covers stored
+// frames that predate it.
 interface ParsedCondition {
   outputMatch?: string;
   afterSeconds?: number;
@@ -387,6 +478,10 @@ interface ParsedCondition {
   every?: number;
   filterToolName?: string;
   filterStatus?: string;
+  // The watch's own prose payload (backend #995: any watch carries one). The
+  // value is dot-all — notes are multiline prose, and patterns may also span
+  // lines — so all value patterns below use [\s\S], never dot.
+  note?: string;
 }
 
 function numAfter(value: string | undefined): number | undefined {
@@ -406,11 +501,90 @@ function numAfter(value: string | undefined): number | undefined {
 // takes the field reading, matching what list/inspect show.)
 const CONDITION_PART_SPLIT = /;\s*(?=(?:output_match|after_seconds|repeat_seconds|progress_interval_ms|note|events):)/;
 
-function parseConditionText(condition: string): ParsedCondition {
+// WATCH_MESSAGE_MAX_CHARS and WATCH_TRUNCATED_INDICATOR mirror the
+// producer's bounds (agent/job_watch.go): the Condition string embeds the
+// note via limitWatchText(cfg.note, watchMessageMaxChars), which truncates by
+// rune with a "\n[truncated]" indicator and performs no whitespace or line
+// folding — the embedding is otherwise the verbatim note value.
+const WATCH_MESSAGE_MAX_CHARS = 2048;
+const WATCH_TRUNCATED_INDICATOR = "\n[truncated]";
+
+// embeddedNoteCandidates lists the exact strings the producer may have
+// embedded as the note: clause for a structured note value: the value itself
+// (cfg.note is already bounded at storage, so this is the live case), plus
+// the limitWatchText truncation for oversized values from stored frames.
+function embeddedNoteCandidates(note: string): string[] {
+  const runes = Array.from(note);
+  if (runes.length <= WATCH_MESSAGE_MAX_CHARS) return [note];
+  const keep = WATCH_MESSAGE_MAX_CHARS - Array.from(WATCH_TRUNCATED_INDICATOR).length;
+  const truncated =
+    keep <= 0
+      ? runes.slice(0, WATCH_MESSAGE_MAX_CHARS).join("")
+      : runes.slice(0, keep).join("") + WATCH_TRUNCATED_INDICATOR;
+  return truncated === note ? [note] : [note, truncated];
+}
+
+// stripStructuredNoteClause removes the exact note: clause the producer
+// embedded in the flattened Condition string, keyed by the structured note
+// field's verbatim value. The note is free prose that may itself contain
+// delimiter-looking text ("; events: […]") which the head-based split below
+// would otherwise parse as real armed triggers. Only a clause-boundary match
+// is removed — the note: head at the string start or right after the "; "
+// join — and only one adjacent join separator goes with it, so neighboring
+// trigger clauses rejoin intact. Without a structured note (legacy stored
+// frames) the condition parses unchanged.
+function stripStructuredNoteClause(condition: string, note: string | undefined): string {
+  if (!note) return condition;
+  for (const value of embeddedNoteCandidates(note)) {
+    const needle = `note: ${value}`;
+    let index = condition.indexOf(needle);
+    while (index !== -1) {
+      const before = condition.slice(0, index);
+      if (index === 0 || /;\s*$/.test(before)) {
+        let start = index;
+        const leading = /;\s*$/.exec(before);
+        if (leading) start = leading.index;
+        let end = index + needle.length;
+        if (index === 0) {
+          const trailing = /^;\s*/.exec(condition.slice(end));
+          if (trailing) end += trailing[0].length;
+        }
+        return condition.slice(0, start) + condition.slice(end);
+      }
+      index = condition.indexOf(needle, index + 1);
+    }
+  }
+  return condition;
+}
+
+function parseConditionText(condition: string, note?: string): ParsedCondition {
   const parsed: ParsedCondition = { events: [] };
-  for (const part of condition.split(CONDITION_PART_SPLIT)) {
+  // The note head is one clause among the split parts: the producer's join
+  // order puts note: before the events clause (watchConditionSummary), so a
+  // legacy persisted Condition reads "output_match: …; note: …; events: […]"
+  // and every trigger clause parses beside the note (RoboRev PR #954). The
+  // note value runs to the next head or end-of-string — a note that itself
+  // contains delimiter-looking text ("; events: […]") truncates here, which
+  // is why list/inspect raws also carry the note in its own structured field
+  // (readers prefer that field; this parse is the fallback for stored frames
+  // that predate it). Slice-free: every part parses independently, so the
+  // note's own whitespace survives verbatim.
+  // When the caller passes the structured note, its exact embedded clause is
+  // stripped first (stripStructuredNoteClause) so delimiter-looking prose
+  // inside the note never parses as armed triggers.
+  // (A caller-supplied output_match containing "; note: " stays ambiguous
+  // even to the producer's own join — the split takes the field reading,
+  // matching what list/inspect show.)
+  for (const part of stripStructuredNoteClause(condition, note).split(CONDITION_PART_SPLIT)) {
     const text = part.trim();
-    const outputMatch = /^output_match:\s*(.+)$/.exec(text)?.[1]?.trim();
+    // A leading "note:" head (a bare note-only string, which the producer
+    // never emits but a stored transcript could carry) is the whole note.
+    const note = /^(?:note:\s*)([\s\S]+)$/.exec(text)?.[1]?.trim();
+    if (note) {
+      if (!parsed.note) parsed.note = note;
+      continue;
+    }
+    const outputMatch = /^output_match:\s*([\s\S]+)$/.exec(text)?.[1]?.trim();
     if (outputMatch) {
       parsed.outputMatch = outputMatch;
       continue;
@@ -445,10 +619,9 @@ function parseConditionText(condition: string): ParsedCondition {
         if (status) parsed.filterStatus = status;
       }
     }
-    // `note: …` and anything unrecognized stay out: the note is the watch's
-    // own prose (shown by the create body, never by a row), and unknown
-    // future parts degrade to the fallback below rather than inventing
-    // rendering.
+    // Anything unrecognized degrades to the fallback below rather than
+    // inventing rendering. (The note head is terminal and handled above,
+    // so reaching here means this part is genuinely something else.)
   }
   return parsed;
 }
@@ -461,7 +634,7 @@ function rowConditionPhrase(row: WatchRow): string {
   const state = watchState(row);
   if (state === "watching") {
     if (row.condition) {
-      const parsed = parseConditionText(row.condition);
+      const parsed = parseConditionText(row.condition, row.note);
       const source = sourceLabel(row.source);
       if (parsed.afterSeconds !== undefined) return `${humanizeSeconds(parsed.afterSeconds)} · ${source}`;
       if (parsed.repeatSeconds !== undefined) {
@@ -475,7 +648,7 @@ function rowConditionPhrase(row: WatchRow): string {
       // "(every N)" shape (RoboRev PR #954 review 3).
       const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
       if (parsed.events.length > 0) {
-        const names = parsed.events.includes("*") ? "any event" : parsed.events.join(", ");
+        const names = parsed.events.map(eventDisplayName).join(", ");
         bits.push(`${names}${every}`);
       }
       if (parsed.filterToolName || parsed.filterStatus) {
@@ -485,7 +658,14 @@ function rowConditionPhrase(row: WatchRow): string {
         bits.push(humanizeInterval(parsed.progressIntervalMS / 1000));
       }
       if (bits.length > 0) return `${bits.join(" · ")} · ${source}`;
-      return `${row.condition} · ${source}`;
+      // No trigger bits parsed: the condition is either a bare note or
+      // unrecognized grammar. A note-only row still names its note (the
+      // structured field verbatim, else the parsed note: clause) — never the
+      // raw Condition grammar ("note: …"). Anything else names just the
+      // source rather than echoing machine tokens.
+      const fallbackNote = row.note ?? parsed.note;
+      if (fallbackNote) return `${fallbackNote} · ${source}`;
+      return source;
     }
     return sourceLabel(row.source);
   }
@@ -493,7 +673,7 @@ function rowConditionPhrase(row: WatchRow): string {
   // session" for a watch that is not there (RoboRev PR #954 combined review).
   if (state === "missing") return "not found";
   if (state === "pending") return `pending · ${sourceLabel(row.source)}`;
-  return row.endReason ? `ended: ${row.endReason}` : "ended";
+  return row.endReason ? `ended: ${endReasonPhrase(row.endReason)}` : "ended";
 }
 
 // watchState reads a watch row/inspect result's lifecycle state in the
@@ -511,6 +691,37 @@ function watchState(entry: { watching: boolean; source?: string; endReason?: str
   if (entry.endReason) return "ended";
   if (entry.source) return "pending";
   return "missing";
+}
+
+// endReasonPhrase renders a watch end_reason id in words, shared by list rows
+// and inspect bodies so the two never drift (8a56741 finding 4). The ids are
+// the whole set the backend records: cleared (explicit clear,
+// agent/job_watch.go clearWatch, "watch cleared"), replaced (a newer watch
+// took the key, agent/job_watch.go:724 "watch replaced"), fired (a one-shot
+// timer retired by its only fire, agent/job_watch.go:3459
+// clearWatchByIDMatchingWithReason), budget_exhausted (the condition-fire
+// budget tripped — the Go notice's own "matched 50 times", agent/job_watch.go
+// watchBudgetClearedMessage), auto_removed_terminal (the watched job went
+// terminal before the condition could match, agent/job_watch.go:3060), and
+// job_manager_closed (agent/jobs.go:737). Anything else falls back to the raw
+// id — never an invented meaning.
+export function endReasonPhrase(endReason: string | undefined): string {
+  switch (endReason) {
+    case "budget_exhausted":
+      return `matched ${WATCH_DELIVERY_BUDGET} times (budget exhausted)`;
+    case "auto_removed_terminal":
+      return "watched job finished before it could fire";
+    case "replaced":
+      return "replaced by a newer watch";
+    case "fired":
+      return "fired";
+    case "cleared":
+      return "cleared";
+    case "job_manager_closed":
+      return "job manager closed";
+    default:
+      return endReason ?? "ended";
+  }
 }
 
 function listCounts(raw: JsonObject): { active: number; pending: number; ended: number } {
@@ -629,7 +840,13 @@ function NoteSection({ note }: { note: string }) {
 // a pattern AND event/filter triggers AND a heartbeat together (only timer
 // fields exclude conditions), so every populated clause renders instead of
 // returning after the first (combined RoboRev review).
-function ConditionSentence({ source, spec }: { source: string; spec: ConditionSpec }) {
+// ConditionSentence owns the sentence's single terminal period (8a56741
+// finding 1): callers with delivery/creation metadata pass it as meta
+// ("3 deliveries, created Sep 6, 09:41") and it joins with an em dash before
+// that one period — the caller never appends its own ("matches. — 3
+// deliveries.").
+function ConditionSentence({ source, spec, meta }: { source: string; spec: ConditionSpec; meta?: string }) {
+  const tail = meta ? ` — ${meta}` : "";
   const heartbeat = heartbeatPhrase(spec);
   // Top-level clauses join with ", " exactly once, in the final render
   // below. Clause nodes carry NO separators of their own — neither leading
@@ -686,7 +903,7 @@ function ConditionSentence({ source, spec }: { source: string; spec: ConditionSp
     if (spec.events.length === 1) {
       parts.push(
         <span key="filter-event">
-          (<span className={CLASS.mono}>{spec.events[0]}</span>)
+          (<span className={CLASS.mono}>{eventDisplayName(spec.events[0] ?? "")}</span>)
         </span>,
       );
     }
@@ -700,7 +917,7 @@ function ConditionSentence({ source, spec }: { source: string; spec: ConditionSp
     const throttle = spec.every !== undefined ? ` (every ${spec.every})` : "";
     head.push(
       <span key="events">
-        wakes on <span className={CLASS.mono}>{spec.events.join(", ")}</span>
+        wakes on <span className={CLASS.mono}>{spec.events.map(eventDisplayName).join(", ")}</span>
         {throttle}
       </span>,
     );
@@ -709,14 +926,21 @@ function ConditionSentence({ source, spec }: { source: string; spec: ConditionSp
   if (head.length === 0) {
     return (
       <span>
-        Watches <span className={CLASS.mono}>{source}</span>.
+        Watches <span className={CLASS.mono}>{source}</span>
+        {tail}.
       </span>
     );
   }
   return (
     <span>
       Wakes you when <span className={CLASS.mono}>{source}</span> {joinNodes(head, ", ")}
-      {budgeted ? <>, auto-clears after {WATCH_DELIVERY_BUDGET} matches.</> : "."}
+      {budgeted ? (
+        <>
+          , auto-clears after {WATCH_DELIVERY_BUDGET} matches{tail}.
+        </>
+      ) : (
+        <>{tail}.</>
+      )}
     </span>
   );
 }
@@ -735,12 +959,30 @@ function CreateBody({ raw, item }: { raw: JsonObject; item: ItemModel }) {
   const source = sourceLabel(strField(raw, "source"));
   const condition = conditionSpec(raw, asJsonObject(parseArgs(item.argumentsJSON)));
   if (!condition) return null;
+  // A note-only watch arms no trigger: there is no sentence, but the note
+  // still renders as its own clamped section (backend #995) rather than
+  // vanishing behind the summary-only rule for triggerless creates.
+  if (
+    condition.outputMatch === undefined &&
+    condition.progressIntervalMS === undefined &&
+    condition.events.length === 0 &&
+    condition.filterToolName === undefined &&
+    condition.filterStatus === undefined
+  ) {
+    return condition.note ? <NoteSection note={condition.note} /> : null;
+  }
+  // Any watch carries a note (backend #995): the sentence names the trigger
+  // and the note renders as its own clamped section below, reusing the
+  // timer-note disclosure — never folded into the sentence.
   return (
-    <div className={CLASS.section}>
-      <div className={CLASS.trigger} data-testid="job-watch-trigger">
-        <ConditionSentence source={source} spec={condition} />
+    <>
+      <div className={CLASS.section}>
+        <div className={CLASS.trigger} data-testid="job-watch-trigger">
+          <ConditionSentence source={source} spec={condition} />
+        </div>
       </div>
-    </div>
+      {condition.note ? <NoteSection note={condition.note} /> : null}
+    </>
   );
 }
 
@@ -757,21 +999,22 @@ function WatchRow({ row }: { row: WatchRow }) {
   const detail = row.watching ? rowDetailPhrase(row) : undefined;
   const state = watchState(row);
   const chip = state === "watching" ? "watching" : state === "missing" ? "not found" : state;
+  // No per-row wrapper div: rows are direct children of the list container
+  // so the container's :not(:first-child) separator applies (a wrapper
+  // would make every row a first child and erase all separators).
   if (!detail) {
     return (
-      <div key={row.id}>
-        <div className={CLASS.rowStatic} data-testid="job-watch-row">
-          <Chip>{chip}</Chip>
-          <span className={CLASS.rowId} title={row.id}>
-            {clipJobID(row.id)}
-          </span>
-          <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
-        </div>
+      <div className={CLASS.rowStatic} data-testid="job-watch-row">
+        <Chip>{chip}</Chip>
+        <span className={CLASS.rowId} title={row.id}>
+          {clipJobID(row.id)}
+        </span>
+        <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </div>
     );
   }
   return (
-    <div key={row.id}>
+    <>
       <button
         type="button"
         className={CLASS.row}
@@ -792,7 +1035,7 @@ function WatchRow({ row }: { row: WatchRow }) {
           <div className={CLASS.trigger}>{detail}</div>
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -802,7 +1045,12 @@ function WatchRow({ row }: { row: WatchRow }) {
 // (RoboRev PR #954).
 function rowDetailPhrase(row: WatchRow): string | undefined {
   if (!row.watching || !row.condition) return undefined;
-  const parsed = parseConditionText(row.condition);
+  const parsed = parseConditionText(row.condition, row.note);
+  // The structured note wins over the note: clause: it is verbatim even
+  // when the note contains delimiter-looking text that truncates the
+  // clause parse. The clause is the fallback for stored frames that
+  // predate the structured field.
+  const detailNote = row.note ?? parsed.note;
   const source = sourceLabel(row.source);
   const deliveries = row.deliveries !== undefined ? ` — ${row.deliveries} deliveries` : "";
   if (parsed.outputMatch) {
@@ -813,24 +1061,35 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
     // Clauses compose here exactly as in the row phrase and the create
     // summary: a composite watch arms a pattern AND event/filter triggers
     // together, so the detail names every armed clause, never just the
-    // pattern (combined RoboRev review).
+    // pattern (combined RoboRev review). The embedded note rides along as
+    // trailing prose — the row has no disclosure section to host it.
     const bits: string[] = [`“${parsed.outputMatch}”`];
     const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
     if (parsed.events.length > 0) {
-      const names = parsed.events.includes("*") ? "any event" : parsed.events.join(", ");
+      const names = parsed.events.map(eventDisplayName).join(", ");
       bits.push(`${names}${every}`);
     }
     if (parsed.filterToolName || parsed.filterStatus) {
       bits.push(`${filterSummaryPhrase(parsed)}${parsed.events.length === 0 ? every : ""}`);
     }
-    return `Watching ${source} for ${bits.join(" · ")}${heartbeat}${deliveries}.`;
+    const note = detailNote ? ` Note: ${detailNote}.` : "";
+    return `Watching ${source} for ${bits.join(" · ")}${heartbeat}${deliveries}.${note}`;
   }
-  if (parsed.afterSeconds !== undefined) return `Reminds ${humanizeSeconds(parsed.afterSeconds)}${deliveries}.`;
-  if (parsed.repeatSeconds !== undefined) return `Reminds ${humanizeInterval(parsed.repeatSeconds)}${deliveries}.`;
+  if (parsed.afterSeconds !== undefined || parsed.repeatSeconds !== undefined) {
+    const seconds = parsed.afterSeconds ?? parsed.repeatSeconds ?? 0;
+    const when = parsed.afterSeconds !== undefined ? humanizeSeconds(seconds) : humanizeInterval(seconds);
+    // Timer Condition strings carry note: too (backend #995) — the detail
+    // names it like every other branch, not just the cadence.
+    const note = detailNote ? ` Note: ${detailNote}.` : "";
+    // A one-shot timer reminds once ("Remind me in 5m", mirroring the create
+    // summary); a repeating timer keeps reminding ("Reminds every 5m").
+    const verb = parsed.afterSeconds !== undefined ? "Remind me" : "Reminds";
+    return `${verb} ${when}${deliveries}.${note}`;
+  }
   const bits: string[] = [];
   const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
   if (parsed.events.length > 0) {
-    const names = parsed.events.includes("*") ? "any event" : parsed.events.join(", ");
+    const names = parsed.events.map(eventDisplayName).join(", ");
     bits.push(`${names}${every}`);
   }
   if (parsed.filterToolName || parsed.filterStatus) {
@@ -841,7 +1100,10 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
   if (parsed.progressIntervalMS !== undefined) {
     bits.push(`heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`);
   }
-  if (bits.length > 0) return `Watches ${source}: ${bits.join(" · ")}${deliveries}.`;
+  if (bits.length > 0) {
+    const note = detailNote ? ` Note: ${detailNote}.` : "";
+    return `Watches ${source}: ${bits.join(" · ")}${deliveries}.${note}`;
+  }
   return undefined;
 }
 
@@ -863,7 +1125,7 @@ function ListBody({ raw }: { raw: JsonObject }) {
     );
   }
   return (
-    <div>
+    <div className={CLASS.list}>
       {rows.map((row) => (
         <WatchRow key={row.id} row={row} />
       ))}
@@ -907,41 +1169,252 @@ function InspectBody({ raw }: { raw: JsonObject }) {
   }
   if (state === "pending") {
     const source = sourceLabel(strField(raw, "source"));
+    // The pending raw carries the same trigger/detail fields as any other
+    // inspect (condition, note, deliveries, created_at —
+    // jobWatchInspectToolResult, agent/session_tools_jobs.go:1578) — a bare
+    // "is pending" drops everything the watch is pending FOR (8a56741 finding
+    // 3). The watching branches below own the full trigger grammar; read them
+    // through the same helpers so pending never drifts.
+    const condition = strField(raw, "condition");
+    const structuredNote = strField(raw, "note");
+    const parsed = condition ? parseConditionText(condition, structuredNote) : undefined;
+    const note = structuredNote ?? parsed?.note;
+    const deliveries = typeof raw.deliveries === "number" ? raw.deliveries : undefined;
+    const created = formatCreatedDate(strField(raw, "created_at"));
+    const meta = [deliveries !== undefined ? `${deliveries} deliveries` : "", created ?? ""]
+      .filter((bit) => bit !== "")
+      .join(", ");
+    const spec =
+      parsed && (parsed.outputMatch || parsed.events.length > 0 || parsed.filterToolName || parsed.filterStatus)
+        ? {
+            outputMatch: parsed.outputMatch,
+            events: parsed.events,
+            every: parsed.every,
+            progressIntervalMS: parsed.progressIntervalMS,
+            filterToolName: parsed.filterToolName,
+            filterStatus: parsed.filterStatus,
+          }
+        : undefined;
+    const metaSuffix = meta ? ` — ${meta}` : "";
+    if (spec) {
+      // ConditionSentence owns the condition trigger's terminal period
+      // (finding 1), so pendingTrigger keeps the pending sentence's own
+      // period too: the sentence names the pending state first, then the
+      // same trigger clauses the watching body would render ("Watch on X is
+      // pending: wakes you when …").
+      const pendingTrigger = (
+        <span>
+          Watch on <span className={CLASS.mono}>{source}</span> is pending:{" "}
+          <ConditionSentence
+            source={source}
+            spec={{
+              outputMatch: spec.outputMatch,
+              events: spec.events,
+              every: spec.every,
+              progressIntervalMS: spec.progressIntervalMS,
+              filterToolName: spec.filterToolName,
+              filterStatus: spec.filterStatus,
+            }}
+            meta={meta === "" ? undefined : meta}
+          />
+        </span>
+      );
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              {pendingTrigger}
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
+    const timerSeconds =
+      parsed?.afterSeconds !== undefined || parsed?.repeatSeconds !== undefined
+        ? (parsed.afterSeconds ?? parsed.repeatSeconds ?? 0)
+        : undefined;
+    if (timerSeconds !== undefined) {
+      const when = parsed?.afterSeconds !== undefined ? humanizeSeconds(timerSeconds) : humanizeInterval(timerSeconds);
+      const verb = parsed?.afterSeconds !== undefined ? "Remind me" : "Reminds";
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              <span>
+                Watch on <span className={CLASS.mono}>{source}</span> is pending: {verb} {when}
+                {metaSuffix}.
+              </span>
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
+    const heartbeat =
+      parsed?.progressIntervalMS !== undefined
+        ? `heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`
+        : undefined;
+    if (heartbeat) {
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              <span>
+                Watch on <span className={CLASS.mono}>{source}</span> is pending: {heartbeat}
+                {metaSuffix}.
+              </span>
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
     return (
-      <div className={CLASS.section}>
-        <div className={CLASS.trigger} data-testid="job-watch-trigger">
-          <span>
-            Watch on <span className={CLASS.mono}>{source}</span> is pending.
-          </span>
+      <>
+        <div className={CLASS.section}>
+          <div className={CLASS.trigger} data-testid="job-watch-trigger">
+            <span>
+              Watch on <span className={CLASS.mono}>{source}</span> is pending{metaSuffix}.
+            </span>
+          </div>
         </div>
-      </div>
+        {note ? <NoteSection note={note} /> : null}
+      </>
     );
   }
   const source = sourceLabel(strField(raw, "source"));
   if (state === "ended") {
     const endReason = strField(raw, "end_reason");
+    // The ended raw carries the same trigger/detail fields as any other
+    // inspect (condition, note, deliveries — inspectResultFromWatchHistory,
+    // agent/job_watch.go:2363; the structured note rides beside the Condition
+    // string verbatim — jobWatchInspectToolResult, agent/session_tools_jobs.go).
+    // The end sentence names the outcome first, then the same trigger clauses
+    // the watching body renders, so an ended watch still says what it was
+    // watching for — mirroring the pending branch above — with the note as
+    // its own section below.
+    const condition = strField(raw, "condition");
+    const structuredNote = strField(raw, "note");
+    const parsed = condition ? parseConditionText(condition, structuredNote) : undefined;
+    const note = structuredNote ?? parsed?.note;
+    const deliveries = typeof raw.deliveries === "number" ? raw.deliveries : undefined;
+    const meta = deliveries !== undefined ? `${deliveries} deliveries` : undefined;
+    const endSentence = endReason ? (
+      <span>
+        Watch on <span className={CLASS.mono}>{source}</span> ended — {endReasonPhrase(endReason)}.
+      </span>
+    ) : (
+      <span>
+        Watch on <span className={CLASS.mono}>{source}</span> ended.
+      </span>
+    );
+    const spec =
+      parsed && (parsed.outputMatch || parsed.events.length > 0 || parsed.filterToolName || parsed.filterStatus)
+        ? {
+            outputMatch: parsed.outputMatch,
+            events: parsed.events,
+            every: parsed.every,
+            progressIntervalMS: parsed.progressIntervalMS,
+            filterToolName: parsed.filterToolName,
+            filterStatus: parsed.filterStatus,
+          }
+        : undefined;
+    if (spec) {
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              {endSentence} <ConditionSentence source={source} spec={spec} meta={meta} />
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
+    const timerSeconds =
+      parsed?.afterSeconds !== undefined || parsed?.repeatSeconds !== undefined
+        ? (parsed.afterSeconds ?? parsed.repeatSeconds ?? 0)
+        : undefined;
+    if (timerSeconds !== undefined) {
+      const when = parsed?.afterSeconds !== undefined ? humanizeSeconds(timerSeconds) : humanizeInterval(timerSeconds);
+      const verb = parsed?.afterSeconds !== undefined ? "Remind me" : "Reminds";
+      const metaSuffix = meta ? ` — ${meta}` : "";
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              <span>
+                {endSentence} {verb} {when}
+                {metaSuffix}.
+              </span>
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
+    const heartbeat =
+      parsed?.progressIntervalMS !== undefined
+        ? `heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`
+        : undefined;
+    if (heartbeat) {
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              <span>
+                {endSentence} {heartbeat}
+                {meta ? ` — ${meta}` : ""}.
+              </span>
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
+    if (note || meta) {
+      return (
+        <>
+          <div className={CLASS.section}>
+            <div className={CLASS.trigger} data-testid="job-watch-trigger">
+              <span>
+                {endSentence}
+                {meta ? ` ${meta}.` : ""}
+              </span>
+            </div>
+          </div>
+          {note ? <NoteSection note={note} /> : null}
+        </>
+      );
+    }
     return (
       <div className={CLASS.section}>
         <div className={CLASS.trigger} data-testid="job-watch-trigger">
-          {endReason ? (
-            <span>
-              Watch on <span className={CLASS.mono}>{source}</span> ended — {endReason}.
-            </span>
-          ) : (
-            <span>
-              Watch on <span className={CLASS.mono}>{source}</span> ended.
-            </span>
-          )}
+          {endSentence}
         </div>
       </div>
     );
   }
   const condition = strField(raw, "condition");
-  const parsed = condition ? parseConditionText(condition) : undefined;
+  const structuredNote = strField(raw, "note");
+  const parsed = condition ? parseConditionText(condition, structuredNote) : undefined;
+  // The structured note wins over the note: clause for the same reason as
+  // list rows: it is verbatim even when the note contains delimiter-looking
+  // text. Its exact embedded clause is stripped before parsing (see
+  // stripStructuredNoteClause) so delimiter-looking prose never invents
+  // triggers. The clause is the fallback for stored frames that predate it.
+  const note = structuredNote ?? parsed?.note;
   const deliveries = typeof raw.deliveries === "number" ? raw.deliveries : undefined;
   const created = formatCreatedDate(strField(raw, "created_at"));
-  const used = deliveries !== undefined ? ` — ${deliveries} deliveries` : "";
-  const since = created ? `, ${created}` : "";
+  // ConditionSentence owns the sentence's single terminal period (8a56741
+  // finding 1): metadata arrives as its `meta` clause ("3 deliveries, created
+  // Sep 6, 09:41"), joined with an em dash before the one period — never
+  // appended beside it ("matches. — 3 deliveries.").
+  const meta =
+    [deliveries !== undefined ? `${deliveries} deliveries` : "", created ?? ""]
+      .filter((bit) => bit !== "")
+      .join(", ") || undefined;
   // Every embedded condition form renders humanized: pattern, timer
   // cadence, heartbeat, events (+every throttle), and filter — the same
   // sentence grammar as the create/inspect one-liners, never raw keys. The
@@ -950,9 +1423,9 @@ function InspectBody({ raw }: { raw: JsonObject }) {
   // (combined RoboRev review).
   if (parsed?.outputMatch) {
     return (
-      <div className={CLASS.section}>
-        <div className={CLASS.trigger} data-testid="job-watch-trigger">
-          <span>
+      <>
+        <div className={CLASS.section}>
+          <div className={CLASS.trigger} data-testid="job-watch-trigger">
             <ConditionSentence
               source={source}
               spec={{
@@ -963,29 +1436,34 @@ function InspectBody({ raw }: { raw: JsonObject }) {
                 filterToolName: parsed.filterToolName,
                 filterStatus: parsed.filterStatus,
               }}
+              meta={meta}
             />
-            <span>
-              {used}
-              {since}.
-            </span>
-          </span>
+          </div>
         </div>
-      </div>
+        {note ? <NoteSection note={note} /> : null}
+      </>
     );
   }
   if (parsed?.afterSeconds !== undefined || parsed?.repeatSeconds !== undefined) {
     const seconds = parsed.afterSeconds ?? parsed.repeatSeconds ?? 0;
     const when = parsed.afterSeconds !== undefined ? humanizeSeconds(seconds) : humanizeInterval(seconds);
+    // A one-shot timer reminds once ("Remind me in 5m", mirroring the create
+    // summary); a repeating timer keeps reminding ("Reminds every 5m" —
+    // 8a56741 finding 2).
+    const verb = parsed.afterSeconds !== undefined ? "Remind me" : "Reminds";
+    const metaSuffix = meta ? ` — ${meta}` : "";
     return (
-      <div className={CLASS.section}>
-        <div className={CLASS.trigger} data-testid="job-watch-trigger">
-          <span>
-            Reminds {when}
-            {used}
-            {since}.
-          </span>
+      <>
+        <div className={CLASS.section}>
+          <div className={CLASS.trigger} data-testid="job-watch-trigger">
+            <span>
+              {verb} {when}
+              {metaSuffix}.
+            </span>
+          </div>
         </div>
-      </div>
+        {note ? <NoteSection note={note} /> : null}
+      </>
     );
   }
   if (
@@ -996,24 +1474,24 @@ function InspectBody({ raw }: { raw: JsonObject }) {
       parsed.progressIntervalMS !== undefined)
   ) {
     return (
-      <div className={CLASS.section}>
-        <div className={CLASS.trigger} data-testid="job-watch-trigger">
-          <ConditionSentence
-            source={source}
-            spec={{
-              events: parsed.events,
-              every: parsed.every,
-              progressIntervalMS: parsed.progressIntervalMS,
-              filterToolName: parsed.filterToolName,
-              filterStatus: parsed.filterStatus,
-            }}
-          />
-          <span>
-            {used}
-            {since}.
-          </span>
+      <>
+        <div className={CLASS.section}>
+          <div className={CLASS.trigger} data-testid="job-watch-trigger">
+            <ConditionSentence
+              source={source}
+              spec={{
+                events: parsed.events,
+                every: parsed.every,
+                progressIntervalMS: parsed.progressIntervalMS,
+                filterToolName: parsed.filterToolName,
+                filterStatus: parsed.filterStatus,
+              }}
+              meta={meta}
+            />
+          </div>
         </div>
-      </div>
+        {note ? <NoteSection note={note} /> : null}
+      </>
     );
   }
   return (
@@ -1021,8 +1499,7 @@ function InspectBody({ raw }: { raw: JsonObject }) {
       <div className={CLASS.trigger} data-testid="job-watch-trigger">
         <span>
           Watching <span className={CLASS.mono}>{source}</span>
-          {used}
-          {since}.
+          {meta ? ` — ${meta}` : ""}.
         </span>
       </div>
     </div>
@@ -1072,6 +1549,24 @@ function JobWatchBody(props: ToolRenderProps) {
   }
 }
 
+// jobWatchHasBody mirrors JobWatchBody's null conditions exactly: clear
+// results and terminal catch-ups are summary-only (the summary line IS the
+// rendering), as are noteless timers and sourceless-condition creates.
+// ToolCallItem consults this to withhold the disclosure control that would
+// otherwise open to nothing.
+function jobWatchHasBody(item: ItemModel): boolean {
+  const raw = asJsonObject(item.raw);
+  if (!raw || !isRecognizedWatchResult(raw)) return true;
+  const operation = jobWatchOperation(item, raw);
+  if (operation === "clear") return false;
+  if (operation === "list" || operation === "inspect") return true;
+  if (isTerminalCatchup(raw)) return false;
+  const timer = timerSpec(raw);
+  if (timer && !timer.note) return false;
+  if (!timer && !conditionSpec(raw, asJsonObject(parseArgs(item.argumentsJSON)))) return false;
+  return true;
+}
+
 registerToolRenderer({
   match: "job_watch",
   icon: "job",
@@ -1081,4 +1576,5 @@ registerToolRenderer({
   fold: "never",
   summary: jobWatchSummary,
   body: JobWatchBody,
+  hasBody: jobWatchHasBody,
 });
