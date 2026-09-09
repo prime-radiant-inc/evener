@@ -13,17 +13,18 @@ import (
 func TestLinuxProcessExitedHandlesInterruptedPoll(t *testing.T) {
 	realErr := errors.New("poll failed")
 	for _, tc := range []struct {
-		name      string
-		revents   int16
-		pollErr   error
-		wantGone  bool
-		wantErr   error
-		wantCalls int
+		name        string
+		revents     int16
+		injectEINTR bool
+		wantRealErr bool
+		wantGone    bool
+		wantErr     error
+		wantCalls   int
 	}{
-		{name: "EINTR then live", pollErr: unix.EINTR, wantCalls: 2},
-		{name: "EINTR then exited", pollErr: unix.EINTR, revents: unix.POLLIN, wantGone: true, wantCalls: 2},
-		{name: "EINTR then hangup", pollErr: unix.EINTR, revents: unix.POLLHUP, wantGone: true, wantCalls: 2},
-		{name: "EINTR then real error", pollErr: unix.EINTR, wantErr: realErr, wantCalls: 2},
+		{name: "EINTR then live", injectEINTR: true, wantCalls: 2},
+		{name: "EINTR then exited", injectEINTR: true, revents: unix.POLLIN, wantGone: true, wantCalls: 2},
+		{name: "EINTR then hangup", injectEINTR: true, revents: unix.POLLHUP, wantGone: true, wantCalls: 2},
+		{name: "EINTR then real error", injectEINTR: true, wantRealErr: true, wantErr: realErr, wantCalls: 2},
 		{name: "closed descriptor", revents: unix.POLLNVAL, wantErr: os.ErrClosed, wantCalls: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -33,11 +34,11 @@ func TestLinuxProcessExitedHandlesInterruptedPoll(t *testing.T) {
 				if timeout != 0 {
 					t.Fatalf("poll timeout = %d; want 0", timeout)
 				}
-				if calls == 1 && tc.pollErr == unix.EINTR {
+				if calls == 1 && tc.injectEINTR {
 					return 0, unix.EINTR
 				}
 				fds[0].Revents = tc.revents
-				if tc.wantErr == realErr {
+				if tc.wantRealErr {
 					return 0, realErr
 				}
 				return 1, nil
