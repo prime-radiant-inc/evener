@@ -484,3 +484,43 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   }
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
+
+// The original inline footer button offered force stop to nested sessions
+// too: its gate was just `local: && !recoveryOwnerRef && !closed`, with no
+// parentRef check. The hub's force-stop contract rejects a descendant with
+// "no direct daemon ownership claim" once its parent is gone, and the dialog
+// surfaces that error — that was the accepted recovery path for a nested
+// fork whose owning session is unresponsive. This pins that behavior: the
+// menu still offers the action for a nested session, and confirming surfaces
+// the hub's rejection.
+test.each(["subagent", "fork"])("a nested %s session still offers Force stop and surfaces rejection", async (kind) => {
+  const user = userEvent.setup();
+  const ref = `local:nested-${kind}`;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "restartRequired" },
+      evener: {
+        ref,
+        kind,
+        parentRef: "local:parent",
+        capabilities: { ...CAPABILITIES, shutdown: false },
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  fake.on("evener/thread/forceStop", () => {
+    throw new Error("no direct daemon ownership claim");
+  });
+  setLocation(ref);
+  await threadsStore.getState().ensureThread(ref);
+  renderWithToast(<SessionChromeView ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  const toasts = await screen.findAllByText("Couldn't force stop session: no direct daemon ownership claim");
+  expect(toasts.length).toBeGreaterThanOrEqual(1);
+  expect(
+    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+});

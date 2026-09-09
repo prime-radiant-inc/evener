@@ -95,9 +95,22 @@ function stubSessionSlots(): void {
 stubSessionSlots();
 
 afterAll(() => {
+  // A test that restored a slot mid-file (and, under test.each, has no
+  // onTestFinished to re-stub it) leaves vi.mocked(...).mockRestore absent;
+  // re-stub first so handing the real components back can't fail.
+  stubSessionSlots();
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
 });
+
+// Force stop lives in the session "⋯" menu (SessionChrome) now that the inline
+// footer button is retired; this walks the same menu path a user would. Tests
+// using it must restore the real SessionChrome and render it (or the real
+// Composer, which mounts it) themselves.
+async function openForceStopDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+}
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -2103,6 +2116,7 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
 test("explicit Resume follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {
   onTestFinished(stubSessionSlots);
   vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   const stableRef = "local:stable-a";
   const currentRef = "local:current-b";
   let stopped = false;
@@ -2188,7 +2202,8 @@ test("explicit Resume follows the returned identity through transcript and new s
     await refreshPendingTurnsProjection(stableRef);
   });
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Force stop…" }));
+  await user.click(await screen.findByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(resumed).toBe(false);
@@ -2286,6 +2301,7 @@ test.each(["success", "refused"])(
 );
 
 test.each(["success", "refused"])("hydrated restart recovery works without navigation: %s", async (outcome) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   const fake = connectFakeClient();
   const ref = "local:incompatible-root";
   let status = "restartRequired";
@@ -2301,24 +2317,28 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   });
   render(
     <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref={ref} />
       <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
     </ClientProvider>,
   );
   await screen.findByRole("button", { name: "Refresh session" });
   const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Force stop…" }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-  await user.click(screen.getByRole("button", { name: "Force stop…" }));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
     { method: "evener/thread/forceStop", params: { ref } },
   ]);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
-    expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
+    expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
     expect(
       (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -2470,6 +2490,7 @@ test("keeps recovery failure visible on a compatible session until reconciliatio
 });
 
 test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   const mutationId = await seedPendingSend("local:retained-child");
   await mutationStorage.markUnknown(mutationId, "blockedUnknown");
   const fake = connectFakeClient();
@@ -2494,6 +2515,7 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   });
   render(
     <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref="local:retained-child" />
       <Session params={{ ref: "local:retained-child" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
@@ -2508,7 +2530,12 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
   expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
-  expect(screen.queryByRole("button", { name: /Force stop/ })).toBeNull();
+  // A session retained by its owner offers no force stop anywhere in the
+  // pane: the owner directs recovery (the notice above links to it).
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.queryByRole("menuitem", { name: /Force stop/ })).toBeNull();
+  await user.keyboard("{Escape}");
   owned = false;
   fireEvent.click(refresh);
   const resume = await screen.findByRole("button", { name: "Resume session" });
@@ -2522,6 +2549,7 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
 test.each(["idle", "active"])(
   "hydrated %s session keeps recovery when subsequent reads stall without navigation",
   async (status) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
     const ref = "local:retained-unresponsive";
     let stopped = false;
@@ -2542,6 +2570,7 @@ test.each(["idle", "active"])(
     });
     render(
       <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
         <Session params={{ ref }} paneId="p1" focused={true} />
       </ClientProvider>,
     );
@@ -2552,7 +2581,7 @@ test.each(["idle", "active"])(
     await waitFor(() => expect(reads).toBe(2));
     expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Force stop…" }));
+    await openForceStopDialog(user);
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
@@ -2594,6 +2623,7 @@ test("a fresh client offers explicit Resume for a server-fenced stopped session"
 test.each(["pending", "failed"])(
   "saved session retains confirmed recovery when resumed daemon read is %s",
   async (outcome) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
     const ref = "local:saved-resume-stall";
     let daemonStarted = false;
@@ -2618,12 +2648,15 @@ test.each(["pending", "failed"])(
     try {
       render(
         <ClientProvider client={fake}>
+          <SessionChromeModule.SessionChrome ref={ref} />
           <Session params={{ ref }} paneId="p1" focused={true} />
         </ClientProvider>,
       );
       const user = userEvent.setup();
       const resume = await screen.findByRole("button", { name: "Resume session" });
-      expect(screen.getAllByRole("button", { name: "Force stop…" })).toHaveLength(1);
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
       await user.click(resume);
       expect(daemonStarted).toBe(true);
       if (outcome === "failed") {
@@ -2631,7 +2664,7 @@ test.each(["pending", "failed"])(
         await screen.findByText("resumed daemon read failed");
       } else expect((resume as HTMLButtonElement).disabled).toBe(true);
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
-      await user.click(await screen.findByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       await waitFor(() =>
@@ -2707,6 +2740,7 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
 test.each(["pending", "failed"])(
   "saved Send exposes confirmed recovery when automatic resume is %s",
   async (outcome) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
     const ref = "local:saved-auto-resume";
     let daemonStarted = false;
@@ -2744,6 +2778,7 @@ test.each(["pending", "failed"])(
     try {
       render(
         <ClientProvider client={fake}>
+          <SessionChromeModule.SessionChrome ref={ref} />
           <Session params={{ ref }} paneId="p1" focused={true} />
         </ClientProvider>,
       );
@@ -2752,7 +2787,10 @@ test.each(["pending", "failed"])(
         await threadsStore.getState().refreshThread(ref);
       });
       expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
-      expect(screen.getAllByRole("button", { name: "Force stop…" })).toHaveLength(1);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
       await act(async () => {
         await threadsStore.getState().send(ref, "continue the saved conversation");
       });
@@ -2762,8 +2800,7 @@ test.each(["pending", "failed"])(
         await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
       }
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
-      const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       await waitFor(() => expect(stopped).toBe(true));
@@ -2783,6 +2820,7 @@ test.each(["pending", "failed"])(
 test.each(["model", "compact"])(
   "saved %s action retains recovery while automatic resume stalls without navigation",
   async (action) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
     const ref = "local:saved-action";
     let daemonStarted = false;
@@ -2810,6 +2848,7 @@ test.each(["model", "compact"])(
     });
     render(
       <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
         <Session params={{ ref }} paneId="p1" focused={true} />
       </ClientProvider>,
     );
@@ -2817,7 +2856,7 @@ test.each(["model", "compact"])(
     const user = userEvent.setup();
     try {
       // A saved snapshot cannot establish whether an automatic resume has launched a daemon.
-      await user.click(screen.getByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       const request =
@@ -2827,13 +2866,14 @@ test.each(["model", "compact"])(
       const settled = request.catch((error: unknown) => error);
       await waitFor(() => expect(daemonStarted).toBe(true));
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
-      expect(screen.getAllByRole("button", { name: "Force stop…" })).toHaveLength(1);
-      await user.click(screen.getByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
-      expect(screen.getAllByRole("button", { name: "Force stop…" })).toHaveLength(1);
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
+      await user.keyboard("{Escape}");
       expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
@@ -2850,6 +2890,7 @@ test.each(["model", "compact"])(
 test.each(["idle", "active"])(
   "independent nested fork keeps confirmed recovery during stalled %s reads",
   async (status) => {
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
     const fake = connectFakeClient();
     const ref = "local:original-fork";
     setNavigationTitle(ref, "Original fork", false);
@@ -2874,6 +2915,7 @@ test.each(["idle", "active"])(
     });
     render(
       <ClientProvider client={fake}>
+        <SessionChromeModule.SessionChrome ref={ref} />
         <Session params={{ ref }} paneId="p1" focused={true} />
       </ClientProvider>,
     );
@@ -2887,10 +2929,10 @@ test.each(["idle", "active"])(
       await waitFor(() => expect(finishRead).toBeTypeOf("function"));
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe(status);
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
-      await user.click(screen.getByRole("button", { name: "Force stop…" }));
+      await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
@@ -2906,3 +2948,56 @@ test.each(["idle", "active"])(
     }
   },
 );
+
+// Regression for the review finding on the footer-button removal: a FENCED
+// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
+// at all, which used to leave the ⋯ menu - the only force-stop surface -
+// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
+// the footer for exactly this state. This drives the REAL Session + Composer
+// tree (no slot stubs) to prove the menu is reachable there.
+test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:fenced-not-loaded";
+  setNavigationTitle(ref, "Fenced saved session");
+  let stopped = false;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = !stopped;
+    response.thread.evener.mutationStateAuthoritative = false;
+    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
+    // resume fence (applyThreadResumeRequirement) takes it away - which is
+    // what kills the composer's follow-up card and its chrome mount.
+    if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
+    return response;
+  });
+  fake.on("evener/thread/forceStop", () => {
+    stopped = true;
+    return {};
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  // The fence kills the composer card entirely - no invitation, no chrome.
+  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
+  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  const user = userEvent.setup();
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
