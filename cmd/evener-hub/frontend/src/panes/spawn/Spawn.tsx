@@ -1062,7 +1062,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             ? resolveSpawnModelItems(modelCatalog)
             : resolveSpawnEffortItems(effortLevels, reasoningEffort);
         const needle = value.toLowerCase();
-        const known = items.some((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
+        // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
+        // resolveSpawnEffortItems (the "(default)" entry) must not count as
+        // known here, so an empty effort value toasts
+        // "/reasoning-effort needs a value" and aborts without thread/start
+        // (palette parity - in-session bare /reasoning-effort errors with no
+        // side effects). Bare /model stays fail-open via the branch above.
+        const known =
+          builtinMatch.command.id === "reasoning-effort" && value === ""
+            ? false
+            : items.some((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
         if (!known) {
           const message = value
             ? `/${builtinMatch.command.id}: unknown value "${value}"`

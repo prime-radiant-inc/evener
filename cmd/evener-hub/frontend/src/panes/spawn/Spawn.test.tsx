@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
+import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
@@ -21,14 +22,50 @@ import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
-import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
 
 let modelListOverride: ModelDescriptor[] | null = null;
+
+// Seeds the tracked ThreadModel for a fresh session ref so the post-start
+// reasoning-effort follow-up (palette source: focusedModel's own
+// reasoningEffortLevels/supportsReasoning) resolves against a reasoning model
+// instead of an empty store.
+function seedReasoningModel(ref: string): void {
+  const model: ThreadModel = {
+    ref,
+    threadId: "abc123",
+    name: "",
+    status: { type: "idle" },
+    modelProvider: "anthropic",
+    model: "claude-sonnet-4-5",
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    lastFrameAt: 0,
+    capabilities: NO_CAPABILITIES,
+    goal: null,
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: ["minimal", "low", "medium", "high"],
+    supportsReasoning: true,
+    cwd: "/tmp/project",
+  };
+  threadsStore.setState({ threads: new Map([[ref, model]]) });
+}
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -399,6 +436,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  resetThreadsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
@@ -3005,4 +3043,66 @@ test("a bare /model with no catalog spawns with no model follow-up and no error 
   const start = fake.calls.find((c) => c.method === "thread/start");
   expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/model" }] });
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  // No error toast: the fail-open path toasts nothing.
+  expect(getToasts()).toEqual([]);
+});
+
+test("a /reasoning-effort prompt starts the session and applies thread/reasoning-effort/set on the new ref", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => {
+      seedReasoningModel("local:abc123");
+      return startResponse("local:abc123");
+    });
+    f.on("thread/reasoning-effort/set", () => ({}));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/reasoning-effort high");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/reasoning-effort high" }] });
+  const set = fake.calls.find((c) => c.method === "thread/reasoning-effort/set");
+  expect(set?.params).toMatchObject({ ref: "local:abc123", reasoningEffort: "high" });
+});
+
+test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/reasoning-effort ultra");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "ultra"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/reasoning-effort");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText("/reasoning-effort needs a value")).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/reasoning-effort/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
 });
