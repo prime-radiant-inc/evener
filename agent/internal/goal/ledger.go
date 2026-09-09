@@ -144,10 +144,14 @@ func CanonicalizeObservationOutput(out string) string {
 // (timestamps, request ids, RNG) over the stated scope and collapses
 // whitespace. Timestamp-noise-only outputs canonicalize equal; genuinely
 // different content stays distinct. Empty stays empty — the class-only
-// fallback signal (never novel by default). Shared with
-// CanonicalizeObservationOutput (which additionally redacts long hex: raw
-// outputs may carry hashes, while the evidence seam hashes canonicalized
-// output and must never redact the digest it is about to compare).
+// fallback signal (never novel by default).
+//
+// DEPRECATED for the novelty path: FoldLedger compares stored digests
+// directly (the evidence seam hashes canonicalized output), and
+// re-canonicalizing a 64-char hex digest redacts it to "<id>" — collapsing
+// every entry. Use CanonicalizeObservationOutput (raw outputs, incl. long
+// hex) and compare digests verbatim. Kept for the unit test pinning the
+// redaction contract on prose inputs.
 func CanonicalizeObservationHash(h string) string {
 	if h == "" {
 		return ""
@@ -168,7 +172,12 @@ func CanonicalizeObservationHash(h string) string {
 func FoldLedger(prev LedgerSummary, outcome TurnOutcome, waitAdvanced bool) LedgerSummary {
 	fp := CanonicalizeActionFingerprint(outcome.ActionFingerprint)
 	class := outcome.ObservationClass
-	hash := CanonicalizeObservationHash(outcome.ObservationHash)
+	// Compare digests directly: the evidence seam stores sha256 hex digests
+	// of canonicalized output, and re-canonicalizing a 64-char hex digest
+	// redacts it to "<id>" — collapsing every entry to one hash and
+	// suppressing novelty entirely. Volatile redaction belongs BEFORE the
+	// hash (CanonicalizeObservationOutput at the seam), never after.
+	hash := outcome.ObservationHash
 	digest := outcome.StateDigest
 
 	hashNovel := false

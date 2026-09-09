@@ -789,6 +789,41 @@ func TestGoalChildDurableMatchesSessionID(t *testing.T) {
 	}
 }
 
+// TestGoalSubstrateCheckURLDeniesPrivateRanges pins the egress gate: parsed
+// literal IPs deny by range (incl. 172.16/12, which a substring list misses),
+// loopback hostnames deny, and public hosts pass (path/query substrings must
+// not false-positive — matching runs on the parsed host, not the raw URL).
+func TestGoalSubstrateCheckURLDeniesPrivateRanges(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	sub := &goalSessionSubstrate{sess: sess}
+	for _, raw := range []string{
+		"http://172.16.0.5/hook",
+		"http://172.31.255.1/hook",
+		"http://10.0.0.9/hook",
+		"http://192.168.1.2/hook",
+		"http://127.0.0.1/hook",
+		"http://localhost/hook",
+		"http://0.0.0.0/hook",
+		"http://[::1]/hook",
+	} {
+		if sub.CheckURL(raw, time.Minute) {
+			t.Fatalf("CheckURL(%q) = true, want denied (private/loopback)", raw)
+		}
+	}
+	for _, raw := range []string{
+		"https://example.com/hook",
+		"https://example.com/10.0/status",
+		"https://hooks.example.com/172.16/ping",
+	} {
+		if !sub.CheckURL(raw, time.Minute) {
+			t.Fatalf("CheckURL(%q) = false, want allowed (public host)", raw)
+		}
+	}
+}
+
 // TestGoalLedgerFullTurnStallGraduates pins the fold end to end through a
 // scripted turn: communicate-only continuation turns with no state movement
 // nudge at K and block after, with the evidence named.

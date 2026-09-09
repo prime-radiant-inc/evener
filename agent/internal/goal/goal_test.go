@@ -253,6 +253,16 @@ func TestApplyExtendClampsExtremeValues(t *testing.T) {
 	if err != nil || out.Budgets.MaxParkedTotal != MaxParkedTotalCap {
 		t.Fatalf("parked-total = (%+v, %v), want clamped to %v", out.Budgets, err, MaxParkedTotalCap)
 	}
+	// Ordinary values must pass through unclamped (the broken arithmetic
+	// granted the full cap for ANY positive value).
+	out, err = ApplyExtend(full, ExtendRequest{Budget: ExtendDeadline, Value: 3600}, now)
+	if err != nil || !out.Budgets.Deadline.Equal(now.Add(time.Hour)) {
+		t.Fatalf("deadline = (%+v, %v), want now+1h", out.Budgets, err)
+	}
+	out, err = ApplyExtend(full, ExtendRequest{Budget: ExtendParkedTotal, Value: 60}, now)
+	if err != nil || out.Budgets.MaxParkedTotal != MaxParkedTotalCap {
+		t.Fatalf("parked-total = (%+v, %v), want clamped to cap (default already at cap)", out.Budgets, err)
+	}
 }
 
 func TestBudgetsAccrueInFold(t *testing.T) {

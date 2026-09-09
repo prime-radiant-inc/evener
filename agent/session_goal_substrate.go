@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -205,15 +207,36 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 }
 
 // CheckURL validates an http_match URL under the session egress policy:
-// well-formed absolute http(s) (goal.ValidHTTPURL) with deny
-// link-local/loopback by default.
+// well-formed absolute http(s) (goal.ValidHTTPURL) with loopback,
+// link-local, and private ranges denied (matcher/fetch evaluation itself is
+// a deferred slice — this gate is validation-only). The host is parsed
+// (never substring-matched over the raw URL): literal IPs deny by range
+// (incl. 172.16/12, which a substring list misses, and 0.0.0.0/::),
+// hostnames deny loopback/link-local literals, and "localhost" names.
 func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
 	if !goal.ValidHTTPURL(rawURL) {
 		return false
 	}
 	_ = timeout
-	lower := strings.ToLower(rawURL)
-	for _, denied := range []string{"localhost", "127.", "0.0.0.0", "::1", "[::1]", "10.", "192.168.", "169.254."} {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() || ip.IsUnspecified() {
+			return false
+		}
+		return true
+	}
+	lower := strings.ToLower(host)
+	for _, denied := range []string{"localhost", "127.", "0.0.0.0", "::1", "[::1]", "10.", "192.168.", "169.254.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31."} {
 		if strings.Contains(lower, denied) {
 			return false
 		}

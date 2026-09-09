@@ -1657,7 +1657,7 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 		// Bound BEFORE the Duration multiply: ext.Value seconds near
 		// math.MaxInt64/1e9 would overflow time.Duration and wrap negative,
 		// defeating the cap comparison below.
-		if ext.Value > int64((GoalDeadlineCap / time.Second).Seconds()) {
+		if ext.Value > int64(GoalDeadlineCap/time.Second) {
 			out.Budgets.Deadline = now.Add(GoalDeadlineCap)
 		} else {
 			out.Budgets.Deadline = now.Add(time.Duration(ext.Value) * time.Second)
@@ -1670,7 +1670,7 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 		if ext.Value <= 0 {
 			return GoalSnapshot{}, fmt.Errorf("invalid --extend parked-total value %d: want a positive second count", ext.Value)
 		}
-		if ext.Value > int64((MaxParkedTotalCap / time.Second).Seconds()) {
+		if ext.Value > int64(MaxParkedTotalCap/time.Second) {
 			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
 			break
 		}
