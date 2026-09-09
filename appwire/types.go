@@ -2886,9 +2886,9 @@ type CommandDescriptor struct {
 	PluginName   string `json:"pluginName,omitempty"`
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
-	// Source is "plugin" or "user"; "project" is reserved for a future
-	// project-scoped catalog (project commands are cwd-dependent and never
-	// appear in the hub-wide catalog).
+	// Source is "plugin", "user", or "project". "project" is returned by the
+	// spawn-scoped catalog (project commands are cwd-dependent); it never
+	// appears in the hub-wide catalog.
 	Source string `json:"source,omitempty"`
 }
 
