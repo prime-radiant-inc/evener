@@ -536,11 +536,18 @@ export interface InstanceCreateParams {
 
 export interface InstanceEditParams {
   name: string;
+  newName?: string;
   baseUrl?: string;
   clearBaseUrl?: boolean;
   protocol?: string;
+  clearProtocol?: boolean;
   surface?: string;
+  clearSurface?: boolean;
   vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  clearApiKeyEnv?: boolean;
+  credentialHeader?: string;
+  clearCredentialHeader?: boolean;
 }
 
 export interface InstanceEntry {
@@ -552,6 +559,8 @@ export interface InstanceEntry {
   auth: string;
   baseUrl?: string;
   vars?: Record<string, string>;
+  apiKeyEnv?: string;
+  credentialHeader?: string;
   implicit: boolean;
   hidden?: boolean;
   isDefault: boolean;

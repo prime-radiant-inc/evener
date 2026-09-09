@@ -119,12 +119,14 @@ or `credential_headers`, both of which only `InstanceCreateParams` accepts.
 Each set/clear pair follows `baseUrl`/`clearBaseUrl`: never both meaningful
 in one request. `InstanceEntry` gains `apiKeyEnv?: string` (the first
 authored `api_key_env` entry) and `credentialHeader?: string` (the single
-authored header rendered as `NAME=VALUE`). Both are variable names and
-`$VAR` templates by construction (`registry.CheckCredentialHeaderValue`
-refuses a literal), never secret values. They come from the authored layer
-(`c.read()`), which `entryFor` does not read today; `List` reads the layer
-once per call and passes the authored `registry.Provider` alongside each
-instance.
+authored header rendered as `NAME=VALUE`). Neither carries a secret:
+`api_key_env` is a variable name, and the header is what
+`registry.CheckCredentialHeaderValue` accepts — `$VAR` references with at
+most one auth scheme word ahead of them — with any header that rule refuses
+omitted from the entry, because the loader itself would read back a
+hand-written literal. They come from the authored layer (`c.read()`), which
+`entryFor` does not read today; `List` reads the layer once per call and
+passes the authored `registry.Provider` alongside each instance.
 
 ### Hub: Edit
 

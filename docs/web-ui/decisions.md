@@ -916,3 +916,30 @@ uniform radius. The user's own message keeps its `--accent-bg` wash
 reverses the bubble decision for the agent side only, and it is the one
 2026-09-06 change that is taste rather than measurement; it is the shape
 both major chat assistants converged on for long technical answers.
+
+## 2026-09-07 detail sheets are editors
+
+The provider instance sheet shipped as an inspector: a stack of quiet
+buttons whose "Edit" opened a one-field dialog (Base URL), and nothing could
+rename an instance or change its api_key_env or credential header after
+creation. Jesse called the whole pattern out. The rule in design-system.md
+§10 now reads: a detail sheet is the item's editor. Editable facts are
+prefilled form fields in place with a dirty-gated Save in the footer;
+rename is editing the name field; dialogs are reserved for write-only
+secret entry and multi-step flows. `InstanceSheet` is the reference
+implementation (spec
+`docs/superpowers/specs/2026-09-07-settings-sheet-editors-and-agents-doc-design.md`);
+the marketplaces list follows in its own slice, and the installed-plugin
+sheet already edited its two switches in place and is unchanged.
+
+Two consequences ride along. Protocol and surface are exposed on both the
+sheet and the Add form as selects over the registry's four-value
+vocabularies, with an "inherit from base" empty option. From the sheet
+that option sends the new clear flag; the Add form's create params have no
+clear flags, so it just omits the field. And the wire's instance entry now
+carries the authored api_key_env and credential header (never a secret:
+`registry.CheckCredentialHeaderValue`, the rule both authoring surfaces
+share, takes $VARIABLE references with at most one auth scheme word ahead
+of them, and the hub omits from the entry any header that rule refuses —
+the loader itself would accept a hand-written literal) so the form can
+prefill them.

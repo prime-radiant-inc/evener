@@ -1,0 +1,30 @@
+{
+  "name": "transcript-stamp-rail",
+  "description": "transcript: a mid-exchange agent timestamp leaves the flow for the right margin only when the transcript container has room for it (55rem), aligned with the first prose line and fully outside the column; below that it is an in-flow right-justified line under the content (PR 1041). The wide-measure override band (55-75rem with data-transcript-measure=wide) is covered by the transcript-stamp-rail-wide twin - this harness's body is fixed to the reading measure.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/turnblock.module.css",
+    "panes/session/transcript/messages/agentmessageitem.module.css",
+    "widgets/timestamp/timestamp.module.css",
+    "widgets/markdown/markdown.module.css"
+  ],
+  "viewport": {
+    "width": 1440,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "widthMatrix": [
+    { "width": 1112, "window": 1440 },
+    { "width": 900, "window": 1440 },
+    { "width": 860, "window": 1440 },
+    { "width": 500, "window": 1440 }
+  ],
+  "mutation": {
+    "declaration": "agentmessageitem.module.css: the @container (min-width: 55rem) .stamp rail rule's `position: absolute` reverted to `static`",
+    "verified": "2026-09-09",
+    "expect": "fail",
+    "note": "Verified 2026-09-09: with the rail rule neutralized the 1112px and 900px containers keep the stamp in flow, and the case fails with 'stamp is in flow but the container has room for the rail'."
+  }
+}

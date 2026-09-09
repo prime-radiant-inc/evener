@@ -6,7 +6,7 @@ import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/typ
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
-import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog, EditInstanceDialog } from "./instanceDialogs";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -113,6 +113,20 @@ describe("AddInstanceDialog", () => {
     // varsEnv is the v3 name list, not a fallback: only vars drives the form.
     await user.selectOptions(screen.getByLabelText("Base provider"), "vars-env-only");
     expect(screen.queryByLabelText("LEGACY_ENV")).toBeNull();
+  });
+
+  // The Add form and the sheet show the same instance's variables, so they
+  // order them the same way: by code point, the order a placeholder name has
+  // as an identifier, not the one the reader's locale collates. The two
+  // disagree here - a locale sort puts EXTRA_ONE first, ignoring the
+  // underscore, while "S" is below "_" by code point.
+  test("variable rows are ordered by code point, as the sheet orders them", async () => {
+    connectFakeClient();
+    const extras = provider({ id: "extras", vars: { EXTRAS: "EXTRAS_ENV", EXTRA_ONE: "EXTRA_ONE_ENV" } });
+    render(<AddInstanceDialog availableProviders={[extras]} onCancel={() => {}} onSuccess={() => {}} />);
+    await userEvent.setup().selectOptions(screen.getByLabelText("Base provider"), "extras");
+    const rows = Array.from(document.querySelectorAll('input[id^="add-instance-var-"]')).map((el) => el.id);
+    expect(rows).toEqual(["add-instance-var-EXTRAS", "add-instance-var-EXTRA_ONE"]);
   });
 
   test("google-vertex-express renders only its own base-URL override, no project or location", async () => {
@@ -281,132 +295,35 @@ describe("AddInstanceDialog", () => {
     expect(screen.getAllByText("Create failed: name already exists").length).toBeGreaterThan(0);
     expect(onSuccess).not.toHaveBeenCalled();
   });
-});
 
-describe("EditInstanceDialog", () => {
-  test("Base URL is pre-filled from the instance", () => {
-    connectFakeClient();
-    render(
-      <EditInstanceDialog
-        instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
-        onCancel={() => {}}
-        onSuccess={() => {}}
-      />,
-    );
-    expect(screen.getByLabelText(/base url/i)).toHaveProperty("value", "https://existing");
-  });
-
-  test("emptying a set Base URL clears it back to the provider default", async () => {
+  test("Protocol and Surface default to inherit and are sent only when chosen", async () => {
     const fake = connectFakeClient();
-    fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", clearBaseUrl: true });
-      return { instances: [], availableProviders: [] };
-    });
-    const onSuccess = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <EditInstanceDialog
-        instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
-        onCancel={() => {}}
-        onSuccess={onSuccess}
-      />,
-    );
-    await user.clear(screen.getByLabelText(/base url/i));
-    // InstanceEditParams.baseUrl keeps its old "empty means unchanged"
-    // meaning (v3); clearBaseUrl is the additive signal that actually
-    // drops the authored override back to the provider's default (#711).
-    expect(screen.getByText(/resets the endpoint to the provider's default/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-  });
-
-  test("an instance with no Base URL of its own may be saved empty", async () => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work" });
-      return { instances: [], availableProviders: [] };
-    });
-    const onSuccess = vi.fn();
-    render(
-      <EditInstanceDialog
-        instance={instance({ name: "work", providerId: "anthropic" })}
-        onCancel={() => {}}
-        onSuccess={onSuccess}
-      />,
-    );
-    expect(screen.queryByText(/resets the endpoint to the provider's default/i)).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
-  });
-
-  test("submit with an unchanged Base URL sends only { name }", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work" });
+    fake.on("evener/instance/create", (params) => {
+      expect(params).toEqual({
+        name: "work",
+        base: "anthropic",
+        baseUrl: "",
+        protocol: "openai-responses",
+        surface: "generic",
+      });
       return { instances: [], availableProviders: [] };
     });
     const onSuccess = vi.fn();
     const user = userEvent.setup();
     render(
       <>
-        <EditInstanceDialog
-          instance={instance({ name: "work", providerId: "anthropic", baseUrl: "https://existing" })}
-          onCancel={() => {}}
-          onSuccess={onSuccess}
-        />
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
         <Toast />
       </>,
     );
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect((screen.getByLabelText("Protocol") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Surface") as HTMLSelectElement).value).toBe("");
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "work");
+    await user.selectOptions(screen.getByLabelText("Protocol"), "openai-responses");
+    await user.selectOptions(screen.getByLabelText("Surface"), "generic");
+    await user.click(screen.getByRole("button", { name: "Create" }));
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
-  });
-
-  test("submit with a changed Base URL sends { name, baseUrl }", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "https://x" });
-      return { instances: [], availableProviders: [] };
-    });
-    const onSuccess = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <>
-        <EditInstanceDialog
-          instance={instance({ name: "work", providerId: "anthropic" })}
-          onCancel={() => {}}
-          onSuccess={onSuccess}
-        />
-        <Toast />
-      </>,
-    );
-    await user.clear(screen.getByLabelText(/base url/i));
-    await user.type(screen.getByLabelText(/base url/i), "https://x");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
-    expect(screen.getAllByText("Saved work").length).toBeGreaterThan(0);
-  });
-
-  test("a failure shows an inline error and an 'Edit failed' toast", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/edit", () => {
-      throw new Error("boom");
-    });
-    const user = userEvent.setup();
-    render(
-      <>
-        <EditInstanceDialog
-          instance={instance({ name: "work", providerId: "anthropic" })}
-          onCancel={() => {}}
-          onSuccess={() => {}}
-        />
-        <Toast />
-      </>,
-    );
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("boom");
-    expect(screen.getAllByText("Edit failed: boom").length).toBeGreaterThan(0);
   });
 });
 

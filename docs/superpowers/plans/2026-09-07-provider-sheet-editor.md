@@ -27,7 +27,7 @@
 ### Task 1: Wire types
 
 **Files:**
-- Modify: `appwire/types.go` (the `InstanceEditParams` doc comment and struct near line 2762; the `InstanceEntry` struct near line 2671)
+- Modify: `appwire/types.go` (the `InstanceEditParams` doc comment at line 2762 and its struct at line 2783; the `InstanceEntry` struct at line 2671)
 - Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`, `docs/appwire-protocol.md`
 
 **Interfaces:**
@@ -36,7 +36,18 @@
 
 - [ ] **Step 1: Replace the InstanceEditParams doc comment and struct**
 
-In `appwire/types.go`, replace the paragraph that begins `// Protocol and Surface have no clear operation yet` (three lines, through `// treatment as BaseURL is ledgered for whenever a form needs to clear one.`) with:
+In `appwire/types.go`, replace these FOUR lines, the last paragraph of the
+`InstanceEditParams` doc comment (immediately above the struct). Match them
+verbatim, em dash included:
+
+```go
+// Protocol and Surface have no clear operation yet — Name identifies the
+// instance and an empty Vars map is a no-op edit either way, so those two
+// are the only fields still unreachable. Giving them the same ClearXxx
+// treatment as BaseURL is ledgered for whenever a form needs to clear one.
+```
+
+with:
 
 ```go
 // The 2026-09-07 sheet-editor additions keep the same rule. NewName renames
@@ -44,7 +55,8 @@ In `appwire/types.go`, replace the paragraph that begins `// Protocol and Surfac
 // CredentialHeader/ClearCredentialHeader set or drop the authored
 // api_key_env and credential_headers; CredentialHeader is NAME=VALUE with a
 // $VAR value, exactly as InstanceCreateParams takes it. ClearProtocol and
-// ClearSurface are the clears the paragraph above ledgered. A Vars entry
+// ClearSurface drop an authored protocol or surface so the base provider's
+// value applies again, the same shape as ClearBaseURL. A Vars entry
 // whose value is empty DELETES that variable: a blank var never meant
 // anything, so the empty value is free to mean "remove". Each set/clear
 // pair follows BaseURL/ClearBaseURL: never both meaningful in one request.
@@ -148,6 +160,12 @@ func TestCredentialHeaderField_RendersTheFirstHeaderInSortedOrder(t *testing.T) 
 	if got != "Authorization=Bearer $A" {
 		t.Fatalf("got %q", got)
 	}
+	// A literal only reaches credential_headers by hand-editing the file:
+	// the loader accepts it, both authoring surfaces refuse it, and it must
+	// never be broadcast to a client.
+	if got := credentialHeaderField(map[string]string{"Authorization": "Bearer sk-literal"}); got != "" {
+		t.Fatalf("a hand-authored literal reached the wire: %q", got)
+	}
 }
 ```
 
@@ -155,6 +173,8 @@ func TestCredentialHeaderField_RendersTheFirstHeaderInSortedOrder(t *testing.T) 
 
 Run: `go test ./cmd/evener-hub -run 'TestInstances_ListReportsAuthoredCredentialFields|TestCredentialHeaderField' 2>&1 | head -8`
 Expected: compile error `undefined: credentialHeaderField`.
+
+Note `registry` is already imported by `app_instances.go`, so the filter needs no new import.
 
 - [ ] **Step 3: Implement**
 
@@ -200,13 +220,24 @@ Add below `entryFor`:
 // credentialHeaderField renders the authored credential_headers map as the
 // single NAME=VALUE field the forms use; credentialHeaderFrom is its
 // inverse. Several headers are possible by hand-editing the file, never
-// through the pane; the first in sorted order is the one the form edits.
+// through the pane; the first in sorted order is the one the form edits, and
+// editing that field replaces the whole map.
+//
+// A value the authoring rule would refuse is omitted rather than sent.
+// registry.CheckCredentialHeaderValue guards evener's own authoring surfaces
+// only - the loader's checkEnvRefs passes anything without a '$' - so a
+// hand-written literal secret loads fine, and it must not reach a client.
+// Prefilling one would also build a form Edit refuses to save.
 func credentialHeaderField(headers map[string]string) string {
 	if len(headers) == 0 {
 		return ""
 	}
 	names := slices.Sorted(maps.Keys(headers))
-	return names[0] + "=" + headers[names[0]]
+	value := headers[names[0]]
+	if registry.CheckCredentialHeaderValue(value) != nil {
+		return ""
+	}
+	return names[0] + "=" + value
 }
 ```
 
@@ -215,7 +246,18 @@ func credentialHeaderField(headers map[string]string) string {
 - [ ] **Step 4: Run the instances tests and the wire-fixture corpus test**
 
 Run: `go test ./cmd/evener-hub -run 'TestInstances_|TestCredentialHeaderField|TestAuthWireFixtures' 2>&1 | tail -8`
-Expected: PASS. If `TestAuthWireFixturesMatchTheHubHandler` fails because a scenario now carries `apiKeyEnv` or `credentialHeader`, regenerate the corpus exactly as its failure message says (`go test ./cmd/evener-hub -run TestAuthWireFixtures -update-authwire`), then run `go test ./cmd/evener-tui/... 2>&1 | tail -3` and, from `cmd/evener-hub/frontend`, `npx vitest run src/panes/settings/sections/credentials 2>&1 | tail -5`, and include `cmd/evener-hub/testdata/authwire/responses.json` in the commit.
+Expected: `TestAuthWireFixturesMatchTheHubHandler` FAILS, and that is not
+optional — the corpus's `instances/mixed-sources` scenario authors
+`[providers.headered]` with a `credential_headers` entry and
+`[providers.unkeyed]` with `api_key_env`, so two rows gain the new fields.
+Regenerate exactly as the failure message says:
+
+`go test ./cmd/evener-hub -run TestAuthWireFixtures -update-authwire`
+
+Then re-run the decoders of that corpus: `go test ./cmd/evener-tui/... 2>&1 | tail -3`
+and, from `cmd/evener-hub/frontend`, `npx vitest run src/panes/settings/sections/credentials 2>&1 | tail -5`.
+Re-run the hub tests (`go test ./cmd/evener-hub -run 'TestInstances_|TestCredentialHeaderField|TestAuthWireFixtures' 2>&1 | tail -8`)
+and confirm PASS. `cmd/evener-hub/testdata/authwire/responses.json` goes in the commit.
 
 - [ ] **Step 5: Commit**
 
@@ -224,14 +266,14 @@ git add cmd/evener-hub/app_instances.go cmd/evener-hub/app_instances_test.go
 git commit -m "feat(hub): report an instance's authored api_key_env and credential header"
 ```
 
-(Add `cmd/evener-hub/testdata/authwire/responses.json` to the `git add` if it was regenerated.)
+Include `cmd/evener-hub/testdata/authwire/responses.json` in that `git add` — it will have been regenerated.
 
 ---
 
 ### Task 3: Edit applies the new field pairs, the clears, and var deletion
 
 **Files:**
-- Modify: `cmd/evener-hub/app_instances.go` (`Edit`, lines 280-360)
+- Modify: `cmd/evener-hub/app_instances.go` (`Edit`, lines 280-353)
 - Test: `cmd/evener-hub/app_instances_test.go`
 
 **Interfaces:**
@@ -348,7 +390,11 @@ In `Edit`, directly after the `validVarNames` check at the top, add the header v
 	}
 ```
 
-(`credentialHeaderFrom` returns `nil, nil` for an empty field and an `InvalidParams` wire error for a malformed one.) Note that `err` is then reused by the existing `before, _, err := c.read()` line: change that line to `before, _, err := c.read()` → `before, _, readErr := c.read(); if readErr != nil { return readErr }` only if the compiler complains about redeclaration; otherwise leave it.
+(`credentialHeaderFrom` returns `nil, nil` for an empty field and an
+`InvalidParams` wire error for a malformed one.) Leave the existing
+`before, _, err := c.read()` and `l, _, err := c.read()` lines exactly as they
+are: each declares a new variable on the left, so `:=` reassigns `err` rather
+than redeclaring it. `Create` already runs this identical sequence.
 
 Replace the field-apply block (from `if params.ClearBaseURL {` through the `if len(params.Vars) > 0 { ... }` block) with:
 
@@ -619,7 +665,11 @@ Add after `Edit`:
 // reloaded: the config is already renamed, so a failure here is reported as
 // what was left behind rather than undone - the list stays consistent with
 // the file, and a leftover stays reachable under the old name through
-// evener/auth/apiKey/clear or the state directory.
+// evener/auth/apiKey/clear or the state directory. One consequence: the
+// RPC handler broadcasts evener/auth/updated only when Edit returns nil, so
+// on this partial failure other clients keep the old name until their next
+// refresh. The success path — the one the spec's broadcast sentence is
+// about — is unaffected.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
 	if value, ok := c.auth.creds.Get(oldName); ok {
@@ -997,17 +1047,45 @@ In `InstanceSheet.test.tsx`:
   });
 ```
 
+- Three more `"Edit"` references live outside that describe block and must be
+  handled too, or the file will not typecheck once `onEdit` leaves
+  `noopHandlers()`:
+  - In `describe("action callbacks fire")`, in `"clicking each action calls its handler"`,
+    delete the two lines
+    `await user.click(screen.getByRole("button", { name: "Edit" }));` and
+    `expect(handlers.onEdit).toHaveBeenCalled();`.
+  - In `"pending verification disables only the Test credentials action"`, change
+    `screen.getByRole("button", { name: "Edit" })` to `{ name: "Remove" }` (its
+    instance is non-implicit, so Remove renders and is the right stand-in for
+    "an unrelated action stays enabled").
+  - Rename `test("disables Edit, Remove, and make default", ...)` to
+    `test("disables Remove and make default", ...)` and delete its `"Edit"`
+    assertion line. Do NOT retarget it at Save: Save is disabled on a clean
+    form regardless of `writesRefused`, so the assertion would pass
+    vacuously. Save under `writesRefused` is covered non-vacuously by the new
+    `"Save is disabled until a field changes, and while writesRefused"` test,
+    which types into a field first.
+
 - Append a new block:
 
 ```tsx
 describe("the form", () => {
   const OPENAI: ProviderDescriptor = { id: "openai", protocol: "openai-chat", auth: "bearer", implicit: true };
+  // BASE_URL's key differs from its label on purpose: a template var is
+  // KEYED by placeholder name and LABELLED by the env var name the docs tell
+  // users to set. With key == label everywhere, a component that mixed the
+  // two up would still pass (real templates differ - see vars_env in
+  // llm/registry/data/providers_overlay.toml).
   const VERTEX: ProviderDescriptor = {
     id: "google-vertex-anthropic",
     protocol: "anthropic",
     auth: "gcp-adc",
     implicit: true,
-    vars: { GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT", GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION" },
+    vars: {
+      GOOGLE_VERTEX_PROJECT: "GOOGLE_VERTEX_PROJECT",
+      GOOGLE_VERTEX_LOCATION: "GOOGLE_VERTEX_LOCATION",
+      BASE_URL: "GOOGLE_VERTEX_BASE_URL",
+    },
   };
   const WORK = instance({
     name: "work",
@@ -1052,6 +1130,25 @@ describe("the form", () => {
     expect(field("GOOGLE_VERTEX_PROJECT").value).toBe("p1");
     expect(field("GOOGLE_VERTEX_LOCATION").value).toBe("");
     expect(field("EXTRA").value).toBe("e");
+    // Labelled by env var name, keyed by template name: the row exists under
+    // the label, and nothing renders under the bare key.
+    expect(field("GOOGLE_VERTEX_BASE_URL").value).toBe("");
+    expect(screen.queryByLabelText("BASE_URL")).toBeNull();
+  });
+
+  test("a template var whose key differs from its label is sent under the KEY", async () => {
+    const V = instance({ name: "v", providerId: "google-vertex-anthropic" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", (params) => {
+      expect(params).toEqual({ name: "v", vars: { BASE_URL: "https://vx.example.test" } });
+      return { instances: [V], availableProviders: [VERTEX] };
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(V, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.type(field("GOOGLE_VERTEX_BASE_URL"), "https://vx.example.test");
+    await user.click(saveButton());
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/edit")).toBe(true));
   });
 
   test("Save is disabled until a field changes, and while writesRefused", async () => {
@@ -1154,6 +1251,21 @@ describe("the form", () => {
     await user.type(field("Credential header"), "Authorization=Bearer sk-literal");
     await user.click(saveButton());
     expect(screen.getByRole("alert").textContent).toContain("$VARIABLE");
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+  });
+
+  test("an emptied name is refused inline, with no RPC", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Name"));
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(screen.getByRole("alert").textContent).toContain("Name cannot be empty");
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
   });
 
@@ -1281,6 +1393,7 @@ const CLASS = {
 };
 
 const LITERAL_HEADER_ERROR = "Credential header must reference a $VARIABLE, never a literal secret.";
+const EMPTY_NAME_ERROR = "Name cannot be empty.";
 
 export interface InstanceSheetProps {
   name: string | null;
@@ -1386,6 +1499,13 @@ export function InstanceSheet({
 
   async function handleSave(): Promise<void> {
     if (instance === undefined || params === null) return;
+    // An emptied Name is refused here rather than sent: the wire reads an
+    // empty newName as "unchanged", so the request would succeed and rename
+    // nothing while the toast claimed a save.
+    if (draft !== null && draft.name.trim() === "") {
+      setFormError(EMPTY_NAME_ERROR);
+      return;
+    }
     if (params.credentialHeader !== undefined && !params.credentialHeader.includes("$")) {
       setFormError(LITERAL_HEADER_ERROR);
       return;
@@ -1650,6 +1770,13 @@ export function InstanceSheet({
 
 Delete the now-unused `.metaList` and `.metaMono` rules from the stylesheet only if `requireClass` no longer references them (it does not in the code above); keep `.metaRow`, `.metaLabel`, `.metaValue`.
 
+Two deliberate drops in the component above, so neither reads as an accident
+in review. The old meta table had a `Provider` row and an `API` row rendered
+from `styleInfoText`; the form supersedes the table, and spec §2's body list
+keeps only the base-provider fact, now labelled `Base provider`. Drop the
+`styleInfoText` import from this file — it stays in use by `InstanceRow.tsx`
+and `credentialLabels.test.ts`, so nothing else breaks.
+
 - [ ] **Step 6: Run the sheet tests**
 
 Run: `npx biome check --write src/panes/settings/sections/credentials/InstanceSheet.tsx src/panes/settings/sections/credentials/InstanceSheet.module.css src/panes/settings/sections/credentials/InstanceSheet.test.tsx src/panes/settings/sections/credentials/InstanceSheet.wire.test.tsx && npx vitest run src/panes/settings/sections/credentials/InstanceSheet 2>&1 | tail -12`
@@ -1669,14 +1796,15 @@ git commit -m "feat(web): the provider instance sheet is the editor"
 **Files:**
 - Modify: `credentials/CredentialsSection.tsx`
 - Modify: `credentials/instanceDialogs.tsx` (delete `EditInstanceDialogProps` and `EditInstanceDialog`)
+- Modify: `credentials/InstanceRow.tsx` and `credentials/InstanceRow.module.css` (comments only: both name `InstanceDetailSheet`, and InstanceRow.tsx's header lists `edit` as a sheet action)
 - Test: `credentials/CredentialsSection.test.tsx`, `credentials/CredentialsSection.edge.test.tsx`, `credentials/instanceDialogs.test.tsx`
 
 - [ ] **Step 1: Update the section tests first**
 
 In `CredentialsSection.test.tsx`:
 - In the `describe("single-open-editor invariant")` test, rename it to `"opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)"` and change the clicked button from `"Edit"` to `"Replace key"`, and the final expectation from `screen.getByRole("dialog", { name: "Edit work" })` to `screen.getByRole("dialog", { name: "Set API key for work" })`.
-- In the `writesRefused` test, rename it to `"writesRefused disables Add and each sheet's Save/Remove/make default, but not Test credentials/Set key/Clear"` and change the `"Edit"` assertion to `{ name: "Save" }`.
-- At the other `"Edit"` assertion (around line 234, inside the diagnostics tests), change it to `{ name: "Remove" }`.
+- In the `writesRefused` test, rename it to `"writesRefused disables Add and each sheet's Remove/make default, but not Test credentials/Set key/Clear"` and DELETE its `"Edit"` assertion line (the next line already asserts Remove is disabled). Do not retarget it at Save: on a clean form Save is disabled whatever `writesRefused` says, so the assertion would pass vacuously. `InstanceSheet.test.tsx` covers Save under `writesRefused` with a dirtied field.
+- The other `"Edit"` assertion is at line 234, inside `describe("credential verification")` — the test `"sends the exact custom instance name and shows local pending state until the deferred response arrives"`, NOT the diagnostics tests. Change it to `{ name: "Remove" }` (its instance is non-implicit).
 - Append to the file:
 
 ```tsx
@@ -1706,7 +1834,7 @@ describe("rename from the sheet", () => {
 });
 ```
 
-In `CredentialsSection.edge.test.tsx`, delete the test `"an edit dialog closes when a refreshed list removes its instance"` and its leading comment.
+In `CredentialsSection.edge.test.tsx`, delete the test `"an edit dialog closes when a refreshed list removes its instance"` and its leading comment, and delete the matching bullet from the file's own header comment (line 6: `// - findInstance returns undefined for edit dialog when instance is gone`) so the header stops advertising a case the file no longer has.
 
 In `instanceDialogs.test.tsx`, delete the whole `describe("EditInstanceDialog", ...)` block and remove `EditInstanceDialog` from the import line.
 
@@ -1723,19 +1851,24 @@ In `CredentialsSection.tsx`:
 - In `type OpenEditor`, delete the `| { kind: "edit"; name: string }` member.
 - Delete the `{openEditor?.kind === "edit" && (() => { ... })()}` render block.
 - Replace `<InstanceDetailSheet` with `<InstanceSheet`, delete the `onEdit={...}` prop, and add `onRenamed={setSelectedInstance}`.
-- In the header comment, replace `every per-instance action (test, set key, sign in, edit, make default, clear, clear stored key, remove) lives in that sheet` with `the sheet is the instance's editor (name, base URL, protocol, surface, vars, api-key env, credential header; spec 2026-09-07 §2) and every other per-instance action (test, set key, sign in, make default, clear, clear stored key, remove) lives in it too`, and `The editors (add/apiKey/edit/OAuth flows) stay dialogs` with `The secret-entry and multi-step flows (add/apiKey/credential JSON/OAuth) stay dialogs`.
+- In the header comment, rewrite two claims. Both are WRAPPED across `// ` lines, so a single-line find/replace will miss them — reflow the paragraph after editing rather than matching one line:
+  - Lines 2-5 read `instance rows are single tappable targets that open an InstanceDetailSheet inspector; every per-instance action (test, set key, sign in, edit, make default, clear, clear stored key, remove) lives in that sheet`. It becomes: `instance rows are single tappable targets that open an InstanceSheet; the sheet is the instance's editor (name, base URL, protocol, surface, vars, api-key env, credential header; spec 2026-09-07 §2) and every other per-instance action (test, set key, sign in, make default, clear, clear stored key, remove) lives in it too`.
+  - Lines 8-9 read `The editors (add/apiKey/edit/OAuth flows) stay dialogs`, continuing `: opening one from the sheet replaces it (single-mutable-editor invariant below).` Keep that continuation and replace the lead with `The secret-entry and multi-step flows (add/apiKey/credential JSON/OAuth) stay dialogs`.
+- One more `InstanceDetailSheet` mention hides in this file at line 192, inside a comment: `// for it - same scheme test InstanceDetailSheet's own button uses.` Rename it too.
+
+In `credentials/InstanceRow.tsx`, the header comment (around lines 5-8) says every per-instance action `moved into InstanceDetailSheet` and lists `edit` among them. Rename the component and drop `edit` from that list, since editing is now the sheet's form rather than an action button. `credentials/InstanceRow.module.css` names the old component in its header comment too (around line 4); rename it there as well. Comments only; no code change in either file.
 
 In `instanceDialogs.tsx`, delete `EditInstanceDialogProps` and `EditInstanceDialog` (the interface, the doc comment, and the function), and drop `InstanceEntry` from the type import only if nothing else in the file uses it (ApiKeyDialogProps does, so keep it). Update the file's top comment: `the 3 instance-CRUD editors ... Add, Edit, and Set/Replace API key` → `the instance-CRUD editors that stay dialogs (spec 2026-09-07 §2): Add, plus Set/Replace API key and credential JSON. Editing an existing instance lives in InstanceSheet.`
 
 - [ ] **Step 4: Run the credentials tests and the whole settings suite**
 
-Run: `npx biome check --write src/panes/settings/sections/credentials/CredentialsSection.tsx src/panes/settings/sections/credentials/instanceDialogs.tsx src/panes/settings/sections/credentials/CredentialsSection.test.tsx src/panes/settings/sections/credentials/CredentialsSection.edge.test.tsx src/panes/settings/sections/credentials/instanceDialogs.test.tsx && npx vitest run src/panes/settings 2>&1 | tail -10`
+Run: `npx biome check --write src/panes/settings/sections/credentials/CredentialsSection.tsx src/panes/settings/sections/credentials/instanceDialogs.tsx src/panes/settings/sections/credentials/InstanceRow.tsx src/panes/settings/sections/credentials/CredentialsSection.test.tsx src/panes/settings/sections/credentials/CredentialsSection.edge.test.tsx src/panes/settings/sections/credentials/instanceDialogs.test.tsx && npx vitest run src/panes/settings 2>&1 | tail -10`
 Expected: all pass. Then `grep -rn "InstanceDetailSheet\|EditInstanceDialog" src` must print nothing.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/panes/settings/sections/credentials/CredentialsSection.tsx src/panes/settings/sections/credentials/instanceDialogs.tsx src/panes/settings/sections/credentials/CredentialsSection.test.tsx src/panes/settings/sections/credentials/CredentialsSection.edge.test.tsx src/panes/settings/sections/credentials/instanceDialogs.test.tsx
+git add src/panes/settings/sections/credentials/CredentialsSection.tsx src/panes/settings/sections/credentials/instanceDialogs.tsx src/panes/settings/sections/credentials/InstanceRow.tsx src/panes/settings/sections/credentials/InstanceRow.module.css src/panes/settings/sections/credentials/CredentialsSection.test.tsx src/panes/settings/sections/credentials/CredentialsSection.edge.test.tsx src/panes/settings/sections/credentials/instanceDialogs.test.tsx
 git commit -m "refactor(web): route instance editing through the sheet; drop the edit dialog"
 ```
 
@@ -1815,7 +1948,11 @@ In `AddInstanceDialog`:
         </FormRow>
 ```
 
-Update the file's top comment sentence `the openai-only API-style radio is gone (Protocol is no longer openai-specific data the form special-cases)` to `Protocol and Surface are plain selects over the registry's vocabularies (instanceEdit.ts), defaulting to inherit`.
+Update the file's top comment. The target sentence is wrapped across three
+`// ` lines and reads `the openai-only API-style` / `radio is gone (Protocol is no longer openai-specific data the form` /
+`special-cases)`; replace it with `Protocol and Surface are plain selects over
+the registry's vocabularies (instanceEdit.ts), defaulting to inherit`, and
+reflow the paragraph.
 
 - [ ] **Step 4: Run the dialog tests**
 
@@ -1864,7 +2001,34 @@ sheet with unsaved edits discards them silently; the sheet reseeds only when a d
 opens or its own save lands, so another client's refresh never clobbers a draft.
 ```
 
-Also update the sentence in the section's first paragraph `It is now the reference implementation for the two idioms below` to `Settings → Providers & credentials (`panes/settings/sections/credentials/InstanceSheet.tsx`) is the reference implementation of the sheet-as-editor form; Marketplaces & Plugins remains the reference for segments`.
+Also, in the section's first paragraph (the `**The pattern (2026-08-29)…**` one),
+replace ONLY the clause `It is now the reference implementation for the two idioms below`
+and keep the rest of that sentence (`; any future page with the same shape … inventing a
+third layout.`) intact. The clause becomes:
+
+```markdown
+It is the reference implementation for the two idioms below, with Settings →
+Providers & credentials (`panes/settings/sections/credentials/InstanceSheet.tsx`)
+the reference for the sheet-as-editor form
+```
+
+- [ ] **Step 1b: Make the rest of §10 agree with the new rule**
+
+Two later §10 paragraphs still describe the sheet as an inspector, and one of
+them now contradicts shipped behaviour. Both are small edits.
+
+In `**The meta table idiom.**`, change `Inside an inspector, facts render as
+label/value rows` to `Inside a detail sheet, read-only facts render as
+label/value rows`.
+
+In `**An inspector is only as alive as its subject.**`, the sentence
+`when the entity disappears from the store (its own Remove completing, or
+another client's), the sheet closes itself instead of offering actions on a
+ghost` is now false for a rename. Rename the lead-in to `**A detail sheet is
+only as alive as its subject.**` and extend that sentence with the exception:
+`— except when the disappearance is the sheet's own rename landing, where the
+section re-selects the item under its new name and the sheet stays open`.
+Reflow the paragraph.
 
 - [ ] **Step 2: Append the decisions entry**
 

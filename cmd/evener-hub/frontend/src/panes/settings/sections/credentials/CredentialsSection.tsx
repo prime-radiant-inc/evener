@@ -1,13 +1,15 @@
 // CredentialsSection (#7 - the dominant piece of the Agents & models
 // cluster), detail-sheet redesign: instance rows are single tappable
-// targets that open an InstanceDetailSheet inspector; every per-instance
-// action (test, set key, sign in, edit, make default, clear, clear stored
-// key, remove) lives in that sheet - the same row→detail-sheet
-// collection-page idiom the marketplacesPlugins redesign introduced (a
-// sibling workstream; the idiom's design-system writeup lands with it) -
-// instead of a per-row button cluster. The editors (add/apiKey/edit/OAuth
-// flows) stay dialogs: opening one from the sheet replaces it
-// (single-mutable-editor invariant below).
+// targets that open an InstanceSheet; the sheet is the instance's editor
+// (name, base URL, protocol, surface, vars, api-key env, credential
+// header; spec 2026-09-07 §2) and every other per-instance action (test,
+// set key, sign in, make default, clear, clear stored key, remove) lives
+// in it too - the same row→detail-sheet collection-page idiom the
+// marketplacesPlugins redesign introduced (a sibling workstream; the
+// idiom's design-system writeup lands with it) - instead of a per-row
+// button cluster. The secret-entry and multi-step flows
+// (add/apiKey/credential JSON/OAuth) stay dialogs: opening one from the
+// sheet replaces it (single-mutable-editor invariant below).
 //
 // Updated for the provider registry's instance wire shape (spec §11.3):
 // instances group by providerId, the add form is fed availableProviders, and
@@ -29,9 +31,9 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsSection.module.css";
 import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
-import { InstanceDetailSheet } from "./InstanceDetailSheet";
 import { InstanceRow } from "./InstanceRow";
-import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog, EditInstanceDialog } from "./instanceDialogs";
+import { InstanceSheet } from "./InstanceSheet";
+import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 
@@ -52,7 +54,6 @@ type OpenEditor =
   | { kind: "add" }
   | { kind: "apiKey"; name: string }
   | { kind: "credentialJson"; name: string }
-  | { kind: "edit"; name: string }
   | OAuthEditor
   | null;
 
@@ -189,7 +190,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   // clearStoredKey's dialog/toast name what it clears: a gcp-adc instance's
   // stored credential is a JSON document (spec 2026-09-04
   // google-vertex-express §4), not an API key, so "stored key" reads wrong
-  // for it - same scheme test InstanceDetailSheet's own button uses.
+  // for it - same scheme test InstanceSheet's own button uses.
   function clearsCredentialJson(name: string): boolean {
     return findInstance(name)?.authModes?.includes("credentialJson") ?? false;
   }
@@ -251,14 +252,14 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           </div>
         ))}
 
-      <InstanceDetailSheet
+      <InstanceSheet
         name={selectedInstance}
         writesRefused={writesRefused}
         onClose={() => setSelectedInstance(null)}
         onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
         onSetCredentialJson={() => openEditorFromSheet((name) => setOpenEditor({ kind: "credentialJson", name }))}
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
-        onEdit={() => openEditorFromSheet((name) => setOpenEditor({ kind: "edit", name }))}
+        onRenamed={setSelectedInstance}
         onClear={() => {
           if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
         }}
@@ -299,13 +300,6 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
           const target = findInstance(openEditor.name);
           return target ? (
             <CredentialJsonDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} />
-          ) : null;
-        })()}
-      {openEditor?.kind === "edit" &&
-        (() => {
-          const target = findInstance(openEditor.name);
-          return target ? (
-            <EditInstanceDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} />
           ) : null;
         })()}
       {openEditor?.kind === "oauth-redirect" && (
