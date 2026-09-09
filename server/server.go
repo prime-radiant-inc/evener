@@ -382,8 +382,11 @@ type Server struct {
 	// (post-clamp) value every downstream consumer converges on.
 	notesHumanSetFunc func(outerID, note string) (string, error)
 	// urlsRemoveFunc is called by the appwire urls/remove method. The callback
-	// removes one URL list entry by id, reporting whether one was found.
-	urlsRemoveFunc      func(id string) (bool, error)
+	// removes one URL list entry by id, reporting whether one was found. The
+	// outer clientMutationId travels with it so the session can journal the
+	// outer mutation (success replays after the entry is gone; a reused ID
+	// with a different entry id conflicts without mutating).
+	urlsRemoveFunc      func(outerID, id string) (bool, error)
 	drainSteerFunc      func() error
 	drainSteerInputFunc func(string, []ImageAttachment) error
 	promoteSteerFunc    func(int, string) error
@@ -647,10 +650,11 @@ func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (string, err
 }
 
 // SetUrlsRemoveFunc sets the function called by the appwire urls/remove
-// method. The callback removes one URL list entry by id, reporting whether
-// one was found; the session emits EventUrlsUpdated after a successful
-// removal for the projector to derive the push from.
-func (s *Server) SetUrlsRemoveFunc(fn func(id string) (bool, error)) {
+// method. The callback removes one URL list entry by id for the given outer
+// clientMutationId, reporting whether one was found; the session emits
+// EventUrlsUpdated after a successful removal for the projector to derive
+// the push from.
+func (s *Server) SetUrlsRemoveFunc(fn func(outerID, id string) (bool, error)) {
 	s.mu.Lock()
 	s.urlsRemoveFunc = fn
 	s.mu.Unlock()

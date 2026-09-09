@@ -207,7 +207,7 @@ func TestServerAppWireSharedNotesCapabilityFollowsWiring(t *testing.T) {
 	if caps := srv.appCapabilities("idle", false); caps.SharedNotes {
 		t.Fatalf("SharedNotes should be false with only notes/human/set wired")
 	}
-	srv.SetUrlsRemoveFunc(func(id string) (bool, error) { return false, nil })
+	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
 	if caps := srv.appCapabilities("idle", false); !caps.SharedNotes {
 		t.Fatalf("SharedNotes should be true with both verbs wired on an open session")
 	}

@@ -1779,15 +1779,21 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 // pushes directly: the callback emits EventNotesUpdated after its successful
 // store mutation, and the projector owns that event's push emission.
 func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
+	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
+	// The lock re-checks the root target via requireRootMutationIdentity
+	// (which calls requireRootMutationTarget), so the explicit call below is
+	// kept for the pre-lock shape errors it reports, not removed as a double
+	// check: both reject identically, and the post-lock recheck is what
+	// fences a clear that wins the race.
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.NotesHumanSetResponse{}, err
 	}
-	if strings.TrimSpace(params.ClientMutationID) == "" {
-		return appwire.NotesHumanSetResponse{}, appwire.InvalidParams("clientMutationId is required")
+	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedInstanceID) == "" {
-		return appwire.NotesHumanSetResponse{}, appwire.InvalidParams("expectedInstanceId is required")
-	}
+	defer unlock()
 	s.mu.RLock()
 	fn := s.notesHumanSetFunc
 	s.mu.RUnlock()
@@ -1808,15 +1814,19 @@ func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesH
 // EventUrlsUpdated after a successful removal, and the projector owns that
 // event's push emission.
 func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
+	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
+	// Same double-check contract as handleAppNotesHumanSet: the explicit
+	// requireRootMutationTarget stays for pre-lock shape errors while the
+	// lock's own requireRootMutationIdentity recheck fences a racing clear.
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.UrlsRemoveResponse{}, err
 	}
-	if strings.TrimSpace(params.ClientMutationID) == "" {
-		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("clientMutationId is required")
+	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, err
 	}
-	if strings.TrimSpace(params.ExpectedInstanceID) == "" {
-		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("expectedInstanceId is required")
-	}
+	defer unlock()
 	if strings.TrimSpace(params.ID) == "" {
 		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("id is required")
 	}
@@ -1826,7 +1836,7 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 	if fn == nil {
 		return appwire.UrlsRemoveResponse{}, appwire.Unavailable("urls not available")
 	}
-	removed, err := fn(params.ID)
+	removed, err := fn(params.ClientMutationID, params.ID)
 	if err != nil {
 		return appwire.UrlsRemoveResponse{}, err
 	}

@@ -313,11 +313,11 @@ func TestRemoveSessionURLDaemonPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	removed, err := s.RemoveSessionURL(a.ID)
+	removed, err := s.RemoveSessionURL("outer-rm-1", a.ID)
 	if err != nil || !removed {
 		t.Fatalf("remove = %v, %v; want true, nil", removed, err)
 	}
-	if removed, _ := s.RemoveSessionURL("nonexistent"); removed {
+	if removed, _ := s.RemoveSessionURL("outer-unknown", "nonexistent"); removed {
 		t.Fatalf("remove of unknown id returned true")
 	}
 	if _, ok := nextNotesEvent(t, s, events.EventUrlsUpdated).(events.UrlsUpdatedData); !ok {

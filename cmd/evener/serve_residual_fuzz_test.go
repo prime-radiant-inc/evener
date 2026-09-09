@@ -37,7 +37,7 @@ type residualServeServer struct {
 	queueImages    func(string, []server.ImageAttachment) error
 	goal           func(string) (bool, error)
 	notesHumanSet  func(outerID, note string) (string, error)
-	urlsRemove     func(id string) (bool, error)
+	urlsRemove     func(outerID, id string) (bool, error)
 	drain          func() error
 	drainInput     func(string, []server.ImageAttachment) error
 	promote        func(int, string) error
@@ -76,7 +76,7 @@ func (s *residualServeServer) SetGoalFunc(f func(string) (bool, error)) { s.goal
 func (s *residualServeServer) SetNotesHumanSetFunc(f func(outerID, note string) (string, error)) {
 	s.notesHumanSet = f
 }
-func (s *residualServeServer) SetUrlsRemoveFunc(f func(id string) (bool, error)) {
+func (s *residualServeServer) SetUrlsRemoveFunc(f func(outerID, id string) (bool, error)) {
 	s.urlsRemove = f
 }
 func (s *residualServeServer) SetDrainAsSteerFunc(f func() error) { s.drain = f }
@@ -120,7 +120,7 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_, _ = s.goal(" ")
 	_, _ = s.goal("objective")
 	_, _ = s.notesHumanSet("outer-1", "note")
-	_, _ = s.urlsRemove("u1")
+	_, _ = s.urlsRemove("outer-1", "u1")
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
 	_ = s.promote(0, "q_1_x")
