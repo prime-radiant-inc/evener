@@ -15,11 +15,3 @@
   align-items: center;
   color: var(--danger);
 }
-
-/* On intent-bearing tool rows (toolcallitem's .row[data-intent="true"]),
- * match the rationale's tightened line-height so the cross centres on the
- * first line. See the matching overrides on .rowIcon and .status in
- * toolcallitem.module.css. */
-.row[data-intent="true"] .glyph {
-  line-height: var(--line-height-title);
-}
