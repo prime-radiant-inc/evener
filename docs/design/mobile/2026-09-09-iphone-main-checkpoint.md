@@ -39,8 +39,24 @@ The first candidates are based on main `ab02d1cbbfd9f33b4e318105574caaa47c398e9a
 
 | Candidate | Scope | Branch |
 | --- | --- | --- |
-| Empty navigation updates | Normalize empty projected entities so delta reconstruction agrees with snapshots | `codex/mobile-empty-navigation` |
+| Empty session list | Return an empty JSON array rather than null for an empty hub | `codex/mobile-empty-session-list` |
 | Device authorization binding | Reject a device flow polled for another provider instance without consuming the original flow | `codex/mobile-device-auth-binding` |
 | Logout result | Report whether a stored credential actually existed while preserving environment credentials | `codex/mobile-logout-result` |
 
 These changes already existed in the mobile integration source. Extracting them into focused candidates does not add new product scope. Roster performance, lifecycle/transcript corrections, SDK packaging, shared native dependencies and the app itself remain subsequent batches.
+
+
+## Published prerequisite PRs
+
+| PR | Reviewed head | Local validation | Landing status |
+| --- | --- | --- | --- |
+| [#1066: provider-bound device authorization](https://github.com/prime-radiant-inc/evener/pull/1066) | `df7c8ba67` | Regression red/green, all auth tests, package vet, independent review | Open; CI and approving GitHub review required |
+| [#1067: accurate logout result](https://github.com/prime-radiant-inc/evener/pull/1067) | `f0cb0297d` | Regression red/green, all auth tests, package vet, independent review | Open; CI and approving GitHub review required |
+| [#1068: empty session array](https://github.com/prime-radiant-inc/evener/pull/1068) | `1c18e6866` | Regression red/green, thread-list tests, package vet, independent review | Open; CI and approving GitHub review required |
+| [#1069: update entrypoint aliases](https://github.com/prime-radiant-inc/evener/pull/1069) | `3705a9098` | Portable regression, full hub package, focused race tests, package vet, independent review | Open; CI and approving GitHub review required |
+
+The navigation candidate was omitted after its behavioral regression passed on current main: semantic snapshot comparison already handles nil and empty entities. Changing that representation would add no needed fix. The isolated candidate and audit are retained for traceability. PR #1069 addresses the macOS path-alias failures exposed by the full hub package run, including a portable regression using an explicit parent-directory symlink.
+
+GitHub requires seven named checks, an up-to-date base and one approving review. Auto-merge is disabled. These are open prerequisite PRs, not evidence that the native checkpoint has merged.
+
+The first web check on #1066 failed because Chrome missed its 30-second startup deadline before layout cases ran. The remaining browser guards passed, as did the same frontend on #1067. A retry of only that failed job is pending completion of the original workflow; no timeout or test coverage was changed. This is not a green-CI claim.
