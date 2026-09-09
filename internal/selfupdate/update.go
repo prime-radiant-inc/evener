@@ -612,6 +612,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		prev, statErr := os.ReadFile(dst)
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			_ = os.Remove(tmp)
+			rollback()
 			return nil, fmt.Errorf("read existing %s: %w", dst, statErr)
 		}
 		s := staged{bin: bin, tmp: tmp, previous: prev, hadPrev: statErr == nil}

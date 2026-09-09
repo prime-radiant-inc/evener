@@ -186,6 +186,20 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
         return;
       }
     } catch (err) {
+      // A transport disconnect after the server received the apply
+      // request may still result in a successful install + restart —
+      // the response frame is lost, not the work. Treat a mid-request
+      // disconnect as an unknown outcome and poll for the new hub
+      // before declaring failure. A pre-request failure ("cannot call
+      // while state is closed") never reached the server, so it stays
+      // an error.
+      const msg = err instanceof Error ? err.message : String(err);
+      const sentButLost = /disconnect|fetch|network|abort/i.test(msg) && !/cannot call/i.test(msg);
+      if (sentButLost) {
+        set({ applying: false, restarting: true });
+        await waitForNewHub(previous);
+        return;
+      }
       set({ applying: false, applyError: friendlyErrorMessage(err) });
       return;
     }
