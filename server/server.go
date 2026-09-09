@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/httpguard"
@@ -434,6 +435,7 @@ func NewServer(cfg ServerConfig) *Server {
 		mux: http.NewServeMux(),
 		appServer: appserver.NewServer(appserver.ServerConfig{
 			ServerName: "evener-serve",
+			Version:    buildinfo.Version(),
 			SourceID:   "local",
 			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
 				if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
