@@ -1256,7 +1256,6 @@ export function ConversationScreen({
 		if (restoreFrame.current !== null)
 			cancelAnimationFrame(restoreFrame.current);
 		restoreFrame.current = null;
-		readerLatest.current = false;
 		readerHeader.current = false;
 		captureSuppressed.current = false;
 		readerPageAttempts.current = new Set<string>();
@@ -1265,6 +1264,7 @@ export function ConversationScreen({
 			route.params.hubId,
 			route.params.ref,
 		);
+		readerLatest.current = readerAnchor.current === null;
 	}, [route.params.hubId, route.params.ref]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
@@ -1287,6 +1287,10 @@ export function ConversationScreen({
 		) {
 			readerAnchor.current = null;
 			appliedReaderRestore.current = null;
+			readerLatest.current = true;
+			(
+				timeline.current?.getScrollResponder() as ScrollView | null
+			)?.scrollToEnd({ animated: false });
 			return;
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
