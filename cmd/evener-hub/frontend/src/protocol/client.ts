@@ -33,6 +33,13 @@ class ProtocolVersionMismatchError extends Error {
   }
 }
 
+class InitializeValidationError extends Error {
+  constructor() {
+    super("invalid initialize response");
+    this.name = "InitializeValidationError";
+  }
+}
+
 // HandshakeRejectedError marks an initialize the server REFUSED, as opposed to
 // one it answered with a version we do not speak. A daemon that disagrees about
 // the protocol rejects with InvalidRequest rather than replying with its own
@@ -139,7 +146,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     !isRecord(value) ||
     !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
   ) {
-    throw new Error("invalid initialize response");
+    throw new InitializeValidationError();
   }
   const serverInfo = value.serverInfo;
   const features = value.features;
@@ -174,7 +181,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
         !Number.isSafeInteger(navigation.sequence) ||
         navigation.sequence < 0))
   ) {
-    throw new Error("invalid initialize response");
+    throw new InitializeValidationError();
   }
   return value as unknown as InitializeResponse;
 }
@@ -460,7 +467,11 @@ export class AppwireClient {
   // connect (performHandshake) and every reconnect attempt, so both paths
   // leave the same evidence for ConnectionBanner's "reload this page" copy.
   private noteProtocolFailure(error: unknown): boolean {
-    if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
+    if (
+      error instanceof ProtocolVersionMismatchError ||
+      error instanceof HandshakeRejectedError ||
+      error instanceof InitializeValidationError
+    ) {
       this.terminalReasonValue = "protocol";
       return true;
     }

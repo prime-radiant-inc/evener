@@ -229,6 +229,57 @@ describe("AppwireClient", () => {
     expect(client.terminalReason).toBe("protocol");
   });
 
+  test("a malformed initial handshake is a terminal protocol failure", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    fake.receive({ id: lastSentFrame(fake).id, result: { ...FAKE_INITIALIZE_RESULT, features: null } });
+
+    await expect(connecting).rejects.toThrow("invalid initialize response");
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+  });
+
+  test("a malformed reconnect handshake closes without retrying or publishing ready", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const ready = vi.fn();
+    const handshakes = vi.fn();
+    client.onReady(ready);
+    client.onHandshakeResult(handshakes);
+    const connecting = client.connect();
+    const initial = sockets[0];
+    if (!initial) throw new Error("expected initial socket");
+    initial.open();
+    await connecting;
+    initial.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnect = sockets[1];
+    if (!reconnect) throw new Error("expected reconnect socket");
+    reconnect.open();
+    await flushUntil(() => reconnect.sent.length > 0);
+    reconnect.receive({
+      id: lastSentFrame(reconnect).id,
+      result: { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } },
+    });
+    await flushUntil(() => reconnect.closeRequests.length > 0);
+
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(handshakes).toHaveBeenCalledTimes(1);
+  });
+
   test("connect is idempotent across concurrent callers", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     let socketsCreated = 0;
