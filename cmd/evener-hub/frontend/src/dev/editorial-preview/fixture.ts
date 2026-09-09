@@ -2,7 +2,7 @@ import { FakeClient } from "../../protocol/testing/fakeClient";
 import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "../../protocol/types.gen";
 import { wireV2 } from "../../stores/navigation/testing";
-import { CHILD, summaries as initialSummaries, initialThreads, PARENT, QUESTION, RESUMED } from "./data";
+import { summaries as initialSummaries, initialThreads, PARENT, parentRefs, QUESTION } from "./data";
 
 export { CHILD, PARENT, QUESTION, RESUMED } from "./data";
 
@@ -27,6 +27,10 @@ export function createEditorialClient(): EditorialClient {
   const applied = new Map<string, { turn: Turn; receipt: MutationReceipt }>();
   const parent = summaries.find((row) => row.ref === PARENT);
   if (!parent) throw new Error("Fixture parent is required");
+  const sessionTree = (row: (typeof summaries)[number]): object => ({
+    ...row,
+    children: summaries.filter((child) => parentRefs[child.ref] === row.ref).map(sessionTree),
+  });
   let serial = 0;
   const read = (ref?: string) => {
     const result = threads.get(ref ?? "");
@@ -98,10 +102,7 @@ export function createEditorialClient(): EditorialClient {
         return wrap({
           key: "editorial",
           current: {
-            sessions: [
-              { ...parent, children: summaries.filter((row) => row.ref === CHILD || row.ref === RESUMED) },
-              summaries.find((row) => row.ref === QUESTION),
-            ],
+            sessions: [sessionTree(parent), summaries.find((row) => row.ref === QUESTION)],
             remaining: 0,
           },
           recent: { sessions: [], remaining: 0 },
@@ -111,14 +112,20 @@ export function createEditorialClient(): EditorialClient {
       case "location": {
         const session = summaries.find((row) => row.ref === params.ref);
         if (!session) throw new Error(`Unknown fixture location: ${params.ref}`);
-        const owner = params.ref === CHILD || params.ref === RESUMED ? PARENT : params.ref;
-        return wrap({
+        let owner = session.ref;
+        for (let ancestor = parentRefs[owner]; ancestor; ancestor = parentRefs[owner]) owner = ancestor;
+        const response = wrap({
           ref: params.ref,
           top_level_ref: owner,
           top_level: params.ref === owner,
           tier: "current",
           session,
         });
+        // The shared test helper defaults locations to top-level. This fixture
+        // serves real nested locations, so preserve the truthful v2 metadata.
+        const data = response.data as { metadata: Record<string, unknown> };
+        data.metadata.top_level = params.ref === owner;
+        return response;
       }
       default:
         throw new Error(`Unexpected fixture navigation: ${JSON.stringify(params)}`);

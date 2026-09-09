@@ -4,6 +4,14 @@ export const PARENT = "local:editorial-parent";
 export const CHILD = "local:editorial-child";
 export const QUESTION = "local:editorial-question";
 export const RESUMED = "local:editorial-resumed";
+export const GRANDCHILD = "local:editorial-grandchild";
+export const GREAT_GRANDCHILD = "local:editorial-great-grandchild";
+export const parentRefs: Record<string, string> = {
+  [CHILD]: PARENT,
+  [RESUMED]: PARENT,
+  [GRANDCHILD]: CHILD,
+  [GREAT_GRANDCHILD]: GRANDCHILD,
+};
 const TURN = "editorial-evidence";
 const capabilities = {
   send: true,
@@ -24,6 +32,15 @@ export const summaries = [
   { ref: CHILD, title: "Editorial fixture child", kind: "subagent", state: "idle", live: true, children: [] },
   { ref: QUESTION, title: "Editorial fixture question", kind: "session", state: "awaiting", live: true, children: [] },
   { ref: RESUMED, title: "Editorial fixture resumed", kind: "subagent", state: "active", live: true, children: [] },
+  { ref: GRANDCHILD, title: "Editorial fixture grandchild", kind: "subagent", state: "idle", live: true, children: [] },
+  {
+    ref: GREAT_GRANDCHILD,
+    title: "Editorial fixture great-grandchild",
+    kind: "subagent",
+    state: "idle",
+    live: true,
+    children: [],
+  },
 ];
 const tool = (
   id: string,
@@ -43,6 +60,24 @@ const tool = (
   argumentsJson: JSON.stringify(args),
   ...(output === undefined ? {} : { output }),
 });
+const nestedDelegates: EvenerDelegateInfo[] = Object.entries(parentRefs)
+  .filter(([ref]) => ref === GRANDCHILD || ref === GREAT_GRANDCHILD)
+  .map(([ref, parentRef]) => ({
+    delegateId: `dlg_${ref.slice(6).replaceAll("-", "_")}`,
+    ownerSessionId: parentRef.slice(6),
+    rootSessionId: PARENT.slice(6),
+    childSessionId: ref.slice(6),
+    transcriptRef: ref,
+    type: "delegate",
+    lifecycle: "idle",
+    phase: "idle",
+    status: "idle",
+    outcome: "completed",
+    terminal: true,
+    resumable: true,
+    needsAttention: false,
+    projectionRevision: 1,
+  }));
 const delegates: EvenerDelegateInfo[] = [
   {
     delegateId: "dlg_editorial_report",
@@ -152,6 +187,7 @@ export function initialThreads(): Map<string, ThreadReadResponse> {
   return new Map(
     summaries.map((summary) => {
       const ref = summary.ref;
+      const owned = nestedDelegates.filter((delegate) => delegate.ownerSessionId === ref.slice(6));
       const items: ThreadItem[] =
         ref === PARENT
           ? parentItems
@@ -184,8 +220,26 @@ export function initialThreads(): Map<string, ThreadReadResponse> {
                   text:
                     ref === CHILD
                       ? "Child report: independent transcript, not the parent snapshot."
-                      : "Previous report: first review completed. Resumed work is now checking the same evidence again.",
+                      : ref === GRANDCHILD
+                        ? "Grandchild report: evidence authored by the independent grandchild."
+                        : ref === GREAT_GRANDCHILD
+                          ? "Great-grandchild report: deeper independent evidence."
+                          : "Previous report: first review completed. Resumed work is now checking the same evidence again.",
                 },
+                ...owned.map((delegate) =>
+                  tool(
+                    `nested-${delegate.childSessionId}`,
+                    "delegate",
+                    `Inspect ${delegate.childSessionId} independently`,
+                    "completed",
+                    { prompt: `Inspect ${delegate.childSessionId} independently` },
+                    JSON.stringify({
+                      delegate_id: delegate.delegateId,
+                      status: "completed",
+                      transcript_ref: delegate.transcriptRef,
+                    }),
+                  ),
+                ),
               ];
       return [
         ref,
@@ -208,8 +262,9 @@ export function initialThreads(): Map<string, ThreadReadResponse> {
               instanceId: `instance-${ref}`,
               mutationStateAuthoritative: true,
               capabilities,
-              ...(ref === CHILD || ref === RESUMED ? { parentRef: PARENT, kind: "subagent" } : {}),
+              ...(parentRefs[ref] ? { parentRef: parentRefs[ref], kind: "subagent" } : {}),
               ...(ref === PARENT ? { diagnostics: { delegates } } : {}),
+              ...(owned.length ? { diagnostics: { delegates: owned } } : {}),
               queue: { revision: 0, depth: 0 },
               ...(ref === QUESTION ? { askPending: true } : {}),
             },

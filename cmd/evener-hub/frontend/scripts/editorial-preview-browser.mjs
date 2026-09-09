@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { measureEditorial, assertEditorialGeometry } from "./editorial-preview-measure.mjs";
 import { measureReadyDesktopCollaborators, assertDesktopCollaborators } from "./editorial-preview-readiness.mjs";
+import { exerciseNestedTranscripts } from "./editorial-preview-nested.mjs";
 import { startBrowserGuard } from "./browserGuardProcess.mjs";
 import { connectPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
 
@@ -83,6 +84,9 @@ try {
   await clickText("Editorial fixture parent");
   await until("decodeURIComponent(location.pathname) === '/s/local:editorial-parent'");
   observations.tasks.push("Actual rail parent → distinct child transcript/ref → parent");
+  // Truthful nested navigation retains the child's secondary session on rail
+  // return. Close it through real dock controls before the parent-only sample.
+  await closeAuxiliaryPanes();
   await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length === 3");
   assert.deepEqual(await evalJS("Array.from(document.querySelectorAll('[data-testid=delegate-lifecycle]')).map(e=>e.innerText)"), ["Idle · reported", "Running", "Status unavailable"]);
   observations.tasks.push("Owner projections override historical running/completed receipts; unknown remains unavailable");
@@ -154,6 +158,8 @@ try {
     observations.childOpenTrace=await evalJS("window.editorialTrace??[]");
     fs.writeFileSync(path.join(evidence,"phone-independent-child-failure.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
   }
+  await exerciseNestedTranscripts({ evalJS, send, until, navigateFixture, origin, observations,
+    screenshot: async label => fs.writeFileSync(path.join(evidence,`nested-${label}.png`),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64")) });
   await captureBoundary();
   // Independent panel/matrix test setup in this private Chrome profile only.
   // Earlier real preference persistence assertions already completed. This

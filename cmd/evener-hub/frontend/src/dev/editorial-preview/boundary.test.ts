@@ -1,6 +1,40 @@
 import { expect, test } from "vitest";
 import { CHILD, createEditorialClient, PARENT, QUESTION, RESUMED } from "./fixture";
 
+test.each([
+  [CHILD, "local:editorial-grandchild", "Grandchild report: evidence authored by the independent grandchild."],
+  [
+    "local:editorial-grandchild",
+    "local:editorial-great-grandchild",
+    "Great-grandchild report: deeper independent evidence.",
+  ],
+])("nested transcript %s opens exact distinct %s with truthful ancestry", async (parentRef, ref, text) => {
+  const client = createEditorialClient();
+  const owner = await client.request("thread/read", { includeTurns: true, ref: parentRef });
+  const child = await client.request("thread/read", { includeTurns: true, ref });
+  expect(child.thread.evener).toMatchObject({ ref, parentRef, kind: "subagent" });
+  expect(child.thread.id).not.toBe(owner.thread.id);
+  expect(child.thread.turns?.[0]?.items?.[0]?.text).toBe(text);
+  const delegate = owner.thread.evener.diagnostics?.delegates?.find((row) => row.transcriptRef === ref);
+  expect(delegate).toMatchObject({
+    ownerSessionId: parentRef.slice(6),
+    rootSessionId: PARENT.slice(6),
+    childSessionId: ref.slice(6),
+  });
+  const invocation = owner.thread.turns?.[0]?.items?.find((item) => item.toolName === "delegate");
+  expect(JSON.parse(invocation?.output ?? "{}")).toMatchObject({
+    transcript_ref: ref,
+    delegate_id: delegate?.delegateId,
+  });
+  const location = await client.request("evener/navigation/read", {
+    resource: "location",
+    ref,
+    representationVersion: 2,
+  });
+  expect(location.data).toMatchObject({ metadata: { ref, top_level_ref: PARENT, top_level: false } });
+  expect(client.rejectedRequests).toEqual([]);
+});
+
 test("distinct child reads and owner projections never derive current lifecycle from receipts", async () => {
   const client = createEditorialClient();
   const parent = await client.request("thread/read", { includeTurns: true, ref: PARENT });
