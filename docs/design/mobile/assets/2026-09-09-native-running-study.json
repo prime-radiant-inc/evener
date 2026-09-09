@@ -1,0 +1,215 @@
+{
+  "status": "observed-before-fix; full Task 15 remains open",
+  "date": "2026-09-09",
+  "native": {
+    "commit": "b9990e5c17c9618b0b5dcc2b6fea75852d77aa3c",
+    "bundleId": "com.primeradiant.evener.native",
+    "device": "iPhone 17 Pro simulator",
+    "os": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "jsSha256": "c0bfb4c8cb695cac4246d3ed84b4ca4d0b1960b1ce1f9851a8f4bcfae1464b4b",
+    "executableSha256": "ae3c07c6ccea33d58aeef80aa578e22dc88aea229c5f0ae7ac0891b3506d90f0"
+  },
+  "fixture": {
+    "privateRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi",
+    "hubRoot": "/private/tmp/evener-iphone-joined-8MIBV9",
+    "hubRpc": "ws://127.0.0.1:64940/rpc",
+    "provider": "owned scripted OpenAI chat loopback at 127.0.0.1:55450",
+    "providerInstance": "ios-review-obase0wi",
+    "session": {
+      "ref": "local:034LhBa0oCQKUVf6qsFQRl",
+      "instanceId": "034LhBa0oCQKUVf6qsFQRl",
+      "providerName": "ios-review-obase0wi"
+    },
+    "externalProviderScripted": true,
+    "noProductionSessionMutated": true,
+    "retainedForConfirmation": true
+  },
+  "interactions": {
+    "running": "Held real turn with one queued message, active goal and software keyboard; queue sheet opened/closed.",
+    "reachableStateBoundary": "Releasing ask_user ended its turn and drained the queue; pending question plus goal is a separate observed state.",
+    "question": {
+      "turnId": "turn_m4",
+      "status": "completed",
+      "submittedText": "[answers]\n1. [Sync strategy] \u2192 \"Check delivery first\" \u2014 note: \"keep both messages until the check finishes.\"",
+      "keyboard": "Send answers reached with one native scroll; actual submission completed.",
+      "separateMessageDraft": "keep this draft local until delivery is confirmed."
+    },
+    "approval": {
+      "turnId": "turn_m5",
+      "status": "completed",
+      "action": "Allow once",
+      "effectPath": "/private/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/approval-effects/sync-review-6.txt",
+      "contents": "Offline sync review approved\n",
+      "effectSha256": "e2902e89ee4ef10256dd5fcae89bad60ef815738e381f87861f94db51cee6b41"
+    },
+    "recovery": {
+      "pid": 18403,
+      "operation": "temporarily suspend owned hub process, then resume same process",
+      "providerRequestsBefore": 7,
+      "draftBefore": "keep this draft local until delivery is confirmed.",
+      "connectionControlObservedAfterSeconds": 23.304,
+      "recoveryControlMovedToHeader": true,
+      "resumedSameProcess": true,
+      "draftAfter": "keep this draft local until delivery is confirmed.",
+      "providerRequestsAfter": 7,
+      "providerRequestsUnchanged": true,
+      "hubProcessStateAfter": "Ss",
+      "listenerPIDAfter": 18403
+    }
+  },
+  "preservation": {
+    "evener-drafts.db": [
+      {
+        "table": "drafts",
+        "beforeRows": 12,
+        "afterRows": 13,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "question_drafts",
+        "beforeRows": 10,
+        "afterRows": 11,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "question_positions",
+        "beforeRows": 3,
+        "afterRows": 3,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "draft_images",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "draft_image_sets",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "creation_drafts",
+        "beforeRows": 1,
+        "afterRows": 1,
+        "allOriginalRowsUnchanged": true
+      },
+      {
+        "table": "creation_draft_images",
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true
+      }
+    ],
+    "ExpoSQLiteStorage": {
+      "originalEntries": 3,
+      "allOriginalReaderEntriesUnchanged": true,
+      "newOwnedReaderEntries": 1,
+      "otherValuesExactlyEqual": true,
+      "originalLastLocationRestored": true
+    },
+    "visibleOriginalDraft": "Retain this separate draft",
+    "appearance": "dark"
+  },
+  "screenshots": [
+    {
+      "path": "2026-09-09-study-running-keyboard-dark.png",
+      "sha256": "236a10d7687d151f5a333a78cc4f37e6444be115cedcdd9326619ad16af6a23a",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-running-keyboard-dark.ax.json",
+      "axSha256": "f79cb9c2e99a4f6794f2f02e18a760a77716a8fd95a3146e784add17b71cde9d"
+    },
+    {
+      "path": "2026-09-09-study-running-light.png",
+      "sha256": "082e93974f0a8adf68daee8f4b838f6cdea2bc2ea457fa8dbf93f7fdb94a39a0",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-running-light.ax.json",
+      "axSha256": "5dcec1ffb9eba55ff5aa24ce4f59c9e0a0fea627132a12bbd670928abc5acd9e"
+    },
+    {
+      "path": "2026-09-09-study-queue-light.png",
+      "sha256": "98cb3ece7086adfcd28a17558728df77b60ac5698938263a9e1790eca13c8b3e",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-queue-light.ax.json",
+      "axSha256": "0866aad24462352848ac86caa8ac5b523dcd5e3bb87305f5254ced226738268c"
+    },
+    {
+      "path": "2026-09-09-study-question-sheet-dark.png",
+      "sha256": "9ceb1906563bc30567cc6bd7f3a60cbc189cddbd68452533a616ffd3f247211e",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-question-sheet-dark.ax.json",
+      "axSha256": "7330d7e9361076f2322e08759d9772b45bd4165b631af0f827e61ecb0b188de5"
+    },
+    {
+      "path": "2026-09-09-study-question-keyboard-scroll-dark.png",
+      "sha256": "a8ae9a6a0e6ba06662f006694a0cd54e13bf78a2041eeeb7622484fc9ec1987c",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-question-keyboard-scroll-dark.ax.json",
+      "axSha256": "f106032195e43e061d5265beef36449c63ce3f94513c186d9e044121c71c1f58"
+    },
+    {
+      "path": "2026-09-09-study-approval-sheet-dark.png",
+      "sha256": "7c454dfbc377017acc0e709e6c879b5baa3543cd9e21ab0ab92c99b004b3283b",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-approval-sheet-dark.ax.json",
+      "axSha256": "d36c5eaf6e661054fd60db6cc26c6cf83f76e7a0845b14d7372aee5da79c1e05"
+    },
+    {
+      "path": "2026-09-09-study-recovery-light.png",
+      "sha256": "2213bca93235bfc1aeb5cc28be8031e9e63860f978a5f7a21dddbb0335626159",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-recovery-light.ax.json",
+      "axSha256": "11ceca9ff1af1f41321f0273bca49b121980b80d0e3d85fe97952a5d63d4e685"
+    },
+    {
+      "path": "2026-09-09-study-recovery-header-dark.png",
+      "sha256": "88f75663c0cc95968f66c0c8fd2b0cf18bec205b66d110937dabd3e48f295ba4",
+      "axPath": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-recovery-header-dark.ax.json",
+      "axSha256": "b7c648f00207377d221413e1bfd4f32366e600382815c76d4da393d589de1ac5"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study.mjs",
+      "sha256": "f317c25a134add90a019e2fb515d6cc95e229961d7ffe0d24a43b01294fd39b3"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/ui.py",
+      "sha256": "fcad0dfc222b4e4a2f8c8e13fc9ad493e83cc9293c3d003667d742d9bf24e4c5"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/provider.py",
+      "sha256": "5c2d27db85b80e853e037d96d07f61a8e635b71b599d689528c2af9f99b357a7"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/recovery.py",
+      "sha256": "fd4b6015ad29d35c895a6efe639d3d7d2f2a5b714dd7ce0d069a83e001de5c71"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/ordinary-readback.json",
+      "sha256": "094569b2585e882a17253d655b7fe1f94715ca7261673e0bf38dca991f461008"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/held-readback.json",
+      "sha256": "5d22facc9589430f1902718d7d53ee604bf47208af0363ce4d6d2fa220dec349"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/readback-1788939740900.json",
+      "sha256": "027d9d9b3dc57bb701e3afa10bb8230fe140c0a944ba89ef09b7aabce3c74020"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/recovery-result.json",
+      "sha256": "1fbe1d431aeaec77af381ab401a51e0e829109c603b0f16feb4967ba3e4c12f6"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/study-preservation.json",
+      "sha256": "e419dde5d897470445cff0887226477de7bffbc5e8d688cc21e988561f439164"
+    },
+    {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-running-obase0wi/original-restored.ax.json",
+      "sha256": "e136ba66af0fc96fbe8b0777aa3ee270252957d98ecaa552ad4c4be7079c87f0"
+    }
+  ],
+  "limits": [
+    "Before-fix observation; no acceptance of the forthcoming source batch.",
+    "The connection fault occurred with an idle unsent draft, not a submitted message with a lost acknowledgement. Seven provider requests before and after establish no unsolicited send in this run.",
+    "Appearance-transition captures with global dimming cannot establish persistent contrast failure; stable light confirmation is still required.",
+    "Full source-matched image content, overlapping hub names, representative scale, latency and physical-device acceptance remain open.",
+    "iPad and dedicated accessibility remain paused. Native header and intentional user-message surface are preserved."
+  ]
+}
