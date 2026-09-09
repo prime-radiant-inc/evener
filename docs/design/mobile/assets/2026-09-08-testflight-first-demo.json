@@ -1,0 +1,96 @@
+{
+  "schema": "evener.testflight.first-demo.v1",
+  "observedAt": "2026-09-09T02:21:22.013051+00:00",
+  "source": "5e642fc20308dd3f8948aafe2edabf205507104a",
+  "archiveReceipt": "2026-09-08-ios-demo-archive.json",
+  "ipa": {
+    "ipa": "/private/tmp/evener-first-demo-archive-5s4t26yg/export/Evener.ipa",
+    "sha256": "c675c4615d66689393eea117192de97e23f24474ef170f1e696e870fbff08868",
+    "identity": {
+      "CFBundleIdentifier": "com.primeradiant.evener.native",
+      "CFBundleShortVersionString": "0.1.0",
+      "CFBundleVersion": "1",
+      "UIDeviceFamily": [
+        1
+      ],
+      "DTPlatformName": "iphoneos"
+    },
+    "architecture": "arm64",
+    "signature": "Apple Distribution: Jesse Vincent",
+    "codesignVerifyExit": 0,
+    "getTaskAllow": false,
+    "profileUUID": "c16d95a4-4cbd-4799-9820-cb232be3ac9a",
+    "bytes": 17005407
+  },
+  "appId": "6809994028",
+  "internalGroup": {
+    "id": "7ea9cf9b-bb33-46ca-a975-208903052b56",
+    "name": "Evener Internal",
+    "testerCount": 1,
+    "tester": "Jesse Vincent",
+    "assignmentVerifiedBy": "native Safari UI and fresh public App Store Connect API read"
+  },
+  "apiAuthenticationVerified": true,
+  "distributionProfile": {
+    "id": "TU493D2Y7S",
+    "uuid": "c16d95a4-4cbd-4799-9820-cb232be3ac9a",
+    "name": "Evener TestFlight Distribution",
+    "type": "IOS_APP_STORE",
+    "state": "ACTIVE",
+    "expires": "2027-09-09T02:01:52.000+00:00",
+    "bundle_id": "com.primeradiant.evener.native",
+    "certificate_id": "35DH6R89C7",
+    "created_at": "2026-09-09T02:12:50Z"
+  },
+  "preflightUnusedVersionBuildVerified": true,
+  "uploadAccepted": true,
+  "uploadAcceptedAt": "2026-09-08T19:16:40-07:00",
+  "appleProcessing": "pending",
+  "internalBuildAvailable": false,
+  "githubConfiguration": {
+    "repository": "prime-radiant-inc/evener",
+    "secretNames": [
+      "APPLE_TEAM_ID",
+      "APP_STORE_CONNECT_API_ISSUER_ID",
+      "APP_STORE_CONNECT_API_KEY_CONTENT",
+      "APP_STORE_CONNECT_API_KEY_ID",
+      "IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64",
+      "IOS_DISTRIBUTION_CERTIFICATE_PASSWORD",
+      "IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64"
+    ],
+    "variables": [
+      {
+        "name": "IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME",
+        "value": "Evener TestFlight Distribution"
+      },
+      {
+        "name": "IOS_INTERNAL_TESTFLIGHT_GROUP",
+        "value": "Evener Internal"
+      }
+    ],
+    "workflowRegistered": false,
+    "workflowDispatched": false
+  },
+  "files": {
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/ExportOptions.plist": "7deca540825b2b58771cfb09cdd4edaa635bc439fbee2f917aad03076edb7812",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/export-exit.json": "1fd730b5ddeb4c6ce27e0c7c3f1623ea751f264f482d826f49354a2443a8d103",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/export.log": "3c9a3ec1fdbd898187e7d40bc8410bc62917860f6c43238170a762b8a9d604e4",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/ipa-validation.json": "37bafc5cabe3ffd514c9689e999778f905c9587f431426dc5c70ba4727b7c5d4",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/export/Evener.ipa": "c675c4615d66689393eea117192de97e23f24474ef170f1e696e870fbff08868",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/fastlane-preflight.log": "ea1dbdbf5b1d9e1891c4ca0ef93e5ad0d68c181f25387ff303871fb62f0cfcd5",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/fastlane-preflight-exit.json": "5bc232b82de377a5655a39a2af9d7ae0fc868de5b9df957e18905cb914606c88",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/upload-start.json": "414f0fcb81779c90fd8b428145f4172c8114c1f64140fbd027f560af0735c91f",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/upload-accepted.log": "97a8c183e54f4690e5cbdbb3bf6f192fc9a947a575b1576ec36ff2ecf0658424",
+    "/Users/jesse/.local/state/evener/apple-distribution/87WJ58S66M/api-preflight.json": "1d4a1b6e715165a236aa185056c5d3c02a27b071157b478dfb9efedb53284be3",
+    "/Users/jesse/.local/state/evener/apple-distribution/87WJ58S66M/tester-assignment.json": "6eaf7fecfebcf427a25442c648566e1f3bce33db110c97bad5bc4be17c49700e",
+    "/Users/jesse/.local/state/evener/apple-distribution/87WJ58S66M/distribution-certificate-metadata.json": "c753d0bb88a32eba719487c1e537579fb278e3bb1bfba31c96c2984b9bd7f0ea",
+    "/Users/jesse/.local/state/evener/apple-distribution/87WJ58S66M/distribution-profile-metadata.json": "d0d267fa367f951aa825fa60aa456c0a0d1b2f69ebe2aa6a1cc4baee8a7fa33b",
+    "/Users/jesse/.local/state/evener/apple-distribution/87WJ58S66M/github-configuration-receipt.json": "71d0c59a5780a5d77f278f726137dcd4faece52cfe1081a32b2377244ef312f0"
+  },
+  "limitations": [
+    "Upload acceptance is not Apple processing success or internal tester build availability.",
+    "The local checked-in Fastlane lane executed the upload. No remote workflow run is claimed; the default branch currently has neither the workflow nor native subtree.",
+    "Physical TestFlight installation, actual-phone hub/network/keychain smoke checks and an update retaining app data remain open.",
+    "The original development archive and the separately re-signed distribution IPA have distinct identities; simulator journeys qualify their separately identified native artifact."
+  ]
+}
