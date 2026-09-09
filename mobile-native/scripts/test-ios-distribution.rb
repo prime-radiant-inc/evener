@@ -105,16 +105,17 @@ end
 # API-key action, IPA reader and lane runner execute below it.
 class DistributionStore
   class << self
-    attr_accessor :app, :group, :builds, :uploads, :assign_build, :ready, :queries
+    attr_accessor :app, :group, :builds, :uploads, :assign_build, :internal_build_state, :queries
   end
 
   App = Struct.new(:id)
-  Build = Struct.new(:id, :processing_state, :ready) do
+  BuildBetaDetail = Struct.new(:internal_build_state)
+  Build = Struct.new(:id, :processing_state, :build_beta_detail) do
     def ready_for_internal_testing?
-      ready
+      build_beta_detail && build_beta_detail.internal_build_state == "READY_FOR_BETA_TESTING"
     end
   end
-  Group = Struct.new(:id, :name, :is_internal_group, :builds) do
+  Group = Struct.new(:id, :name, :is_internal_group, :has_access_to_all_builds, :builds) do
     def fetch_builds
       builds
     end
@@ -124,12 +125,12 @@ class DistributionStore
 
   def self.reset
     self.app = App.new("app-1")
-    self.group = Group.new("group-1", "Internal", true, [])
+    self.group = Group.new("group-1", "Internal", true, true, [])
     self.builds = []
     self.uploads = []
     self.queries = []
     self.assign_build = true
-    self.ready = true
+    self.internal_build_state = "READY_FOR_BETA_TESTING"
     Spaceship::ConnectAPI.token = nil
   end
 
@@ -158,12 +159,12 @@ end
 Fastlane::Actions::UploadToTestflightAction.define_singleton_method(:run) do |config|
   DistributionStore.require_auth
   raise "upload did not use API key" unless config[:api_key]
-  raise "upload selected another group" unless config[:groups] == ["Internal"]
+  raise "upload attempted to assign an internal group" unless config[:groups].nil?
   raise "upload skipped processing" unless config[:skip_waiting_for_build_processing] == false
   raise "external distribution requested" unless config[:distribute_external] == false && config[:submit_beta_review] == false
   raise "external tester notification requested" unless config[:notify_external_testers] == false
   DistributionStore.uploads << config[:ipa]
-  build = DistributionStore::Build.new("build-7", "VALID", DistributionStore.ready)
+  build = DistributionStore::Build.new("build-7", "VALID", DistributionStore::BuildBetaDetail.new(DistributionStore.internal_build_state))
   DistributionStore.builds = [build]
   DistributionStore.group.builds = [build] if DistributionStore.assign_build
 end
@@ -182,7 +183,7 @@ def test_lanes(tmpdir)
   DistributionStore.reset
   lane.runner.execute(:preflight, :ios)
   assert(DistributionStore.queries.length == 1, "preflight omitted duplicate lookup")
-  DistributionStore.builds = [DistributionStore::Build.new("existing", "VALID", true)]
+  DistributionStore.builds = [DistributionStore::Build.new("existing", "VALID", DistributionStore::BuildBetaDetail.new("READY_FOR_BETA_TESTING"))]
   expect_failure("duplicate build") { lane.runner.execute(:preflight, :ios) }
   DistributionStore.reset
   DistributionStore.app = nil
@@ -190,6 +191,10 @@ def test_lanes(tmpdir)
   DistributionStore.reset
   DistributionStore.group = nil
   expect_failure("missing group") { lane.runner.execute(:preflight, :ios) }
+  DistributionStore.reset
+  DistributionStore.group.has_access_to_all_builds = false
+  expect_failure("internal group without automatic build access") { lane.runner.execute(:testflight, :ios) }
+  assert(DistributionStore.uploads.empty?, "uploaded without automatic internal distribution")
   DistributionStore.reset
   DistributionStore.group.is_internal_group = false
   expect_failure("external group") { lane.runner.execute(:testflight, :ios) }
@@ -210,10 +215,13 @@ def test_lanes(tmpdir)
   DistributionStore.assign_build = false
   expect_failure("missing exact group membership") { lane.runner.execute(:testflight, :ios) }
   assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "receipt written without membership")
+  ["PROCESSING", "EXPIRED"].each do |state|
+    DistributionStore.reset
+    DistributionStore.internal_build_state = state
+    expect_failure("unavailable internal state #{state}") { lane.runner.execute(:testflight, :ios) }
+  end
   DistributionStore.reset
-  DistributionStore.ready = false
-  expect_failure("unprocessed build") { lane.runner.execute(:testflight, :ios) }
-  DistributionStore.reset
+  DistributionStore.internal_build_state = "IN_BETA_TESTING"
   lane.runner.execute(:testflight, :ios)
   receipt = JSON.parse(File.read(ENV["IOS_RECEIPT_PATH"]))
   assert(DistributionStore.uploads == [ENV["IOS_IPA_PATH"]], "upload did not use exact IPA once")

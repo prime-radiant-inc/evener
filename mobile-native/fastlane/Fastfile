@@ -16,7 +16,9 @@ platform :ios do
       candidate.name == ENV.fetch("IOS_INTERNAL_TESTFLIGHT_GROUP") && candidate.is_internal_group
     end
     UI.user_error!("Expected one matching internal TestFlight group") unless groups.length == 1
-    groups.first
+    group = groups.first
+    UI.user_error!("Configured internal TestFlight group does not have automatic build access") unless group.has_access_to_all_builds
+    group
   end
 
   lane :preflight do
@@ -58,7 +60,6 @@ platform :ios do
     upload_to_testflight(
       api_key: api_key,
       ipa: ipa_path,
-      groups: [group.name],
       skip_waiting_for_build_processing: false,
       distribute_external: false,
       notify_external_testers: false,
@@ -67,7 +68,9 @@ platform :ios do
 
     builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, version: ENV.fetch("IOS_MARKETING_VERSION"), build_number: ENV.fetch("IOS_BUILD_NUMBER"), platform: "IOS")
     build = builds.first if builds.length == 1
-    assigned = build && build.processing_state == "VALID" && build.ready_for_internal_testing? && group.fetch_builds.any? { |candidate| candidate.id == build.id }
+    internal_state = build&.build_beta_detail&.internal_build_state
+    ready_for_internal_testing = %w[READY_FOR_BETA_TESTING IN_BETA_TESTING].include?(internal_state)
+    assigned = build && build.processing_state == "VALID" && ready_for_internal_testing && group.fetch_builds.any? { |candidate| candidate.id == build.id }
     UI.user_error!("Processed iOS build is not available in the configured internal TestFlight group") unless assigned
 
     require "digest"
