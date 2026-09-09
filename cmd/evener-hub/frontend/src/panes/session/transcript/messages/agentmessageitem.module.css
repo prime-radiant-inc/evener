@@ -142,11 +142,13 @@
 
 /* The wide transcript measure (64rem column) eats the margin the 55rem
  * floor counts on; until the container is 75rem the stamp keeps the base
- * in-flow treatment. position is the only revert needed - top/left and
- * nowrap are inert on a static box. */
+ * in-flow treatment. top/left are inert on a static box, but the rail's
+ * nowrap is NOT - white-space applies to in-flow boxes too - so wrapping
+ * is reverted explicitly alongside position. */
 @container (min-width: 55rem) and (max-width: 75rem) {
   body[data-transcript-measure="wide"] .stamp {
     position: static;
+    white-space: normal;
   }
 }
 
