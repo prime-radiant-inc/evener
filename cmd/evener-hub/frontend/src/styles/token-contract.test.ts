@@ -735,6 +735,47 @@ test("dedicated diff backgrounds preserve quiet contrast and grayscale separatio
   }
 });
 
+const METER_STYLESHEET = STYLESHEETS["widgets/meter/meter.module.css"];
+
+// The empty meter track must read as a bounded bar, not vanish into its
+// ground: --surface-2 is pixel-identical to --surface-1 in both themes, so a
+// meter on a surface-1 card/pane showed no extent until the fill painted.
+// The track sinks into --field (the same sunken-track token the switch and
+// the recommendation card's confidence bar use), pinned here as an exact
+// declaration plus a per-theme distinctness floor against both surfaces.
+test("Meter track sinks into --field, distinct from both surfaces in both themes", () => {
+  expect(METER_STYLESHEET).toBeDefined();
+  if (!METER_STYLESHEET) return;
+  expect(declarationInRule(METER_STYLESHEET, "track", "background")).toBe("var(--field)");
+
+  const themes = [
+    {
+      name: "dark",
+      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+    },
+    {
+      name: "light",
+      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+    },
+  ];
+
+  for (const theme of themes) {
+    const field = declaredToken(theme.block, "--field");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    const surface2 = declaredToken(theme.block, "--surface-2");
+    expect([field, surface1, surface2], `${theme.name} theme declares the meter track contrast tokens`).not.toContain(
+      undefined,
+    );
+    if (!field || !surface1 || !surface2) continue;
+
+    const fieldRgb = parseHexColor(field);
+    const surface1Rgb = parseHexColor(surface1);
+    const surface2Rgb = parseHexColor(surface2);
+    expect(contrastRatio(fieldRgb, surface1Rgb), `${theme.name} track vs surface-1`).toBeGreaterThanOrEqual(1.05);
+    expect(contrastRatio(fieldRgb, surface2Rgb), `${theme.name} track vs surface-2`).toBeGreaterThanOrEqual(1.05);
+  }
+});
+
 test("tokens.css dark and light blocks declare the same color token names", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/);
   const lightBlock = extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/);
