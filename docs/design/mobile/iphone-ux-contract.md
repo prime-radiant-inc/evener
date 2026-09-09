@@ -159,3 +159,5 @@ This is the remaining Task 15 design gate. The source/screenshot panel informs
 that specimen; it does not close the gate. Apply agreed findings in one bounded
 batch, then confirm the affected journeys. Performance measurements remain
 Task 14 with their own dataset and device identity.
+
+The [9 September running-work panel](2026-09-09-iphone-running-panel.md) adds a second independent two-person review of actual running, queue, question, approval and connection-recovery states on `b9990e5c1`, with executed outcomes and preservation evidence. It defines the next bounded fix batch; full Task 15 acceptance remains open.

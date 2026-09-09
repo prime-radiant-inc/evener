@@ -4,6 +4,8 @@ Updated 9 September 2026. Owner: Bot; product direction: Jesse.
 
 **The native app has substantial implementation and verified end-to-end slices. iOS v1 is not release-ready.** The execution order is **Usable → Useful → Good**: first a dependable daily conversation loop, then full iPhone functionality, then fluency, performance and delivery quality. Ordinary lifecycle recovery and data preservation belong in the first milestone. Jesse paused iPad and accessibility work on 8 September; those items are retained for later resumption. Performance, physical-device and distribution qualification remain separate from feature coverage, and the complete SDK outcome matrix remains project work. Passing a build or finding a screen in source does not close a workflow.
 
+The [9 September running-work review](2026-09-09-iphone-running-panel.md) adds two independent Luna assessments of actual running, queue, question, approval and reconnect states on the current simulator artifact. Question submission and an approved file effect completed; an idle draft survived a paused hub with no unsolicited send. Local recovery, busy-composer grouping and duplicate refresh notices are the next bounded fix batch. This is design/interaction evidence, not full Task 15 or physical-device acceptance.
+
 ## Scope and architecture
 
 - **V1 is iOS-only; active work now targets iPhone.** iPad and accessibility work are paused at Jesse's request, not completed or removed. Android source, build instructions and historical evidence are preserved; Android qualification and its unresolved ANR investigation are deferred beyond v1. Voice/barge-in is outside v1.
