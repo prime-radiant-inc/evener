@@ -1,16 +1,12 @@
 package agent
 
 import (
-	"net/netip"
-	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/goal"
 )
 
 // Slice-2 goal substrate (spec §2 validation + §8 forward support): the
@@ -243,135 +239,9 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 	return false
 }
 
-// CheckURL validates an http_match URL under the session egress policy:
-// well-formed absolute http(s) (goal.ValidHTTPURL) with loopback,
-// link-local, and private ranges denied (matcher/fetch evaluation itself is
-// a deferred slice — this gate is validation-only). The host parses
-// strictly: canonical IP literals deny by range; legacy numeric spellings
-// (decimal/octal/hex parts, short forms like 127.1, bare integers like
-// 2130706433) deny outright since resolvers may interpret them as IPs;
-// localhost names deny; anything else must be a syntactically valid DNS
-// name. Resolution-time (DNS rebinding) checks belong at the deferred fetch
-// leg, which resolves and re-checks the destination IP.
-func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
-	// The timeout is the fetch bound the deferred fetch leg enforces
-	// (registration passes the lease TTL, the poll leg the per-fetch
-	// default): only the fail-closed floor lives here — a non-positive
-	// bound can never permit a fetch, so it rejects. A positive upper
-	// clamp lands with the fetch leg, which owns the per-fetch default.
-	// Checked first so a bound that can never permit a fetch skips the
-	// URL parse.
-	if timeout <= 0 {
-		return false
-	}
-	if !goal.ValidHTTPURL(rawURL) {
-		return false
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.TrimSuffix(u.Hostname(), ".")
-	if host == "" {
-		return false
-	}
-	lower := strings.ToLower(host)
-	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
-		return false
-	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		addr = addr.Unmap()
-		if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsPrivate() || !addr.IsValid() || addr.IsUnspecified() {
-			return false
-		}
-		return true
-	}
-	// Not a canonical IP literal: deny legacy numeric spellings resolvers
-	// may still interpret as IPs (isLegacyIPv4Literal mirrors the mobile
-	// pairing gate in cmd/evener-hub/app_mobile.go), then require a valid
-	// DNS name so encoded/odd spellings fail closed.
-	if isLegacyIPv4Literal(host) {
-		return false
-	}
-	if !isValidDNSName(lower) {
-		return false
-	}
-	return true
-}
-
-// isLegacyIPv4Literal reports whether host looks like an inet_aton-style
-// numeric address (decimal/octal/hex parts, 1-4 parts, bare integers like
-// 2130706433 or 0x7f000001). Mirrors the mobile pairing gate: such
-// spellings are denied deterministically rather than resolved.
-func isLegacyIPv4Literal(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) > 4 {
-		return false
-	}
-	for i, part := range parts {
-		base := 10
-		digits := part
-		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
-			base = 16
-			digits = part[2:]
-		} else if len(part) > 1 && part[0] == '0' {
-			base = 8
-		}
-		if digits == "" {
-			return false
-		}
-		value, err := strconv.ParseUint(digits, base, 32)
-		if err != nil {
-			return false
-		}
-		bits := 8
-		if i == len(parts)-1 {
-			bits = 8 * (5 - len(parts))
-		}
-		if value >= uint64(1)<<bits {
-			return false
-		}
-	}
-	return true
-}
-
-// isDNSLabelChar reports whether c is valid inside a DNS label:
-// lowercase letter, digit, or hyphen.
-func isDNSLabelChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
-}
-
-// isValidDNSName reports whether host is a syntactically valid DNS name:
-// dot-separated labels of letters/digits/hyphens, no empty labels, no
-// leading/trailing hyphens, TLD not all-numeric (numeric TLDs are IP-like).
-func isValidDNSName(host string) bool {
-	if len(host) == 0 || len(host) > 253 {
-		return false
-	}
-	labels := strings.Split(host, ".")
-	for _, label := range labels {
-		if len(label) == 0 || len(label) > 63 {
-			return false
-		}
-		for i := 0; i < len(label); i++ {
-			if !isDNSLabelChar(label[i]) {
-				return false
-			}
-		}
-		if label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-	}
-	tld := labels[len(labels)-1]
-	allDigits := true
-	for i := 0; i < len(tld); i++ {
-		if tld[i] < '0' || tld[i] > '9' {
-			allDigits = false
-			break
-		}
-	}
-	return !allDigits
-}
+// Note: the http_match CheckURL egress gate (URL validation, legacy
+// numeric/DNS host parsing) was removed with the subtype (issue #1061).
+// The fetch-based watch type reintroduces it alongside the fetch leg.
 
 // itoa renders an int64 without importing strconv at this site.
 func itoa(n int64) string {

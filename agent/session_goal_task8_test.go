@@ -53,8 +53,6 @@ func (f *task8FileSubstrate) LookupApproval(contentKey, generation string) bool 
 
 func (f *task8FileSubstrate) LookupChild(id string) bool { return false }
 
-func (f *task8FileSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
-
 // wireTask8Files installs the file substrate on the session's goal store.
 func wireTask8Files(sess *Session, files map[string]string) {
 	sess.getOrCreateGoalStore().SetSubstrate(&task8FileSubstrate{files: files})
@@ -721,7 +719,7 @@ func TestGoalExpectKindRestrictionToolLevel(t *testing.T) {
 	}{
 		{"approval", map[string]any{"desc": "a", "kind": "until_approval", "target": "q?"}, "until_approval"},
 		{"child", map[string]any{"desc": "c", "kind": "until_child", "target": "child_1"}, "until_child"},
-		{"http", map[string]any{"desc": "h", "kind": "until_event", "event_subtype": "http_match", "target": "https://example.com/hook"}, "http_match"},
+		{"http", map[string]any{"desc": "h", "kind": "until_event", "event_subtype": "http_match", "target": "https://example.com/hook"}, "not supported"},
 		{"external", map[string]any{"desc": "e", "kind": "until_event", "event_subtype": "external_label"}, "external_label"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

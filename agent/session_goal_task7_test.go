@@ -735,8 +735,6 @@ func (f *goalWaitTerminalStub) LookupApproval(contentKey, generation string) boo
 
 func (f *goalWaitTerminalStub) LookupChild(id string) bool { return f.children[id] }
 
-func (f *goalWaitTerminalStub) CheckURL(rawURL string, timeout time.Duration) bool { return false }
-
 // TestGoalChildWaitRegistrationRequiresKnownDescendant pins the lifted
 // boundary: unknown child targets still reject fail-closed, while a tracked
 // descendant registers (the slice-1 scoped-out rejection is gone).
@@ -798,59 +796,30 @@ func TestGoalChildDurableMatchesSessionID(t *testing.T) {
 	}
 }
 
-// TestGoalSubstrateCheckURLDeniesPrivateRanges pins the egress gate: parsed
-// literal IPs deny by range (incl. 172.16/12, which a substring list misses),
-// loopback hostnames deny, and public hosts pass (path/query substrings must
-// not false-positive — matching runs on the parsed host, not the raw URL).
-func TestGoalSubstrateCheckURLDeniesPrivateRanges(t *testing.T) {
+// TestGoalWaitHTTPMatchRemoved pins the http_match removal end to end
+// (issue #1061): the tool-level validation rejects before the store, and
+// the store rejects even a direct registration — a well-formed URL never
+// parks.
+func TestGoalWaitHTTPMatchRemoved(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
-	sub := &goalSessionSubstrate{sess: sess}
-	for _, raw := range []string{
-		"http://172.16.0.5/hook",
-		"http://172.31.255.1/hook",
-		"http://10.0.0.9/hook",
-		"http://192.168.1.2/hook",
-		"http://127.0.0.1/hook",
-		"http://localhost/hook",
-		"http://LOCALHOST/hook",
-		"http://localhost./hook",
-		"http://0.0.0.0/hook",
-		"http://[::1]/hook",
-		"http://[::ffff:127.0.0.1]/hook",
-		// Non-canonical numerics resolvers may interpret as IPs.
-		"http://2130706433/hook",
-		"http://0x7f.0.0.1/hook",
-		"http://0177.0.0.1/hook",
-		"http://0x7f000001/hook",
-		"http://172.016.0.1/hook",
-		"http://0xac.0x10.0.1/hook",
-		"http://127.1/hook",
-		// Embedded credentials must never survive into the stored target:
-		// userinfo rejects even on a public host.
-		"https://user:pass@example.com/hook",
-		"https://user@example.com/hook",
-	} {
-		if sub.CheckURL(raw, time.Minute) {
-			t.Fatalf("CheckURL(%q) = true, want denied (private/loopback)", raw)
-		}
+	wireKickAndNotify(sess)
+	store := sess.getOrCreateGoalStore()
+	store.Set("no http", clk.Now())
+	req := goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.com/hook", Timeout: time.Minute}
+	if _, ok := store.RegisterWait(req, clk.Now()); ok {
+		t.Fatal("http_match must reject (removed, issue #1061)")
 	}
-	// A non-positive fetch bound can never permit a fetch: fail closed.
-	for _, timeout := range []time.Duration{0, -time.Second} {
-		if sub.CheckURL("https://example.com/hook", timeout) {
-			t.Fatalf("CheckURL(public, %v) = true, want denied (non-positive timeout)", timeout)
-		}
+	if reason := store.LastRejectReason(); !strings.Contains(reason, "1061") {
+		t.Fatalf("http_match reject reason %q must name issue #1061", reason)
 	}
-	for _, raw := range []string{
-		"https://example.com/hook",
-		"https://example.com/10.0/status",
-		"https://hooks.example.com/172.16/ping",
-	} {
-		if !sub.CheckURL(raw, time.Minute) {
-			t.Fatalf("CheckURL(%q) = false, want allowed (public host)", raw)
-		}
+	if err := validateGoalWaitArgs(map[string]any{
+		"kind": "until_event", "event_subtype": "http_match",
+		"target": "https://example.com/hook", "timeout_seconds": 60,
+	}); err == nil || !strings.Contains(err.Error(), "1061") {
+		t.Fatalf("tool validation must reject http_match naming issue #1061, got %v", err)
 	}
 }
 

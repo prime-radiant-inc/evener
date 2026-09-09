@@ -1141,8 +1141,6 @@ func (f *goalWaitToolSubstrate) LookupApproval(contentKey, generation string) bo
 
 func (f *goalWaitToolSubstrate) LookupChild(id string) bool { return false }
 
-func (f *goalWaitToolSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
-
 // TestGoalWaitToolChildFromChildScopedOut pins the slice-2 forward boundary
 // (spec section 8): the slice-1 scoped-out rejection is lifted — until_child
 // from a child session validates like any other registration. An unknown
@@ -1171,11 +1169,13 @@ func TestGoalWaitToolChildFromChildScopedOut(t *testing.T) {
 
 // TestGoalWaitToolEventEmptyTargetRequiresTarget pins the tool-level
 // target-required check for until_event subtypes with a durable target (spec
-// section 2): file_modified / http_match with an empty target reject with
+// section 2): file_modified with an empty target rejects with
 // `target is required` - never falling through to a substrate error.
+// (http_match rejects earlier with the removal named — see
+// TestGoalWaitHTTPMatchRemoved.)
 func TestGoalWaitToolEventEmptyTargetRequiresTarget(t *testing.T) {
 	t.Parallel()
-	for _, subtype := range []string{"file_modified", "http_match"} {
+	for _, subtype := range []string{"file_modified"} {
 		t.Run(subtype, func(t *testing.T) {
 			t.Parallel()
 			clk := agenttest.NewFakeClock()
@@ -1310,20 +1310,13 @@ func TestGoalWaitToolsRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
 // fix-wave regression tests (spec §2). Absent entries model hallucinated
 // targets; present-but-terminal job/delegate entries model retained-terminal
 // catch-up; files map to baselines; approvals to live asks; children to known
-// descendants; urls to match results.
+// descendants.
 type fixStubSubstrate struct {
 	jobs      map[string]fixStubTarget
 	delegates map[string]fixStubTarget
 	files     map[string]string
 	approvals map[string]bool
 	children  map[string]bool
-	// urls models http_match reachability (registration validation); matched
-	// models the matcher truth at the poll leg (the fire). Split because one
-	// map cannot mean both "well-formed under policy" and "currently
-	// matching" — registration must succeed while the predicate reads
-	// false, then flip true at the tick.
-	urls    map[string]bool
-	matched map[string]bool
 }
 
 type fixStubTarget struct {
@@ -1358,19 +1351,6 @@ func (f *fixStubSubstrate) LookupApproval(contentKey, generation string) bool {
 }
 
 func (f *fixStubSubstrate) LookupChild(id string) bool { return f.children[id] }
-
-func (f *fixStubSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
-	if timeout <= 0 {
-		return false
-	}
-	// Registration validation (RegisterWait) passes the lease timeout
-	// (minutes); the poll-leg truth check passes the fixed per-fetch
-	// timeout (seconds). Route on it so one stub serves both.
-	if timeout >= time.Minute {
-		return f.urls[rawURL]
-	}
-	return f.matched[rawURL]
-}
 
 // TestFixWaveC1AllKindsFire pins C1 (spec §§1-2): every non-timer kind fires
 // through the gate claim — register, make true/expire, assert exactly-one
@@ -1419,13 +1399,6 @@ func TestFixWaveC1AllKindsFire(t *testing.T) {
 			sub:         &fixStubSubstrate{files: map[string]string{"/sandbox/plan.md": "base-1"}},
 			mutate:      func(sub *fixStubSubstrate) { sub.files["/sandbox/plan.md"] = "base-2" },
 			wantTrigger: "file modified",
-		},
-		{
-			name:        "http_match at poll leg",
-			req:         goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.com/hook", Timeout: time.Hour},
-			sub:         &fixStubSubstrate{urls: map[string]bool{"https://example.com/hook": true}, matched: map[string]bool{"https://example.com/hook": false}},
-			mutate:      func(sub *fixStubSubstrate) { sub.matched["https://example.com/hook"] = true },
-			wantTrigger: "http match",
 		},
 		{
 			name:        "until_child terminal",

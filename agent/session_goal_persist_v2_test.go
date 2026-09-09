@@ -188,7 +188,3 @@ func (f *goalPersistCondSubstrate) LookupApproval(contentKey, generation string)
 }
 
 func (f *goalPersistCondSubstrate) LookupChild(id string) bool { return false }
-
-func (f *goalPersistCondSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
-	return false
-}

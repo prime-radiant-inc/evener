@@ -36,7 +36,6 @@ type fakeSubstrate struct {
 	files     map[string]string
 	approvals map[string]bool
 	children  map[string]bool
-	urls      map[string]bool
 }
 
 func (f *fakeSubstrate) LookupJob(id string) (bool, bool, string, bool) {
@@ -66,10 +65,6 @@ func (f *fakeSubstrate) LookupApproval(contentKey, generation string) bool {
 
 func (f *fakeSubstrate) LookupChild(id string) bool { return f.children[id] }
 
-func (f *fakeSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
-	return f.urls[rawURL] && timeout > 0
-}
-
 func waveBClock() time.Time { return time.Unix(1_700_000_000, 0).UTC() }
 
 func TestRegisterWaitRejectsHallucinatedJob(t *testing.T) {
@@ -92,7 +87,7 @@ func TestRegisterWaitRejectsHallucinatedTargets(t *testing.T) {
 		{"child", goal.WaitKind{Kind: goal.WaitUntilChild, Target: "child_nope", Timeout: time.Minute}, "child_nope"},
 		{"approval", goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", AskGeneration: "gen1", Timeout: time.Minute}, "ship it?"},
 		{"file", goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/nope.md", Timeout: time.Minute}, "/sandbox/nope.md"},
-		{"url", goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.invalid/hook", Timeout: time.Minute}, "https://example.invalid/hook"},
+		{"http-removed", goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.com/hook", Timeout: time.Minute}, "http_match"},
 	}
 	for _, tc := range cases {
 		s := goal.NewStore()
@@ -192,7 +187,6 @@ func TestRegisterWaitFileBaselineAndURL(t *testing.T) {
 	s.Set("x", waveBClock())
 	s.SetSubstrate(&fakeSubstrate{
 		files: map[string]string{"/sandbox/plan.md": "sha:abc"},
-		urls:  map[string]bool{"https://example.com/hook": true},
 	})
 	w, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Minute}, waveBClock())
 	if !ok {
@@ -201,26 +195,25 @@ func TestRegisterWaitFileBaselineAndURL(t *testing.T) {
 	if w.Lease.Predicate.Baseline != "sha:abc" {
 		t.Fatalf("file lease must persist the stat baseline, got %+v", w.Lease.Predicate)
 	}
-	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "https://example.com/hook", Timeout: time.Minute}, waveBClock()); !ok {
-		t.Fatalf("well-formed URL must park: %q", s.LastRejectReason())
-	}
-	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: "://bad", Timeout: time.Minute}, waveBClock()); ok {
-		t.Fatal("malformed URL must be rejected")
-	}
 }
 
-func TestValidHTTPURLRejectsUserinfo(t *testing.T) {
-	for _, raw := range []string{
-		"https://user:pass@example.com/hook",
-		"https://user@example.com/hook",
-		"http://user:pass@10.0.0.1/hook",
-	} {
-		if goal.ValidHTTPURL(raw) {
-			t.Fatalf("ValidHTTPURL(%q) = true, want rejected (embedded credentials)", raw)
+// TestRegisterWaitHTTPMatchRemoved pins the http_match removal (issue
+// #1061): any http_match registration rejects with the removal named —
+// never parks, even for a well-formed URL.
+func TestRegisterWaitHTTPMatchRemoved(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	s.SetSubstrate(&fakeSubstrate{})
+	for _, target := range []string{"https://example.com/hook", "://bad"} {
+		if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventHTTPMatch, Target: target, Timeout: time.Minute}, waveBClock()); ok {
+			t.Fatalf("http_match %q must reject (removed, issue #1061)", target)
 		}
-	}
-	if !goal.ValidHTTPURL("https://example.com/hook") {
-		t.Fatal("ValidHTTPURL must still accept a credential-free public URL")
+		if reason := s.LastRejectReason(); !strings.Contains(reason, "1061") {
+			t.Fatalf("http_match reject reason %q must name issue #1061", reason)
+		}
+		if snap, _ := s.Snapshot(); snap.Status != goal.StatusActive {
+			t.Fatalf("rejected registration must not park: %+v", snap)
+		}
 	}
 }
 

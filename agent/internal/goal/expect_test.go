@@ -207,8 +207,6 @@ func (f *expectTestSubstrate) LookupApproval(contentKey, generation string) bool
 
 func (f *expectTestSubstrate) LookupChild(id string) bool { return false }
 
-func (f *expectTestSubstrate) CheckURL(rawURL string, timeout time.Duration) bool { return false }
-
 // TestRegisterExpectKindRestriction pins fix-1/4 I1: only file/job/delegate
 // predicates register; approval/child/http/external-label reject with the
 // reason named (substrate extension is out of scope for v1).

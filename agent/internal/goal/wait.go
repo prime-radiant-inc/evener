@@ -9,7 +9,6 @@ package goal
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 	"unicode"
@@ -144,9 +143,9 @@ type Substrate interface {
 	LookupApproval(contentKey, generation string) (live bool)
 	// LookupChild reports whether id is a known descendant session.
 	LookupChild(id string) (known bool)
-	// CheckURL validates an http_match URL (well-formed, egress-policy
-	// compliant) with an explicit per-fetch timeout bound.
-	CheckURL(rawURL string, timeout time.Duration) (ok bool)
+	// Note: the http_match CheckURL leg was removed with the subtype
+	// (issue #1061). Reintroduce a fetch-backed check here when the
+	// fetch-based watch type lands.
 }
 
 // PredicateEvaluator is the evaluation seam (spec §1): predicate truth is
@@ -222,25 +221,7 @@ func defaultLabelFor(req WaitKind) string {
 	return string(req.Kind)
 }
 
-// ValidHTTPURL reports whether raw is a well-formed absolute http(s) URL.
-// This is the syntactic gate inside validation; the session egress policy
-// (deny link-local/loopback, redirect handling — spec §2) lives behind
-// Substrate.CheckURL, which validation additionally requires. URLs carrying
-// userinfo are rejected: embedded credentials must never survive into the
-// stored target or a future fetch.
-func ValidHTTPURL(raw string) bool {
-	if len(raw) > MaxURLBytes || raw == "" {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() {
-		return false
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return false
-	}
-	if u.User != nil {
-		return false
-	}
-	return u.Host != ""
-}
+// Note: the http_match URL helpers (ValidHTTPURL, the CheckURL egress
+// gate, DNS/legacy-numeric parsing) were removed with the subtype
+// (issue #1061). The fetch-based watch type reintroduces them alongside
+// the fetch leg.

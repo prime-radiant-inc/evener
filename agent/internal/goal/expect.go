@@ -47,7 +47,7 @@ func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
 	case WaitUntilEvent:
 		switch pred.EventSubtype {
 		case EventHTTPMatch:
-			return fmt.Sprintf("condition subtype %q is not verifiable in v1: http fetch is out of scope (register a file, job, or delegate condition)", pred.EventSubtype), true
+			return fmt.Sprintf("condition subtype %q is not supported (removed; follow issue #1061 for the fetch-based watch type)", pred.EventSubtype), true
 		case EventExternalLabel:
 			return fmt.Sprintf("condition subtype %q is not verifiable in v1: external labels carry no queryable state (register a file, job, or delegate condition)", pred.EventSubtype), true
 		case EventFileModified, "":
@@ -130,9 +130,8 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 // substrate branches (same fail-closed reasons) without parking: job/delegate
 // retained-terminal targets snapshot satisfied=true; live targets snapshot
 // their current truth; file_modified snapshots the baseline and compares;
-// http_match snapshots matcher state via CheckURL reachability (truth
-// re-evaluates at claim); approval snapshots the live-ask match;
-// until_child snapshots known-descendant truth. Caller must hold s.mu.
+// approval snapshots the live-ask match; until_child snapshots
+// known-descendant truth. Caller must hold s.mu.
 func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline string, ok bool) {
 	sub := s.substrate
 	kindNeedsSubstrate := pred.Kind != WaitUntilEvent || pred.EventSubtype != EventExternalLabel
@@ -185,11 +184,8 @@ func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline 
 			}
 			return false, baseline, true
 		case EventHTTPMatch:
-			if !ValidHTTPURL(pred.Target) || !sub.CheckURL(pred.Target, pred.Timeout) {
-				s.lastRejectReason = fmt.Sprintf("rejected URL %q: must be well-formed with an explicit timeout under the session egress policy", pred.Target)
-				return false, "", false
-			}
-			return false, "", true
+			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", pred.EventSubtype)
+			return false, "", false
 		case EventExternalLabel:
 			return false, "", true
 		default:
@@ -275,7 +271,9 @@ func evaluateExpectation(sub Substrate, c Condition) bool {
 			live, ok := sub.StatFile(pred.Target)
 			return ok && live != c.Baseline
 		case EventHTTPMatch:
-			return ValidHTTPURL(pred.Target) && sub.CheckURL(pred.Target, pred.Timeout)
+			// Removed (issue #1061): registration rejects, so a persisted
+			// pre-removal condition can only read unsatisfied here.
+			return false
 		case EventExternalLabel:
 			return false
 		}

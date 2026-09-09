@@ -501,11 +501,6 @@ type Store struct {
 // NewStore returns an empty Store.
 func NewStore() *Store { return &Store{} }
 
-// waitHTTPTimeout resolves the http_match per-fetch timeout (spec §2: default
-// 15s): the lease timeout bounds the registration TTL separately, so the
-// fetch uses the fixed default here. Pure.
-func waitHTTPTimeout() time.Duration { return 15 * time.Second }
-
 // ClassifyWaits evaluates every live lease against the live substrate at one
 // tick (spec §§1-2: the predicateTruth seam plus the expiry/loss routing).
 // Returned in GoalSnapshot.Waits order. Expiry (any kind's lease deadline
@@ -524,8 +519,9 @@ func waitHTTPTimeout() time.Duration { return 15 * time.Second }
 //   - until_child: terminal status → fire; known non-terminal → park;
 //     unknown → loss.
 //   - file_modified: baseline delta → fire; unchanged → park; unstatable →
-//     loss. http_match: matcher true at the poll leg → fire; else park.
-//     external_label: never true via evaluation (notification/expiry only).
+//     loss. http_match: removed (issue #1061) — a persisted pre-removal
+//     lease parks, never fires. external_label: never true via evaluation
+//     (notification/expiry only).
 //
 // Pure over the store read: takes the store lock internally, never held
 // across Substrate calls (the substrate field is copied out first).
@@ -639,9 +635,9 @@ func waitPredicateTruth(sub Substrate, w Wait, childTerminal func(childID string
 			}
 			return false, "", false, ""
 		case EventHTTPMatch:
-			if ValidHTTPURL(w.Lease.Predicate.Target) && sub.CheckURL(w.Lease.Predicate.Target, waitHTTPTimeout()) {
-				return true, "http match: " + w.Lease.Predicate.Target, false, ""
-			}
+			// Removed (issue #1061): http_match registration rejects, so a
+			// live lease can only arrive via a persisted pre-removal
+			// snapshot — park it, never fire, until it expires.
 			return false, "", false, ""
 		case EventExternalLabel:
 			return false, "", false, ""
@@ -932,10 +928,8 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			}
 			norm.Baseline = baseline
 		case EventHTTPMatch:
-			if !ValidHTTPURL(norm.Target) || !sub.CheckURL(norm.Target, timeout) {
-				s.lastRejectReason = fmt.Sprintf("rejected URL %q: must be well-formed with an explicit timeout under the session egress policy", norm.Target)
-				return Wait{}, false
-			}
+			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", norm.EventSubtype)
+			return Wait{}, false
 		default:
 			s.lastRejectReason = fmt.Sprintf("unknown event subtype %q", norm.EventSubtype)
 			return Wait{}, false
