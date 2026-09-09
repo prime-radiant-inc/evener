@@ -1,6 +1,9 @@
+import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import { workspaceStore } from "../../../shell/workspace";
+import { selectLocation } from "../../../stores/navigation/selectors";
+import { navigationStore } from "../../../stores/navigation/store";
 import { OpenButton } from "../../../widgets";
 
 function transcriptRefOf(params: unknown): string | undefined {
@@ -10,6 +13,25 @@ function transcriptRefOf(params: unknown): string | undefined {
 
 function sameParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// Follow only retained read-only parent context, not arbitrary focused panes.
+// This also works before a child's navigation location has been fetched.
+function transcriptContextRefs(ref: string): string[] {
+  const panes = workspaceStore.getState().panes;
+  const visited = new Set<string>();
+  let current: string | undefined = ref;
+  while (current !== undefined && !visited.has(current)) {
+    visited.add(current);
+    const pane = panes.find((pane) => pane.type === "transcript" && transcriptRefOf(pane.params) === current);
+    const parentRef = (pane?.params as { parentRef?: unknown } | undefined)?.parentRef;
+    current = typeof parentRef === "string" ? parentRef : undefined;
+  }
+  return [...visited];
+}
+
+export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
+  return transcriptContextRefs(ref).includes(ancestorRef);
 }
 
 // Workspace deduplication deliberately compares the entire params bag. That
@@ -35,7 +57,27 @@ function canonicalTranscriptPane(ref: string, params: { ref: string; parentRef?:
 export function openTranscript(ref: string, parentRef?: string): void {
   const params = parentRef === undefined ? { ref } : { ref, parentRef };
   const exactPaneId = canonicalTranscriptPane(ref, params);
-  if (parentRef !== undefined) openTopLevelSession(parentRef);
+  if (parentRef !== undefined) {
+    const main = workspaceStore.getState().mainPane();
+    const mainRef = main?.type === "session" ? transcriptRefOf(main.params) : undefined;
+    const context = transcriptContextRefs(parentRef);
+    // parentRef stays the immediate Back target. It is not necessarily the
+    // owner: a retained transcript chain or a routed nested session identifies
+    // the real main session without promoting the immediate parent into it.
+    if (mainRef === undefined || !context.includes(mainRef)) {
+      let ownerRef = parentRef;
+      for (const contextRef of context) {
+        const location = selectLocation(contextRef)(navigationStore.getState())?.data as
+          | NavigationSessionLocation
+          | undefined;
+        if (location) {
+          ownerRef = location.top_level_ref ?? contextRef;
+          break;
+        }
+      }
+      openTopLevelSession(ownerRef);
+    }
+  }
   if (exactPaneId !== undefined) {
     const retained = workspaceStore.getState().panes.find((pane) => pane.id === exactPaneId);
     if (retained) {
