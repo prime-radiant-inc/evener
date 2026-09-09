@@ -2,6 +2,12 @@
 
 **Scope update — 8 September 2026:** Jesse paused iPad and accessibility work. The immediate milestone is full iPhone functionality; preserve paused requirements and historical evidence. The [active checklist](ios-v1-remaining.md) governs current work and supersedes broader device/accessibility gates below.
 
+The [whole-app iPhone UX contract](iphone-ux-contract.md) consolidates the designed
+daily path and screen hierarchy, with actual browser/reader images. The
+[independent two-reviewer panel](2026-09-08-iphone-ux-panel.md) records remaining
+attention, running-state and recovery design work. Complete current-artifact
+workflow design acceptance remains open.
+
 **iOS-only v1 (iPhone and iPad) · current scope, 8 September 2026**
 
 Use the [delivery plan](../../superpowers/plans/2026-09-06-native-mobile-delivery.md)
