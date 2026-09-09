@@ -220,13 +220,17 @@ func TestRegisterWaitHTTPMatchRemoved(t *testing.T) {
 func TestRegisterWaitMax8(t *testing.T) {
 	s := goal.NewStore()
 	s.Set("x", waveBClock())
+	// until_time registers substrate-free, so it isolates the cap from
+	// substrate wiring (external_label filled this role before its
+	// removal in issue #1063). Same-target re-register replaces, so
+	// slots differ by target.
 	for i := 1; i <= goal.MaxLiveWaitsPerGoal; i++ {
-		req := goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventExternalLabel, Target: "label-" + string(rune('0'+i)), Timeout: time.Minute}
+		req := goal.WaitKind{Kind: goal.WaitUntilTime, Target: "timer-" + string(rune('0'+i)), Timeout: time.Minute}
 		if _, ok := s.RegisterWait(req, waveBClock()); !ok {
 			t.Fatalf("wait %d must register: %q", i, s.LastRejectReason())
 		}
 	}
-	extra := goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventExternalLabel, Target: "label-9", Timeout: time.Minute}
+	extra := goal.WaitKind{Kind: goal.WaitUntilTime, Target: "timer-9", Timeout: time.Minute}
 	if _, ok := s.RegisterWait(extra, waveBClock()); ok {
 		t.Fatal("9th live wait must be rejected")
 	}

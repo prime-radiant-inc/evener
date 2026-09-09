@@ -175,10 +175,15 @@ func validateGoalWaitArgs(args map[string]any) error {
 	if kind == string(goal.WaitUntilEvent) && goal.EventSubtype(subtype) == goal.EventHTTPMatch {
 		return fmt.Errorf("invalid_request: event_subtype %q is not supported (removed; follow issue #1061 for the fetch-based watch type)", subtype)
 	}
+	// external_label was removed from the implementation (issue #1063
+	// tracks the notification-based watch type): nothing can wake it, so
+	// reject instead of parking a wait that can only expire.
+	if kind == string(goal.WaitUntilEvent) && goal.EventSubtype(subtype) == goal.EventExternalLabel {
+		return fmt.Errorf("invalid_request: event_subtype %q is not supported (removed; follow issue #1063 for the notification-based watch type)", subtype)
+	}
 	// M2: file_modified needs its target at tool level (a file path);
-	// only external_label fires via notification/expiry with no durable
-	// target to name, and only until_time is target-free by kind.
-	if kind != string(goal.WaitUntilTime) && (kind != string(goal.WaitUntilEvent) || subtype != string(goal.EventExternalLabel)) && strings.TrimSpace(target) == "" {
+	// only until_time is target-free by kind.
+	if kind != string(goal.WaitUntilTime) && strings.TrimSpace(target) == "" {
 		return fmt.Errorf("invalid_request: target is required for kind %q", kind)
 	}
 	if _, err := goalWaitTimeoutArg(args); err != nil {
@@ -439,14 +444,14 @@ func validateGoalExpectArgs(args map[string]any) error {
 		effSubtype = string(goal.EventFileModified)
 	}
 	// v1 restriction (fix-1/4 I1): only file_modified is a registrable
-	// until_event subtype; http_match was removed (issue #1061) and
-	// external_label rejects named.
+	// until_event subtype; http_match (issue #1061) and external_label
+	// (issue #1063) were removed and reject named.
 	if goal.Kind(effKind) == goal.WaitUntilEvent {
 		switch goal.EventSubtype(effSubtype) {
 		case goal.EventHTTPMatch:
 			return fmt.Errorf("invalid_request: condition subtype %q is not supported (removed; follow issue #1061 for the fetch-based watch type)", effSubtype)
 		case goal.EventExternalLabel:
-			return fmt.Errorf("invalid_request: condition subtype %q is not verifiable in v1: external labels carry no queryable state (register a file, job, or delegate condition)", effSubtype)
+			return fmt.Errorf("invalid_request: condition subtype %q is not supported (removed; follow issue #1063 for the notification-based watch type)", effSubtype)
 		}
 	}
 	if strings.TrimSpace(target) == "" {

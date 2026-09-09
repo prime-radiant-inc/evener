@@ -520,8 +520,8 @@ func NewStore() *Store { return &Store{} }
 //     unknown → loss.
 //   - file_modified: baseline delta → fire; unchanged → park; unstatable →
 //     loss. http_match: removed (issue #1061) — a persisted pre-removal
-//     lease parks, never fires. external_label: never true via evaluation
-//     (notification/expiry only).
+//     lease parks, never fires. external_label: removed (issue #1063) —
+//     same park-never-fire treatment.
 //
 // Pure over the store read: takes the store lock internally, never held
 // across Substrate calls (the substrate field is copied out first).
@@ -640,6 +640,9 @@ func waitPredicateTruth(sub Substrate, w Wait, childTerminal func(childID string
 			// snapshot — park it, never fire, until it expires.
 			return false, "", false, ""
 		case EventExternalLabel:
+			// Removed (issue #1063): external_label registration rejects,
+			// so a live lease can only arrive via a persisted pre-removal
+			// snapshot — park it, never fire, until it expires.
 			return false, "", false, ""
 		default:
 			return false, "", true, fmt.Sprintf("unknown event subtype %q", w.Lease.Predicate.EventSubtype)
@@ -843,11 +846,11 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		return Wait{}, false
 	}
 	// Kinds with no durable substrate to resolve register substrate-free:
-	// UntilTime (pure timer) and external-label events (fire via the
-	// notification path or expire; Task 2). Every other kind validates
-	// against the session substrate below, fail-closed.
-	if norm.Kind == WaitUntilTime ||
-		(norm.Kind == WaitUntilEvent && norm.EventSubtype == EventExternalLabel) {
+	// UntilTime (pure timer). Every other kind validates against the
+	// session substrate below, fail-closed. (external_label registered
+	// here before issue #1063 removed it; the substrate-free branch goes
+	// with it.)
+	if norm.Kind == WaitUntilTime {
 		s.nextWaitID++
 		w := Wait{Lease: Lease{
 			WaitID:         fmt.Sprintf("wait_%d", s.nextWaitID),
@@ -929,6 +932,9 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			norm.Baseline = baseline
 		case EventHTTPMatch:
 			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", norm.EventSubtype)
+			return Wait{}, false
+		case EventExternalLabel:
+			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: external_label was removed (issue #1063 — follow it for the notification-based watch type)", norm.EventSubtype)
 			return Wait{}, false
 		default:
 			s.lastRejectReason = fmt.Sprintf("unknown event subtype %q", norm.EventSubtype)

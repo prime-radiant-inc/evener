@@ -49,7 +49,7 @@ func expectKindRejected(pred WaitKind) (reason string, rejected bool) {
 		case EventHTTPMatch:
 			return fmt.Sprintf("condition subtype %q is not supported (removed; follow issue #1061 for the fetch-based watch type)", pred.EventSubtype), true
 		case EventExternalLabel:
-			return fmt.Sprintf("condition subtype %q is not verifiable in v1: external labels carry no queryable state (register a file, job, or delegate condition)", pred.EventSubtype), true
+			return fmt.Sprintf("condition subtype %q is not supported (removed; follow issue #1063 for the notification-based watch type)", pred.EventSubtype), true
 		case EventFileModified, "":
 			return "", false
 		default:
@@ -134,8 +134,7 @@ func (s *Store) RegisterExpect(req ExpectRequest, now time.Time) (Condition, boo
 // known-descendant truth. Caller must hold s.mu.
 func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline string, ok bool) {
 	sub := s.substrate
-	kindNeedsSubstrate := pred.Kind != WaitUntilEvent || pred.EventSubtype != EventExternalLabel
-	if kindNeedsSubstrate && sub == nil {
+	if sub == nil {
 		s.lastRejectReason = fmt.Sprintf("%s %q: no wait substrate wired", pred.Kind, pred.Target)
 		return false, "", false
 	}
@@ -187,7 +186,8 @@ func (s *Store) expectAttachScanLocked(pred WaitKind) (satisfied bool, baseline 
 			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: http_match was removed (issue #1061 — follow it for the fetch-based watch type)", pred.EventSubtype)
 			return false, "", false
 		case EventExternalLabel:
-			return false, "", true
+			s.lastRejectReason = fmt.Sprintf("event subtype %q is not supported: external_label was removed (issue #1063 — follow it for the notification-based watch type)", pred.EventSubtype)
+			return false, "", false
 		default:
 			s.lastRejectReason = fmt.Sprintf("unknown event subtype %q", pred.EventSubtype)
 			return false, "", false
@@ -275,6 +275,8 @@ func evaluateExpectation(sub Substrate, c Condition) bool {
 			// pre-removal condition can only read unsatisfied here.
 			return false
 		case EventExternalLabel:
+			// Removed (issue #1063): registration rejects, so a persisted
+			// pre-removal condition can only read unsatisfied here.
 			return false
 		}
 	}

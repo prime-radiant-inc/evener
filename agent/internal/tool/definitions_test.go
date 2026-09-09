@@ -1048,7 +1048,6 @@ func TestDefGoalWaitPerKindShapes(t *testing.T) {
 		"until_delegate: target = the delegate id",
 		"until_approval: target = the approval content key",
 		"until_event file_modified: target = the file path",
-		"until_event external_label: target = the harness label",
 		"until_child: target = the known descendant session id",
 	} {
 		if !strings.Contains(desc, shape) {

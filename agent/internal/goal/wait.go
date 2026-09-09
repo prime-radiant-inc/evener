@@ -56,13 +56,14 @@ const (
 type WaitKind struct {
 	Kind Kind
 	// Target carries the kind's target identity: job id, delegate id, child
-	// session id, file path, URL, or approval content key.
+	// session id, file path, or approval content key.
 	Target string
 	// Timeout is the lease time-to-live from registration.
 	Timeout time.Duration
 	// Label is the chip-rendered short label (defaults per kind when empty).
 	Label string
-	// Matcher is the http_match/event matcher body (size-capped).
+	// Matcher is the event matcher body (size-capped; reserved for a
+	// future content-matching watch type).
 	Matcher string
 	// EventSubtype selects the UntilEvent flavor.
 	EventSubtype EventSubtype

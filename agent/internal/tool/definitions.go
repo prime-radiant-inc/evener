@@ -1024,10 +1024,11 @@ func DefAskUser() llm.ToolDefinition {
 // model-declared wait registration). The model names a wait kind plus its
 // predicate: kind selects the source (until_time | until_job | until_delegate
 // | until_approval | until_event | until_child); target carries the kind's
-// target identity (job id, delegate id, child session id, file path, URL, or
+// target identity (job id, delegate id, child session id, file path, or
 // approval content key); event_subtype selects the until_event flavor
-// (file_modified | http_match | external_label); matcher carries the
-// http_match/event matcher body (capped at 1KB); ask_generation binds an
+// (file_modified only — http_match removed, issue #1061; external_label
+// removed, issue #1063); matcher carries the event matcher body
+// (capped at 1KB); ask_generation binds an
 // until_approval lease to the stable turn/ask-call ID of the ask_user call;
 // label is the chip-rendered short label (capped at 256 chars, restricted
 // printable charset); timeout_seconds is the lease time-to-live (default 600,
@@ -1043,15 +1044,14 @@ func DefGoalWait() llm.ToolDefinition {
 			`The goal burns zero turns while parked and wakes exactly once when the wait fires or expires. ` +
 			`Use until_time to sleep until a deadline; until_job/until_delegate to wait on a supervised job or delegate you own; ` +
 			`until_approval to wait on a live ask_user question you asked (with its ask-call ID); ` +
-			`until_event file_modified to wait on a file inside the session sandbox changing, ` +
-			`external_label for a harness-signalled label; until_child to wait on a known descendant session's terminal report. ` +
+			`until_event file_modified to wait on a file inside the session sandbox changing; ` +
+			`until_child to wait on a known descendant session's terminal report. ` +
 			`Per-kind predicate shapes (target carries the kind's identity): ` +
 			`until_time: no target (timeout_seconds alone sets the deadline). ` +
 			`until_job: target = the supervised job id (must be running, or retained-terminal inside the record window for immediate catch-up). ` +
 			`until_delegate: target = the delegate id (must be running/settling/stopping, or retained-terminal for catch-up). ` +
 			`until_approval: target = the approval content key (header + question) plus ask_generation = the stable turn/ask-call ID of the ask_user call (root session only). ` +
 			`until_event file_modified: target = the file path inside the session sandbox (must exist and stat), event_subtype = "file_modified". ` +
-			`until_event external_label: target = the harness label, event_subtype = "external_label". ` +
 			`until_child: target = the known descendant session id (fires only on the child's terminal report). ` +
 			`Hallucinated targets are rejected with the reason named; a retained-terminal job/delegate fires immediately with its terminal outcome.`,
 		Parameters: map[string]any{
@@ -1064,7 +1064,7 @@ func DefGoalWait() llm.ToolDefinition {
 					"enum":        []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"},
 				},
 				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, URL, or approval content key. Empty for until_time."},
-				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor: file_modified | external_label (http_match was removed; see issue #1061).", "enum": []string{"file_modified", "http_match", "external_label"}},
+				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor: file_modified only (http_match removed, see issue #1061; external_label removed, see issue #1063).", "enum": []string{"file_modified", "http_match", "external_label"}},
 				"matcher":        map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
 				"ask_generation": map[string]any{"type": "string", "description": "Stable turn/ask-call ID of the ask_user call an until_approval wait binds to."},
 				"label":          map[string]any{"type": "string", "description": "Chip-rendered short label (max 256 chars, printable). Defaults per kind when empty."},
