@@ -344,14 +344,15 @@ func (s *Session) goalKickState() (kick func(prompt string), pendingAsk bool) {
 	return s.kickFunc, len(s.askPending) > 0
 }
 
-// boundsBreached reports whether any spec section-1 rule-2/3 spend bound is
-// exceeded for full at now: maxContinuations consumed, maxParkedTotal
+// boundsBreachedAt reports whether any spec section-1 rule-2/3 spend bound
+// is exceeded for full at now: maxContinuations consumed, maxParkedTotal
 // exhausted, or the wall-clock deadline passed. parkedTotal is the LIVE
 // total (persisted plus the open entry→now stretch): the persisted field
 // alone accrues only at segment boundaries, so a boundary read would let a
-// goal sit parked past its cap between claims. The terminal-pending latch
-// consults this so the wake turn still runs while a budget is also exceeded,
-// with enforcement deferred to the next gate (no starvation by flapping
+// goal sit parked past its cap between claims — callers with a live parked
+// stretch pass store.ParkedTotalAt(now). The terminal-pending latch consults
+// this so the wake turn still runs while a budget is also exceeded, with
+// enforcement deferred to the next gate (no starvation by flapping
 // predicates).
 func boundsBreachedAt(full goal.GoalSnapshot, parkedTotal time.Duration, now time.Time) bool {
 	if full.Budgets.MaxContinuations > 0 && full.Budgets.UsedContinuations >= full.Budgets.MaxContinuations {
@@ -361,13 +362,6 @@ func boundsBreachedAt(full goal.GoalSnapshot, parkedTotal time.Duration, now tim
 		return true
 	}
 	return !full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline)
-}
-
-// boundsBreached is boundsBreachedAt over the persisted total (segment
-// boundaries: folds, claims, timer fires that already accrued the stretch).
-// Gates and timer paths with a live parked stretch pass ParkedTotalAt.
-func boundsBreached(full goal.GoalSnapshot, now time.Time) bool {
-	return boundsBreachedAt(full, full.Budgets.ParkedTotal, now)
 }
 
 // armGoalContinuation runs in the drain-loop gate (on the turn goroutine) after a
