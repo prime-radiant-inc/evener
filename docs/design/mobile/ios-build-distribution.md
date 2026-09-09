@@ -14,7 +14,12 @@ The original keychain settings and generated project files were restored.
 The upload succeeded. The local lane's final single availability check ran too
 early during Apple's post-compliance transition and exited 1; separate reads
 37 seconds later verified the exact build and group. No reupload was attempted.
-The readiness correction is separate from the already uploaded application.
+The readiness correction at `378d5b20e` now waits for fresh exact build and group
+observations with a monotonic bound. Its separate `verify_testflight` lane passed
+against the already uploaded build 3 at 11:09 UTC on 9 September and wrote the
+expected `VALID`/`IN_BETA_TESTING` receipt. It did not upload again. The deterministic
+transition regression fails against the old lane and passes against the correction.
+Independent Luna review approved the final code and tests.
 Builds 1, 2 and 3 already exist; a future upload must select another unused number.
 
 PR #1039 was updated onto current main at `e0c10be42`; all checks are green,
@@ -82,6 +87,31 @@ pending. The first demo used the signed `0.1.0 (1)` artifact and must not be
 reuploaded.
 
 ## Local verification and remaining delivery gate
+
+To check an already uploaded build, run the following from `mobile-native` with
+the three App Store Connect API credential variables above configured. Supply
+the retained IPA and a writable receipt path. This checks the local IPA identity,
+then waits for the exact Apple build to be ready in the internal group; it writes
+the observed build/group states and local IPA hash without uploading.
+
+```sh
+IOS_BUNDLE_IDENTIFIER=com.primeradiant.evener.native \
+IOS_MARKETING_VERSION=0.1.0 \
+IOS_BUILD_NUMBER=3 \
+IOS_INTERNAL_TESTFLIGHT_GROUP='Evener Internal' \
+IOS_IPA_PATH=/path/to/Evener.ipa \
+IOS_RECEIPT_PATH=/path/to/testflight-receipt.json \
+bundle exec fastlane ios verify_testflight
+```
+
+The readiness check uses a two-minute ceiling and five-second polling interval
+by default. `IOS_BUILD_READINESS_TIMEOUT_SECONDS` and
+`IOS_BUILD_READINESS_POLL_INTERVAL_SECONDS` configure these bounds. Each
+observation rereads the exact build, then refreshes group membership when one
+matching build exists. Terminal
+processing/internal states fail immediately; expiration of the ceiling leaves
+the existing upload in place. The live build 3 verification passed with automation
+source `378d5b20e`; the original upload result remains recorded separately.
 
 The pinned Ruby, Bundler and locked gems installed successfully. Independent
 review and coordinator checks passed workflow linting and the distribution

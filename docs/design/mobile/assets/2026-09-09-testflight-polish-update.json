@@ -1,6 +1,6 @@
 {
   "schema": "evener.native.testflight-polish.v1",
-  "verifiedAt": "2026-09-09T10:50:56Z",
+  "verifiedAt": "2026-09-09T11:09:14.861136+00:00",
   "status": "available-for-internal-testing",
   "source": {
     "source": "f866b2a80294d7354b6879e85a6f9d2d441fa545",
@@ -97,12 +97,78 @@
     "xcodebuild-export.log": {
       "path": "/private/tmp/evener-testflight-build3-current/xcodebuild-export.log",
       "sha256": "a79275127630f3712d7480f76ae131b0890a9701688b1058210c71ce3cb2a9bf"
+    },
+    "verify-existing.py": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing.py",
+      "sha256": "8a79cf668468cae926636a7af38f52ace163bdafa3aebea89f3b73c8481ebfc8"
+    },
+    "verify-existing-result.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing-result.json",
+      "sha256": "77d90014b46364083845529880a7db9ab8ec5a89e0a7cc75fc2ed3013873c4ab"
+    },
+    "verify-existing.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/verify-existing.log",
+      "sha256": "8a61851827011f58ceec55e26efb5f701a2a3b8034703d4ecfb77e1632bb6d02"
+    },
+    "testflight-receipt.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/testflight-receipt.json",
+      "sha256": "98c9691ad3ea3a2e1f119b551d9072269a7e5186705865313b2276e55ecb1aef"
+    },
+    "distribution-regression.json": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-regression.json",
+      "sha256": "6b875869902a93f411403c6ffb62e9d847ea0fa3d03193d3821ab0a2dd140725"
+    },
+    "distribution-old-lane-regression.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-old-lane-regression.log",
+      "sha256": "4ec6707cc4be9e87f215130e4df7ba5afc69109f2e7e1d7aec1e0a9141cbe1b4"
+    },
+    "distribution-root-final-check.log": {
+      "path": "/private/tmp/evener-testflight-build3-current/distribution-root-final-check.log",
+      "sha256": "7821ae03a9eda8ed582da3272d4ac6517332846d8e6e859447f00cb0096cec65"
     }
   },
   "limits": [
     "Local signed upload used Xcode 26.6. CI remains separate and has not run the TestFlight workflow.",
     "Physical TestFlight installation/update and full device smoke are unverified.",
     "External testing for Drew remains READY_FOR_BETA_SUBMISSION with no installable external build or sent invitation.",
-    "The app includes browser/reader, running/recovery, media caption and search fixes through f866b2a80. Whole-app and SDK acceptance remain open."
-  ]
+    "The app includes browser/reader, running/recovery, media caption and search fixes through f866b2a80. Whole-app and SDK acceptance remain open.",
+    "The corrected readiness logic passed the deterministic transition test and a live verify-only run on existing build 3. A fresh upload using the corrected lane and the first CI upload remain unverified."
+  ],
+  "verification": {
+    "lane": "ios verify_testflight",
+    "startedAt": "2026-09-09T11:09:12.170322+00:00",
+    "automationRevision": "378d5b20e2ebc732edeb375f25825c90aa03f285",
+    "sourceFiles": {
+      "mobile-native/fastlane/Fastfile": "c530191452f210051226aaf40972570db4b978a80b1595f7f30298767a57cf45",
+      "mobile-native/fastlane/testflight_readiness.rb": "f6fcf6de0b3b1532faf01b491d72f37998675f921f6f7531894d1c4a20ced83c",
+      "mobile-native/scripts/test-ios-distribution.rb": "de8174b2d5cfec3aadd0e819fd8bd1aaa38f24b51e2b0bd473215b709ccba4d6"
+    },
+    "exitCode": 0,
+    "finishedAt": "2026-09-09T11:09:14.861136+00:00",
+    "expectedReceiptMatches": true,
+    "receiptSha256": "98c9691ad3ea3a2e1f119b551d9072269a7e5186705865313b2276e55ecb1aef",
+    "receipt": {
+      "bundle_identifier": "com.primeradiant.evener.native",
+      "marketing_version": "0.1.0",
+      "build_number": "3",
+      "internal_group": "Evener Internal",
+      "internal_group_id": "7ea9cf9b-bb33-46ca-a975-208903052b56",
+      "processing_state": "VALID",
+      "internal_build_state": "IN_BETA_TESTING",
+      "build_id": "927f2581-8e15-4adf-ba50-a824fceea595",
+      "ipa_sha256": "35d0a0cdfcbeeadcf75c16d3b9419291dd4bea769c2bd36e6a801ce0c5419111"
+    },
+    "uploads": 0,
+    "review": "Independent Luna final review approved source and deterministic behavior tests; coordinator executed the pinned suite and real verify-only lane.",
+    "regression": {
+      "oldLaneRevision": "a97082d89",
+      "oldLaneExitCode": 1,
+      "oldLaneSha256": "5bd7aec023acefb9707994b2f4a1fb83018d69a89d4723af90da2cf64871ba74",
+      "regressionDirectory": "/private/tmp/evener-testflight-build3-current/readiness-regression-kxcxjp6r",
+      "observedFailure": "single immediate readiness check rejects processing-to-group transition",
+      "currentSuiteExitCode": 0,
+      "currentSuiteLog": "/private/tmp/evener-testflight-build3-current/distribution-root-check.log",
+      "finalSuiteLog": "/private/tmp/evener-testflight-build3-current/distribution-root-final-check.log"
+    }
+  }
 }
