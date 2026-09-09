@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -201,6 +202,13 @@ func (f *nativeUpgradeFixture) SetMode(mode string) {
 
 func (f *nativeUpgradeFixture) ReleaseHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if filepath.Base(r.URL.Path) == "checksums.txt" {
+			sum := sha256.Sum256(f.archive)
+			asset := "evener_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), asset)
+			return
+		}
 		f.mu.Lock()
 		mode := f.mode
 		f.counts.downloads++

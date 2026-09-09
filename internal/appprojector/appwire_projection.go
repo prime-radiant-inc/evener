@@ -355,7 +355,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			TurnID:   data.StableTurnID,
 			Turn:     appwire.Turn{ID: data.StableTurnID, Status: appwire.TurnStatusCompleted, ItemsView: "full", Items: []appwire.ThreadItem{item}},
 		})}
 	case events.EventUserInput:

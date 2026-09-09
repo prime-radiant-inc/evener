@@ -29,14 +29,14 @@ func TestEnvironmentTurnPreservesUserTurnIdentity(t *testing.T) {
 				t.Fatalf("environment notifications: %v", out)
 			}
 			params, ok := out[0].Params.(appwire.TurnCompletedParams)
-			if !ok || params.ThreadID != "session" || params.Ref != "local:session" || params.TurnID != "turn_env_context" || params.Turn.ID != params.TurnID {
+			if !ok || params.ThreadID != "session" || params.Ref != "local:session" || params.Turn.ID != "turn_env_context" {
 				t.Fatalf("environment routing: %+v", out[0].Params)
 			}
 			if params.Turn.Status != appwire.TurnStatusCompleted || params.Turn.ItemsView != "full" || len(params.Turn.Items) != 1 {
 				t.Fatal("environment must be one complete standalone turn")
 			}
 			item := params.Turn.Items[0]
-			if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindEnvironment || item.TurnID != params.TurnID || item.Text != "context" {
+			if item.Type != "systemMessage" || item.EventKind != appwire.ThreadItemEventKindEnvironment || item.TurnID != params.Turn.ID || item.Text != "context" {
 				t.Fatalf("environment item: %+v", item)
 			}
 			if !active {

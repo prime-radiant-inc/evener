@@ -72,10 +72,7 @@ func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwir
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	if response, ok, err := pastThreadReadResponse(ctx, cfg, params); ok || err != nil {
-		if err == nil && params.Subscribe && response.Thread.Status.Type != appwire.ThreadStatusRestartRequired {
-			return subscribedPastThreadReadResponse(ctx, cfg, sources, params)
-		}
+	if response, ok, err := subscribedPastThreadReadResponse(ctx, cfg, sources, params); ok || err != nil {
 		return response, ok, err
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
@@ -119,6 +116,12 @@ func subscribedPastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig
 		found    bool
 	}
 	saved, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, sessionID, "", func() (result, error) {
+		// Incompatible or uncertain ownership still permits a saved read, but
+		// cannot establish the stopped-to-live subscription handoff.
+		if _, required, ownershipErr := restartRequiredDaemon(ctx, cfg, params.Ref, sessionID); required || ownershipErr != nil {
+			response, found, readErr := pastThreadReadResponse(ctx, cfg, params)
+			return result{response: response, found: found}, readErr
+		}
 		if source, sourceErr := sourceForThread(sources, params.Ref, sessionID); sourceErr == nil {
 			if localSource, ok := source.(*appsource.LocalDaemonSource); ok {
 				if _, resolveErr := localSource.ResolveRelaySession(params); resolveErr == nil {

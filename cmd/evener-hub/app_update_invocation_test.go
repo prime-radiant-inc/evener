@@ -19,6 +19,10 @@ func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
 	stubUpdateAvailable(t)
 	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
@@ -52,14 +56,14 @@ func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 	if _, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{Channel: "snapshot"}); err != nil {
 		t.Fatalf("hubUpdateApply: %v", err)
 	}
-	if gotOpts.Prefix != root {
-		t.Fatalf("Prefix = %q, want %q", gotOpts.Prefix, root)
+	if gotOpts.Prefix != resolvedRoot {
+		t.Fatalf("Prefix = %q, want %q", gotOpts.Prefix, resolvedRoot)
 	}
 	if gotOpts.BinDir != customBin {
 		t.Fatalf("BinDir = %q, want the invocation dir %q", gotOpts.BinDir, customBin)
 	}
-	if gotOpts.ShareBinDir != shareBin {
-		t.Fatalf("ShareBinDir = %q, want %q", gotOpts.ShareBinDir, shareBin)
+	if gotOpts.ShareBinDir != filepath.Join(resolvedRoot, "share", "evener", "bin") {
+		t.Fatalf("ShareBinDir = %q, want %q", gotOpts.ShareBinDir, filepath.Join(resolvedRoot, "share", "evener", "bin"))
 	}
 }
 

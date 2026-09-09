@@ -1834,7 +1834,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		relayMu.Unlock()
 		notification, original := startup.finish(admitted && err == nil && ctx.Err() == nil)
 		if notification != nil {
-			_, publicationErr := withDeletionTargetOwnership(cfg, relayKey, thread.ID, "", func() (struct{}, error) {
+			_, publicationErr := withDeletionTargetOwnership(ctx, cfg, relayKey, thread.ID, "", func() (struct{}, error) {
 				if original {
 					server.Broadcast(relayKey, notification.Method, notification.Params)
 				} else {
