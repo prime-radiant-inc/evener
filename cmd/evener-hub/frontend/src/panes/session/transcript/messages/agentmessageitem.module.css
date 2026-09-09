@@ -104,34 +104,49 @@
 
 /* The mid-exchange fragment's relative time is a margin note, not a caption
  * line (Jesse, 2026-09-08): rendered as its own line above the prose it used
- * to add a row of vertical height to every fragment. Above the gutter
- * breakpoint it leaves the flow entirely - absolute against .message, whose
- * right edge IS the transcript column's right edge on mid-exchange rows
- * (runContent pads only the left) - and sits one gap step outside the
- * column, italic, aligned with the first prose line (message padding +
- * bubble padding = two rhythm steps to that line's top edge). It adds no
- * vertical height; the virtual list's overflow-x: clip means a pane too
- * narrow to have a margin clips the stamp instead of scrolling sideways.
- * The opener's header keeps its own inline time (the slack-lean attribution
- * line) - that one never added height. */
-@media (min-width: 700px) {
+ * to add a row of vertical height to every fragment. The BASE treatment,
+ * applying at every width (so no fractional viewport can fall between two
+ * media queries onto an unstyled span): in flow on its own line AFTER the
+ * bubble (DOM order), right-justified, italic, snug under the content it
+ * times. */
+.stamp {
+  display: block;
+  text-align: right;
+  font-style: italic;
+}
+
+/* On wide windows the stamp leaves the flow and becomes a right-margin note:
+ * absolute against .message, whose right edge IS the transcript column's
+ * right edge on mid-exchange rows (runContent pads only the left) - one gap
+ * step outside the column, aligned with the first prose line, adding no
+ * vertical height. The top offset is message padding (--rhythm-line) + the
+ * continuation bubble's --rhythm-item top margin + bubble padding
+ * (--rhythm-line).
+ *
+ * The 1200px floor is where a right margin reliably EXISTS. Below 900px the
+ * shell is rail-less yet the column fills the pane from ~750px up; at 900px
+ * the 280px rail reappears, so a margin needs window >= 280 rail + 48 pane
+ * padding + 704 measure + ~170 for stamp + gap on the two centered sides.
+ * Between 700 and 1200 the stamp keeps the base in-flow treatment rather
+ * than clipping away unreadably (roborev, PR 1041). The virtual list's
+ * overflow-x: clip remains the backstop for a pane narrower than this
+ * window-width math assumes (dock splits): clip, never sideways scroll. */
+@media (min-width: 1200px) {
   .stamp {
     position: absolute;
-    top: calc(2 * var(--rhythm-line));
+    top: calc(var(--rhythm-item) + 2 * var(--rhythm-line));
     left: calc(100% + var(--space-3));
     white-space: nowrap;
-    font-style: italic;
   }
 }
 
-/* Below the breakpoint there is no margin to borrow: the stamp stays in
- * flow on its own line (it follows the bubble in DOM order), right-
- * justified and snug under the content it times. */
-@media (max-width: 699px) {
-  .stamp {
-    display: block;
-    text-align: right;
-    font-style: italic;
+/* The wide transcript measure (64rem column) eats the margin the 1200px
+ * floor counts on; until the window is proportionally wider the stamp keeps
+ * the base in-flow treatment. position is the only revert needed - top/left
+ * and nowrap are inert on a static box. */
+@media (min-width: 1200px) and (max-width: 1535px) {
+  body[data-transcript-measure="wide"] .stamp {
+    position: static;
   }
 }
 
