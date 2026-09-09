@@ -107,6 +107,21 @@ type hubGoalMsg struct {
 	err     error
 }
 
+// hubNotesMsg reports the result of a notes/human/set call. cleared
+// distinguishes the clear path (empty note) from setting a note; note carries
+// the stored (post-clamp) value the daemon converges on.
+type hubNotesMsg struct {
+	note    string
+	cleared bool
+	err     error
+}
+
+// hubURLRemoveMsg reports the result of a urls/remove call.
+type hubURLRemoveMsg struct {
+	id  string
+	err error
+}
+
 // hubForkMsg reports the result of a thread/fork call. aside distinguishes the
 // /aside tip-fork (side thread) from the divergent fork-from-turn flow so
 // failures are attributed to the right command.
@@ -1121,6 +1136,78 @@ func hubGoalStatusText(goal *appwire.GoalState) string {
 		return "No goal set. Use /goal <objective> to set one."
 	}
 	return fmt.Sprintf("Goal: %s %d", goal.Status, goal.Iterations)
+}
+
+// sendHubNotes issues notes/human/set to set (empty note ⇒ clear) the
+// session's human whiteboard. It mirrors sendHubGoal: a thin async command
+// that reports its result so the update loop can surface a system message.
+// The authoritative state arrives via the evener/notes/updated push.
+func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
+	cleared := strings.TrimSpace(note) == ""
+	return func() tea.Msg {
+		if idErr != nil {
+			return hubNotesMsg{cleared: cleared, err: idErr}
+		}
+		resp, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			Note:               note,
+		})
+		return hubNotesMsg{note: resp.Note, cleared: cleared, err: err}
+	}
+}
+
+// runHubNotes dispatches the /notes command: `clear` clears the human note
+// and anything else sets it as the note text.
+func (m *hubModel) runHubNotes(args string) tea.Cmd {
+	arg := strings.TrimSpace(args)
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	if strings.EqualFold(arg, "clear") {
+		return sendHubNotes(m.client, ref, "", mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+	}
+	return sendHubNotes(m.client, ref, arg, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+}
+
+// sendHubURLRemove issues urls/remove to remove one session URL list entry by
+// id. It mirrors sendHubNotes: a thin async command reporting its result so
+// the update loop can surface a system message. The authoritative list
+// arrives via the evener/urls/updated push.
+func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expectedInstanceID string) tea.Cmd {
+	mutationID, idErr := newClientMutationID()
+	return func() tea.Msg {
+		if idErr != nil {
+			return hubURLRemoveMsg{id: id, err: idErr}
+		}
+		_, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{
+			Ref:                ref.String(),
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			ID:                 id,
+		})
+		return hubURLRemoveMsg{id: id, err: err}
+	}
+}
+
+// runHubURLRemove dispatches the /url-remove command, which takes the URL
+// entry id to remove.
+func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
+	id := strings.TrimSpace(args)
+	if id == "" {
+		m.addSessionSystem("Usage: /url-remove <id>")
+		return nil
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	return sendHubURLRemove(m.client, ref, id, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
 }
 
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {

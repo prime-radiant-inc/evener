@@ -54,6 +54,14 @@ type hubSessionCapabilities struct {
 	// is in flight and the source can accept an enqueued user message for
 	// processing after the active turn completes.
 	Queue bool
+	// SharedNotes advertises support for the shared-notes verbs
+	// (notes/human/set, urls/remove). True for a live evener session whose
+	// daemon wires the verbs; false for sources that do not advertise the
+	// capability, so the notes verbs gate like every other thread action.
+	// Unlike the action capabilities above, it is NOT zeroed for non-live
+	// sessions: notes stay readable on ended sessions and only the
+	// edit/remove commands gate on it.
+	SharedNotes bool
 }
 
 type hubSessionDetail struct {
@@ -93,6 +101,12 @@ type hubSessionDetail struct {
 	// Goal mirrors thread.Evener.Goal so `/goal status` can read the cached
 	// snapshot without a fresh round-trip. Nil when no goal is set.
 	Goal *appwire.GoalState
+	// HumanNote, AgentNote, and SessionURLs mirror thread.Evener's
+	// shared-notes state so the details drawer can render them without a
+	// fresh round-trip. Empty/nil when unset.
+	HumanNote   string
+	AgentNote   string
+	SessionURLs []appwire.SessionURL
 	// Usage, WorkMillis, and ActiveTurnStartedAt mirror thread.Evener's WS2
 	// working-state/token metrics so the session header chip strip and the
 	// /status details drawer can render them without a fresh round-trip.
@@ -247,6 +261,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		ChangeModel:       caps.ChangeModel,
 		ChangeVisionModel: caps.ChangeVisionModel,
 		Queue:             caps.Queue,
+		SharedNotes:       caps.SharedNotes,
 	}
 	if !node.Live {
 		capabilities.Send = false
@@ -287,6 +302,9 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Capabilities:          capabilities,
 		Queue:                 thread.Evener.Queue,
 		Goal:                  thread.Evener.Goal,
+		HumanNote:             thread.Evener.HumanNote,
+		AgentNote:             thread.Evener.AgentNote,
+		SessionURLs:           thread.Evener.SessionURLs,
 		Usage:                 thread.Evener.Usage,
 		WorkMillis:            thread.Evener.WorkMillis,
 		ActiveTurnStartedAt:   thread.Evener.ActiveTurnStartedAt,

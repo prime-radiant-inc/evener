@@ -191,6 +191,32 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:               "notes",
+		Summary:            "Set or clear your shared session note",
+		PaletteLabel:       "/notes",
+		PaletteDetail:      "set/clear your session note",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "edit note",
+		UnavailableSummary: "Note editing is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.SharedNotes }, "source does not advertise shared notes"),
+		Run: func(m *hubModel, args string) tea.Cmd {
+			return m.runHubNotes(args)
+		},
+	},
+	{
+		Name:               "url-remove",
+		Summary:            "Remove a shared session URL by id",
+		PaletteLabel:       "/url-remove",
+		PaletteDetail:      "remove a session URL by id",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "remove URL",
+		UnavailableSummary: "URL removal is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.SharedNotes }, "source does not advertise shared notes"),
+		Run: func(m *hubModel, args string) tea.Cmd {
+			return m.runHubURLRemove(args)
+		},
+	},
+	{
 		Name:          "status",
 		Summary:       "Show session info and context pressure",
 		PaletteLabel:  "/status",

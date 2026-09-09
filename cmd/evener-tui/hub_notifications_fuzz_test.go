@@ -35,6 +35,10 @@ var notifyMethods = []string{
 	appwire.NotifyThreadModelChanged,
 	appwire.NotifyThreadReasoningEffortChanged,
 	appwire.NotifyThreadVisionModelChanged,
+	// Shared-notes pushes land on the cached session detail so the details
+	// drawer re-renders (Task 8): real dispatch cases, not ignores.
+	appwire.NotifyEvenerNotesUpdated,
+	appwire.NotifyEvenerUrlsUpdated,
 	appwire.NotifyEvenerMarketplaceUpdated,
 	appwire.NotifyEvenerPluginUpdated,
 	appwire.NotifyEvenerSandboxEscalationRequested,

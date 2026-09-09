@@ -27,11 +27,6 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyEvenerTaskUpdated,
 	// TUI goal status still comes from its own fetch/status surface.
 	appwire.NotifyEvenerGoalUpdated,
-	// TUI shared-notes status still comes from its own fetch/status surface
-	// (Task 5 wires the daemon pushes; the TUI details surface lands in Task 8
-	// beside the goal surface above).
-	appwire.NotifyEvenerNotesUpdated,
-	appwire.NotifyEvenerUrlsUpdated,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
 	// prompt it already cleared locally when the user answered.
 	appwire.NotifyEvenerSandboxEscalationResolved,

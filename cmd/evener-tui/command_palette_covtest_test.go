@@ -161,7 +161,7 @@ func TestCovCommandPaletteEntriesForRows_SessionMode(t *testing.T) {
 	got := commandPaletteCommandNames(entries)
 	want := []string{
 		"upgrade", "help", "dashboard", "project", "auth", "login", "logout",
-		"tasks", "agents", "goal", "status", "details", "interrupt", "compact",
+		"tasks", "agents", "goal", "notes", "url-remove", "status", "details", "interrupt", "compact",
 		"clear", "fork", "aside", "shutdown", "model", "vision-model", "effort", "theme",
 		"next-live-session", "previous-live-session", "quit",
 	}

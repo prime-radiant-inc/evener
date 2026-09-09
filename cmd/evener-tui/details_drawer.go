@@ -98,6 +98,27 @@ func (d detailsDrawer) View() string {
 			fmt.Fprintf(&b, "  %s\n", err)
 		}
 	}
+	if detail.Capabilities.SharedNotes {
+		b.WriteString(sectionLabel("shared notes"))
+		b.WriteString("\n")
+		if detail.HumanNote != "" {
+			fmt.Fprintf(&b, "You:    %s\n", detail.HumanNote)
+		}
+		if detail.AgentNote != "" {
+			fmt.Fprintf(&b, "Agent:  %s\n", detail.AgentNote)
+		}
+		for _, u := range detail.SessionURLs {
+			label := u.URL
+			if u.Label != "" {
+				label = fmt.Sprintf("%s (%s)", u.Label, u.URL)
+			}
+			fmt.Fprintf(&b, "Link:   %s\n", label)
+		}
+		if detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0 && detail.Live {
+			b.WriteString(ghostText("Add a note with /notes"))
+			b.WriteString("\n")
+		}
+	}
 	if detail.Diagnostics == nil {
 		b.WriteString(ghostText("Diagnostics: not reported by source"))
 		b.WriteString("\n")
