@@ -86,7 +86,7 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 		},
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
 	}}.View())
-	for _, want := range []string{"SHARED NOTES", "You:    h", "Agent:  a", "Link:   why (https://x.test/)"} {
+	for _, want := range []string{"SHARED NOTES", "You:    h", "Agent:  a", "Link:   why (https://x.test/) [u1]"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("drawer missing %q:\n%s", want, got)
 		}
@@ -108,8 +108,8 @@ func TestDetailsDrawerSharedNotesSection(t *testing.T) {
 	got = strip(detailsDrawer{Detail: hubSessionDetail{
 		Capabilities: hubSessionCapabilities{SharedNotes: true},
 	}}.View())
-	if !strings.Contains(got, "SHARED NOTES") {
-		t.Fatalf("ended-empty section missing:\n%s", got)
+	if !strings.Contains(got, "SHARED NOTES") || !strings.Contains(got, "No shared notes") {
+		t.Fatalf("ended-empty section missing inert copy:\n%s", got)
 	}
 	if strings.Contains(got, "Add a note with /notes") {
 		t.Fatalf("ended-empty section rendered the live trigger:\n%s", got)

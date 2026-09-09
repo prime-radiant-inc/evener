@@ -112,10 +112,17 @@ func (d detailsDrawer) View() string {
 			if u.Label != "" {
 				label = fmt.Sprintf("%s (%s)", u.Label, u.URL)
 			}
+			if u.ID != "" {
+				label = fmt.Sprintf("%s [%s]", label, u.ID)
+			}
 			fmt.Fprintf(&b, "Link:   %s\n", label)
 		}
 		if detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0 && detail.Live {
 			b.WriteString(ghostText("Add a note with /notes"))
+			b.WriteString("\n")
+		}
+		if detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0 && !detail.Live {
+			b.WriteString(ghostText("No shared notes"))
 			b.WriteString("\n")
 		}
 	}

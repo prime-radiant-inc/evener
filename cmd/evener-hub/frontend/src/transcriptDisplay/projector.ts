@@ -71,9 +71,9 @@ const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
 // Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
 // a value outside this set as an unknown event and deliberately renders it.
-// `environment` is intentionally a routine low-level system event: its
-// visibility is governed by Advanced.systemEvents, just like the other known
-// diagnostic announcements.
+// `environment` and `notes-context` are intentionally routine low-level system
+// events: their visibility is governed by Advanced.systemEvents, just like the
+// other known diagnostic announcements.
 const KNOWN_EVENT_KINDS = new Set([
   "system_prompt",
   "plugin_loaded",
@@ -91,6 +91,7 @@ const KNOWN_EVENT_KINDS = new Set([
   "model_switch",
   "error",
   "environment",
+  "notes-context",
 ]);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
