@@ -13,7 +13,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { friendlyErrorMessage, WireError } from "../protocol/errors";
+import { ConnectionClosedError, friendlyErrorMessage, WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { UpdateCheckResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -172,8 +172,18 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
     }
     set({ applying: true, applyError: null, restartTimedOut: false });
     const previous = check.currentVersion;
+    // Resolve the client before entering the transport handler: a missing
+    // client means no request was sent, so it must surface as an error,
+    // not fall through to restart polling.
+    let client: AppwireClientLike;
     try {
-      const resp = await requireClient().request(
+      client = requireClient();
+    } catch (err) {
+      set({ applying: false, applyError: friendlyErrorMessage(err) });
+      return;
+    }
+    try {
+      const resp = await client.request(
         "evener/update/apply",
         { channel: get().channel ?? "" },
         { timeoutMs: APPLY_TIMEOUT_MS },
@@ -192,11 +202,11 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
       // means the server responded with a failure (not a transport drop),
       // so it stays an error. A RequestTimeoutError or a plain Error
       // (socket closed, network unreachable) means the response was lost,
-      // so poll for the new hub before declaring failure. A pre-request
-      // "cannot call … while state is closed" never reached the server,
-      // so it stays an error too.
-      const msg = err instanceof Error ? err.message : String(err);
-      const neverSent = /cannot call/i.test(msg);
+      // so poll for the new hub before declaring failure. Errors that mean
+      // the request never reached the server (ConnectionClosedError, the
+      // "cannot call … while state is closed" rejection) stay errors.
+      const neverSent =
+        err instanceof ConnectionClosedError || (err instanceof Error && /cannot call/i.test(err.message));
       const serverResponded = err instanceof WireError;
       if (!neverSent && !serverResponded) {
         set({ applying: false, restarting: true });
