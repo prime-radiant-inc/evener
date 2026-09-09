@@ -266,20 +266,31 @@ const goalUpdateGenerations = new Map<string, number>();
 function invalidateGoalResponseFallback(ref: string): void {
   goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
 }
-// A generation changes at every local shared-notes request and every accepted
-// notes/urls authority (a matching notification or full hydration). Same
+// A generation changes at every local human-note request and every accepted
+// notes authority (a matching evener/notes/updated or full hydration). Same
 // contract as goalUpdateGenerations above: a notes/human/set response may
 // publish its derived local state only while its generation is still current,
 // so neither a later request nor accepted authoritative state that arrived
-// during the await can be overwritten by that delayed response. One map for
-// both verbs: a note save and a URL removal are independent mutations, but
-// their fallbacks write disjoint fields (humanNote vs sessionUrls), so a
-// shared generation can only ever suppress a stale write, never a live one —
-// and the authoritative push invalidates both together.
+// during the await can be overwritten by that delayed response. Per-verb,
+// not shared with urls: the two verbs write disjoint fields (humanNote vs
+// sessionUrls), and a urls/updated push carries no note state — sharing one
+// generation would drop a note commit on an unrelated URL removal.
 const notesUpdateGenerations = new Map<string, number>();
 
 function invalidateNotesResponseFallback(ref: string): void {
   notesUpdateGenerations.set(ref, (notesUpdateGenerations.get(ref) ?? 0) + 1);
+}
+
+// The urls/remove half of the same contract: removeURL commits no local
+// state (the evener/urls/updated push is the authority), but a second
+// removal racing the first must not double-apply bookkeeping keyed on this
+// generation later. notes pushes bump only the notes map above, urls pushes
+// only this one — mirroring how goal pushes invalidate only the goal
+// fallback.
+const urlsUpdateGenerations = new Map<string, number>();
+
+function invalidateUrlsResponseFallback(ref: string): void {
+  urlsUpdateGenerations.set(ref, (urlsUpdateGenerations.get(ref) ?? 0) + 1);
 }
 
 // Pushes whose acceptance retires a response-derived local commit: the goal
@@ -1459,6 +1470,8 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
   invalidateGoalResponseFallback(ref);
+  invalidateNotesResponseFallback(ref);
+  invalidateUrlsResponseFallback(ref);
   threadsStore.setState((s) => {
     const hydrations = new Map(s.hydrations);
     hydrations.set(ref, (hydrations.get(ref) ?? 0) + 1);
@@ -1715,12 +1728,14 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
-  // Accepted fallback-invalidating refs: goal pushes invalidate the goal
-  // response fallback, notes/urls pushes the shared-notes one. One set is
-  // collected per family below (a goal push never invalidates a notes
-  // fallback and vice versa), so the name is per-use, not shared.
+  // Accepted fallback-invalidating refs, one set per family: goal pushes
+  // invalidate the goal fallback, notes pushes the notes fallback, urls
+  // pushes the urls fallback. A push never invalidates another family's
+  // fallback (a urls/updated carries no note state, so it must not retire
+  // a setHumanNote response commit).
   const acceptedGoalRefs = new Set<string>();
   const acceptedNotesRefs = new Set<string>();
+  const acceptedUrlsRefs = new Set<string>();
   // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
   // are intentionally left as plain map iterations (NOT indexed). They are
   // usually tiny — at most one entry per in-flight thread/read (bounded by
@@ -1739,7 +1754,8 @@ function handleNotification(n: AnyNotification): void {
     if (targeted) {
       for (const ref of targeted) {
         if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-        else acceptedNotesRefs.add(ref);
+        else if (n.method === "evener/notes/updated") acceptedNotesRefs.add(ref);
+        else acceptedUrlsRefs.add(ref);
       }
     }
   }
@@ -1752,7 +1768,8 @@ function handleNotification(n: AnyNotification): void {
     if (targeted) {
       for (const ref of targeted) {
         if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
-        else acceptedNotesRefs.add(ref);
+        else if (n.method === "evener/notes/updated") acceptedNotesRefs.add(ref);
+        else acceptedUrlsRefs.add(ref);
       }
     }
   }
@@ -1773,10 +1790,15 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
   }
-  if (n.method === "evener/notes/updated" || n.method === "evener/urls/updated") {
+  if (n.method === "evener/notes/updated") {
     for (const ref of acceptedThreads) acceptedNotesRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedNotesRefs.add(ref);
     for (const ref of acceptedNotesRefs) invalidateNotesResponseFallback(ref);
+  }
+  if (n.method === "evener/urls/updated") {
+    for (const ref of acceptedThreads) acceptedUrlsRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedUrlsRefs.add(ref);
+    for (const ref of acceptedUrlsRefs) invalidateUrlsResponseFallback(ref);
   }
   if (!nextThreads && !nextWatchedThreads) return;
 
@@ -1803,6 +1825,8 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
   invalidateGoalResponseFallback(ref);
+  invalidateNotesResponseFallback(ref);
+  invalidateUrlsResponseFallback(ref);
   putWatchedThreadModel(ref, model);
 }
 
@@ -2793,14 +2817,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async removeURL(ref, id) {
     const client = requireClient();
+    const generation = (urlsUpdateGenerations.get(ref) ?? 0) + 1;
+    urlsUpdateGenerations.set(ref, generation);
     try {
       const model = trackedThreadModel(ref);
-      return await client.request("urls/remove", {
+      const response = await client.request("urls/remove", {
         ref,
         clientMutationId: createSecureUUID(),
         expectedInstanceId: threadInstanceID(model) ?? "",
         id,
       });
+      // The response carries no state (the evener/urls/updated push is the
+      // authority), so there is no local commit — but the generation still
+      // fences a racing second removal's bookkeeping the way setHumanNote's
+      // guards its commit above.
+      if (urlsUpdateGenerations.get(ref) !== generation) return response;
+      return response;
     } catch (err) {
       throw mapConflict(err);
     }
@@ -3027,6 +3059,7 @@ export function resetThreadsStoreForTests(): void {
   olderPageGenerations.clear();
   goalUpdateGenerations.clear();
   notesUpdateGenerations.clear();
+  urlsUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();

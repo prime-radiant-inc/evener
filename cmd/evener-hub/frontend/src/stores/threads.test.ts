@@ -4528,6 +4528,103 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
   });
 
+  test("setHumanNote does not overwrite a newer authoritative hydration", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    let resolveSetNote: (response: { note: string }) => void = () => {
+      throw new Error("notes/human/set handler was not reached");
+    };
+    const setNoteReachedHandler = nextHandledRequest(
+      fake,
+      "notes/human/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetNote = resolve;
+        }),
+    );
+    const pending = threadsStore.getState().setHumanNote("ref_a", "local note");
+    await setNoteReachedHandler;
+
+    const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
+    let resolveRefreshReadsReached: () => void = () => {
+      throw new Error("both hydration handlers were not reached");
+    };
+    const refreshReadsReached = new Promise<void>((resolve) => {
+      resolveRefreshReadsReached = resolve;
+    });
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          refreshReads.push(resolve);
+          if (refreshReads.length === 2) resolveRefreshReadsReached();
+        }),
+    );
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await refreshReadsReached;
+
+    const authoritativeResponse = readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        humanNote: "authoritative note",
+      },
+    });
+    for (const resolveRead of refreshReads) resolveRead(authoritativeResponse);
+    await flushUntil(
+      () =>
+        threadsStore.getState().threads.get("ref_a")?.humanNote === "authoritative note" &&
+        threadsStore.getState().watchedThreads.get("ref_a")?.humanNote === "authoritative note",
+    );
+    expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
+
+    resolveSetNote({ note: "local note" });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
+  });
+
+  test("a urls/updated push arriving during a setHumanNote await does not drop the note commit", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    let resolveSetNote: (response: { note: string }) => void = () => {
+      throw new Error("notes/human/set handler was not reached");
+    };
+    const setNoteReachedHandler = nextHandledRequest(
+      fake,
+      "notes/human/set",
+      () =>
+        new Promise((resolve) => {
+          resolveSetNote = resolve;
+        }),
+    );
+    const pending = threadsStore.getState().setHumanNote("ref_a", "local note");
+    await setNoteReachedHandler;
+
+    // An unrelated urls push carries no note state: it must retire only the
+    // urls fallback, leaving the in-flight note commit intact.
+    fake.emitNotification({
+      method: "evener/urls/updated",
+      params: { threadId: "thr_ref_a", ref: "ref_a", urls: [{ id: "u1", url: "https://x.test/y" }] },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.sessionUrls).toEqual([{ id: "u1", url: "https://x.test/y" }]);
+
+    resolveSetNote({ note: "local note" });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("local note");
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("local note");
+  });
+
   test("rename sends evener/thread/name/set with {ref, name}", async () => {
     const fake = connectFakeClient();
     fake.on("evener/thread/name/set", () => ({}));

@@ -127,8 +127,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 // Whether a shared-notes URL points at the web (rendered as an external
-// anchor opening a new tab) rather than a file/path (rendered as in-app
-// text with an OpenButton beside it via the doc pane). Same http(s)-only
+// anchor opening a new tab) rather than a file/path (rendered as honest
+// inert text: no OpenButton — per fix-round ruling the doc-pane open-beside
+// affordance is explicitly descoped for this section). Same http(s)-only
 // rule as ContextCard's own isWebHref and transcript-link rendering.
 function isWebURL(url: string): boolean {
   return /^https?:\/\//.test(url);

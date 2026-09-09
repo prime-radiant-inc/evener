@@ -52,6 +52,13 @@ type threadEnvelope struct {
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
 	Goal                    *appwire.GoalState
+	// HumanNote/AgentNote/SessionURLs are the shared-notes whiteboards and
+	// URL list, sampled from SessionMeta beside Goal (which documents the
+	// facet/carrier split this struct enforces). Empty means unset;
+	// nil/empty SessionURLs means no links.
+	HumanNote   string
+	AgentNote   string
+	SessionURLs []appwire.SessionURL
 	// Carrier generations are internal per-identity fences. A sampled checkpoint
 	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
 	taskCarrierGeneration uint64
@@ -376,6 +383,19 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if facets&facetGoal != 0 && meta.Goal != nil {
 			next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
 		}
+		if facets&facetGoal != 0 {
+			next.HumanNote = strings.TrimSpace(meta.HumanNote)
+			next.AgentNote = strings.TrimSpace(meta.AgentNote)
+			if len(meta.SessionURLs) > 0 {
+				urls := make([]appwire.SessionURL, 0, len(meta.SessionURLs))
+				for _, u := range meta.SessionURLs {
+					urls = append(urls, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+				}
+				next.SessionURLs = urls
+			} else {
+				next.SessionURLs = nil
+			}
+		}
 	}
 
 	s.mu.Lock()
@@ -428,6 +448,9 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
 	}
 	if facets&facetGoal != 0 {
 		e.Goal = next.Goal
+		e.HumanNote = next.HumanNote
+		e.AgentNote = next.AgentNote
+		e.SessionURLs = next.SessionURLs
 	}
 	if facets&facetWork != 0 {
 		e.WorkMillis = next.WorkMillis

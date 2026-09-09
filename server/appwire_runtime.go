@@ -508,6 +508,24 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				s.appEnvelope.Goal = goalPatch(params)
 				s.appEnvelope.goalCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			case appwire.NotesUpdatedParams:
+				// Direct typed carrier like GoalUpdatedParams above, but with
+				// no generation fence: notes have no carrier generation
+				// (threadEnvelope's goalCarrierGeneration is goal-only).
+				s.appEnvelope.HumanNote = params.HumanNote
+				s.appEnvelope.AgentNote = params.AgentNote
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			case appwire.UrlsUpdatedParams:
+				// Fresh copy, nil-on-empty: the envelope owns its slices
+				// once written (threadEnvelope's rule), so the push's
+				// backing array must not alias the installed state.
+				var urls []appwire.SessionURL
+				if len(params.URLs) > 0 {
+					urls = make([]appwire.SessionURL, 0, len(params.URLs))
+					urls = append(urls, params.URLs...)
+				}
+				s.appEnvelope.SessionURLs = urls
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
 			}
@@ -733,6 +751,18 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				}
 			case appwire.GoalUpdatedParams:
 				projection.thread.Evener.Goal = goalPatch(params)
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			case appwire.NotesUpdatedParams:
+				projection.thread.Evener.HumanNote = params.HumanNote
+				projection.thread.Evener.AgentNote = params.AgentNote
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			case appwire.UrlsUpdatedParams:
+				var urls []appwire.SessionURL
+				if len(params.URLs) > 0 {
+					urls = make([]appwire.SessionURL, 0, len(params.URLs))
+					urls = append(urls, params.URLs...)
+				}
+				projection.thread.Evener.SessionURLs = urls
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params, snapshot: projection.turns})
@@ -2307,6 +2337,9 @@ func (s *Server) appThreadLocked() appwire.Thread {
 	queue := envelope.Queue
 	pendingMutations := envelope.PendingMutations
 	goalState := envelope.Goal
+	humanNote := envelope.HumanNote
+	agentNote := envelope.AgentNote
+	sessionURLs := envelope.SessionURLs
 	taskAggregate := envelope.Tasks
 	workMillis := envelope.WorkMillis
 	usage := envelope.Usage
@@ -2349,6 +2382,9 @@ func (s *Server) appThreadLocked() appwire.Thread {
 			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
 			Goal:                  goalState,
+			HumanNote:             humanNote,
+			AgentNote:             agentNote,
+			SessionURLs:           sessionURLs,
 			Usage:                 usage,
 			Cost:                  appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
 			WorkMillis:            workMillis,
