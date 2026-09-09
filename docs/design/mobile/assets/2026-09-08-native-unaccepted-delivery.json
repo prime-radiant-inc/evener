@@ -1,0 +1,150 @@
+{
+  "schema": "evener.native.unaccepted-delivery.v1",
+  "observedAt": "2026-09-09T03:08:56.569281+00:00",
+  "status": "recovery-observed-cleanup-verified",
+  "nativeCodeSource": "bfe632f44",
+  "nativeFiles": {
+    "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/F3F405B7-7947-46F1-A973-AB329BFAD510/Evener.app/Evener": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+    "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/F3F405B7-7947-46F1-A973-AB329BFAD510/Evener.app/main.jsbundle": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b"
+  },
+  "backendSource": "6a0278e36",
+  "fixtureRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82",
+  "device": "iPhone 17 Pro, iOS 26.5 simulator",
+  "hubId": "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+  "sessionRef": "local:034LYwEzxfqSAgWQxLrrHP",
+  "interruption": {
+    "mechanism": "Suspend the exact owned hub before a native Send; after the app persists uncertainty, terminate the stopped hub before it can process the request. Restart the same hub and verify absence before relaunching the app.",
+    "hubBefore": 50508,
+    "nativeBefore": 43137,
+    "marker": "Native unaccepted delivery recovery",
+    "ref": "local:034LYwEzxfqSAgWQxLrrHP",
+    "tokenShaBefore": "1250f840b4a38534ea3077cc33e972b9a39a3d490c4a89e1c07cc4c9d10a5d67",
+    "nativeTapCount": 1,
+    "hubStoppedState": "Ts",
+    "frozenDraft": {
+      "draft": "",
+      "unconfirmed": "Native unaccepted delivery recovery"
+    },
+    "hubAfter": 18403,
+    "tokenPreserved": true,
+    "beforeRelaunchReadback": {
+      "ref": "local:034LYwEzxfqSAgWQxLrrHP",
+      "instance": "034LYwEzxfqSAgWQxLrrHP",
+      "matchingInputs": 0,
+      "turnIds": [
+        "turn_system",
+        "turn_env_T5LCVVLRNYRQ5SFMPVP3IPFOVC",
+        "turn_m1",
+        "turn_m2",
+        "turn_m3"
+      ]
+    },
+    "relaunchExit": 0,
+    "relaunchOutput": "com.primeradiant.evener.native: 18456\n"
+  },
+  "recovery": {
+    "readbacks": {
+      "unaccepted-before-relaunch": [],
+      "unaccepted-after-relaunch": [],
+      "unaccepted-after-restore": [],
+      "accepted-manual-retry": [
+        {
+          "turnId": "turn_m4",
+          "status": "completed",
+          "messageId": "item_user_35",
+          "clientMutationId": "cmid-1788922958396-1"
+        }
+      ]
+    },
+    "providerExactLastUserMatches": [
+      {
+        "file": "/private/tmp/evener-native-reader-s7qgm65n/provider-request-55.json",
+        "sha256": "8f345e9facfaec427cc4294754bf4652066c997b69008a77d91874b112779a88"
+      }
+    ]
+  },
+  "nativeObservations": {
+    "unconfirmedNoticeAfterRelaunch": true,
+    "sendDisabledWithUnconfirmedInput": true,
+    "checkDeliveryPressed": true,
+    "restoreToDraftPressed": true,
+    "restoredExactTextPersisted": true,
+    "explicitSendAfterRestore": true,
+    "completedResponseVisible": true
+  },
+  "files": {
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/interruption-in-progress.json": "1886d43ffe4647e46a6aa7bb307ce1fc04ba2827425933dcf8012065553f519d",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/prepared-ax.json": "06cf8577a352dec894c8e0042d6e733aa7b45e321341fbeeb339f6aab74bc345",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/interruption-result.json": "f17a5813753546e9d4c9f12e8c2feaa99f9c05ef118b5b7b7d18a91b6e28230c",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/manual-retry-completed-ax.json": "4037d2cf0f78821a2c3fbb4d42b008c3698cc85274e56ac9aaf64c246cd9ff1d",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/before-evener-drafts.db.json": "d68d589d2582a200ffbb6f75a54f112511290315595c5cb2de9f30a6563e96b8",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/before-unaccepted-send.json": "3f79b36fef70fcf0d859f9031f027ebbcd5d9a19498716b105544ba99d196266",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/unconfirmed-relaunch.png": "5daeeffc0b16cd2dd02696ab87887502aaa26e453f8ef0eb608da6ec3047bcf5",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/unaccepted-after-restore.json": "af7c3a4b739c1de23548f87b63d449c83e1aed6e3b7aff2a66e0764e3a5b3774",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/read-native.mjs": "6a0f4ff1e22a2c921eea651f6d97249cb1a67261b0e92470c3f2d134076fc0b1",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/accepted-manual-retry.json": "92fe788debc6335533f46772a712cce256a0f8fd1f6ecc2e5c7bd2e03b4f241a",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/backend-identity.json": "1ab470126894a1a4f52fcb113a33c8e834f65263b1fbe8b4493a54b0e021e45b",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/unaccepted-before-relaunch.json": "af7c3a4b739c1de23548f87b63d449c83e1aed6e3b7aff2a66e0764e3a5b3774",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/draft-tables-after-retry.json": "7b01c54f45f7cb19360cfd142ec45282c7174ca49372399324cf2c8ea7fddefa",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/identity.json": "e9d65af0c68f6e8acc46994208d3c4e193fa1dee99345b399100fdd259259acb",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/accepted-manual-retry.log": "9a074ad6a7fcd6e07deb0a8a01d3d9e6eae299cdeb4dc6a3958853b54c1883ca",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/provider-before-manual-send.json": "b8330526b6cf2b8ea4365191432d724d4c571cd5e84cfcd786f31e047895db57",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/after-restore-read.log": "52364957a4c072b814f07981e5c98fd3f2db919e13fb1d1ee99c45ba7422ccaf",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/exercise-unaccepted.py": "0863092f8a339253868de993220573590714538e6c76b1052c1ece78770a86df",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/restored-draft-ax.json": "c9b5e16d85c288a22aeea56d01d1e54251e3a9ea833419b5c35c48832f5c1392",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/restored-draft-row.json": "354095ee6358acc0d6a256a295e4ff92551ef0d272dfc6ede0d18bace27a3103",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/before-ExpoSQLiteStorage.json": "8b67da77d7e9e6edf8dba6e3e786a9bfc51af855390f715065e086bd2f496469",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/authoritative-outcomes.json": "37b140ac4173ed11291da6104d431931a89819b4c958b9922e0ec386fc41b7df",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/unconfirmed-relaunch-ax.json": "54a51ba5fb7600c589137b67f7da6e70fbea6950eafe5811f2203b39cac5740f",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/cleanup-pending.json": "1cb88c8790c8177d3afad1a34a895e1e7e6fb5cbb16bc57a5bf7d6222004e63f",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/unaccepted-after-relaunch.json": "af7c3a4b739c1de23548f87b63d449c83e1aed6e3b7aff2a66e0764e3a5b3774",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-55.json": "8f345e9facfaec427cc4294754bf4652066c997b69008a77d91874b112779a88",
+    "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/cleanup-verification.json": "dec73d35328c09557b8e3d7cb954a50f64163d40f4be7c8a3d1b3a9b2f9cccca"
+  },
+  "limitations": [
+    "Native app/hub lifecycle was controlled directly; no proxy or wire-ack interception claim.",
+    "Three authoritative reads and provider capture show absence before the manual retry; the manual retry has one completed matching user input and one provider request.",
+    "The Check delivery button was pressed, but a separate native RPC trace for that press was not retained.",
+    "This is one simulator recovery branch, not the integrated Usable journey, physical-device acceptance or full lifecycle/stress qualification.",
+    "The earlier Mac-lock pause is retained in cleanupBeforeUnlock; after unlock the original draft, selected session and keyboard setting were restored and preservation was independently verified."
+  ],
+  "cleanupBeforeUnlock": {
+    "changes": {
+      "drafts": {
+        "removed": [
+          [
+            "89b1b05e-fdbb-4ef9-8123-bc48ee211e55",
+            "local:034LYwEzxfqSAgWQxLrrHP",
+            "Keep this creation draft unsent",
+            null
+          ]
+        ],
+        "added": []
+      }
+    },
+    "allOtherDraftRowsPreserved": true,
+    "pendingOriginalDraft": "Keep this creation draft unsent",
+    "pendingOriginalSelectedRef": "local:034LVKwtHytL0Jh8qsVDFb",
+    "pendingSimulatorSetting": "Disconnect hardware keyboard to restore its initial setting",
+    "reason": "Computer Use reported the Mac locked before final UI restoration. No alternate UI route was used to bypass that boundary."
+  },
+  "cleanup": {
+    "verifiedAt": "2026-09-09T03:22:17.983363+00:00",
+    "allSevenDraftTablesExact": true,
+    "originalCreatedSessionDraftRestored": "Keep this creation draft unsent",
+    "originalSelectedRef": "local:034LVKwtHytL0Jh8qsVDFb",
+    "selectedSessionDraft": "Retain this separate draft",
+    "readerPositionEntriesUnchanged": 8,
+    "readerTouchedAtExcluded": true,
+    "nativeArtifactsUnchanged": true,
+    "hardwareKeyboardConnected": false,
+    "keyboardVerification": "Coordinator toggled Connect Hardware Keyboard off; fresh native menu showed Toggle Software Keyboard disabled.",
+    "independentVerification": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-unaccepted-ll797e82/cleanup-verification.json"
+  },
+  "review": {
+    "reviewer": "independent Luna worker and coordinator",
+    "supported": "Zero matching accepted inputs at three recovery boundaries and one completed input/provider request after explicit manual retry.",
+    "providerProvenance": "The joined hub intentionally uses the existing owned reader fixture provider at port 64939. Both roots and provider PID are recorded in identity.json runtime; request-55.json is from that provider root.",
+    "limit": "No transport-level absence claim or separate Check delivery RPC trace."
+  }
+}
