@@ -23,6 +23,13 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
   onActivate: (node: T) => void;
   onToggle: (node: T) => void;
   renderRow: (node: T, info: TreeRowInfo) => ReactNode;
+  // Alt-held arrows (and Alt+Home/End) belong to the desktop global chords
+  // (Alt+Arrow pane cycling, Alt+Shift+Arrow live-session navigation and
+  // transcript scroll, Alt+Home/End); releasing them lets those chords fire
+  // while a row has focus. Desktop-only consumers set this: on mobile the
+  // bindings are not installed, and Alt+ArrowLeft/Right are the browser's
+  // history navigation - the tree keeps them tree-owned instead.
+  releaseModifierKeys?: boolean;
 }
 
 const CLASS = {
@@ -80,7 +87,13 @@ function flattenVisible<T extends TreeNode>(nodes: T[], depth = 0, parent: T | n
  * currently the roving-tabindex target" state, the same way a native
  * `<select>`'s highlighted option isn't state the parent owns.
  */
-export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggle, renderRow }: TreeProps<T>) {
+export function Tree<T extends TreeNode = TreeNode>({
+  nodes,
+  onActivate,
+  onToggle,
+  renderRow,
+  releaseModifierKeys = false,
+}: TreeProps<T>) {
   const flat = flattenVisible(nodes);
   const indexById = new Map(flat.map((entry, i) => [entry.node.id, i]));
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -157,17 +170,28 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
     // practice - but that's an invariant between two separate functions,
     // not something the type system enforces, so it's worth a real check.
     if (index === undefined) return;
-    // Alt means an ARROW belongs to a global chord (Alt+Arrow session pane
-    // cycling, Alt+Shift+Arrow live-session navigation and transcript
-    // scroll, Alt+Home/End); a blanket preventDefault below would swallow
-    // all of them while a rail row has focus - the same trap
-    // RailResizeHandle's own guard (roborev PR #884 round 3) names. Arrows
-    // only: no global chord binds a modifier+Enter, so activation stays
-    // tree-owned (PR #1044 round-2 low). Shift, Ctrl and Meta stay
-    // tree-owned: the defaults map binds no Ctrl/Meta arrow chord, so
-    // releasing them to the tree keeps its navigation working where nothing
-    // else would handle them (roborev PR #1044 round-8 low 2).
-    if (event.altKey && event.key.startsWith("Arrow")) return;
+    // Alt-held arrows and Alt+Home/End belong to the desktop global chords
+    // (Alt+Arrow session pane cycling, Alt+Shift+Arrow live-session
+    // navigation and transcript scroll, Alt+Home/End); a blanket
+    // preventDefault below would swallow all of them while a rail row has
+    // focus - the same trap RailResizeHandle's own guard (roborev PR #884
+    // round 3) names. Opt-in via releaseModifierKeys: only a desktop
+    // consumer, where the bindings are installed - on mobile the chords
+    // are inert and Alt+ArrowLeft/Right would fall through to the
+    // browser's history navigation, so the tree keeps them tree-owned
+    // (roborev PR #1044 round-9 medium 1). No global chord binds a
+    // modifier+Enter, so activation stays tree-owned (round-2 low).
+    // Shift, Ctrl and Meta stay tree-owned: the defaults map binds no
+    // Ctrl/Meta arrow chord, so releasing them to the tree keeps its
+    // navigation working where nothing else would handle them (round-8
+    // low 2). Home/End release too: Alt+Home/End are global chords while
+    // plain Home/End stay tree-owned (round-9 medium 2).
+    if (
+      releaseModifierKeys &&
+      event.altKey &&
+      (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End")
+    )
+      return;
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 

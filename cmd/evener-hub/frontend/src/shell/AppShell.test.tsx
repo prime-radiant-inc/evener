@@ -32,6 +32,7 @@ import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
+import { navigate } from "./routing";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
@@ -3410,5 +3411,131 @@ test("a live demand can be re-issued after an invalidation restales the pages", 
   await act(async () => {
     resolve2(wireV2(params2, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 9, medium 3: the inert early return must clear the in-flight key so
+// the set keeps tracking in-flight demands only. A same-key re-demand is not
+// reachable end-to-end (a page that resolves with data always advances the
+// next-demand offset past itself, and an error/abort resolves through the
+// already-deleting error path), so this pins the reachable lifecycle instead:
+// a palette-inert completion leaves nothing sticky - after the palette
+// closes, the same chord still navigates, here via the page the inert
+// completion loaded (roborev PR #1044 round-9 medium 3).
+test("a demand that completes inert does not leave the live chord stuck", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // First demand: the palette is open when it completes, so it goes inert
+  // (no navigation) even though the page resolved with B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  act(() => {
+    paletteStore.setState({ open: true, query: "" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  act(() => {
+    paletteStore.setState({ open: false, query: "" });
+  });
+
+  // After the palette closes, the same chord must still work - the demand's
+  // page is loaded, so this is the direct step to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 9, medium 4: leaving the session and returning before a demand
+// resolves restores an identical focused pane and session ref, so the
+// press-time guards alone read as "never left" and the stale completion
+// navigates under the returned user. The route epoch must invalidate the
+// demand instead (roborev PR #1044 round-9 medium 4).
+test("an in-flight live demand-load goes inert after leaving the session and returning", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+  const paneAtPress = workspaceStore.getState().focusedPaneId;
+  // The route-placement effect re-focuses the session pane on the return
+  // leg only when the location resource is present, so the test installs
+  // it exactly as the app's own location lookup would have.
+  installLocationForRoute("local:live-a");
+
+  // Demand in flight from A (the last loaded live row). The leave/return
+  // must be a round trip the OLD guards cannot see: going to "/" opens the
+  // welcome pane in SECONDARY (openPane never displaces a non-welcome
+  // main), and returning re-matches the still-open session pane, so the
+  // pane id, focused ref, and pathname are all identical to press time -
+  // only the route epoch knows the user left at all.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  await act(async () => {
+    navigate("/");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  await act(async () => {
+    navigate("/s/local%3Alive-a");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneAtPress);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The stale completion must NOT navigate: the demand left with the route
+  // it was pressed on, and the epoch has since moved.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  // And the chord is not permanently bricked by the inert completion: page
+  // two is loaded now, so the same press takes the direct step to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });

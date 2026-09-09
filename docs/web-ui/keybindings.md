@@ -242,10 +242,13 @@ The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
 - The TUI binds the same chords in session view
   (`cmd/evener-tui/hub_livecycle.go`), cycling live sessions in dashboard
   order through the ordinary session-entry read.
-- Tree-keyboard note: the rail's Tree widget leaves Alt/Ctrl/Meta-held
-  arrows alone (no `preventDefault`) so these and every other global
-  Alt+Arrow chord still fire while a rail row has focus — the same guard
-  RailResizeHandle carries.
+- Tree-keyboard note: the desktop rail's Tree widget leaves Alt-held
+  arrows and Alt+Home/End alone (no `preventDefault`) so these and every
+  other global Alt chord still fire while a rail row has focus — the same
+  guard RailResizeHandle carries. Ctrl/Meta-held arrows stay tree-owned
+  (no global chord binds them), and on mobile — where the global chords
+  are inert — the tree keeps every arrow tree-owned so Alt+ArrowLeft/Right
+  never fall through to the browser's history navigation.
 
 ## Phase 3: transcript scroll
 

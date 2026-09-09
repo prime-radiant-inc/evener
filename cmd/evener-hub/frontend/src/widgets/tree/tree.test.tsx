@@ -25,6 +25,7 @@ function renderTree(overrides: Partial<Parameters<typeof Tree>[0]> = {}) {
       onActivate={overrides.onActivate ?? onActivate}
       onToggle={overrides.onToggle ?? onToggle}
       renderRow={overrides.renderRow ?? ((node) => node.id)}
+      releaseModifierKeys={overrides.releaseModifierKeys}
     />,
   );
   return { ...utils, onActivate, onToggle };
@@ -148,14 +149,17 @@ test("ArrowLeft on an expanded branch collapses it via onToggle and does not mov
   expect(document.activeElement).toBe(row("b"));
 });
 
-// Alt/Ctrl/Meta mean the key belongs to a GLOBAL chord (Alt+Arrow pane
-// cycling, Alt+Shift+Arrow live-session navigation and transcript scroll,
-// Alt+Home/End): a blanket preventDefault here would swallow all of them
-// while a rail row has focus (same trap RailResizeHandle.tsx's own guard
-// documents). Shift stays tree-owned: no global chord is Shift+Arrow without
-// Alt.
-test("arrow keys with Alt held are left for global chords (no preventDefault, no tree action)", () => {
-  const { onToggle } = renderTree();
+// With releaseModifierKeys (the desktop rail), Alt-held arrows and
+// Alt+Home/End belong to the GLOBAL chords (Alt+Arrow pane cycling,
+// Alt+Shift+Arrow live-session navigation and transcript scroll, Alt+Home/End):
+// a blanket preventDefault here would swallow all of them while a rail row has
+// focus (same trap RailResizeHandle.tsx's own guard documents). Shift stays
+// tree-owned: no global chord is Shift+Arrow without Alt. This release is
+// opt-in per consumer (roborev PR #1044 round-9 medium 1) - on mobile the
+// chords are inert and Alt+ArrowLeft/Right are the browser's history
+// navigation, so the default below keeps them tree-owned.
+test("with releaseModifierKeys, arrows and Home/End with Alt held are left for global chords", () => {
+  const { onToggle } = renderTree({ releaseModifierKeys: true });
   act(() => row("b").focus());
   for (const mod of [{ altKey: true }, { altKey: true, shiftKey: true }]) {
     // b is an expanded branch: without the guard, ArrowRight would move focus
@@ -165,15 +169,40 @@ test("arrow keys with Alt held are left for global chords (no preventDefault, no
     expect(document.activeElement).toBe(row("b"));
     const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", ...mod });
     expect(left).toBe(true);
+    const home = fireEvent.keyDown(row("b"), { key: "Home", ...mod });
+    expect(home).toBe(true);
+    const end = fireEvent.keyDown(row("b"), { key: "End", ...mod });
+    expect(end).toBe(true);
     expect(onToggle).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(row("b"));
   }
+});
+
+// The default (no releaseModifierKeys): the tree owns every arrow and
+// Home/End press, modifier or not. That is the mobile rail's configuration -
+// the global Alt chords are not installed there, so releasing Alt+ArrowLeft/
+// Right would hand them to the browser's history navigation (roborev PR
+// #1044 round-9 medium 1).
+test("without releaseModifierKeys, Alt-held arrows and Home/End stay tree-owned", () => {
+  const { onToggle } = renderTree();
+  act(() => row("b").focus());
+  // b is an expanded branch: ArrowLeft with Alt collapses it via onToggle,
+  // ArrowRight with Alt moves focus into b1, Home/End... are not tree keys
+  // at all without modifiers, so the meaningful assertion is the arrows:
+  // the tree acts on them despite Alt.
+  const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", altKey: true });
+  expect(left).toBe(false); // preventDefaulted: the tree owns the key
+  expect(onToggle).toHaveBeenCalledExactlyOnceWith(NODES[1]);
+  const right = fireEvent.keyDown(row("b"), { key: "ArrowRight", altKey: true });
+  expect(right).toBe(false);
+  expect(document.activeElement).toBe(row("b1"));
 });
 
 // Round 8, low 2: only the ALT family has global arrow chords; Ctrl/Meta+
 // Arrow must stay tree-owned so the tree's own navigation still works with
 // those modifiers held (roborev PR #1044 round-8 low 2).
 test("arrow keys with Ctrl or Meta held still navigate the tree", () => {
-  const { onToggle } = renderTree();
+  const { onToggle } = renderTree({ releaseModifierKeys: true });
   act(() => row("b").focus());
   // b is an expanded branch: ArrowLeft with Ctrl collapses it via onToggle.
   const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", ctrlKey: true });

@@ -513,6 +513,24 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       .catch(() => undefined);
   }, [locationFailed, locationGone, locationRef, locationResource, navigationMode]);
   const isMobile = useIsMobile();
+  // Route-change epoch for in-flight live demands (roborev PR #1044 round-9
+  // medium 4): leaving the session (to settings, the dashboard, another
+  // session) and returning BEFORE a demand resolves can restore an identical
+  // focused pane id and session ref, so the press-time pane/ref guards alone
+  // cannot tell that round trip apart from "never left" - and the stale
+  // completion then navigates under a user who has since re-entered the app.
+  // A monotonic epoch bumped on every pathname change closes it: the demand
+  // completes only onto the route it was pressed on. Bumped during render
+  // (not in an effect) so it lands in the same commit as the navigation
+  // itself - the same render-phase-ref precedent as renderTimePanesRef
+  // below. StrictMode's double render only double-bumps; monotonicity is all
+  // the check needs.
+  const liveNavRouteEpochRef = useRef(0);
+  const liveNavSeenPathnameRef = useRef<string | null>(null);
+  if (pathname !== liveNavSeenPathnameRef.current) {
+    liveNavSeenPathnameRef.current = pathname;
+    liveNavRouteEpochRef.current++;
+  }
   // Alt+ArrowLeft/Right cycle focus through the open session panes (Phase 3;
   // cycling semantics live in sessionCycle.ts). Desktop only, following
   // RailHost's rail.toggle pattern: with no action registered on mobile the
@@ -589,6 +607,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       const generationAtPress = state.clientGenerationID;
       const paneAtPress = workspaceStore.getState().focusedPaneId;
       const refAtPress = focusedSessionRef();
+      const routeEpochAtPress = liveNavRouteEpochRef.current;
       void state
         .loadSection("live", offset)
         .then((page) => {
@@ -600,12 +619,19 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             !liveNavMounted ||
             intentAtPress !== liveNavIntent ||
             navigationStore.getState().clientGenerationID !== generationAtPress ||
+            liveNavRouteEpochRef.current !== routeEpochAtPress ||
             workspaceStore.getState().focusedPaneId !== paneAtPress ||
             focusedSessionRef() !== refAtPress ||
             paletteStore.getState().open ||
             document.querySelector('[aria-modal="true"]') !== null
-          )
+          ) {
+            // Went inert: this demand is no longer in flight, so the set
+            // must not retain its key (the set tracks in-flight demands
+            // only - same invariant as the success and error paths).
+            // Roborev PR #1044 round-9 medium 3.
+            demandedLivePages.delete(demandKey);
             return;
+          }
           const rows = selectLiveRows(navigationStore.getState());
           demandedLivePages.delete(demandKey); // completed: the set tracks in-flight only (round-8 low 1)
           if (direction === "next") {
