@@ -59,6 +59,7 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { matchBuiltinInvocation } from "../session/composer/builtinCommand";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
 import {
   filterSlashMenuItems,
@@ -93,7 +94,12 @@ import {
   setGlobalLastWorkingDir,
   sweepStaleModels,
 } from "./spawnDefaults";
-import { spawnBuiltinCommands } from "./spawnSlashMenu";
+import {
+  resolveSpawnEffortItems,
+  resolveSpawnModelItems,
+  runSpawnBuiltinAfterStart,
+  spawnBuiltinCommands,
+} from "./spawnSlashMenu";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
@@ -1028,6 +1034,47 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       setBusyStartedAt(null);
       return;
     }
+    // Task 6: submit interception for the pre-session builtins (spawnSlashMenu's
+    // allowlist: goal, model, reasoning-effort). Composer's own guard, ported:
+    // a prompt carrying attachments is never read as a command, and on a
+    // non-evener harness there is no menu and no interception - the prompt
+    // always spawns verbatim (same pluginSelectionSupported gate as slashOpen).
+    // A match still starts the session with the literal prompt text (the
+    // daemon expands plugin commands/skills in the first input itself); the
+    // builtin is then applied against the new ref via
+    // runSpawnBuiltinAfterStart, and only then does navigation happen.
+    const builtinMatch =
+      pluginSelectionSupported && attachments.items.length === 0
+        ? matchBuiltinInvocation(prompt, spawnBuiltinCommands())
+        : null;
+    if (builtinMatch && (builtinMatch.command.id === "model" || builtinMatch.command.id === "reasoning-effort")) {
+      // Pre-start validation for enum-arg builtins: there is no cheaper
+      // moment to refuse than before the session exists. Unknown value ->
+      // toast the blocked message and abort WITHOUT thread/start - AND reset
+      // the busy guard handleSpawn set above, or Start strands disabled.
+      // Empty /model means "(default)": fail-open, no follow-up at all.
+      const value = builtinMatch.argsText.trim();
+      if (builtinMatch.command.id === "model" && value === "") {
+        // Fall through to the ordinary start below with no model follow-up.
+      } else {
+        const items =
+          builtinMatch.command.id === "model"
+            ? resolveSpawnModelItems(modelCatalog)
+            : resolveSpawnEffortItems(effortLevels, reasoningEffort);
+        const needle = value.toLowerCase();
+        const known = items.some((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
+        if (!known) {
+          const message = value
+            ? `/${builtinMatch.command.id}: unknown value "${value}"`
+            : `/${builtinMatch.command.id} needs a value`;
+          toasts.push("error", message);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+      }
+    }
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
@@ -1049,6 +1096,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
+    if (builtinMatch) {
+      // Post-start application failure toasts but does NOT block navigation:
+      // the session started fine, only the follow-up setting failed.
+      await runSpawnBuiltinAfterStart(builtinMatch.command.id, builtinMatch.argsText, ref, toasts);
+    }
     saveDefaults({
       cwd,
       harness,

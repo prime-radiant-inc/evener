@@ -2883,3 +2883,126 @@ test("the open spawn menu wires listbox roles and aria-activedescendant on the p
   await user.keyboard("{Escape}");
   expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
 });
+
+// --- Task 6: submit interception for pre-session builtins --------------------
+//
+// A prompt parsing as /goal, /model, or /reasoning-effort starts the session
+// with the literal text, then applies the builtin against the new ref, then
+// navigates. Everything else spawns exactly as today.
+
+test("a /goal prompt starts the session with the literal text and applies goal/set on the new ref", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/goal build the widget");
+  // Dismiss the inline menu without altering the text: plain Enter commits
+  // the highlight here, and Mod+Enter is the submit under test.
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/goal build the widget" }] });
+  const goal = fake.calls.find((c) => c.method === "goal/set");
+  expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "build the widget" });
+});
+
+test("a /model prompt starts the session and applies thread/model/set on the new ref", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("thread/model/set", () => ({}));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/model openai/gpt-5" }] });
+  const set = fake.calls.find((c) => c.method === "thread/model/set");
+  expect(set?.params).toMatchObject({ ref: "local:abc123", modelProvider: "openai", model: "gpt-5" });
+});
+
+test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model nope");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "nope"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  expect(button.textContent).toBe("Start");
+});
+
+test("plain text spawns with no goal/set call", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "hello world");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "hello world" }] });
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
+});
+
+test("a /goal prompt on a non-evener harness spawns verbatim with no goal/set call", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "external");
+
+  await user.type(promptField(), "/goal x");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/goal x" }] });
+  expect(fake.calls.some((c) => c.method === "goal/set")).toBe(false);
+});
+
+test("a bare /model with no catalog spawns with no model follow-up and no error toast", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [{ type: "text", text: "/model" }] });
+  expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
+});
