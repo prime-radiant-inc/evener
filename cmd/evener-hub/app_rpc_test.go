@@ -11874,6 +11874,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerLaunchSetLayer,
 		appwire.MethodEvenerLaunchTrustRepo,
 		appwire.MethodEvenerUpgrade,
+		appwire.MethodEvenerUpdateCheck,
+		appwire.MethodEvenerUpdateApply,
 		appwire.MethodModelList,
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,

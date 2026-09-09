@@ -301,6 +301,17 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		appwire.MethodThreadRead:            true,
 		appwire.MethodThreadTurnsList:       true,
 		appwire.MethodEvenerSubagentPreview: true,
+		// evener/update/check does synchronous GitHub I/O (up to two
+		// 10s timeouts); inline dispatch would block unrelated RPCs
+		// on the connection. Read-only, frontend discards stale results.
+		appwire.MethodEvenerUpdateCheck: true,
+		// evener/update/apply does a multi-minute download, verify, and
+		// install under the overall upgrade deadline; inline dispatch
+		// would hold the connection's serial worker that whole time.
+		// Safe out of order: hubUpdateMu plus the cross-process install
+		// lock fail a concurrent apply fast, and the restart waits on
+		// its own response flush rather than connection order.
+		appwire.MethodEvenerUpdateApply: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {

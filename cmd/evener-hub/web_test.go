@@ -900,6 +900,10 @@ func TestWeb_APIHealth(t *testing.T) {
 	if !got.Capabilities.TranscriptFollow {
 		t.Fatalf("missing capabilities: %+v", got.Capabilities)
 	}
+	// The self-update restart poll reads this endpoint to spot the new hub.
+	if cache := rec.Header().Get("Cache-Control"); cache != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cache)
+	}
 }
 
 func TestWeb_APIHealthExposesAssetIdentity(t *testing.T) {

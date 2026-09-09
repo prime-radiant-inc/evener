@@ -134,6 +134,8 @@ no router (reserved).
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
+| `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
+| `evener/update/apply` | hub | `UpdateApplyParams` | `UpdateApplyResponse` | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | `AuthTestParams` | `AuthTestResponse` | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | `AuthLoginStartParams` | `AuthLoginStartResponse` | Begins an OAuth login flow; returns a flow ID and URL. |
@@ -2019,6 +2021,44 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `receipt` | `appwire.MutationReceipt` |  |  |
+
+
+### `UpdateApplyParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateApplyResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `release` | `string` |  |  |
+| `channel` | `string` |  |  |
+| `installed` | `[]string` |  |  |
+| `restarting` | `bool` |  |  |
+
+
+### `UpdateCheckParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` | yes |  |
+
+
+### `UpdateCheckResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `channel` | `string` |  |  |
+| `buildChannel` | `string` |  |  |
+| `currentVersion` | `string` |  |  |
+| `currentCommit` | `string` |  |  |
+| `latestTag` | `string` | yes |  |
+| `latestCommit` | `string` | yes |  |
+| `updateAvailable` | `bool` |  |  |
+| `applicable` | `bool` |  |  |
 
 
 ### `UpgradeParams`

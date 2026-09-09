@@ -319,6 +319,44 @@ then verifies health; see
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
 
+### Updating the hub from Settings
+
+Settings → Hub → Updates shows the running build (version, commit, channel),
+a channel selector (release or snapshot), and whether that channel is ahead
+of the running build. "Update and restart" downloads and installs the
+channel's archive with the same code as `evener upgrade`, then, once the
+apply response has been written to the websocket, the hub `exec`s the
+installed binary in place: same PID, same arguments, same
+environment. That is why it works the same under launchd, systemd, or a
+plain shell, and why nothing needs `KeepAlive`. The `hub.lock` flock and the
+listener are released by the exec and re-acquired by the new process; the
+page polls `/api/health` until the new version answers, then reloads.
+
+The install targets the prefix the running hub was launched from (derived
+from its own binary path, e.g. `/usr/local` for a system install), not
+always `~/.local`. The whole operation runs under a 4-minute overall
+deadline (both downloads, verification, install) so a stalled server fails
+the apply instead of blocking later updates. Before
+extraction, the archive's SHA-256 is checked against the release's
+`checksums.txt` entry (same fail-closed guarantee as `install.sh`); a
+mismatch or missing entry refuses the install. Note the limit: the
+checksums travel over the same GitHub TLS transport as the archive,
+unsigned, so this stops corruption and asset-swaps but not a compromise
+that rewrites both files the way a signature would.
+
+The channel selector has no stored setting. It defaults to the channel the
+running binary was built for, and after an update the installed binary's
+channel becomes the new default.
+
+Dev builds (a worktree `make build-hub`, channel `dev`) are excluded:
+Settings shows a rebuild note instead of the controls, and
+`evener/update/apply` is refused. Use `make build-hub` or
+`scripts/ops/deploy-hub.sh` for those.
+
+Running session daemons keep the binary they were spawned from (see the
+"Existing daemons keep the `evener` binary" note below); restart a session
+to move it to the new build.
+
 ### Trace browser AppWire traffic
 
 Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag
