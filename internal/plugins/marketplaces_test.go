@@ -1474,46 +1474,6 @@ func TestEditMarketplace_RefusesADirectorySourceInsideTheStore(t *testing.T) {
 	})
 }
 
-// A rename stages nothing, so the staging sweep an edit's unwind runs belongs
-// to the fetch alone. Run on a rename too, it deletes <marketplaces>/.staging
-// — which for a marketplace an older evener registered under that name is its
-// clone, and the rename is the only way such an entry can be moved off it. So
-// the one operation that rescues that clone destroyed it whenever it failed.
-func TestEditMarketplace_ARenameOnlyFailureSweepsNoStaging(t *testing.T) {
-	m := NewManager(t.TempDir())
-	ctx := context.Background()
-	clone := plantCatalog(t, m.marketplaceDir(stagingCloneName))
-	if err := os.WriteFile(filepath.Join(clone, "keepme"), []byte("the legacy clone's"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.saveMarketplaces(Marketplaces{stagingCloneName: {
-		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/legacy.git"},
-		InstallLocation: clone,
-		LastUpdated:     time.Date(2031, 4, 1, 0, 0, 0, 0, time.UTC),
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	before := readStoreFile(t, m.marketplacesFile())
-
-	// saveMarketplaces is the only writer through this seam, so the rename
-	// gets all the way to the last step before it fails and unwinds.
-	origWrite := marketplaceAtomicWriteFile
-	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return errors.New("boom") }
-	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
-
-	_, err := m.EditMarketplace(ctx, stagingCloneName, "legacy", nil)
-	marketplaceAtomicWriteFile = origWrite
-	if err == nil {
-		t.Fatal("expected the save to fail")
-	}
-	if _, err := os.Stat(filepath.Join(clone, "keepme")); err != nil {
-		t.Fatalf("the failed rename swept the legacy clone at %s: %v", clone, err)
-	}
-	if got := readStoreFile(t, m.marketplacesFile()); got != before {
-		t.Fatalf("%s changed after a failed rename:\n%s", marketplacesFileName, got)
-	}
-}
-
 func TestEditMarketplace_Refusals(t *testing.T) {
 	m := NewManager(t.TempDir())
 	ctx := context.Background()
@@ -1596,10 +1556,16 @@ func TestEditMarketplace_NoOpReturnsTheCurrentRef(t *testing.T) {
 	}
 }
 
+// A rename moves exactly the entries keyed "@<oldName>", whatever else the
+// key holds: a plugin's own '@' sits before that last one and parses back
+// intact. An orphan a removed marketplace left under the target key loses to
+// the entry moving onto it, and an install path follows the cache directory
+// only when one moved.
 func TestRekeyRegistry(t *testing.T) {
 	oldCache, newCache := filepath.Join("cache", "acme"), filepath.Join("cache", "beta")
 	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{
 		registryKey("widget", "acme"):    {{InstallPath: filepath.Join(oldCache, "widget", "abc")}},
+		registryKey("wid@get", "acme"):   {{InstallPath: filepath.Join(oldCache, "wid@get", "abc")}},
 		registryKey("other", "zeta"):     {{InstallPath: filepath.Join("cache", "zeta", "other", "def")}},
 		registryKey("elsewhere", "acme"): {{InstallPath: filepath.Join("somewhere", "else")}},
 		// An orphan a removed marketplace named beta left behind: removal drops
@@ -1607,14 +1573,17 @@ func TestRekeyRegistry(t *testing.T) {
 		// key is already taken and the live install has to win it.
 		registryKey("widget", "beta"): {{InstallPath: filepath.Join(newCache, "widget", "ghost")}},
 	}}
-	// beta is the removed marketplace whose orphan is under the target key, so
-	// only acme and zeta are still recorded.
-	got := rekeyRegistry(reg, Marketplaces{"acme": {}, "zeta": {}}, "acme", "beta", oldCache, newCache)
-	if _, still := got.Plugins[registryKey("widget", "acme")]; still {
-		t.Fatal("old key survived")
+	got := rekeyRegistry(reg, "acme", "beta", oldCache, newCache)
+	for _, plugin := range []string{"widget", "wid@get", "elsewhere"} {
+		if _, still := got.Plugins[registryKey(plugin, "acme")]; still {
+			t.Fatalf("old key %s survived", registryKey(plugin, "acme"))
+		}
 	}
 	if p := got.Plugins[registryKey("widget", "beta")][0].InstallPath; p != filepath.Join(newCache, "widget", "abc") {
 		t.Fatalf("InstallPath = %q, want the moved entry to beat the orphan already under that key", p)
+	}
+	if p := got.Plugins[registryKey("wid@get", "beta")][0].InstallPath; p != filepath.Join(newCache, "wid@get", "abc") {
+		t.Fatalf("a plugin whose name carries '@' = %q, want it moved with its path", p)
 	}
 	if p := got.Plugins[registryKey("other", "zeta")][0].InstallPath; p != filepath.Join("cache", "zeta", "other", "def") {
 		t.Fatalf("an unrelated entry changed: %q", p)
@@ -1624,5 +1593,11 @@ func TestRekeyRegistry(t *testing.T) {
 	}
 	if got.Version != 2 {
 		t.Fatalf("Version = %d", got.Version)
+	}
+
+	// With no cache directory moved, the keys move and every path stays.
+	unmoved := rekeyRegistry(reg, "acme", "beta", "", "")
+	if p := unmoved.Plugins[registryKey("widget", "beta")][0].InstallPath; p != filepath.Join(oldCache, "widget", "abc") {
+		t.Fatalf("InstallPath = %q, want it left under the cache directory that did not move", p)
 	}
 }

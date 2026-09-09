@@ -148,24 +148,6 @@ func unsafePathComponent(name string) bool {
 		!filepath.IsLocal(name)
 }
 
-// refuseRecordedName refuses to derive a store path from the name a
-// marketplace is recorded under when that name is not a path component.
-// known_marketplaces.json is a plain file an older evener or a hand edit can
-// put anything in, and every directory an operation derives from a recorded
-// name is a join: a recorded "../escape" is the clone a rename moves, the
-// plugin cache beside it, and the directory a removal deletes, all outside the
-// store.
-//
-// Only the path-component rules apply. The scratch names and '@' are legal
-// components that later rules reserved, and an entry recorded under one of
-// those is deliberately still renameable — the rename is its only way out.
-func refuseRecordedName(name string) error {
-	if unsafePathComponent(name) {
-		return fmt.Errorf("%s records marketplace %q, whose name is not a single non-traversing path component, so the store cannot derive its directories: %w", marketplacesFileName, name, ErrInvalidName)
-	}
-	return nil
-}
-
 func (m *Manager) now() time.Time {
 	if m.Now != nil {
 		return m.Now()

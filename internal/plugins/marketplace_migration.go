@@ -35,7 +35,7 @@ func (m *Manager) migrateMarketplaceNames() error {
 		return err
 	}
 	for _, name := range names {
-		newName, err := m.freeMarketplaceName(migratedMarketplaceName(name), name, mk, reg)
+		newName, err := m.freeMarketplaceName(migratedMarketplaceName(name), mk, reg)
 		if err != nil {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
@@ -92,7 +92,7 @@ func migratedMarketplaceName(name string) string {
 // freeMarketplaceName is base, or the first of base-2, base-3, … that nothing
 // occupies: no recorded marketplace, and none of the residue a rename onto
 // it would bury (refuseLeftoversUnder).
-func (m *Manager) freeMarketplaceName(base, name string, mk Marketplaces, reg Registry) (string, error) {
+func (m *Manager) freeMarketplaceName(base string, mk Marketplaces, reg Registry) (string, error) {
 	for n := 1; ; n++ {
 		candidate := base
 		if n > 1 {
@@ -101,7 +101,7 @@ func (m *Manager) freeMarketplaceName(base, name string, mk Marketplaces, reg Re
 		if _, recorded := mk[candidate]; recorded {
 			continue
 		}
-		err := m.refuseLeftoversUnder(name, candidate, mk, reg)
+		err := m.refuseLeftoversUnder(candidate, reg)
 		if errors.Is(err, ErrMarketplaceExists) {
 			continue
 		}
@@ -123,10 +123,10 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, reg Registry, name, ne
 	ref, registryAsFound := mk[name], reg
 	var undo []func() error
 	if unsafePathComponent(name) {
-		reg = rekeyRegistry(reg, mk, name, newName, "", "")
+		reg = rekeyRegistry(reg, name, newName, "", "")
 	} else {
 		var err error
-		if ref, reg, undo, err = m.moveMarketplace(mk, name, newName, ref, reg); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg); err != nil {
 			return registryAsFound, err
 		}
 	}
