@@ -3,13 +3,14 @@
 // one list at a time behind a page-level SegmentedControl (Installed /
 // Browse / Marketplaces) instead of the three stacked sub-sections the
 // parity wave shipped. Per-plugin actions live in the PluginDetailSheet
-// opened from an Installed row, so each segment stays a single-purpose
-// list. The orchestrator's jobs are unchanged in kind: the initial parallel
-// fetch (mirroring the legacy's own Promise.all), the top-level
-// loading/error gate, and the lifted `expandedMarketplaces` (see
-// MarketplacesSection's own comment for why Refresh needs to read it); on
-// top of those it owns the two new page-level states, activeSegment and
-// selectedPlugin.
+// opened from an Installed row, and every per-marketplace action in the
+// MarketplaceSheet opened from a Marketplaces row, so each segment stays a
+// single-purpose list. The orchestrator's jobs are unchanged in kind: the
+// initial parallel fetch (mirroring the legacy's own Promise.all), the
+// top-level loading/error gate, and the lifted `expandedMarketplaces` (the
+// sheet's Refresh reads it - see MarketplaceSheet's own comment); on top of
+// those it owns the page-level states activeSegment, selectedPlugin and
+// selectedMarketplace.
 import { useEffect, useState } from "react";
 import { friendlyErrorMessage } from "../../../../protocol/errors";
 import { connectionStore } from "../../../../stores/connection";
@@ -18,6 +19,7 @@ import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { BrowseSection } from "./BrowseSection";
 import { InstalledSection } from "./InstalledSection";
+import { MarketplaceSheet } from "./MarketplaceSheet";
 import { MarketplacesSection } from "./MarketplacesSection";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailSheet } from "./PluginDetailSheet";
@@ -43,6 +45,7 @@ export function MarketplacesPluginsSection() {
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
 
   // Mirrors DirListSetting's own mount-effect shape (see that component's
   // comment): waits for the shared client to actually be ready before
@@ -62,10 +65,12 @@ export function MarketplacesPluginsSection() {
 
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
-    // The detail sheet belongs to the Installed list; navigating away from
-    // the segment that opened it closes it rather than leaving an inspector
-    // floating over an unrelated list.
+    // Each sheet belongs to the segment whose row opened it - the plugin
+    // detail sheet to Installed, the marketplace editor to Marketplaces.
+    // Navigating away closes both rather than leaving an editor floating
+    // over an unrelated list.
     setSelectedPlugin(null);
+    setSelectedMarketplace(null);
   }
 
   const loadError = marketplacesError ?? pluginsError;
@@ -106,8 +111,15 @@ export function MarketplacesPluginsSection() {
       {activeSegment === "browse" && (
         <BrowseSection expandedMarketplaces={expandedMarketplaces} setExpandedMarketplaces={setExpandedMarketplaces} />
       )}
-      {activeSegment === "marketplaces" && <MarketplacesSection expandedMarketplaces={expandedMarketplaces} />}
+      {activeSegment === "marketplaces" && <MarketplacesSection onSelect={setSelectedMarketplace} />}
       <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
+      <MarketplaceSheet
+        name={selectedMarketplace}
+        onClose={() => setSelectedMarketplace(null)}
+        onRenamed={setSelectedMarketplace}
+        expandedMarketplaces={expandedMarketplaces}
+        setExpandedMarketplaces={setExpandedMarketplaces}
+      />
     </section>
   );
 }

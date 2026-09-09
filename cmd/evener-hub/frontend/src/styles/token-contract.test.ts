@@ -529,6 +529,13 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // hub-error text. Error text is the danger hue's canonical, ungateable job,
 // the same as railDialog.module.css's .pickerError and
 // delegateStatus.module.css's .dangerText above.
+// marketplace-sheet-editor task 4: panes/settings/sections/marketplacesPlugins/
+// marketplacesPlugins.module.css earns the same exception for the same
+// structural reason - it lives under panes/settings/sections/, not
+// widgets/<name>/, so it can never match WIDGET_STYLESHEET_RE either. Its one
+// semantic reach is --danger-ink on .sheetError, the MarketplaceSheet's inline
+// failed-save text. Error text is the danger hue's canonical, ungateable job,
+// the same as keybindings.module.css's .rowError above.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "shell/rail/RailRow.module.css",
   "shell/rail/railDialog.module.css",
@@ -541,6 +548,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/session/transcript/tools/sandboxescalation.module.css",
   "panes/session/transcript/tools/delegateStatus.module.css",
   "panes/settings/sections/keybindings.module.css",
+  "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {

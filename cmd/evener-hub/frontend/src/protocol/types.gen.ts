@@ -906,6 +906,12 @@ export interface MarketplaceCatalogPlugin {
   author?: string;
 }
 
+export interface MarketplaceEditParams {
+  name: string;
+  newName?: string;
+  source?: MarketplaceSourceInput;
+}
+
 export interface MarketplaceEntry {
   name: string;
   source: MarketplaceSourceInput;
@@ -2233,6 +2239,7 @@ export const METHOD_NAMES = [
   "evener/marketplace/add",
   "evener/marketplace/remove",
   "evener/marketplace/refresh",
+  "evener/marketplace/edit",
   "evener/marketplace/browse",
   "evener/plugin/list",
   "evener/plugin/install",
@@ -2420,6 +2427,7 @@ export interface MethodTypes {
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };
   "evener/marketplace/refresh": { params: MarketplaceNameParams; result: MarketplaceListResponse };
+  "evener/marketplace/edit": { params: MarketplaceEditParams; result: MarketplaceListResponse };
   "evener/marketplace/browse": { params: MarketplaceBrowseParams; result: MarketplaceBrowseResponse };
   "evener/plugin/list": { params: EmptyParams; result: PluginListResponse };
   "evener/plugin/install": { params: PluginRefParams; result: PluginListResponse };
