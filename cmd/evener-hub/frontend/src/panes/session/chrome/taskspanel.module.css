@@ -5,7 +5,7 @@
 }
 
 /* The body header repeats the trigger's aggregate so an open panel reads as
- * a whole: the same done/total the trigger badge shows, plus the meter. */
+ * a whole: the same done/total the trigger badge shows. */
 .bodyHead {
   display: flex;
   align-items: center;
