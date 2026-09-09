@@ -1,0 +1,68 @@
+{
+  "date": "2026-09-09",
+  "passed": true,
+  "boundary": "real registered hub auth handlers in an opt-in Go test binary; external OAuth device/code/token functions scripted; direct loopback AppWire",
+  "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "sourceHead": "60f27669600cc442948f2653c121f37005e75c9a",
+  "harnessSourceSha256": "0df7ea59689227a4f2b2d8f5a3235bd2ef96316d2dbeb1f7d32103863efa3529",
+  "installedSdkRoot": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client",
+  "installedSdkTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731",
+  "harnessBinarySha256": "a706c6064b5810bffa4effc277cc23535a518c5b6506aaabf4a4491c1bbd24c1",
+  "driverSha256": "a201cd2a710e06de00caacde08b396ca331bca36538b7106dae77f1853e77864",
+  "historicalOriginalDriverSha256": "61168ca40ee47ff935d7af9fb062abe7fb7bc568b8e72b663cccb2a1803e2def",
+  "command": "EVENER_NATIVE_AUTH_HARNESS=1 EVENER_NATIVE_AUTH_ADDR=127.0.0.1:18769 EVENER_NATIVE_AUTH_ORIGIN=http://127.0.0.1:18769 /private/tmp/evener-sdk-completion-ahdo59zq/native-auth-harness-current.test -test.run '^TestNativeAuthHarness$' -test.v; EVENER_NATIVE_AUTH_ORIGIN=http://127.0.0.1:18769 EVENER_OAUTH_SDK_DIR=/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client EVENER_OAUTH_WS_MODULE=/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/ws/index.js node /private/tmp/sdk-oauth-current-run-counter.mjs",
+  "exitCodes": {
+    "driver": 0,
+    "harness": 0
+  },
+  "checks": {
+    "devicePending": true,
+    "deviceAuthorized": true,
+    "expiry": true,
+    "faultRecovery": true,
+    "lostDeviceReply": true,
+    "browserCompletion": true,
+    "lostBrowserReply": true,
+    "crossProviderBinding": true
+  },
+  "requestCounts": {
+    "initialize": 6,
+    "evener/auth/logout": 6,
+    "evener/auth/status": 28,
+    "evener/auth/device/start": 5,
+    "evener/auth/device/poll": 6,
+    "evener/auth/login/start": 2,
+    "evener/auth/login/complete": 2
+  },
+  "credentialReadback": "authorized and fallback flows read back signedIn=true and hasStoredOAuth=true; cleanup readback logged out both instances; no raw token persisted in public evidence",
+  "credentialStatusBefore": "primary and secondary instances started signed out with no stored OAuth; every flow passed reviewed status into the SDK",
+  "credentialStatusAfter": "primary and secondary instances were logged out and read back signedIn=false during cleanup; held exchange flows read back stored OAuth before cleanup",
+  "providerBinding": "cross-provider poll rejected and secondary status remained unchanged",
+  "rawEvidence": {
+    "driverLogSha256": "790a4f9cf716f616226086c7d5c372f84fa98dd52f6e27281605dc1ca78c8be3",
+    "harnessLogSha256": "93f32af950937560da34e51ab9cad2296830f757565ead499d951c26e0266975",
+    "privateRoot": "/private/tmp/sdk-oauth-current-run.psNB8J",
+    "driverLogPath": "/private/tmp/sdk-oauth-current-run.psNB8J/driver.log",
+    "harnessLogPath": "/private/tmp/sdk-oauth-current-run.psNB8J/harness.log",
+    "counterDriverPath": "/private/tmp/sdk-oauth-current-run-counter.mjs",
+    "counterDriverSha256": "a201cd2a710e06de00caacde08b396ca331bca36538b7106dae77f1853e77864"
+  },
+  "cleanup": {
+    "fixtureStop": true,
+    "harnessExit": 0,
+    "listenerClosed": true
+  },
+  "qualification": "SDK and real registered handler plumbing qualified at test-binary boundary; real provider-account authentication, CLI middleware, native UI, and simulator behavior remain unverified",
+  "independentReview": {
+    "status": "accepted-bounded",
+    "reviewer": "Luna medium, sdk_current_evidence_review",
+    "coordinatorChecks": [
+      "Exact executed public/private driver bytes and SHA256 agree",
+      "Six source/binary/raw-log/counter SHA256 pairs verified",
+      "Harness and auth handler source exactly match d683abe21",
+      "Recorded OAuth listener 18769 absent after run"
+    ],
+    "scope": "Eight SDK/registered-handler scenarios only; excludes live provider account login, CLI middleware and native UI"
+  },
+  "handlerSourceSha256": "d0490b3d94b762a4a78961b87e1a6aaa9b8355b952a03d5df549a66b267fddbd"
+}

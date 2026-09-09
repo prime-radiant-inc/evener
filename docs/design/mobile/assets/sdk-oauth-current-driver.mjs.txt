@@ -1,0 +1,209 @@
+import assert from "node:assert/strict";
+
+const origin = process.env.EVENER_NATIVE_AUTH_ORIGIN;
+const sdkRoot = process.env.EVENER_OAUTH_SDK_DIR;
+const wsModule = process.env.EVENER_OAUTH_WS_MODULE;
+assert.ok(origin && sdkRoot && wsModule, "EVENER_NATIVE_AUTH_ORIGIN, EVENER_OAUTH_SDK_DIR, and EVENER_OAUTH_WS_MODULE are required.");
+
+const [{ AppwireClient }, { default: WebSocket }] = await Promise.all([
+  import(`${sdkRoot}/dist/index.js`),
+  import(wsModule),
+]);
+const { runOAuth } = await import(`${sdkRoot}/examples/oauth-logic.mjs`);
+
+const endpoint = new URL("/rpc", origin).toString().replace(/^http/, "ws");
+const mutationEnvironment = { EVENER_RPC_URL: endpoint, EVENER_OAUTH_MUTATION: "1" };
+const provider = process.env.EVENER_OAUTH_PROVIDER ?? "work";
+const secondaryProvider = process.env.EVENER_OAUTH_SECONDARY_PROVIDER ?? "work-secondary";
+const checks = {};
+const clients = new Set();
+const counts = new WeakMap();
+const totals = new Map();
+
+function client() {
+  const instance = new AppwireClient({
+    url: endpoint,
+    clientInfo: { name: "oauth-sdk-qualification", version: "1" },
+    socketFactory: (url) => new WebSocket(url),
+  });
+  const requests = new Map();
+  counts.set(instance, requests);
+  const request = instance.request.bind(instance);
+  instance.request = (method, ...args) => {
+    requests.set(method, (requests.get(method) ?? 0) + 1);
+    totals.set(method, (totals.get(method) ?? 0) + 1);
+    return request(method, ...args);
+  };
+  clients.add(instance);
+  return instance;
+}
+async function http(path, options = {}) {
+  const response = await fetch(new URL(path, origin), options);
+  assert.equal(response.ok, true, `fixture HTTP ${response.status}`);
+  return response;
+}
+async function json(path, options) { return responseJson(await http(path, options)); }
+async function responseJson(response) { return response.json(); }
+async function post(path) { return http(path, { method: "POST" }); }
+async function waitFor(check, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("qualification condition timed out");
+}
+function waitForNotification(promise, timeoutMs = 10_000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("auth update timed out")), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+async function status(hub, name) { return hub.request("evener/auth/status", { provider: name }); }
+function reviewed(value) { return structuredClone(value); }
+function options(action, params) { return { action, params, ownedHub: endpoint, environment: mutationEnvironment }; }
+async function logout(hub, name) {
+  await hub.request("evener/auth/logout", { provider: name });
+}
+function close(hub) { hub.close(); clients.delete(hub); }
+function authObserver(hub) {
+  let resolve;
+  const updated = new Promise((value) => { resolve = value; });
+  const stop = hub.onNotification((event) => {
+    if (event?.method === "evener/auth/updated" && event.params?.provider === provider && event.params?.activeSource === "oauth") resolve(event.params);
+  });
+  updated.catch(() => {});
+  return { updated, stop };
+}
+
+let primary;
+let secondary;
+let cleanupOK = true;
+let passed = false;
+try {
+  primary = client();
+  await primary.connect();
+  await post("/mode/device");
+  await logout(primary, provider);
+  const before = await status(primary, provider);
+  const start = await runOAuth(primary, options("device/start", { provider, reviewed: reviewed(before) }));
+  assert.equal(start.outcome, "started");
+  const pending = await runOAuth(primary, options("device/poll", { provider, flow: start }));
+  assert.equal(pending.outcome, "pending"); checks.devicePending = true;
+  await post(`/approve?code=${encodeURIComponent(start.userCode)}`);
+  await post("/mode/device");
+  const authorized = await runOAuth(primary, options("device/poll", { provider, flow: start }));
+  assert.equal(authorized.outcome, "authorized"); checks.deviceAuthorized = true;
+  assert.equal(authorized.acknowledged.signedIn, true);
+  assert.equal(authorized.readback.signedIn, true);
+  await logout(primary, provider);
+  const expiryStart = await runOAuth(primary, options("device/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  await post("/clock/expire");
+  const expired = await runOAuth(primary, options("device/poll", { provider, flow: expiryStart }));
+  assert.equal(expired.outcome, "expired"); checks.expiry = true;
+  const faultStart = await runOAuth(primary, options("device/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  await post(`/fault/poll?code=${encodeURIComponent(faultStart.userCode)}`);
+  const faulted = await runOAuth(primary, options("device/poll", { provider, flow: faultStart }));
+  assert.equal(faulted.outcome, "uncertain");
+  const faultStatus = await status(primary, provider);
+  assert.equal(faultStatus.signedIn, false);
+  assert.equal(faultStatus.hasStoredOAuth, false);
+  await post(`/fault/clear?code=${encodeURIComponent(faultStart.userCode)}`);
+  await post(`/approve?code=${encodeURIComponent(faultStart.userCode)}`);
+  const recovered = await runOAuth(primary, options("device/poll", { provider, flow: faultStart }));
+  assert.equal(recovered.outcome, "authorized"); checks.faultRecovery = true;
+
+  await logout(primary, provider);
+  assert.equal((await status(primary, provider)).signedIn, false);
+  const observer = client();
+  await observer.connect();
+  const observed = authObserver(observer);
+  const lostStart = await runOAuth(primary, options("device/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  await post(`/approve?code=${encodeURIComponent(lostStart.userCode)}`);
+  await post("/exchange/hold");
+  const lostClient = client();
+  const lostAttempt = runOAuth(lostClient, options("device/poll", { provider, flow: lostStart }));
+  let lostResult;
+  const lostSettled = lostAttempt.then((value) => { lostResult = { value }; }, (error) => { lostResult = { error }; });
+  await waitFor(async () => (await json("/exchange/status")).waiting === true);
+  close(lostClient);
+  await post("/exchange/release");
+  await waitForNotification(observed.updated);
+  const lostStatus = await status(observer, provider);
+  assert.equal(lostStatus.signedIn, true);
+  assert.equal(lostStatus.hasStoredOAuth, true);
+  await lostSettled;
+  assert.ok(lostResult.error instanceof AggregateError);
+  assert.equal(lostResult.error.errors.length, 2);
+  assert.equal(counts.get(lostClient).get("evener/auth/device/poll"), 1);
+  assert.equal(counts.get(lostClient).get("evener/auth/status"), 1);
+  checks.lostDeviceReply = true;
+  observed.stop?.();
+  close(observer);
+
+  await post("/mode/browser");
+  const browserStart = await runOAuth(primary, options("device/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  assert.equal(browserStart.outcome, "fallback");
+  const login = await runOAuth(primary, options("login/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  const browser = await (await http(new URL(login.url).pathname + new URL(login.url).search)).text();
+  const redirect = browser.match(/<textarea[^>]*>([^<]+)<\/textarea>/i)?.[1]?.replaceAll("&amp;", "&");
+  assert.ok(redirect, "browser fixture did not provide redirect textarea");
+  const completed = await runOAuth(primary, options("login/complete", { provider, flow: login, redirectUrl: redirect }));
+  assert.equal(completed.outcome, "authorized");
+  assert.equal(completed.acknowledged.signedIn, true);
+  assert.equal(completed.readback.signedIn, true);
+  checks.browserCompletion = true;
+  await logout(primary, provider);
+
+  const browserObserver = client();
+  await browserObserver.connect();
+  const browserObserved = authObserver(browserObserver);
+  const lostLogin = await runOAuth(primary, options("login/start", { provider, reviewed: reviewed(await status(primary, provider)) }));
+  const lostBrowserPage = await (await http(new URL(lostLogin.url).pathname + new URL(lostLogin.url).search)).text();
+  const lostRedirect = lostBrowserPage.match(/<textarea[^>]*>([^<]+)<\/textarea>/i)?.[1]?.replaceAll("&amp;", "&");
+  assert.ok(lostRedirect, "browser fixture did not provide lost-flow redirect textarea");
+  await post("/exchange/hold");
+  const lostBrowserClient = client();
+  const lostBrowserAttempt = runOAuth(lostBrowserClient, options("login/complete", { provider, flow: lostLogin, redirectUrl: lostRedirect }));
+  let lostBrowserResult;
+  const lostBrowserSettled = lostBrowserAttempt.then((value) => { lostBrowserResult = { value }; }, (error) => { lostBrowserResult = { error }; });
+  await waitFor(async () => (await json("/exchange/status")).waiting === true);
+  close(lostBrowserClient);
+  await post("/exchange/release");
+  await waitForNotification(browserObserved.updated);
+  const lostBrowserStatus = await status(browserObserver, provider);
+  assert.equal(lostBrowserStatus.signedIn, true);
+  assert.equal(lostBrowserStatus.hasStoredOAuth, true);
+  await lostBrowserSettled;
+  assert.ok(lostBrowserResult.error instanceof AggregateError);
+  assert.equal(lostBrowserResult.error.errors.length, 2);
+  assert.equal(counts.get(lostBrowserClient).get("evener/auth/login/complete"), 1);
+  assert.equal(counts.get(lostBrowserClient).get("evener/auth/status"), 1);
+  checks.lostBrowserReply = true;
+  browserObserved.stop?.();
+  close(browserObserver);
+
+  secondary = client();
+  await secondary.connect();
+  const secondaryBefore = await status(secondary, secondaryProvider);
+  await assert.rejects(runOAuth(primary, options("device/poll", { provider: secondaryProvider, flow: start })));
+  assert.deepEqual(await status(secondary, secondaryProvider), secondaryBefore); checks.crossProviderBinding = true;
+
+  passed = true;
+} catch {
+  process.exitCode = 1;
+  console.error("OAuth qualification failed; completed checks are recorded in the receipt.");
+} finally {
+  try { await post("/exchange/release"); } catch { cleanupOK = false; }
+  if (primary) {
+    try { await logout(primary, provider); assert.equal((await status(primary, provider)).signedIn, false); } catch { cleanupOK = false; }
+    try { await logout(primary, secondaryProvider); assert.equal((await status(primary, secondaryProvider)).signedIn, false); } catch { cleanupOK = false; }
+  }
+  if (secondary) {
+    try { close(secondary); } catch { cleanupOK = false; }
+  }
+  for (const hub of clients) close(hub);
+  if (!cleanupOK) process.exitCode = 1;
+  console.log(JSON.stringify({ passed, checks, cleanup: cleanupOK, requestCounts: Object.fromEntries(totals) }));
+}
