@@ -175,6 +175,7 @@ class FakeConversationService implements LiveConversationService {
     activity: ActivityView;
     olderCursor: string | null;
   } | null = null;
+  readProjectionBlock: Promise<ConversationReadProjection> | null = null;
   readProjectionCalls: { ref: string }[] = [];
   // refreshCapabilities support
   refreshCapsResult: ThreadCapabilities | null = null;
@@ -186,6 +187,7 @@ class FakeConversationService implements LiveConversationService {
   }
   async readProjection(ref: string): Promise<ConversationReadProjection> {
     this.readProjectionCalls.push({ ref });
+    if (this.readProjectionBlock) return this.readProjectionBlock;
     if (this.readProjectionResult) return this.readProjectionResult;
     return {
       conversation: this.openConv,
@@ -975,6 +977,206 @@ describe("ConversationStore", () => {
       // F4: The sink should have received the notification via applyLiveNotification.
       expect(sink.applyLiveNotificationCalls.length).toBeGreaterThan(0);
       expect(sink.applyLiveNotificationCalls[0]?.n).toBe(n);
+    });
+
+    it("suspends without clearing the displayed conversation and blocks mutations", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      const before = store.getState().conversation;
+      const oldHandler = service.notificationHandler;
+
+      store.getState().suspendProjected();
+      expect(store.getState().conversation).toBe(before);
+      expect(store.getState().status).toBe("opening");
+      await store.getState().send(service, textInput("blocked"));
+      expect(service.sendCallCount).toBe(0);
+
+      oldHandler?.({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation).toBe(before);
+    });
+
+    it("retains the display while resuming and installs a fresh subscribed read", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      const before = store.getState().conversation;
+      store.getState().suspendProjected();
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+
+      const resume = store.getState().resumeProjected(service, sink, "ref-1");
+      expect(store.getState().conversation).toBe(before);
+      expect(store.getState().status).toBe("opening");
+      expect(service.readProjectionCalls).toHaveLength(2);
+      await store.getState().send(service, textInput("blocked while resuming"));
+      expect(service.sendCallCount).toBe(0);
+      release({
+        conversation: before as MobileConversation,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-resumed",
+      });
+      await resume;
+      expect(store.getState().status).toBe("open");
+      expect(store.getState().conversation?.id).toBe(before?.id);
+      expect(store.getState().olderCursor).toBe("cursor-resumed");
+      expect(service.notificationHandler).not.toBeNull();
+    });
+
+    it("reopens instead of retaining a display for a different service identity", async () => {
+      const service = new FakeConversationService();
+      const otherService = new FakeConversationService();
+      otherService.openConv = makeConversation({ id: "thread-2" });
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.getState().suspendProjected();
+      await store
+        .getState()
+        .resumeProjected(otherService, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.id).toBe("thread-2");
+      expect(store.getState().status).toBe("open");
+    });
+
+    it("retains the suspended display when the fresh subscribed read fails", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const before = store.getState().conversation;
+      store.getState().suspendProjected();
+      service.readProjectionBlock = Promise.reject(new Error("resume failed"));
+
+      await store
+        .getState()
+        .resumeProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation).toBe(before);
+      expect(store.getState().status).toBe("error");
+      expect(store.getState().error).toBe("resume failed");
+      await store.getState().send(service, textInput("blocked"));
+      expect(service.sendCallCount).toBe(0);
+    });
+
+    it("preserves completed older-page history across a resumed latest read", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      const latest = makeConversation({
+        id: "thread-1",
+        instanceId: "instance-1",
+        items: [{ kind: "user", id: "new", text: "new" }],
+      });
+      service.readProjectionResult = {
+        conversation: latest,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-1",
+      };
+      service.olderItems = {
+        items: [{ kind: "user", id: "old", text: "old" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+      await store.getState().loadOlder(service);
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["old", "new"]);
+      store.getState().suspendProjected();
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+      const resume = store.getState().resumeProjected(service, sink, "ref-1");
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["old", "new"]);
+      release({
+        conversation: latest,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      });
+      await resume;
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["old", "new"]);
+      expect(store.getState().olderCursor).toBe("cursor-2");
+
+      await store.getState().rehydrate(service, sink);
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["old", "new"]);
+      expect(store.getState().olderCursor).toBe("cursor-2");
+
+      const replacement = makeConversation({
+        id: "thread-1",
+        instanceId: "instance-2",
+        items: [{ kind: "user", id: "replacement", text: "replacement" }],
+      });
+      service.readProjectionBlock = null;
+      service.readProjectionResult = {
+        conversation: replacement,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "fresh-cursor",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(
+        store.getState().conversation?.items.map((item) => item.id),
+      ).toEqual(["replacement"]);
+      expect(store.getState().olderCursor).toBe("fresh-cursor");
+    });
+
+    it("invalidates an open that is still awaiting its first projection", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+      const opening = store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      store.getState().suspendProjected();
+      release({
+        conversation: makeConversation(),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      });
+      await opening;
+      expect(store.getState().conversation).toBeNull();
+      expect(store.getState().status).toBe("opening");
     });
   });
 

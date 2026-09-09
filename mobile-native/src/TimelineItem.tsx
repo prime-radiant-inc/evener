@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { View } from "react-native";
+import { ActionSheetIOS, Alert, Platform, Pressable, View } from "react-native";
 import {
 	scopedDisclosureId,
 	toggleDisclosure,
@@ -66,28 +66,73 @@ export function TimelineItem({
 				</>
 			);
 			break;
-		case "user":
+		case "user": {
+			const preview = item.text.replace(/\s+/g, " ").trim().slice(0, 120);
+			const forkMessage = () => {
+				if (item.transcriptEntryIndex !== undefined)
+					fork?.(item.transcriptEntryIndex, item.text);
+			};
+			const showActions = () => {
+				if (Platform.OS === "ios") {
+					ActionSheetIOS.showActionSheetWithOptions(
+						{
+							title: preview ? `Message: ${preview}` : "Message actions",
+							options: ["Fork from here", "Cancel"],
+							cancelButtonIndex: 1,
+						},
+						(buttonIndex) => {
+							if (buttonIndex === 0) forkMessage();
+						},
+					);
+					return;
+				}
+				Alert.alert("Message actions", preview, [
+					{ text: "Fork from here", onPress: forkMessage },
+					{ text: "Cancel", style: "cancel" },
+				]);
+			};
 			content = (
-				<>
-					<Copy label={`You: ${item.text}`}>{item.text}</Copy>
+				<View
+					style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}
+				>
+					<View style={{ flex: 1, minWidth: 0 }}>
+						<Copy label={`You: ${item.text}`}>{item.text}</Copy>
+					</View>
 					{fork &&
 					item.transcriptEntryIndex !== undefined &&
 					Number.isSafeInteger(item.transcriptEntryIndex) &&
 					item.transcriptEntryIndex > 0 ? (
-						<Action
-							tone="quiet"
-							label={`Fork from message: ${item.text.slice(0, 80)}`}
-							onPress={() => {
-								if (item.transcriptEntryIndex !== undefined)
-									fork(item.transcriptEntryIndex, item.text);
-							}}
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={`Message actions for ${preview}`}
+							onPress={showActions}
+							style={({ pressed }) => ({
+								width: 44,
+								height: 44,
+								alignItems: "center",
+								justifyContent: "center",
+								opacity: pressed ? 0.65 : 1,
+							})}
 						>
-							Fork from here
-						</Action>
+							<View style={{ flexDirection: "row", gap: 3 }}>
+								{[0, 1, 2].map((dot) => (
+									<View
+										key={dot}
+										style={{
+											width: 4,
+											height: 4,
+											borderRadius: 2,
+											backgroundColor: colors.secondary,
+										}}
+									/>
+								))}
+							</View>
+						</Pressable>
 					) : null}
-				</>
+				</View>
 			);
 			break;
+		}
 		case "assistant":
 			content = (
 				<>

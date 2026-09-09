@@ -443,6 +443,12 @@ export interface LiveConversationState extends ConversationState {
     ref: string,
     replacement?: ConversationReadProjection,
   ): Promise<void>;
+  suspendProjected(): void;
+  resumeProjected(
+    service: LiveConversationService,
+    activitySink: LiveActivitySink,
+    ref: string,
+  ): Promise<void>;
   rehydrate(
     service: LiveConversationService,
     activitySink: LiveActivitySink,
@@ -767,6 +773,9 @@ export function createConversationStore() {
   // without holding its own service reference.
   let boundService: LiveConversationService | null = null;
   let boundSink: LiveActivitySink | null = null;
+  let suspendedService: LiveConversationService | null = null;
+  let acceptedRehydrate: { generation: number; sink: LiveActivitySink } | null =
+    null;
   // I1: Binding epoch — incremented on every openProjected/open/close/reset so
   // a request queued for an older binding (serviceA+refA) can never run after
   // the store switched to a newer binding (serviceB+refB). Every request
@@ -786,7 +795,8 @@ export function createConversationStore() {
   function captureBinding(): RequestBinding | null {
     if (boundService === null || boundSink === null) return null;
     const state = storeGet?.();
-    if (state === undefined || state.ref === null) return null;
+    if (state === undefined || state.ref === null || state.status !== "open")
+      return null;
     return {
       epoch: bindingEpoch,
       ref: state.ref,
@@ -810,7 +820,8 @@ export function createConversationStore() {
     // the boundary before any request.
     if ((service as LiveConversationService) !== boundService) return null;
     const state = storeGet?.();
-    if (state === undefined || state.ref === null) return null;
+    if (state === undefined || state.ref === null || state.status !== "open")
+      return null;
     return {
       epoch: bindingEpoch,
       ref: state.ref,
@@ -1126,6 +1137,7 @@ export function createConversationStore() {
       lastAcceptedMutation: null,
 
       async open(service, ref) {
+        suspendedService = null;
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
@@ -1195,6 +1207,7 @@ export function createConversationStore() {
       },
 
       async openProjected(service, sink, ref, replacement) {
+        suspendedService = null;
         const gen = ++conversationGen;
         // I1: increment the binding epoch and bind service+sink so queued
         // requests from an older binding are suppressed at the boundary.
@@ -1322,6 +1335,134 @@ export function createConversationStore() {
         }
       },
 
+      suspendProjected() {
+        const state = get();
+        if (state.ref === null) return;
+        suspendedService = boundService;
+        conversationGen += 1;
+        bindingEpoch += 1;
+        loadOlderToken += 1;
+        trailingReread = null;
+        boundService = null;
+        boundSink = null;
+        set({
+          status: "opening",
+          error: null,
+          pendingMutation: null,
+          pendingSend: null,
+          loadingOlder: false,
+          conversationGeneration: conversationGen,
+        });
+      },
+
+      async resumeProjected(service, sink, ref) {
+        const state = get();
+        if (
+          state.ref !== ref ||
+          state.conversation === null ||
+          suspendedService !== service
+        ) {
+          await get().openProjected(service, sink, ref);
+          return;
+        }
+        const gen = ++conversationGen;
+        bindingEpoch += 1;
+        loadOlderToken += 1;
+        trailingReread = null;
+        activitySink = sink;
+        boundService = service;
+        boundSink = sink;
+        set({
+          status: "opening",
+          error: null,
+          pendingMutation: null,
+          pendingSend: null,
+          loadingOlder: false,
+          conversationGeneration: gen,
+        });
+
+        let active = true;
+        let hydrated = false;
+        let needsSnapshot = false;
+        const buffered: AnyNotification[] = [];
+        const unsubscribe = service.subscribeNotifications((notification) => {
+          if (!active || gen !== conversationGen) return;
+          if (!hydrated) {
+            if (
+              notification.method === "evener/sandbox/escalation/requested" ||
+              notification.method === "evener/sandbox/escalation/resolved"
+            )
+              buffered.push(notification);
+            else {
+              const target = notificationRef(notification);
+              if (target && (target.ref === undefined || target.ref === ref))
+                needsSnapshot = true;
+            }
+            return;
+          }
+          const identity = get().conversation
+            ? {
+                threadId: get().conversation?.id ?? "",
+                ref,
+                generation: gen,
+              }
+            : null;
+          if (identity) {
+            const outcome = sink.applyLiveNotification(notification, identity);
+            if (outcome === "rehydrate") requestRehydrate(ref);
+          }
+          get().applyNotification(notification);
+        });
+        try {
+          await get().rehydrate(service, sink);
+          if (!active || gen !== conversationGen) return;
+          const current = get();
+          if (
+            current.error !== null ||
+            acceptedRehydrate === null ||
+            acceptedRehydrate.generation !== gen ||
+            acceptedRehydrate.sink !== sink
+          ) {
+            boundService = null;
+            boundSink = null;
+            suspendedService = service;
+            set({
+              status: "error",
+              error:
+                current.error ?? "Could not refresh the session. Try again.",
+            });
+            return;
+          }
+          suspendedService = null;
+          set({ status: "open" });
+          hydrated = true;
+          const conversation = get().conversation;
+          if (conversation) {
+            const identity = {
+              threadId: conversation.id,
+              ref,
+              generation: gen,
+            };
+            for (const notification of buffered) {
+              const outcome = sink.applyLiveNotification(
+                notification,
+                identity,
+              );
+              if (outcome === "rehydrate") requestRehydrate(ref);
+              get().applyNotification(notification);
+            }
+          }
+          buffered.length = 0;
+          if (needsSnapshot) requestRehydrate(ref);
+        } finally {
+          if (gen !== conversationGen || get().status === "error") {
+            active = false;
+            buffered.length = 0;
+            if (gen === conversationGen) unsubscribe();
+          }
+        }
+      },
+
       async rehydrate(service, sink) {
         // Rehydrate uses readProjection to refresh the conversation without
         // calling destructive open(). Preserves draft.
@@ -1345,6 +1486,7 @@ export function createConversationStore() {
         // items/cursor while committing the reread conversation+activity.
         const state = get();
         if (state.ref === null) return;
+        acceptedRehydrate = null;
         const ref = state.ref;
         const gen = state.conversationGeneration;
         // I1: If the service or sink objects differ from the current binding,
@@ -1426,7 +1568,6 @@ export function createConversationStore() {
             return;
           }
           const currentSnapshot = get();
-          const pageOwnerChanged = entryLoadOlderToken !== loadOlderToken;
           const mutationOwnerChanged = entryMutationRev !== mutationOwnerRev;
           // R1: If mutation owner changed, do not publish predating projection.
           // Arrange one bounded trailing authoritative reread via the scheduler
@@ -1445,8 +1586,9 @@ export function createConversationStore() {
             set({ draft: currentSnapshot.draft });
             return;
           }
-          // R2: If page owner changed, safely merge: preserve newer page-owned
-          // items/cursor while committing the reread conversation+activity.
+          // R2: If the same conversation instance has page-owned history,
+          // preserve that history/cursor while committing the reread
+          // conversation+activity. A replaced instance must start clean.
           // Merge page items (from current conversation) into the reread's
           // conversation items, deduping by source item identity, and keep
           // the page's newer cursor.
@@ -1461,6 +1603,9 @@ export function createConversationStore() {
           const rereadIds = new Set(conversation.items.map((i) => i.id));
           const rereadKeys = new Set(conversation.items.map(timelineIdentity));
           const currentConvForMerge = currentSnapshot.conversation;
+          const preservePageHistory =
+            currentConvForMerge?.instanceId === conversation.instanceId &&
+            (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
@@ -1504,7 +1649,7 @@ export function createConversationStore() {
             ];
           });
           let mergedCursor = olderCursor;
-          if (pageOwnerChanged) {
+          if (preservePageHistory) {
             if (currentConvForMerge !== null) {
               // 1. Prepend only current-only pageOwned history (items in
               //    pageOwnedIds that are not in the reread projection).
@@ -1571,6 +1716,7 @@ export function createConversationStore() {
           // conversation projection. If it returns false, do not commit.
           const accepted = sink.setLiveView(activity, identity);
           if (!accepted) return;
+          acceptedRehydrate = { generation: gen, sink };
           // R1: Success preserves any newer error owner. Only clear error if
           // the error-owner revision hasn't changed AND no failed mutation
           // owns the error. A failed mutation's error persists until a
@@ -2185,6 +2331,7 @@ export function createConversationStore() {
       },
 
       close() {
+        suspendedService = null;
         // Increment generation so late frames from the closed conversation
         // cannot repopulate the store.
         ++conversationGen;
@@ -2721,6 +2868,7 @@ export function createConversationStore() {
       },
 
       reset() {
+        suspendedService = null;
         // Invalidate the current conversation generation so late frames are
         // rejected, then return to idle.
         ++conversationGen;
