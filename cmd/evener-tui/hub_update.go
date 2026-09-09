@@ -266,17 +266,25 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// must be cleared before a re-arm can issue. The deferred
 			// reconcile from a stale recovery dropped while this read was
 			// pending is also settled here (roborev PR #1044 round-16
+			// medium 1). When the reconcile issues, the recovery path owns
+			// the re-arm: a batched subscribeNewChildren would race the
+			// replacing read, which can cull the child subscriptions after
+			// they were created (round-12 race reintroduced; round-17
 			// medium 1).
 			if msg.liveNavSeq > 0 {
 				m.watchedChildRefs = nil
-				reenableChildren := m.subscribeNewChildren()
 				if m.liveNavNeedsReconcile {
 					m.liveNavNeedsReconcile = false
 					retried, reconcile := m.reestablishDisplayedSubscription()
 					retried.liveNavNeedsReconcile = false
-					return retried, tea.Batch(reenableChildren, reconcile)
+					// preCut rides along: the notifications' follow-up reads
+					// (thread resyncs, status refreshes) are non-subscribing,
+					// so they cannot race the reconcile's replacement
+					// (roborev PR #1044 round-17 medium 2).
+					return retried, tea.Batch(append(preCut, reconcile)...)
 				}
-				return m, reenableChildren
+				reenableChildren := m.subscribeNewChildren()
+				return m, tea.Batch(append(preCut, reenableChildren)...)
 			}
 			return m, tea.Batch(preCut...)
 		}
@@ -329,19 +337,22 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Subscribe to any already-running subagent children so the rail shows
 		// their live activity on session entry, not just for new spawns.
 		subscribeChildren := m.subscribeNewChildren()
-		preCut = append(preCut, subscribeChildren)
 		// The settle point of a live-nav navigation: a stale recovery dropped
 		// while this read was pending may have left the server-side
 		// subscription on the older session (its replacement can land after
 		// the newer read's). Issue the deferred tagged reconcile now that the
 		// navigation settled and the pending state cleared (roborev PR
-		// #1044 round-15 medium 1).
+		// #1044 round-15 medium 1). When the reconcile issues, the recovery
+		// path owns the re-arm: a batched subscribeNewChildren would race the
+		// replacing read, which can cull the child subscriptions after they
+		// were created (round-17 medium 1).
 		if m.liveNavNeedsReconcile {
 			m.liveNavNeedsReconcile = false
 			retried, reconcile := m.reestablishDisplayedSubscription()
 			retried.liveNavNeedsReconcile = false
 			return retried, tea.Batch(append(preCut, reconcile)...)
 		}
+		preCut = append(preCut, subscribeChildren)
 		return m, tea.Batch(preCut...)
 	case hubNotificationMsg:
 		if !msg.ok {

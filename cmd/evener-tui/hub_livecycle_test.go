@@ -1023,6 +1023,163 @@ func TestHubSessionLiveCycleSameRefSettleProcessesReconcileFlag(t *testing.T) {
 	}
 }
 
+// Round 17, medium 1: at the settle points, the deferred reconcile's
+// replacing read was tea.Batch'd CONCURRENTLY with the child re-arm - the
+// round-12 race reintroduced: the replacing read can cull the child
+// subscriptions after they were created. When a reconcile issues, the
+// recovery path must own the re-arm: no child read until the reconcile
+// response applies, then the child read issues (roborev PR #1044 round-17
+// medium 1).
+func TestHubSessionLiveCycleSettleSequencesChildrenAfterReconcile(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01A", liveCycleTree())
+	defer cleanup()
+	// The displayed session's read carries a running child.
+	reads.threadByRef = map[string]appwire.Thread{"local:01A": threadWithRunningChild("local:01A")}
+
+	// A recovery read is issued (draft drop), then the user wraps back to A.
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01B
+	m1.session.input.SetValue("typed while the read was in flight")
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+
+	// Wrap: clear draft, press next (pending 01B), then previous (pending
+	// 01A).
+	m2.session.input.SetValue("")
+	m3, _ := m2.switchToAdjacentLiveSession(1)
+	m4, newer2 := m3.switchToAdjacentLiveSession(-1) // pending: 01A
+
+	// The stale recovery response drops while the newest read is pending:
+	// sets the deferred reconcile flag.
+	updated3, _ := m4.Update(sessionMsg)
+	m5 := updated3.(hubModel)
+	if !m5.liveNavNeedsReconcile {
+		t.Fatal("stale recovery drop while pending did not set the deferred reconcile flag")
+	}
+
+	// The newest read's response lands on the same-ref branch: the settle
+	// issues the reconcile. The child read must NOT issue concurrently with
+	// the reconcile read.
+	newer2Msg := newer2().(hubSessionMsg)
+	updated4, settle := m5.Update(newer2Msg)
+	m6 := updated4.(hubModel)
+	if settle == nil {
+		t.Fatal("settle returned no command: the deferred reconcile was not processed")
+	}
+	readsBefore := len(reads.get())
+	// Run the settle's command ONCE: the reconcile read issues, but no
+	// child read may ride along.
+	settleMsg := settle()
+	var reconcileMsg hubSessionMsg
+	switch m := settleMsg.(type) {
+	case hubSessionMsg:
+		reconcileMsg = m
+	case tea.BatchMsg:
+		for _, child := range m {
+			msg := child()
+			if sessionMsg, ok := msg.(hubSessionMsg); ok {
+				reconcileMsg = sessionMsg
+			}
+		}
+	}
+	for _, ref := range reads.get()[readsBefore:] {
+		if ref == "local:01CHILD" {
+			t.Fatal("child subscription issued concurrently with the reconcile read: the replacing read can cull it (round-12 race)")
+		}
+	}
+
+	// Deliver the reconcile response: NOW the child re-arm issues, after
+	// the replacement completed.
+	updated5, childCmd := m6.Update(reconcileMsg)
+	m7 := updated5.(hubModel)
+	if m7.detail.Ref != "local:01A" {
+		t.Fatalf("reconcile switched sessions: viewed ref = %q, want local:01A", m7.detail.Ref)
+	}
+	if childCmd == nil {
+		t.Fatal("reconcile response returned no command: the child re-arm was not sequenced after the replacement")
+	}
+	if batch, isBatch := childCmd().(tea.BatchMsg); isBatch {
+		for _, child := range batch {
+			_ = child()
+		}
+	}
+	found := false
+	for _, ref := range reads.get() {
+		if ref == "local:01CHILD" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("child subscription never re-armed: reads = %v", reads.get())
+	}
+}
+
+// Round 17, medium 2: the same-ref early return omitted the collected
+// preCut commands - notifications delivered ahead of the response were
+// applied to model state, but their follow-up reads (e.g. a status-change
+// notification's state refresh) were discarded, leaving stale session state.
+// The same-ref return path must include preCut (roborev PR #1044 round-17
+// medium 2).
+func TestHubSessionLiveCycleSameRefSettleKeepsPreCut(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01A", liveCycleTree())
+	defer cleanup()
+
+	// Wrap: press next (pending 01B), then previous (pending 01A) while the
+	// first read is in flight.
+	m1, _ := m.switchToAdjacentLiveSession(1)
+	m2, newer2 := m1.switchToAdjacentLiveSession(-1) // pending: 01A
+
+	// A status-change notification rides the newest read's beforeCut: it
+	// updates the state and requires a follow-up state refresh read.
+	newer2Msg := newer2().(hubSessionMsg)
+	statusParams, err := json.Marshal(appwire.ThreadStatusChangedParams{
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer2Msg.beforeCut = []appwire.Notification{{
+		Method: appwire.NotifyThreadStatusChanged,
+		Params: statusParams,
+	}}
+	// The notification must match the displayed session to be processed.
+	newer2Msg.ref = "local:01A"
+
+	updated, settle := m2.Update(newer2Msg)
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01A" {
+		t.Fatalf("wrap did not stay on A: viewed ref = %q, want local:01A", m3.detail.Ref)
+	}
+	// The follow-up state refresh read must issue from the settle's
+	// commands. Run the settle and look for the expected-state read.
+	if settle == nil {
+		t.Fatal("settle returned no commands at all")
+	}
+	var sawRefresh bool
+	run := func(msg tea.Msg) {
+		if sessionMsg, ok := msg.(hubSessionMsg); ok && sessionMsg.expectedState != "" {
+			sawRefresh = true
+		}
+		if sessionMsg, ok := msg.(hubSessionMsg); ok && sessionMsg.capture != nil {
+			sessionMsg.capture.Release()
+		}
+	}
+	switch v := settle().(type) {
+	case tea.BatchMsg:
+		for _, child := range v {
+			run(child())
+		}
+	default:
+		run(v)
+	}
+	if !sawRefresh {
+		t.Fatal("same-ref settle dropped the preCut follow-up reads: the status-change notification's state refresh never issued")
+	}
+}
+
 // A pending live-nav target must not survive a dashboard round-trip: the
 // mode-exit drop (ctrl+o while the read is in flight) returns without
 // clearing it, and nothing on re-entry clears it either, so the next press
