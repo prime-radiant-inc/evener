@@ -1,5 +1,7 @@
 # AppWire protocol coverage inventory
 
+**9 September v5 baseline:** main `48dcab480` expands the catalog to 96 methods and 37 notifications. The dated v4 recipe/producer counts below remain historical evidence. The new `evener/settings/agentsDoc/changed` producer and the expanded method outcomes require current qualification; see the [v5 integration record](2026-09-09-appwire-v5-rebase.md) and [method outcome index](sdk-outcome-matrix.md).
+
 For the current native implementation and release position, see the [project status](status.md)
 and [acceptance ledger](acceptance.md). This inventory records protocol and SDK
 evidence; it is not itself a release gate.

@@ -1,5 +1,7 @@
 # Native mobile acceptance ledger
 
+**9 September v5 baseline:** main `48dcab480` expands the catalog to 96 methods and 37 notifications. The dated v4 recipe/producer counts below remain historical evidence. The new `evener/settings/agentsDoc/changed` producer and the expanded method outcomes require current qualification; see the [v5 integration record](2026-09-09-appwire-v5-rebase.md) and [method outcome index](sdk-outcome-matrix.md).
+
 This is the current, source-backed acceptance ledger for the native Evener
 client. It is deliberately separate from historical implementation notes in
 the coverage spec and backlog. A source or deterministic test proves that a
