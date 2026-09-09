@@ -252,13 +252,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "i", "q":
 			m.exitSessionBrowse()
-		// Unmodified arrows scroll and select in browse; the alt+shift pair
-		// is not browse input, so live-session cycling stays live here
-		// (roborev PR #1044 round-4 low).
-		case "alt+shift+right":
-			return m.switchToAdjacentLiveSession(1)
-		case "alt+shift+left":
-			return m.switchToAdjacentLiveSession(-1)
+		// The alt+shift live-session chords are dispatched in the early
+		// global switch above, before any view or mode early return - so
+		// they stay live in browse and scroll modes (roborev PR #1044
+		// round-4 low) without a per-mode case here.
 		case "up", "down", "left", "right":
 			return m.updateSessionBrowseComposerKey(msg)
 		case "k":
@@ -354,10 +351,8 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "alt+shift+right":
-		return m.switchToAdjacentLiveSession(1)
-	case "alt+shift+left":
-		return m.switchToAdjacentLiveSession(-1)
+	// The alt+shift live-session chords live in the early global switch
+	// above; reaching this switch means they already had their chance.
 	case "ctrl+c":
 		now := time.Now()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {

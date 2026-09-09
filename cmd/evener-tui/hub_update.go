@@ -97,7 +97,19 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// round-12 medium 2).
 			if msg.liveNavRecovery {
 				if msg.liveNavSeq != m.liveNavSeq || m.detail.Ref != msg.ref {
-					return m, nil
+					// A stale recovery response's ThreadRead still replaced
+					// the server-side subscription, and concurrent RPCs have
+					// no ordering guarantee: it can have landed AFTER the
+					// newer navigation's read, leaving the subscription on
+					// the older session. When no newer read is in flight,
+					// reconcile by re-establishing the DISPLAYED session's
+					// subscription - through the tagged helper, so this
+					// reconcile cannot itself hijack (roborev PR #1044
+					// round-14 medium 1).
+					if m.liveNavPendingRef != "" {
+						return m, nil
+					}
+					return m.reestablishDisplayedSubscription()
 				}
 				if msg.err != nil {
 					// A failed recovery read left the connection's

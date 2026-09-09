@@ -643,6 +643,111 @@ func TestHubSessionLiveCycleRecoveryReadDoesNotHijackNavigation(t *testing.T) {
 	}
 }
 
+// Round 14, low 1: the early alt+shift dispatch runs before the forkDraft
+// handling. A user who deletes the prefilled fork text leaves the composer
+// empty, so the draft guard passes and a chord switches sessions - the
+// session-entry path then clears forkDraft, silently discarding the active
+// fork target and original text. A non-nil forkDraft is a hold state for the
+// live-nav chords, like a draft (roborev PR #1044 round-14 low 1).
+func TestHubSessionLiveCycleChordHoldsWithForkDraft(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	forkRef, err := appwire.ParseRef("local:01B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.forkDraft = &hubForkDraft{
+		Ref:          forkRef,
+		EntryIndex:   3,
+		OriginalText: "fork target message",
+		Label:        "original before fork",
+	}
+
+	_, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cmd != nil {
+		t.Fatal("expected no live-nav command while a fork draft is active")
+	}
+	if got := reads.get(); len(got) != 0 {
+		t.Fatalf("issued thread/read %v with a fork draft present", got)
+	}
+	updated := m
+	if updated.forkDraft == nil {
+		t.Fatal("chord handling cleared the fork draft")
+	}
+}
+
+// Round 14, medium 1: a stale-dropped recovery response's ThreadRead still
+// replaced the server-side subscription, and concurrent RPCs have no
+// ordering guarantee - the read can complete after the newer navigation's,
+// leaving the subscription on the OLDER session while the UI shows the new
+// one. Dropping the stale response must also reconcile: when no newer read
+// is in flight, re-establish the displayed session's subscription (roborev
+// PR #1044 round-14 medium 1).
+func TestHubSessionLiveCycleStaleRecoveryDropReEstablishesSubscription(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+
+	// The user clears the draft and navigates away while the recovery read
+	// is in flight; the newer press's response APPLIES (UI on 01C).
+	m2.session.input.SetValue("")
+	m3, newer := m2.switchToAdjacentLiveSession(1) // from 01B, pending: 01C
+	if newer == nil {
+		t.Fatal("expected a newer live-nav command")
+	}
+	newerMsg := newer().(hubSessionMsg)
+	updatedNewer, _ := m3.Update(newerMsg)
+	mApplied := updatedNewer.(hubModel)
+	if mApplied.detail.Ref != "local:01C" {
+		t.Fatalf("newer navigation did not apply: viewed ref = %q, want local:01C", mApplied.detail.Ref)
+	}
+
+	// The stale recovery response lands: dropped for the transcript, but its
+	// server-side replacement may have landed AFTER the newer read's - the
+	// subscription can be on the older session. The drop must reconcile by
+	// re-establishing the DISPLAYED session's subscription.
+	updated3, reconcile := mApplied.Update(sessionMsg)
+	m4 := updated3.(hubModel)
+	if m4.detail.Ref != "local:01C" {
+		t.Fatalf("stale recovery response hijacked navigation: viewed ref = %q, want local:01C", m4.detail.Ref)
+	}
+	if reconcile == nil {
+		t.Fatal("stale recovery drop returned no command: the displayed session's subscription was not reconciled")
+	}
+	// The reconcile read targets the displayed session and carries the
+	// recovery tag (so IT cannot hijack in turn).
+	reconcileMsg, ok := reconcile().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("reconcile command result = %T, want hubSessionMsg", reconcile())
+	}
+	if reconcileMsg.ref != "local:01C" {
+		t.Fatalf("reconcile read ref = %q, want local:01C", reconcileMsg.ref)
+	}
+	if !reconcileMsg.liveNavRecovery {
+		t.Fatal("reconcile read is not tagged as a recovery read")
+	}
+	if reconcileMsg.capture != nil {
+		reconcileMsg.capture.Release()
+	}
+	got := reads.get()
+	if got[len(got)-1] != "local:01C" {
+		t.Fatalf("last read = %v, want the reconcile read for local:01C", got)
+	}
+}
+
 // A pending live-nav target must not survive a dashboard round-trip: the
 // mode-exit drop (ctrl+o while the read is in flight) returns without
 // clearing it, and nothing on re-entry clears it either, so the next press

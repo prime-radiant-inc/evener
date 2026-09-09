@@ -71,6 +71,14 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 		m.addSessionSystem("Draft kept. Send or clear it before switching live sessions.")
 		return m, nil
 	}
+	// An active fork draft is the same class of hold even with the prefilled
+	// text deleted: the switch replaces m.session and the entry path clears
+	// forkDraft, silently discarding the fork target and original text
+	// (roborev PR #1044 round-14 low 1).
+	if m.forkDraft != nil {
+		m.addSessionSystem("Fork draft kept. Enter to fork, or esc to cancel it before switching live sessions.")
+		return m, nil
+	}
 	base := m.detail.Ref
 	if m.liveNavPendingRef != "" {
 		base = m.liveNavPendingRef
