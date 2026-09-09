@@ -218,6 +218,24 @@ func (s *Session) resumeNotesHumanSetDelivery(lease *clientMutationLease, outerI
 	// store order either (G1).
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	// Re-check the pending markers under the lock: the generation>1 check in
+	// completeNotesHumanSet ran BEFORE this lock, so a fresh-ID save may have
+	// delivered this same value (last-writer-wins) and cleared the markers in
+	// between. When neither marker still names this value, delivery already
+	// happened — journal success without steering or emitting again, so the
+	// agent wakes exactly once for the text.
+	stillPending := false
+	if pending, changed, ok := s.pendingNotesHumanIntent(outerID); ok && changed && pending == stored {
+		stillPending = true
+	}
+	if !stillPending {
+		if journaled, ok := s.notesDeliveryPending(outerID); ok && journaled == stored {
+			stillPending = true
+		}
+	}
+	if !stillPending {
+		return s.applyNotesHumanSetResult(lease, outerID, stored)
+	}
 	human, agentNote := s.notesSnapshot()
 	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
 	return s.deliverNotesHumanSetSteer(lease, outerID, stored)
