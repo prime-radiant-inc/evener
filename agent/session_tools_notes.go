@@ -48,7 +48,10 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			deps.notesGuard.save()
 			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(deps.notesGuard.SnapshotURLs()))
 			return tool.StateResult{
-				Output: "URL added: " + entry.URL,
+				// The model never sees the State side-channel (only Output
+				// reaches it), yet urls_remove requires the entry id — so the
+				// id rides the human-readable output beside the URL/label.
+				Output: "URL added: " + formatNotesLinkLine(entry),
 				State:  entry,
 			}, nil
 		},

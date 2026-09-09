@@ -443,6 +443,31 @@ func clientMutationInput(text string, images []ImageAttachment) []appwire.InputI
 	return input
 }
 
+// setSteeringKindOnRecord stamps kind onto the durable journal record for
+// clientMutationID. Unlike the reflected in-memory steeringQueue entry (which
+// dies with the process), the journal record survives a restart, so durable
+// reconstruction (clientSteeringFromSnapshot) can restore the kind onto the
+// rebuilt entry. The record must already exist (the steer was accepted); a
+// missing record is a no-op. The write runs inside the store serializer via
+// mutate, so it cannot interleave with a concurrent drain's claim of the
+// same steer.
+func (s *Session) setSteeringKindOnRecord(clientMutationID, kind string) {
+	if s.clientMutations == nil || strings.TrimSpace(clientMutationID) == "" {
+		return
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[clientMutationID]
+		if !ok {
+			return nil
+		}
+		record.SteeringKind = kind
+		snapshot.Journal[clientMutationID] = record
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist steering kind failed: %v", err)})
+	}
+}
+
 func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 	input, err := appwire.NormalizeMutationInput(params.Input)
 	if err != nil {
@@ -1057,9 +1082,14 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		}
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		client = append(client, steeringMessage{
-			Text:             queued.Text,
-			Images:           queued.Images,
-			Source:           events.SteeringSourceUser,
+			Text:   queued.Text,
+			Images: queued.Images,
+			Source: events.SteeringSourceUser,
+			// The kind survives the restart because it rode the durable
+			// journal record (see SteeringKind on clientMutationRecord),
+			// not the reflected in-memory entry. Plain user steering
+			// carries no stamp and keeps its empty kind.
+			Kind:             snapshot.Journal[id].SteeringKind,
 			ClientMutationID: id,
 			StableTurnID:     pending.TurnID,
 		})

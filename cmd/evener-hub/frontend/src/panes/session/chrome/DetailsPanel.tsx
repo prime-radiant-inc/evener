@@ -195,36 +195,43 @@ function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: 
     <section className={CLASS.section} data-testid="shared-notes-section">
       <h3 className={CLASS.sectionTitle}>Shared notes</h3>
       <dl className={CLASS.list}>
-        {model.humanNote !== "" || (live && !hasContent) ? (
+        {/* The human row renders for every live session with the capability,
+            independent of existing content: otherwise the first human note
+            could never be created once an agent note or URL existed (the
+            trigger disappeared with hasContent), and the Add trigger set
+            popoverOpen with no mounted editor to open. */}
+        {model.humanNote !== "" || live ? (
           <DetailRow label="human note" testId="shared-notes-human">
-            {model.humanNote !== "" ? (
-              <span>{model.humanNote}</span>
-            ) : (
-              // Live-but-empty: the explicit affordance. The trigger seeds
-              // the draft via the popover-open effect above.
-              <Button
-                variant="quiet"
-                size="sm"
-                onClick={() => setPopoverOpen(true)}
-                data-testid="shared-notes-add-note"
-              >
-                Add a note
-              </Button>
-            )}
-            {live && model.humanNote !== "" && (
+            {model.humanNote !== "" ? <span>{model.humanNote}</span> : null}
+            {live && (
               <Popover
                 open={popoverOpen}
                 onClose={() => setPopoverOpen(false)}
                 data-testid="shared-notes-editor"
                 trigger={
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    onClick={() => setPopoverOpen((v) => !v)}
-                    data-testid="shared-notes-edit"
-                  >
-                    Edit
-                  </Button>
+                  model.humanNote !== "" ? (
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      onClick={() => setPopoverOpen((v) => !v)}
+                      data-testid="shared-notes-edit"
+                    >
+                      Edit
+                    </Button>
+                  ) : (
+                    // Live but no human note yet (a fresh session, or only
+                    // agent content so far): the first-note affordance. The
+                    // trigger seeds the draft via the popover-open effect
+                    // above.
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      onClick={() => setPopoverOpen((v) => !v)}
+                      data-testid="shared-notes-add-note"
+                    >
+                      Add a note
+                    </Button>
+                  )
                 }
               >
                 <Textarea

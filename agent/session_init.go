@@ -1005,6 +1005,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.humanNote = meta.HumanNote
 	s.agentNote = meta.AgentNote
 	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
+	// Seed the notes-projection record from the restored history so the
+	// change-gated projection (maybeAppendNotesContext) does not re-emit a
+	// snapshot the model already saw: the last NOTES_CONTEXT turn in the
+	// resumed history is the model's latest truth. Any NOTES_CONTEXT turn at
+	// all marks the store as having been projected (the transition-to-empty
+	// rule), even when the current store is empty — in that case the next
+	// projection after new content still emits, and a still-empty store
+	// stays silent.
+	s.seedNotesProjectionLocked(resumeHistory)
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read

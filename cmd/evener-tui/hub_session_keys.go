@@ -499,7 +499,7 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 		m.addSessionSystem("Unknown command: /" + cmd + ". Type /help for available commands.")
 		return nil
 	}
-	available, reason := hubCommandAvailable(definition, hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities})
+	available, reason := hubCommandAvailable(definition, hubCommandContext{mode: hubModeSession, caps: m.detail.Capabilities, live: m.detail.Live})
 	if !available {
 		m.addActionUnavailableNotice(definition.UnavailableAction, definition.UnavailableSummary, reason)
 		return nil

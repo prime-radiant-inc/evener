@@ -20,6 +20,12 @@ const (
 type hubCommandContext struct {
 	mode hubMode
 	caps hubSessionCapabilities
+	// live reports whether the current session is live. Mutating commands
+	// (notes, url-remove) require it alongside their capability: the
+	// SharedNotes capability bit is retained on ended sessions for read
+	// rendering, so capability alone would fire resume-first writes on
+	// read-only past sessions.
+	live bool
 }
 
 type hubCommandDefinition struct {
@@ -198,7 +204,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:             hubCommandSession,
 		UnavailableAction:  "edit note",
 		UnavailableSummary: "Note editing is not available for this session.",
-		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.SharedNotes }, "source does not advertise shared notes"),
+		Available:          sharedNotesLiveAvailable,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return m.runHubNotes(args)
 		},
@@ -211,7 +217,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:             hubCommandSession,
 		UnavailableAction:  "remove URL",
 		UnavailableSummary: "URL removal is not available for this session.",
-		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.SharedNotes }, "source does not advertise shared notes"),
+		Available:          sharedNotesLiveAvailable,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			return m.runHubURLRemove(args)
 		},
@@ -545,6 +551,25 @@ var hubCommandRegistry = []hubCommandDefinition{
 	},
 }
 
+// sharedNotesLiveAvailable gates the mutating shared-notes commands on both
+// the SharedNotes capability and session liveness. The capability bit is
+// deliberately retained on ended sessions so the drawer keeps rendering the
+// section read-only (hubDetailFromThread); gating availability on capability
+// alone would advertise /notes and /url-remove on read-only past sessions,
+// where dispatch would fire resume-first writes. Liveness mirrors how the
+// other mutating commands gate: hubDetailFromThread zeroes their capability
+// bits for non-live sessions, and SharedNotes keeps its bit for reads, so
+// the live check lives here instead.
+func sharedNotesLiveAvailable(ctx hubCommandContext) (bool, string) {
+	if !ctx.caps.SharedNotes {
+		return false, "source does not advertise shared notes"
+	}
+	if !ctx.live {
+		return false, "session is not live"
+	}
+	return true, ""
+}
+
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {
 	return func(ctx hubCommandContext) (bool, string) {
 		if check(ctx.caps) {
@@ -606,7 +631,7 @@ func hubCommandAvailable(command hubCommandDefinition, ctx hubCommandContext) (b
 
 func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args string) tea.Cmd {
 	if command.Name == "help" {
-		m.addSessionSystem(hubSlashCommandHelp(m.detail.Capabilities))
+		m.addSessionSystem(hubSlashCommandHelpLive(m.detail.Capabilities, m.detail.Live))
 		return nil
 	}
 	if command.Run == nil {
@@ -616,7 +641,11 @@ func runHubCommandDefinition(m *hubModel, command hubCommandDefinition, args str
 }
 
 func hubCommandHelp(caps hubSessionCapabilities) string {
-	ctx := hubCommandContext{mode: hubModeSession, caps: caps}
+	return hubCommandHelpLive(caps, true)
+}
+
+func hubCommandHelpLive(caps hubSessionCapabilities, live bool) string {
+	ctx := hubCommandContext{mode: hubModeSession, caps: caps, live: live}
 	lines := []string{"Available commands:"}
 	for _, command := range hubCommandsForScope(hubCommandSession) {
 		available, _ := hubCommandAvailable(command, ctx)

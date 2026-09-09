@@ -117,13 +117,33 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 		lookup.Lease.Release()
 		return stored, fmt.Errorf("notes/human/set: inject human-note steer: %w", err)
 	}
-	// The human-note injection carries its steering kind on the queued entry
-	// itself: AcceptClientMutationSteer only transports text, so the durable
-	// steering entry is annotated after acceptance. The kind labels the
-	// rendered steering divider (events.SteeringKindHumanNote) instead of a
-	// reader guessing it from the text's prose.
+	// The human-note injection carries its steering kind on the durable
+	// inner-steer journal record (see setSteeringKindOnRecord) so durable
+	// reconstruction restores it, and on the reflected in-memory entry for
+	// the live path. The kind labels the rendered steering divider
+	// (events.SteeringKindHumanNote) instead of a reader guessing it from
+	// the text's prose.
+	s.setSteeringKindOnRecord(innerID, events.SteeringKindHumanNote)
 	s.annotateSteeringKind(innerID, events.SteeringKindHumanNote)
 	return s.applyNotesHumanSetResult(lookup.Lease, outerID, stored)
+}
+
+// annotateSteeringKind stamps kind onto the queued steering entry for
+// clientMutationID, when that entry is still pending delivery. It runs after
+// AcceptClientMutationSteer because that path only transports input text;
+// the kind annotation is what the drain path persists onto the steering turn
+// and emits on SteeringInjectedData, so the UI labels the divider from the
+// wire instead of pattern-matching its prose. A missing entry (already
+// drained, or never accepted) is a no-op: the store remains authoritative.
+func (s *Session) annotateSteeringKind(clientMutationID, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.steeringQueue {
+		if s.steeringQueue[i].ClientMutationID == clientMutationID {
+			s.steeringQueue[i].Kind = kind
+			return
+		}
+	}
 }
 
 // applyNotesHumanSetResult commits the stored note beside its outer
@@ -237,24 +257,6 @@ func (s *Session) AddSessionURLForTest(rawURL, label string) (schema.SessionURL,
 	return s.addSessionURL(rawURL, label)
 }
 
-// annotateSteeringKind stamps kind onto the queued steering entry for
-// clientMutationID, when that entry is still pending delivery. It runs after
-// AcceptClientMutationSteer because that path only transports input text;
-// the kind annotation is what the drain path persists onto the steering turn
-// and emits on SteeringInjectedData, so the UI labels the divider from the
-// wire instead of pattern-matching its prose. A missing entry (already
-// drained, or never accepted) is a no-op: the store remains authoritative.
-func (s *Session) annotateSteeringKind(clientMutationID, kind string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.steeringQueue {
-		if s.steeringQueue[i].ClientMutationID == clientMutationID {
-			s.steeringQueue[i].Kind = kind
-			return
-		}
-	}
-}
-
 // notesSnapshot reads the human and agent notes under s.mu.
 func (s *Session) notesSnapshot() (human, agentNote string) {
 	human, agentNote, _ = s.notesSnapshotAll()
@@ -270,11 +272,19 @@ func (s *Session) snapshotSessionURLs() []schema.SessionURL {
 // notesContextBlock renders the current notes plus URL list for agent context
 // injection: beside the goal continuation-prompt rendering at turn start and
 // on resume, refreshed from note events before the next round. Empty state
-// renders nothing, so a fresh session's context is byte-identical to today.
+// renders the explicit cleared marker (see notesClearedBlock), except that a
+// session whose store was NEVER non-empty this process renders nothing, so a
+// fresh session's context is byte-identical to today.
 func (s *Session) notesContextBlock() string {
 	human, agentNote, urls := s.notesSnapshotAll()
 	if human == "" && agentNote == "" && len(urls) == 0 {
-		return ""
+		s.mu.Lock()
+		everProjected := s.notesEverProjected
+		s.mu.Unlock()
+		if !everProjected {
+			return ""
+		}
+		return notesClearedBlock
 	}
 	var b strings.Builder
 	b.WriteString("<shared-notes>\n")
@@ -291,13 +301,30 @@ func (s *Session) notesContextBlock() string {
 	return b.String()
 }
 
+// notesClearedBlock is the explicit empty snapshot maybeAppendNotesContext
+// appends when the store transitions to empty after having held content. A
+// removal that empties the last populated field (final URL removed while both
+// notes are empty, a note cleared while nothing else is set) must still reach
+// the next model request as a turn: history is append-only and the model
+// never re-reads the store, so without this the stale pre-removal snapshot
+// would stand as the model's latest truth. Distinct from "" (never
+// populated: project nothing) so the fill→remove-all→next-request sequence
+// shows empty rather than stale rows.
+const notesClearedBlock = "<shared-notes>\n(empty — all shared notes and links cleared)\n</shared-notes>"
+
 // formatNotesLinkLine renders one session URL list entry for the model
-// context block and the notes_read tool output.
+// context block and the notes_read tool output. The entry id rides alongside
+// the human-readable URL/label because the model never receives the State
+// side-channel — only Output — yet urls_remove requires the id.
 func formatNotesLinkLine(u schema.SessionURL) string {
+	base := u.URL
 	if u.Label != "" {
-		return fmt.Sprintf("Link: %s (%s)", u.Label, u.URL)
+		base = fmt.Sprintf("%s (%s)", u.Label, u.URL)
 	}
-	return "Link: " + u.URL
+	if u.ID != "" {
+		return fmt.Sprintf("Link: %s [id: %s]", base, u.ID)
+	}
+	return "Link: " + base
 }
 
 // notesSnapshotAll reads human note, agent note, and URL list together.
@@ -308,15 +335,64 @@ func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.Session
 }
 
 // maybeAppendNotesContext records a NOTES_CONTEXT turn carrying the current
-// shared-notes block when it is non-empty. It runs beside the goal
-// continuation-prompt rendering at turn start and on resume, and before the
-// next round when a note event landed, so human URL removals reach the agent
-// even though the wire pushes travel hub-ward. The persisted note is the
-// source of truth; this turn is its per-turn projection.
+// shared-notes block. It runs beside the goal continuation-prompt rendering
+// at turn start and on resume, and before the next round when a note event
+// landed, so human URL removals reach the agent even though the wire pushes
+// travel hub-ward. The persisted note is the source of truth; this turn is
+// its per-turn projection.
+//
+// The projection appends only when the rendered block differs from the last
+// projected block (a per-session last-projected record under mu): unchanged
+// state across consecutive rounds appends nothing, bounding the steady-state
+// cost that re-rendering a limit-sized block every round would impose. A
+// transition to empty still appends the explicit cleared marker (M3), so the
+// next model request reflects the cleared list instead of the stale snapshot.
+// resetNotesProjectionAfterCompaction clears the record when compaction folds
+// history away, so the next projection re-emits the full current state the
+// model can no longer see (the resume/compaction guarantee).
 func (s *Session) maybeAppendNotesContext() {
 	block := s.notesContextBlock()
 	if block == "" {
 		return
 	}
+	s.mu.Lock()
+	if block == s.notesLastProjected {
+		s.mu.Unlock()
+		return
+	}
+	s.notesLastProjected = block
+	s.notesEverProjected = true
+	s.mu.Unlock()
 	s.appendTurn(schema.TurnNotesContext, llm.User(block))
+}
+
+// resetNotesProjectionAfterCompaction clears the last-projected notes record
+// when a CHECKPOINT/SUMMARY turn replaces history: compaction folds away any
+// previously appended NOTES_CONTEXT turns, so the model loses whatever state
+// was last projected. Clearing forces the next maybeAppendNotesContext call
+// to re-emit the full current block rather than staying silent on state the
+// model can no longer see. Mirrors
+// resetEnvContextTrackerAfterCompaction's contract for ENVIRONMENT turns.
+func (s *Session) resetNotesProjectionAfterCompaction() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notesLastProjected = ""
+}
+
+// seedNotesProjectionLocked records the last NOTES_CONTEXT turn of a restored
+// history as the already-projected block, so a resumed session's first
+// maybeAppendNotesContext call appends only when the current store differs
+// from what the model last saw. Callers must hold no lock; the seeding takes
+// s.mu itself (restore runs single-threaded before the session is visible).
+func (s *Session) seedNotesProjectionLocked(history []schema.Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Kind != schema.TurnNotesContext {
+			continue
+		}
+		s.notesLastProjected = history[i].Message.Text()
+		s.notesEverProjected = true
+		return
+	}
 }

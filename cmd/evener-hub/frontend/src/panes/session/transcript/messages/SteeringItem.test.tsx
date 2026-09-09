@@ -74,6 +74,19 @@ test('source "user" steering does NOT open an exchange - it interrupts one', () 
   expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBeNull();
 });
 
+test('a user-sourced human-note steer renders the labeled divider, not a user bubble', () => {
+  render(
+    <SteeringItem
+      item={item({ text: "human updated their whiteboard: hello", source: "user", steeringKind: "human-note" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("steering-item")).toBeTruthy();
+  expect(screen.queryByTestId("user-message-item")).toBeNull();
+  expect(screen.getByTestId("steering-item").textContent).toMatch(/Human note/);
+});
+
 // --- daemon-sourced (no source, or any non-"user" source) -> quiet divider --
 
 test("no source at all renders the collapsible steering divider, not a user bubble", () => {

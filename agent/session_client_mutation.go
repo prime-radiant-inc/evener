@@ -101,6 +101,15 @@ type clientMutationRecord struct {
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attempt_generation"`
+	// SteeringKind carries the steering label (events.SteeringKind*) for a
+	// durable steering mutation, stamped after acceptance by the injection
+	// site (the human-note steer). It is journal metadata, not part of the
+	// dedupe payload: newClientMutationRequest hashes only the wire payload,
+	// so stamping the kind never changes the payload hash and a hub retry of
+	// the inner steer still replays. Reconstruction reads it back onto the
+	// reflected steeringMessage.Kind so the divider survives a restart.
+	// Empty for plain user steering.
+	SteeringKind string `json:"steering_kind,omitempty"`
 }
 
 type clientMutationFailure struct {

@@ -464,6 +464,10 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// ManageContext) funnels through via contextMgr.OnCompactionTurn /
 		// WithCompactionTurnCallback.
 		s.resetEnvContextTrackerAfterCompaction()
+		// Same for the shared-notes projection: folded-away NOTES_CONTEXT
+		// turns are gone from what the model sees, so the change gate must
+		// forget the last projected block and re-emit the current state.
+		s.resetNotesProjectionAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {

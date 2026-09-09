@@ -164,9 +164,60 @@ func TestSharedNotesCommandsGateOnCapability(t *testing.T) {
 		available, _ = hubCommandAvailable(definition, hubCommandContext{
 			mode: hubModeSession,
 			caps: hubSessionCapabilities{SharedNotes: true},
+			live: true,
 		})
 		if !available {
-			t.Fatalf("/%s unavailable with the SharedNotes capability", name)
+			t.Fatalf("/%s unavailable with the SharedNotes capability on a live session", name)
 		}
+	}
+}
+
+// TestSharedNotesCommandsRequireLiveness asserts the M7 contract: the
+// SharedNotes capability bit is retained on ended sessions for read rendering
+// (TestHubDetailFromThreadMapsSharedNotes), so /notes and /url-remove
+// additionally require session liveness — for both availability and dispatch
+// — and never fire resume-first writes on read-only past sessions.
+func TestSharedNotesCommandsRequireLiveness(t *testing.T) {
+	for _, name := range []string{"notes", "url-remove"} {
+		definition, ok := hubCommandByName(name)
+		if !ok {
+			t.Fatalf("/%s is not registered", name)
+		}
+		// Capability set but not live: unavailable.
+		available, _ := hubCommandAvailable(definition, hubCommandContext{
+			mode: hubModeSession,
+			caps: hubSessionCapabilities{SharedNotes: true},
+		})
+		if available {
+			t.Fatalf("/%s available on an ended session with the SharedNotes capability", name)
+		}
+		// Capability set and live: available.
+		available, _ = hubCommandAvailable(definition, hubCommandContext{
+			mode: hubModeSession,
+			caps: hubSessionCapabilities{SharedNotes: true},
+			live: true,
+		})
+		if !available {
+			t.Fatalf("/%s unavailable on a live session with the SharedNotes capability", name)
+		}
+	}
+	// Dispatch on an ended session refuses without issuing a command.
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities = hubSessionCapabilities{SharedNotes: true}
+	m.detail.Live = false
+	if cmd := m.runHubNotes("hello"); cmd != nil {
+		t.Fatalf("runHubNotes on ended session returned a command, want refusal")
+	}
+	if cmd := m.runHubURLRemove("u1"); cmd != nil {
+		t.Fatalf("runHubURLRemove on ended session returned a command, want refusal")
+	}
+	// Dispatch on a live session proceeds to a command.
+	m.detail.Live = true
+	m.detail.Ref = "local:01LIVE"
+	if cmd := m.runHubNotes("hello"); cmd == nil {
+		t.Fatalf("runHubNotes on live session returned nil, want a send command")
+	}
+	if cmd := m.runHubURLRemove("u1"); cmd == nil {
+		t.Fatalf("runHubURLRemove on live session returned nil, want a send command")
 	}
 }

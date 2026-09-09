@@ -185,6 +185,7 @@ type clientMutationStoreRecord struct {
 	Rejection           *clientMutationStoreRejection `json:"rejection"`
 	Failure             json.RawMessage               `json:"failure"`
 	AttemptGeneration   uint64                        `json:"attempt_generation"`
+	SteeringKind        string                        `json:"steering_kind"`
 }
 
 type clientMutationStoreRejection struct {

@@ -22,3 +22,7 @@ func parseSlashCommand(input string) (cmd, args string) {
 func hubSlashCommandHelp(caps hubSessionCapabilities) string {
 	return hubCommandHelp(caps)
 }
+
+func hubSlashCommandHelpLive(caps hubSessionCapabilities, live bool) string {
+	return hubCommandHelpLive(caps, live)
+}

@@ -1,8 +1,11 @@
-// The steering item renderer. Source-discriminated first, then kind-routed:
+// The steering item renderer. The human-note kind routes first (it rides the
+// user-sourced rail but renders the labeled divider), then source ("user" ->
+// UserMessageView), then kind-routed:
 //
 //   - source === "user" (parity issue #24, appwire_projection.go:588 /
 //     apptranscript.go:225-228): steering the human typed themselves is
-//     indistinguishable from a normal prompt and reuses UserMessageView.
+//     indistinguishable from a normal prompt and reuses UserMessageView -
+//     except the human-note kind above, which labels the whiteboard update.
 //   - daemon-originated steering: routes on item.steeringKind (the wire's
 //     events.SteeringKind*, named at the injection site) rather than
 //     guessing a kind from the message's prose. current-task/task-list are
@@ -142,6 +145,23 @@ function SteeringDivider({
 }
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
+  // The human-note steer rides the user-sourced steering rail (it interrupts
+  // via the client-mutation steer path) but carries the human-note kind, and
+  // the kind selects the divider: it labels the human's whiteboard update
+  // distinctly rather than rendering as an indistinguishable user bubble.
+  // Every other user-sourced steer still renders as a user message below.
+  if (item.steeringKind === "human-note") {
+    if (!item.text) return null; // no text, no images path here - nothing to show
+    const humanLabel = labelFor("human-note");
+    return (
+      <SteeringDivider
+        id={item.id}
+        label={humanLabel ? `${STEERED}: ${humanLabel}` : STEERED}
+        text={item.text}
+        sessionRef={sessionRef}
+      />
+    );
+  }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
   // work already under way rather than starting a new exchange, so it renders
   // like a prompt without claiming the boundary a prompt marks.

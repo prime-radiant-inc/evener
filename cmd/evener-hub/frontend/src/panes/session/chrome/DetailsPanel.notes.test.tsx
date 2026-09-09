@@ -139,6 +139,44 @@ test("live-empty session shows the Add a note trigger", async () => {
   expect(screen.getByTestId("shared-notes-add-note")).toBeTruthy();
 });
 
+test("live session with agent content still offers the first-note trigger", async () => {
+  await openPanel(
+    testModel({
+      agentNote: "agent hello",
+      sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }],
+    }),
+  );
+  expect(screen.getByTestId("shared-notes-human")).toBeTruthy();
+  expect(screen.getByTestId("shared-notes-add-note")).toBeTruthy();
+  expect(screen.queryByTestId("shared-notes-edit")).toBeNull();
+  // Clicking it opens the mounted editor (the pre-fix bug set popoverOpen
+  // with no editor mounted).
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId("shared-notes-add-note"));
+  expect(screen.getByTestId("shared-notes-editor")).toBeTruthy();
+});
+
+test("first-note trigger saves through the threads store", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("notes/human/set", (params) => {
+    called = params;
+    return { note: "first note" };
+  });
+
+  const model = testModel({ agentNote: "agent hello" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await openPanel(model);
+  await user.click(screen.getByTestId("shared-notes-add-note"));
+  const editor = screen.getByTestId("shared-notes-editor");
+  await user.type(within(editor).getByRole("textbox", { name: "Human note" }), "first note");
+  await user.click(within(editor).getByRole("button", { name: /save/i }));
+
+  await waitFor(() => expect(called).toMatchObject({ ref: model.ref, note: "first note" }));
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("first note");
+});
+
 // --- edit dispatches RPC -------------------------------------------------------
 
 test("edit dispatches notes/human/set through the threads store", async () => {

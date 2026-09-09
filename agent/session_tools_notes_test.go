@@ -142,3 +142,42 @@ func TestNotesReadTool(t *testing.T) {
 		}
 	}
 }
+
+// TestUrlsRemoveUsingOnlyToolReturnedInfo verifies the M2 contract: a model
+// holding nothing but tool-returned Output text (never session internals) can
+// add a URL, read it back, and remove it. The urls_add output, the notes_read
+// output, and the injected context block must each carry the entry id that
+// urls_remove requires.
+func TestUrlsRemoveUsingOnlyToolReturnedInfo(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	ctx := context.Background()
+	added := notesToolExec(ctx, t, s, "u1", "urls_add", map[string]any{"url": "https://x.test/y", "label": "why"})
+	entry := s.sessionURLsForTest()[0]
+	if !strings.Contains(added, entry.ID) {
+		t.Fatalf("urls_add output = %q, want it to carry entry id %q", added, entry.ID)
+	}
+	read := notesToolExec(ctx, t, s, "r1", "notes_read", map[string]any{})
+	if !strings.Contains(read, entry.ID) {
+		t.Fatalf("notes_read output = %q, want it to carry entry id %q", read, entry.ID)
+	}
+	block := s.notesContextBlock()
+	if !strings.Contains(block, entry.ID) {
+		t.Fatalf("context block = %q, want it to carry entry id %q", block, entry.ID)
+	}
+	// Remove using only the id surfaced by the tool outputs (which is also
+	// the id in the context block — all three come from one rendering).
+	id := entry.ID
+	for _, out := range []string{added, read, block} {
+		if !strings.Contains(out, id) {
+			t.Fatalf("output %q does not carry id %q", out, id)
+		}
+	}
+	removed := notesToolExec(ctx, t, s, "u2", "urls_remove", map[string]any{"id": id})
+	if removed == "" {
+		t.Fatalf("urls_remove output = %q, want non-empty", removed)
+	}
+	if got := s.sessionURLsForTest(); len(got) != 0 {
+		t.Fatalf("url list after remove = %+v, want empty", got)
+	}
+}

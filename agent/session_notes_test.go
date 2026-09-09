@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -197,6 +198,44 @@ func TestAddSessionURLDedupKeepsIdentity(t *testing.T) {
 	}
 }
 
+// TestCanonicalFilePathEscapesDelimiters verifies the M6 contract: filenames
+// containing URL delimiters (#, ?, %) serialize escaped through net/url, and
+// a bare path and its canonical file:/// URL dedup to the same entry (the
+// pre-fix "file://" + abs concat let docs/a#b.md round-trip as path docs/a
+// with fragment b.md).
+func TestCanonicalFilePathEscapesDelimiters(t *testing.T) {
+	for _, name := range []string{"docs/a#b.md", "docs/a?b.md", "docs/a%b.md"} {
+		got, err := canonicalSessionURL(name, "/tmp/proj")
+		if err != nil {
+			t.Fatalf("canonicalSessionURL(%q): %v", name, err)
+		}
+		parsed, err := url.Parse(got)
+		if err != nil {
+			t.Fatalf("parse canonical %q: %v", got, err)
+		}
+		if parsed.Fragment != "" || parsed.RawQuery != "" {
+			t.Fatalf("canonical %q split into fragment/query: path=%q frag=%q query=%q", got, parsed.Path, parsed.Fragment, parsed.RawQuery)
+		}
+		wantPath := "/tmp/proj/" + name
+		if parsed.Path != wantPath {
+			t.Fatalf("canonical %q decodes to path %q, want %q", got, parsed.Path, wantPath)
+		}
+		// The canonical file:/// URL re-adds to the same entry (dedup).
+		s := newTestNotesSession(t, "/tmp/proj")
+		a, err := s.addSessionURL(name, "")
+		if err != nil {
+			t.Fatalf("add %q: %v", name, err)
+		}
+		b, err := s.addSessionURL(got, "")
+		if err != nil {
+			t.Fatalf("re-add %q: %v", got, err)
+		}
+		if a.ID != b.ID || a.URL != b.URL {
+			t.Fatalf("dedup mismatch: bare %q -> %+v vs canonical %q -> %+v", name, a, got, b)
+		}
+	}
+}
+
 // TestSetHumanNoteStoresAndSteers verifies the daemon human-set path: the
 // note stores, one EventNotesUpdated emits, and one human-note steer lands in
 // the durable steering queue under the derived inner id.
@@ -355,5 +394,142 @@ func TestNotesContextBlockContainsNotesAndURLs(t *testing.T) {
 	defer s.mu.Unlock()
 	if len(s.history) != 1 || s.history[0].Kind != schema.TurnNotesContext {
 		t.Fatalf("history kinds = %+v, want one NOTES_CONTEXT turn", s.history)
+	}
+}
+
+// TestNotesProjectionAppendsOnceWhenUnchanged verifies the M4 change gate:
+// two consecutive projections with no notes change append exactly one
+// NOTES_CONTEXT turn, and a later change appends again.
+func TestNotesProjectionAppendsOnceWhenUnchanged(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	s.setHumanNote("human hello")
+	s.maybeAppendNotesContext()
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	n := len(s.history)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("history length after two unchanged projections = %d, want 1", n)
+	}
+	if _, changed := s.setAgentNote("agent hello"); !changed {
+		t.Fatal("agent set not reported as change")
+	}
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != 2 {
+		t.Fatalf("history length after changed projection = %d, want 2", len(s.history))
+	}
+}
+
+// TestNotesProjectionStillProjectsAfterCompaction verifies the resume/
+// compaction guarantee survives the M4 change gate: after compaction folds
+// history away, the next projection re-emits the current state the model can
+// no longer see instead of staying silent.
+func TestNotesProjectionStillProjectsAfterCompaction(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	s.setHumanNote("human hello")
+	s.maybeAppendNotesContext()
+	s.resetNotesProjectionAfterCompaction()
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != 2 {
+		t.Fatalf("history length after compaction reset = %d, want 2 (re-projection)", len(s.history))
+	}
+	if s.history[1].Message.Text() != s.history[0].Message.Text() {
+		t.Fatalf("re-projected block = %q, want %q", s.history[1].Message.Text(), s.history[0].Message.Text())
+	}
+}
+
+// TestNotesRemoveAllProjectsEmptySnapshot verifies the M3 contract:
+// fill→remove-all→next projection appends the explicit empty snapshot (not
+// silence), so the next model request reflects the cleared list instead of
+// the stale pre-removal rows.
+func TestNotesRemoveAllProjectsEmptySnapshot(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	entry, err := s.addSessionURL("https://x.test/y", "why")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	s.maybeAppendNotesContext()
+	if !s.removeSessionURL(entry.ID) {
+		t.Fatalf("remove of %q returned false", entry.ID)
+	}
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != 2 {
+		t.Fatalf("history length after fill→remove-all = %d, want 2 (snapshot + explicit empty)", len(s.history))
+	}
+	last := s.history[1].Message.Text()
+	if !strings.Contains(last, "empty") {
+		t.Fatalf("empty snapshot = %q, want the explicit cleared marker", last)
+	}
+	if strings.Contains(last, "https://x.test/y") {
+		t.Fatalf("empty snapshot = %q, want no stale rows", last)
+	}
+}
+
+// TestNotesNeverPopulatedProjectsNothing verifies the M3 boundary: a fresh
+// session whose store was never non-empty projects nothing, keeping its
+// history byte-identical.
+func TestNotesNeverPopulatedProjectsNothing(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if got := s.notesContextBlock(); got != "" {
+		t.Fatalf("empty block = %q, want empty", got)
+	}
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != 0 {
+		t.Fatalf("history length = %d, want 0 (never-populated projects nothing)", len(s.history))
+	}
+}
+
+// TestHumanNoteSteerKindSurvivesDurableReconstruction verifies the M5
+// contract: the human-note steer's kind is stamped on the durable journal
+// record (not just the reflected in-memory entry), so rebuilding the runtime
+// queue from the snapshot — the restart path — restores the kind the divider
+// renders from. Plain user steering keeps its empty kind.
+func TestHumanNoteSteerKindSurvivesDurableReconstruction(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if _, err := s.SetHumanNote("outer-kind-1", "hello world"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	s.mu.Lock()
+	live := append([]steeringMessage(nil), s.steeringQueue...)
+	s.mu.Unlock()
+	if len(live) != 1 || live[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("live steer kind = %+v, want one human-note entry", live)
+	}
+	rebuilt := clientSteeringFromSnapshot(s.clientMutations.snapshot())
+	if len(rebuilt) != 1 {
+		t.Fatalf("rebuilt steering length = %d, want 1", len(rebuilt))
+	}
+	if rebuilt[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("rebuilt steer kind = %q, want %q", rebuilt[0].Kind, events.SteeringKindHumanNote)
+	}
+	if rebuilt[0].Source != events.SteeringSourceUser {
+		t.Fatalf("rebuilt steer source = %q, want %q (user provenance retained)", rebuilt[0].Source, events.SteeringSourceUser)
+	}
+	// The rebuilt entry must drain to a steering turn carrying the kind, so
+	// the projection (and its SteeringInjected event) labels the divider.
+	s.injectDrainedSteering()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindHumanNote {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no TurnSteering with human-note kind in history %+v", s.history)
 	}
 }

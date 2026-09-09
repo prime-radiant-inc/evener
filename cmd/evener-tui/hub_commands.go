@@ -1162,6 +1162,10 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 // runHubNotes dispatches the /notes command: `clear` clears the human note
 // and anything else sets it as the note text.
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
+	if !m.detail.Live {
+		m.addSessionSystem("Note editing is not available for this session.")
+		return nil
+	}
 	arg := strings.TrimSpace(args)
 	ref, ok := m.currentRef()
 	if !ok {
@@ -1198,6 +1202,10 @@ func sendHubURLRemove(client *appwire.Client, ref appwire.Ref, id string, expect
 // runHubURLRemove dispatches the /url-remove command, which takes the URL
 // entry id to remove.
 func (m *hubModel) runHubURLRemove(args string) tea.Cmd {
+	if !m.detail.Live {
+		m.addSessionSystem("URL removal is not available for this session.")
+		return nil
+	}
 	id := strings.TrimSpace(args)
 	if id == "" {
 		m.addSessionSystem("Usage: /url-remove <id>")

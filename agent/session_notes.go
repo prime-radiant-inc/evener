@@ -240,7 +240,12 @@ func canonicalFilePath(path, cwd, raw string) (string, error) {
 	} else if cwd != "" && !pathWithinNotesScope(abs, cwd) {
 		return "", fmt.Errorf("urls/add: path %q is outside the session scope %q", raw, cwd)
 	}
-	out := "file://" + abs
+	// Serialize through net/url so path delimiters in filenames (#, ?, %)
+	// escape instead of parsing back as a fragment, query, or escape:
+	// "file://" + abs would let docs/a#b.md round-trip as path docs/a with
+	// fragment b.md.
+	fileURL := url.URL{Scheme: "file", Path: abs}
+	out := fileURL.String()
 	if len([]rune(out)) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
 	}

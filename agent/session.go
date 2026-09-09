@@ -174,6 +174,24 @@ type Session struct {
 	// persists nothing. Guarded by mu (see setEnvContextState).
 	envContextState *envctx.State
 
+	// notesLastProjected is the last shared-notes block
+	// maybeAppendNotesContext appended as a NOTES_CONTEXT turn. The
+	// projection appends only when the rendered block differs from this
+	// record, so consecutive rounds with no notes change append once rather
+	// than re-emitting a limit-sized block every round. Cleared by
+	// resetNotesProjectionAfterCompaction when compaction folds history away
+	// (the model must re-see the current state), and seeded from restored
+	// history on resume (see below). Guarded by mu.
+	notesLastProjected string
+	// notesEverProjected reports whether this process has ever projected a
+	// non-empty notes block. It distinguishes the transition-to-empty case
+	// (append the explicit cleared marker so the next model request
+	// reflects the cleared list) from the never-populated case (project
+	// nothing, keeping a fresh session's history byte-identical). Seeded
+	// from restored history on resume alongside notesLastProjected.
+	// Guarded by mu.
+	notesEverProjected bool
+
 	// --- Synchronization / lock discipline ---
 	//
 	// The turn loop (ProcessInput → processOneInput) is the primary owner of

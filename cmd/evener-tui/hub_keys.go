@@ -223,7 +223,7 @@ func (m *hubModel) openCommandPalette() {
 	if m.mode == hubModeSession {
 		rows = nil
 	}
-	palette := newCommandPalette("Command palette", commandPaletteEntriesForRows(m.mode, m.detail.Capabilities, rows), width)
+	palette := newCommandPalette("Command palette", commandPaletteEntriesForSession(m.mode, m.detail.Capabilities, m.detail.Live, rows), width)
 	m.commandPalette = &palette
 }
 
@@ -332,7 +332,7 @@ func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) 
 	if !ok {
 		return m, nil
 	}
-	available, _ := hubCommandAvailable(definition, hubCommandContext{mode: m.mode, caps: m.detail.Capabilities})
+	available, _ := hubCommandAvailable(definition, hubCommandContext{mode: m.mode, caps: m.detail.Capabilities, live: m.detail.Live})
 	if !available {
 		return m, nil
 	}
