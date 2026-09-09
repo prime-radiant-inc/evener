@@ -435,6 +435,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
+	// Rendezvous ownership must identify the same state files regardless of the
+	// hub's working directory, including when serve accepts a relative path.
+	absoluteStateDir, stateDirErr := filepath.Abs(sd)
+	if stateDirErr != nil {
+		return fmt.Errorf("resolve absolute state directory: %w", stateDirErr)
+	}
+	sd = absoluteStateDir
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {

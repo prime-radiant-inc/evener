@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -432,5 +433,74 @@ func TestRenameLiveWorkspaceAliasReachesDaemon(t *testing.T) {
 	}
 	if meta.Name != "saved name" {
 		t.Fatalf("hub bypassed daemon and wrote metadata: %q", meta.Name)
+	}
+}
+
+func TestLiveRenameRejectsRecoveryAdmission(t *testing.T) {
+	for _, unread := range []bool{false, true} {
+		t.Run(strconv.FormatBool(unread), func(t *testing.T) {
+			cfg := hubcore.WebConfig{ResumeLocks: hubcore.NewResumeLocks()}
+			live := &renameNavigationSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: "owner", Name: "replacement", Evener: appwire.EvenerThread{Ref: "local:owner", Capabilities: appwire.ThreadCapabilities{Rename: true}}}}}
+			registry := appsource.NewRegistry()
+			registry.Add(live)
+			server := newHubAppServer(cfg, registry)
+			params := appwire.ThreadNameSetParams{Ref: "local:owner", Name: "stale"}
+			message := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodEvenerThreadNameSet, params)
+			ctx := t.Context()
+			if unread {
+				ctx = admitSessionConnection(ctx, cfg)
+			} else {
+				ctx = admitSessionRecovery(ctx, cfg, message)
+			}
+			finish := cfg.ResumeLocks.BeginForceStop([]string{"owner"})
+			if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
+				t.Fatal(err)
+			}
+			finish(true)
+			if err := cfg.ResumeLocks.ExplicitResumeCompleted("owner", cfg.ResumeLocks.RecoveryState("owner").Epoch); err != nil {
+				t.Fatal(err)
+			}
+			if unread {
+				ctx = admitSessionRecovery(ctx, cfg, message)
+			}
+			if _, err := exactDispatch(ctx, t, server, appwire.MethodEvenerThreadNameSet, params); !isSessionRecoveryAdmissionError(err) || live.thread.Name != "replacement" {
+				t.Fatalf("stale rename changed replacement: err=%v name=%q", err, live.thread.Name)
+			}
+			fresh := admitSessionRecovery(admitSessionConnection(t.Context(), cfg), cfg, message)
+			params.Name = "fresh"
+			if _, err := exactDispatch(fresh, t, server, appwire.MethodEvenerThreadNameSet, params); err != nil || live.thread.Name != "fresh" {
+				t.Fatalf("fresh rename failed: err=%v name=%q", err, live.thread.Name)
+			}
+		})
+	}
+}
+
+func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "project-0123456789")
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndexWithDB(stateDir, filepath.Join(root, "index.db"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Past: past, ResumeLocks: hubcore.NewResumeLocks()}
+	ctx := admitSessionConnection(t.Context(), cfg)
+	finish := cfg.ResumeLocks.BeginForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"})
+	if err := cfg.ResumeLocks.PersistForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"}, "02wMz5Txv1C3Hut0M8GCeB"); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	server := newHubAppServer(cfg, appsource.NewRegistry())
+	if _, err := exactDispatch(ctx, t, server, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:02wMz5Txv1C3Hut0M8GCeB", Name: "saved"}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, "02wMz5Txv1C3Hut0M8GCeB")
+	if err != nil || meta.Name != "saved" {
+		t.Fatalf("saved rename: meta=%+v err=%v", meta, err)
+	}
+	if !cfg.ResumeLocks.RecoveryState("02wMz5Txv1C3Hut0M8GCeB").ResumeRequired {
+		t.Fatal("rename cleared explicit resume requirement")
 	}
 }

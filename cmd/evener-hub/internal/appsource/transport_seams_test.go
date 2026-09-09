@@ -90,7 +90,7 @@ func fuzzScenarioLocalDaemonDialSeamPreservesCallerCancellation(t *testing.T) {
 
 	local := NewLocalDaemonSource("local", nil, nil)
 	local.dial = dial
-	if err := local.withClient(ctx, rendezvousEntry("ws://daemon"), func(*appwire.Client) error { return nil }); !errors.Is(err, context.Canceled) {
+	if err := local.withClient(ctx, rendezvousEntry("ws://daemon"), func(context.Context, *appwire.Client) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("local withClient error = %v", err)
 	}
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon", SourceID: "local", ThreadID: "thread"}
@@ -110,7 +110,7 @@ func TestWithClientPreservesCallerCancellationAfterCall(t *testing.T) {
 	local := NewLocalDaemonSource("local", nil, nil)
 	local.dial = dialTransport(transport)
 
-	err := local.withClient(ctx, rendezvousEntry("ws://daemon"), func(*appwire.Client) error {
+	err := local.withClient(ctx, rendezvousEntry("ws://daemon"), func(context.Context, *appwire.Client) error {
 		cancel()
 		return appwire.InternalError(context.Canceled.Error())
 	})
@@ -172,7 +172,7 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 		transport := respondingTransport(func(string) (any, error) { cancel(); return nil, errors.New("failed") })
 		s := NewLocalDaemonSource("local", nil, nil)
 		s.dial = dialTransport(transport)
-		if err := s.withClient(callCtx, entry, func(*appwire.Client) error { return nil }); !errors.Is(err, context.Canceled) {
+		if err := s.withClient(callCtx, entry, func(context.Context, *appwire.Client) error { return nil }); !errors.Is(err, context.Canceled) {
 			t.Fatalf("withClient error = %v", err)
 		}
 	})
@@ -186,7 +186,7 @@ func fuzzScenarioLocalDaemonRemainingTransportBranches(t *testing.T) {
 		if _, err := s.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "local:thread"}); err == nil {
 			t.Fatal("SubscribeThread returned nil")
 		}
-		if err := s.withClient(ctx, entry, func(*appwire.Client) error { return nil }); err == nil {
+		if err := s.withClient(ctx, entry, func(context.Context, *appwire.Client) error { return nil }); err == nil {
 			t.Fatal("withClient returned nil")
 		}
 	})

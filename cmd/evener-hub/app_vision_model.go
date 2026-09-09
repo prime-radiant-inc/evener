@@ -19,7 +19,7 @@ func setThreadVisionModelWithResume(ctx context.Context, cfg hubcore.WebConfig, 
 	if !shouldResumeAfterSessionUnavailable(err) {
 		return err
 	}
-	if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
+	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
 		return resumeErr
 	}
 	return setThreadVisionModelOnce(ctx, cfg, sources, params)

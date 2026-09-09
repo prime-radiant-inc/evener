@@ -101,6 +101,7 @@ no router (reserved).
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | `ThreadVisionModelSetParams` | `EmptyResponse` | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
+| `evener/thread/forceStop` | hub | `ThreadForceStopParams` | `EmptyResponse` | Explicitly terminates a verified local daemon and confirms exit; saved session data is retained. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
 | `turn/steer` | both | `TurnSteerParams` | `TurnSteerResponse` | Injects a steering message into the active turn. |
@@ -1507,6 +1508,13 @@ _(no fields)_
 
 
 ### `ThreadCompactStartParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+
+
+### `ThreadForceStopParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|

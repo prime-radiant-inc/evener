@@ -202,6 +202,13 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 	return r
 }
 
+// SetProcessAlive overrides the process-liveness probe. Tests with synthetic
+// rendezvous claims must not depend on whether their PIDs exist on the host.
+func (r *Roster) SetProcessAlive(probe func(int) bool) *Roster {
+	r.procAlive = probe
+	return r
+}
+
 // NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
 // bypassing the rendezvous-dir scan. Each entry is indexed by its PID (for List)
 // and, when non-empty, by its SessionID (for Find), mirroring how Refresh

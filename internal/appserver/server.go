@@ -43,6 +43,13 @@ type ServerConfig struct {
 	// SubscriptionAdmissionResolverV2 distinguishes invalid target requests from
 	// unresolved subscribing reads, so native handlers retain validation errors.
 	SubscriptionAdmissionResolverV2 func(appwire.Message) SubscriptionAdmissionResolution
+	// RequestAdmissionContext captures immutable request metadata before queueing.
+	// It must be pure, synchronous, and derive its result from the supplied
+	// connection context so cancellation remains inherited.
+	RequestAdmissionContext func(context.Context, appwire.Message) context.Context
+	// ConnectionAdmissionContext captures immutable metadata before accepting
+	// any WebSocket frames. It must preserve the supplied context cancellation.
+	ConnectionAdmissionContext func(context.Context) context.Context
 }
 
 type SubscriptionAdmissionIntent uint8
@@ -246,7 +253,7 @@ func (s *Server) NewConnection(id string) *Connection {
 		id:                id,
 		server:            s,
 		send:              make(chan appwire.Message, appwire.NotificationBufferCap),
-		requests:          make(chan appwire.Message, s.requestQueueCapacity),
+		requests:          make(chan admittedRequest, s.requestQueueCapacity),
 		slowReadSlots:     make(chan struct{}, slowReadDispatchCap),
 		slowReadInflight:  map[string]int{},
 		workerExited:      make(chan struct{}),
@@ -500,6 +507,11 @@ func navigationCapability(capability *appwire.NavigationCapability) *appwire.Nav
 	return &clone
 }
 
+type admittedRequest struct {
+	ctx     context.Context
+	message appwire.Message
+}
+
 type Connection struct {
 	id         string
 	server     *Server
@@ -512,7 +524,7 @@ type Connection struct {
 	// consumer teardown is context cancellation — and ServeWebSocket purges
 	// its buffered frames at teardown so an orphaned handler retains at most
 	// the one frame it is executing.
-	requests chan appwire.Message
+	requests chan admittedRequest
 	// queueSaturationAdvised makes the queue-saturation advisory one-shot per
 	// connection. Only the receive-loop goroutine touches it.
 	queueSaturationAdvised bool
@@ -538,6 +550,7 @@ type Connection struct {
 	pendingAdmissions map[*subscriptionAdmission]struct{}
 	mu                sync.RWMutex
 	initialized       bool
+	recoveryRunning   bool
 	cancel            context.CancelFunc
 	responseMu        sync.Mutex
 	hydrationMu       sync.Mutex
@@ -1243,8 +1256,8 @@ func concurrentDispatchMethod(method string) bool {
 // concerns: a ping request is answered inline through the shared
 // handleAndEnqueue barrier, bypassing the request queue — one ping
 // implementation, one panic barrier, no hand-built response beside the real
-// path that could drift from it — and every other frame is enqueued for the
-// serial worker. False means the connection died while blocked on a full
+// path that could drift from it. Initialized force-stop requests have one
+// independent recovery slot; every other frame is enqueued for the serial worker. False means the connection died while blocked on a full
 // queue and the loop should return. A second transport inherits the whole
 // policy by driving this same entry point.
 //
@@ -1253,8 +1266,35 @@ func concurrentDispatchMethod(method string) bool {
 // cascade cancels the connection: ping liveness is guaranteed against
 // handler behavior, not against a peer that stopped draining its own socket.
 func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bool {
+	if msg.Request != nil && c.server.cfg.RequestAdmissionContext != nil {
+		admitted, ok := c.admitRequestContext(ctx, msg)
+		if !ok {
+			c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.InternalError("internal error admitting request")))
+			return true
+		}
+		ctx = admitted
+	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodPing {
 		c.handleAndEnqueue(ctx, msg)
+		return true
+	}
+	if msg.Request != nil && msg.Request.Method == appwire.MethodEvenerThreadForceStop && c.isInitialized() {
+		c.mu.Lock()
+		busy := c.recoveryRunning
+		if !busy {
+			c.recoveryRunning = true
+		}
+		c.mu.Unlock()
+		if busy {
+			c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable("force stop is already running")))
+			return true
+		}
+		// Recovery must reach ownership cancellation even when the serial worker
+		// is awaiting an unresponsive daemon. Other mutations retain FIFO order.
+		go func() {
+			defer func() { c.mu.Lock(); c.recoveryRunning = false; c.mu.Unlock() }()
+			c.handleAndEnqueue(ctx, msg)
+		}()
 		return true
 	}
 	return c.enqueueRequest(ctx, msg)
@@ -1271,8 +1311,9 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 // exactly the ordering it asked for, applied at the transport instead of in
 // server memory.
 func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bool {
+	request := admittedRequest{ctx: ctx, message: msg}
 	select {
-	case c.requests <- msg:
+	case c.requests <- request:
 		return true
 	default:
 	}
@@ -1289,7 +1330,7 @@ func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bo
 		c.server.blockedEnqueue()
 	}
 	select {
-	case c.requests <- msg:
+	case c.requests <- request:
 		return true
 	case <-ctx.Done():
 		return false
@@ -1323,7 +1364,8 @@ func (c *Connection) runWorker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-c.requests:
+		case request := <-c.requests:
+			msg := request.message
 			if c.server.afterWorkerDequeue != nil {
 				c.server.afterWorkerDequeue(msg)
 			}
@@ -1334,7 +1376,7 @@ func (c *Connection) runWorker(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			c.executeOrdered(ctx, msg)
+			c.executeOrdered(request.ctx, msg)
 		}
 	}
 }
@@ -1361,7 +1403,8 @@ func (c *Connection) purgeRequestQueue() {
 drain:
 	for {
 		select {
-		case msg := <-c.requests:
+		case request := <-c.requests:
+			msg := request.message
 			discarded++
 			// Tally only cataloged names verbatim: the method field is
 			// client-controlled and the transport read limit admits very
@@ -1634,4 +1677,15 @@ func (c *Connection) enqueueDispatched(ctx context.Context, resp appwire.Message
 	if err := c.enqueueResponse(ctx, resp); err != nil {
 		c.cancelContext()
 	}
+}
+
+func (c *Connection) admitRequestContext(ctx context.Context, msg appwire.Message) (admitted context.Context, ok bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.server.panicLogf("appserver: panic admitting %s: %v\n%s", methodOf(msg), recovered, debug.Stack())
+			admitted, ok = nil, false
+		}
+	}()
+	admitted = c.server.cfg.RequestAdmissionContext(ctx, msg)
+	return admitted, admitted != nil
 }

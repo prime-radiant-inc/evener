@@ -11720,6 +11720,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
+		appwire.MethodEvenerThreadForceStop,
 		appwire.MethodThreadModelSet,
 		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,

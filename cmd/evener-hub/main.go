@@ -344,6 +344,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	cfg.Addr = hubListener.Addr().String()
 
+	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("load recovery state: %w", err)
+	}
 	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
 	if err != nil {
 		_ = hubListener.Close()
@@ -384,6 +389,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PinSections:               pinSections,
 		Spawner:                   spawner,
 		DeletionStore:             deletionStore,
+		ResumeLocks:               resumeLocks,
 		PastPerPage:               cfg.PastResultsPerPage,
 		StateDir:                  stateDir,
 		CredsStore:                credsStore,

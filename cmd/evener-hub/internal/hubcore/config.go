@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
@@ -33,20 +34,21 @@ type RelayLifecycleHooks struct {
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr                   string
-	AuthToken                 string                  // capability token gating every non-exempt route
-	MobileBaseURL             string                  // optional external origin used for mobile pairing QR codes
-	HubStateRoot              string                  // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
-	LaunchConfigRoot          string                  // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
-	TranscriptDisplayStore    *TranscriptDisplayStore // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
-	TranscriptDisplayStoreErr error                   // diagnostic returned while loading the injected store; retained for startup diagnostics
-	KeybindingsStore          *KeybindingsStore       // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
-	KeybindingsStoreErr       error                   // diagnostic returned while loading the injected store; retained for startup diagnostics
-	RunDir                    string                  // run directory where rendezvous files live
-	PastIndexPath             string                  // path to the SQLite past-index DB, for display in settings
+	AuthToken                 string                   // capability token gating every non-exempt route
+	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
+	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
+	LaunchConfigRoot          string                   // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
+	TranscriptDisplayStore    *TranscriptDisplayStore  // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
+	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
+	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
+	RunDir                    string                   // run directory where rendezvous files live
+	PastIndexPath             string                   // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster
 	Past                      *PastIndex
 	Spawner                   Spawner            // optional; nil disables spawn
-	ResumeLocks               *ResumeLocks       // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
+	ResumeLocks               *ResumeLocks       // shared session ownership and recovery authority; web construction loads from HubStateRoot when nil
 	DeletionStore             *DeletionStore     // host-authoritative deletion fences; production persists this under HubStateRoot
 	PastPerPage               int                // results per page for /past; defaults to 50 when zero
 	StateDir                  string             // root of the projects/<sha> state directory; needed for ForkSession
