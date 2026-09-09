@@ -123,8 +123,11 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	// attempt's pending intent in one atomic write, so any of these is
 	// enough to prove the first attempt's write landed: a journaled
 	// delivery-pending record, or a metadata-committed pending intent for
-	// this outer ID. The recorded value wins over the caller's (possibly
-	// older) input, so an intervening save is never clobbered.
+	// this outer ID, or a superseded-write tombstone another attempt left
+	// when it spent this attempt's delivery (clearNotesDeliveryPending
+	// keeps the stored value with the pending bit cleared). The recorded
+	// value wins over the caller's (possibly older) input, so an
+	// intervening save is never clobbered.
 	if generation > 1 {
 		if stored, changed, ok := s.pendingNotesHumanIntent(outerID); ok {
 			if !changed {
@@ -133,6 +136,9 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
 		}
 		if stored, ok := s.notesDeliveryPending(outerID); ok {
+			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
+		}
+		if stored, ok := s.notesSupersededWriteTombstone(outerID); ok {
 			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
 		}
 	}
@@ -162,6 +168,12 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	if adopted, ok := s.adoptPendingNotesDelivery(outerID, note, lease); ok {
 		live, _ := s.notesSnapshot()
 		if live != normalizeNote(note) {
+			// This fresh write supersedes the adopted delivery: spend the
+			// adopted pending marker (leaving its stored value as the
+			// tombstone) BEFORE this attempt's own persist, so a same-ID
+			// retry of the adopted ID recognizes the landed write — even
+			// when this attempt's persist below fails and the retry arrives
+			// while the adopted record would otherwise look unfinished.
 			s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
 			s.clearPendingNotesHuman(adopted.outerID)
 		} else {
@@ -530,10 +542,39 @@ func (s *Session) clearNotesDeliveryPending(outerID, stored string) {
 			return nil
 		}
 		record.NotesDeliveryPending = false
-		record.NotesStoredValue = ""
+		// Keep the stored value as the tombstone: delivery for it already
+		// finished via this attempt's steer, and a same-ID retry of the
+		// adopted ID must recognize the landed write (tombstone path in
+		// completeNotesHumanSet) instead of rewriting the store against a
+		// newer intervening save. adoptPendingNotesDelivery only matches
+		// pending (NotesDeliveryPending) records, so the kept value cannot
+		// be re-adopted; notesDeliveryPending still gates on the pending
+		// bit, so it keeps reporting no pending delivery.
 		snapshot.Journal[outerID] = record
 		return nil
 	})
+}
+
+// notesSupersededWriteTombstone reports the stored value a superseding
+// fresh-ID write left behind for outerID (see clearNotesDeliveryPending):
+// the pending bit is cleared but NotesStoredValue still names the landed
+// write, on a still-InFlight record. completeNotesHumanSet treats a
+// generation>1 retry carrying that tombstone like stillPending == false —
+// the write landed and its delivery finished via the superseding write —
+// so the retry journals its own applied result without rewriting the store.
+// An already-Applied record replays on its own; a live pending marker takes
+// the delivery path; anything else is no tombstone.
+func (s *Session) notesSupersededWriteTombstone(outerID string) (string, bool) {
+	if s.clientMutations == nil {
+		return "", false
+	}
+	record, exists := s.clientMutations.snapshot().Journal[outerID]
+	if !exists || record.Method != clientMutationMethodNotesHumanSet ||
+		record.OperationState != clientMutationOperationInFlight ||
+		record.NotesDeliveryPending || record.NotesStoredValue == "" {
+		return "", false
+	}
+	return record.NotesStoredValue, true
 }
 
 // pendingNotesHumanIntent reports the notes/human/set intent the last atomic
