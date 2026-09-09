@@ -237,7 +237,12 @@ func InstallDirsFromExecutable(exe string) (prefix, binDir, shareBinDir string) 
 				entry = abs
 			}
 			sibling := filepath.Join(entry, filepath.Base(exe))
-			if entry != dir {
+			// Compare resolved directory identities, not path strings: a
+			// symlinked ancestor makes different strings name the same
+			// directory, and binDir==shareBinDir corrupts the install.
+			entryResolved, err1 := filepath.EvalSymlinks(entry)
+			dirResolved, err2 := filepath.EvalSymlinks(dir)
+			if err1 == nil && err2 == nil && entryResolved != dirResolved {
 				if resolved, err := filepath.EvalSymlinks(sibling); err == nil && resolved == candidate {
 					return prefix, entry, dir
 				}
@@ -251,7 +256,9 @@ func InstallDirsFromExecutable(exe string) (prefix, binDir, shareBinDir string) 
 	// binary, derive both dirs directly from the link instead of matching
 	// suffixes -- the prefix is unknowable, so return it empty and let the
 	// caller use binDir/shareBinDir as given.
-	if entryDir != dir {
+	entryResolved, errE := filepath.EvalSymlinks(entryDir)
+	dirResolved, errD := filepath.EvalSymlinks(dir)
+	if errE == nil && errD == nil && entryResolved != dirResolved {
 		sibling := filepath.Join(entryDir, filepath.Base(exe))
 		if abs, err := filepath.Abs(entryDir); err == nil {
 			if resolved, err := filepath.EvalSymlinks(sibling); err == nil && resolved == candidate {
@@ -604,7 +611,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		}
 		prev, statErr := os.ReadFile(dst)
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			rollback()
+			_ = os.Remove(tmp)
 			return nil, fmt.Errorf("read existing %s: %w", dst, statErr)
 		}
 		s := staged{bin: bin, tmp: tmp, previous: prev, hadPrev: statErr == nil}
@@ -696,10 +703,15 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		// Snapshot a regular-file entrypoint just before swapSymlink
 		// destroys it: deferred from stage time so an earlier abort
 		// (ctx error, this rename failure) never pays the read.
+		// Abort if the read fails — silently ignoring it destroys an
+		// unbackupable entrypoint.
 		if s.linkIsRegular && s.linkFile == nil {
-			if data, rerr := os.ReadFile(filepath.Join(binDir, s.bin)); rerr == nil {
-				s.linkFile = data
+			data, rerr := os.ReadFile(filepath.Join(binDir, s.bin))
+			if rerr != nil {
+				restore()
+				return nil, fmt.Errorf("snapshot entrypoint %s: %w", filepath.Join(binDir, s.bin), rerr)
 			}
+			s.linkFile = data
 		}
 		if err := swapSymlink(dst, filepath.Join(binDir, s.bin)); err != nil {
 			restore()
