@@ -16,13 +16,13 @@
   color: var(--danger);
 }
 
-/* On intent-bearing tool rows (toolcallitem's .row[data-intent="true"]),
- * match the rationale's tightened line-height so the cross centres on the
- * first line. The PARENT selector is :global (the .row class lives in
- * toolcallitem.module.css) while .glyph stays LOCAL here, so the compiled
- * descendant selector reaches the hashed class this module actually renders.
- * See the matching overrides on .rowIcon and .status in
- * toolcallitem.module.css. */
-:global(.row[data-intent="true"]) .glyph {
+/* On intent-bearing tool rows (ToolRow's data-intent="true"]), match the
+ * rationale's tightened line-height so the cross centres on the first line.
+ * Scoped by the data-intent ATTRIBUTE, not a class: .row lives in
+ * toolcallitem.module.css and compiles to a hashed name there, so a
+ * :global(.row…) parent would never match the rendered DOM. The attribute is
+ * set only on ToolRow's root div. See the matching overrides on .rowIcon and
+ * .status in toolcallitem.module.css. */
+:global([data-intent="true"]) .glyph {
   line-height: var(--line-height-title);
 }
