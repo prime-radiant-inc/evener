@@ -252,8 +252,11 @@ test("missing credentials surface setup in the composer without opening a dialog
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "draft-sentinel");
   await setWorkingDir(user, "/tmp/my-project");
   expect((screen.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
-  await user.click(connect);
-  await screen.findByRole("dialog");
+  await act(async () => {
+    await user.click(connect);
+    await vi.dynamicImportSettled();
+  });
+  expect(screen.getByRole("dialog")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
