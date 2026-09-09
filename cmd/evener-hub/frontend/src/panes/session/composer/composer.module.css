@@ -64,7 +64,7 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-chip);
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--surface-inset);
   transition: border-color var(--motion-duration-overlay);
 }
 

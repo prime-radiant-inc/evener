@@ -121,8 +121,6 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .sectionHeadingRow {
@@ -154,8 +152,6 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
   cursor: default;
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
