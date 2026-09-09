@@ -16,7 +16,7 @@ steer. Hub Details sidebar and TUI drawer display all three.
 
 Extend persisted `SessionMeta` (`agent/schema/snapshot.go`, `<id>.meta.json`)
 with `humanNote: string`, `agentNote: string`, and
-`sessionUrls: [{id, url, label?, addedBy: human|agent, addedAt}]`. Mirror
+`sessionUrls: [{id, url, label?, addedBy: agent, addedAt}]`. Mirror
 in-memory on `Session` (`agent/session.go`). Project onto wire `EvenerThread`
 (`appwire/types.go`), hub `fetchStatus`/`daemonStatus`
 (`cmd/evener-hub/web_session.go`), and frontend `ThreadModel`
@@ -59,10 +59,11 @@ by value (repeat sets converge; last writer wins). Wire conformance tests
   interrupts like steer. Reuse the steering path; do not fork it. The inner
   steer derives its mutation id deterministically from the outer
   clientMutationId (`outer + "/note-steer"`), and the daemon dedupes on it, so
-  a hub retry of the outer RPC never double-interrupts. A save whose text
-  equals the stored note is a no-op: return the current value with no push and
-  no steer. Clearing (empty string) notifies with a "(whiteboard cleared)"
-  marker instead of empty inline text.
+a hub retry of the outer RPC never double-interrupts. A save whose text
+equals the stored note is a no-op: return the current value with no push and
+no steer — including an empty save on an already-empty note. Clearing means
+a non-empty-to-empty transition, which notifies with a
+"(whiteboard cleared)" marker instead of empty inline text.
 - Idle sessions follow `turn/steer` semantics exactly: the injected steering
   wakes the session via a steering-carrier turn, which costs a model turn.
   The Details UI names this when the session is idle ("saving will wake the
@@ -70,12 +71,17 @@ by value (repeat sets converge; last writer wins). Wire conformance tests
 - `notes/agent/set` (agent tool, same family as `update_goal`; handler beside
   `session_tools_goal.go`).
 - `urls/add` (agent tool: url plus optional label). The server validates the
-  scheme (http(s) or `file:`), resolves bare file paths against the session
-  cwd per the `securepath` precedent, and `securepath`-checks absolute
-  `file:///` URLs the same way. The dedup key is the canonical resolved URL,
-  so `docs/x.md` and `./docs/x.md` collide. Re-adding an existing URL with a
-  different label updates the label and returns the existing entry (id,
-  addedBy, addedAt unchanged).
+scheme (http(s) or `file:`), resolves bare file paths against the session cwd
+per the `securepath` precedent, and `securepath`-checks absolute
+`file:///` URLs the same way. The dedup key is the canonical resolved URL:
+bare paths resolve against the session cwd first (so `docs/x.md` and
+`./docs/x.md` collide, and a bare path collides with its `file:///` absolute
+form); http(s) URLs normalize by lowercasing scheme and host, dropping
+default ports, collapsing a trailing slash on an empty path, and dropping
+the fragment. Re-adding an existing URL with a
+different label updates the label and returns the existing entry (id,
+addedBy, addedAt unchanged). URL and label lengths cap at 2048 and 280
+characters; over-length adds fail with a typed error the tool surfaces.
 - `urls/remove` (agent tool plus hub RPC, by entry id).
 
 Pushes `evener/notes/updated` and `evener/urls/updated` mirror
@@ -92,7 +98,12 @@ models, fallback invalidation, same as the goal path). Wire checklist for
 all four RPCs plus both pushes: `appwire/protocol.go` catalog entries,
 `appwire/client.go` methods, `docs/appwire-protocol.md`, `make generate` for
 `types.gen.ts` (never hand-edited), and deep-copy support in `appwire/clone.go`
-(the URL slice must not alias across cloned snapshots).
+(the URL slice must not alias across cloned snapshots). Capability: a
+`SharedNotes bool` on `ThreadCapabilities` (beside `Goal`), true for live
+evener sessions whose daemon wires the four verbs; hub and TUI gate the
+section, edit affordances, and remove buttons on it, and the two hub RPCs
+reject when unset — so an old daemon with a new hub fails closed instead of
+dropping writes.
 
 ## Agent read path
 
@@ -180,6 +191,10 @@ RPC, push rerenders, failure toasts with draft kept) plus `threads.ts` and
 `hub_goal_test.go`, plus the notification-coverage gate. E2E scenarios in
 `test/scenarios/` for human-note-interrupts-thread and
 agent-add/human-remove-URL, mirroring the goal set-and-complete scenarios.
+Also: appending `human-note` to `events.AllSteeringKinds` (the generation
+source for the `STEERING_KINDS` catalog in `internal/appwirets/emit.go`) with
+its producer-coverage test updated, and `make generate` golden output
+refreshed.
 
 ## Non-goals
 
