@@ -17,6 +17,7 @@ import (
 // passes the caller's unbounded context straight through.
 func TestHubUpdateApplyBoundsTheWholeUpgrade(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previous := hubUpgradeTimeout
 	hubUpgradeTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { hubUpgradeTimeout = previous })

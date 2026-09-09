@@ -17,6 +17,7 @@ import (
 // Fails today: hubInstallDirs reads only hubExecutable().
 func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	root := t.TempDir()
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
@@ -70,6 +71,7 @@ func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 // target on Linux), losing the custom BINDIR.
 func TestHubUpdateApplyResolvesBarePathInvocation(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	root := t.TempDir()
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {

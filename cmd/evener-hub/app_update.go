@@ -131,6 +131,26 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	if !hubRestartSupported() {
 		return appwire.UpdateApplyResponse{}, errors.New("in-place restart is not supported on this platform; use evener/upgrade and restart manually")
 	}
+	// Re-check server-side before installing: the store refuses stale
+	// checks, but a direct RPC (or a check that went stale in flight)
+	// would otherwise download, reinstall, and exec an identical build --
+	// and the frontend poll keys on a version change, so a no-op restart
+	// ends in a misleading restart-timeout. Runs before the lock: there
+	// is nothing to serialize when no install follows.
+	fresh, err := runHubUpdateCheck(ctx, selfupdate.CheckOptions{
+		Channel:    channel,
+		CurrentSHA: buildinfo.GitSHA,
+	})
+	if err != nil {
+		return appwire.UpdateApplyResponse{}, err
+	}
+	if !fresh.UpdateAvailable {
+		return appwire.UpdateApplyResponse{
+			Release:    fresh.LatestTag,
+			Channel:    fresh.Channel,
+			Restarting: false,
+		}, nil
+	}
 	if err := tryLockHubUpdate(); err != nil {
 		return appwire.UpdateApplyResponse{}, err
 	}
@@ -335,8 +355,11 @@ func scheduleHubRestartAfterResponse(ctx context.Context, pin restartPin, binary
 			// O_CLOEXEC so a successful Exec drops the lock exactly as
 			// the new image takes over; on failure release it here.
 			// A short timeout: a stuck holder must abort the restart,
-			// not strand the hub past its health-poll window.
-			relockCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			// not strand the hub past its health-poll window. The bound
+			// stays well under the frontend's 30s restart poll (plus the
+			// post-response delay above) so a contended-but-successful
+			// restart still lands before the UI declares a timeout.
+			relockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			release, err := selfupdate.AcquireInstallLockForVerify(relockCtx, pin.shareBinDir)
 			cancel()
 			if err != nil {

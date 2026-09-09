@@ -169,11 +169,18 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
     set({ applying: true, applyError: null, restartTimedOut: false });
     const previous = check.currentVersion;
     try {
-      await requireClient().request(
+      const resp = (await requireClient().request(
         "evener/update/apply",
         { channel: get().channel ?? "" },
         { timeoutMs: APPLY_TIMEOUT_MS },
-      );
+      )) as { restarting?: boolean };
+      // The server re-checks before installing and answers restarting:false
+      // when the channel was already current: no download, no exec, no new
+      // version to poll for. Report it instead of polling into a timeout.
+      if (resp && resp.restarting === false) {
+        set({ applying: false, applyError: "Already up to date" });
+        return;
+      }
     } catch (err) {
       set({ applying: false, applyError: friendlyErrorMessage(err) });
       return;

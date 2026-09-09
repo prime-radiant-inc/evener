@@ -17,6 +17,11 @@ import (
 
 const defaultAPIURL = "https://api.github.com"
 
+// minCurrentSHALen is the shortest CurrentSHA that may claim to be current:
+// release builds stamp a 7-char ShortCommit (see .goreleaser.yml), and
+// anything shorter matches exponentially more full SHAs. See Check.
+const minCurrentSHALen = 7
+
 // CheckOptions configures Check. Channel is required; the rest default.
 type CheckOptions struct {
 	Channel    string
@@ -80,11 +85,15 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	if commit.SHA == "" {
 		return CheckResult{}, fmt.Errorf("tag %s resolved to no commit", tag)
 	}
+	// A prefix shorter than what release builds stamp (7-char ShortCommit)
+	// cannot prove currency: it matches 16^(7-len) full SHAs, so a
+	// collision would report up to date and hide an available update.
+	// Fail open — such an input is always treated as stale.
 	return CheckResult{
 		Channel:         opts.Channel,
 		LatestTag:       tag,
 		LatestCommit:    commit.SHA,
-		UpdateAvailable: opts.CurrentSHA == "" || !strings.HasPrefix(commit.SHA, opts.CurrentSHA),
+		UpdateAvailable: opts.CurrentSHA == "" || len(opts.CurrentSHA) < minCurrentSHALen || !strings.HasPrefix(commit.SHA, opts.CurrentSHA),
 	}, nil
 }
 

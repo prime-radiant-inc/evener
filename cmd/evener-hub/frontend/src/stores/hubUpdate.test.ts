@@ -275,6 +275,34 @@ describe("apply", () => {
     expect(hubUpdateStore.getState().restarting).toBe(false);
   });
 
+  test("does not poll for a restart the server says is not coming", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const fetchImpl = healthFetch(["be70029"]);
+    resetHubUpdateStoreForTests({ fetchImpl, reload });
+    const fake = connectFakeClient();
+    fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true }));
+    // The server re-checked and found nothing to install: no download, no
+    // exec, no version change to wait for.
+    fake.on("evener/update/apply", () => ({
+      release: "snapshot",
+      channel: "snapshot",
+      installed: [],
+      restarting: false,
+    }));
+    hubUpdateStore.getState().setChannel("snapshot");
+    await act(() => hubUpdateStore.getState().runCheck());
+
+    await act(() => hubUpdateStore.getState().apply());
+
+    // Fails today: apply discards the response and always polls into a
+    // restart timeout on an unchanged version.
+    expect(hubUpdateStore.getState().restarting).toBe(false);
+    expect(hubUpdateStore.getState().restartTimedOut).toBe(false);
+    expect(hubUpdateStore.getState().applyError).toBe("Already up to date");
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   test("requests evener/update/apply, then polls /api/health until the version changes and reloads", async () => {
     vi.useFakeTimers();
     const reload = vi.fn();

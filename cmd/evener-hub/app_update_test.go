@@ -67,6 +67,21 @@ func stubUpdateCheck(t *testing.T, fn func(context.Context, selfupdate.CheckOpti
 	return &calls
 }
 
+// stubUpdateAvailable stubs the pre-install freshness check hubUpdateApply
+// runs before locking: tests exercising the upgrade seam must not depend on
+// live GitHub (AGENTS.md forbids network in default tests).
+func stubUpdateAvailable(t *testing.T) {
+	t.Helper()
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       opts.Channel,
+			LatestCommit:    "ffffffffffffffffffffffffffffffffffffffff",
+			UpdateAvailable: true,
+		}, nil
+	})
+}
+
 func stubHubSelfUpgrade(t *testing.T, fn func(context.Context, selfupdate.Options) (selfupdate.Result, error)) *int {
 	t.Helper()
 	calls := 0
@@ -213,6 +228,7 @@ func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
 
 func TestHubUpdateApplyInstallsThenSchedulesRestartWithHubArgs(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousArgs := hubProcessArgs
 	hubProcessArgs = func() []string { return []string{"/old/evener", "hub", "-addr", "0.0.0.0:9180"} }
 	t.Cleanup(func() { hubProcessArgs = previousArgs })
@@ -248,6 +264,7 @@ func TestHubUpdateApplyInstallsThenSchedulesRestartWithHubArgs(t *testing.T) {
 
 func TestHubUpdateApplyDefaultChannelIsBuildChannel(t *testing.T) {
 	setBuild(t, "3b1c5f8", "release")
+	stubUpdateAvailable(t)
 	var gotOpts selfupdate.Options
 	stubHubSelfUpgrade(t, func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
 		gotOpts = opts
@@ -264,6 +281,7 @@ func TestHubUpdateApplyDefaultChannelIsBuildChannel(t *testing.T) {
 
 func TestHubUpdateApplyUpgradeFailureDoesNotRestart(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
 		return selfupdate.Result{}, errors.New("download failed")
 	})
@@ -279,6 +297,7 @@ func TestHubUpdateApplyUpgradeFailureDoesNotRestart(t *testing.T) {
 
 func TestHubUpdateApplyRejectsResultWithoutInstalledBinary(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
 		return selfupdate.Result{Release: "snapshot", Channel: "snapshot"}, nil
 	})
@@ -294,6 +313,7 @@ func TestHubUpdateApplyRejectsResultWithoutInstalledBinary(t *testing.T) {
 
 func TestHubUpdateApplyPicksEvenerFromInstalled(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousArgs := hubProcessArgs
 	hubProcessArgs = func() []string { return []string{"/old/evener", "hub"} }
 	t.Cleanup(func() { hubProcessArgs = previousArgs })
@@ -311,6 +331,7 @@ func TestHubUpdateApplyPicksEvenerFromInstalled(t *testing.T) {
 
 func TestHubUpdateApplyErrorsWhenInstalledHasNoEvener(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
 		return stubInstalledResult(t, "evener-dev"), nil
 	})
@@ -372,6 +393,7 @@ func TestHubUpdateCheckRejectsUnknownChannel(t *testing.T) {
 
 func TestHubUpdateApplySerializesConcurrentCalls(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	block := make(chan struct{})
 	entered := make(chan struct{}, 1)
 	stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
@@ -409,6 +431,7 @@ func TestHubUpdateApplySerializesConcurrentCalls(t *testing.T) {
 
 func TestHubUpdateApplyReleasesLockWhenRestartExecFails(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousDelay := hubRestartDelay
 	hubRestartDelay = 0
 	t.Cleanup(func() { hubRestartDelay = previousDelay })
@@ -448,6 +471,7 @@ func TestHubUpdateApplyReleasesLockWhenRestartExecFails(t *testing.T) {
 
 func TestHubUpdateApplyRestartsAfterTheResponseIsWritten(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousDelay := hubRestartDelay
 	hubRestartDelay = 0
 	t.Cleanup(func() { hubRestartDelay = previousDelay })

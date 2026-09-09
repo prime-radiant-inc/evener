@@ -32,6 +32,7 @@ func TestHubUpgradeRefusedWhileApplyHoldsTheLock(t *testing.T) {
 
 func TestHubUpdateApplyRefusedWhileUpgradeHoldsTheLock(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	if !hubUpdateMu.TryLock() {
 		t.Fatal("failed to take hubUpdateMu")
 	}

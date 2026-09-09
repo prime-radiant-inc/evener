@@ -159,3 +159,19 @@ func TestCheckSendsProductUserAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckShortPrefixIsStale proves a truncated CurrentSHA cannot claim to
+// be current: builds stamp a 7-char short SHA, so a 1-6 char prefix match
+// against the channel's full commit hides an available update on collision.
+// Such a short input must fail open (update available), never up to date.
+// Fails today: any HasPrefix match reports current.
+func TestCheckShortPrefixIsStale(t *testing.T) {
+	server, _, _ := fakeGitHub(t, "", "be7002918fdc60dbdeab71d9dd17e00d3d006c56", http.StatusOK)
+	got, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "be70", APIURL: server.URL})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !got.UpdateAvailable {
+		t.Fatal("UpdateAvailable = false for a 4-char prefix of the latest commit, want true (too short to prove currency)")
+	}
+}

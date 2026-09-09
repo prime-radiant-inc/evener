@@ -223,6 +223,118 @@ func TestInstallPairRollbackRemovesFreshLinks(t *testing.T) {
 	}
 }
 
+// TestInstallPairRestoresOnDigestFailure proves a digest failure after the
+// commit rolls the pair back: committed binaries must not stay live when
+// the install reports an error and no restart follows. Fails today:
+// committed=true is set before digestsUnderLock runs, so a digest error
+// leaves the swapped pair on disk unrestored.
+func TestInstallPairRestoresOnDigestFailure(t *testing.T) {
+	extractDir := t.TempDir()
+	shareBin := filepath.Join(t.TempDir(), "share")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	for _, d := range []string{extractDir, shareBin, binDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldBody := []byte("old release binary")
+	for _, bin := range installBinaries {
+		if err := os.WriteFile(filepath.Join(extractDir, bin), []byte("new "+bin), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(shareBin, bin), oldBody, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(shareBin, bin), filepath.Join(binDir, bin)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Remove one committed binary before digest time: digestsUnderLock must
+	// fail, and the install must roll back instead of leaving the new pair.
+	previous := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		if err := os.Rename(oldpath, newpath); err != nil {
+			return err
+		}
+		if filepath.Base(newpath) == installBinaries[1] {
+			_ = os.Remove(newpath)
+		}
+		return nil
+	}
+	t.Cleanup(func() { renameFile = previous })
+
+	if _, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir); err == nil {
+		t.Fatal("expected a digest error from the removed committed binary")
+	}
+	for _, bin := range installBinaries {
+		got, err := os.ReadFile(filepath.Join(shareBin, bin))
+		if err != nil {
+			t.Fatalf("read %s: %v", bin, err)
+		}
+		if !bytes.Equal(got, oldBody) {
+			t.Fatalf("%s = %q after digest failure, want the old release restored", bin, got)
+		}
+	}
+}
+
+// TestInstallPairPreservesCopiedEntrypoint proves rollback restores a
+// pre-existing non-symlink binDir entry: a copied (not symlinked) binary is
+// a supported layout, and swapSymlink's rename-over destroys it. Fails
+// today: restore() leaves the swapped-in link in place for non-symlinks.
+func TestInstallPairPreservesCopiedEntrypoint(t *testing.T) {
+	extractDir := t.TempDir()
+	shareBin := filepath.Join(t.TempDir(), "share")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	for _, d := range []string{extractDir, shareBin, binDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldBody := []byte("old release binary")
+	for _, bin := range installBinaries {
+		if err := os.WriteFile(filepath.Join(extractDir, bin), []byte("new "+bin), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(shareBin, bin), oldBody, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Copied entrypoint for evener: a regular file, not a symlink.
+	copiedBody := []byte("copied entrypoint binary")
+	if err := os.WriteFile(filepath.Join(binDir, "evener"), copiedBody, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(shareBin, "evener-dev"), filepath.Join(binDir, "evener-dev")); err != nil {
+		t.Fatal(err)
+	}
+
+	previous := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		if filepath.Base(newpath) == installBinaries[1] {
+			return errors.New("injected second-binary failure")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFile = previous })
+
+	if _, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir); err == nil {
+		t.Fatal("expected the injected second-binary failure")
+	}
+	got, err := os.ReadFile(filepath.Join(binDir, "evener"))
+	if err != nil {
+		t.Fatalf("read binDir evener: %v", err)
+	}
+	if !bytes.Equal(got, copiedBody) {
+		t.Fatalf("binDir evener = %q after rollback, want the copied entrypoint restored", got)
+	}
+	if fi, err := os.Lstat(filepath.Join(binDir, "evener")); err != nil {
+		t.Fatalf("lstat binDir evener: %v", err)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("binDir evener is a symlink after rollback, want the original regular file")
+	}
+}
+
 // TestUpgradeDigestsUnderLock proves InstalledSHA256 reflects the bytes
 // committed while the install lock was held: a test double swaps one
 // installed binary between commit and digest time would previously poison

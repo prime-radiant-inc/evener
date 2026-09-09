@@ -17,6 +17,7 @@ import (
 // no install dirs at all.
 func TestHubUpdateApplyUpgradesTheRunningPrefix(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousExe := hubExecutable
 	hubExecutable = func() (string, error) { return "/usr/local/share/evener/bin/evener", nil }
 	t.Cleanup(func() { hubExecutable = previousExe })
@@ -50,6 +51,7 @@ func TestHubUpdateApplyUpgradesTheRunningPrefix(t *testing.T) {
 // ~/.local and the wrong prefix is upgraded.
 func TestHubUpdateApplyResolvesBinSymlinkEntrypoint(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	root := t.TempDir()
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
@@ -97,6 +99,7 @@ func TestHubUpdateApplyResolvesBinSymlinkEntrypoint(t *testing.T) {
 // Upgrade's own defaults: empty install dirs, not garbage.
 func TestHubUpdateApplyDefaultsInstallDirsForUnknownLayouts(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateAvailable(t)
 	previousExe := hubExecutable
 	hubExecutable = func() (string, error) { return "/tmp/worktree-evener-build/evener-hub", nil }
 	t.Cleanup(func() { hubExecutable = previousExe })

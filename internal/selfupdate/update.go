@@ -561,12 +561,13 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		previous []byte // pre-install content, nil when dst is new
 		hadPrev  bool
 		// linkHadEntry reports a pre-install binDir entry; linkTarget and
-		// linkIsLink describe it (symlink target, or "" for a regular
-		// file/dir which rollback cannot reconstruct byte-exact -- it
-		// removes a swapped-in link instead of guessing).
+		// linkIsLink describe it. linkFile holds the bytes of a regular
+		// file entry (a copied executable is a supported layout), so
+		// rollback can restore it after swapSymlink's rename-over.
 		linkHadEntry bool
 		linkTarget   string
 		linkIsLink   bool
+		linkFile     []byte
 	}
 	var stagedBins []staged
 	rollback := func() {
@@ -595,6 +596,12 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 				if target, rerr := os.Readlink(filepath.Join(binDir, bin)); rerr == nil {
 					s.linkTarget = target
 				}
+			} else if fi.Mode().IsRegular() {
+				// Snapshot now: the commit loop's rename-over destroys
+				// these bytes, and rollback must restore them.
+				if data, rerr := os.ReadFile(filepath.Join(binDir, bin)); rerr == nil {
+					s.linkFile = data
+				}
 			}
 		}
 		stagedBins = append(stagedBins, s)
@@ -613,16 +620,23 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			// failure must remove the swapped-in link rather than
 			// leave it dangling after its target is deleted.
 			link := filepath.Join(binDir, s.bin)
-			if !s.linkHadEntry {
+			switch {
+			case !s.linkHadEntry:
 				_ = os.Remove(link)
-			} else if s.linkIsLink {
+			case s.linkIsLink:
 				_ = os.Remove(link)
 				_ = os.Symlink(s.linkTarget, link)
+			case s.linkFile != nil:
+				// A copied executable: restore the snapshotted bytes
+				// over the swapped-in link.
+				_ = os.Remove(link)
+				_ = os.WriteFile(link, s.linkFile, 0o755)
+			default:
+				// A non-regular entry (dir and friends) cannot be
+				// reconstructed after rename-over destroyed it; leave
+				// the new link pointing at the restored binary rather
+				// than guessing.
 			}
-			// A pre-existing non-symlink entry (regular file, dir)
-			// cannot be reconstructed: swapSymlink replaced it via
-			// rename-over, so the bytes are gone. Leave the new link
-			// pointing at the restored binary rather than guessing.
 			dst := filepath.Join(shareBinDir, s.bin)
 			if !s.hadPrev {
 				_ = os.Remove(dst)
@@ -647,8 +661,16 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			return nil, err
 		}
 	}
+	// Digest before committing the transaction: a digest failure must roll
+	// back the swapped pair like any other commit error, not leave the new
+	// binaries live while the install reports failure and no restart runs.
+	digests, err := digestsUnderLock(shareBinDir)
+	if err != nil {
+		restore()
+		return nil, err
+	}
 	committed = true
-	return digestsUnderLock(shareBinDir)
+	return digests, nil
 }
 
 // digestsUnderLock hashes each committed managed binary. Callers must
