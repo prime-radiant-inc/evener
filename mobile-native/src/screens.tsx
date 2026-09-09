@@ -64,6 +64,7 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
+import { ProjectSessionsList } from "./ProjectSessionsList";
 import {
 	editPairingInput,
 	importPairing as importReviewedPairing,
@@ -430,6 +431,8 @@ export function SessionsScreen({
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
 	const [searchText, setSearchText] = useState("");
+	const [searchActive, setSearchActive] = useState(false);
+	const focused = useIsFocused();
 	const roster = useMemo(
 		() =>
 			new RosterSearch(
@@ -445,25 +448,31 @@ export function SessionsScreen({
 		query,
 	} = useSyncExternalStore(roster.subscribe, roster.getSnapshot);
 	const refresh = useCallback(async () => {
-		if (state === "ready") await roster.load();
-	}, [roster, state]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: A new connection starts with an unfiltered roster.
+		if (state === "ready" && searchActive) await roster.load();
+	}, [roster, state, searchActive]);
 	useEffect(() => {
 		setSearchText("");
+		setSearchActive(false);
+		return () => roster.cancel();
 	}, [roster]);
 	useFocusEffect(
 		useCallback(() => {
 			const unwatch =
-				client && state === "ready"
+				client && state === "ready" && searchActive
 					? roster.watch(client)
-					: () => roster.cancel();
-			void refresh();
+					: () => {};
 			return unwatch;
-		}, [refresh, roster, client, state]),
+		}, [roster, client, state, searchActive]),
 	);
 	function search(value: string) {
 		if (state !== "ready") return;
 		Keyboard.dismiss();
+		if (!value.trim()) {
+			setSearchActive(false);
+			roster.cancel();
+			return;
+		}
+		setSearchActive(true);
 		void roster.load(value);
 	}
 	useEffect(() => {
@@ -483,8 +492,46 @@ export function SessionsScreen({
 				{
 					type: "button",
 					label: "New session",
+					icon: { type: "sfSymbol", name: "square.and.pencil" },
 					disabled: !activeProfile || state !== "ready",
 					onPress: openNew,
+				},
+				{
+					type: "menu",
+					label: "Hub actions",
+					accessibilityLabel: "Hub actions",
+					icon: { type: "sfSymbol", name: "ellipsis" },
+					disabled: !activeProfile,
+					menu: {
+						items: [
+							{
+								type: "action",
+								label: "Hub settings",
+								disabled: state !== "ready",
+								onPress: () =>
+									navigation.navigate("HubSettings", {
+										hubId: activeProfile?.id ?? "",
+									}),
+							},
+							{
+								type: "action",
+								label: "Browse projects",
+								disabled: state !== "ready",
+								onPress: () =>
+									navigation.navigate("Projects", {
+										hubId: activeProfile?.id ?? "",
+									}),
+							},
+							{
+								type: "action",
+								label: "Pinned sections",
+								onPress: () =>
+									navigation.navigate("PinSections", {
+										hubId: activeProfile?.id ?? "",
+									}),
+							},
+						],
+					},
 				},
 			],
 			headerLeft: () => <Action onPress={openHubs}>Hubs</Action>,
@@ -499,227 +546,261 @@ export function SessionsScreen({
 			),
 		});
 	}, [navigation, activeProfile, state, fontScale]);
+	const header = (
+		<View style={{ marginBottom: 4 }}>
+			<ConnectionStatus />
+			{Platform.OS !== "ios" ? (
+				<View style={[styles.row, { flexWrap: "wrap" }]}>
+					<Action
+						disabled={!activeProfile || state !== "ready"}
+						onPress={() => {
+							if (activeProfile)
+								navigation.navigate("HubSettings", {
+									hubId: activeProfile.id,
+								});
+						}}
+					>
+						Hub settings
+					</Action>
+					<Action
+						disabled={!activeProfile || state !== "ready"}
+						onPress={() => {
+							if (activeProfile)
+								navigation.navigate("Projects", {
+									hubId: activeProfile.id,
+								});
+						}}
+					>
+						Browse projects
+					</Action>
+					<Action
+						disabled={!activeProfile}
+						onPress={() => {
+							if (activeProfile)
+								navigation.navigate("PinSections", {
+									hubId: activeProfile.id,
+								});
+						}}
+					>
+						Pinned sections
+					</Action>
+				</View>
+			) : null}
+			<View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
+				<View style={[styles.row, { flexWrap: "wrap" }]}>
+					<TextInput
+						accessibilityLabel="Search sessions"
+						placeholder="Search sessions"
+						placeholderTextColor={colors.secondary}
+						value={searchText}
+						onChangeText={setSearchText}
+						onSubmitEditing={() => search(searchText)}
+						returnKeyType="search"
+						autoCapitalize="none"
+						autoCorrect={false}
+						style={[
+							styles.input,
+							styles.fill,
+							{
+								minWidth: fontScale > 1.4 ? "100%" : "50%",
+								color: colors.text,
+								borderColor: colors.border,
+								backgroundColor: colors.surface,
+							},
+						]}
+					/>
+					<Action
+						disabled={state !== "ready"}
+						onPress={() => search(searchText)}
+					>
+						Search
+					</Action>
+					{searchText || searchActive ? (
+						<Action
+							disabled={state !== "ready"}
+							onPress={() => {
+								setSearchText("");
+								search("");
+							}}
+						>
+							Clear
+						</Action>
+					) : null}
+				</View>
+				{searchActive && query ? (
+					<Copy muted>{`Results for “${query}”`}</Copy>
+				) : null}
+			</View>
+			<ErrorMessage message={searchActive ? error : null} />
+			{searchActive && error ? (
+				<Action
+					disabled={state !== "ready" || refreshing}
+					onPress={() => {
+						void refresh();
+					}}
+				>
+					Retry sessions
+				</Action>
+			) : null}
+		</View>
+	);
 	return (
 		<SafeAreaView
 			edges={["bottom", "left", "right"]}
 			style={[styles.fill, { backgroundColor: colors.background }]}
 		>
-			<FlatList
-				ListHeaderComponent={
-					<View style={{ marginBottom: 4 }}>
-						<ConnectionStatus />
-						<View style={[styles.row, { flexWrap: "wrap" }]}>
-							<Action
-								disabled={!activeProfile || state !== "ready"}
-								onPress={() => {
-									if (activeProfile)
-										navigation.navigate("HubSettings", {
-											hubId: activeProfile.id,
-										});
-								}}
-							>
-								Hub settings
-							</Action>
-							<Action
-								disabled={!activeProfile || state !== "ready"}
-								onPress={() => {
-									if (activeProfile)
-										navigation.navigate("Projects", {
-											hubId: activeProfile.id,
-										});
-								}}
-							>
-								Browse projects
-							</Action>
-							<Action
-								disabled={!activeProfile}
-								onPress={() => {
-									if (activeProfile)
-										navigation.navigate("PinSections", {
-											hubId: activeProfile.id,
-										});
-								}}
-							>
-								Pinned sections
-							</Action>
-						</View>
-						<View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
-							<View style={[styles.row, { flexWrap: "wrap" }]}>
-								<TextInput
-									accessibilityLabel="Search sessions"
-									placeholder="Search sessions"
-									placeholderTextColor={colors.secondary}
-									value={searchText}
-									onChangeText={setSearchText}
-									onSubmitEditing={() => search(searchText)}
-									returnKeyType="search"
-									autoCapitalize="none"
-									autoCorrect={false}
-									style={[
-										styles.input,
-										styles.fill,
-										{
-											minWidth: fontScale > 1.4 ? "100%" : "50%",
-											color: colors.text,
-											borderColor: colors.border,
-											backgroundColor: colors.surface,
-										},
-									]}
-								/>
-								<Action
-									disabled={state !== "ready"}
-									onPress={() => search(searchText)}
-								>
-									Search
-								</Action>
-								{searchText || query ? (
-									<Action
-										disabled={state !== "ready"}
-										onPress={() => {
-											setSearchText("");
-											search("");
-										}}
-									>
-										Clear
-									</Action>
-								) : null}
-							</View>
-							{query ? <Copy muted>{`Results for “${query}”`}</Copy> : null}
-						</View>
-						<ErrorMessage message={error} />
-						{error ? (
-							<Action
-								disabled={state !== "ready" || refreshing}
-								onPress={() => {
-									void refresh();
-								}}
-							>
-								Retry sessions
-							</Action>
-						) : null}
-					</View>
-				}
-				keyboardShouldPersistTaps="handled"
-				data={rows}
-				keyExtractor={(item) => item.ref}
-				refreshing={refreshing}
-				onRefresh={() => {
-					void refresh();
-				}}
-				contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
-				ListEmptyComponent={
-					<View style={{ paddingHorizontal: 16 }}>
-						<Copy muted>
-							{refreshing
-								? "Loading sessions…"
-								: state !== "ready"
-									? "Connect to the hub to load sessions."
-									: error
-										? "Pull down to retry loading sessions."
-										: query
-											? "No sessions match your search."
-											: "No sessions on this hub yet."}
-						</Copy>
-					</View>
-				}
-				ListFooterComponent={
-					hasMore ? (
+			{client && activeProfile ? (
+				<View style={{ flex: 1, display: searchActive ? "none" : "flex" }}>
+					<ProjectSessionsList
+						key={activeProfile.id}
+						client={client}
+						ready={state === "ready"}
+						focused={focused && !searchActive}
+						header={header}
+						openSession={(session) =>
+							navigation.navigate("Conversation", {
+								hubId: activeProfile.id,
+								ref: session.ref,
+								title: session.title,
+							})
+						}
+						openProject={(project) =>
+							navigation.navigate("Project", {
+								hubId: activeProfile.id,
+								projectKey: project.key,
+								title: project.name,
+							})
+						}
+					/>
+				</View>
+			) : (
+				header
+			)}
+			{searchActive ? (
+				<FlatList
+					ListHeaderComponent={header}
+					keyboardShouldPersistTaps="handled"
+					data={rows}
+					keyExtractor={(item) => item.ref}
+					refreshing={refreshing}
+					onRefresh={() => {
+						void refresh();
+					}}
+					contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
+					ListEmptyComponent={
 						<View style={{ paddingHorizontal: 16 }}>
 							<Copy muted>
-								Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
-								search to find others.
+								{refreshing
+									? "Loading sessions…"
+									: state !== "ready"
+										? "Connect to the hub to load sessions."
+										: error
+											? "Pull down to retry loading sessions."
+											: query
+												? "No sessions match your search."
+												: "No sessions on this hub yet."}
 							</Copy>
 						</View>
-					) : null
-				}
-				renderItem={({ item }) => {
-					const stateLabel = humanizeState(
-						item.status,
-						item.askPending === true,
-					);
-					const signals = [
-						["active", "awaiting", "warning", "errored"].includes(item.status)
-							? stateLabel
-							: "",
-						item.askPending && item.status !== "awaiting"
-							? humanizeState("awaiting", true)
-							: "",
-					].filter(Boolean);
-					const metadataStyle = {
-						fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
-						lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
-					};
-					return (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`Open ${item.title || "Untitled session"}`}
-							accessibilityHint={[
-								...(signals.length ? signals : [stateLabel]),
-								item.project,
-							]
-								.filter(Boolean)
-								.join(". ")}
-							disabled={state !== "ready" || !activeProfile}
-							onPress={() => {
-								if (activeProfile)
-									navigation.navigate("Conversation", {
-										hubId: activeProfile.id,
-										ref: item.ref,
-										title: item.title,
-									});
-							}}
-							style={[
-								{
-									marginHorizontal: 16,
-									paddingVertical: 13,
-									minHeight: Platform.OS === "android" ? 72 : 68,
-									borderBottomWidth: 0.5,
-									borderColor: colors.border,
-									gap: 4,
-								},
-							]}
-						>
-							<Text
-								allowFontScaling={Platform.OS !== "ios"}
-								numberOfLines={2}
-								style={{
-									color: colors.text,
-									fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-									fontWeight: "500",
+					}
+					ListFooterComponent={
+						hasMore ? (
+							<View style={{ paddingHorizontal: 16 }}>
+								<Copy muted>
+									Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
+									search to find others.
+								</Copy>
+							</View>
+						) : null
+					}
+					renderItem={({ item }) => {
+						const stateLabel = humanizeState(
+							item.status,
+							item.askPending === true,
+						);
+						const signals = [
+							["active", "awaiting", "warning", "errored"].includes(item.status)
+								? stateLabel
+								: "",
+							item.askPending && item.status !== "awaiting"
+								? humanizeState("awaiting", true)
+								: "",
+						].filter(Boolean);
+						const metadataStyle = {
+							fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
+							lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
+						};
+						return (
+							<Pressable
+								accessibilityRole="button"
+								accessibilityLabel={`Open ${item.title || "Untitled session"}`}
+								accessibilityHint={[
+									...(signals.length ? signals : [stateLabel]),
+									item.project,
+								]
+									.filter(Boolean)
+									.join(". ")}
+								disabled={state !== "ready" || !activeProfile}
+								onPress={() => {
+									if (activeProfile)
+										navigation.navigate("Conversation", {
+											hubId: activeProfile.id,
+											ref: item.ref,
+											title: item.title,
+										});
 								}}
+								style={[
+									{
+										marginHorizontal: 16,
+										paddingVertical: 13,
+										minHeight: Platform.OS === "android" ? 72 : 68,
+										borderBottomWidth: 0.5,
+										borderColor: colors.border,
+										gap: 4,
+									},
+								]}
 							>
-								{item.title || "Untitled session"}
-							</Text>
-							{signals.length ? (
 								<Text
 									allowFontScaling={Platform.OS !== "ios"}
-									style={[
-										metadataStyle,
-										{
-											color:
-												item.attention === "needsYou"
-													? colors.accent
-													: colors.secondary,
-										},
-									]}
+									numberOfLines={2}
+									style={{
+										color: colors.text,
+										fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
+										fontWeight: "500",
+									}}
 								>
-									{signals.join(" · ")}
+									{item.title || "Untitled session"}
 								</Text>
-							) : null}
-							{item.project ? (
-								<Text
-									allowFontScaling={Platform.OS !== "ios"}
-									numberOfLines={fontScale > 1.4 ? 2 : 1}
-									ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
-									style={[metadataStyle, { color: colors.secondary }]}
-								>
-									{item.project}
-								</Text>
-							) : null}
-						</Pressable>
-					);
-				}}
-			/>
+								{signals.length ? (
+									<Text
+										allowFontScaling={Platform.OS !== "ios"}
+										style={[
+											metadataStyle,
+											{
+												color:
+													item.attention === "needsYou"
+														? colors.accent
+														: colors.secondary,
+											},
+										]}
+									>
+										{signals.join(" · ")}
+									</Text>
+								) : null}
+								{item.project ? (
+									<Text
+										allowFontScaling={Platform.OS !== "ios"}
+										numberOfLines={fontScale > 1.4 ? 2 : 1}
+										ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
+										style={[metadataStyle, { color: colors.secondary }]}
+									>
+										{item.project}
+									</Text>
+								) : null}
+							</Pressable>
+						);
+					}}
+				/>
+			) : null}
 		</SafeAreaView>
 	);
 }
@@ -863,20 +944,21 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
 	useEffect(() => {
 		if (!service || !connected || !focused) return;
 		void store
 			.getState()
-			.openProjected(service, activitySink, route.params.ref);
+			.resumeProjected(service, activitySink, route.params.ref);
 		return () => {
-			store.getState().close();
+			store.getState().suspendProjected();
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
 	async function refresh() {
-		if (!service || !connected || refreshing) return;
+		if (!service || !connected || !focused || refreshing) return;
 		setRefreshing(true);
 		try {
 			if (store.getState().status === "open")
@@ -884,7 +966,7 @@ export function ConversationScreen({
 			else {
 				await store
 					.getState()
-					.openProjected(service, activitySink, route.params.ref);
+					.resumeProjected(service, activitySink, route.params.ref);
 			}
 		} finally {
 			setRefreshing(false);
@@ -1319,6 +1401,7 @@ export function ConversationScreen({
 	const pending = snapshot.pendingMutation?.status === "pending";
 	const ready =
 		connected &&
+		focused &&
 		snapshot.status === "open" &&
 		!refreshing &&
 		!pending &&
@@ -1981,6 +2064,19 @@ export function ConversationScreen({
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
 									<ConnectionStatus />
+									{snapshot.status === "opening" && snapshot.conversation ? (
+										<View
+											style={{
+												flexDirection: "row",
+												alignItems: "center",
+												gap: 8,
+												paddingHorizontal: 16,
+											}}
+										>
+											<ActivityIndicator />
+											<Copy muted>Updating session…</Copy>
+										</View>
+									) : null}
 									<ErrorMessage message={snapshot.error || actionError} />
 									<ErrorMessage message={draft.error} />
 									{unconfirmedSend !== null ? (

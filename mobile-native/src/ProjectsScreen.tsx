@@ -212,12 +212,44 @@ export function PageList<T>({
 	access.current = { rowKey, childRows };
 	const [revealError, setRevealError] = useState<string | null>(null);
 	const [revealRequest, setRevealRequest] = useState(0);
+	const [refreshing, setRefreshing] = useState(false);
+	const [loadingMore, setLoadingMore] = useState(false);
 	const revealEpoch = useRef(revealRequest);
 	revealEpoch.current = revealRequest;
 	function refreshList() {
 		if (revealRef) setRevealRequest((value) => value + 1);
 		void actions?.reconcile();
 	}
+	const refreshPages = useCallback(async () => {
+		if (!ready) return;
+		setRefreshing(true);
+		try {
+			if (actions) await actions.reconcile();
+			else await pages.refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [actions, pages, ready]);
+	const requestMore = useCallback(
+		(allowError = false) => {
+			const current = pages.getSnapshot();
+			if (
+				!ready ||
+				!focused ||
+				!current.loaded ||
+				current.loading ||
+				current.stale ||
+				(!allowError && current.error) ||
+				current.remaining <= 0
+			)
+				return;
+			setLoadingMore(true);
+			void pages.more().finally(() => setLoadingMore(false));
+		},
+		[focused, pages, ready],
+	);
+	const loadMore = useCallback(() => requestMore(), [requestMore]);
+	const retryMore = useCallback(() => requestMore(true), [requestMore]);
 	const [revealed, setRevealed] = useState<NavigationPages<T> | null>(null);
 	const scrollAttempt = useRef(0);
 	const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -336,10 +368,12 @@ export function PageList<T>({
 				}}
 				data={rows}
 				keyExtractor={({ item }) => rowKey(item)}
-				refreshing={state.loading}
+				refreshing={refreshing}
 				onRefresh={() => {
-					if (ready) refreshList();
+					void refreshPages();
 				}}
+				onEndReachedThreshold={0.5}
+				onEndReached={loadMore}
 				contentContainerStyle={styles.padded}
 				ListEmptyComponent={
 					state.loading ? (
@@ -358,15 +392,21 @@ export function PageList<T>({
 								may be missing.
 							</Copy>
 						) : null}
-						{state.remaining > 0 ? (
-							<Action
-								disabled={!ready || state.loading || state.stale}
-								onPress={() => {
-									void pages.more();
-								}}
+						{loadingMore ? (
+							<View
+								accessibilityLiveRegion="polite"
+								style={{ alignItems: "center", paddingVertical: 8 }}
 							>
-								{state.loading
-									? "Loading…"
+								<ActivityIndicator accessibilityLabel="Loading more results" />
+								<Copy muted>Loading more…</Copy>
+							</View>
+						) : state.remaining > 0 ? (
+							<Action
+								disabled={!ready || !focused || state.loading || state.stale}
+								onPress={state.error ? retryMore : loadMore}
+							>
+								{state.error
+									? "Retry loading more"
 									: `Load more · ${state.remaining} remaining`}
 							</Action>
 						) : null}
