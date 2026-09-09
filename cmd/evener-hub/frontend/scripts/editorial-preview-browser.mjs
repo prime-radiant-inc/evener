@@ -53,6 +53,24 @@ try {
     await send("Input.dispatchMouseEvent", {type: "mousePressed", button: "left", clickCount: 1, ...box});
     await send("Input.dispatchMouseEvent", {type: "mouseReleased", button: "left", clickCount: 1, ...box});
   }
+  async function closeAuxiliaryPanes() {
+    // DockHost deliberately hides the main tab header. Only visible auxiliary
+    // native tab-close controls are actionable; never mutate the workspace store.
+    const selector = ".dv-default-tab-action";
+    const visible = `Array.from(document.querySelectorAll('${selector}')).filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;})`;
+    while (await evalJS(`${visible}.length > 0`)) {
+      const box = await evalJS(`(() => {const e=${visible}[0];const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+      assert(await evalJS(`document.elementFromPoint(${box.x},${box.y})?.closest('${selector}') !== null`), "Auxiliary Close target hit-test");
+      await send("Input.dispatchMouseEvent", {type:"mousePressed",button:"left",clickCount:1,...box});
+      await send("Input.dispatchMouseEvent", {type:"mouseReleased",button:"left",clickCount:1,...box});
+      await evalJS("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+    }
+  }
+  function assertWideSetup(m, viewport, label) {
+    if (viewport.width !== 1440) return;
+    assert(m.transcript.width >= 880, `${label}: required wide timestamp rail width not established`);
+    assert(m.stamps.length > 0, `${label}: required wide timestamp sample missing`);
+  }
   await applyViewport(send, {width: 1440, height: 1000});
   await navigateFixture(`${origin}/`);
   await until("window.editorialPreview?.fixtureOnly && document.body.innerText.includes('Editorial fixture parent')");
@@ -147,12 +165,12 @@ try {
   await clickText("Session actions"); await clickText("Tasks");
   await until("document.body.innerText.includes('Review fixture evidence')");
   fs.writeFileSync(path.join(evidence,"tasks.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
-  await clickText("Session actions"); await clickText("Tasks");
+  await closeAuxiliaryPanes();
   await until("!document.body.innerText.includes('Review fixture evidence')");
   await clickText("Session actions"); await clickText("Activity");
   await until("document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
   fs.writeFileSync(path.join(evidence,"activity.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
-  await clickText("Session actions"); await clickText("Activity");
+  await closeAuxiliaryPanes();
   await until("!document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
   observations.tasks.push("Actual Tasks and Activity panel selection; fixture tasks and partial owner-derived activity; Details split exercised in matrix");
   for (const viewport of [{width:360,height:800,mobile:true,touch:true}, {width:390,height:844,mobile:true,touch:true}, {width:1280,height:1000,narrow:true}, {width:1440,height:1000}]) {
@@ -166,11 +184,12 @@ try {
       await until("document.body.innerText.includes('Parent analysis: fixture-only evidence.') && !!document.querySelector('[data-testid=composer-input-card]')");
       assert.equal(await evalJS("document.documentElement.dataset.theme"),theme);
       assert.equal(await evalJS("document.body.dataset.fontSize"),size);
-      const hasDetails = await evalJS("document.body.innerText.includes('session id')");
-      if (Boolean(viewport.narrow) !== hasDetails) { await clickText("Session actions"); await clickText("Details"); }
+      if (!viewport.touch) await closeAuxiliaryPanes();
+      if (viewport.narrow) { await clickText("Session actions"); await clickText("Details"); }
       await until(viewport.narrow ? "document.body.innerText.includes('session id')" : "!document.body.innerText.includes('session id')");
       const label = `${viewport.width}-${theme}-${size}`;
       await waitForFonts(send);
+      assertWideSetup(await evalJS(`(${measureEditorial.toString()})()`), viewport, label);
       await evalJS("document.querySelector('[data-testid=transcript-virtual-list]').scrollTop=0");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-trigger]')");
       await evalJS("(() => { const row=document.querySelector('[data-tool-name=read_file]'); if (!row.querySelector('[data-testid=tool-row-body-trigger]')) row.querySelector('[data-testid=tool-row-trigger]').click(); })()");
@@ -182,6 +201,7 @@ try {
       fs.writeFileSync(path.join(evidence, `${label}-evidence.png`), Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
       const geometry = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label, ...geometry});
+      assertWideSetup(geometry, viewport, label);
       try { assertEditorialGeometry(assert,geometry,label); } catch(error) { observations.geometryFailures.push(error.message); }
       if (viewport.narrow) assert(geometry.transcript.width<=600, `${label}: did not create a narrow desktop pane`);
       await evalJS("(() => { const row=document.querySelector('[data-tool-name=read_file]'); if (!row.querySelector('[data-testid=tool-row-body-trigger]')) row.querySelector('[data-testid=tool-row-trigger]').click(); })()");
@@ -191,6 +211,7 @@ try {
       await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length===3");
       const collaborators = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label:`${label}-collaborators`,...collaborators});
+      assertWideSetup(collaborators, viewport, `${label}-collaborators`);
       try { assertEditorialGeometry(assert,collaborators,label); } catch(error) { observations.geometryFailures.push(error.message); }
       fs.writeFileSync(path.join(evidence, `${label}-collaborators.png`), Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
       assert.deepEqual(await evalJS("window.editorialPreview.client.rejectedRequests"),[]);
