@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -335,7 +336,7 @@ func (s *Session) adoptPendingNotesDelivery(outerID, note string, lease *clientM
 	// names this same value. An intent with Changed=false is delivery-complete
 	// (a pure no-op) and never adoptable.
 	s.mu.Lock()
-	intents := clonePendingNotesHuman(s.pendingNotesHuman)
+	intents := maps.Clone(s.pendingNotesHuman)
 	s.mu.Unlock()
 	var intentIDs []string
 	for id := range intents {
@@ -630,19 +631,6 @@ func (s *Session) clearPendingNotesHuman(outerID string) {
 	if len(s.pendingNotesHuman) == 0 {
 		s.pendingNotesHuman = nil
 	}
-}
-
-// clonePendingNotesHuman copies a pending-intent map, preserving nil so a
-// session that never staged an intent persists nothing.
-func clonePendingNotesHuman(src map[string]schema.PendingNotesHuman) map[string]schema.PendingNotesHuman {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]schema.PendingNotesHuman, len(src))
-	for id, pending := range src {
-		dst[id] = pending
-	}
-	return dst
 }
 
 // markNotesSteerAccepted records which inner steer id the outer notes/human/set

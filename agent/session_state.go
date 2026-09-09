@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -166,7 +167,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		HumanNote:                s.humanNote,
 		AgentNote:                s.agentNote,
 		SessionURLs:              append([]schema.SessionURL(nil), s.sessionURLs...),
-		PendingNotesHuman:        clonePendingNotesHuman(s.pendingNotesHuman),
+		PendingNotesHuman:        maps.Clone(s.pendingNotesHuman),
 		WorktreePath:             s.worktreeCurrentPath,
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,

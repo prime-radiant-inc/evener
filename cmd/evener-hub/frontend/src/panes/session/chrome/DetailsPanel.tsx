@@ -35,6 +35,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import type { SessionURL } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
 import { Button, InspectorCard, Meter, Popover, Sheet, Textarea, useToasts } from "../../../widgets";
+import { isWebHref } from "../../../widgets/contextcard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
@@ -126,15 +127,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-// Whether a shared-notes URL points at the web (rendered as an external
-// anchor opening a new tab) rather than a file/path (rendered as honest
-// inert text: no OpenButton — per fix-round ruling the doc-pane open-beside
-// affordance is explicitly descoped for this section). Same http(s)-only
-// rule as ContextCard's own isWebHref and transcript-link rendering.
-function isWebURL(url: string): boolean {
-  return /^https?:\/\//.test(url);
-}
-
 // SharedNotesSection renders the "Shared notes" group per the ordered
 // display rule (design spec §Hub Details UI): (1) capability unset hides
 // the section entirely; (2) capability set but session not live shows
@@ -214,29 +206,18 @@ function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: 
                 onClose={() => setPopoverOpen(false)}
                 data-testid="shared-notes-editor"
                 trigger={
-                  model.humanNote !== "" ? (
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onClick={() => setPopoverOpen((v) => !v)}
-                      data-testid="shared-notes-edit"
-                    >
-                      Edit
-                    </Button>
-                  ) : (
-                    // Live but no human note yet (a fresh session, or only
-                    // agent content so far): the first-note affordance. The
-                    // trigger seeds the draft via the popover-open effect
-                    // above.
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onClick={() => setPopoverOpen((v) => !v)}
-                      data-testid="shared-notes-add-note"
-                    >
-                      Add a note
-                    </Button>
-                  )
+                  // Live but no human note yet (a fresh session, or only
+                  // agent content so far): the first-note affordance. The
+                  // trigger seeds the draft via the popover-open effect
+                  // above.
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    onClick={() => setPopoverOpen((v) => !v)}
+                    data-testid={model.humanNote !== "" ? "shared-notes-edit" : "shared-notes-add-note"}
+                  >
+                    {model.humanNote !== "" ? "Edit" : "Add a note"}
+                  </Button>
                 }
               >
                 <Textarea
@@ -273,7 +254,7 @@ function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: 
             <ul>
               {model.sessionUrls.map((url) => (
                 <li key={url.id} data-testid={`shared-notes-url-${url.id}`}>
-                  {isWebURL(url.url) ? (
+                  {isWebHref(url.url) ? (
                     <a href={url.url} target="_blank" rel="noopener noreferrer">
                       {url.label || url.url}
                     </a>

@@ -117,11 +117,12 @@ func (d detailsDrawer) View() string {
 			}
 			fmt.Fprintf(&b, "Link:   %s\n", label)
 		}
-		if detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0 && detail.Live {
+		empty := detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0
+		if empty && detail.Live {
 			b.WriteString(ghostText("Add a note with /notes"))
 			b.WriteString("\n")
 		}
-		if detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0 && !detail.Live {
+		if empty && !detail.Live {
 			b.WriteString(ghostText("No shared notes"))
 			b.WriteString("\n")
 		}

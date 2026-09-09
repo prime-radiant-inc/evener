@@ -1005,7 +1005,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.humanNote = meta.HumanNote
 	s.agentNote = meta.AgentNote
 	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
-	s.pendingNotesHuman = clonePendingNotesHuman(meta.PendingNotesHuman)
+	s.pendingNotesHuman = maps.Clone(meta.PendingNotesHuman)
 	// Seed the notes-projection record from the restored history so the
 	// change-gated projection (maybeAppendNotesContext) does not re-emit a
 	// snapshot the model already saw: the last NOTES_CONTEXT turn in the

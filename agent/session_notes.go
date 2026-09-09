@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -76,16 +77,13 @@ func (s *Session) storeNote(note string, human bool) (stored string, changed boo
 // It performs no fetch. The caller persists (maybeAutoSave) and emits
 // EventUrlsUpdated after a successful add.
 func (s *Session) addSessionURL(rawURL, label string) (schema.SessionURL, error) {
-	if len([]rune(label)) > sessionLabelMaxLen {
-		return schema.SessionURL{}, fmt.Errorf("urls/add: label exceeds %d characters", sessionLabelMaxLen)
-	}
 	cwd := s.notesCWD()
 	canonical, err := canonicalSessionURL(rawURL, cwd)
 	if err != nil {
 		return schema.SessionURL{}, err
 	}
 	clampedLabel := normalizeNote(label)
-	if len([]rune(clampedLabel)) > sessionLabelMaxLen {
+	if utf8.RuneCountInString(clampedLabel) > sessionLabelMaxLen {
 		return schema.SessionURL{}, fmt.Errorf("urls/add: label exceeds %d characters", sessionLabelMaxLen)
 	}
 	s.mu.Lock()
@@ -149,7 +147,7 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 	if trimmed == "" {
 		return "", errors.New("urls/add: empty URL")
 	}
-	if len([]rune(trimmed)) > sessionURLMaxLen {
+	if utf8.RuneCountInString(trimmed) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
 	}
 	lowered := strings.ToLower(trimmed)
@@ -211,7 +209,7 @@ func canonicalHTTPURL(raw string) (string, error) {
 		parsed.RawPath = ""
 	}
 	out := parsed.String()
-	if len([]rune(out)) > sessionURLMaxLen {
+	if utf8.RuneCountInString(out) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
 	}
 	return out, nil
@@ -246,7 +244,7 @@ func canonicalFilePath(path, cwd, raw string) (string, error) {
 	// fragment b.md.
 	fileURL := url.URL{Scheme: "file", Path: abs}
 	out := fileURL.String()
-	if len([]rune(out)) > sessionURLMaxLen {
+	if utf8.RuneCountInString(out) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)
 	}
 	return out, nil
