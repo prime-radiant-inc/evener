@@ -1,14 +1,37 @@
 # iPhone builds and TestFlight
 
-Status checked 8 September 2026. Jesse confirmed that `prime-radiant-inc` already uses shared credentials for Mac builds. Reuse that organization infrastructure for iPhone delivery.
+Status checked 9 September 2026. Jesse confirmed that `prime-radiant-inc` already uses shared credentials for Mac builds. Reuse that organization infrastructure for iPhone delivery.
+
+## Current delivery
+
+Build **0.1.0 (3)**, native source `f866b2a80`, is `VALID` and `IN_BETA_TESTING`
+and belongs to Evener Internal. The [build 3 receipt](assets/2026-09-09-testflight-polish-update.json)
+records the exact signed archive/IPA identities and independent Apple API reads.
+It includes the browser/reader, running/recovery, media-caption and reviewed
+search-destination improvements. Both archive and export explicitly use build 3.
+The original keychain settings and generated project files were restored.
+
+The upload succeeded. The local lane's final single availability check ran too
+early during Apple's post-compliance transition and exited 1; separate reads
+37 seconds later verified the exact build and group. No reupload was attempted.
+The readiness correction is separate from the already uploaded application.
+Builds 1, 2 and 3 already exist; a future upload must select another unused number.
+
+PR #1039 was updated onto current main at `e0c10be42`; all checks are green,
+but repository review is still required. Default-branch workflow registration
+and a real CI TestFlight run remain open. Once registered, dispatch the native
+source branch `codex/evener-iphone-v1`. Physical iPhone update/smoke and Drew's
+external beta review remain open. The paired iOS 27 phone is visible, but Xcode
+still cannot mount its developer disk image; no physical smoke is claimed.
+
 
 ## Verified starting point
 
 - Evener already runs native TypeScript tests and SDK package checks in GitHub Actions. The manual iOS archive/TestFlight workflow is documented below; it has not yet been dispatched.
 - The [Clipfan release workflow at `093f37e9`](https://github.com/prime-radiant-inc/clipfan/blob/093f37e9b56e5d1c4faa42e217a7c595abc53aa8/.github/workflows/release.yml) uses `macos-26`, shared Apple secret references, a temporary signing keychain and cleanup. Its Developer ID Application certificate and notarization steps serve Mac distribution; they do not establish iOS distribution signing.
 - The current Evener iPhone Release development build succeeded and its signature verified. The [build receipt](assets/2026-09-08-iphone-device-build.json) records the source, generated-project and artifact hashes, team and embedded provisioning profile. This is an arm64 device build, separate from the installed simulator artifact.
-- A first signed distribution IPA (`0.1.0 (1)`) was accepted by App Store Connect and processed as `VALID`, `IN_BETA_TESTING`, with exact membership in the `Evener Internal` group. The original local lane exited 1 after successful upload and processing because Fastlane 2.228.0 attempted an unsupported manual internal-group assignment; the deterministic fix passes, but no live upload through the fixed lane is claimed. See the [first TestFlight demo receipt](assets/2026-09-08-testflight-first-demo.json).
-- The configured App Store Connect API authentication, distribution certificate/profile and seven repository secrets plus two workflow variables are verified. PR [#1039](https://github.com/prime-radiant-inc/evener/pull/1039) passed all checks on its initial head and was updated to current main at `1f1bd61353`; all refreshed checks passed and an approving review remains required; the workflow has not been registered on the default branch, dispatched or run. Dispatch must select `codex/evener-iphone-v1` because `main` does not yet contain the native app subtree.
+- A first signed distribution IPA (`0.1.0 (1)`) was accepted by App Store Connect and processed as `VALID`, `IN_BETA_TESTING`, with exact membership in the `Evener Internal` group. The original local lane exited 1 after successful upload and processing because Fastlane 2.228.0 attempted an unsupported manual internal-group assignment; the deterministic fix and later build 2 upload passed. Build 3 availability and its later readiness-check timing failure are recorded below. See the [first TestFlight demo receipt](assets/2026-09-08-testflight-first-demo.json).
+- The configured App Store Connect API authentication, distribution certificate/profile and seven repository secrets plus two workflow variables are verified. PR [#1039](https://github.com/prime-radiant-inc/evener/pull/1039) passed all checks on its initial head and was updated to current main at `e0c10be42`; all refreshed checks passed and an approving review remains required; the workflow has not been registered on the default branch, dispatched or run. Dispatch must select `codex/evener-iphone-v1` because `main` does not yet contain the native app subtree.
 - A fresh read-only GitHub check on 8 September enumerated 95 non-archived, non-fork organization repositories. Organization code searches for `APP_STORE_CONNECT_API_KEY_CONTENT`, `IOS_DISTRIBUTION_CERTIFICATE`, and `app-store-connect` workflow references returned no matches. Direct workflow inspection covered `prime-radiant-inc/clipfan:.github/workflows/release.yml` and the local Evener workflow at `8a1b1826b`/`aff5561bb`; no additional accessible iOS/TestFlight precedent was found. Clipfan has a Mac-only Developer ID certificate secret (`DEVELOPER_ID_APPLICATION_CERT_BASE64`, with its password and signing identity); it is unrelated to the verified iOS distribution assets.
 - Local Apple metadata retains the earlier wildcard development profile and device-build evidence. The separately signed distribution IPA and active App Store Connect distribution profile are recorded in the first TestFlight demo receipt; the shared Mac Developer ID certificate remains unrelated to iPhone signing.
 

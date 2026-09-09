@@ -1,0 +1,137 @@
+{
+  "status": "passed",
+  "scope": "SDK thread model, reasoning-effort, and vision-model settings",
+  "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "driver": {
+    "path": "/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate/docs/design/mobile/assets/sdk-thread-settings-driver.mjs.txt",
+    "sha256": "b4f8e4d7418c954e12d0e57bd75e5dc603178b20060ac1e154d4c8a77e18518a",
+    "executedPrivatePath": "/private/tmp/evener-sdk-settings-cluster-r2-1788950326/driver.mjs"
+  },
+  "rawEvidence": {
+    "requests": {
+      "path": "/private/tmp/evener-sdk-settings-cluster-r2-1788950326/qualification/requests.json",
+      "sha256": "2000f575173db2a04795df7725cc6ff9d297f4cfe4e17da00d12844ffb12a656"
+    },
+    "responses": {
+      "path": "/private/tmp/evener-sdk-settings-cluster-r2-1788950326/qualification/responses.json",
+      "sha256": "1153338e66c5ef89bdda215ce8dca39742babcea3ff68b6b501a0697edf7e94b"
+    },
+    "qualificationReceipt": {
+      "path": "/private/tmp/evener-sdk-settings-cluster-r2-1788950326/qualification/receipt.json",
+      "sha256": "d169a0643b884931bdb0d0ac0b435eca9feed4303b17fbe1599bf8381577b390"
+    },
+    "cleanup": {
+      "path": "/private/tmp/evener-sdk-settings-cluster-r2-1788950326/provider-fixture/cleanup.json",
+      "sha256": "9899a18879b4e6d92f4271700f4482ab3cde55872ca212d9ca0079f28f3a244a",
+      "value": {
+        "hubExit": 0,
+        "tokenRemoved": true
+      }
+    }
+  },
+  "identities": {
+    "installedSdkDistSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "hubBinarySha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+    "packageTarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "observed": {
+    "positiveModelChangeAndRestore": true,
+    "positiveReasoningEffortSetAndReset": true,
+    "positiveVisionModelSetAndReset": true,
+    "invalidCasesRejected": 4,
+    "invalidCasesPreservedSettings": true,
+    "stalePreflight": {
+      "kind": "client preflight",
+      "setting": "reasoning-effort",
+      "syntheticExpectedInstanceId": true,
+      "rejectedBeforeSetterDispatch": true,
+      "notServerStaleInstanceOutcome": true,
+      "setterWritesBefore": 6,
+      "setterWritesAfter": 6
+    },
+    "settingsRestored": true,
+    "invalidCases": [
+      {
+        "case": "missing-model",
+        "method": "thread/model/set",
+        "expectedCode": -32602,
+        "expectedInfo": "invalidParams",
+        "rejected": true,
+        "before": {
+          "modelProvider": "fixture-model"
+        },
+        "after": {
+          "modelProvider": "fixture-model"
+        }
+      },
+      {
+        "case": "numeric-reasoning-effort",
+        "method": "thread/reasoning-effort/set",
+        "expectedCode": -32602,
+        "expectedInfo": "invalidParams",
+        "rejected": true,
+        "before": {
+          "modelProvider": "fixture-model"
+        },
+        "after": {
+          "modelProvider": "fixture-model"
+        }
+      },
+      {
+        "case": "numeric-vision-model",
+        "method": "thread/vision-model/set",
+        "expectedCode": -32602,
+        "expectedInfo": "invalidParams",
+        "rejected": true,
+        "before": {
+          "modelProvider": "fixture-model"
+        },
+        "after": {
+          "modelProvider": "fixture-model"
+        }
+      },
+      {
+        "case": "unconfigured-vision-provider",
+        "method": "thread/vision-model/set",
+        "expectedCode": -32602,
+        "expectedInfo": "invalidParams",
+        "rejected": true,
+        "before": {
+          "modelProvider": "fixture-model"
+        },
+        "after": {
+          "modelProvider": "fixture-model"
+        }
+      }
+    ],
+    "settings": {
+      "before": {
+        "modelProvider": "fixture-model"
+      },
+      "after": {
+        "modelProvider": "fixture-model"
+      }
+    },
+    "requestCount": 34,
+    "acknowledgedSetterCount": 6
+  },
+  "limitations": [
+    "Setter RPC types do not accept expectedInstanceId; stale outcome is only client-side preflight suppression, with no server stale-instance claim.",
+    "The run observed deterministic owned-hub loopback behavior; it does not qualify provider/model behavior or physical/native UI performance."
+  ],
+  "coordinatorVerification": {
+    "checkedAt": "2026-09-09T10:48:39.803583+00:00",
+    "rawResponsesIndependentlyChecked": true,
+    "ownedProcessesAbsent": {
+      "hubPID": {
+        "pid": 67541,
+        "alive": false
+      },
+      "providerPID": {
+        "pid": 67527,
+        "alive": false
+      }
+    },
+    "hashesChecked": 9
+  }
+}
