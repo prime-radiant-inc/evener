@@ -167,7 +167,7 @@
     "No physical-iPhone or real-network latency target is qualified; warmed local transport times are not native performance evidence.",
     "Aggregate search remains limited to50 results because its server contract provides no valid continuation.",
     "Automatic paging failure and invalidation guards have deterministic controller coverage; the native pass did not inject every fault.",
-    "Source changes are separate from the currently installed TestFlight build1; build2 delivery is in progress.",
+    "TestFlight build 2 is available for internal testing; physical installation and update smoke remain unqualified. See 2026-09-08-testflight-browser-update.json.",
     "iPad and dedicated accessibility work remain paused; this receipt does not complete iPhone v1 acceptance.",
     "The original saved hub reconnected and its session selection was restored; this pass did not independently compare every SecureStore credential value."
   ]

@@ -1,0 +1,63 @@
+{
+  "schema": "evener.native.testflight-browser-update.receipt.v1",
+  "status": "available-for-internal-testing",
+  "verifiedAt": "2026-09-09T05:30:21.719053+00:00",
+  "source": {
+    "nativeRuntimeCommit": "f75411ead63c1616aada8496a567aa880bdf09bb",
+    "subsequentDocsCommit": "d17695f33",
+    "bundleId": "com.primeradiant.evener.native",
+    "version": "0.1.0",
+    "build": "2",
+    "deviceFamily": [
+      1
+    ],
+    "toolchain": "Xcode 26.6 build 17F113",
+    "sdk": "iphoneos26.5",
+    "privateArtifactRoot": "/private/tmp/evener-testflight-build2-f75411ead.f4w5wZ",
+    "ipaSha256": "377441db00f9811fd16552aeef78ef97ee6febbb57004a63dffa7f2189929cb0",
+    "javascriptBundleSha256": "58dfa4197ddde3abc138a91557db85b5552e7805f2f62c61bc3afaf81a81e93f",
+    "archiveAndExportJavaScriptMatch": true,
+    "archiveBundleVersion": "1",
+    "exportVersionNote": "The archive retains build 1; Xcode export produced the inspected build 2 IPA. Xcode manageAppVersionAndBuildNumber defaults to YES. The final IPA identity guard passed before upload; no rebuild or second upload was performed."
+  },
+  "apple": {
+    "buildId": "b06f45da-6027-4dca-acbb-1a2ab08ebede",
+    "processingState": "VALID",
+    "internalBuildState": "IN_BETA_TESTING",
+    "externalBuildState": "READY_FOR_BETA_SUBMISSION",
+    "internalGroup": "Evener Internal",
+    "internalGroupId": "7ea9cf9b-bb33-46ca-a975-208903052b56",
+    "buildPresentInInternalGroup": true,
+    "rootFreshGetStatuses": {
+      "root-build.json": 200,
+      "root-beta-detail.json": 200,
+      "root-group-builds.json": 200
+    }
+  },
+  "verification": {
+    "nativeGate": "703 tests across 75 files plus TypeScript",
+    "sharedConversationTests": 289,
+    "apiPackageGate": "passed outside-checkout install qualification",
+    "nativeUIReceipt": "2026-09-08-native-project-browser.json",
+    "independentDesignDisposition": "ship for scoped iPhone UI",
+    "fastlaneInternalDistributionLane": "completed with exact build identity and group availability",
+    "keychainSearchListRestoredExactly": true,
+    "defaultKeychainRestoredExactly": true,
+    "generatedFastlaneFilesMovedToPrivateEvidence": true
+  },
+  "evidenceHashes": {
+    "testflight-receipt.json": "1a904ed16a8236e444699b0524f9a8ab8b879527088053f30141c3cd83e7dd3a",
+    "root-build.json": "5c14fc4bf1831d9b03d0058b2556a9d21d177b272be44df1fe9f9372a8dc6127",
+    "root-beta-detail.json": "e3abce10117e86f59b386215071f345c0e7477a021a4b92c8c2d881a13e55d03",
+    "root-group-builds.json": "855fc3008e89c033ba0fb102c3c7d34432a29cc468d44c71079ad0e27c4ff5e9",
+    "xcodebuild-archive.log": "f2e66fbbeb505efe405dc62952224f0d1e08c7ea787f8ba98bb49891627c0741",
+    "xcodebuild-export.log": "351f03d60a870a42d1bf1be7c4e7ddff7d723684b5d6227c632ab4a55d34bd79"
+  },
+  "limits": [
+    "Apple availability is not proof of build 2 installation or physical-device smoke testing.",
+    "Physical-iPhone and representative real-network performance remain unqualified.",
+    "The CI registration PR #1039 remains review-required; this was a local signed delivery using Xcode 26.6, distinct from the workflow pinned to 26.4.",
+    "Drew’s external invitation and beta review remain unresolved; this upload did not grant account access or invite him.",
+    "Full iPhone v1 acceptance and SDK outcome qualification remain open."
+  ]
+}
