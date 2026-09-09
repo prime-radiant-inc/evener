@@ -3,6 +3,33 @@
 Status: **current**. This is the blessed design's provenance — what we chose,
 out of what alternatives, and whether the code does it today.
 
+## Editorial instrument (2026-09-09)
+
+The user approved a comprehensive Tufte-inspired editorial direction and the
+`editorial-instrument` / `tools-and-collaborators` studies. The governing
+[specification](../superpowers/specs/2026-09-09-tufte-webui-design.md) supersedes the
+Beautiful UI aesthetic mandate, **not** its interaction contracts, widget APIs,
+semantic attention law, accessibility requirements or MIT attribution.
+
+**Implemented foundations:** warm paper/ink neutrals; Source Serif 4 for reading and
+editorial headings alongside Inter operations and JetBrains Mono evidence; shared
+`--font-prose` and body-scaled 18px `--font-size-prose`; structural card shadow none;
+3px chip / 4px control and overlay radii; flat Card/InspectorCard/PaneScaffold;
+sentence-case fine-rule tables; visibly bounded fields. Dark default, all preferences,
+44/64rem measures, phone geometry and focus behavior remain unchanged. Source Serif 4
+5.3.0 is self-hosted with real italic under OFL-1.1, not loaded from a CDN.
+
+Contrast is a constraint, not an aesthetic vote: the warm light ground required darker
+alive/danger/accent `-ink` colors and re-derived diff washes. Original pairing, thresholds
+and grayscale comparisons remain intact. Historical palette/header-band assertions changed
+only to match this explicit approval. Vitest and coverage-v8 moved together from 4.1.10 to
+4.1.11 to address GHSA-82fw-gwwq-j7x9; this is an explicit dependency repair, not visual work.
+
+The canonical [guide](design-system.md) documents the implemented shared layer. Transcript,
+shell and individual pane makeovers, live usability panel and PR are subsequent units;
+this entry does not imply they have already shipped. Dated decisions below describe their
+period and remain useful for interaction intent, not as competing current palette/type law.
+
 ## Directory selection (2026-09-05)
 
 Jesse approved the session-start directory dialog and its use for every web

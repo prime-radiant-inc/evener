@@ -5,6 +5,7 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 ## Current
 
 - **[design-system.md](design-system.md)** — the design law as shipped: tokens,
+  the implemented editorial foundations (warm paper/ink, serif reading, flat structure),
   type, space, motion, the cadence instrument, and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
 - **[decisions.md](decisions.md)** — what we chose out of the 2026-06 visual
@@ -16,7 +17,8 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
   it. Cited from live source comments.
 - **[typography-spacing-critique-2026-09-06.md](typography-spacing-critique-2026-09-06.md)** —
   measured critique of type scale, measure, rhythm and balance on desktop and
-  phone, with a proposed ramp and enforcement plan. Proposal, not shipped.
+  phone. The ramp, measure and rhythm work landed; the current editorial system
+  supersedes its two-face premise. See the canonical guide for shipped values.
 - **[keybindings.md](keybindings.md)** — the keybindings dispatcher: registry,
   scope stack, precedence layers, per-binding policy flags, and how to
   register an action or a chord, the shipped default binding map (including
@@ -43,12 +45,17 @@ There is no static example gallery to keep in sync. Run the dev server and open
 rendered from the real tokens. `src/dev/WidgetGallery.test.tsx` fails the build
 the day a widget has no section, so it cannot silently go stale.
 
-**`/dev/type`** does the same for the type system itself: the size ramp, the
+**`/dev/type`** does the same for the type system itself: Inter operations, Source Serif 4
+reading (normal and italic), JetBrains Mono evidence, the size ramp, the
 three line-heights, the eyebrow recipe, the four rhythm steps and a paragraph
 at each measure, in both themes, so a ramp change is reviewed as a picture
 rather than a diff.
 
-The gallery is dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
+**`/dev/surfaces`** renders real composite surfaces, including transcript evidence,
+for checking the shared foundations in context. Surface-specific redesign proceeds in
+separate units; a token update is not a claim that every workflow was reviewed.
+
+The galleries are dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.
 
 ## history/
@@ -62,8 +69,8 @@ built on. `history/examples/` holds the golden reference screen, a hard-cases
 screen, the three explored visual directions, and the brief all three had to
 render.
 
-These are kept for one reason: **they still look better than what shipped**, and
-`decisions.md` names the specific gaps. They are not maintained, their tokens
+These remain historical evidence of interaction and hierarchy decisions;
+`decisions.md` names their specific gaps and the superseding editorial direction. They are not maintained, their tokens
 share two names with the live ones, and the app they were built against was
 deleted in `660376f78`.
 
