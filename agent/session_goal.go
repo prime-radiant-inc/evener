@@ -1090,6 +1090,24 @@ func claimedPredicateFire(claimed []goal.PendingWake) bool {
 	return false
 }
 
+// batchForIDs narrows a snapshot to the named backlog entries for one kick's
+// prompt frame (spec section 2: one combined wake turn per claim batch).
+// Pure: no locks.
+func batchForIDs(full goal.GoalSnapshot, ids []string) goal.GoalSnapshot {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var kept []goal.PendingWake
+	for _, p := range full.PendingWake {
+		if want[p.WaitID] {
+			kept = append(kept, p)
+		}
+	}
+	full.PendingWake = kept
+	return full
+}
+
 // renderGoalWakePrompt renders the wait-attributable wake turn prompt (spec
 // section 2): the current objective plus one trailer frame carrying every
 // coalesced (wait_id, trigger excerpt, fired_at) triple. Pure: no locks.
@@ -1497,12 +1515,28 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 		kick(prompt)
 		return
 	}
+	// Normal path: kick exactly the claimed batch (spec section 2: one
+	// combined wake turn per claim batch). Other backlog entries that landed
+	// concurrently (a deadline synthetic, a second forward) keep their own
+	// kick path — kicking them here would double-deliver one fire.
+	want := make(map[string]bool, len(claimed))
+	for _, c := range claimed {
+		want[c.WaitID] = true
+	}
 	var ids []string
 	for _, p := range full.PendingWake {
-		ids = append(ids, p.WaitID)
+		if want[p.WaitID] {
+			ids = append(ids, p.WaitID)
+		}
+	}
+	if len(ids) == 0 {
+		// Consumed between claim and kick (wake-tail drain won the race):
+		// nothing left to deliver.
+		s.armGoalWaitTimer()
+		return
 	}
 	s.markGoalWakesDelivered(ids)
-	prompt := s.renderGoalWakePrompt(full)
+	prompt := s.renderGoalWakePrompt(batchForIDs(full, ids))
 	s.armGoalWaitTimer()
 	if kick == nil {
 		return
