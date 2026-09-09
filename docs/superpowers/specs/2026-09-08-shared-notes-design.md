@@ -26,7 +26,10 @@ The URL list caps at 50 entries; beyond that the server rejects with a typed
 error. A paragraph is one block: collapse every run of whitespace (including
 newlines) to a single space, cap at 1000 Unicode characters; the server clamps
 and returns the stored value, and every downstream consumer (including the
-steered text below) uses the post-clamp value.
+steered text below) uses the post-clamp value. No-op detection
+clamp-then-compares: the server normalizes and clamps the incoming text
+first, then compares against the stored note, so re-saving identical
+over-length text stays a no-op.
 
 Ownership is enforced by channel, not by a caller-role flag (neither the tool
 `Exec(ctx, env, args)` args nor the hub mutation envelope carries a role).
@@ -103,7 +106,24 @@ all four RPCs plus both pushes: `appwire/protocol.go` catalog entries,
 evener sessions whose daemon wires the four verbs; hub and TUI gate the
 section, edit affordances, and remove buttons on it, and the two hub RPCs
 reject when unset — so an old daemon with a new hub fails closed instead of
-dropping writes.
+dropping writes. Hub reject is a pre-flight gate like `goal/set`
+(`TestHubRPCGoalSetGatedByCapability` precedent: the hub reads the
+capabilities from its own thread/read and returns structured Unavailable
+before the call reaches the source), named in the relay beside the goal
+gate. TUI plumbing is explicit because the TUI never reads
+`appwire.ThreadCapabilities` directly: add `SharedNotes` to
+`hubSessionCapabilities` (`cmd/evener-tui/hub_types.go`), copy it in
+`hubDetailFromThread` field-by-field like every other bit, and leave it out
+of the non-live zeroing block (notes stay readable on ended sessions; only
+the edit/remove commands gate on it). Past sessions: `pastThreadCapabilities`
+(`cmd/evener-hub/app_threadread.go`) sets `SharedNotes: true`, and
+`pastEntryThread` projects stored notes and URLs into the thread snapshot —
+notes are persisted per-session state, so ended sessions display all three
+read-only, with the edit affordance hidden (same as always-render: the
+section shows, the "Add a note" trigger does not when the capability is
+unset). The close frame (`stampClosedThreadCapabilities`) carries the same
+set. Tests: appCapabilities wiring test, hub reject-when-unset test for both
+hub RPCs, hub and TUI gating tests, TUI capability-mapping test.
 
 ## Agent read path
 
@@ -159,7 +179,7 @@ plus label is in scope; no new transcript card components
 
 ## Edge cases
 
-Empty note clears the whiteboard; the push still fires so both sides
+Clearing (a non-empty-to-empty transition) fires the push so both sides
 converge. Over-length input clamps server-side; the response carries the
 stored value. Same-field races on hub RPCs resolve last-writer-wins through
 mutation fencing (expected-instance and queue revision reject stale writes;
@@ -180,15 +200,21 @@ ownership tests via wrong-channel invocation, steering-injection-on-human-set
 (held, queued, and idle-carrier cases beside
 `session_steering_held_test.go`), retry of one outer mutation id producing a
 single steer, URL validation, canonical dedup, label-update-on-re-add,
-securepath rejection, 50-entry cap, single push emission per mutation from
+securepath rejection, 50-entry cap, URL/label over-length rejection, single
+push emission per mutation from
 the projector path, agent context injection containing current notes and
 URLs, `notes/read` returning current values. Wire: retry-safe-mutation
 conformance for the two hub RPCs (fencing, idempotent retry, rejoin snapshot
-carries notes and URLs). Hub: `DetailsPanel.test.tsx`-style component tests
+carries notes and URLs), hub pre-flight reject-when-unset for both hub RPCs
+(`TestHubRPCGoalSetGatedByCapability` pattern), `pastThreadCapabilities`
+carrying `SharedNotes: true` with past-thread projection of stored notes
+and URLs. Hub: `DetailsPanel.test.tsx`-style component tests
 (empty state renders affordance, edit dispatches RPC, remove dispatches
-RPC, push rerenders, failure toasts with draft kept) plus `threads.ts` and
+RPC, push rerenders, failure toasts with draft kept, section hidden when
+capability unset) plus `threads.ts` and
 `reducer.ts` push tests. TUI: drawer render and command tests beside
-`hub_goal_test.go`, plus the notification-coverage gate. E2E scenarios in
+`hub_goal_test.go`, plus the notification-coverage gate, plus a
+`hubDetailFromThread` capability-mapping test covering `SharedNotes`. E2E scenarios in
 `test/scenarios/` for human-note-interrupts-thread and
 agent-add/human-remove-URL, mirroring the goal set-and-complete scenarios.
 Also: appending `human-note` to `events.AllSteeringKinds` (the generation
