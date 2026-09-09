@@ -603,6 +603,10 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			return nil, err
 		}
 		prev, statErr := os.ReadFile(dst)
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			rollback()
+			return nil, fmt.Errorf("read existing %s: %w", dst, statErr)
+		}
 		s := staged{bin: bin, tmp: tmp, previous: prev, hadPrev: statErr == nil}
 		if fi, lerr := os.Lstat(filepath.Join(binDir, bin)); lerr == nil {
 			s.linkHadEntry = true
@@ -656,7 +660,25 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 				_ = os.Remove(dst)
 				continue
 			}
-			_ = os.WriteFile(dst, s.previous, 0o755)
+			// Restore via temp+rename: truncating the live path with
+			// WriteFile loses to ETXTBSY if a process already launched
+			// the new binary, and a partial write leaves mixed bytes.
+			// Use os.Rename directly (not the renameFile seam) so a
+			// test stub that injects commit failures doesn't block
+			// rollback.
+			tmp, err := os.CreateTemp(shareBinDir, s.bin+".*.restore")
+			if err != nil {
+				continue
+			}
+			tmpName := tmp.Name()
+			_ = os.Chmod(tmpName, 0o755)
+			_, werr := tmp.Write(s.previous)
+			_ = closeFile(tmp)
+			if werr != nil {
+				_ = os.Remove(tmpName)
+				continue
+			}
+			_ = os.Rename(tmpName, dst)
 		}
 	}
 	for i := range stagedBins {
