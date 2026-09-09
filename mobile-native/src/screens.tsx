@@ -149,7 +149,14 @@ function ConnectionStatus({ inset = 16 }: { inset?: number } = {}) {
 	const { state, error, retry, activeProfile } = useConnection();
 	return (
 		<View style={{ paddingHorizontal: inset }}>
-			<View style={styles.row}>
+			<View
+				style={[
+					styles.row,
+					// Reserve the reconnect action's height so offscreen header changes
+					// do not shift the conversation underneath the reader.
+					{ minHeight: Platform.OS === "ios" ? 44 : 48 },
+				]}
+			>
 				<View style={styles.fill}>
 					<Copy muted>
 						{activeProfile?.name ?? "No hub selected"} ·{" "}
