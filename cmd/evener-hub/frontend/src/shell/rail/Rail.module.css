@@ -123,6 +123,16 @@
   font-weight: var(--font-weight-medium);
 }
 
+/* Canonical short index labels only. Pin-section names are user-authored
+ * and share the heading/disclosure geometry, not this uppercase recipe. */
+.staticSectionLabel {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+}
+
 .sectionHeadingRow {
   display: flex;
   align-items: center;
