@@ -102,8 +102,9 @@ type AppEventProjector struct {
 	skillCandidate       skillActivationCandidate
 	delegates            map[string]appwire.EvenerDelegateInfo
 
-	lastAssistantTurnID string
-	lastAssistantText   string
+	lastAssistantTurnID  string
+	lastAssistantText    string
+	pendingNotifications []AppNotification
 
 	// pendingTurnID/pendingCompletedAtMillis/pendingDurationMS record the most
 	// recent EventTurnEnded's timing until the turn it names is actually
@@ -220,6 +221,9 @@ func (p *AppEventProjector) clearSkillCandidate() {
 }
 
 func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotification) {
+	pending := p.pendingNotifications
+	p.pendingNotifications = nil
+	defer func() { out = append(pending, out...) }()
 	// Message lifecycles share one timing rule: keep the first visible event's
 	// timestamp through completion. One-shot messages use their own event time.
 	defer func() {
@@ -2122,8 +2126,17 @@ func (p *AppEventProjector) ReserveTurnID() string {
 func (p *AppEventProjector) ReserveStableTurnID(turnID string) {
 	invariant.Hold(strings.TrimSpace(turnID) != "", "appprojector: stable turn id is empty")
 	// Durable mutation state is authoritative over a stale live projection.
-	// Keeping the old active ID would make an intervening event publish it
-	// again before this reservation is consumed by EventUserInput.
+	// Close the old projection before replacing its active identity, retaining
+	// its item completion, timing, usage, and cost receipts for the next event.
+	oldTurnID := p.activeTurnID
+	if oldTurnID == "" && p.reasoningItem != "" {
+		oldTurnID = p.reasoningTurnID
+	}
+	if oldTurnID != "" {
+		p.activeTurnID = oldTurnID
+		p.reservedTurnID = ""
+		p.pendingNotifications = append(p.pendingNotifications, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+	}
 	p.activeTurnID = ""
 	p.reservedTurnID = turnID
 }
