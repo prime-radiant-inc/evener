@@ -24,10 +24,11 @@ import (
 // Test seams: the GitHub check, the exec-in-place restart, and the restart
 // goroutine's log destination.
 var (
-	runHubUpdateCheck            = selfupdate.Check
-	scheduleHubRestart           = scheduleHubRestartAfterResponse
-	execHubBinary                = selfupdate.Restart
-	hubUpdateStderr    io.Writer = os.Stderr
+	runHubUpdateCheck             = selfupdate.Check
+	scheduleHubRestart            = scheduleHubRestartAfterResponse
+	execHubBinary                 = selfupdate.Restart
+	hubRestartSupported           = selfupdate.RestartSupported
+	hubUpdateStderr     io.Writer = os.Stderr
 )
 
 // hubRestartDelay is a short grace period for the kernel to flush the apply
@@ -122,6 +123,13 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	channel, err := validateUpdateChannel(params.Channel)
 	if err != nil {
 		return appwire.UpdateApplyResponse{}, err
+	}
+	// Fail fast where the in-place restart cannot run: without this the
+	// apply would download and install, report Restarting:true, and only
+	// then fail in the post-response goroutine -- leaving the frontend to
+	// poll a hub that never restarts. hubUpgrade (no exec) stays allowed.
+	if !hubRestartSupported() {
+		return appwire.UpdateApplyResponse{}, errors.New("in-place restart is not supported on this platform; use evener/upgrade and restart manually")
 	}
 	if err := tryLockHubUpdate(); err != nil {
 		return appwire.UpdateApplyResponse{}, err

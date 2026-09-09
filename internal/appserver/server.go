@@ -1322,7 +1322,14 @@ func concurrentDispatchMethod(method string) bool {
 		// shared-state writes; running it inline blocks unrelated RPCs
 		// on the connection for up to two 10s GitHub timeouts. The
 		// frontend already discards stale check responses by sequence.
-		appwire.MethodEvenerUpdateCheck:
+		appwire.MethodEvenerUpdateCheck,
+		// evener/update/apply is a multi-minute download, verify, and
+		// install under the overall upgrade deadline; running it inline
+		// holds the connection's serial worker that whole time. Safe
+		// out of order: hubUpdateMu plus the cross-process install lock
+		// fail a concurrent apply fast, and the restart waits on its own
+		// response flush rather than connection order.
+		appwire.MethodEvenerUpdateApply:
 		return true
 	}
 	return false

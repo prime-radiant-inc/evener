@@ -253,6 +253,28 @@ describe("runCheck", () => {
 });
 
 describe("apply", () => {
+  test("refuses to apply when the check says already up to date", async () => {
+    resetHubUpdateStoreForTests();
+    const fake = connectFakeClient();
+    fake.on("evener/update/check", () => UP_TO_DATE);
+    fake.on("evener/update/apply", () => ({
+      release: "snapshot",
+      channel: "snapshot",
+      installed: ["/x/evener"],
+      restarting: true,
+    }));
+    hubUpdateStore.getState().setChannel("snapshot");
+    await act(() => hubUpdateStore.getState().runCheck());
+
+    await act(() => hubUpdateStore.getState().apply());
+
+    // Fails today: apply only checks channel staleness, so a stored
+    // up-to-date check still issues a full download + exec restart.
+    expect(fake.calls.some((call) => call.method === "evener/update/apply")).toBe(false);
+    expect(hubUpdateStore.getState().applyError).toBe("Already up to date");
+    expect(hubUpdateStore.getState().restarting).toBe(false);
+  });
+
   test("requests evener/update/apply, then polls /api/health until the version changes and reloads", async () => {
     vi.useFakeTimers();
     const reload = vi.fn();

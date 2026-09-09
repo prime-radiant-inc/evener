@@ -19,3 +19,6 @@ func Restart(binary string, args []string) error {
 	}
 	return nil
 }
+
+// RestartSupported reports whether Restart can exec in place on this build.
+func RestartSupported() bool { return true }

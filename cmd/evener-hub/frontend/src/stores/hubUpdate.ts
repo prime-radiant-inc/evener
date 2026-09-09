@@ -159,6 +159,13 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
       set({ applyError: "That result is stale; run a fresh check first" });
       return;
     }
+    // The button disables without an available update, but apply is a store
+    // call too: never issue a download + exec restart for an up-to-date
+    // check the button state let through.
+    if (!check.updateAvailable) {
+      set({ applyError: "Already up to date" });
+      return;
+    }
     set({ applying: true, applyError: null, restartTimedOut: false });
     const previous = check.currentVersion;
     try {
