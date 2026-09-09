@@ -467,6 +467,53 @@ func TestHubSessionLiveCycleStaleReadKeepsNewerPendingTarget(t *testing.T) {
 	}
 }
 
+// Round 10, medium: the stale-read drop's re-subscription must not fire
+// while a NEWER live-nav read is still pending. The resub targets the session
+// currently displayed - the OLDER one - so its untagged response would land
+// after the newer read applied and be processed as an ordinary session entry,
+// reverting the UI to the older session; its own ThreadRead also re-points
+// the server-side subscription at the older session (roborev PR #1044 round-10
+// medium). While a newer read is pending, that read owns the subscription
+// when it lands, so the drop must return no command.
+func TestHubSessionLiveCycleStaleReadDoesNotResubWhileNewerReadPending(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)  // pending: 01C
+	m2, cmd2 := m1.switchToAdjacentLiveSession(1) // pending: 01A (newer, still in flight)
+
+	// The STALE read (01C) lands while the newer one is pending: dropped,
+	// and it must NOT launch a re-subscription read for the displayed 01B.
+	updated, resub := m2.Update(cmd1())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("stale read applied: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if m3.liveNavPendingRef != "local:01A" {
+		t.Fatalf("stale read cleared the newer pending target: liveNavPendingRef = %q, want local:01A", m3.liveNavPendingRef)
+	}
+	if resub != nil {
+		msg := resub()
+		if _, ok := msg.(hubSessionMsg); ok {
+			t.Fatal("stale-read drop launched a re-subscription read while a newer live-nav read was pending")
+		}
+	}
+
+	// The newer read (01A) lands and applies; the UI must stay on it - no
+	// in-flight resub response can revert it.
+	updated2, _ := m3.Update(cmd2())
+	m4 := updated2.(hubModel)
+	if m4.detail.Ref != "local:01A" {
+		t.Fatalf("newer read did not apply: viewed ref = %q, want local:01A", m4.detail.Ref)
+	}
+
+	// Only the two cycling reads were issued: no resub read for 01B.
+	got := reads.get()
+	if len(got) != 2 {
+		t.Fatalf("thread/read calls = %v, want exactly the two cycling reads (no resub while pending)", got)
+	}
+}
+
 // Round 8, medium 2: every cycling read replaces the server-side
 // subscription. Two rapid presses issue two ThreadReads; when the older
 // lands AFTER the newer, its subscription replacement must not stand - the

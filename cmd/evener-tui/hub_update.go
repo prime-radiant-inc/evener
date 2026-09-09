@@ -87,6 +87,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if msg.liveNavSeq != m.liveNavSeq {
+				// A newer cycling read is still in flight: IT owns the
+				// server-side subscription when it lands, and a resub here
+				// would target the OLDER displayed session - its own
+				// ThreadRead re-points the subscription at it, and its
+				// untagged response then arrives after the newer read
+				// applied and is processed as an ordinary session entry,
+				// reverting the UI to the older session (roborev PR #1044
+				// round-10 medium). Only the settled-display case (below,
+				// once the pending target has been consumed) re-establishes.
+				if m.liveNavPendingRef != "" {
+					return m, nil
+				}
 				var resub tea.Cmd
 				if ref, ok := m.currentRef(); ok && m.frames != nil {
 					resub = fetchHubSession(m.frames, m.client, ref)
