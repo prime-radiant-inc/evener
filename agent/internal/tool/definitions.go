@@ -1031,10 +1031,11 @@ func DefAskUser() llm.ToolDefinition {
 // until_approval lease to the stable turn/ask-call ID of the ask_user call;
 // label is the chip-rendered short label (capped at 256 chars, restricted
 // printable charset); timeout_seconds is the lease time-to-live (default 600,
-// cap 86400). Registration runs the identical validation as the harness-auto
-// path: hallucinated targets are rejected with the reason named, never
-// parked; a retained-terminal job/delegate fires immediately with the
-// terminal outcome instead of parking.
+// cap 86400). Registration validates fail-closed: hallucinated targets are
+// rejected with the reason named, never parked; a retained-terminal
+// job/delegate fires immediately with the terminal outcome instead of
+// parking. (No harness-auto registration path exists in this slice — every
+// wait is model-declared through this tool.)
 func DefGoalWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "goal_wait",

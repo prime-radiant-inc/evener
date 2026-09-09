@@ -233,6 +233,28 @@ func TestBudgetsDefaults(t *testing.T) {
 	}
 }
 
+// TestApplyExtendClampsExtremeValues pins the overflow guard: int64 values
+// near MaxInt64 must clamp to the caps, never wrap the int/Duration
+// conversion and defeat the bound (a wrapped-negative cap would read as
+// disabled to the renewal check).
+func TestApplyExtendClampsExtremeValues(t *testing.T) {
+	now := clock()
+	full := GoalSnapshot{Budgets: DefaultBudgets(now)}
+	huge := int64(1) << 62
+	out, err := ApplyExtend(full, ExtendRequest{Budget: ExtendContinuations, Value: huge}, now)
+	if err != nil || out.Budgets.MaxContinuations != MaxContinuationsCap {
+		t.Fatalf("continuations = (%+v, %v), want clamped to %d", out.Budgets, err, MaxContinuationsCap)
+	}
+	out, err = ApplyExtend(full, ExtendRequest{Budget: ExtendDeadline, Value: huge}, now)
+	if err != nil || !out.Budgets.Deadline.Equal(now.Add(GoalDeadlineCap)) {
+		t.Fatalf("deadline = (%+v, %v), want now+cap", out.Budgets, err)
+	}
+	out, err = ApplyExtend(full, ExtendRequest{Budget: ExtendParkedTotal, Value: huge}, now)
+	if err != nil || out.Budgets.MaxParkedTotal != MaxParkedTotalCap {
+		t.Fatalf("parked-total = (%+v, %v), want clamped to %v", out.Budgets, err, MaxParkedTotalCap)
+	}
+}
+
 func TestBudgetsAccrueInFold(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())

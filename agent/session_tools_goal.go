@@ -282,11 +282,11 @@ func describeGoalWaitState(deps *toolDeps) string {
 	return fmt.Sprintf("goal is %q", string(snap.Status))
 }
 
-// goalWaitTool executes the goal_wait tool: validate, register, park. Both
-// registration paths (model-declared here, harness-auto at delegate spawn /
-// supervised-job start / ask time / child-session creation) run this same
-// store validation, so a hallucinated target rejects with the reason named -
-// never parked. On success the coalesced wait timer re-arms to the new lease.
+// goalWaitTool executes the goal_wait tool: validate, register, park. All
+// waits are model-declared through this tool (no harness-auto registration
+// path exists in this slice); store validation rejects hallucinated targets
+// with the reason named — never parked. On success the coalesced wait timer
+// re-arms to the new lease.
 func goalWaitTool(deps *toolDeps, args map[string]any) (any, error) {
 	req, err := decodeGoalWaitArgs(args)
 	if err != nil {

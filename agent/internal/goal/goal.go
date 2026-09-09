@@ -1259,7 +1259,12 @@ func (s *Store) MarkAdvanced(now time.Time) {
 // stood. The gate calls this when its own batch carried no loss, so a loss
 // that landed between scans still reaches the rule-5 read exactly once —
 // never a silent strand, never a repeated verdict. Consuming clears the
-// cause but keeps AdvancementSinceLoss for the check-before-reset read.
+// cause AND the advancement flag atomically: the flag justified exactly one
+// rule-5 read (the loss it accompanied), and a stale set flag would let
+// progress from a previous loss cycle soften an unrelated later loss into a
+// re-drive. The gate's same-turn MarkAdvanced (predicate fire in the same
+// pass) re-arms the window after the consume — ordering matters: consume
+// first, then mark.
 func (s *Store) TakeLossCause() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1268,6 +1273,7 @@ func (s *Store) TakeLossCause() (string, bool) {
 	}
 	cause := s.goal.LossCause
 	s.goal.LossCause = ""
+	s.goal.AdvancementSinceLoss = false
 	return cause, true
 }
 
@@ -1626,6 +1632,12 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 		if ext.Value <= 0 {
 			return GoalSnapshot{}, fmt.Errorf("invalid --extend continuations value %d: want a positive turn count", ext.Value)
 		}
+		// Bound BEFORE the int conversion: an extreme int64 would overflow
+		// the add (or the int width itself) and wrap the cap comparison.
+		if ext.Value > int64(MaxContinuationsCap) {
+			out.Budgets.MaxContinuations = MaxContinuationsCap
+			break
+		}
 		out.Budgets.MaxContinuations += int(ext.Value)
 		if out.Budgets.MaxContinuations > MaxContinuationsCap {
 			out.Budgets.MaxContinuations = MaxContinuationsCap
@@ -1634,7 +1646,14 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 		if ext.Value <= 0 {
 			return GoalSnapshot{}, fmt.Errorf("invalid --extend deadline value %d: want a positive second count", ext.Value)
 		}
-		out.Budgets.Deadline = now.Add(time.Duration(ext.Value) * time.Second)
+		// Bound BEFORE the Duration multiply: ext.Value seconds near
+		// math.MaxInt64/1e9 would overflow time.Duration and wrap negative,
+		// defeating the cap comparison below.
+		if ext.Value > int64((GoalDeadlineCap / time.Second).Seconds()) {
+			out.Budgets.Deadline = now.Add(GoalDeadlineCap)
+		} else {
+			out.Budgets.Deadline = now.Add(time.Duration(ext.Value) * time.Second)
+		}
 		if deadlineCap := now.Add(GoalDeadlineCap); out.Budgets.Deadline.After(deadlineCap) {
 			out.Budgets.Deadline = deadlineCap
 		}
@@ -1642,6 +1661,10 @@ func ApplyExtend(full GoalSnapshot, ext ExtendRequest, now time.Time) (GoalSnaps
 	case ExtendParkedTotal:
 		if ext.Value <= 0 {
 			return GoalSnapshot{}, fmt.Errorf("invalid --extend parked-total value %d: want a positive second count", ext.Value)
+		}
+		if ext.Value > int64((MaxParkedTotalCap / time.Second).Seconds()) {
+			out.Budgets.MaxParkedTotal = MaxParkedTotalCap
+			break
 		}
 		out.Budgets.MaxParkedTotal += time.Duration(ext.Value) * time.Second
 		if out.Budgets.MaxParkedTotal > MaxParkedTotalCap {
