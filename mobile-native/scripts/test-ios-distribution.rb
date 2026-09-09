@@ -11,6 +11,7 @@ require "zip"
 require "fastlane"
 require "fastlane_core/ipa_file_analyser"
 require "xcodeproj"
+require_relative "../fastlane/testflight_readiness"
 
 ROOT = File.expand_path("..", __dir__)
 Fastlane.load_actions
@@ -101,11 +102,60 @@ def test_configure_helper(tmpdir)
   assert(unrelated_before == unrelated_after, "helper changed an unrelated target")
 end
 
+def test_readiness_waiter
+  detail = Struct.new(:internal_build_state)
+  build = Struct.new(:id, :processing_state, :build_beta_detail).new("build-7", "VALID", detail.new("READY_FOR_BETA_TESTING"))
+  now = 0.0
+  observations = [[[build], false], [[build], false], [[build], true]]
+  result = TestflightReadiness.wait(timeout: 5, interval: 1, clock: -> { now }, sleeper: ->(seconds) { now += seconds }) { observations.shift }
+  assert(result == build && now == 2.0, "readiness waiter did not wait for eventual group membership")
+
+  now = 0.0
+  timeout = false
+  begin
+    TestflightReadiness.wait(timeout: 2, interval: 1, clock: -> { now }, sleeper: ->(seconds) { now += seconds }) { [[build], false] }
+  rescue TestflightReadiness::TimeoutError
+    timeout = true
+  end
+  assert(timeout, "readiness waiter did not enforce its monotonic deadline")
+
+  failed = false
+  now = 0.0
+  build.build_beta_detail.internal_build_state = "PROCESSING_EXCEPTION"
+  begin
+    TestflightReadiness.wait(timeout: 5, interval: 1, clock: -> { now }, sleeper: ->(seconds) { now += seconds }) { [[build], false] }
+  rescue TestflightReadiness::TerminalError
+    failed = true
+  end
+  assert(failed && now == 0.0, "readiness waiter did not immediately reject terminal internal state")
+end
+
+def with_test_clock
+  original_clock = Process.method(:clock_gettime)
+  original_sleep = Kernel.instance_method(:sleep)
+  now = 0.0
+  sleeps = []
+  Process.define_singleton_method(:clock_gettime) do |clock_id, *args|
+    clock_id == Process::CLOCK_MONOTONIC ? now : original_clock.call(clock_id, *args)
+  end
+  Kernel.define_method(:sleep) do |seconds|
+    sleeps << seconds
+    now += seconds
+    seconds.to_i
+  end
+  Kernel.send(:private, :sleep)
+  yield sleeps
+ensure
+  Process.define_singleton_method(:clock_gettime, original_clock)
+  Kernel.define_method(:sleep, original_sleep)
+  Kernel.send(:private, :sleep)
+end
+
 # App Store Connect and upload are the external boundary; the actual Fastfile,
 # API-key action, IPA reader and lane runner execute below it.
 class DistributionStore
   class << self
-    attr_accessor :app, :group, :builds, :uploads, :assign_build, :internal_build_state, :queries
+    attr_accessor :app, :group, :builds, :uploads, :assign_build, :internal_build_state, :queries, :build_sequence, :group_assignment_sequence, :group_fetches
   end
 
   App = Struct.new(:id)
@@ -117,7 +167,9 @@ class DistributionStore
   end
   Group = Struct.new(:id, :name, :is_internal_group, :has_access_to_all_builds, :builds) do
     def fetch_builds
-      builds
+      DistributionStore.group_fetches += 1
+      sequence = DistributionStore.group_assignment_sequence
+      sequence && !sequence.empty? ? (sequence.shift ? builds : []) : builds
     end
   end
   Page = Struct.new(:to_models)
@@ -131,6 +183,9 @@ class DistributionStore
     self.queries = []
     self.assign_build = true
     self.internal_build_state = "READY_FOR_BETA_TESTING"
+    self.build_sequence = nil
+    self.group_assignment_sequence = nil
+    self.group_fetches = 0
     Spaceship::ConnectAPI.token = nil
   end
 
@@ -154,7 +209,8 @@ Spaceship::ConnectAPI::Build.define_singleton_method(:all) do |**query|
   expected = { app_id: "app-1", version: "0.1.0", build_number: "7", platform: "IOS" }
   raise "build lookup is not scoped to exact app/version/build/platform" unless query == expected
   DistributionStore.queries << query
-  DistributionStore.builds
+  sequence = DistributionStore.build_sequence
+  sequence && !sequence.empty? ? [sequence.shift] : DistributionStore.builds
 end
 Fastlane::Actions::UploadToTestflightAction.define_singleton_method(:run) do |config|
   DistributionStore.require_auth
@@ -179,6 +235,8 @@ def test_lanes(tmpdir)
   ENV["IOS_INTERNAL_TESTFLIGHT_GROUP"] = "Internal"
   ENV["IOS_RECEIPT_PATH"] = File.join(tmpdir, "receipt.json")
   ENV["IOS_IPA_PATH"] = File.join(tmpdir, "good.ipa")
+  ENV["IOS_BUILD_READINESS_TIMEOUT_SECONDS"] = "0"
+  ENV["IOS_BUILD_READINESS_POLL_INTERVAL_SECONDS"] = "0"
   lane = Fastlane::FastFile.new(File.join(ROOT, "fastlane", "Fastfile"))
   DistributionStore.reset
   lane.runner.execute(:preflight, :ios)
@@ -215,10 +273,26 @@ def test_lanes(tmpdir)
   DistributionStore.assign_build = false
   expect_failure("missing exact group membership") { lane.runner.execute(:testflight, :ios) }
   assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "receipt written without membership")
-  ["PROCESSING", "EXPIRED"].each do |state|
+  DistributionStore.reset
+  processing = DistributionStore::Build.new("build-7", "PROCESSING", DistributionStore::BuildBetaDetail.new("PROCESSING"))
+  ready = DistributionStore::Build.new("build-7", "VALID", DistributionStore::BuildBetaDetail.new("READY_FOR_BETA_TESTING"))
+  ENV["IOS_BUILD_READINESS_TIMEOUT_SECONDS"] = "5"
+  ENV["IOS_BUILD_READINESS_POLL_INTERVAL_SECONDS"] = "1"
+  DistributionStore.build_sequence = [processing, ready, ready]
+  DistributionStore.group_assignment_sequence = [false, false, true]
+  with_test_clock do |sleeps|
+    lane.runner.execute(:testflight, :ios)
+    assert(sleeps == [1.0, 1.0], "readiness did not wait between fresh availability observations")
+  end
+  assert(DistributionStore.uploads.length == 1, "eventual assignment uploaded more than once")
+  assert(DistributionStore.queries.length == 3 && DistributionStore.group_fetches == 3, "readiness did not repeat exact build and group reads")
+  ENV["IOS_BUILD_READINESS_TIMEOUT_SECONDS"] = "0"
+  FileUtils.rm_f(ENV["IOS_RECEIPT_PATH"])
+  ["PROCESSING", "PROCESSING_EXCEPTION", "EXPIRED"].each do |state|
     DistributionStore.reset
     DistributionStore.internal_build_state = state
     expect_failure("unavailable internal state #{state}") { lane.runner.execute(:testflight, :ios) }
+    assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "receipt written for unavailable internal state #{state}")
   end
   DistributionStore.reset
   DistributionStore.internal_build_state = "IN_BETA_TESTING"
@@ -226,12 +300,33 @@ def test_lanes(tmpdir)
   receipt = JSON.parse(File.read(ENV["IOS_RECEIPT_PATH"]))
   assert(DistributionStore.uploads == [ENV["IOS_IPA_PATH"]], "upload did not use exact IPA once")
   assert(receipt["build_id"] == "build-7" && receipt["internal_group_id"] == "group-1", "receipt has wrong build/group")
+  assert(receipt["internal_build_state"] == "IN_BETA_TESTING", "receipt omitted the ready internal build state")
   assert(receipt["ipa_sha256"] == Digest::SHA256.file(ENV["IOS_IPA_PATH"]).hexdigest, "receipt has wrong IPA hash")
+
+  DistributionStore.reset
+  FileUtils.rm_f(ENV["IOS_RECEIPT_PATH"])
+  wrong_path = File.join(tmpdir, "wrong-verify.ipa")
+  write_ipa(wrong_path, identifier: "wrong.verify", marketing_version: "0.1.0", build_number: "7")
+  ENV["IOS_IPA_PATH"] = wrong_path
+  expect_failure("verify IPA identity") { lane.runner.execute(:verify_testflight, :ios) }
+  assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "verify wrote a receipt for mismatched IPA")
+  ENV["IOS_IPA_PATH"] = File.join(tmpdir, "good.ipa")
+  expect_failure("verify missing exact build") { lane.runner.execute(:verify_testflight, :ios) }
+  assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "verify wrote a receipt without an exact build")
+  existing = DistributionStore::Build.new("build-7", "VALID", DistributionStore::BuildBetaDetail.new("IN_BETA_TESTING"))
+  DistributionStore.builds = [existing]
+  expect_failure("verify missing group membership") { lane.runner.execute(:verify_testflight, :ios) }
+  assert(!File.exist?(ENV["IOS_RECEIPT_PATH"]), "verify wrote a receipt without exact group membership")
+  DistributionStore.group.builds = [existing]
+  lane.runner.execute(:verify_testflight, :ios)
+  assert(DistributionStore.uploads.empty?, "verify-only lane uploaded an IPA")
+  assert(JSON.parse(File.read(ENV["IOS_RECEIPT_PATH"])) == receipt, "verify-only lane did not write the exact ready build receipt")
 end
 
 Dir.mktmpdir("evener-distribution-test") do |tmpdir|
   test_ipa_analyser(tmpdir)
   test_configure_helper(tmpdir)
+  test_readiness_waiter
   test_lanes(tmpdir)
   puts "iOS distribution behavior checks passed"
 end
