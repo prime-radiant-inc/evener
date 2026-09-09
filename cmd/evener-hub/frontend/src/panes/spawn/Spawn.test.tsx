@@ -127,6 +127,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
   fake.on("evener/git/head", () => ({ head: "main" }));
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
+  fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -2689,4 +2690,196 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
   await user.click(confirm);
   expectWorkingDir("/home/other");
+});
+
+// --- spawn prompt-box inline slash menu (Task 5) ---------------------------
+//
+// The prompt box completes the same trailing-slash token the session composer
+// does, against the pre-session catalog (evener/spawn/slashCatalog) merged
+// with the spawn-scoped builtins (goal, model, reasoning-effort). Key
+// handling is ADAPTED for Spawn's submit model, not ported verbatim: plain
+// Enter is the newline key and commits the open menu, while only
+// Mod/Ctrl+Enter submits.
+
+function slashMenu() {
+  return screen.getByTestId("composer-slash-menu");
+}
+
+function slashOptions() {
+  return within(slashMenu()).getAllByRole("option");
+}
+
+function promptField(): HTMLTextAreaElement {
+  return screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+}
+
+// The slash catalog is debounced (useSpawnSlashCatalog): advance past the
+// settle window so the stubbed response lands, then type.
+async function typeSlashQuery(user: ReturnType<typeof userEvent.setup>, text: string): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  await user.type(promptField(), text);
+}
+
+test("typing /re opens the menu with builtin and catalog matches but not /simplify", async () => {
+  const user = userEvent.setup();
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/spawn/slashCatalog", () => ({
+        commands: [{ name: "review", description: "review the diff" }],
+        skills: [{ name: "simplify", description: "rewrite" }],
+      }));
+    }),
+  );
+  await settled();
+
+  await typeSlashQuery(user, "/re");
+
+  // /reasoning-effort (builtin) and /review (catalog) both match "re";
+  // "simplify" has no "r", so the embedding matcher needs every query char
+  // in the label and it must stay out. Asserted negatively on purpose so a
+  // future matcher change stays honest.
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
+    expect.stringContaining("/review"),
+  ]);
+  expect(slashMenu().querySelectorAll('[role="option"]')).toHaveLength(2);
+});
+
+test("typing further narrows the spawn slash menu live", async () => {
+  const user = userEvent.setup();
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/spawn/slashCatalog", () => ({
+        commands: [{ name: "review", description: "review the diff" }],
+        skills: [{ name: "simplify", description: "rewrite" }],
+      }));
+    }),
+  );
+  await settled();
+
+  await typeSlashQuery(user, "/rev");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/sim");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/simplify")]);
+});
+
+test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, "/rev");
+  await user.keyboard("{Tab}");
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect(promptField().selectionStart).toBe("/review ".length);
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect(document.activeElement).toBe(promptField());
+
+  // Plain Enter is Spawn's newline key: with the menu open it commits the
+  // highlighted item instead of submitting.
+  await user.clear(promptField());
+  await user.type(promptField(), "/rev");
+  await user.keyboard("{Enter}");
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+
+  // Mod+Enter ALWAYS submits, even with the menu open: commit nothing.
+  await user.clear(promptField());
+  await user.type(promptField(), "/rev");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  // The menu committed nothing: a successful Start clears the prompt (Spawn's
+  // own doSpawn reset), so the field must NOT hold the committed "/review ".
+  expect((promptField() as HTMLTextAreaElement).value).not.toBe("/review ");
+});
+
+test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
+  const user = userEvent.setup();
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/spawn/slashCatalog", () => ({
+        commands: [{ name: "review", description: "review the diff" }],
+        skills: [],
+      }));
+    }),
+  );
+  await settled();
+
+  await typeSlashQuery(user, "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/re");
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/zzz");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(promptField());
+  await user.type(promptField(), "foo/bar");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+
+  await user.clear(promptField());
+  await user.type(promptField(), "/re");
+  expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
+  fireEvent.blur(promptField());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("a non-evener harness sends no slashCatalog call and typing /goal shows no menu", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "external");
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
+
+  await user.type(promptField(), "/goal");
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("the open spawn menu wires listbox roles and aria-activedescendant on the prompt", async () => {
+  const user = userEvent.setup();
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/spawn/slashCatalog", () => ({
+        commands: [{ name: "review", description: "review the diff" }],
+        skills: [],
+      }));
+    }),
+  );
+  await settled();
+
+  await typeSlashQuery(user, "/re");
+
+  expect(slashMenu().getAttribute("role")).toBe("listbox");
+  const activeId = promptField().getAttribute("aria-activedescendant");
+  expect(activeId).toBeTruthy();
+  expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+
+  await user.keyboard("{Escape}");
+  expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
 });

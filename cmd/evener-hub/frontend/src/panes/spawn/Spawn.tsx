@@ -59,6 +59,15 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  spliceSlashCommand,
+} from "../session/composer/slashCompletion";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
@@ -84,10 +93,12 @@ import {
   setGlobalLastWorkingDir,
   sweepStaleModels,
 } from "./spawnDefaults";
+import { spawnBuiltinCommands } from "./spawnSlashMenu";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
+import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 
 // Below-the-fold dialog: mounted only after the user clicks "Connect
 // provider" (connectingProvider state), never on first paint. The chunk -
@@ -268,6 +279,7 @@ const CLASS = {
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
+  promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
@@ -373,6 +385,79 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     ? withPluginSelection(advancedOverrides, pluginSelection)
     : withPluginSelection(advancedOverrides, { mode: "default" });
 
+  // Inline slash-command completion (slashCompletion.ts's own header
+  // comment - ported from Beautiful UI's prompt-bar). slashToken is the
+  // trailing-token match recomputed on every keystroke (below); null means
+  // no menu, regardless of what the prompt's text actually contains -
+  // Escape closes the menu by setting this to null directly, and typing
+  // further reopens it because the very next keystroke recomputes the
+  // match fresh. slashHighlighted is the ArrowUp/Down cursor over whatever
+  // the CURRENT filtered list is; reset to 0 whenever the token itself
+  // changes (new match, or the query narrowed/widened) rather than
+  // persisted across it - an index into a list that just changed shape is
+  // not a meaningful position to keep.
+  const [slashToken, setSlashToken] = useState<SlashToken | null>(null);
+  const [slashHighlighted, setSlashHighlighted] = useState(0);
+  // The backend already resolved the selection for this cwd plus overrides
+  // (evener/spawn/slashCatalog), so no plugin filtering applies here the
+  // way Composer's visibleCatalogCommands filters its global catalog by
+  // live session plugins.
+  const slashCatalog = useSpawnSlashCatalog({
+    client,
+    cwd,
+    harness,
+    launchOverrides: combinedOverrides,
+    pluginRevision,
+    enabled: pluginSelectionSupported,
+  });
+  // Fail-soft: loading and error both render from the last (or empty)
+  // response, never an empty loading flash or a guessed zero.
+  const catalogResponse = slashCatalog.state.response ?? { commands: [], skills: [] };
+  const slashMenuCatalog = mergeSlashCommands(
+    spawnBuiltinCommands(),
+    catalogResponse.commands,
+    catalogResponse.skills ?? [],
+  );
+  // The menu is only ever open when a token matched AND the merged catalog
+  // has at least one fuzzy label hit for it - a matched-but-empty token
+  // (e.g. "/zzz" against a real catalog) shows no menu at all, same as no
+  // token matching. The pluginSelectionSupported gate is load-bearing: the
+  // hook reports ready-empty for non-evener harnesses, but
+  // spawnBuiltinCommands() merges unconditionally, so without it typing
+  // "/goal" on an external harness would still open a one-row builtin menu
+  // for a session that loads no plugins.
+  const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
+  const slashOpen = pluginSelectionSupported && slashToken !== null && slashItems.length > 0;
+  // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
+  const slashListboxId = "spawn-slash-listbox";
+  const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
+  const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
+
+  // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
+  // prop - it's a shared widget outside this stream's manifest - so this
+  // component sets both directly on the native node it already refs for
+  // cursor restoration below, the same imperative-DOM idiom the cursor-
+  // restore layout effect already uses on the identical ref.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (slashActiveId) {
+      el.setAttribute("aria-controls", slashListboxId);
+      el.setAttribute("aria-activedescendant", slashActiveId);
+    } else {
+      el.removeAttribute("aria-controls");
+      el.removeAttribute("aria-activedescendant");
+    }
+  }, [slashActiveId]);
+
+  // A freshly (re)matched token always starts highlighted at its first
+  // option - an index carried over from the PREVIOUS token's list is not a
+  // meaningful position once the list itself has changed shape.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: slashToken's start/query are deliberate trigger-only deps - the effect body only calls setSlashHighlighted(0), but must still re-run whenever the token identity actually changes (a new match, or the same match with a different query), same idiom as the cursor-restore layout effect below
+  useEffect(() => {
+    setSlashHighlighted(0);
+  }, [slashToken?.start, slashToken?.query]);
+
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
   // React controlled-input rationale). textRef mirrors `prompt` synchronously
@@ -423,6 +508,27 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     },
   };
   const attachments = useAttachments(textEditor);
+
+  // commitSlashCompletion is Tab/plain-Enter's (handlePromptKeyDown below)
+  // and a mouse click's (SlashCompletionMenu's own onSelect) shared "the
+  // user chose this command" path: splices the item's own invocation
+  // (slashCompletion.ts's mergeSlashCommands - "/plugin:name" for a plugin
+  // command via shell/palette/commands.ts's slashCommandInvocation, bare
+  // "/id" for a built-in) in at the token's own start (never the caret,
+  // when the caret was left mid-token by an earlier Escape-then-retype -
+  // spliceSlashCommand's own doc comment), through the SAME
+  // textEditor.write() seam every other programmatic edit in this file
+  // uses, then closes the menu and returns focus to the field - mirrors
+  // Composer.tsx's own commit shape. This only ever INSERTS the invocation
+  // text - whether it goes on to execute as a built-in is Task 6's own
+  // submit interception, below.
+  function commitSlashCompletion(item: SlashMenuItem): void {
+    if (!slashToken) return;
+    const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
+    textEditor.write(spliced.text, spliced.caret);
+    setSlashToken(null);
+    textareaRef.current?.focus();
+  }
 
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
   const providerRequired = usesEvenerModels && providerSetup.status === "missing";
@@ -854,6 +960,49 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }
 
   function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    // Inline slash-completion's own keyboard mechanics, ADAPTED for Spawn's
+    // submit model (deliberately NOT a verbatim Composer port - Composer's
+    // Enter sends, Spawn's plain Enter is a newline and only Mod/Ctrl+Enter
+    // submits): ArrowUp/Down move the highlighted option (wrapping at both
+    // ends) OVER the caret rather than moving the caret itself, Tab OR
+    // unmodified non-composing Enter commits the highlighted option, Escape
+    // dismisses without touching the prompt. The committing Enter never
+    // steals a submit path - it IS the newline key in Spawn, and
+    // Mod/Ctrl+Enter always falls through to the submit branch below even
+    // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
+    // their existing behavior (newline/composition).
+    if (slashOpen) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i + 1) % slashItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashHighlighted((i) => (i - 1 + slashItems.length) % slashItems.length);
+        return;
+      }
+      if (
+        event.key === "Tab" ||
+        (event.key === "Enter" &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          !event.altKey &&
+          !event.nativeEvent.isComposing)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chosen = slashItems[slashActiveIndex] ?? slashItems[0];
+        if (chosen) commitSlashCompletion(chosen);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashToken(null);
+        return;
+      }
+    }
     // ⌘/Ctrl+Enter submits (floor §1.12, spawn.js:1204-1211).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -1077,140 +1226,172 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}
-        <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <PromptCard
-            data-testid="spawn-prompt-card"
-            controlsTestId="spawn-controls"
-            field={
-              <Textarea
-                ref={textareaRef}
-                value={prompt}
-                onChange={(e) => updatePrompt(e.target.value)}
-                onKeyDown={handlePromptKeyDown}
-                onPaste={handlePaste}
-                // Short, because the intro above the card already asks the
-                // question and states the dormant-start rule; a placeholder
-                // that repeats them spends the field's one line on nothing.
-                placeholder="Describe the task…"
-                aria-label="Prompt"
-                autoGrow
-                // The PromptCard around it draws the one border this field
-                // needs and owns the focus ring - without this the field drew
-                // its own box inside the card's, and its resize grabber floated
-                // loose in the corner between them.
-                seamless
-                // The page's primary input, so it opens at a size worth writing
-                // in rather than growing into one. This is also what absorbs
-                // the slack that used to sit dead below the button.
-                minLines={6}
-              />
-            }
-            leading={
-              /* The composer's own leading cluster (Composer.tsx's .leading):
-                 attach, then the model trigger, then effort. All stay INSIDE
-                 the card's control row at every width - choosing a model and
-                 an effort is the same act wherever it happens, so it is the
-                 same component (ModelSwitchTrigger) and the same StatusRow
-                 quiet-effort recipe rather than a bespoke boxed variant below
-                 the card. */
-              <div className={CLASS.leading}>
-                <IconButton
-                  label="Attach image"
-                  icon={<AttachIcon />}
-                  variant="quiet"
-                  size="xs"
-                  type="button"
-                  data-testid="spawn-attach"
-                  onClick={() => fileInputRef.current?.click()}
+        {/* The positioned anchor for the inline slash menu above the card -
+            PromptCard's props are field/leading/actions only, so the menu
+            cannot go inside it (nor is Composer's own menu inside its card
+            either - it sits in Composer.tsx's positioned .formAnchor
+            wrapper). Rendered as this wrapper's first child, mirroring
+            Composer's anchor-above-card placement. */}
+        <div className={CLASS.promptAnchor}>
+          {slashOpen && (
+            <SlashCompletionMenu
+              id={slashListboxId}
+              items={slashItems}
+              highlightedIndex={slashActiveIndex}
+              onSelect={commitSlashCompletion}
+            />
+          )}
+          <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
+            <PromptCard
+              data-testid="spawn-prompt-card"
+              controlsTestId="spawn-controls"
+              field={
+                <Textarea
+                  ref={textareaRef}
+                  value={prompt}
+                  onChange={(e) => {
+                    updatePrompt(e.target.value);
+                    // Every keystroke re-evaluates the trailing-token match
+                    // fresh - a token Escape just closed reopens on the very
+                    // next text change rather than staying closed
+                    // indefinitely.
+                    const caret = e.target.selectionStart ?? e.target.value.length;
+                    setSlashToken(parseSlashToken(e.target.value, caret));
+                  }}
+                  onKeyDown={handlePromptKeyDown}
+                  onPaste={handlePaste}
+                  // Blur is the slash menu's own "clicked/tabbed away
+                  // entirely" close: without it a Tab-away leaves a stale
+                  // menu. SlashCompletionMenu's own options preventDefault()
+                  // on their mousedown specifically so a MOUSE click on an
+                  // option never reaches this handler in the first place -
+                  // see that component's own comment - so this only ever
+                  // fires for a genuine "focus left the field".
+                  onBlur={() => setSlashToken(null)}
+                  // Short, because the intro above the card already asks the
+                  // question and states the dormant-start rule; a placeholder
+                  // that repeats them spends the field's one line on nothing.
+                  placeholder="Describe the task…"
+                  aria-label="Prompt"
+                  autoGrow
+                  // The PromptCard around it draws the one border this field
+                  // needs and owns the focus ring - without this the field drew
+                  // its own box inside the card's, and its resize grabber floated
+                  // loose in the corner between them.
+                  seamless
+                  // The page's primary input, so it opens at a size worth writing
+                  // in rather than growing into one. This is also what absorbs
+                  // the slack that used to sit dead below the button.
+                  minLines={6}
                 />
-                {/* The label follows the same rules the old desktop field's
-                    did - the required-choice word when the hub has confirmed
-                    no default (kata xgk8), otherwise the chosen model, the
-                    resolved default model's own "<model> (default)", or
-                    plain "(default)" until the resolve lands. */}
-                <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
-                  <ModelSwitchTrigger
-                    label={
-                      modelRequired
-                        ? MODEL_CHOOSE_LABEL
-                        : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
-                    }
-                    value={model}
-                    loadCatalog={loadCatalog}
-                    onPick={handleModelPickEntry}
-                    data-testid="spawn-model-trigger"
-                    valueTestId="spawn-model-value"
+              }
+              leading={
+                /* The composer's own leading cluster (Composer.tsx's .leading):
+                   attach, then the model trigger, then effort. All stay INSIDE
+                   the card's control row at every width - choosing a model and
+                   an effort is the same act wherever it happens, so it is the
+                   same component (ModelSwitchTrigger) and the same StatusRow
+                   quiet-effort recipe rather than a bespoke boxed variant below
+                   the card. */
+                <div className={CLASS.leading}>
+                  <IconButton
+                    label="Attach image"
+                    icon={<AttachIcon />}
+                    variant="quiet"
+                    size="xs"
+                    type="button"
+                    data-testid="spawn-attach"
+                    onClick={() => fileInputRef.current?.click()}
                   />
-                </span>
-                {/* StatusRow's quiet-effort recipe (statusrow.module.css's
-                    .effortTrigger): the current value IS the visible control -
-                    a real native <select> laid over its own readout at zero
-                    opacity - so the row stays one quiet line instead of
-                    growing a bordered box. The readout renders the SELECTED
-                    option's own label - including the resolved default's
-                    ("high (default)"), never the bare value - so what the
-                    user sees is what the select holds. Same ladder contract
-                    the removed FormRow select kept: the selected model's own
-                    levels, the fallback ladder when the catalog can't say,
-                    and a disabled control when the model cannot reason at all
-                    (effortDisabled) rather than no control - pre-launch the
-                    setting is still discoverable beside the model it belongs
-                    to. */}
-                <span
-                  className={CLASS.effortTrigger}
-                  data-testid="spawn-effort"
-                  data-disabled={effortDisabled ? "true" : undefined}
-                >
-                  <span className={CLASS.effortSeparator} aria-hidden="true">
-                    ·
+                  {/* The label follows the same rules the old desktop field's
+                      did - the required-choice word when the hub has confirmed
+                      no default (kata xgk8), otherwise the chosen model, the
+                      resolved default model's own "<model> (default)", or
+                      plain "(default)" until the resolve lands. */}
+                  <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
+                    <ModelSwitchTrigger
+                      label={
+                        modelRequired
+                          ? MODEL_CHOOSE_LABEL
+                          : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
+                      }
+                      value={model}
+                      loadCatalog={loadCatalog}
+                      onPick={handleModelPickEntry}
+                      data-testid="spawn-model-trigger"
+                      valueTestId="spawn-model-value"
+                    />
                   </span>
-                  <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
-                    {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
-                      effortLabel(reasoningEffort, effortLevels)}
-                  </span>
-                  <span className={CLASS.effortChevron} aria-hidden="true">
-                    <Chevron direction="down" />
-                  </span>
-                  <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
-                    Prompt reasoning effort
-                  </label>
-                  <select
-                    id="spawn-reasoning-effort"
-                    className={CLASS.effortSelect}
-                    value={reasoningEffort}
-                    onChange={(e) => setReasoningEffort(e.target.value)}
-                    disabled={effortDisabled}
+                  {/* StatusRow's quiet-effort recipe (statusrow.module.css's
+                      .effortTrigger): the current value IS the visible control -
+                      a real native <select> laid over its own readout at zero
+                      opacity - so the row stays one quiet line instead of
+                      growing a bordered box. The readout renders the SELECTED
+                      option's own label - including the resolved default's
+                      ("high (default)"), never the bare value - so what the
+                      user sees is what the select holds. Same ladder contract
+                      the removed FormRow select kept: the selected model's own
+                      levels, the fallback ladder when the catalog can't say,
+                      and a disabled control when the model cannot reason at all
+                      (effortDisabled) rather than no control - pre-launch the
+                      setting is still discoverable beside the model it belongs
+                      to. */}
+                  <span
+                    className={CLASS.effortTrigger}
+                    data-testid="spawn-effort"
+                    data-disabled={effortDisabled ? "true" : undefined}
                   >
-                    {effortOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-              </div>
-            }
-            actions={
-              <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
-                <Button
-                  variant="primary"
-                  size="xs"
-                  data-testid="spawn-submit"
-                  aria-label="Start"
-                  icon={busy ? undefined : <SendIcon />}
-                  onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
-                >
-                  {busy ? (
-                    <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
-                  ) : (
-                    <span className={CLASS.submitLabel}>Start</span>
-                  )}
-                </Button>
-              </Tooltip>
-            }
-          />
-        </Dropzone>
+                    <span className={CLASS.effortSeparator} aria-hidden="true">
+                      ·
+                    </span>
+                    <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
+                      {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
+                        effortLabel(reasoningEffort, effortLevels)}
+                    </span>
+                    <span className={CLASS.effortChevron} aria-hidden="true">
+                      <Chevron direction="down" />
+                    </span>
+                    <label className={CLASS.srOnly} htmlFor="spawn-reasoning-effort">
+                      Prompt reasoning effort
+                    </label>
+                    <select
+                      id="spawn-reasoning-effort"
+                      className={CLASS.effortSelect}
+                      value={reasoningEffort}
+                      onChange={(e) => setReasoningEffort(e.target.value)}
+                      disabled={effortDisabled}
+                    >
+                      {effortOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                </div>
+              }
+              actions={
+                <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                  <Button
+                    variant="primary"
+                    size="xs"
+                    data-testid="spawn-submit"
+                    aria-label="Start"
+                    icon={busy ? undefined : <SendIcon />}
+                    onClick={() => void handleSpawn()}
+                    disabled={busy || modelRequired || providerRequired || pluginSelectionBlocked}
+                  >
+                    {busy ? (
+                      <StartingLoader startedAt={busyStartedAt ?? Date.now()} />
+                    ) : (
+                      <span className={CLASS.submitLabel}>Start</span>
+                    )}
+                  </Button>
+                </Tooltip>
+              }
+            />
+          </Dropzone>
+        </div>
         {providerRequired && (
           <div className={CLASS.notice} role="status">
             <span>Connect a provider to use a model. Sign in or add an API key here.</span>
