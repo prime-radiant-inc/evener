@@ -7,6 +7,7 @@ import {
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
 	type ReaderStorage,
+	reachableReaderOffset,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -36,6 +37,29 @@ const row = (
 	position,
 });
 describe("reader positions", () => {
+	it("retries a clamped restore when the saved position becomes reachable", () => {
+		const measurement = { key: "anchor", y: 4734, height: 127 };
+		const desired = 4746;
+		const clamped = reachableReaderOffset(desired, 4934, 598);
+		expect(clamped).toBe(4336);
+		expect(
+			shouldApplyExactRestore(measurement, measurement, clamped, clamped),
+		).toBe(false);
+		const reachable = reachableReaderOffset(desired, 6120, 598);
+		expect(reachable).toBe(desired);
+		expect(
+			shouldApplyExactRestore(measurement, measurement, clamped, reachable),
+		).toBe(true);
+		expect(
+			shouldApplyExactRestore(
+				measurement,
+				measurement,
+				reachable,
+				reachableReaderOffset(desired, 7000, 598),
+			),
+		).toBe(false);
+		expect(reachableReaderOffset(desired, 300, 598)).toBe(0);
+	});
 	it("uses stable transcript identity and pair ordering", () => {
 		expect(readerKey(row("wire", { entry: 1, item: 2 }))).toBe("key-wire");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(

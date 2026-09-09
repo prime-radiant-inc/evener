@@ -86,6 +86,7 @@ import {
 	type ReaderAnchor,
 	type ReaderMeasurement,
 	ReaderRestoreAttempts,
+	reachableReaderOffset,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -846,13 +847,15 @@ export function ConversationScreen({
 	const snapshot = store();
 	const timeline = useRef<FlatList>(null);
 	const readerMeasurements = useRef(new Map<string, ReaderMeasurement>());
+	const readerContentHeight = useRef(0);
+	const readerViewportHeight = useRef(0);
 	const [layoutRevision, setLayoutRevision] = useState(0);
 	const readerAnchor = useRef<ReaderAnchor | null>(null);
 	const appliedReaderRestore = useRef<{
 		key: string;
 		y: number;
 		height: number;
-		offset: number;
+		scrollOffset: number;
 	} | null>(null);
 	const readerRestoreAttempts = useRef(new ReaderRestoreAttempts());
 	const readerPageAttempts = useRef(new Set<string>());
@@ -1348,15 +1351,23 @@ export function ConversationScreen({
 				animated: false,
 			});
 		} else {
+			if (restoreFrame.current !== null)
+				cancelAnimationFrame(restoreFrame.current);
+			restoreFrame.current = null;
 			const currentKey = readerKey(timelineRows[command.index]);
 			const measurement = readerMeasurements.current.get(currentKey);
+			if (!measurement) return;
+			const scrollOffset = reachableReaderOffset(
+				measurement.y - command.viewOffset,
+				readerContentHeight.current,
+				readerViewportHeight.current,
+			);
 			if (
-				!measurement ||
 				!shouldApplyExactRestore(
 					appliedReaderRestore.current,
 					measurement,
-					appliedReaderRestore.current?.offset ?? null,
-					anchor.withinItemOffset,
+					appliedReaderRestore.current?.scrollOffset ?? null,
+					scrollOffset,
 				)
 			)
 				return;
@@ -1364,11 +1375,11 @@ export function ConversationScreen({
 				key: currentKey,
 				y: measurement.y,
 				height: measurement.height,
-				offset: anchor.withinItemOffset,
+				scrollOffset,
 			};
 			captureSuppressed.current = true;
 			timeline.current?.scrollToOffset({
-				offset: Math.max(0, measurement.y - command.viewOffset),
+				offset: scrollOffset,
 				animated: false,
 			});
 		}
@@ -1990,6 +2001,10 @@ export function ConversationScreen({
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
+							onLayout={(event) => {
+								readerViewportHeight.current = event.nativeEvent.layout.height;
+								setLayoutRevision((revision) => revision + 1);
+							}}
 							data={timelineRows}
 							ListFooterComponent={
 								presentation.usage ? (
@@ -2025,7 +2040,9 @@ export function ConversationScreen({
 								</View>
 							)}
 							contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
-							onContentSizeChange={() => {
+							onContentSizeChange={(_width, height) => {
+								readerContentHeight.current = height;
+								setLayoutRevision((revision) => revision + 1);
 								if (readerLatest.current)
 									(
 										timeline.current?.getScrollResponder() as ScrollView | null
@@ -2060,7 +2077,7 @@ export function ConversationScreen({
 									if (anchor && measurement)
 										appliedReaderRestore.current = {
 											...measurement,
-											offset: anchor.withinItemOffset,
+											scrollOffset: y,
 										};
 								}
 							}}
@@ -2091,6 +2108,13 @@ export function ConversationScreen({
 								const targetIndex = anchor
 									? resolveReaderAnchor(anchor, timelineRows)
 									: null;
+								if (
+									targetIndex !== null &&
+									readerMeasurements.current.has(
+										readerKey(timelineRows[targetIndex]),
+									)
+								)
+									return;
 								const measurementProgress =
 									targetIndex === null
 										? -1

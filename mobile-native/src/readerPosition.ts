@@ -224,6 +224,17 @@ export function shouldApplyExactRestore(
 		previousOffset !== offset
 	);
 }
+// A virtualized list may not yet extend far enough to reach the saved position.
+export function reachableReaderOffset(
+	desiredOffset: number,
+	contentHeight: number,
+	viewportHeight: number,
+): number {
+	return Math.min(
+		Math.max(0, desiredOffset),
+		Math.max(0, contentHeight - viewportHeight),
+	);
+}
 export function restoreReaderCommand(
 	anchor: ReaderAnchor,
 	rows: readonly TimelineRow[],
