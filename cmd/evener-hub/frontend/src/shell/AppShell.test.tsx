@@ -3168,3 +3168,67 @@ test("an in-flight live demand-load goes inert while the palette is open", async
   });
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 });
+
+// Round 6: the demand dedupe keyed the page alone, so an opposite-direction
+// press while that page was in flight returned early WITHOUT bumping the
+// intent counter - the stale continuation still owned the navigation. With no
+// live rows loaded, Previous then Next while page zero loads must leave the
+// Next intent in charge: the first returned row, not the previous direction's
+// tail (roborev PR #1044 round-6 medium).
+test("an opposite-direction press while a demanded page is in flight supersedes the prior intent", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "manifest") {
+        return wireV2(
+          params,
+          { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
+          '"test"',
+        );
+      }
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return new Promise<NavigationReadResponse>((resolve) => {
+            deferred.params = params;
+            deferred.resolve = resolve;
+          });
+        }
+        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  // Page zero (the manifest hydration's) is in flight, deferred.
+  await screen.findByText("No session open");
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // Previous first: with nothing loaded it demands page zero toward the tail.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // Then the user flips to Next: the newest intent must own the navigation.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-zero request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+  });
+  // Next from nothing opens the FIRST live row; the previous direction's
+  // continuation must not run past it toward the tail.
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+});

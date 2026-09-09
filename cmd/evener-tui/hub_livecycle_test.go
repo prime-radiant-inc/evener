@@ -370,3 +370,28 @@ func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
 		t.Fatalf("draft = %q, want preserved", got)
 	}
 }
+
+// An overlay (palette, modal, panel) opened while the read was in flight is
+// the same class of newer intent: applying the read would swap the session
+// under the overlay, leaving it open against stale session context (roborev
+// PR #1044 round-6 low).
+func TestHubSessionLiveCycleDropsReadWhenOverlayOpenedMidFlight(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	palette := newCommandPalette("Test", nil, 80)
+	m1.commandPalette = &palette
+	if got := topmostOverlayName(m1); got != "command-palette" {
+		t.Fatalf("test setup invalid: topmostOverlayName = %q, want command-palette", got)
+	}
+
+	updated, _ := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01B" {
+		t.Fatalf("live-nav read applied under an open overlay: viewed ref = %q, want local:01B", m2.detail.Ref)
+	}
+	if m2.commandPalette == nil {
+		t.Fatal("expected the palette to remain open")
+	}
+}

@@ -547,9 +547,12 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // starting a NEW demand or navigating directly bumps the intent counter,
     // but a press that dedupes against an in-flight demand does NOT - it is
     // the same intent, and bumping would make the demand's own completion
-    // go inert (round-4 medium 2). A completing demand goes inert when the
-    // press that started it no longer owns the intent, the focused session
-    // or pane moved on, or a palette/modal is open.
+    // go inert (round-4 medium 2). The dedupe key is page AND direction: an
+    // opposite-direction press against the same in-flight page is a NEW
+    // intent - it must bump and supersede, not ride the stale continuation
+    // (round-6 medium). A completing demand goes inert when the press that
+    // started it no longer owns the intent, the focused session or pane
+    // moved on, or a palette/modal is open.
     let liveNavMounted = true;
     let liveNavIntent = 0;
     let liveNavGeneration = navigationStore.getState().clientGenerationID;
@@ -558,8 +561,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       const state = navigationStore.getState();
       const offset = selectNextSectionOffset("live", state);
       const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
-      if (demandedLivePages.has(pageID)) return; // waiting on this page already; not newer intent
-      demandedLivePages.add(pageID);
+      const demandKey = `${pageID}:${direction}`;
+      if (demandedLivePages.has(demandKey)) return; // waiting on this page already; not newer intent
+      demandedLivePages.add(demandKey);
       liveNavIntent++;
       const intentAtPress = liveNavIntent;
       const paneAtPress = workspaceStore.getState().focusedPaneId;
@@ -568,7 +572,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         .loadSection("live", offset)
         .then((page) => {
           if (page.error !== null || page.data === null) {
-            demandedLivePages.delete(pageID); // failed load: allow the next press to retry
+            demandedLivePages.delete(demandKey); // failed load: allow the next press to retry
             return;
           }
           if (
@@ -595,7 +599,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           if (last) openNeedsYouSession(last.ref);
         })
         .catch(() => {
-          demandedLivePages.delete(pageID);
+          demandedLivePages.delete(demandKey);
         });
     };
     const unregister = [

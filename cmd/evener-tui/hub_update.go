@@ -78,6 +78,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.liveNavPendingRef = ""
 				return m, nil
 			}
+			// An overlay opened while the read was in flight is the same
+			// class of newer intent: applying the read would swap the session
+			// under the still-open overlay, leaving it against stale session
+			// context (roborev PR #1044 round-6 low). Palette-issued live-nav
+			// commands are unaffected: the palette closes itself before the
+			// command runs (updateCommandPaletteKey), and the focus trap
+			// swallows the chord itself while any overlay is open.
+			if topmostOverlayName(m) != "" {
+				m.liveNavPendingRef = ""
+				return m, nil
+			}
 			m.liveNavPendingRef = ""
 		}
 		var preCut []tea.Cmd
