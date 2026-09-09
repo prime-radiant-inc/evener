@@ -530,6 +530,10 @@ function watchNoteSection(bodyText: string): string | undefined {
 function watchProse(attrs: Record<string, string>, bodyText: string): string {
   const jobId = (attrs.job_id ?? "").trim();
   if (!jobId) return bodyText;
+  // The producer's self job id is internal vocabulary: titles map it to
+  // "this session" (titleForJobNotification), so synthesized prose must too
+  // ("Matched … on self" leaks the same token the card suppresses).
+  const jobLabel = jobId === "self" ? "this session" : jobId;
   const reason = decodeNotificationEntities(attrs.reason ?? "").trim();
   // The producer appends the watch's own note to every fire body
   // (withNotificationNote). Synthesized prose replaces the generic lead
@@ -558,10 +562,10 @@ function watchProse(attrs: Record<string, string>, bodyText: string): string {
   // Value patterns are dot-all: matched output can span lines, and the
   // reason attr carries raw text (only entity-escaped, never line-folded).
   const outputMatch = /^output_match:\s*([\s\S]+)$/.exec(reason)?.[1]?.trim();
-  if (outputMatch) return withNote(escapeNotificationEntities(`Matched output_match: ${outputMatch} on ${jobId}.`));
+  if (outputMatch) return withNote(escapeNotificationEntities(`Matched output_match: ${outputMatch} on ${jobLabel}.`));
   const eventFire = /^event:\s*([\s\S]+)$/.exec(reason)?.[1]?.trim();
-  if (eventFire) return withNote(escapeNotificationEntities(`Watch event triggered: ${eventFire} on ${jobId}.`));
-  if (/^progress_tick$/.test(reason)) return withNote(escapeNotificationEntities(`Progress tick on ${jobId}.`));
+  if (eventFire) return withNote(escapeNotificationEntities(`Watch event triggered: ${eventFire} on ${jobLabel}.`));
+  if (/^progress_tick$/.test(reason)) return withNote(escapeNotificationEntities(`Progress tick on ${jobLabel}.`));
   // Not a recognized trigger reason — the body is whatever the producer
   // sent; only the exact generic sentence is worth replacing, with the
   // escaped reason as the honest fallback.
