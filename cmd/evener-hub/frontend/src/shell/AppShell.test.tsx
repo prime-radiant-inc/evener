@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
+import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
@@ -2396,6 +2397,86 @@ function installMobileViewport(): void {
     })),
   );
 }
+
+test("Open transcript retains focused child after settled parent route reconciliation", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  window.history.pushState({}, "", "/s/local:owner");
+  installLocationForRoute("local:owner");
+  const user = userEvent.setup();
+
+  render(
+    <>
+      <AppShell client={navClient()} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />
+    </>,
+  );
+  await screen.findByText(/loading transcript/i);
+  const parent = paneFor("local:owner");
+  expect(parent).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+
+  // userEvent's pointer interaction is wrapped in React act, so the assertion
+  // below observes the AppShell workspace-panes effect, not the handler's
+  // immediate pre-effect focus.
+  const openButton = screen.getByRole("button", { name: "Open transcript" });
+  await user.click(openButton);
+
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) =>
+        pane.type === "transcript" &&
+        (pane.params as { ref?: string; parentRef?: string }).ref === "local:child" &&
+        (pane.params as { ref?: string; parentRef?: string }).parentRef === "local:owner",
+    );
+  expect(child).toMatchObject({ type: "transcript", slot: "secondary" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+
+  await user.click(openButton);
+  const repeatedChildren = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:child");
+  expect(repeatedChildren).toHaveLength(1);
+  expect(repeatedChildren[0]?.id).toBe(child?.id);
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+});
+
+test("Open transcript retains focused child on desktop until explicit navigation takes precedence", async () => {
+  window.history.pushState({}, "", "/s/local:owner");
+  installLocationForRoute("local:owner");
+  const user = userEvent.setup();
+
+  render(
+    <>
+      <AppShell client={navClient()} />
+      <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" />
+    </>,
+  );
+  await screen.findByText(/loading transcript/i);
+  const parent = paneFor("local:owner");
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+
+  await user.click(screen.getByRole("button", { name: "Open transcript" }));
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) =>
+        pane.type === "transcript" &&
+        (pane.params as { ref?: string; parentRef?: string }).ref === "local:child" &&
+        (pane.params as { ref?: string; parentRef?: string }).parentRef === "local:owner",
+    );
+  expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:next");
+    installLocationForRoute("local:next");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:next" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+  expect(paneFor("local:child")).toBeUndefined();
+});
 
 function installSwitchableViewport(): (mobile: boolean) => void {
   let mobile = false;
