@@ -802,8 +802,7 @@ export function SessionsScreen({
 										ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
 										style={[metadataStyle, { color: colors.secondary }]}
 									>
-										{item.project.split("/").filter(Boolean).at(-1) ||
-											item.project}
+										{item.projectLabel}
 									</Text>
 								) : null}
 							</Pressable>
