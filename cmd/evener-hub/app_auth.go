@@ -583,6 +583,9 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	if !ok {
 		return appwire.AuthDevicePollResponse{State: "expired"}, nil
 	}
+	if flow.Provider != provider {
+		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
+	}
 	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
 		c.mu.Lock()
 		delete(c.deviceFlows, flowID)
