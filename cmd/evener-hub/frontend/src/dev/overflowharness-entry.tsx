@@ -53,6 +53,7 @@ const width = Number(params.get("w") ?? "1400");
 const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
+const intentTailMode = params.get("intenttail") === "1";
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
@@ -230,6 +231,58 @@ ${RAW_UNBROKEN_PAYLOAD}
   },
 };
 
+// ?intenttail=1: the reload-shaped fixture for the top-level intent group's
+// column alignment. A SETTLED transcript whose final turn ENDS in
+// intent-bearing tool calls projects that trailing run as its own virtual-list
+// row (TranscriptBody's transcriptRowsForProjection promotes a terminal
+// single-turn intent run), rendered OUTSIDE TurnBlock's .turn column. A live
+// stream nests the same group mid-turn inside .turn, which is why the
+// misalignment the screenshot showed only appeared after a reload. The main
+// snapshot's intent row (i3b) sits mid-turn on purpose, so it cannot see this.
+const INTENTTAIL_REF = "overflowintenttail";
+const intentTailTurn = snapshot.thread.turns?.[0];
+if (!intentTailTurn) throw new Error("overflow harness snapshot is missing turn_1");
+const intentTailSnapshot: ThreadReadResponse = {
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_intenttail",
+    sessionId: "sess_overflow_intenttail",
+    evener: { ...snapshot.thread.evener, ref: INTENTTAIL_REF },
+    turns: [
+      {
+        ...intentTailTurn,
+        items: [
+          ...(intentTailTurn.items ?? []),
+          {
+            type: "commandExecution",
+            id: "i8",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_2",
+            status: "completed",
+            durationMs: 900,
+            description: "Creating an isolated worktree lane for the timestamp restyling work",
+            argumentsJson: JSON.stringify({ command: "git worktree add timestamp-right" }),
+            output: "Preparing worktree",
+          },
+          {
+            type: "commandExecution",
+            id: "i9",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_3",
+            status: "completed",
+            durationMs: 700,
+            description: "Locating timestamp rendering in the hub frontend source",
+            argumentsJson: JSON.stringify({ command: "rg -l timestamp cmd/evener-hub/frontend/src" }),
+            output: "done",
+          },
+        ],
+      },
+    ],
+  },
+};
+
 const PAGING_REF = "overflowpaging";
 const PAGING_ITEM_IDS = Array.from({ length: 45 }, (_, index) => `paging-item-${index}`);
 PAGING_ITEM_IDS[4] = "item_tool_paging";
@@ -296,7 +349,7 @@ const pagingSnapshot: ThreadReadResponse = {
 };
 
 const fake = new FakeClient("ready");
-fake.on("thread/read", () => (pagingMode ? pagingSnapshot : snapshot));
+fake.on("thread/read", () => (pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : snapshot));
 fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListResponse => {
   if (!pagingMode || request.ref !== PAGING_REF) return { data: [] };
   return {
@@ -315,8 +368,8 @@ fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 // putThreadModel keeps the routing index in step with the seeded map
 // entry (the store's membership path for threads).
-const activeRef = pagingMode ? PAGING_REF : REF;
-const activeSnapshot = pagingMode ? pagingSnapshot : snapshot;
+const activeRef = pagingMode ? PAGING_REF : intentTailMode ? INTENTTAIL_REF : REF;
+const activeSnapshot = pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : snapshot;
 putThreadModel(activeRef, hydrateThread(activeSnapshot, activeRef, 1000));
 const locationKey = { kind: "location", ref: REF } as const;
 const location: NavigationSessionLocation = {
@@ -1254,6 +1307,63 @@ async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
   }
 }
 
+interface IntentColumnMeasurement {
+  groupFound: boolean;
+  groupLeft: number | null;
+  groupRight: number | null;
+  turnLeft: number | null;
+  turnRight: number | null;
+}
+
+// The top-level intent group (a terminal or cross-turn intent run promoted to
+// its own virtual-list row by transcriptRowsForProjection) must share the
+// content column every .turn row reads: same left edge, same right edge. It
+// renders without TurnBlock's .turn wrapper, so this measures the two boxes
+// against each other - the scan above cannot see the misalignment because
+// nothing overflows its scroller, the group is simply wider than the column.
+// Run at the ?intenttail=1 fixture under the chat preset (toolIntent on), and
+// restores the guard's own config afterwards exactly like inspectChatFocus.
+async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Intent column harness pane never mounted");
+  const layout = transcriptDisplayStore.getState().viewport;
+  const original = transcriptDisplayStore.getState().local[layout];
+  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
+    for (let frame = 0; frame < 180; frame += 1) {
+      const value = read();
+      if (value !== null && value !== undefined) return value;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    throw new Error(`Intent column harness did not settle: ${label}`);
+  };
+  try {
+    transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
+    const group = await waitFor(
+      () =>
+        Array.from(pane.querySelectorAll<HTMLDetailsElement>('details[data-testid="intent-group"]')).find(
+          // The nested (mid-turn) group lives INSIDE .turn and is aligned by
+          // construction; only the top-level row's geometry is in question.
+          (details) => details.closest('[data-testid="turn-block"]') === null,
+        ),
+      "top-level intent group",
+    );
+    const turn = await waitFor(() => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'), "turn block");
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const groupRect = group.getBoundingClientRect();
+    const turnRect = turn.getBoundingClientRect();
+    return {
+      groupFound: true,
+      groupLeft: groupRect.left,
+      groupRight: groupRect.right,
+      turnLeft: turnRect.left,
+      turnRight: turnRect.right,
+    };
+  } finally {
+    if (original) transcriptDisplayStore.getState().setLocal(layout, original);
+    else transcriptDisplayStore.getState().clearLocal(layout);
+  }
+}
+
 function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
@@ -1620,6 +1730,7 @@ declare global {
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
     inspectChatFocus: typeof inspectChatFocus;
+    inspectIntentColumn: typeof inspectIntentColumn;
     settled: Promise<true>;
     verifyItemPaging: typeof verifyItemPaging;
   }
@@ -1628,5 +1739,6 @@ window.measure = measure;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
+window.inspectIntentColumn = inspectIntentColumn;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;
