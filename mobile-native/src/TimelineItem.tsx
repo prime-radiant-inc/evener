@@ -23,6 +23,7 @@ export function TimelineItem({
 	expandByDefault = false,
 	showDuration = true,
 	fork,
+	forkDisabled = false,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -31,6 +32,7 @@ export function TimelineItem({
 	expandByDefault?: boolean;
 	showDuration?: boolean;
 	fork?: (entryIndex: number, preview: string) => void;
+	forkDisabled?: boolean;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
@@ -105,13 +107,15 @@ export function TimelineItem({
 						<Pressable
 							accessibilityRole="button"
 							accessibilityLabel={`Message actions for ${preview}`}
+							accessibilityState={{ disabled: forkDisabled }}
+							disabled={forkDisabled}
 							onPress={showActions}
 							style={({ pressed }) => ({
 								width: 44,
 								height: 44,
 								alignItems: "center",
 								justifyContent: "center",
-								opacity: pressed ? 0.65 : 1,
+								opacity: forkDisabled ? 0.4 : pressed ? 0.65 : 1,
 							})}
 						>
 							<View style={{ flexDirection: "row", gap: 3 }}>
