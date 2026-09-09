@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { measureEditorial, assertEditorialGeometry } from "./editorial-preview-measure.mjs";
+import { measureReadyDesktopCollaborators, assertDesktopCollaborators } from "./editorial-preview-readiness.mjs";
 import { startBrowserGuard } from "./browserGuardProcess.mjs";
 import { connectPage, createStartupDeadline, waitForHttp, navigateTo, evaluate, applyViewport, waitForFonts } from "./browserGuardCdp.mjs";
 
@@ -285,7 +286,15 @@ try {
       await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]').click()");
       await evalJS("const list=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;list.scrollTop=list.scrollHeight");
       await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length===3");
-      const collaborators = await evalJS(`(${measureEditorial.toString()})()`);
+      // Desktop collapse/layout can leave mounted rows offscreen for a frame.
+      // Require inspectability in the SAME task as the geometry measurement.
+      // Phone rows need not all fit at once; their existing F1 checks stay separate.
+      const desktop = viewport.touch ? null : await measureReadyDesktopCollaborators(evalJS);
+      if (desktop) {
+        (observations.desktopReadiness ??= []).push({label,...desktop});
+        assertDesktopCollaborators(assert,desktop.readiness,label);
+      }
+      const collaborators = desktop ? desktop.geometry : await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label:`${label}-collaborators`,...collaborators});
       assertWideSetup(collaborators, viewport, `${label}-collaborators`);
       try { assertEditorialGeometry(assert,collaborators,label,{collaborators:true}); } catch(error) { observations.geometryFailures.push(error.message); }
