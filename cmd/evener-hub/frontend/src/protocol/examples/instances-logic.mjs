@@ -3,7 +3,21 @@ import { mutateAndReadback, requireOwnedHub } from "./management-recovery.mjs";
 
 const fields = {
   create: ["name", "base", "baseUrl", "protocol", "surface", "vars", "apiKeyEnv", "credentialHeader"],
-  edit: ["name", "baseUrl", "clearBaseUrl", "protocol", "surface", "vars"],
+  edit: [
+    "name",
+    "newName",
+    "baseUrl",
+    "clearBaseUrl",
+    "protocol",
+    "clearProtocol",
+    "surface",
+    "clearSurface",
+    "vars",
+    "apiKeyEnv",
+    "clearApiKeyEnv",
+    "credentialHeader",
+    "clearCredentialHeader",
+  ],
   remove: ["name"],
   setDefault: ["name"],
 };
@@ -39,7 +53,7 @@ function checkedParams(action, params) {
         isRecord(value) && Object.values(value).every((item) => typeof item === "string"),
         "vars must contain string values.",
       );
-    else assert.equal(typeof value, key === "clearBaseUrl" ? "boolean" : "string", "Invalid instance parameter type.");
+    else assert.equal(typeof value, key.startsWith("clear") ? "boolean" : "string", "Invalid instance parameter type.");
   }
   // Omission, an empty value, and clearBaseUrl are distinct authored inputs.
   return { ...params, ...(Object.hasOwn(params, "vars") ? { vars: { ...params.vars } } : {}) };

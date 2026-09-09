@@ -102,6 +102,44 @@ remain to be qualified.
 
 ### Reviewing and upgrading a hub
 
+### Checking and applying hub updates
+
+update.mjs defaults to the read-only check action and calls
+evener/update/check. Set EVENER_UPDATE_ACTION=apply with an optional params
+file containing { "channel": "stable" } to deliberately apply an update.
+Apply requires EVENER_UPDATE_MUTATION=1 and EVENER_UPDATE_OWNED_HUB equal to
+EVENER_RPC_URL. The recipe reports the installation response as acknowledged
+with execution unverified, then checks the channel again; it never retries an
+ambiguous apply.
+
+### Reading and writing the personal agents document
+
+agents-doc.mjs defaults to the read-only get action. Set
+EVENER_AGENTS_DOC_ACTION=set and provide a params file containing
+{ "content": "...", "reviewed": { "path": "...", "exists": true, "content": "..." } }
+for a deliberate whole-document replacement. Writes require
+EVENER_AGENTS_DOC_MUTATION=1 and EVENER_AGENTS_DOC_OWNED_HUB equal to
+EVENER_RPC_URL; the reviewed snapshot is checked before dispatch and the
+result is read back. The evener/settings/agentsDoc/changed notification tells
+other clients to refresh. The recipe exposes no live qualification claim. The
+companion `agents-doc-notifications.mjs` recipe observes this notification and
+reconciles a fresh readback. Set `EVENER_AGENTS_DOC_NOTIFICATIONS_OUTPUT_FILE`
+to a new private file; document contents and events are written there, while
+stdout reports only the outcome and event count. The optional
+`EVENER_AGENTS_DOC_NOTIFICATIONS_OBSERVE_MS` (default 1000, maximum 10000) and
+`EVENER_AGENTS_DOC_NOTIFICATIONS_MAX_EVENTS` (default/maximum 100) bound the
+observation. Its programmatic helper also accepts an observation callback.
+This is a bounded observation, not continuous event coverage.
+
+### Force-stopping a session
+
+thread-force-stop.mjs requires a params file containing { "ref": "..." },
+EVENER_THREAD_FORCE_STOP_MUTATION=1, and EVENER_THREAD_FORCE_STOP_OWNED_HUB
+equal to EVENER_RPC_URL. It invokes the client's dedicated forceStop(ref)
+recovery connection so a saturated primary request queue cannot delay the stop.
+A successful request is acknowledged while execution remains unverified;
+inspect the hub or session list before retrying an uncertain operation.
+
 `hub-upgrade.mjs` defaults to the read-only `review` action, which reads the
 authoritative `evener/settings/overview` hub version and commit. Set
 `EVENER_HUB_UPGRADE_ACTION=upgrade` and `EVENER_HUB_UPGRADE_PARAMS_FILE`

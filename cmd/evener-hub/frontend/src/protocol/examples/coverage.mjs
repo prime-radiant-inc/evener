@@ -160,6 +160,10 @@ const recipes = {
     "evener/launch/resolve",
   ],
   "inspect.mjs": ["initialize", "model/list", "thread/list", "evener/launch/schema", "evener/launch/resolve"],
+  "thread-force-stop.mjs": ["initialize", "evener/thread/forceStop"],
+  "update.mjs": ["initialize", "evener/update/check", "evener/update/apply"],
+  "agents-doc.mjs": ["initialize", "evener/settings/agentsDoc/get", "evener/settings/agentsDoc/set"],
+  "agents-doc-notifications.mjs": ["initialize", "evener/settings/agentsDoc/get"],
 };
 const coveredNotifications = [
   "evener/launch/updated",
@@ -198,6 +202,7 @@ const coveredNotifications = [
   "warning",
   "evener/thread/modelRetry",
   "evener/steering/injected",
+  "evener/settings/agentsDoc/changed",
 ];
 const covered = new Set(Object.values(recipes).flat());
 for (const method of covered) {

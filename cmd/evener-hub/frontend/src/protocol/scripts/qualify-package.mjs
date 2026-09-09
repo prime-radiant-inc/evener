@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { accessSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,13 +13,15 @@ process.on("exit", (code) => {
   else console.error(`qualification fixture retained at ${fixtureDir}`);
 });
 
-function run(command, args, cwd) {
+function run(command, args, cwd, includeStderr = false) {
   try {
-    return execFileSync(command, args, {
+    const result = spawnSync(command, args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
+    if (result.status !== 0) throw new Error(`${command} exited with status ${result.status}: ${result.stderr}`);
+    return includeStderr ? `${result.stdout}${result.stderr}` : result.stdout;
   } catch (error) {
     const stdout = error.stdout?.toString();
     const stderr = error.stderr?.toString();
@@ -102,44 +104,50 @@ if (composeAskAnswers([]) !== "[answers]") process.exit(1);
 run(process.execPath, [join(fixtureDir, "esm-runtime.mjs")], fixtureDir);
 run(process.execPath, [join(fixtureDir, "commonjs-runtime.cjs")], fixtureDir);
 
-run(
-  process.execPath,
-  [
-    "--test",
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-setup.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/saved-items.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-lineage.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/maintenance-checks.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-upgrade.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/navigation-invalidation.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/bounded-notifications.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-notifications.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/work-notifications.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-notifications.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-notifications.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/discovery.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-management.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/credentials.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/oauth.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/preferences.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/organization.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/plugin-management.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/instances.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/marketplaces.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/approvals.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/questions.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/queue.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/goals.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/tasks.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/commands.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-settings.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/job-output.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/activity.contract.mjs"),
-    join(fixtureDir, "node_modules/@evener/appwire-client/examples/management-recovery.contract.mjs"),
-  ],
-  fixtureDir,
-);
+const contractFiles = [
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-setup.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/saved-items.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-lineage.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/maintenance-checks.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-upgrade.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/navigation-invalidation.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/bounded-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/work-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/hub-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/discovery.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-management.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/credentials.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/oauth.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/streaming-rejoin.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/preferences.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/organization.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/plugin-management.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/instances.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/marketplaces.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/approvals.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/questions.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/queue.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/goals.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/tasks.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/commands.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/session-settings.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/job-output.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/activity.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/management-recovery.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/agents-doc.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/agents-doc-notifications.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/thread-force-stop.contract.mjs"),
+  join(fixtureDir, "node_modules/@evener/appwire-client/examples/update.contract.mjs"),
+];
+for (const file of contractFiles) accessSync(file);
+const contractOutput = run(process.execPath, ["--test", "--test-reporter=tap", ...contractFiles], fixtureDir);
+const contractSummary = contractOutput
+  .split("\n")
+  .filter((line) => /^# (tests|pass|fail|skipped|duration_ms) /.test(line));
+assert.ok(contractSummary.length > 0, "The installed contract runner produced no test summary");
+console.log(`Installed consumer: ${contractFiles.length} contract modules\n${contractSummary.join("\n")}`);
 
 const listing = run("tar", ["-tzf", tarball], fixtureDir);
 for (const expected of [

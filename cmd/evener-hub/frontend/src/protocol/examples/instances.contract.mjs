@@ -94,6 +94,17 @@ for (const [action, params] of [
   ["edit", { name: "fixture", clearBaseUrl: true, vars: {} }],
   ["edit", { name: "fixture", protocol: "openai-chat" }],
   ["edit", { name: "fixture", clearBaseUrl: false, baseUrl: "", vars: { REGION: "local" } }],
+  [
+    "edit",
+    {
+      name: "fixture",
+      newName: "renamed",
+      clearProtocol: true,
+      clearSurface: true,
+      apiKeyEnv: "FIXTURE_TOKEN",
+      clearCredentialHeader: true,
+    },
+  ],
   ["remove", { name: "fixture" }],
   ["setDefault", { name: "fixture" }],
 ])

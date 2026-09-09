@@ -13,6 +13,15 @@ separates recipe coverage, tested package behavior and real-producer evidence.
 Complete success/failure/disconnect and recovery outcomes remain qualification
 work; a method being listed or callable does not establish its full workflow.
 
+The packaged v5 recipes also include bounded management and recovery paths:
+update check/apply, personal AGENTS.md get/set, and session force stop. The
+mutating forms require explicit CLI opt-in plus an owned endpoint and report
+execution as unverified where the response cannot prove the resulting process
+state. Force stop uses the client's dedicated recovery connection, rather than
+placing the request behind the ordinary request queue. Provider instance edits
+preserve explicit clear flags and support renaming, protocol/surface changes,
+API-key environment fields, and credential headers.
+
 The [mobile delivery protocol inventory](design/mobile/protocol-coverage.md)
 accounts for every current method and notification, with router scope, reserved
 entries, cookbook associations and scoped acceptance links. It separates these
