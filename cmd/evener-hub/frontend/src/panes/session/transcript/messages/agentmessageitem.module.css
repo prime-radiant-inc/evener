@@ -16,6 +16,9 @@
    * tight. The larger steps live on the user message (exchange) and the
    * turn separator (group). */
   padding: var(--rhythm-line) 0;
+  /* Containing block for the mid-exchange .stamp's out-of-flow rail
+   * position (see below). */
+  position: relative;
 }
 
 /* The agent's answer is the document, not a bubble (typography-spacing-
@@ -97,6 +100,39 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
+}
+
+/* The mid-exchange fragment's relative time is a margin note, not a caption
+ * line (Jesse, 2026-09-08): rendered as its own line above the prose it used
+ * to add a row of vertical height to every fragment. Above the gutter
+ * breakpoint it leaves the flow entirely - absolute against .message, whose
+ * right edge IS the transcript column's right edge on mid-exchange rows
+ * (runContent pads only the left) - and sits one gap step outside the
+ * column, italic, aligned with the first prose line (message padding +
+ * bubble padding = two rhythm steps to that line's top edge). It adds no
+ * vertical height; the virtual list's overflow-x: clip means a pane too
+ * narrow to have a margin clips the stamp instead of scrolling sideways.
+ * The opener's header keeps its own inline time (the slack-lean attribution
+ * line) - that one never added height. */
+@media (min-width: 700px) {
+  .stamp {
+    position: absolute;
+    top: calc(2 * var(--rhythm-line));
+    left: calc(100% + var(--space-3));
+    white-space: nowrap;
+    font-style: italic;
+  }
+}
+
+/* Below the breakpoint there is no margin to borrow: the stamp stays in
+ * flow on its own line (it follows the bubble in DOM order), right-
+ * justified and snug under the content it times. */
+@media (max-width: 699px) {
+  .stamp {
+    display: block;
+    text-align: right;
+    font-style: italic;
+  }
 }
 
 /* The live stream wrapper. Its only job is the streaming caret - the design

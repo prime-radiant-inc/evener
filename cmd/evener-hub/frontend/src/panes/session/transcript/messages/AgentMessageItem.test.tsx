@@ -402,3 +402,57 @@ for (const live of [false, true]) {
     expect(time?.title).toBeTruthy();
   });
 }
+
+// Stamp placement (Jesse, 2026-09-08): a mid-exchange fragment's time is a
+// margin note, not a caption line above the prose. It rides a .stamp wrapper
+// AFTER the bubble in DOM order, so below the gutter breakpoint plain flow
+// puts it under the content; above the breakpoint the stylesheet takes it
+// out of flow into the right margin. The opener's header keeps its inline
+// time - that one never added height.
+
+test("a continuation's timestamp rides a stamp wrapper after the bubble", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "reply", startedAt: STARTED_AT })} turn={turn} live={false} />);
+  const root = screen.getByTestId("agent-message-item");
+  const stamp = root.querySelector("[class*='stamp']");
+  expect(stamp).not.toBeNull();
+  expect(stamp!.querySelector("time")?.textContent).toBe(TIME);
+  const bubble = screen.getByTestId("agent-bubble");
+  expect(bubble.compareDocumentPosition(stamp!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a continuation with no startedAt renders no stamp wrapper at all", () => {
+  renderMessage(<AgentMessageItem item={item({ text: "reply" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("agent-message-item").querySelector("[class*='stamp']")).toBeNull();
+});
+
+test("an exchange opener keeps its time inline in the speaker header - no stamp wrapper", () => {
+  renderMessage(
+    <AgentMessageItem item={item({ text: "r", startedAt: STARTED_AT })} turn={turn} live={false} opensExchange />,
+  );
+  const root = screen.getByTestId("agent-message-item");
+  expect(root.querySelector("[class*='stamp']")).toBeNull();
+  expect(screen.getByTestId("agent-speaker-header").textContent).toBe(`Agent${TIME}`);
+});
+
+test("the stamp leaves the flow for the right margin above the gutter breakpoint, tucks right-justified under the content below it (declaration-level)", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  // .message is the stamp's containing block for the out-of-flow position.
+  expect(css).toMatch(/\.message\s*\{[^}]*position:\s*relative/);
+  const stampMedia = (css.match(/@media\s*\((?:min|max)-width:\s*\d+px\)\s*\{[\s\S]*?\n\}/g) ?? []).filter((block) =>
+    block.includes(".stamp"),
+  );
+  const wide = stampMedia.find((block) => block.includes("min-width"));
+  const narrow = stampMedia.find((block) => block.includes("max-width"));
+  // Desktop: out of flow (no added height), italic, one gap step outside the
+  // column's right edge, aligned with the first prose line.
+  expect(wide).toMatch(/\.stamp\s*\{[^}]*position:\s*absolute/);
+  expect(wide).toMatch(/\.stamp\s*\{[^}]*top:\s*calc\(2 \* var\(--rhythm-line\)\)/);
+  expect(wide).toMatch(/\.stamp\s*\{[^}]*left:\s*calc\(100% \+ var\(--space-3\)\)/);
+  expect(wide).toMatch(/\.stamp\s*\{[^}]*white-space:\s*nowrap/);
+  expect(wide).toMatch(/\.stamp\s*\{[^}]*font-style:\s*italic/);
+  // Mobile: in-column, right-justified, snug under the content (DOM order).
+  expect(narrow).toMatch(/\.stamp\s*\{[^}]*display:\s*block/);
+  expect(narrow).toMatch(/\.stamp\s*\{[^}]*text-align:\s*right/);
+  expect(narrow).toMatch(/\.stamp\s*\{[^}]*font-style:\s*italic/);
+});
