@@ -775,6 +775,38 @@ Note: tighten the pattern
   expect(n.prose).toContain("Note: tighten the pattern");
 });
 
+// --- Follow-on: self-source prose uses the human label ---------------------
+// Synthesized watch prose must map the producer's self job id to "this
+// session" like titles do — "on self" leaks internal vocabulary the card
+// suppresses.
+
+test("a self-source fire synthesizes prose on this session, not self", () => {
+  const block = `<job-notification job_id="self" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0">
+Job self watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("on this session");
+  expect(n.prose).not.toContain("on self");
+});
+
+test("a self-source event fire synthesizes prose on this session, not self", () => {
+  const block = `<job-notification job_id="self" event="watch" job_type="watch" status="watch" reason="event: assistant.tool" output_bytes="0">
+Job self watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("on this session");
+  expect(n.prose).not.toContain("on self");
+});
+
+test("a self-source progress tick synthesizes prose on this session, not self", () => {
+  const block = `<job-notification job_id="self" event="watch" job_type="watch" status="watch" reason="progress_tick" output_bytes="0">
+Job self watch. Output is available through read_transcript if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.prose).toContain("on this session");
+  expect(n.prose).not.toContain("on self");
+});
+
 // --- RoboRev combined review (322f7aa): dot-all reasons (L1) ---------------
 // Matched output can contain newlines, and the reason attr carries raw text
 // (only entity-escaped). A multiline pattern must title and synthesize, not
