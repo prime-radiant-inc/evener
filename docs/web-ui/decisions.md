@@ -25,10 +25,16 @@ and grayscale comparisons remain intact. Historical palette/header-band assertio
 only to match this explicit approval. Vitest and coverage-v8 moved together from 4.1.10 to
 4.1.11 to address GHSA-82fw-gwwq-j7x9; this is an explicit dependency repair, not visual work.
 
-The canonical [guide](design-system.md) documents the implemented shared layer. Transcript,
-shell and individual pane makeovers, live usability panel and PR are subsequent units;
-this entry does not imply they have already shipped. Dated decisions below describe their
-period and remain useful for interaction intent, not as competing current palette/type law.
+The canonical [guide](design-system.md#inline-tools-and-delegates) now documents the
+implemented inline tool/delegate grammar, including owner-derived lifecycle, separate
+launch receipts, truthful unknown state and retained child-authored words on resumption.
+[Source coverage](design-system.md#editorial-source-coverage) includes direct shell,
+form, composer and ledger work and distinguishes surfaces inheriting shared styling.
+The full-AppShell fixture review, actual-UI panel/fix/retest loop, final integrated gates,
+detached preview and unmerged PR remain pending; nested Open transcript navigation has
+an unresolved review finding. Source implementation does not establish browser acceptance.
+Dated decisions below describe their period and remain useful for interaction intent,
+not as competing current palette/type law.
 
 ## Directory selection (2026-09-05)
 

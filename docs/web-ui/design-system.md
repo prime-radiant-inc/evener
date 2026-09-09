@@ -1,15 +1,19 @@
 # Evener Web Hub — Design System & Style Guide (v3)
 
-Status: **current editorial foundations, implemented 2026-09-09**. The canonical
+Status: **current editorial implementation, 2026-09-09; browser acceptance pending**. The canonical
 system for the React + CSS Modules frontend under `cmd/evener-hub/frontend/src/`.
 The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in both themes.
 
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
 It does **not** replace the interaction law, widget APIs, semantic color meanings,
-accessibility floors or honest-liveness rules. This foundation implements tokens, shared
-widgets and typography; transcript-specific hierarchy, shell and individual pane redesigns
-are subsequent work, not claimed complete here.
+accessibility floors or honest-liveness rules. Source now implements tokens, shared
+widgets, typography, inline tool/delegate hierarchy, shell, forms, composer and ledgers.
+Some surfaces inherit shared styling rather than a separate redesign; see
+[source coverage](#editorial-source-coverage). Source implementation is not browser acceptance:
+the full-AppShell fixture review, actual-UI panel/fix/retest loop, final integrated gates,
+detached preview and unmerged PR remain pending. Nested Open transcript navigation has an
+unresolved review finding; this guide does not certify that workflow.
 
 **Provenance and attribution.** The 2026-08-13 system adapted
 [Beautiful UI](https://www.beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
@@ -21,6 +25,46 @@ Source Serif 4 is self-hosted from `@fontsource-variable/source-serif-4` 5.3.0,
 SIL Open Font License 1.1; the package notice and license are reproduced below.
 
 ---
+
+## Inline tools and delegates
+
+**Tools stay in the conversation.** Use the shared
+[ToolRow](../../cmd/evener-hub/frontend/src/panes/session/transcript/ToolRow.tsx)
+grammar: authored intent first, then action/target and compact result metadata.
+Descriptors supply content and native evidence, not independent row layouts.
+Keep disclosure separate from file/transcript opening; retain existing folding and
+disclosure persistence. Evidence stays in its native code, diff, output or structured
+renderer rather than becoming a second prose summary.
+
+**Delegates are durable collaborators, not launch-tool status.** The inline
+[delegate renderer](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx)
+and [row model](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts)
+take lifecycle from the owning thread's stable delegate projection. Keep the immutable
+launch receipt separate: a completed launch call does not prove the delegate completed.
+Without authoritative owner state, only an explicitly in-flight launch proves activity;
+otherwise show unknown rather than infer success or liveness from the receipt or child
+transcript. Attention is a separate signal from lifecycle.
+
+Use the current run's start for elapsed time, not the old launch receipt. Child-authored
+words remain distinct from machine metadata and may remain visible on resumption; they
+do not establish current lifecycle. Expanded activity shows the five most recent authored/activity
+items, with full history behind Open transcript. Omit unavailable counts and timing;
+distinguish unavailable activity from an empty loaded transcript. These are provenance
+rules, not permission to fabricate a summary or rewrite stored evidence.
+
+## Editorial source coverage
+
+The [approved surface scope](../superpowers/specs/2026-09-09-tufte-webui-design.md#other-surfaces)
+and [real-component SurfaceGallery](../../cmd/evener-hub/frontend/src/dev/SurfaceGallery.tsx)
+provide the coverage references. Direct source work covers transcript tool/delegate rows,
+shell/rail/mobile structure, welcome/spawn/settings/provider forms, composer/queue/AskDock/
+attachments, and activity/task/detail ledgers. This extends beyond a token-only restyle.
+
+Documents, read-only transcripts, menus, dialogs and notices inherit shared Markdown,
+CodeBlock, PaneScaffold, palette, radius and overlay styling; this is not a separate
+interaction rewrite for each surface. Gallery examples and deterministic tests support
+source coverage, not a claim that every workflow, theme, viewport or assistive technology
+has passed the pending browser acceptance work.
 
 ## 1. Direction (the design law)
 
