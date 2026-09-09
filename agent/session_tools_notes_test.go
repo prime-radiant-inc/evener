@@ -56,6 +56,7 @@ func (s *Session) agentNoteForTest() string {
 // nextNotesEvent returns the next NOTES_UPDATED or URLS_UPDATED event payload.
 func nextNotesEvent(t *testing.T, sess *Session, want events.EventKind) events.EventData {
 	t.Helper()
+	// TRIPWIRE: mutations emit synchronously; one second only bounds a wedged regression.
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	for {
