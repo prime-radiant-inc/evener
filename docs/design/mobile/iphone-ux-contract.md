@@ -121,6 +121,18 @@ the still-unreviewed combined running states.
 The [two-reviewer panel](2026-09-08-iphone-ux-panel.md) records the independent
 assessments, source corrections and prioritized design follow-through.
 
+The first panel follow-through is now installed in the simulator at `b9990e5c1`.
+Collapsed projects show a secondary attention count only when the existing hub
+rollup is positive. The [scoped receipt](assets/2026-09-09-native-project-attention.json)
+records a matching count, working disclosure/details actions and preservation of
+all draft and profile values. The [independent visual review](assets/2026-09-09-project-attention-review.md)
+accepts this small change in both appearances. It does not replace the combined
+running-state review below.
+
+| Project attention, light | Project attention, dark |
+| --- | --- |
+| ![Project attention in light mode](assets/2026-09-09-projects-attention-light.png) | ![Project attention in dark mode](assets/2026-09-09-projects-attention-dark.png) |
+
 ## Implementation and evidence boundary
 
 | Part of this contract | Evidence at this review | Still required |
