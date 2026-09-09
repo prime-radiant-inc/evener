@@ -1,0 +1,67 @@
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { clientFromEnvironment } from "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/examples/connection.mjs";
+import { WireError } from "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js";
+import assert from "node:assert/strict";
+
+const output = process.env.SDK_TRUST_OUTPUT;
+const parent = process.env.EVENER_CWD;
+const cwd = await mkdtemp(join(parent, "sdk-trust-same-fixture-"));
+await mkdir(join(cwd, ".evener"));
+const file = join(cwd, ".evener", "launch.toml");
+const records = [];
+const record = async (client, method, params) => {
+  try {
+    const result = await client.request(method, params);
+    records.push({ method, params, result });
+    return result;
+  } catch (error) {
+    records.push({ method, params, error: { name: error.name, code: error.code, message: error.message } });
+    throw error;
+  }
+};
+const one = clientFromEnvironment({ ...process.env, EVENER_CWD: cwd }).hub;
+let two;
+try {
+  await one.connect();
+  await writeFile(file, "max_rounds = 11\n");
+  const reviewed = await record(one, "evener/launch/resolve", { cwd });
+  await writeFile(file, "max_rounds = 12\n");
+  try { await record(one, "evener/launch/trustRepo", { cwd, hash: reviewed.repo.hash }); }
+  catch (error) { if (!(error instanceof WireError) || error.code !== -32009) throw error; }
+  const changed = await record(one, "evener/launch/resolve", { cwd });
+  const confirmed = await record(one, "evener/launch/trustRepo", { cwd, hash: changed.repo.hash });
+  two = clientFromEnvironment({ ...process.env, EVENER_CWD: cwd }).hub;
+  await two.connect();
+  const secondClient = await record(two, "evener/launch/resolve", { cwd });
+  await mkdir(join(parent, "no-config"), { recursive: true });
+  const noConfig = await record(two, "evener/launch/resolve", { cwd: join(parent, "no-config") });
+  assert.equal(reviewed.repo.trust, "untrusted");
+  assert.match(reviewed.repo.preview, /max_rounds = 11/);
+  assert.notEqual(changed.repo.hash, reviewed.repo.hash);
+  assert.match(changed.repo.preview, /max_rounds = 12/);
+  assert.equal(records[1].error?.code, -32009);
+  assert.equal(confirmed.repo.trust, "trusted");
+  assert.equal(secondClient.repo.path, changed.repo.path);
+  assert.equal(secondClient.repo.hash, changed.repo.hash);
+  assert.equal(secondClient.repo.trust, "trusted");
+  assert.equal(secondClient.effective.maxRounds, 12);
+  assert.equal(noConfig.repo.trust, "absent");
+  const result = {
+    status: "passed",
+    sameFixtureAcrossClients: secondClient.repo.path.startsWith(cwd),
+    sameTrustedHashAcrossClients: secondClient.repo.hash === changed.repo.hash,
+    staleHashRejected: records.some((r) => r.method === "evener/launch/trustRepo" && r.error?.code === -32009),
+    freshHashTrusted: confirmed.repo.trust === "trusted",
+    effectiveMaxRounds: secondClient.effective.maxRounds,
+    fixture: { cwd, file, removedAfterCapture: true },
+    records,
+    noConfig: { repo: noConfig.repo, effectiveMaxRounds: noConfig.effective.maxRounds }
+  };
+  await writeFile(output, JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
+  console.log(JSON.stringify({ status: result.status, recordCount: records.length, cwd, hash: secondClient.repo.hash }));
+} finally {
+  one.close();
+  two?.close();
+  await rm(cwd, { recursive: true });
+}
