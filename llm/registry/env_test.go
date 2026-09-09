@@ -63,8 +63,9 @@ func TestScanConfigValue(t *testing.T) {
 }
 
 // CheckCredentialHeaderValue is the one rule both authoring surfaces apply to
-// a credential header: at least one $VARIABLE reference, and no literal text
-// beside it but an auth scheme word (spec §11.2).
+// a credential header: at least one $VARIABLE reference, and at most one
+// literal word, which is the auth scheme and stands ahead of the reference
+// (spec §11.2). Any scheme name works, custom ones included.
 func TestCheckCredentialHeaderValue(t *testing.T) {
 	for _, value := range []string{
 		"$PORTKEY_KEY",
@@ -72,6 +73,7 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		"Bearer $PORTKEY_KEY",
 		"Bearer ${PORTKEY_KEY}",
 		"Basic ${A}${B}",
+		"Custom $PORTKEY_KEY",
 	} {
 		if err := CheckCredentialHeaderValue(value); err != nil {
 			t.Errorf("CheckCredentialHeaderValue(%q) = %v, want accepted", value, err)
@@ -87,6 +89,11 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		{"nothing at all", "", "$VARIABLE", ""},
 		{"a key glued to a reference", "Bearer sk-live-abc$X", "$VARIABLE", "sk-live-abc"},
 		{"a key as its own word", "Bearer sk-live-abc $X", "$VARIABLE", "sk-live-abc"},
+		// A secret made of letters alone reads as a second scheme word, so
+		// only the count and the order of the literals can refuse it.
+		{"an alphabetic key beside the reference", "Bearer supersecret $PORTKEY_KEY", "$VARIABLE", "supersecret"},
+		{"a literal behind the reference", "$PORTKEY_KEY Bearer", "$VARIABLE", ""},
+		{"two scheme words", "Bearer Basic $PORTKEY_KEY", "$VARIABLE", ""},
 		{"a literal that is not a scheme word", "key=$K", "$VARIABLE", "key="},
 		{"an unterminated reference", "Bearer ${TOKEN", "unterminated", ""},
 		{"an invalid variable name", "Bearer ${1BAD}", "invalid environment variable name", ""},
@@ -109,6 +116,22 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 				t.Fatalf("the refusal echoed the value: %v", err)
 			}
 		})
+	}
+}
+
+// CheckCredentialHeaderName is the other half of the NAME=VALUE both
+// authoring surfaces parse: a name outside the HTTP field-name grammar is one
+// no server would read, and a CR or LF in it would forge a second header.
+func TestCheckCredentialHeaderName(t *testing.T) {
+	for _, name := range []string{"Authorization", "X-Api-Key", "x_api_key", "X-Api-Key-1"} {
+		if err := CheckCredentialHeaderName(name); err != nil {
+			t.Errorf("CheckCredentialHeaderName(%q) = %v, want accepted", name, err)
+		}
+	}
+	for _, name := range []string{"", "Bad Name", "X-Api-Key:", "X-Api-Key\n", "X-Api-Key\r\nX-Other: y"} {
+		if err := CheckCredentialHeaderName(name); err == nil {
+			t.Errorf("CheckCredentialHeaderName(%q) = nil, want refused", name)
+		}
 	}
 }
 
@@ -135,5 +158,27 @@ func TestCheckEnvRefs(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "sk-test-PLANTEDSECRET1234") {
 		t.Fatalf("checkEnvRefs error echoed the value: %v", err)
+	}
+}
+
+// CheckAPIKeyEnvName holds api_key_env to what the field names: an
+// environment variable, spelled as a "${NAME}" reference spells it. A value
+// outside that grammar is a key standing where its variable's name belonged.
+func TestCheckAPIKeyEnvName(t *testing.T) {
+	for _, name := range []string{"OPENAI_API_KEY", "_private", "k9", "lowercase_ok"} {
+		if err := CheckAPIKeyEnvName(name); err != nil {
+			t.Errorf("CheckAPIKeyEnvName(%q) = %v, want accepted", name, err)
+		}
+	}
+	for _, name := range []string{"", "sk-live-abc", "TWO WORDS", "$OPENAI_API_KEY", "9LEADING"} {
+		err := CheckAPIKeyEnvName(name)
+		if err == nil {
+			t.Errorf("CheckAPIKeyEnvName(%q) = nil, want refused", name)
+			continue
+		}
+		// The value may be the key itself, so the refusal must not echo it.
+		if name != "" && strings.Contains(err.Error(), name) {
+			t.Errorf("the refusal echoed the name: %v", err)
+		}
 	}
 }

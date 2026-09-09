@@ -554,6 +554,39 @@ func TestProvidersAddExitsZeroWhenTheProbeCannotRun(t *testing.T) {
 	}
 }
 
+// The NAME half of a credential header is an HTTP header token on this
+// surface as on the pane, so neither authors a header the other would refuse.
+func TestProvidersAddRefusesACredentialHeaderNameThatIsNotAToken(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	err := runProviders([]string{"add", "bad", "--base", "openai", "--credential-header", "Bad Name=Bearer $PORTKEY_KEY"}, nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("a credential header name that is not an HTTP token is refused")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
+	}
+}
+
+// --api-key-env names the environment variable holding the key, so a key
+// typed there is refused on this surface as on the pane. The accepted shape
+// (`GW_KEY`) is pinned by
+// TestProvidersAddNoProbeWritesWithoutTouchingTheEndpoint.
+func TestProvidersAddRefusesAnAPIKeyEnvThatIsNotAVariableName(t *testing.T) {
+	root := providersTestEnv(t, nil)
+	var stdout, stderr bytes.Buffer
+	err := runProviders([]string{"add", "bad", "--base", "openai", "--api-key-env", "sk-live-abc"}, nil, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("an --api-key-env that is not an environment variable name is refused")
+	}
+	if strings.Contains(err.Error(), "sk-live-abc") {
+		t.Fatalf("the refusal must not echo the value: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused add wrote providers.toml (stat err = %v)", statErr)
+	}
+}
+
 // Secrets never appear on the command line (spec §11.2): a credential header
 // carries $VARIABLE references, never the key itself. The accepted shape
 // (`Bearer $PORTKEY_KEY`) is pinned by
