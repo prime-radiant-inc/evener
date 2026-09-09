@@ -44,6 +44,8 @@ Assistant prose sits directly on the reading surface. Distinguish speakers with 
 
 Group routine activity with a concise, understandable summary and an accessible expansion control. Expanded content stays near its origin. Keep actionable errors, questions and approvals visible. A summary cannot erase warnings or pretend unfinished work has completed. Screen readers receive state and expansion semantics without announcing every streamed token.
 
+Keep eligible message actions mounted across focus changes; disable them while unfocused, unavailable or refreshing so their geometry and accessible route remain stable. Place refresh progress absolutely outside conversation content geometry, preserving the reader's layout and anchor while data updates.
+
 ### Composer and running-session actions
 
 Keep the input and its main action visually unified. Respect safe areas and the actual keyboard transition. Use native text editing, selection and dictation affordances. Attachment controls and secondary actions must not overpower the text. While work is running, distinguish steer, queue and stop through clear action placement and labels; do not imply a send succeeded before confirmation.
@@ -95,15 +97,19 @@ Record task completion, accidental taps, lost context, and reading interruptions
 The [agent-product research](agent-mobile-research.md) adds interruption sequences to these fixtures: background during a pending approval; answer it on another device; reconnect after missing events; visit settings with a long draft; relaunch with an uncertain submission; and return from a notification to the exact hub and session. Exercise long input with the keyboard open on both platforms. Historical competitor reports motivate these scenarios; they do not establish defects in current releases.
 # Session search
 
-Search the hub, not just loaded rows. Keep the submitted query visible while results load and when returning from a conversation. Use keyboard Search and a visible action; Clear restores browsing. At accessibility text sizes, give the input its own row. Never advertise Load more until the hub can return a correct continuation across its combined sources.
+Search the hub, not just loaded rows. Keep the submitted query visible while results load and when returning from a conversation. Use keyboard Search and a short visible `Search` action; `Clear` restores the project browser. The full accessible label remains `Search sessions`. At accessibility text sizes, give the input its own row. Never advertise Load more until the hub can return a correct continuation across its combined sources.
 
 ## Project browsing
 
-Use server project names and keys. Show current, recent and archived work as selected tabs, with shape and accessibility selection in addition to color. Keep loaded pages when returning from a conversation. Refresh replaces the list; Load more appends only within the same server generation and resource revision. Explain changed-list conflicts instead of silently mixing snapshots.
+The main Sessions surface is a project first expandable browser: project headers are in the same scrolling list as their nested sessions, with current and recent session boundaries represented by guarded page rows. Open a conversation from a session row without expanding a project or opening a detail tab. The first project expands and loads on initial focus; other projects load lazily on expansion. Use server project names and keys, and retain loaded pages when returning from a conversation.
+
+The dedicated Project route is a separate detail surface for one project and may retain its current, recent and archived tabs. Do not copy those tabs into the main Sessions browser or describe the expandable groups as project detail tabs. Project headers use a 19 pt semibold title (600 weight in the shipped native style), a session count, and a separate More/details affordance; nested session titles use 17 pt text, a minimum 68 logical-unit row, and at most two levels of indentation. Quiet idle rows omit status text; working, question, warning and failure signals may wrap below the title.
+
+Refresh replaces the list; Load more appends only within the same server generation and resource revision. Project paging is automatic at the list boundary, while expanded project session pages load as their boundary rows become visible. Explain changed-list conflicts instead of silently mixing snapshots. Show stale and read errors with a recovery action. An empty expanded project says `No current or recent sessions in this project.`; a limited result states that related sessions may be missing.
 
 Live list changes should not move a row under the person’s finger. Preserve the visible snapshot, show a quiet update prompt, and pause continuation until Refresh. Treat ordinary invalidation as new information, reserving error treatment for failed reads.
 
-Related sessions use a separate disclosure action so opening a conversation never also expands it. Keep expanded destinations in the same scrolling list, cap indentation to retain reading width, and preserve expansion on return. State omitted content plainly rather than implying the visible tree is complete.
+Related sessions use a separate disclosure action so opening a conversation never also expands it. Keep expanded destinations in the same scrolling list, cap indentation to retain reading width, and preserve expansion on return. State omitted content plainly rather than implying the visible tree is complete. The accepted project browser is a browsing hierarchy; the dedicated Project route remains the place for project-specific tabbed detail.
 
 ## Organization actions
 
