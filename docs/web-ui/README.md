@@ -5,8 +5,9 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 ## Current
 
 - **[design-system.md](design-system.md)** — the design law as shipped: tokens,
-  the implemented editorial foundations (warm paper/ink, serif reading, flat structure),
-  type, space, motion, the cadence instrument, and the widget library under
+  the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
+  grammar and provenance, source coverage, type, space, motion, the cadence instrument,
+  and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
 - **[decisions.md](decisions.md)** — what we chose out of the 2026-06 visual
   brainstorm, and whether the code still does it. Read this before changing a
@@ -52,8 +53,12 @@ at each measure, in both themes, so a ramp change is reviewed as a picture
 rather than a diff.
 
 **`/dev/surfaces`** renders real composite surfaces, including transcript evidence,
-for checking the shared foundations in context. Surface-specific redesign proceeds in
-separate units; a token update is not a claim that every workflow was reviewed.
+for checking the implemented editorial system in context. The guide's
+[coverage summary](design-system.md#editorial-source-coverage) distinguishes direct
+transcript/shell/form/composer/ledger work from inherited shared surfaces.
+Source coverage is not browser acceptance: full-AppShell fixture review, actual-UI
+panel/fix/retest, final integrated gates, detached preview and unmerged PR remain pending.
+Nested Open transcript navigation has an unresolved review finding.
 
 The galleries are dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.
