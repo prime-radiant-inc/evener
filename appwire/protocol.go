@@ -227,6 +227,8 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 		MethodTurnPromoteQueuedAsSteer: {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
 		MethodTurnCancelQueued:         {"clientMutationId", "expectedInstanceId", "expectedEntryId"},
 		MethodThreadClear:              {"clientMutationId", "expectedInstanceId"},
+		MethodNotesHumanSet:            {"clientMutationId", "expectedInstanceId"},
+		MethodUrlsRemove:               {"clientMutationId", "expectedInstanceId"},
 	}[method]
 	if len(required) == 0 {
 		return nil

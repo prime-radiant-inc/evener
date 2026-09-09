@@ -109,6 +109,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.ReasoningEffortLevels = append([]string(nil), e.ReasoningEffortLevels...)
 	e.Tasks = cloneTaskAggregate(e.Tasks)
 	e.Goal = cloneGoalState(e.Goal)
+	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
 	e.Usage = cloneEvenerUsage(e.Usage)
 	e.FailedToolCalls = cloneInt(e.FailedToolCalls)
 	// Capabilities is all bools (value type) — no copy needed.
