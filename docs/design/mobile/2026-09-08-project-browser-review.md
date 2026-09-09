@@ -74,6 +74,13 @@ correction preserves semantic restoration for genuine transcript reflow.
 
 The same batch hides Latest when no visible transcript rows exist and uses a
 short project label in search, keeping the full directory in its accessible
-context. All 703 native tests and TypeScript pass. Confirming native geometry
-checks and the independent finish review remain pending at this checkpoint.
+context. All 703 native tests and TypeScript pass. The confirming native pass retained all 16 user-message labels, including loaded
+older history, and measured at most 0.000163 points of movement after Fork preview
+and Back. The exact unsent draft remained intact. Empty Latest and short search
+labels also passed. A fresh Luna-medium Impeccable finish reviewer accepted the
+scoped iPhone UI gate after inspecting populated existing conversations, light
+and dark appearance, keyboard search, message actions, and the empty state.
+The [receipt](assets/2026-09-08-native-project-browser.json) and its linked
+screenshots retain the artifact identity and independent review. Physical-device
+and real-network loading measurements remain open.
 The installed TestFlight build has not yet been replaced by this work.

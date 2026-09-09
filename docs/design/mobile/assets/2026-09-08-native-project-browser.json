@@ -1,0 +1,174 @@
+{
+  "schema": "evener.native.project-browser.receipt.v1",
+  "status": "qualified-scoped",
+  "verifiedAt": "2026-09-09T05:17:32.423499+00:00",
+  "scope": "iPhone project browsing, automatic pagination, search, populated reader return, native message actions, and data preservation against an owned real Evener hub",
+  "source": {
+    "nativeCommit": "f75411ead63c1616aada8496a567aa880bdf09bb",
+    "bundleId": "com.primeradiant.evener.native",
+    "simulatorModel": "iPhone 17 Pro",
+    "simulatorOS": "iOS 26.5",
+    "device": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "nativeArtifactHashes": {
+      "Evener": "0d62f57ad99efc65bcbe33239d92d54ec210638ae43c09e7d038360a393ea55b",
+      "main.jsbundle": "1e57b8bf2a4e7b25ec66940e6cea40ec8622ae6dcc11ffeadc778ca728bcc58b"
+    },
+    "backendRevision": "6a0278e36331",
+    "backendBuildDirty": true,
+    "backendIsSeparateArtifact": true,
+    "privateEvidenceRoot": "/private/tmp/evener-project-browser-jtf5hvs9",
+    "evidenceHashes": {
+      "controller-live.json": "108acd0e1f5a59f6b2d8dee1d6ce3a141adab53dbd8d0b524fc9548ecc43389f",
+      "project-a-first-page-ax.json": "eef239984aa29fb3cc731cc98c45d6024b5caf78e99410d7250e1be71938688d",
+      "project-a-autoload-ax.json": "14cf7bd59f734fdb97e81bd9fcbac8a9c133f2a9cc4ce027788dce335812719e",
+      "project-a-return-check.json": "d6d2b027e1acb255896489442d165b41f8506faca33f5fde4b8dc22aa280a6ec",
+      "browser-after-clear-ax.json": "fe244ad4af6785b8835cbf6a121bf6bddacbda4782b13990f796aae58289341a",
+      "conversation-return-check.json": "e670861a91cf9a4404befc81efd4bf0553f183e52ea36517416a96de6cc6a0a7",
+      "confirmed-reader-return-check.json": "a22d669da41e4676766e9fee61b8f235e5c8ef130d84cd2fbe595da56e31a7ce",
+      "confirmed-child-before-ax.json": "0a59e2a90df25834e3a942a988e23f281a3b4cc29571bcc3f3835e9922145149",
+      "confirmed-child-after-ax.json": "da6b9a83d9b3486f926cd9a28469ac289d495ceb33676cf85bc0f83ec44ddcac",
+      "confirmed-reader-older-ax.json": "abbd33fc09c61aabae4f2d96cfaf2c00fc454145202a9411cc06a99af90d78e7",
+      "confirmed-empty-ax.json": "70c53dd8e0ebd0045267c58fcb2d072b1fd4cb0f299afecf89acc48cde4a7fa4",
+      "installed-correction.json": "ade7bbfd5cf72672e4e9414586cb6a6fceab23ba922b6d183b75873bc0b477e1",
+      "preservation-correction.json": "267b60707e4e12f4b2c3c8537503aa8035b01f5f953be80d88cfd38c16b66506",
+      "native-gate-correction.log": "6dbcadf2e9f52a45b73e090f50acdb59ec067ad074cd5a8330d8c256a3d4726a",
+      "conversation-store-tests.log": "2f44b0558d8f96bac2ea299c384e7e7e6f4256d7e35866a87a34c58f36d7e534",
+      "build-correction.log": "9182be54980fe1ad364854f6040053d49d4b6e9d590ff1081b88d372b661d6fa",
+      "finish-review.md": "50709fc395ee9e5ccc0f80fc1299c434c0cab8df60fbcc26f209d84499d447c8",
+      "final-root-preservation.json": "54a6a3a73c716c6dabd1f92c4f7e6cc78751c0a002ed8c100277e40c1c927697",
+      "api-package-gate.log": "e7db14ef41d1deb660f3d108f6ac972a648fb310edc39ae17b848ec62d73d692"
+    }
+  },
+  "browsing": {
+    "projects": 4,
+    "initialProjectRows": 20,
+    "afterAutomaticPaging": 25,
+    "prefixRetained": true,
+    "duplicates": 0,
+    "loadedRowsAndOrderRetainedOnReturn": true,
+    "returnGeometry": {
+      "beforeRows": 25,
+      "afterRows": 25,
+      "sameOrder": true,
+      "largestFrameShift": 2.2737367544323206e-13
+    },
+    "searchClearRetainsExpandedProjectAnd25Rows": true,
+    "pagingDataset": "31 owned records across three seeded projects; most are system-only and qualify roster pagination, not populated conversation latency",
+    "populatedProject": "Existing workspace project with three conversations from prior native acceptance journeys"
+  },
+  "readerReturn": {
+    "sameMessageLabels": true,
+    "largestFrameShift": 0.00016276041696983157,
+    "drafts": [
+      "Retain this separate draft"
+    ],
+    "sendEnabled": true,
+    "olderMessageRetained": true,
+    "messageCountBefore": 16,
+    "messageCountAfter": 16,
+    "sequence": "Open Ordinary response, load older messages, scroll, open message actions, open Fork preview, native Back",
+    "initialRegressionLogicalPoints": 183.33333333333326,
+    "correction": "Keep message controls mounted but disabled across focus and refresh; move refresh feedback outside scroll content; prevent hidden scroll capture",
+    "noForkCreated": true,
+    "noDraftSent": true
+  },
+  "emptyState": {
+    "noMessagesDisplayed": true,
+    "latestAbsent": true
+  },
+  "preservation": {
+    "tables": {
+      "drafts": {
+        "beforeRows": 12,
+        "afterRows": 12,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "question_drafts": {
+        "beforeRows": 10,
+        "afterRows": 10,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "question_positions": {
+        "beforeRows": 3,
+        "afterRows": 3,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "draft_image_sets": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "creation_drafts": {
+        "beforeRows": 1,
+        "afterRows": 1,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      },
+      "creation_draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allOriginalRowsUnchanged": true,
+        "addedRows": 0,
+        "missingOrChangedRows": 0
+      }
+    },
+    "allOriginalDraftRowsUnchanged": true,
+    "originalKVKeysPresent": true,
+    "changedOriginalKVKeys": [
+      "evener.reader-positions"
+    ],
+    "readerChange": "Intentional scrolling during reader qualification",
+    "darkAppearanceRestored": true,
+    "protectedAppleDiffExact": true,
+    "protectedAppleDiffSha256": "f7613605cc9a6c37f6ba048f17c0f90951b8798ccd799ed86cf7dd5490a4fcba",
+    "independentCheck": "Independent Luna recomputation matched all16 message geometries and all seven draft tables; coordinator verified final KV restoration and unchanged protected Apple diff after navigation ended.",
+    "otherOriginalKVUnchanged": true,
+    "originalHubReconnected": true,
+    "lastLocationRestored": true
+  },
+  "verification": {
+    "nativeTests": 703,
+    "nativeTestFiles": 75,
+    "nativeTypeScript": "passed",
+    "sharedConversationTests": 289,
+    "biomeTouchedFiles": "passed",
+    "simulatorReleaseBuild": "passed",
+    "independentSourceReviews": "Luna medium; paging omission and older-history findings corrected before acceptance",
+    "independentFinishReview": "ship at scoped iPhone UI gate",
+    "finishReview": "2026-09-08-project-browser-finish-review.md",
+    "apiPackageGate": "passed; independently packed and installed outside checkout"
+  },
+  "screenshots": {
+    "2026-09-08-project-browser-dark.png": "e95f693963745481a2fbe4440220c72436fc4ca51c44232628fc4d612d8f21a7",
+    "2026-09-08-project-browser-light.png": "bf5e59c93cedba9db9a0b65a92aa0f39ceefd941de9ab99322a6c2bfa429d54f",
+    "2026-09-08-project-search-dark.png": "29ec7d7c6ca09400de21db6274bf09873d730e64e3f33744e2ca5112fab62869",
+    "2026-09-08-project-reader-before.png": "6e1bf1433cb9270fa694ed535b0049dc3e744b4400fa9677e9ceec03a86168e2",
+    "2026-09-08-project-reader-after.png": "8f7fdbf6d76680252b290adcdaf3eb4fa18c4e8e8406b1495a6fe0064f51e82c",
+    "2026-09-08-project-message-actions.png": "00bb55fe8568af6b6fadf3c66310819d2e606485ede43a3129db8931f0d0ac78",
+    "2026-09-08-project-empty.png": "5d59c9246989568ca4b02b9859c08938b566ceb1740b9e271e369f931c5a8585"
+  },
+  "limits": [
+    "No physical-iPhone or real-network latency target is qualified; warmed local transport times are not native performance evidence.",
+    "Aggregate search remains limited to50 results because its server contract provides no valid continuation.",
+    "Automatic paging failure and invalidation guards have deterministic controller coverage; the native pass did not inject every fault.",
+    "Source changes are separate from the currently installed TestFlight build1; build2 delivery is in progress.",
+    "iPad and dedicated accessibility work remain paused; this receipt does not complete iPhone v1 acceptance.",
+    "The original saved hub reconnected and its session selection was restored; this pass did not independently compare every SecureStore credential value."
+  ]
+}
