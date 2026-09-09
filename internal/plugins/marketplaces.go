@@ -56,8 +56,8 @@ func (m *Manager) catalogRoot(ref MarketplaceRef) string {
 
 // loadMarketplaces and saveMarketplaces are the only ways this package reaches
 // known_marketplaces.json. Both derive the path through storePath, so
-// ListMarketplaces — which reads without ever taking the store lock — refuses
-// an unresolved root instead of handing back the working directory's file.
+// ListMarketplaces — which reads without the store lock — refuses an
+// unresolved root instead of handing back the working directory's file.
 func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 	path, err := m.storePath(marketplacesFileName)
 	if err != nil {
@@ -169,7 +169,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
-	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -249,10 +249,26 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	return ref, nil
 }
 
-func (m *Manager) ListMarketplaces() (Marketplaces, error) { return m.loadMarketplaces() }
+// ListMarketplaces reads the marketplaces file without the store lock, so a
+// listing never queues behind a fetch. A name the store refuses means no lock
+// holder has migrated this store yet (lockStore), so the listing takes the
+// lock — which migrates — and reads what that left; a second lister that
+// arrives meanwhile finds nothing left to do once it holds the lock.
+func (m *Manager) ListMarketplaces() (Marketplaces, error) {
+	mk, err := m.loadMarketplaces()
+	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
+		return mk, err
+	}
+	release, err := m.lockStore(context.Background(), marketplaceAcquireLock, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return m.loadMarketplaces()
+}
 
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
-	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -305,7 +321,7 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // directory-source marketplace's relative plugins are referenced in place
 // inside it. A re-source moves neither, beyond the re-key a rename implies.
 func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src *Source) (MarketplaceRef, error) {
-	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -911,7 +927,7 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
-	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}

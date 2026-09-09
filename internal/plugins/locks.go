@@ -55,6 +55,27 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 	return acquire(ctx, lockPath, timeout)
 }
 
+// lockStore takes the store lock and, holding it, renames every marketplace
+// recorded under a name the store refuses today (migrateMarketplaceNames).
+// Every mutation and every lazy fetch locks here, so under the store lock
+// every recorded marketplace name is valid: an operation can derive an
+// entry's directories from its name and split a registry key at its last
+// '@' without asking which evener wrote the name. A migration that fails
+// releases the lock and fails the acquisition, so no operation runs on a
+// half-migrated store. The bundled lock and Doctor's read-only wait on this
+// lock are the two acquisitions that do not come through here.
+func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
+	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.migrateMarketplaceNames(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
 // acquireBundledLock takes the bundled cache's lock for one mutation of
 // <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
 // and it goes through acquireStoreLock so the store-root check lands on this

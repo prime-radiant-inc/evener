@@ -116,7 +116,7 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 
 // Install installs plugin from marketplace, enabled.
 func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := m.acquireStoreLock(ctx, installAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -192,7 +192,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 // The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
 // under the same lock immediately before acting — see upgradeLocked.
 func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (InstallEntry, error) {
-	release, err := m.acquireStoreLock(ctx, installAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return InstallEntry{}, err
 	}
@@ -284,7 +284,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 }
 
 func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
-	release, err := m.acquireStoreLock(ctx, installAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -315,7 +315,7 @@ func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string
 // Remove deletes the registry entry and its cache dir. A plugin referenced in
 // place (directory-source marketplace) leaves the source untouched.
 func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error {
-	release, err := m.acquireStoreLock(ctx, installAcquireLock, m.lockPath(), 30*time.Second)
+	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
