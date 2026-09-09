@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import {readFile, writeFile, mkdir} from 'node:fs/promises';
+import {createHash, randomUUID} from 'node:crypto';
+import WebSocket from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/ws/index.js';
+import {AppwireClient} from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js';
+const root='/private/tmp/evener-sdk-native-write-5uYKV0';
+const out=`${root}/run/root-queue-replacement-${Date.now()}`;
+await mkdir(out,{mode:0o700});
+const token=(await readFile(`${root}/state/evener/auth-token`,'utf8')).trim();
+const clients=['actor','observer'].map(name=>new AppwireClient({url:'ws://127.0.0.1:59913/rpc',clientInfo:{name:`queue-replacement-${name}`,version:'1'},socketFactory:u=>new WebSocket(u,{headers:{Authorization:`Bearer ${token}`}})}));
+const [actor,observer]=clients;
+const save=(name,data)=>writeFile(`${out}/${name}.json`,JSON.stringify(data,null,2)+'\n',{mode:0o600});
+const trace=[];
+const events=[];
+observer.onNotification(e=>events.push(e));
+const uid=label=>`queue-replacement-${label}-${randomUUID()}`;
+async function request(client,method,params){
+  const call={client:client===actor?'actor':'observer',method,params,time:new Date().toISOString()};trace.push(call);
+  try {call.result=await client.request(method,params);return call.result;}
+  catch(error){call.error={name:error.name,message:error.message,code:error.code,data:error.data};throw error;}
+  finally {await save('trace',trace);}
+}
+async function until(check,label){const deadline=Date.now()+30000;for(;;){const result=await check();if(result)return result;if(Date.now()>=deadline)throw Error(`Timed out: ${label}`);await new Promise(resolve=>setTimeout(resolve,100));}}
+async function provider(path,body){const response=await fetch(`http://127.0.0.1:59912${path}`,body===undefined?{}:{method:'POST',body:JSON.stringify(body)});assert.equal(response.status,200);return response.json();}
+const read=ref=>request(observer,'thread/read',{ref,includeTurns:true,subscribe:false,itemLimit:40});
+const allText=body=>body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
+try {
+  await actor.connect();await observer.connect();
+  const initialIdentity=JSON.parse(await readFile(`${root}/session.json`,'utf8'));
+  const initial=await read(initialIdentity.ref);await save('initial',initial);
+  const oldInstance=initial.thread.evener.instanceId;
+  assert.equal(oldInstance,initialIdentity.instanceId,'Do not repeat a clear after replacement');
+  assert.equal(initial.thread.evener.activeTurnId,undefined);
+  assert.equal(initial.thread.evener.queue.depth??0,0);
+  const cleared=await request(actor,'thread/clear',{ref:initialIdentity.ref,expectedInstanceId:oldInstance,clientMutationId:uid('clear')});
+  await save('clear',cleared);
+  const ref=cleared.ref;
+  assert.equal(typeof ref,'string');
+  const current=await read(ref);const instance=current.thread.evener.instanceId;
+  assert.equal(ref,initialIdentity.ref,'Stable reference must survive clear');
+  assert.notEqual(instance,oldInstance);
+  assert.equal(typeof instance,'string');
+  await save('replacement-identity',{ref,oldInstance,instance});
+  const startText=uid('held-input'),staleText=uid('must-never-run'),queuedText=uid('current-input');
+  await save('sentinels',{startText,staleText,queuedText});
+  await provider('/mode',{mode:'held'});
+  const providerBefore=await provider('/state');await save('provider-before',providerBefore);
+  const started=await request(actor,'turn/start',{ref,expectedInstanceId:instance,clientMutationId:uid('start'),input:[{type:'text',text:startText}]});
+  await save('start',started);
+  const held=await until(async()=>{const state=await provider('/state');return state.requests.some(r=>r.index>providerBefore.requests.length&&r.held&&!r.released)&&state;},'provider hold');
+  await save('provider-held',held);
+  const before=await read(ref);assert.equal(before.thread.evener.queue.depth??0,0);
+  const staleMutation=uid('stale-queue');
+  await assert.rejects(request(actor,'turn/queue',{ref,expectedInstanceId:oldInstance,clientMutationId:staleMutation,input:[{type:'text',text:staleText}]}),error=>{
+    assert.equal(error.code,-32013);
+    assert.equal(error.data.evenerErrorInfo,'conflict');
+    assert.equal(error.data.clientMutationId,staleMutation);
+    assert.equal(error.data.mutationOutcome,'notAccepted');
+    assert.equal(error.data.retryDisposition,'none');
+    return true;
+  });
+  const rejected=await read(ref);await save('stale-readback',rejected);
+  assert.deepEqual(rejected.thread.evener.queue,before.thread.evener.queue);
+  const afterReject=await provider('/state');await save('provider-after-reject',afterReject);
+  assert.equal(afterReject.requests.length,held.requests.length);
+  const currentMutation=uid('current-queue');
+  const accepted=await request(actor,'turn/queue',{ref,expectedInstanceId:instance,clientMutationId:currentMutation,input:[{type:'text',text:queuedText}]});
+  await save('queue-accepted',accepted);
+  assert.equal(accepted.receipt.clientMutationId,currentMutation);
+  const queued=await read(ref);await save('queue-readback',queued);
+  assert.equal(queued.thread.evener.queue.depth,1);
+  assert.deepEqual(queued.thread.evener.queue.texts,[queuedText]);
+  assert.deepEqual(queued.thread.evener.queue.clientMutationIds,[currentMutation]);
+  await provider('/mode',{mode:'ordinary'});await provider('/release',{});
+  const completed=await until(async()=>{const snapshot=await read(ref);return !snapshot.thread.evener.activeTurnId&&(snapshot.thread.evener.queue.depth??0)===0&&snapshot.thread.turns.some(t=>t.status==='completed'&&JSON.stringify(t.items).includes(queuedText))&&snapshot;},'current queued turn completed');
+  await save('completed-readback',completed);
+  const providerAfter=await provider('/state');await save('provider-after',providerAfter);
+  const bodies=await Promise.all(providerAfter.requests.map(r=>readFile(`${root}/root-provider/provider-request-${r.index}.json`,'utf8').then(text=>JSON.parse(text))));
+  assert(bodies.some(body=>allText(body).includes(queuedText)),'Provider must consume accepted queued text');
+  assert(bodies.every(body=>!allText(body).includes(staleText)),'Stale text must never reach provider');
+  const artifactPaths={sdk:'/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js',hub:`${root}/bin/evener`,daemon:`${root}/bin/evener-dev`};
+  const hashes=Object.fromEntries(await Promise.all(Object.entries(artifactPaths).map(async([name,path])=>[name,createHash('sha256').update(await readFile(path)).digest('hex')])));
+  const result={status:'passed',scope:'Synchronized clear replacement then stale queue rejection and current queue execution; not an arbitrary interleaving race',ref,oldInstance,instance,staleMutation,currentMutation,queueEntryIds:accepted.receipt.queueEntryIds,providerRequestCount:providerAfter.requests.length,hashes,out};
+  await save('result',result);console.log(JSON.stringify(result));
+} catch(error){await save('failure',{name:error.name,message:error.message,code:error.code,data:error.data,stack:error.stack});console.error(JSON.stringify({status:'failed',out,error:error.message}));process.exitCode=1;}
+finally {await save('events',events);clients.forEach(c=>c.close());}
