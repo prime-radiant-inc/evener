@@ -931,19 +931,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return getSession().SetGoal(ctx, objective)
 	})
 	srv.SetGoalResumeFunc(func(objective, extendBudget string, extendValue int64) (bool, error) {
-		// Resume path (spec §7): Session.GoalResume with the parsed --extend
-		// renewal. Optional replacement objective text ("/goal resume <text>")
-		// retargets via SetGoal AFTER the resume recovers budgets/ledger —
-		// never as the literal "resume".
+		// Resume path (spec §7): GoalResumeFromWire recovers budgets/ledger
+		// and applies optional replacement objective text ("/goal resume
+		// <text>") atomically — never as the literal "resume", never a
+		// stale old-objective kick first.
 		sess := getSession()
-		started, err := sess.GoalResumeFromWire(objective, extendBudget, extendValue)
-		if err != nil {
-			return false, err
-		}
-		if text := strings.TrimSpace(objective); text != "" {
-			return sess.SetGoal(ctx, text)
-		}
-		return started, nil
+		return sess.GoalResumeFromWire(objective, extendBudget, extendValue)
 	})
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {

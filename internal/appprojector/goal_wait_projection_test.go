@@ -54,6 +54,32 @@ func TestProject_GoalUpdatedCarriesWaitingState(t *testing.T) {
 	}
 }
 
+// TestProject_GoalUpdatedCarriesStage pins the §§6-7 graduation projection:
+// the persisted stage on GoalStateData reaches the wire GoalState so every
+// /goal status surface agrees.
+func TestProject_GoalUpdatedCarriesStage(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventGoalUpdated,
+		Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+			Objective:  "ship it",
+			Status:     "active",
+			Iterations: 7,
+			Stage:      "nudged",
+		}},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("want one evener/goal/updated notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.GoalUpdatedParams)
+	if !ok || params.Goal == nil {
+		t.Fatalf("params = %+v, want goal state", out[0].Params)
+	}
+	if params.Goal.Stage != "nudged" {
+		t.Fatalf("Stage = %q, want nudged", params.Goal.Stage)
+	}
+}
+
 // TestProject_GoalWaitingAnnounces pins §7: EventGoalWaiting projects to a
 // goal_waiting system announcement naming the count and nearest label.
 func TestProject_GoalWaitingAnnounces(t *testing.T) {

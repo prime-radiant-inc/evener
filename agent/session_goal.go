@@ -138,6 +138,17 @@ func (s *Session) ClearGoal() {
 // callers resume via GoalResumeFromWire (plain wire types); tests call this
 // directly same-package.
 func (s *Session) goalResume(req goal.ResumeRequest, now time.Time) (started bool, err error) {
+	return s.goalResumeWithRetarget(req, "", now)
+}
+
+// goalResumeWithRetarget re-drives a terminal-blocked goal and, when
+// replacement is non-empty, retargets to it atomically under the same
+// goalUpdateMu hold (spec §7 "/goal resume <text>"): the resumed-then-
+// retargeted objective is recovered (budgets/ledger per Resume) and
+// replaced (budgets-kept per Set) before any kick renders — the serve loop
+// can never consume a stale old-objective continuation first. The kick (if
+// any) renders the final objective.
+func (s *Session) goalResumeWithRetarget(req goal.ResumeRequest, replacement string, now time.Time) (started bool, err error) {
 	store := s.getOrCreateGoalStore()
 	s.goalUpdateMu.Lock()
 	// Capture the pre-resume verdict before Resume clears it: a "waiting
@@ -150,6 +161,9 @@ func (s *Session) goalResume(req goal.ResumeRequest, now time.Time) (started boo
 	if rerr != nil {
 		s.goalUpdateMu.Unlock()
 		return false, rerr
+	}
+	if strings.TrimSpace(replacement) != "" {
+		store.Set(strings.TrimSpace(replacement), now)
 	}
 	// The resumed goal drives fresh: void any stale dependents hold, disarm
 	// any stale wait timer (waits were cleared), drop the delivered set and

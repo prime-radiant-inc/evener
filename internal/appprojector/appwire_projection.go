@@ -398,6 +398,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				NearestLabel:             data.Goal.NearestLabel,
 				UsedContinuations:        data.Goal.UsedContinuations,
 				MaxContinuations:         data.Goal.MaxContinuations,
+				Stage:                    data.Goal.Stage,
 			}
 		}
 		return []AppNotification{p.notification(appwire.NotifyEvenerGoalUpdated, appwire.GoalUpdatedParams{
@@ -1353,6 +1354,7 @@ func goalState(data *events.GoalStateData) *appwire.GoalState {
 		NearestLabel:             data.NearestLabel,
 		UsedContinuations:        data.UsedContinuations,
 		MaxContinuations:         data.MaxContinuations,
+		Stage:                    data.Stage,
 	}
 }
 

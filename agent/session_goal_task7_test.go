@@ -537,6 +537,73 @@ func TestGoalChildForwardSiblingWakeDelivers(t *testing.T) {
 	}
 }
 
+// TestKickClaimedWakeKicksOnlyItsBatch pins the batch-scoped kick (spec §2:
+// one combined wake turn per claim batch): a concurrent backlog entry
+// present at kick time is excluded from the prompt frame and the delivered
+// set, and stays pending for its own kick path.
+func TestKickClaimedWakeKicksOnlyItsBatch(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	var prompts []string
+	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("batch scope", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "mine", Timeout: time.Minute}, clk.Now())
+	if !ok {
+		t.Fatalf("precondition: registration should succeed: %q", store.LastRejectReason())
+	}
+	clk.Advance(2 * time.Minute)
+	claimed, objective, _ := sess.claimGoalWaitExpiredWaits(clk.Now())
+	if len(claimed) != 1 || claimed[0].WaitID != w.Lease.WaitID {
+		t.Fatalf("precondition: claim = %+v, want the timer fire", claimed)
+	}
+	// A concurrent entry lands between claim and kick (deadline synthetic,
+	// second forward, racing timer): it rides the backlog but belongs to
+	// its own kick path. Shrink the deadline below now so the synthetic
+	// claim lands.
+	full, _ := store.GoalSnapshot()
+	persisted, _ := goal.PersistedFromSnapshot(full)
+	persisted.Budgets.Deadline = clk.Now().Add(-time.Second)
+	store.RestoreSnapshot(persisted)
+	if _, ok := store.ClaimDeadlineExpiry(clk.Now()); !ok {
+		t.Fatal("precondition: synthetic claim should land the concurrent entry")
+	}
+	sess.kickClaimedGoalWake(claimed, objective)
+	if len(prompts) != 1 {
+		t.Fatalf("kicks = %d, want exactly 1", len(prompts))
+	}
+	if !strings.Contains(prompts[0], w.Lease.WaitID) {
+		t.Fatalf("kick prompt must carry the claimed wait %q:\n%.200q...", w.Lease.WaitID, prompts[0])
+	}
+	if strings.Contains(prompts[0], goal.DeadlineWakeID) {
+		t.Fatalf("kick prompt must NOT carry the concurrent entry:\n%.200q...", prompts[0])
+	}
+	sess.mu.Lock()
+	_, marked := sess.goalWakeDelivered[w.Lease.WaitID]
+	_, concurrentMarked := sess.goalWakeDelivered[goal.DeadlineWakeID]
+	sess.mu.Unlock()
+	if !marked {
+		t.Fatal("claimed wait must be marked delivered")
+	}
+	if concurrentMarked {
+		t.Fatal("concurrent entry must NOT be marked delivered (its own kick path owns it)")
+	}
+	full, _ = store.GoalSnapshot()
+	found := false
+	for _, p := range full.PendingWake {
+		if p.WaitID == goal.DeadlineWakeID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("concurrent entry must stay pending: %+v", full.PendingWake)
+	}
+}
+
 // TestGoalChildForwardIntermediateChatterDoesNotClaim pins terminal-only
 // matching: a still-running child never fires its parent's until_child — the
 // goal stays parked with no backlog.

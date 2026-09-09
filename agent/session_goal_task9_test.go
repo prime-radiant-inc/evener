@@ -392,35 +392,44 @@ func TestGoalResumeFromWirePinsDaemonGlue(t *testing.T) {
 	}
 }
 
-// TestGoalResumeFromWireSuppressesKickWithReplacementText pins the stale-kick
-// guard: a wire resume carrying replacement objective text reports
-// not-started so the caller retargets via SetGoal — the old-objective kick
-// must not drive (the retarget's own kick, or the drain-loop gate, drives
-// the NEW objective instead).
+// TestGoalResumeFromWireAppliesReplacementAtomically pins the stale-kick
+// guard: a wire resume carrying replacement objective text recovers AND
+// retargets under one hold — the kick (if any) renders the NEW objective,
+// never a stale old-objective continuation first.
 func TestGoalResumeFromWireSuppressesKickWithReplacementText(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
-	kicks := wireKickAndNotify(sess)
+	var prompts []string
+	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	sess.SetNotifyFunc(func() {})
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("old objective", clk.Now())
 	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictBudgetExhausted, clk.Now()) {
 		t.Fatal("precondition: SetTerminal should block")
 	}
-	// Idle session (no turn running): a plain wire resume would kick.
+	// Idle session (no turn running): the resume kicks exactly once.
 	started, err := sess.GoalResumeFromWire("new objective", "continuations", 50)
 	if err != nil {
 		t.Fatalf("wire resume with replacement = %v, want nil", err)
 	}
-	if started {
-		t.Fatal("wire resume with replacement text must report not-started (the retarget drives)")
+	if !started {
+		t.Fatal("idle wire resume with replacement must kick (rendering the NEW objective)")
 	}
 	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
-		t.Fatalf("status = %q, want active (resume committed; only the kick is suppressed)", snap.Status)
+		t.Fatalf("status = %q, want active", snap.Status)
 	}
-	_ = kicks
+	if full, _ := store.GoalSnapshot(); full.Objective != "new objective" {
+		t.Fatalf("objective = %q, want the replacement applied atomically", full.Objective)
+	}
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "new objective") {
+		t.Fatalf("kick prompts = %d, want exactly 1 rendering the NEW objective", len(prompts))
+	}
+	if strings.Contains(prompts[0], "old objective") {
+		t.Fatalf("kick must never render the stale objective:\n%.200q...", prompts[0])
+	}
 }
 
 // restorePersistedFromFull round-trips a full snapshot through the persisted
