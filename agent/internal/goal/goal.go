@@ -1327,13 +1327,21 @@ func (s *Store) ClaimDeadlineExpiry(now time.Time) (PendingWake, bool) {
 	if g.Budgets.Deadline.IsZero() || now.Before(g.Budgets.Deadline) {
 		return PendingWake{}, false
 	}
-	// Idempotent on a standing synthetic entry: the backlog already carries
+	// Settled on a standing synthetic entry: the backlog already carries
 	// the final turn (a retarget-carried entry included — the superseded
-	// branch owns the carried entry's drive). A second append would pile a
-	// duplicate beside it. Report the standing entry without claiming; the
-	// marker sets only on a fresh claim below.
+	// branch owns the carried entry's drive). Report it without appending a
+	// duplicate — but settle like a fresh claim (marker one-shot, status,
+	// park anchor): the retarget reset the marker alongside carrying the
+	// backlog, and every deadline check must observe the settled state, or
+	// each check re-reports the same entry as newly claimed.
 	for _, p := range g.PendingWake {
 		if p.WaitID == DeadlineWakeID {
+			g.DeadlineFinalDelivered = true
+			if g.Status == StatusWaiting {
+				g.Status = StatusActive
+			}
+			g.UpdatedAt = now
+			s.settleParkAnchorLocked(now)
 			return p, true
 		}
 	}

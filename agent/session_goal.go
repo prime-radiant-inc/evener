@@ -635,7 +635,7 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	// with the honest loss notice, otherwise the latch clears and the real
 	// decide sees the wakes.
 	decidePending := claimed
-	if latched && len(full.PendingWake) == 0 && len(claimed) == 0 && !boundsBreached(full, now) {
+	if latched && len(full.PendingWake) == 0 && len(claimed) == 0 && !boundsBreachedAt(full, store.ParkedTotalAt(now), now) {
 		// Latched but nothing fresh to gate and bounds clean - clear and
 		// decide normally. (Bounds breached with no fresh wakes still
 		// pre-decides below so the block path - not a plain drive - runs.)
@@ -789,8 +789,9 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			// re-folds).
 			// Terminal-flagged when a budget is also exceeded: latch so the
 			// NEXT gate enforces bounds before rule 1 (no starvation by
-			// flapping predicates).
-			if boundsBreached(full, now) {
+			// flapping predicates). Reads the live parked total: the wake
+			// turn being driven extends the open stretch to now.
+			if boundsBreachedAt(full, store.ParkedTotalAt(now), now) {
 				store.SetTerminalPending(true, now)
 				s.mu.Lock()
 				s.goalTerminalPending = true
@@ -1266,10 +1267,15 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 	// entry→now into the persisted total now — otherwise the persisted field
 	// still reads pre-crossing and the bound never binds on this pass.
 	// ClaimClassified's per-claim settles already folded the stretch when
-	// leases fired (anchor re-stamped); this covers the no-claim crossing
-	// (pure budget fire). Either way the stretch ends here: re-stamp the
-	// anchor when still waiting so the next segment accrues from now rather
-	// than double-counting entry→now.
+	// leases fired; this covers the no-claim crossing (pure budget fire).
+	// The status read is post-claim: a batch that fired the last lease
+	// transitioned Waiting→Active, so its stretch already settled — only a
+	// still-waiting goal re-stamps the anchor for the next segment (never
+	// re-arm it while active, or later active time would charge the cap).
+	full, ok = store.GoalSnapshot()
+	if !ok {
+		return nil, "", nil
+	}
 	if full.Status == goal.StatusWaiting {
 		store.AccrueParked(now)
 		store.NoteParkEnter(now)
@@ -1742,11 +1748,28 @@ func (s *Session) settleGoalOnIdle() bool {
 	// Note the status subtlety: claiming the last live lease returns the goal
 	// to active, so the check keys on the backlog itself - not on waiting -
 	// or a post-claim active-with-backlog settle would re-kick.
+	// A restored-but-never-kicked backlog is the exception (spec §7
+	// kick-immediately): restore claims into pendingWake with no kick wired,
+	// so no wake turn is scheduled yet — the first settle after wiring must
+	// kick it. The delivered set distinguishes them: a kicked batch is
+	// marked at kick time, a restored one is not.
 	backlogPending := false
+	restoredBacklog := false
 	if len(claimed) == 0 && preHasGoal && (preParked || preSnap.Status == goal.StatusActive) {
 		s.goalUpdateMu.Lock()
 		if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok && len(full.PendingWake) > 0 {
 			backlogPending = true
+			s.mu.Lock()
+			for _, p := range full.PendingWake {
+				if !s.goalWakeDelivered[p.WaitID] {
+					restoredBacklog = true
+					break
+				}
+			}
+			s.mu.Unlock()
+			if restoredBacklog {
+				backlogPending = false
+			}
 		}
 		s.goalUpdateMu.Unlock()
 	}
@@ -1769,10 +1792,22 @@ func (s *Session) settleGoalOnIdle() bool {
 	// means the wait already fired, so the wake turn is due now. A non-parked
 	// active goal kicks normally when no hold suppresses it.
 	// A delivered-but-unconsumed backlog (kick went out, wake turn not yet
-	// folded) also suppresses: the wake is already scheduled.
-	if kick != nil && !pendingAsk && !suppressHold && !backlogPending && (!preParked || len(claimed) > 0) {
-		if preHasGoal && (preSnap.Status == goal.StatusActive || (preSnap.Status == goal.StatusWaiting && len(claimed) > 0)) {
-			if len(claimed) > 0 {
+	// folded) also suppresses: the wake is already scheduled. A
+	// restored-but-never-kicked backlog kicks below with the wake prompt.
+	if kick != nil && !pendingAsk && !suppressHold && !backlogPending && (!preParked || len(claimed) > 0 || restoredBacklog) {
+		if preHasGoal && (preSnap.Status == goal.StatusActive || (preSnap.Status == goal.StatusWaiting && (len(claimed) > 0 || restoredBacklog))) {
+			if len(claimed) > 0 || restoredBacklog {
+				if restoredBacklog {
+					s.goalUpdateMu.Lock()
+					wakeFull, wakeOK = s.getOrCreateGoalStore().GoalSnapshot()
+					s.goalUpdateMu.Unlock()
+					if wakeOK {
+						for _, p := range wakeFull.PendingWake {
+							wakeIDs = append(wakeIDs, p.WaitID)
+						}
+						wakePrompt = s.renderGoalWakePrompt(wakeFull)
+					}
+				}
 				prompt = wakePrompt
 			} else {
 				prompt = goal.Render(preSnap.Objective)

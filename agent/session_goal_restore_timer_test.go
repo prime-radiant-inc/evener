@@ -247,3 +247,46 @@ func TestGoalRestore_ExpiredWaitAttachScanClaimsAtRestore(t *testing.T) {
 		t.Fatalf("attach-scan must claim the already-expired lease at restore, got %+v", full.PendingWake)
 	}
 }
+
+// TestGoalRestore_SettleKicksRestoredBacklog pins the restore kick-immediately
+// path (spec §7): a restored pendingWake backlog with no kick wired at
+// restore has no scheduled wake turn yet — the first settle after wiring
+// kicks it exactly once (the delivered set distinguishes it from an
+// already-kicked backlog, which suppresses).
+func TestGoalRestore_SettleKicksRestoredBacklog(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	src := newWaitGateSession(t, clk)
+	defer src.Close()
+	wireKickAndNotify(src)
+
+	store := src.getOrCreateGoalStore()
+	store.Set("crash mid-wake", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "crash-timer", Timeout: time.Minute, Label: "crash-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: crash-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	meta := src.Meta()
+	clk2 := agenttest.NewFakeClockAt(clk.Now())
+	meta.ID = "restore-settle-kick"
+	restored := restoreGoalTestSession(t, clk2, meta)
+	defer restored.Close()
+	kicks := wireKickAndNotify(restored)
+
+	if !restored.settleGoalOnIdle() {
+		t.Fatal("first settle over a restored-but-never-kicked backlog must kick")
+	}
+	if *kicks != 1 {
+		t.Fatalf("kicks = %d, want 1", *kicks)
+	}
+	if restored.settleGoalOnIdle() {
+		t.Fatal("second settle must not re-kick the same restored fire (exactly-once)")
+	}
+	if *kicks != 1 {
+		t.Fatalf("kicks = %d, want still 1 after the second settle", *kicks)
+	}
+}
