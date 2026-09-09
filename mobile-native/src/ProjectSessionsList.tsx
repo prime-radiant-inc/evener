@@ -116,6 +116,7 @@ export function ProjectSessionsList({
 			});
 			if (!group?.expanded) continue;
 			const seen = new Set<string>();
+			let staleNoticeAdded = false;
 			for (const tier of ["current", "recent"] as const) {
 				const page = group[tier];
 				for (const { item, depth } of navigationTree(
@@ -134,7 +135,7 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (page.loading || page.error || page.stale || page.remaining > 0) {
+				if (page.loading || page.error || (page.remaining > 0 && !page.stale)) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
@@ -142,7 +143,19 @@ export function ProjectSessionsList({
 						tier,
 						loading: page.loading,
 						error: page.error,
-						stale: page.stale,
+						stale: false,
+					});
+				}
+				if (page.stale && !staleNoticeAdded) {
+					staleNoticeAdded = true;
+					result.push({
+						kind: "page",
+						key: `page:${project.key}:stale`,
+						projectKey: project.key,
+						tier,
+						loading: false,
+						error: null,
+						stale: true,
 					});
 				}
 			}
