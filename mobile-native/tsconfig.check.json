@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "anser": ["./node_modules/anser"],
+      "react": ["./node_modules/@types/react"],
+      "tinykeys": ["./node_modules/tinykeys"],
+      "zustand": ["./node_modules/zustand"],
+      "zustand/*": ["./node_modules/zustand/*"]
+    }
+  }
+}

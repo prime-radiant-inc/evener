@@ -53,6 +53,11 @@ npm run check
 npx expo export --platform ios
 ```
 
+The type check resolves shared headless sources against this app's installed
+dependencies, matching Metro's dependency ownership. Its aliases live in
+`tsconfig.check.json` because the React alias points to declarations only;
+Expo reads the main `tsconfig.json` when resolving runtime imports.
+
 The Android export remains available for deferred platform work with
 `npx expo export --platform android`.
 
