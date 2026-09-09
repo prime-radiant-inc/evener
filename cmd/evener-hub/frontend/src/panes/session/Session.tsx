@@ -35,6 +35,7 @@ import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDispl
 import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
+import { SessionChrome } from "./chrome/SessionChrome";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
@@ -493,6 +494,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
                 resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
               />
             )}
+            {/* A FENCED notLoaded session (resumeRequired -> Send=false)
+                renders no composer card at all, which leaves the ⋯ menu -
+                the only force-stop surface - unmounted. Force stop matters
+                most in exactly that state: a stalled or fenced snapshot may
+                still have a daemon to stop. With Send=true the composer's
+                follow-up card exists and carries the menu, so this mount is
+                scoped to send === false to never render a second one.
+                Owner-retained sessions are excluded - their notice directs
+                recovery to the owner. */}
+            {model.status.type === "notLoaded" &&
+              !recoveryOwnerRef &&
+              ref.startsWith("local:") &&
+              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}

@@ -2948,3 +2948,56 @@ test.each(["idle", "active"])(
     }
   },
 );
+
+// Regression for the review finding on the footer-button removal: a FENCED
+// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
+// at all, which used to leave the ⋯ menu - the only force-stop surface -
+// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
+// the footer for exactly this state. This drives the REAL Session + Composer
+// tree (no slot stubs) to prove the menu is reachable there.
+test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:fenced-not-loaded";
+  setNavigationTitle(ref, "Fenced saved session");
+  let stopped = false;
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.resumeRequired = !stopped;
+    response.thread.evener.mutationStateAuthoritative = false;
+    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
+    // resume fence (applyThreadResumeRequirement) takes it away - which is
+    // what kills the composer's follow-up card and its chrome mount.
+    if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
+    return response;
+  });
+  fake.on("evener/thread/forceStop", () => {
+    stopped = true;
+    return {};
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  // The fence kills the composer card entirely - no invitation, no chrome.
+  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
+  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  const user = userEvent.setup();
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(menuTrigger);
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
