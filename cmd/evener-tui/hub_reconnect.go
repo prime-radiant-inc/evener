@@ -83,6 +83,7 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	// the new connection has no cycling read in flight.
 	m.liveNavSeq++
 	m.liveNavPendingRef = ""
+	m.liveNavNeedsReconcile = false // the reconnect's own tagged resub re-establishes
 	if m.pending != nil {
 		m.client.SetPendingCoordinator(m.pending)
 	}

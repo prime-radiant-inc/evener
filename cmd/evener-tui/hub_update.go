@@ -106,7 +106,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// subscription - through the tagged helper, so this
 					// reconcile cannot itself hijack (roborev PR #1044
 					// round-14 medium 1).
+					//
+					// While a newer read is still PENDING, the reconcile
+					// defers: the newer read owns the subscription while it
+					// is in flight, and its own response performs the
+					// replacement. But the stale replacement may have landed
+					// after the newer read's own request completed, so the
+					// settle point must reconcile once the pending state
+					// clears (round-15 medium 1).
 					if m.liveNavPendingRef != "" {
+						m.liveNavNeedsReconcile = true
 						return m, nil
 					}
 					return m.reestablishDisplayedSubscription()
@@ -174,8 +183,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Composing began while the read was in flight: the draft is newer
 			// intent than the navigation. The press-time guard cannot cover
-			// this - the content did not exist yet (round-5 medium 2).
-			if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
+			// this - the content did not exist yet (round-5 medium 2). A fork
+			// draft created mid-flight is the same class of newer intent:
+			// applying the read would clear it via the session-entry path,
+			// silently discarding the fork target (roborev PR #1044
+			// round-15 medium 2).
+			if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 || m.forkDraft != nil {
 				m.liveNavPendingRef = ""
 				// The dropped read's ThreadRead replaced the connection's
 				// subscriptions server-side (main AND children), so the
@@ -298,7 +311,20 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Subscribe to any already-running subagent children so the rail shows
 		// their live activity on session entry, not just for new spawns.
 		subscribeChildren := m.subscribeNewChildren()
-		return m, tea.Batch(append(preCut, subscribeChildren)...)
+		preCut = append(preCut, subscribeChildren)
+		// The settle point of a live-nav navigation: a stale recovery dropped
+		// while this read was pending may have left the server-side
+		// subscription on the older session (its replacement can land after
+		// the newer read's). Issue the deferred tagged reconcile now that the
+		// navigation settled and the pending state cleared (roborev PR
+		// #1044 round-15 medium 1).
+		if m.liveNavNeedsReconcile {
+			m.liveNavNeedsReconcile = false
+			retried, reconcile := m.reestablishDisplayedSubscription()
+			retried.liveNavNeedsReconcile = false
+			return retried, tea.Batch(append(preCut, reconcile)...)
+		}
+		return m, tea.Batch(preCut...)
 	case hubNotificationMsg:
 		if !msg.ok {
 			// Evaluated before the return: the call mutates m, and the model

@@ -260,6 +260,14 @@ type hubModel struct {
 	// press has superseded.
 	liveNavPendingRef string
 	liveNavSeq        int
+	// liveNavNeedsReconcile records that a stale recovery response was
+	// dropped while a newer read was still pending: its server-side
+	// replacement may have landed after the newer read's, so once the newest
+	// navigation settles (its response applies and clears the pending state)
+	// the displayed session's subscription must be re-established (roborev
+	// PR #1044 round-15 medium 1). Cleared when the reconcile issues, on
+	// reconnect (its own resub), and by any direct re-establish.
+	liveNavNeedsReconcile bool
 	// liveNavRecoveryRetries counts consecutive failed recovery reads
 	// (reestablishDisplayedSubscription). A persistent RPC failure must not
 	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure

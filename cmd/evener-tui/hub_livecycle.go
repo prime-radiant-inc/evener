@@ -138,6 +138,7 @@ func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, 
 	seq := m.liveNavSeq
 	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
 	m.liveNavRecoveryRetries = 0
+	m.liveNavNeedsReconcile = false // this read is the reconcile
 	resub := fetchHubSessionRead(m.frames, m.client, ref, "", 0, true, replace)
 	return m, func() tea.Msg {
 		msg := resub()

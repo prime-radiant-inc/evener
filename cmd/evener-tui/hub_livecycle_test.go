@@ -748,6 +748,147 @@ func TestHubSessionLiveCycleStaleRecoveryDropReEstablishesSubscription(t *testin
 	}
 }
 
+// Round 15, medium 2: the apply-time mid-flight guard tested only input
+// text and attachments - a fork draft created while the cycling read was in
+// flight was applied over and cleared by the session-entry path, silently
+// discarding the fork target. The mid-flight guard must re-check forkDraft
+// too, clearing the pending state and re-establishing the displayed
+// subscription like the draft drop (roborev PR #1044 round-15 medium 2).
+func TestHubSessionLiveCycleDropsReadWhenForkDraftAppearedMidFlight(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	forkRef, err := appwire.ParseRef("local:01B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1.forkDraft = &hubForkDraft{
+		Ref:          forkRef,
+		EntryIndex:   2,
+		OriginalText: "mid-flight fork target",
+		Label:        "original before fork",
+	}
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01B" {
+		t.Fatalf("live-nav read applied over a mid-flight fork draft: viewed ref = %q, want local:01B", m2.detail.Ref)
+	}
+	if m2.forkDraft == nil {
+		t.Fatal("live-nav read cleared the mid-flight fork draft")
+	}
+	if m2.liveNavPendingRef != "" {
+		t.Fatalf("liveNavPendingRef = %q after dropping over a fork draft, want cleared", m2.liveNavPendingRef)
+	}
+	// The dropped read's replacement must be reconciled: a tagged recovery
+	// read for the displayed session.
+	if resub == nil {
+		t.Fatal("fork-draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+	if sessionMsg.ref != "local:01B" {
+		t.Fatalf("resub read ref = %q, want local:01B", sessionMsg.ref)
+	}
+	if !sessionMsg.liveNavRecovery {
+		t.Fatal("resub read is not tagged as a recovery read")
+	}
+	got := reads.get()
+	if len(got) < 2 || got[1] != "local:01B" {
+		t.Fatalf("resub read missing: reads = %v, want a read for local:01B", got)
+	}
+}
+
+// Round 15, medium 1: a stale recovery response dropped while a newer read
+// was still PENDING recorded nothing - the newer response then applied and
+// cleared the pending state, and no later read reconciled, so the stale
+// replacement could leave the subscription on the older session forever.
+// The settle point must issue the tagged recovery (roborev PR #1044
+// round-15 medium 1).
+func TestHubSessionLiveCycleReconcilesAfterPendingNavigationSettles(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+
+	// The user clears the draft and presses again while the recovery read
+	// is in flight: the newer read is PENDING (not yet applied).
+	m2.session.input.SetValue("")
+	m3, newer := m2.switchToAdjacentLiveSession(1) // from 01B, pending: 01C
+	if newer == nil {
+		t.Fatal("expected a newer live-nav command")
+	}
+
+	// The stale recovery response drops while the newer read is pending.
+	updated3, dropped := m3.Update(sessionMsg)
+	m4 := updated3.(hubModel)
+	if m4.detail.Ref != "local:01B" {
+		t.Fatalf("stale recovery response hijacked: viewed ref = %q, want local:01B", m4.detail.Ref)
+	}
+	if m4.liveNavPendingRef != "local:01C" {
+		t.Fatalf("stale drop cleared the pending target: liveNavPendingRef = %q, want local:01C", m4.liveNavPendingRef)
+	}
+	_ = dropped
+
+	// The newer read's response now applies: it clears the pending state,
+	// and because a stale replacement occurred while the read was pending,
+	// the settle point must issue a tagged recovery for the displayed
+	// session's subscription.
+	newerMsg := newer().(hubSessionMsg)
+	updatedNewer, settle := m4.Update(newerMsg)
+	m5 := updatedNewer.(hubModel)
+	if m5.detail.Ref != "local:01C" {
+		t.Fatalf("newer navigation did not apply: viewed ref = %q, want local:01C", m5.detail.Ref)
+	}
+	if settle == nil {
+		t.Fatal("settle point returned no command: the stale replacement was not reconciled")
+	}
+	// Unwrap layers: the settle may batch the child re-arm with the recovery
+	// read. Find the recovery read for the displayed session.
+	var reconcileMsg hubSessionMsg
+	var collect func(msg tea.Msg)
+	collect = func(msg tea.Msg) {
+		switch inner := msg.(type) {
+		case hubSessionMsg:
+			if inner.ref == "local:01C" {
+				reconcileMsg = inner
+			}
+		case tea.BatchMsg:
+			for _, child := range inner {
+				collect(child())
+			}
+		}
+	}
+	collect(settle())
+	if reconcileMsg.ref == "" {
+		t.Fatal("settle point issued no recovery read for the displayed session")
+	}
+	if !reconcileMsg.liveNavRecovery {
+		t.Fatal("settle recovery read is not tagged as a recovery read")
+	}
+	if reconcileMsg.capture != nil {
+		reconcileMsg.capture.Release()
+	}
+	got := reads.get()
+	if got[len(got)-1] != "local:01C" {
+		t.Fatalf("last read = %v, want the settle recovery for local:01C", got)
+	}
+}
+
 // A pending live-nav target must not survive a dashboard round-trip: the
 // mode-exit drop (ctrl+o while the read is in flight) returns without
 // clearing it, and nothing on re-entry clears it either, so the next press
