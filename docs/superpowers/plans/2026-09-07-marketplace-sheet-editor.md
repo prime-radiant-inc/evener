@@ -385,6 +385,22 @@ func TestRekeyRegistry(t *testing.T) {
 
 `strings` and `errors` are already imported by this test file.
 
+Two corrections to the block above, from pre-flight verification:
+
+- **Run the pasted block through gofmt before committing.** `TestRekeyRegistry`'s
+  map literal is aligned to only two of its three keys; gofmt realigns all three
+  to the longest (`registryKey("elsewhere", "acme"):`), and `make lint-gofmt`
+  walks every tracked `.go` file.
+- **Do not add a third copy of an existing fixture.**
+  `makeInstallableMarketplace` (`internal/plugins/install_test.go:15`) already
+  builds exactly `makeMarketplaceRepoWithPlugin(t, "acme", "widget")`. Add the new
+  helper, then have `makeInstallableMarketplace` delegate to it and return
+  `(dir, "acme")` — but only after checking that its callers depend on nothing
+  the delegation changes (the fixture's parent temp-dir path shape in
+  particular). If delegating would change any existing test's behavior, leave
+  both helpers and say so in your report. `makeMarketplaceRepoDirNoGit`
+  (`doctor_test.go:617`) is deliberately plugin-less; leave it alone.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./internal/plugins -run 'TestEditMarketplace|TestRekeyRegistry' 2>&1 | head -8`
@@ -404,8 +420,11 @@ In `internal/plugins/marketplaces.go`, add `"strings"` to the import block, and 
 // EditMarketplace renames a registered marketplace and/or replaces its
 // source (spec 2026-09-07 §3). The order is chosen so the one step that can
 // take a long time or fail for reasons outside the store - fetching the new
-// source - happens before anything on disk moves, and every directory rename
-// is undone if a later step fails before the files are saved:
+// source - happens before anything on disk moves, and a failure at any later
+// step, the marketplaces file's own save included, puts back everything the
+// edit moved: the renamed directories, the re-keyed registry file, and the
+// contents of a clone the new source was swapped into - the swap sets the old
+// contents aside and they stay there until both files are saved.
 //
 //  1. fetch a changed source into staging and parse its catalog (Add's own
 //     staging discipline: a bad source never half-registers);
@@ -417,8 +436,9 @@ In `internal/plugins/marketplaces.go`, add `"strings"` to the import block, and 
 //  4. save the installed registry, then the marketplaces file.
 //
 // A same-name, same-source call is a no-op that returns the current ref.
-// Installed plugins are materialized under the cache, so a re-source never
-// touches them beyond the re-key a rename implies.
+// A git-backed marketplace's plugins are materialized under the cache; a
+// directory-source marketplace's relative plugins are referenced in place
+// inside it. A re-source moves neither, beyond the re-key a rename implies.
 func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src *Source) (MarketplaceRef, error) {
 	release, err := m.acquireStoreLock(ctx, marketplaceAcquireLock, m.lockPath(), 30*time.Second)
 	if err != nil {
@@ -575,7 +595,13 @@ If `marketplaceStat` is not a package-level var in this file (check `grep -n mar
 - [ ] **Step 4: Run the plugin tests**
 
 Run: `go test ./internal/plugins 2>&1 | tail -4`
-Expected: ok, including the fuzz-coverage tests that also stub `marketplaceRename`.
+Expected: ok.
+
+Then run `go vet -tags evenerfuzz ./internal/plugins 2>&1 | tail -5`. The only
+other test that stubs `marketplaceRename` is `fuzzMarketplacesCoverage` in
+`internal/plugins/coverage_marketplaces_fuzz_test.go`, which is behind
+`//go:build evenerfuzz` and so is invisible to plain `go test` — but CI's
+tagged lanes compile it, so the tagged build must stay green.
 
 - [ ] **Step 5: Commit**
 
@@ -593,7 +619,8 @@ git commit -m "feat(plugins): rename and re-source a registered marketplace"
 - Modify: `appwire/protocol.go` (catalog entry after the Refresh entry; the two notification doc strings)
 - Modify: `cmd/evener-hub/app_plugins.go` (`EditMarketplace`)
 - Modify: `cmd/evener-hub/app_rpc.go` (handler after the Refresh handler)
-- Test: `cmd/evener-hub/app_plugins_test.go`, `appwire/protocol_test.go`
+- Test: `cmd/evener-hub/app_plugins_test.go`, `appwire/protocol_test.go`,
+  `cmd/evener-hub/app_rpc_test.go` (the registered-handler lock, see Step 4)
 - Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`, `docs/appwire-protocol.md`
 
 **Interfaces:**
@@ -708,18 +735,19 @@ In `appwire/protocol.go`, after the `MethodEvenerMarketplaceRefresh` catalog lin
 
 Change the two notification doc strings `(add/remove/refresh)` → `(add/edit/remove/refresh)` and `(install/upgrade/remove/enable/disable/setAutoUpgrade)` → `(install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace rename re-keying installs)`.
 
-If `go test ./appwire` then reports that every hub method needs a `*Client` wrapper, add beside `MarketplaceAdd` in `appwire/client.go`:
+Those same two enumerations are duplicated outside `protocol.go`. Update every
+occurrence under `appwire/` — `grep -rn 'add/remove/refresh\|setAutoUpgrade)' appwire/`
+finds them, including `appwire/types.go` around the doc for
+`MarketplaceListResponse`, which is this method's own result type. There are
+also copies in `cmd/evener-tui/internal/launchconfig/plugins_client.go`: read
+them, and update them only if they enumerate which methods *broadcast* the
+notification (then they are now wrong); leave them if they enumerate that
+client's own calls (then they are still right). Say which you found in your
+report.
 
-```go
-// MarketplaceEdit renames a marketplace and/or replaces its source.
-func (c *Client) MarketplaceEdit(ctx context.Context, params MarketplaceEditParams) (MarketplaceListResponse, error) {
-	var out MarketplaceListResponse
-	err := c.Request(ctx, MethodEvenerMarketplaceEdit, params, &out)
-	return out, err
-}
-```
-
-(Match `MarketplaceAdd`'s exact body shape if it differs.)
+No `*Client` wrapper: nothing in the tree requires hub methods to have one, and
+this method's only callers are the TypeScript in Tasks 3-5, so a wrapper would
+be dead code.
 
 - [ ] **Step 4: Implement the controller and handler**
 
@@ -764,19 +792,28 @@ In `cmd/evener-hub/app_rpc.go`, after the `MethodEvenerMarketplaceRefresh` handl
 	})
 ```
 
+Then register the method with the two tests that lock the handler set.
+`cmd/evener-hub/app_rpc_test.go`'s `TestHubRPCRegistersExpectedHandlerSet` holds
+a hard-coded `expected` list — "The list is a lock, not a sample: nothing may be
+registered that it does not name" — and a `notDispatched` map that keeps the
+marketplace methods from being dispatched against a real plugin root. Add
+`appwire.MethodEvenerMarketplaceEdit` to BOTH, each beside its
+`MethodEvenerMarketplaceRefresh` neighbour. (`TestHubRouterMatchesCatalog` in
+`cmd/evener-hub/appwire_catalog_test.go` is the parity test and needs no edit.)
+
 - [ ] **Step 5: Regenerate and run the tests**
 
 Run: `make generate && go test ./appwire ./internal/appwirets ./cmd/evener-hub 2>&1 | tail -6`
-Expected: ok for all three (the hub's catalog-to-router parity test sees the new handler). `git status --short` shows `types.gen.ts` and `docs/appwire-protocol.md` modified; confirm `grep -n "marketplace/edit" cmd/evener-hub/frontend/src/protocol/types.gen.ts`.
+Expected: ok for all three. `git status --short` shows `types.gen.ts` and `docs/appwire-protocol.md` modified; confirm `grep -n "marketplace/edit" cmd/evener-hub/frontend/src/protocol/types.gen.ts` and that the generated params read `newName?: string` and `source?: MarketplaceSourceInput` (optional, never nullable — Tasks 3-5 omit those keys rather than passing null).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add appwire/types.go appwire/protocol.go appwire/protocol_test.go cmd/evener-hub/app_plugins.go cmd/evener-hub/app_plugins_test.go cmd/evener-hub/app_rpc.go cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
+git add appwire/types.go appwire/protocol.go appwire/protocol_test.go cmd/evener-hub/app_plugins.go cmd/evener-hub/app_plugins_test.go cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go cmd/evener-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md
 git commit -m "feat(hub): serve evener/marketplace/edit"
 ```
 
-(Add `appwire/client.go` if the wrapper was needed.)
+(Add `cmd/evener-tui/internal/launchconfig/plugins_client.go` only if its comments needed the enumeration fix.)
 
 ---
 
@@ -1033,7 +1070,9 @@ git commit -m "feat(web): marketplace edit mutation and form model"
 - Create: `marketplacesPlugins/MarketplaceSheet.tsx`
 - Modify: `marketplacesPlugins/MarketplacesSection.tsx` (rows become buttons; Refresh/Remove and their state move out; new `onSelect` prop)
 - Modify: `marketplacesPlugins/index.tsx` (`selectedMarketplace`; renders the sheet)
-- Modify: `marketplacesPlugins/marketplacesPlugins.module.css` (add `.sheetForm`, `.sheetNote`, `.sheetActions`, `.sheetDivider`)
+- Modify: `marketplacesPlugins/marketplacesPlugins.module.css` (add `.sheetForm`, `.sheetNote`, `.sheetError`, `.sheetActions`, `.sheetDivider` — all five; `src/styles/requireclass-contract.test.ts` statically asserts every `styles.x` the components reference resolves to a real class)
+- Modify: `marketplacesPlugins/PluginDetailSheet.tsx` (its header comment and the comment at its close-on-vanish effect still call it an "inspector"; the sheet-is-the-editor rule makes that stale — carried over from slice 2)
+- Modify: `src/styles/token-contract.test.ts` (`SEMANTIC_PATH_EXCEPTIONS`, see Step 4)
 - Test: `marketplacesPlugins/MarketplaceSheet.test.tsx` (new), `marketplacesPlugins/MarketplacesSection.test.tsx` (rows + moved tests), `marketplacesPlugins/index.test.tsx` (segment switch closes the sheet)
 
 **Interfaces:**
@@ -1110,7 +1149,9 @@ test("prefills the name, the source kind, and its field; shows install location 
   renderSheet(ACME);
   expect(screen.getByRole("dialog", { name: "acme" })).toBeTruthy();
   expect(field("Name").value).toBe("acme");
-  expect((screen.getByRole("radio", { name: "owner/repo" }) as HTMLInputElement).checked).toBe(true);
+  // RadioGroup renders <button role="radio" aria-checked>, not an <input>, so
+  // the checked state reads off the attribute (the idiom in index.test.tsx).
+  expect(screen.getByRole("radio", { name: "owner/repo" }).getAttribute("aria-checked")).toBe("true");
   // The kind's input shares its label text with the radio, so query it by
   // placeholder - the same idiom MarketplacesSection.test.tsx uses.
   expect((screen.getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("acme/plugins");
@@ -1204,6 +1245,17 @@ test("Refresh calls refreshMarketplace, is busy in flight, toasts, and re-browse
   expect(fake.calls.some((c) => c.method === "evener/marketplace/browse")).toBe(true);
 });
 
+test("a failed Refresh toasts and re-enables the button", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  fake.on("evener/marketplace/refresh", () => {
+    throw new Error("fetch failed");
+  });
+  renderSheet(ACME);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(getToasts().some((t) => t.text === "Refresh failed: fetch failed")).toBe(true));
+  expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
 test("Remove opens a confirm; confirming removes, toasts, and the sheet closes when the entry vanishes", async () => {
   const fake = connectionStore.getState().client as FakeClient;
   fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
@@ -1224,6 +1276,30 @@ test("cancelling the remove confirm calls nothing", async () => {
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.some((c) => c.method === "evener/marketplace/remove")).toBe(false);
+});
+
+test("the confirm dialog's buttons disable while removal is in flight, and it stays open until it resolves", async () => {
+  const fake = connectionStore.getState().client as FakeClient;
+  let release: (() => void) | undefined;
+  fake.on(
+    "evener/marketplace/remove",
+    () =>
+      new Promise((resolve) => {
+        release = () => resolve({ marketplaces: [] });
+      }),
+  );
+  renderSheet(ACME);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  const confirm = screen.getByRole("dialog", { name: "Remove marketplace" });
+  await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+  await waitFor(() =>
+    expect((within(confirm).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true),
+  );
+  expect((within(confirm).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole("dialog", { name: "Remove marketplace" })).toBeTruthy();
+  act(() => release?.());
+  await waitFor(() => expect(getToasts().some((t) => t.text === "Removed marketplace acme")).toBe(true));
 });
 
 test("closes itself when the entry disappears from the store", async () => {
@@ -1254,7 +1330,12 @@ test("renders each marketplace as one tappable row carrying name, kind, and sour
 });
 ```
 
-- Every remaining render of `<MarketplacesSection expandedMarketplaces={...} />` becomes `<MarketplacesSection onSelect={vi.fn()} />`.
+  Carry over verbatim, into this same test, the two assertions the original
+  first test made and this replacement drops — the `queryByRole("heading")`
+  and `queryByText("1 entry")` lines that pin "the segment label owns the
+  heading and the count". They still hold, and nothing else covers them.
+
+- Every remaining render of `<MarketplacesSection expandedMarketplaces={...} />` becomes `<MarketplacesSection onSelect={vi.fn()} />` (eight call sites).
 - Delete the tests from `"Refresh calls refreshMarketplace and toasts success"` through `"the confirm dialog's buttons disable while removal is in flight, and it stays open until it resolves"` (they now live in `MarketplaceSheet.test.tsx`).
 
 In `index.test.tsx`, append:
@@ -1268,7 +1349,7 @@ test("switching segments while the marketplace sheet is open closes it", async (
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Browse" }));
-  expect(screen.queryByRole("dialog", { name: "acme-plugins" })).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "acme-plugins" })).toBeNull());
 });
 ```
 
@@ -1302,7 +1383,7 @@ Append to `marketplacesPlugins.module.css`:
 
 .sheetError {
   margin: 0;
-  color: var(--ink-hi);
+  color: var(--danger-ink);
   font-size: var(--font-size-caption);
 }
 
@@ -1323,6 +1404,15 @@ Append to `marketplacesPlugins.module.css`:
   border-top: 1px solid var(--edge);
 }
 ```
+
+`--danger-ink` is the repo's token for inline error text (`keybindings.module.css`
+and `delegateStatus.module.css` both use it for exactly this). It is a semantic
+token, so `src/styles/token-contract.test.ts`'s `SEMANTIC_VAR_RE` will flag it
+unless this stylesheet is listed in `SEMANTIC_PATH_EXCEPTIONS` — add
+`panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css`
+there, beside its neighbours. First read that list's own comment: if it
+documents a rule this stylesheet does not meet, keep `var(--ink-hi)` instead,
+add nothing to the list, and report the conflict as a concern.
 
 - [ ] **Step 5: Implement the sheet**
 
@@ -1618,13 +1708,26 @@ export function MarketplaceSheet({ name, onClose, onRenamed, expandedMarketplace
 }
 ```
 
-If `PathField`'s `onChange` fires on commit rather than every keystroke (read its doc comment), the "Local path" field still works: the draft updates on commit. If `RadioGroup`'s `options` type requires `{ value: string; label: string }` exactly, cast `MARKETPLACE_SOURCE_OPTIONS` at the call site rather than widening the constant.
+Two things pre-flight settled, so do not re-litigate them: `RadioGroup`'s
+`options` element type is `{ value: string; label: string; accessibleLabel?:
+string; disabled?: boolean }`, so `MARKETPLACE_SOURCE_OPTIONS` is assignable
+with no cast; and `PathField` with `kind="dir"` renders a trigger button that
+opens the shared `DirectoryPicker` rather than a text input, so its `onChange`
+fires once on commit — the draft updates then, which is all this form needs.
+
+Because that field is a button and not an input, wrap it exactly the way
+`MarketplacesSection.tsx`'s add form already wraps its own `PathField`: copy
+that wrapping (whether or not it uses a `FormRow`, and whichever of `label`
+/`htmlFor`/`ariaLabel` it sets) instead of the `FormRow label="Local path"` +
+`ariaLabel="Local path"` pair sketched above, which would give the control two
+labels with the same text.
 
 - [ ] **Step 6: Make the rows tappable and lift the selection**
 
 Rewrite `MarketplacesSection.tsx`'s list and props:
 - Props become `export interface MarketplacesSectionProps { onSelect: (name: string) => void; }`.
-- Delete `pendingRemove`, `removeBusy`, `refreshBusy`, `handleRefresh`, `handleConfirmRemove`, the `ConfirmDialog`, and the `rowActions` markup; drop `ConfirmDialog` from the widgets import and remove `rowActions` from `CLASS`; add `rowButton` and `rowChevron` to `CLASS` (both already exist in the stylesheet) and import `Chevron` from widgets.
+- Delete `pendingRemove`, `removeBusy`, `refreshBusy`, `handleRefresh`, `handleConfirmRemove`, the `ConfirmDialog`, and the `rowActions` markup; drop `ConfirmDialog` from the widgets import and remove `rowActions` AND `row` from `CLASS` (the `<li>` loses `.row` when it becomes a button, so both entries go dead; the classes themselves stay in the stylesheet because `BrowseSection.tsx` still uses them); add `rowButton` and `rowChevron` to `CLASS` (both already exist in the stylesheet) and import `Chevron` from widgets.
+- Delete the section's own `SourceKind` type and `SOURCE_OPTIONS` constant and import `type MarketplaceSourceKind` and `MARKETPLACE_SOURCE_OPTIONS` from `./marketplaceEdit` instead — Task 3 introduces the same three kinds in the same order, and its own comment says the sheet's picker must match the add form's. Do this only if the two option arrays are identical (same values, same labels, same order); if a label differs, keep the section's constant, leave the add form's visible labels alone, and report the divergence.
 - Each list item renders:
 
 ```tsx
@@ -1661,6 +1764,14 @@ In `index.tsx`:
 
 with `import { MarketplaceSheet } from "./MarketplaceSheet";`.
 
+Finally, retire the stale "inspector" framing in this directory (spec 2026-09-07
+§4 makes a detail sheet the item's editor; slice 2 deferred this to whichever
+slice next touched these files). Reword, comments only, no behavior change:
+`PluginDetailSheet.tsx:1` ("the plugin inspector for the Segmented Workspace")
+and `PluginDetailSheet.tsx:53` ("An inspector for a thing that no longer
+exists…"), plus the same word in the `index.tsx` comment you are already
+editing. `PluginDetailSheet` itself gets no functional change (spec §4).
+
 - [ ] **Step 7: Run the marketplaces tests and the whole settings suite**
 
 Run: `npx biome check --write src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.tsx src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.test.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.test.tsx src/panes/settings/sections/marketplacesPlugins/index.tsx src/panes/settings/sections/marketplacesPlugins/index.test.tsx src/panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css && npx vitest run src/panes/settings 2>&1 | tail -10`
@@ -1669,7 +1780,7 @@ Expected: all pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.tsx src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.test.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.test.tsx src/panes/settings/sections/marketplacesPlugins/index.tsx src/panes/settings/sections/marketplacesPlugins/index.test.tsx src/panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css
+git add src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.tsx src/panes/settings/sections/marketplacesPlugins/MarketplaceSheet.test.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.tsx src/panes/settings/sections/marketplacesPlugins/MarketplacesSection.test.tsx src/panes/settings/sections/marketplacesPlugins/index.tsx src/panes/settings/sections/marketplacesPlugins/index.test.tsx src/panes/settings/sections/marketplacesPlugins/PluginDetailSheet.tsx src/panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css src/styles/token-contract.test.ts
 git commit -m "feat(web): marketplace rows open an editor sheet"
 ```
 
@@ -1678,11 +1789,29 @@ git commit -m "feat(web): marketplace rows open an editor sheet"
 ### Task 5: Docs, gates, browser pass, and the pull request
 
 **Files:**
-- Modify: `docs/web-ui/design-system.md` (§10: the sentence naming the reference implementations gains `MarketplaceSheet.tsx` beside `InstanceSheet.tsx`; if slice 2 has not merged yet, add the equivalent sentence to the existing paragraph without rewriting it)
+- Modify: `docs/web-ui/design-system.md` (§10)
 
-- [ ] **Step 1: Name the second reference implementation**
+- [ ] **Step 1: Name the sheet as the reference editor**
 
-In `docs/web-ui/design-system.md` §10, where the sheet-as-editor reference implementation is named, add `and Settings → Marketplaces & Plugins → Marketplaces (`marketplacesPlugins/MarketplaceSheet.tsx`)`.
+Pre-flight settled what this step assumed: slice 2 has NOT merged, so §10 has no
+sheet-as-editor sentence and names no reference `.tsx` file. It still says "The
+sheet is the item's inspector" (around line 639), and the rows-are-single-
+tappable-targets paragraph ends around line 645 with "…closing the pane out
+from under an open overlay."
+
+So, the fallback path, kept as small as it can be:
+
+- Append one sentence to that paragraph: a detail sheet is the item's **editor**,
+  with editable facts rendered as prefilled form fields and a dirty-gated Save in
+  the sheet footer, and name `panes/settings/sections/marketplacesPlugins/MarketplaceSheet.tsx`
+  as the reference implementation.
+- Reword only the "inspector" framing in §10 that the new sentence would
+  otherwise contradict outright (the two spots pre-flight found, around lines 639
+  and 652).
+
+Do NOT do the rest of slice 2's work here: no full §10 rewrite, and no
+`docs/web-ui/decisions.md` entry — spec §4 and §6 assign both to slice 2, whose
+PR will expand this sentence rather than correct it.
 
 - [ ] **Step 2: Run every gate from the repo root, reading each for failures**
 

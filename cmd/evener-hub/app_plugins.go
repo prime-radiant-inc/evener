@@ -230,38 +230,80 @@ func (c *hubPluginsController) listMarketplaces() (appwire.MarketplaceListRespon
 	return appwire.MarketplaceListResponse{Marketplaces: entries}, nil
 }
 
+// marketplaceRefusalToWire turns the manager's marketplace sentinels into the
+// wire's own refusal classes, so the same refusal reads the same way whichever
+// mutation raised it — a taken name is the caller's Conflict, whether another
+// marketplace holds it or a removed one's leftovers still occupy it, and an
+// unknown name, a name the store cannot carry, and a source inside the plugin
+// store's own directories their InvalidParams. Anything else — a fetch
+// failure, a rename the filesystem refused — stays the hub's plain error.
+func marketplaceRefusalToWire(err error) error {
+	switch {
+	case errors.Is(err, plugins.ErrMarketplaceExists):
+		return appwire.Conflict(err.Error())
+	case errors.Is(err, plugins.ErrMarketplaceNotFound), errors.Is(err, plugins.ErrInvalidName),
+		errors.Is(err, plugins.ErrMarketplaceSourceInStore):
+		return appwire.InvalidParams(err.Error())
+	}
+	return err
+}
+
 // AddMarketplace registers a new marketplace and returns the updated list.
+// Its refusals — a source inside the store's own directories, and a fetched
+// catalog whose name the store cannot carry — are classified like the edit
+// path's identical ones, by marketplaceRefusalToWire.
 func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 	if _, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source)); err != nil {
-		return appwire.MarketplaceListResponse{}, err
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.listMarketplaces()
 }
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
+// Its refusals — an unknown name, and an entry recorded under a name the store
+// cannot derive directories from — are classified by marketplaceRefusalToWire.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, err
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.listMarketplaces()
 }
 
 // RefreshMarketplace pulls a marketplace's latest catalog and returns the
-// updated list.
+// updated list. Its refusals are classified like RemoveMarketplace's; a fetch
+// that failed is not a refusal and stays the hub's plain error.
 func (c *hubPluginsController) RefreshMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RefreshMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, err
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
+	}
+	return c.listMarketplaces()
+}
+
+// EditMarketplace renames a marketplace and/or replaces its source and
+// returns the updated list. Its refusals are classified by
+// marketplaceRefusalToWire.
+func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
+	var src *plugins.Source
+	if params.Source != nil {
+		converted := marketplaceSourceFromWire(*params.Source)
+		src = &converted
+	}
+	if _, err := c.mgr.EditMarketplace(ctx, params.Name, params.NewName, src); err != nil {
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.listMarketplaces()
 }
 
 // Browse returns a marketplace's plugin catalog. Like ListMarketplaces, this
 // is a read (the manager may lazily fetch an unfetched marketplace pointer,
-// but that is serialized by the manager's own flock).
+// but that is serialized by the manager's own flock). Its refusals — an
+// unknown name, and an entry whose recorded name the lazy fetch cannot derive
+// a clone directory from — are classified like RemoveMarketplace's, by
+// marketplaceRefusalToWire; a fetch that failed is not a refusal.
 func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 	cat, err := c.mgr.Browse(ctx, params.Name)
 	if err != nil {
-		return appwire.MarketplaceBrowseResponse{}, err
+		return appwire.MarketplaceBrowseResponse{}, marketplaceRefusalToWire(err)
 	}
 	entries := make([]appwire.MarketplaceCatalogPlugin, 0, len(cat.Plugins))
 	for _, p := range cat.Plugins {

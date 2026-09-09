@@ -1047,6 +1047,15 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		}
 		return resp, err
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
+		resp, err := pluginsController.EditMarketplace(ctx, params)
+		if err == nil {
+			// An edit can re-key installed plugins, so both lists refresh.
+			notifyMarketplaceUpdated(server)
+			notifyPluginUpdated(server)
+		}
+		return resp, err
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
 	})

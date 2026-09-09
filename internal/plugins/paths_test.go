@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,6 +34,52 @@ func TestManagerPaths(t *testing.T) {
 	for got, want := range cases {
 		if got != want {
 			t.Errorf("path = %q, want %q", got, want)
+		}
+	}
+}
+
+// A name that is a legal path component can still be one the store's own
+// machinery has already spoken for: the two scratch directories a marketplace
+// fetch renames through, and the '@' that separates plugin from marketplace in
+// a registry key. Both are a marketplace's rule alone — the scratch
+// directories are the marketplaces directory's own children, and a registry
+// key is parsed at its LAST '@', which only a marketplace name carrying one
+// moves.
+func TestValidNameComponent_RefusesTheScratchNamesAndAtForMarketplaces(t *testing.T) {
+	refused := []struct{ kind, name, rule string }{
+		{"marketplace", stagingCloneName, "scratch"},
+		{"marketplace", asideCloneName, "scratch"},
+		{"marketplace", "foo@bar", "'@'"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.kind+"/"+tc.name, func(t *testing.T) {
+			err := validNameComponent(tc.kind, tc.name)
+			if !errors.Is(err, ErrInvalidName) {
+				t.Fatalf("validNameComponent(%q, %q) = %v, want ErrInvalidName", tc.kind, tc.name, err)
+			}
+			if !strings.Contains(err.Error(), tc.rule) {
+				t.Fatalf("error = %v, want it to name the rule (%q)", err, tc.rule)
+			}
+			if !strings.Contains(err.Error(), tc.kind) {
+				t.Fatalf("error = %v, want it to name the kind (%q)", err, tc.kind)
+			}
+		})
+	}
+	// A plugin named for one of them collides with nothing: its cache
+	// directory is cache/<marketplace>/<plugin>, a sibling of no scratch
+	// directory, and the staging an install uses is one level deeper still.
+	// Nor does a plugin's '@' collide: it sits before the key's last one, so
+	// foo@bar in acme keys foo@bar@acme and reads back as the name the
+	// catalog gave.
+	for _, name := range []string{stagingCloneName, asideCloneName, "foo@bar"} {
+		if err := validNameComponent("plugin", name); err != nil {
+			t.Errorf("validNameComponent(\"plugin\", %q) = %v, want nil", name, err)
+		}
+	}
+	// Neither rule reaches a name that merely starts with a dot or holds one.
+	for _, name := range []string{"acme", "acme-corp", ".hidden", "widget.v2"} {
+		if err := validNameComponent("marketplace", name); err != nil {
+			t.Errorf("validNameComponent(%q) = %v, want nil", name, err)
 		}
 	}
 }

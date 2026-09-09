@@ -611,3 +611,22 @@ func TestControlMutationsRequireNoTurnID(t *testing.T) {
 		})
 	}
 }
+
+func TestMarketplaceEditCatalog(t *testing.T) {
+	for _, method := range Methods {
+		if method.Name != MethodEvenerMarketplaceEdit {
+			continue
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("scope = %q, want %q", method.Scope, ScopeHub)
+		}
+		if reflect.TypeOf(method.Params) != reflect.TypeFor[MarketplaceEditParams]() {
+			t.Errorf("params type = %T", method.Params)
+		}
+		if reflect.TypeOf(method.Result) != reflect.TypeFor[MarketplaceListResponse]() {
+			t.Errorf("result type = %T", method.Result)
+		}
+		return
+	}
+	t.Fatalf("method catalog missing %s", MethodEvenerMarketplaceEdit)
+}

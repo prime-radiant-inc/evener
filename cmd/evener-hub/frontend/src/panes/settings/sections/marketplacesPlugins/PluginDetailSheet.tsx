@@ -1,4 +1,4 @@
-// PluginDetailSheet: the plugin inspector for the Segmented Workspace
+// PluginDetailSheet: the plugin's own editor for the Segmented Workspace
 // redesign. Opens from an InstalledSection row tap; owns every per-plugin
 // ACTION (enable/disable, auto-upgrade, upgrade, remove) so the list rows
 // stay single-target. A right side Sheet on desktop, a bottom Sheet on
@@ -50,8 +50,8 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
 
   // The entry can vanish under an open sheet - a remove completing (this
   // sheet's own or another client's), or a refetch after external change.
-  // An inspector for a thing that no longer exists closes itself rather
-  // than rendering stale actions.
+  // An editor for a thing that no longer exists closes itself rather than
+  // rendering stale actions.
   useEffect(() => {
     if (target !== null && plugins !== null && entry === undefined) onClose();
   }, [target, plugins, entry, onClose]);

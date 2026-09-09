@@ -21,6 +21,48 @@ import (
 // tools spec §9 steps 4-6, §5 close-unlock). They build on the wtRepo harness
 // from session_tools_worktree_create_test.go.
 
+// TestCloseStopJoin_HopelessStopLeavesHalfBudget verifies the close-budget
+// split closeStopJoinContext exists to enforce: a delegate-tree stop parked
+// forever behind an uncancellable tool call must consume at most half of the
+// close cascade's budget, so the bounded joins and teardown that follow the
+// stop still have a full half left. This is the unit pin for the
+// TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall flake
+// (2026-09-08, race-root CI: Close spent 2.136s of a 3s budget after the
+// drain returned, tripping that test's 2s ceiling): the stop join is
+// SUPPOSED to burn ~budget/2, and the ceiling above it must clear that burn
+// with margin for close's own scheduling. If this test ever goes red, the
+// stop join stopped honouring its half — do not "fix" it by widening the
+// ceiling in cmd/evener/run_drain_wedged_delegate_test.go.
+func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
+	shortenCloseCascadeBudget(t, 3*time.Second)
+	// The initiating close mints the cascade budget from Background, exactly
+	// as Session.Close does.
+	cascade, cancelCascade := ensureCloseBudget(context.Background())
+	defer cancelCascade()
+	cascadeDeadline, ok := cascade.Deadline()
+	if !ok {
+		t.Fatal("ensureCloseBudget minted no deadline: the cascade budget is gone")
+	}
+	stopCtx, cancelStop := closeStopJoinContext(cascade)
+	defer cancelStop()
+	stopDeadline, ok := stopCtx.Deadline()
+	if !ok {
+		t.Fatal("closeStopJoinContext minted no deadline: the hopeless stop join is unbounded")
+	}
+	// Both halves of the split, read off the two context deadlines with no
+	// wall-clock wait: the stop's own deadline must sit a joins' half before
+	// the cascade deadline it was derived from. Derived fresh off
+	// time.Now inside two back-to-back WithTimeout calls, so a 250ms
+	// tolerance is orders of magnitude above any honest scheduling skew
+	// between the two mints — tight enough that an implementation burning 2s
+	// of the 3s budget (reserved ~1s) fails, loose enough to never flake.
+	want := LaneClosePassBudget / 2
+	reserved := cascadeDeadline.Sub(stopDeadline)
+	if got := reserved - want; got < -250*time.Millisecond || got > 250*time.Millisecond {
+		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (LaneClosePassBudget/2) within 250ms", reserved, LaneClosePassBudget, want)
+	}
+}
+
 // seedIsolationLane seeds the stable delegate controller. Returns the delegate
 // id, lane path, and the base SHA recorded in the sidecar.
 func (r *wtRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
