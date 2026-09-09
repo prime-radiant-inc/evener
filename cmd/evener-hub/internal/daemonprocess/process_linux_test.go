@@ -2,11 +2,57 @@ package daemonprocess
 
 import (
 	"encoding/binary"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestLinuxProcessExitedHandlesInterruptedPoll(t *testing.T) {
+	realErr := errors.New("poll failed")
+	for _, tc := range []struct {
+		name        string
+		revents     int16
+		injectEINTR bool
+		wantRealErr bool
+		wantGone    bool
+		wantErr     error
+		wantCalls   int
+	}{
+		{name: "EINTR then live", injectEINTR: true, wantCalls: 2},
+		{name: "EINTR then exited", injectEINTR: true, revents: unix.POLLIN, wantGone: true, wantCalls: 2},
+		{name: "EINTR then hangup", injectEINTR: true, revents: unix.POLLHUP, wantGone: true, wantCalls: 2},
+		{name: "EINTR then real error", injectEINTR: true, wantRealErr: true, wantErr: realErr, wantCalls: 2},
+		{name: "closed descriptor", revents: unix.POLLNVAL, wantErr: os.ErrClosed, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			poll := func(fds []unix.PollFd, timeout int) (int, error) {
+				calls++
+				if timeout != 0 {
+					t.Fatalf("poll timeout = %d; want 0", timeout)
+				}
+				if calls == 1 && tc.injectEINTR {
+					return 0, unix.EINTR
+				}
+				fds[0].Revents = tc.revents
+				if tc.wantRealErr {
+					return 0, realErr
+				}
+				return 1, nil
+			}
+			gotGone, gotErr := (&linuxProcess{fd: 1}).exitedWith(poll)
+			if gotGone != tc.wantGone || !errors.Is(gotErr, tc.wantErr) {
+				t.Fatalf("exited = (%v, %v), want (%v, %v)", gotGone, gotErr, tc.wantGone, tc.wantErr)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("poll calls = %d, want %d", calls, tc.wantCalls)
+			}
+		})
+	}
+}
 
 func TestLinuxLockEvidence(t *testing.T) {
 	for _, tt := range []struct {
