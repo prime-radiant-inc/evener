@@ -179,6 +179,50 @@ func TestInstallPairRestoresBinDirEntrypoints(t *testing.T) {
 	}
 }
 
+// TestInstallPairRollbackRemovesFreshLinks proves rollback handles the
+// binDir entry independently of hadPrev: on a first-time install (no prior
+// managed binaries) a mid-commit failure must remove the swapped-in link,
+// not leave it dangling after its target is deleted. Fails today:
+// restore() `continue`s past link handling when !hadPrev.
+func TestInstallPairRollbackRemovesFreshLinks(t *testing.T) {
+	extractDir := t.TempDir()
+	shareBin := filepath.Join(t.TempDir(), "share")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	for _, d := range []string{extractDir, shareBin, binDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// First-time install: extract dir has the new pair, share/bin empty.
+	for _, bin := range installBinaries {
+		if err := os.WriteFile(filepath.Join(extractDir, bin), []byte("new "+bin), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previous := renameFile
+	renameFile = func(oldpath, newpath string) error {
+		if filepath.Base(newpath) == installBinaries[1] {
+			return errors.New("injected second-binary failure")
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFile = previous })
+
+	if _, err := installExtractedBinaries(t.Context(), extractDir, shareBin, binDir); err == nil {
+		t.Fatal("expected the injected second-binary failure")
+	}
+	// The first binary committed its dst and swapped its link before the
+	// failure; rollback must undo both, leaving no dangling entrypoint.
+	first := installBinaries[0]
+	if _, err := os.Lstat(filepath.Join(shareBin, first)); !os.IsNotExist(err) {
+		t.Fatalf("managed %s present after failed first-time install (err=%v)", first, err)
+	}
+	if _, err := os.Lstat(filepath.Join(binDir, first)); !os.IsNotExist(err) {
+		t.Fatalf("binDir %s present after failed first-time install (err=%v), want the swapped-in link removed", first, err)
+	}
+}
+
 // TestUpgradeDigestsUnderLock proves InstalledSHA256 reflects the bytes
 // committed while the install lock was held: a test double swaps one
 // installed binary between commit and digest time would previously poison

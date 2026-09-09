@@ -607,18 +607,15 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 	}()
 	restore := func() {
 		for _, s := range stagedBins {
-			dst := filepath.Join(shareBinDir, s.bin)
-			if !s.hadPrev {
-				_ = os.Remove(dst)
-				continue
-			}
-			_ = os.WriteFile(dst, s.previous, 0o755)
+			// The binDir entry is restored independently of hadPrev:
+			// the commit loop swaps the link even on a first-time
+			// install (no prior managed binary), so a mid-commit
+			// failure must remove the swapped-in link rather than
+			// leave it dangling after its target is deleted.
 			link := filepath.Join(binDir, s.bin)
 			if !s.linkHadEntry {
 				_ = os.Remove(link)
-				continue
-			}
-			if s.linkIsLink {
+			} else if s.linkIsLink {
 				_ = os.Remove(link)
 				_ = os.Symlink(s.linkTarget, link)
 			}
@@ -626,6 +623,12 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			// cannot be reconstructed: swapSymlink replaced it via
 			// rename-over, so the bytes are gone. Leave the new link
 			// pointing at the restored binary rather than guessing.
+			dst := filepath.Join(shareBinDir, s.bin)
+			if !s.hadPrev {
+				_ = os.Remove(dst)
+				continue
+			}
+			_ = os.WriteFile(dst, s.previous, 0o755)
 		}
 	}
 	for _, s := range stagedBins {
