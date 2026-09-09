@@ -64,6 +64,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: false,
   queue: false,
   goal: false,
+  sharedNotes: false,
   rename: false,
 };
 

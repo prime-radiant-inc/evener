@@ -197,6 +197,7 @@ const THREAD_CAPABILITIES = {
   changeVisionModel: false,
   queue: false,
   goal: false,
+  sharedNotes: false,
   rename: false,
 };
 

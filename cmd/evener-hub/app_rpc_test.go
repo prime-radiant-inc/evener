@@ -11850,6 +11850,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
+		appwire.MethodNotesHumanSet,
+		appwire.MethodUrlsRemove,
 		appwire.MethodEvenerAuthStatus,
 		appwire.MethodEvenerAuthTest,
 		appwire.MethodEvenerAuthLoginStart,

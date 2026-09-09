@@ -24,6 +24,7 @@ const STEER_WITHOUT_STOP: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 

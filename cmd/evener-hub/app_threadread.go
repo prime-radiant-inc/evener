@@ -516,6 +516,9 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
 			Goal:         persistedGoalState(entry.Meta.Goal),
+			HumanNote:    entry.Meta.HumanNote,
+			AgentNote:    entry.Meta.AgentNote,
+			SessionURLs:  persistedSessionURLs(entry.Meta.SessionURLs),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
 			Usage:        cumulativeUsage,
@@ -680,6 +683,23 @@ func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
 		return nil
 	}
 	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
+}
+
+// persistedSessionURLs projects a past session's stored shared-notes URL list
+// onto the wire, mirroring persistedGoalState's stored-state rule: nil/empty
+// stored state reads as an absent list, never as an invented empty one. The
+// copy keeps the past index's SessionMeta from aliasing the served snapshot
+// (appwire/clone.go's URL-slice deep copy covers the live clone path; this
+// covers the past projection path, which builds its own thread).
+func persistedSessionURLs(urls []schema.SessionURL) []appwire.SessionURL {
+	if len(urls) == 0 {
+		return nil
+	}
+	out := make([]appwire.SessionURL, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, appwire.SessionURL{ID: u.ID, URL: u.URL, Label: u.Label, AddedBy: u.AddedBy, AddedAt: u.AddedAt})
+	}
+	return out
 }
 
 // pastTranscriptCache memoizes saved-transcript parsing by file identity. Past

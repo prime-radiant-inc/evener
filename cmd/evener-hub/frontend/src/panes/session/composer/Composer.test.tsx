@@ -84,6 +84,7 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: true,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -105,6 +106,7 @@ const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: false,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 
@@ -126,6 +128,7 @@ const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: true,
   queue: false,
   goal: true,
+  sharedNotes: true,
   rename: true,
 };
 

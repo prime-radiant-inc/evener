@@ -25,10 +25,12 @@ import type {
   AnyNotification,
   GoalSetResponse,
   ModelListResponse,
+  NotesHumanSetResponse,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  UrlsRemoveResponse,
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
@@ -176,6 +178,16 @@ export interface ThreadsStoreState {
   // after it). A successful response commits the known goal state locally;
   // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
+  // Sets the session's human shared-note (an empty note clears it). Returns
+  // the stored post-clamp value. A successful response commits the known
+  // note locally; the evener/notes/updated push keeps every other client
+  // synchronized. Same generation-guard contract as setGoal above.
+  setHumanNote(ref: string, note: string): Promise<NotesHumanSetResponse>;
+  // Removes one session URL list entry by id. The response carries no
+  // state; the evener/urls/updated push is the authority. Local list edits
+  // on success are the push's business, not this response's — unlike
+  // setGoal/setHumanNote there is no response-derived local commit here.
+  removeURL(ref: string, id: string): Promise<UrlsRemoveResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
   // Clears the thread's conversation through the durable mutation outbox. The
@@ -253,6 +265,30 @@ const goalUpdateGenerations = new Map<string, number>();
 
 function invalidateGoalResponseFallback(ref: string): void {
   goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
+}
+// A generation changes at every local shared-notes request and every accepted
+// notes/urls authority (a matching notification or full hydration). Same
+// contract as goalUpdateGenerations above: a notes/human/set response may
+// publish its derived local state only while its generation is still current,
+// so neither a later request nor accepted authoritative state that arrived
+// during the await can be overwritten by that delayed response. One map for
+// both verbs: a note save and a URL removal are independent mutations, but
+// their fallbacks write disjoint fields (humanNote vs sessionUrls), so a
+// shared generation can only ever suppress a stale write, never a live one —
+// and the authoritative push invalidates both together.
+const notesUpdateGenerations = new Map<string, number>();
+
+function invalidateNotesResponseFallback(ref: string): void {
+  notesUpdateGenerations.set(ref, (notesUpdateGenerations.get(ref) ?? 0) + 1);
+}
+
+// Pushes whose acceptance retires a response-derived local commit: the goal
+// push retires setGoal's, the notes/urls pushes retire setHumanNote's. The
+// pending-hydration path (targeted sets below) and the steady-state path
+// (the per-method blocks in handleNotification) must agree on exactly this
+// set, so it lives here rather than inline in both.
+function isFallbackInvalidatingPush(method: string): boolean {
+  return method === "evener/goal/updated" || method === "evener/notes/updated" || method === "evener/urls/updated";
 }
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
@@ -1679,7 +1715,12 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
+  // Accepted fallback-invalidating refs: goal pushes invalidate the goal
+  // response fallback, notes/urls pushes the shared-notes one. One set is
+  // collected per family below (a goal push never invalidates a notes
+  // fallback and vice versa), so the name is per-use, not shared.
   const acceptedGoalRefs = new Set<string>();
+  const acceptedNotesRefs = new Set<string>();
   // Pending-hydration routing: pendingThreadHydrations/pendingWatchedHydrations
   // are intentionally left as plain map iterations (NOT indexed). They are
   // usually tiny — at most one entry per in-flight thread/read (bounded by
@@ -1692,18 +1733,28 @@ function handleNotification(n: AnyNotification): void {
   let pendingRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingThreadHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    const targeted = isFallbackInvalidatingPush(n.method) ? new Set<string>() : undefined;
     collectPendingRefs(pendingThreadHydrations, n, refs, targeted);
     if (refs.size > 0) pendingRefs = refs;
-    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
+    if (targeted) {
+      for (const ref of targeted) {
+        if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
+        else acceptedNotesRefs.add(ref);
+      }
+    }
   }
   let pendingWatchedRefs: ReadonlySet<string> = EMPTY_PENDING_REFS;
   if (pendingWatchedHydrations.size > 0) {
     const refs = new Set<string>();
-    const targeted = n.method === "evener/goal/updated" ? new Set<string>() : undefined;
+    const targeted = isFallbackInvalidatingPush(n.method) ? new Set<string>() : undefined;
     collectPendingRefs(pendingWatchedHydrations, n, refs, targeted);
     if (refs.size > 0) pendingWatchedRefs = refs;
-    if (targeted) for (const ref of targeted) acceptedGoalRefs.add(ref);
+    if (targeted) {
+      for (const ref of targeted) {
+        if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
+        else acceptedNotesRefs.add(ref);
+      }
+    }
   }
   const {
     next: nextThreads,
@@ -1721,6 +1772,11 @@ function handleNotification(n: AnyNotification): void {
     for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
     for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
+  }
+  if (n.method === "evener/notes/updated" || n.method === "evener/urls/updated") {
+    for (const ref of acceptedThreads) acceptedNotesRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedNotesRefs.add(ref);
+    for (const ref of acceptedNotesRefs) invalidateNotesResponseFallback(ref);
   }
   if (!nextThreads && !nextWatchedThreads) return;
 
@@ -2706,6 +2762,50 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
+  async setHumanNote(ref, note) {
+    const client = requireClient();
+    const generation = (notesUpdateGenerations.get(ref) ?? 0) + 1;
+    notesUpdateGenerations.set(ref, generation);
+    try {
+      const model = trackedThreadModel(ref);
+      const response = await client.request("notes/human/set", {
+        ref,
+        clientMutationId: createSecureUUID(),
+        expectedInstanceId: threadInstanceID(model) ?? "",
+        note,
+      });
+      if (notesUpdateGenerations.get(ref) !== generation) return response;
+      // The response's stored post-clamp value is authoritative for this
+      // write (appwire.NotesHumanSetResponse.doc), like setGoal's
+      // response-derived commit above — until evener/notes/updated arrives.
+      const humanNote = response.note;
+      threadsStore.setState((state) => {
+        const threads = replaceThread(state.threads, ref, (model) => ({ ...model, humanNote }));
+        const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, humanNote }));
+        if (threads === state.threads && watchedThreads === state.watchedThreads) return state;
+        return { threads, watchedThreads };
+      });
+      return response;
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async removeURL(ref, id) {
+    const client = requireClient();
+    try {
+      const model = trackedThreadModel(ref);
+      return await client.request("urls/remove", {
+        ref,
+        clientMutationId: createSecureUUID(),
+        expectedInstanceId: threadInstanceID(model) ?? "",
+        id,
+      });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
   async rename(ref, name) {
     const client = requireClient();
     try {
@@ -2926,6 +3026,7 @@ export function resetThreadsStoreForTests(): void {
   ensureGenerations.clear();
   olderPageGenerations.clear();
   goalUpdateGenerations.clear();
+  notesUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();

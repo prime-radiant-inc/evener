@@ -57,6 +57,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   changeVisionModel: false,
   queue: false,
   goal: false,
+  sharedNotes: false,
   rename: false,
 };
 
@@ -79,6 +80,9 @@ function model(turns: TurnModel[]): ThreadModel {
     lastFrameAt: 0,
     capabilities: NO_CAPABILITIES,
     goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,

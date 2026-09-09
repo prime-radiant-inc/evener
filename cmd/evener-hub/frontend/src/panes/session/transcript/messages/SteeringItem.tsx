@@ -66,6 +66,7 @@ const KIND_LABELS: Record<LabelledKind, string> = {
   "task-inactive": "Task list idle",
   "note-handoff": "Note to self",
   "goal-objective": "Goal objective",
+  "human-note": "Human note",
   "transcript-pointer": "Transcript pointer",
   "provider-failure": "Provider failure",
 };
