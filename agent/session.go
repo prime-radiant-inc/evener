@@ -228,6 +228,12 @@ type Session struct {
 	// that announces it. It is always acquired before mu; emit runs after mu is
 	// released, so observers see mutation order without event emission under mu.
 	goalUpdateMu sync.Mutex
+	// notesUpdateMu serializes each shared-notes store mutation with the event
+	// that announces it, mirroring goalUpdateMu: the mutation and its
+	// snapshot capture run under this lock plus mu, and emit runs after both
+	// are released, so concurrent saves publish in store order and a stale
+	// event never wins at the projector.
+	notesUpdateMu sync.Mutex
 
 	// --- native worktree occupancy (spec §7) ---
 	//
@@ -1922,23 +1928,27 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 // Writes only lightweight SessionMeta (~500 bytes), not the full history.
 // The conversation history is already durably recorded by the transcript JSONL.
 func (s *Session) maybeAutoSave() {
-	if s.stateDir == "" {
-		return
-	}
-	err := func() error {
-		s.metaSaveMu.Lock()
-		defer s.metaSaveMu.Unlock()
-		meta := s.Meta()
-		if fs := s.cfg.testOnly.metaFS; fs != nil {
-			return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
-		}
-		return schema.SaveSessionMeta(s.stateDir, meta)
-	}()
-	if err != nil {
+	if err := s.autoSaveMeta(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}
+}
+
+// autoSaveMeta persists the session metadata, reporting the write outcome so
+// mutation paths can refuse to journal success for a write that never landed.
+// maybeAutoSave keeps the warn-only contract for the non-mutation callers.
+func (s *Session) autoSaveMeta() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	meta := s.Meta()
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+	}
+	return schema.SaveSessionMeta(s.stateDir, meta)
 }
 
 // sessionsSubdir is the directory, under a session's StateDir, where its

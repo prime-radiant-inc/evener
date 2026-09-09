@@ -309,6 +309,20 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		s.mu.Unlock()
 	}
 
+	// Shared-notes refresh AFTER any compaction above: a fold drops the
+	// previously projected NOTES_CONTEXT turns from what the model sees, so
+	// the next projection must re-emit the current state before this request
+	// expands history. This is the common path every entry kind (turn,
+	// notification wake, delegate attention) funnels through, so the refresh
+	// covers entry paths whose accept step projects nothing.
+	s.maybeAppendNotesContext()
+	// Re-snapshot so the request expands the refreshed history. The
+	// in-flight boundary stands: the appended turn is plain user-role text,
+	// unaffected by the N4 replay-provenance exemption either way.
+	s.mu.Lock()
+	historyTurns = append([]schema.Turn{}, s.history...)
+	s.mu.Unlock()
+
 	// Reuse historyTurns from context management — no redundant copy.
 	scope := replayScope{
 		Instance:       profile.ID(),

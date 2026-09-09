@@ -22,10 +22,11 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 			note, _ := args["note"].(string)
-			stored, changed := deps.notesGuard.setAgentNote(note)
-			deps.notesGuard.save()
+			stored, changed, human, agent := deps.notesGuard.setAgentNoteSerialized(note)
+			if err := deps.notesGuard.saveMeta(); err != nil {
+				return nil, err
+			}
 			if changed {
-				human, agent := deps.notesGuard.Snapshot()
 				deps.emit(events.EventNotesUpdated, notesUpdatedData(human, agent))
 			}
 			return tool.StateResult{
@@ -41,12 +42,14 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = env
 			rawURL, _ := args["url"].(string)
 			label, _ := args["label"].(string)
-			entry, err := deps.notesGuard.addURL(rawURL, label)
+			entry, urls, err := deps.notesGuard.addURLSerialized(rawURL, label)
 			if err != nil {
 				return nil, err
 			}
-			deps.notesGuard.save()
-			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(deps.notesGuard.SnapshotURLs()))
+			if err := deps.notesGuard.saveMeta(); err != nil {
+				return nil, err
+			}
+			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 			return tool.StateResult{
 				// The model never sees the State side-channel (only Output
 				// reaches it), yet urls_remove requires the entry id — so the
@@ -62,11 +65,14 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 			id, _ := args["id"].(string)
-			if !deps.notesGuard.removeURL(id) {
+			removed, urls := deps.notesGuard.removeURLSerialized(id)
+			if !removed {
 				return nil, fmt.Errorf("urls/remove: no URL entry with id %q", id)
 			}
-			deps.notesGuard.save()
-			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(deps.notesGuard.SnapshotURLs()))
+			if err := deps.notesGuard.saveMeta(); err != nil {
+				return nil, err
+			}
+			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 			return tool.StateResult{
 				Output: "URL removed.",
 				State:  map[string]any{"id": id},

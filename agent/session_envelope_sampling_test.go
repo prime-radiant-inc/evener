@@ -59,6 +59,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.goalUpdateMu.Lock()
 		return s.goalUpdateMu.Unlock
 	}},
+	{owner: "Session", field: "notesUpdateMu", hold: func(s *Session) func() {
+		s.notesUpdateMu.Lock()
+		return s.notesUpdateMu.Unlock
+	}},
 	{owner: "Session", field: "metaSaveMu", hold: func(s *Session) func() {
 		s.metaSaveMu.Lock()
 		return s.metaSaveMu.Unlock

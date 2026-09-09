@@ -110,6 +110,19 @@ type clientMutationRecord struct {
 	// reflected steeringMessage.Kind so the divider survives a restart.
 	// Empty for plain user steering.
 	SteeringKind string `json:"steering_kind,omitempty"`
+	// NotesDeliveryPending marks a notes/human/set (or urls/remove) outer
+	// mutation whose storage effect is committed but whose delivery
+	// (the derived steer, or the post-remove emission contract) has not
+	// completed. A retry takes the record over and completes the pending
+	// delivery instead of repeating the applied storage write, so an
+	// intervening save cannot be clobbered. Cleared when the mutation
+	// reaches its applied result.
+	NotesDeliveryPending bool `json:"notes_delivery_pending,omitempty"`
+	// NotesStoredValue carries the post-clamp stored note a delivery-pending
+	// notes/human/set committed, so recovery completes the pending delivery
+	// for that value without re-reading (and possibly rewriting) the live
+	// store. Empty for urls/remove, which has no stored value.
+	NotesStoredValue string `json:"notes_stored_value,omitempty"`
 }
 
 type clientMutationFailure struct {

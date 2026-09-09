@@ -220,8 +220,18 @@ func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time)
 // locking; notesGuard adds no behavior of its own.
 type notesGuard struct {
 	setAgentNote func(note string) (string, bool)
-	addURL       func(rawURL, label string) (schema.SessionURL, error)
-	removeURL    func(id string) bool
+	// setAgentNoteSerialized stores the agent note and captures the notes
+	// snapshot serialized with the mutation (notesUpdateMu + mu, emit
+	// after release), mirroring the goal-update pattern.
+	setAgentNoteSerialized func(note string) (stored string, changed bool, human, agent string)
+	addURL                 func(rawURL, label string) (schema.SessionURL, error)
+	// addURLSerialized appends the URL entry and captures the resulting
+	// list serialized with the mutation.
+	addURLSerialized func(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error)
+	removeURL        func(id string) bool
+	// removeURLSerialized deletes the entry and captures the resulting
+	// list serialized with the mutation.
+	removeURLSerialized func(id string) (bool, []schema.SessionURL)
 	// snapshot reads the human and agent notes under s.mu.
 	snapshot func() (human, agent string)
 	// snapshotURLs reads a copy of the session URL list under s.mu.
@@ -230,6 +240,9 @@ type notesGuard struct {
 	snapshotAll func() (human, agent string, urls []schema.SessionURL)
 	// save persists session meta (maybeAutoSave), a no-op without a state dir.
 	save func()
+	// saveMeta persists session meta, reporting the write outcome so tool
+	// handlers refuse success for a write that never landed.
+	saveMeta func() error
 }
 
 // Snapshot reads the human and agent notes.
@@ -290,13 +303,17 @@ func newToolDeps(s *Session) *toolDeps {
 			setTerminal:          s.setGoalTerminal,
 		},
 		notesGuard: notesGuard{
-			setAgentNote: s.setAgentNote,
-			addURL:       s.addSessionURL,
-			removeURL:    s.removeSessionURL,
-			snapshot:     s.notesSnapshot,
-			snapshotURLs: s.snapshotSessionURLs,
-			snapshotAll:  s.notesSnapshotAll,
-			save:         s.maybeAutoSave,
+			setAgentNote:           s.setAgentNote,
+			setAgentNoteSerialized: s.setAgentNoteSerialized,
+			addURL:                 s.addSessionURL,
+			addURLSerialized:       s.addSessionURLSerialized,
+			removeURL:              s.removeSessionURL,
+			removeURLSerialized:    s.removeSessionURLSerialized,
+			snapshot:               s.notesSnapshot,
+			snapshotURLs:           s.snapshotSessionURLs,
+			snapshotAll:            s.notesSnapshotAll,
+			save:                   s.maybeAutoSave,
+			saveMeta:               s.persistNotesMeta,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

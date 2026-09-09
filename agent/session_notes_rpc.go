@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -48,6 +49,14 @@ const (
 // of truth the agent re-reads; the steer is delivery, and a delivery refusal
 // must not roll back storage.
 //
+// Storage and delivery journal separately: once the store commits, the
+// reservation records the stored value with delivery pending. A retry that
+// takes the record over (a released lease, a higher AttemptGeneration)
+// completes the pending steer for the COMMITTED value without repeating the
+// write, so an intervening save cannot be clobbered. The metadata save gates
+// the success journal: a persistence failure releases the reservation with
+// no recorded result, so a retry (or restart recovery) still owns the write.
+//
 // Daemon handlers never emit pushes directly: the EventNotesUpdated emission
 // here is the projector's only input for the evener/notes/updated push.
 func (s *Session) SetHumanNote(outerID, note string) (string, error) {
@@ -92,13 +101,55 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 	if lookup.Lease == nil {
 		return "", appwire.InternalError("notes mutation owner is missing")
 	}
-	stored, changed := s.setHumanNote(note)
-	if !changed {
-		return s.applyNotesHumanSetResult(lookup.Lease, outerID, stored)
+	return s.completeNotesHumanSet(lookup.Lease, outerID, note, lookup.Record.AttemptGeneration)
+}
+
+// completeNotesHumanSet applies one owned notes/human/set attempt. A takeover
+// (AttemptGeneration above 1) completes the pending delivery the previous
+// attempt journaled — stored value, emission, steer — without repeating the
+// storage write, so an intervening save is never clobbered.
+func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, note string, generation uint64) (string, error) {
+	// A takeover resumes the previous attempt's committed storage: the record
+	// it takes over already carries the stored value with delivery pending.
+	if generation > 1 {
+		if stored, ok := s.notesDeliveryPending(outerID); ok {
+			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
+		}
 	}
+	stored, changed, human, agentNote := s.storeHumanNoteSerialized(note)
+	if err := s.persistNotesMeta(); err != nil {
+		lease.Release()
+		return stored, err
+	}
+	if !changed {
+		return s.applyNotesHumanSetResult(lease, outerID, stored)
+	}
+	// Storage is durable now; journal the stored value with delivery pending
+	// BEFORE emitting or steering, so a crash or refusal between here and
+	// the applied result still resumes delivery for this value.
+	if err := s.markNotesDeliveryPending(outerID, stored); err != nil {
+		lease.Release()
+		return stored, NormalizeClientMutationError(outerID, err)
+	}
+	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
+	return s.deliverNotesHumanSetSteer(lease, outerID, stored)
+}
+
+// resumeNotesHumanSetDelivery completes a delivery the previous attempt
+// journaled: re-emit the current snapshot and re-drive the derived steer for
+// the RECORDED value, never re-applying the caller's (possibly older) input
+// to the store.
+func (s *Session) resumeNotesHumanSetDelivery(lease *clientMutationLease, outerID, stored string) (string, error) {
 	human, agentNote := s.notesSnapshot()
 	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
-	s.maybeAutoSave()
+	return s.deliverNotesHumanSetSteer(lease, outerID, stored)
+}
+
+// deliverNotesHumanSetSteer drives the derived inner steer for an already
+// stored (and journaled) note value, then commits the applied result. A
+// refusal releases the reservation WITHOUT recording, keeping delivery
+// pending so the next retry resumes it.
+func (s *Session) deliverNotesHumanSetSteer(lease *clientMutationLease, outerID, stored string) (string, error) {
 	text := "human updated their whiteboard: " + stored
 	if stored == "" {
 		text = "human updated their whiteboard: (whiteboard cleared)"
@@ -107,14 +158,12 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 	// path; do not fork it): the mutation store dedupes a hub retry on the
 	// derived inner id, so one outer id produces a single steer.
 	innerID := strings.TrimSpace(outerID) + "/note-steer"
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: innerID,
-		Input:            clientMutationInput(text, nil),
-	}); err != nil {
+	steerID, err := s.acceptNotesSteer(lookupSteerID(outerID, innerID, lease), text)
+	if err != nil {
 		// Delivery refused: release the reservation without recording, so a
 		// retry takes the record over and replays the inner steer instead
 		// of converging on a failure the fence may have lifted.
-		lookup.Lease.Release()
+		lease.Release()
 		return stored, fmt.Errorf("notes/human/set: inject human-note steer: %w", err)
 	}
 	// The human-note injection carries its steering kind on the durable
@@ -123,9 +172,96 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 	// the live path. The kind labels the rendered steering divider
 	// (events.SteeringKindHumanNote) instead of a reader guessing it from
 	// the text's prose.
-	s.setSteeringKindOnRecord(innerID, events.SteeringKindHumanNote)
-	s.annotateSteeringKind(innerID, events.SteeringKindHumanNote)
-	return s.applyNotesHumanSetResult(lookup.Lease, outerID, stored)
+	s.setSteeringKindOnRecord(steerID, events.SteeringKindHumanNote)
+	s.annotateSteeringKind(steerID, events.SteeringKindHumanNote)
+	return s.applyNotesHumanSetResult(lease, outerID, stored)
+}
+
+// lookupSteerID derives the inner steer id for one owned outer attempt: the
+// base id on the first attempt, suffixed with the outer AttemptGeneration on
+// a takeover retry. A rejected steer record replays its rejection forever —
+// recovery keys on AttemptGeneration, which only advances on a NEW id — so
+// a retry after a lifted fence must steer under a fresh id to deliver. The
+// generation suffix keeps that fresh while staying deterministic: one outer
+// attempt produces exactly one steer id, and a hub replay of an APPLIED
+// outer record never reaches this path at all.
+func lookupSteerID(outerID, innerID string, lease *clientMutationLease) string {
+	if lease != nil && lease.attemptGeneration > 1 {
+		return innerID + "/attempt-" + strconv.FormatUint(lease.attemptGeneration, 10)
+	}
+	_ = outerID
+	return innerID
+}
+
+// acceptNotesSteer drives the derived inner steer under steerID.
+func (s *Session) acceptNotesSteer(steerID, text string) (string, error) {
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: steerID,
+		Input:            clientMutationInput(text, nil),
+	}); err != nil {
+		return "", err
+	}
+	return steerID, nil
+}
+
+// notesDeliveryPending reports whether the outer notes/human/set record
+// carries a committed stored value with delivery still pending.
+func (s *Session) notesDeliveryPending(outerID string) (string, bool) {
+	if s.clientMutations == nil {
+		return "", false
+	}
+	record, exists := s.clientMutations.snapshot().Journal[outerID]
+	if !exists || !record.NotesDeliveryPending {
+		return "", false
+	}
+	return record.NotesStoredValue, true
+}
+
+// markNotesDeliveryPending journals the committed stored value with delivery
+// pending beside the owner's reservation. It runs inside the store
+// serializer via mutate, so it cannot interleave with a concurrent reserve
+// of the same record; the owner lease stays open for the final applied
+// update (mutate, unlike update, settles no ownership).
+func (s *Session) markNotesDeliveryPending(outerID, stored string) error {
+	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[outerID]
+		if !ok || record.Method != clientMutationMethodNotesHumanSet ||
+			record.OperationState != clientMutationOperationInFlight {
+			return errClientMutationOwner
+		}
+		record.NotesDeliveryPending = true
+		record.NotesStoredValue = stored
+		snapshot.Journal[outerID] = record
+		return nil
+	})
+}
+
+// storeHumanNoteSerialized stores the normalized note and captures its
+// snapshot serialized with the mutation, mirroring the goal-update pattern
+// (goalUpdateMu + mu, emit after release). Callers hold no lock; the update
+// lock is held across the mutation AND the snapshot capture, so concurrent
+// saves publish in store order and a stale event never wins at the
+// projector. Emission itself runs after release.
+func (s *Session) storeHumanNoteSerialized(note string) (stored string, changed bool, human, agentNote string) {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	stored, changed = s.setHumanNote(note)
+	s.mu.Lock()
+	human, agentNote = s.humanNote, s.agentNote
+	s.mu.Unlock()
+	return stored, changed, human, agentNote
+}
+
+// persistNotesMeta persists the notes store, propagating a failure so the
+// caller refuses to journal success for a write that never landed. A
+// test-injected fault surfaces as the mutation error.
+func (s *Session) persistNotesMeta() error {
+	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
+		if err := fault(); err != nil {
+			return err
+		}
+	}
+	return s.autoSaveMeta()
 }
 
 // annotateSteeringKind stamps kind onto the queued steering entry for
@@ -210,7 +346,7 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	if lookup.Lease == nil {
 		return false, appwire.InternalError("notes mutation owner is missing")
 	}
-	removed := s.removeSessionURL(id)
+	removed, urls := s.removeSessionURLSerialized(id)
 	if !removed {
 		if lookup.Record.AttemptGeneration > 1 {
 			// Crash-recovery takeover: the pre-crash attempt passed validation
@@ -218,6 +354,10 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 			// before dying, so the entry's absence IS its success. An
 			// AttemptGeneration of 1 is a fresh reservation, where absence
 			// means a genuinely unknown id.
+			if err := s.persistNotesMeta(); err != nil {
+				lookup.Lease.Release()
+				return false, err
+			}
 			return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 		}
 		unknown := appwire.InvalidParams("no URL entry with id " + id)
@@ -229,9 +369,63 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 		}
 		return false, unknown
 	}
-	s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLs()))
-	s.maybeAutoSave()
+	// The metadata save gates the success journal: a persistence failure
+	// releases the reservation with no recorded result, so the entry's
+	// absence is not journaled as success for a write that never landed
+	// and a retry still owns the removal.
+	if err := s.persistNotesMeta(); err != nil {
+		lookup.Lease.Release()
+		return false, err
+	}
+	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
+}
+
+// removeSessionURLSerialized deletes the entry with id and captures the
+// resulting list serialized with the mutation, mirroring the goal-update
+// pattern (notesUpdateMu + mu, emit after release). Callers hold no lock;
+// the update lock is held across the mutation AND the snapshot capture, so
+// concurrent URL mutations publish in store order. Emission itself runs
+// after release.
+func (s *Session) removeSessionURLSerialized(id string) (bool, []schema.SessionURL) {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	removed := s.removeSessionURL(id)
+	s.mu.Lock()
+	urls := append([]schema.SessionURL(nil), s.sessionURLs...)
+	s.mu.Unlock()
+	return removed, urls
+}
+
+// setAgentNoteSerialized stores the agent note and captures the notes
+// snapshot serialized with the mutation, mirroring the goal-update pattern
+// (notesUpdateMu + mu, emit after release). Callers hold no lock; emission
+// itself runs after release.
+func (s *Session) setAgentNoteSerialized(note string) (stored string, changed bool, human, agent string) {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	stored, changed = s.setAgentNote(note)
+	s.mu.Lock()
+	human, agent = s.humanNote, s.agentNote
+	s.mu.Unlock()
+	return stored, changed, human, agent
+}
+
+// addSessionURLSerialized appends the URL entry and captures the resulting
+// list serialized with the mutation, mirroring the goal-update pattern
+// (notesUpdateMu + mu, emit after release). Callers hold no lock; emission
+// itself runs after release.
+func (s *Session) addSessionURLSerialized(rawURL, label string) (schema.SessionURL, []schema.SessionURL, error) {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	entry, err := s.addSessionURL(rawURL, label)
+	if err != nil {
+		return schema.SessionURL{}, nil, err
+	}
+	s.mu.Lock()
+	urls := append([]schema.SessionURL(nil), s.sessionURLs...)
+	s.mu.Unlock()
+	return entry, urls, nil
 }
 
 // applyUrlsRemoveResult commits an empty success beside its outer reservation.
