@@ -109,6 +109,21 @@ func TestReasoningItemCompletesWhenAssistantRoundEnds(t *testing.T) {
 	}
 }
 
+func TestReasoningItemCompletesWhenToolOnlyAssistantRoundEnds(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	at := time.Unix(25, 0)
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, Timestamp: at, Data: events.UserInputData{Text: "one", StableTurnID: "turn_m1"}})
+	started := reasoningItemStarted(p.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, Timestamp: at, Data: events.ReasoningSummaryDeltaData{Delta: "thinking"}}))
+	out := p.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, Timestamp: at, Data: events.AssistantTextEndData{Text: "", FinishReason: "tool_calls"}})
+	if len(out) != 1 {
+		t.Fatalf("tool-only notifications=%+v, want one reasoning completion", out)
+	}
+	params, ok := out[0].Params.(appwire.ItemLifecycleParams)
+	if !ok || params.Item.ID != started[0] || params.Item.Type != "reasoning" || params.Item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("tool-only completion=%+v, want completed reasoning %q", out[0].Params, started[0])
+	}
+}
+
 func TestReasoningItemCompletesBeforeNextAssistantRound(t *testing.T) {
 	p := NewAppEventProjector("th_1", "local:th_1")
 	at := time.Unix(30, 0)

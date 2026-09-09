@@ -83,8 +83,11 @@ type AppEventProjector struct {
 	communicateCommittedCalls    map[string]struct{}
 	communicatePhases            map[string]communicatePhase
 	reasoningItem                string
-	toolItemsByKey               map[string]string
-	toolArgsByKey                map[string]string
+	// reasoningTurnID remains stable when a durable turn reservation replaces
+	// the live active turn before the reasoning item is completed.
+	reasoningTurnID string
+	toolItemsByKey  map[string]string
+	toolArgsByKey   map[string]string
 	// toolStartByKey records each open tool call's server-side start time (the
 	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
 	// the completed item with the call's real StartedAt/DurationMS (issue
@@ -411,7 +414,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// an empty agent message must not reach the envelope for it.
 		p.assistantItem = ""
 		p.assistantText = ""
-		p.reasoningItem = ""
 		return out
 	case events.EventAssistantTextDelta:
 		created, out := p.ensureAssistantItem(event.Timestamp)
@@ -482,7 +484,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// above, is the whole effect it has on the envelope.
 		if p.assistantItem == "" && strings.TrimSpace(text) == "" {
 			p.assistantText = ""
-			return out
+			return append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		}
 		// The turn is already open above, so this can only materialize the
 		// item; it has no turn/started of its own left to announce.
@@ -533,6 +535,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				ItemID:   p.reasoningItem,
 			}))
 			p.reasoningItem = ""
+			p.reasoningTurnID = ""
 		}
 		return out
 	case events.EventModelRetry:
@@ -1979,9 +1982,11 @@ func (p *AppEventProjector) completeReasoningItem(status string) []AppNotificati
 	if p.reasoningItem == "" {
 		return nil
 	}
-	item := appwire.ThreadItem{Type: "reasoning", ID: p.reasoningItem, TurnID: p.activeTurnID, Status: status}
+	turnID := p.reasoningTurnID
+	item := appwire.ThreadItem{Type: "reasoning", ID: p.reasoningItem, TurnID: turnID, Status: status}
 	p.reasoningItem = ""
-	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, Item: item})}
+	p.reasoningTurnID = ""
+	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{ThreadID: p.threadID, Ref: p.ref, TurnID: turnID, Item: item})}
 }
 
 // resetTurnScopedState clears everything that belongs to one turn and must not
@@ -1999,6 +2004,7 @@ func (p *AppEventProjector) resetTurnScopedState() {
 	p.assistantText = ""
 	p.messageStartByID = nil
 	p.reasoningItem = ""
+	p.reasoningTurnID = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
@@ -2180,9 +2186,14 @@ func (p *AppEventProjector) ensureAssistantItem(startedAt time.Time) (bool, []Ap
 // single item/started before the first delta) alongside whatever ensureTurn had
 // to announce first.
 func (p *AppEventProjector) ensureReasoningItem(startedAt time.Time) (bool, []AppNotification) {
-	out := p.ensureTurn(startedAt)
+	var out []AppNotification
+	if p.reasoningItem != "" && p.reasoningTurnID != p.activeTurnID {
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
+	}
+	out = append(out, p.ensureTurn(startedAt)...)
 	if p.reasoningItem == "" {
 		p.reasoningItem = p.nextItemID("reasoning")
+		p.reasoningTurnID = p.activeTurnID
 		return true, out
 	}
 	return false, out

@@ -2,33 +2,16 @@ package server
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
-func dialReasoningServer(t *testing.T, srv *Server) *appwire.Client {
-	t.Helper()
-	hs := httptest.NewServer(srv)
-	t.Cleanup(hs.Close)
-	tr, err := appwire.DialWebSocket(context.Background(), "ws"+hs.URL[len("http"):]+"/rpc", hs.Client())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tr.Close() })
-	c := appwire.NewClient(tr)
-	c.Start(context.Background())
-	if _, err := c.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
 func TestServerAppWireReadReplaysProjectedReasoningWithTerminalIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_reasoning")
-	client := dialReasoningServer(t, srv)
+	client := dialServerAppWire(t, srv)
 	ctx := context.Background()
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_reasoning", Data: events.UserInputData{Text: "question", StableTurnID: "turn_stable_reasoning"}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_reasoning", Data: events.ReasoningSummaryDeltaData{SummaryIndex: 0, Delta: "first "}})
