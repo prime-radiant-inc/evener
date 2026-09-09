@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -93,6 +95,9 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	if first.Thread.ID != "new" || second.Thread.ID != "new" {
 		t.Fatalf("clear thread ids = (%q, %q), want replacement new", first.Thread.ID, second.Thread.ID)
 	}
+	if !first.Thread.Evener.MutationStateAuthoritative || !second.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("root clear snapshots must identify the authoritative replacement mutation state")
+	}
 	if first.Ref != params.Ref || second.Ref != params.Ref {
 		t.Fatalf("clear refs = (%q, %q), want stable %q", first.Ref, second.Ref, params.Ref)
 	}
@@ -121,6 +126,10 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	}
 	if replayed.Thread.ID != "new" || replayed.Receipt.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("restart replay = (%q, %q), want (new, replayed)", replayed.Thread.ID, replayed.Receipt.Disposition)
+	}
+
+	if !replayed.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("persisted clear receipt lost replacement mutation authority")
 	}
 
 	wrongWorkspace := NewServer(ServerConfig{StateDir: stateDir})
@@ -580,5 +589,54 @@ func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *
 	}
 	if response.Thread.ID != "new" || response.Receipt.Disposition != appwire.MutationDispositionApplied {
 		t.Fatalf("recovered retry = (%q, %q), want (new, applied)", response.Thread.ID, response.Receipt.Disposition)
+	}
+}
+
+func TestDescendantAfterClearUsesStableParentRef(t *testing.T) {
+	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
+	srv.SetAppIdentity("local", "old")
+	setReplacingClearFunc(srv, "new")
+	if _, err := srv.handleAppThreadClear(t.Context(), appwire.ThreadClearParams{
+		Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, event := range []events.SessionEvent{
+		{Kind: events.EventUserInput, SessionID: "child", Data: events.UserInputData{Text: "child work"}},
+		{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{}},
+	} {
+		srv.RecordDescendantAppEvent("new", event)
+		child, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:child"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if child.Thread.Evener.ParentRef != "local:old" {
+			t.Errorf("parent after %s = %q, want stable local:old", event.Kind, child.Thread.Evener.ParentRef)
+		}
+		parent, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: child.Thread.Evener.ParentRef})
+		if err != nil {
+			t.Errorf("resolve descendant parent after %s: %v", event.Kind, err)
+		} else if parent.Thread.ID != "new" || parent.Thread.Evener.Ref != "local:old" {
+			t.Errorf("parent after %s = %+v, want replacement new at local:old", event.Kind, parent.Thread)
+		}
+	}
+
+	started := false
+	for _, notification := range srv.AppNotificationsAfter(0, "child") {
+		if notification.Notification.Method != appwire.NotifyThreadStarted {
+			continue
+		}
+		var params appwire.ThreadStartedParams
+		if err := json.Unmarshal(notification.Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Thread.Evener.ParentRef != "local:old" {
+			t.Errorf("started parent = %q, want stable local:old", params.Thread.Evener.ParentRef)
+		}
+		started = true
+	}
+	if !started {
+		t.Fatal("descendant start was not published")
 	}
 }

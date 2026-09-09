@@ -32,7 +32,7 @@ var (
 	hubCanonicalizeDir = fspaths.CanonicalizeDir
 	hubResolveLaunch   = launchconfig.Resolve
 	hubParseModelRef   = cmdutil.ParseModelRef
-	hubRosterRefresh   = func(r *hubcore.Roster) { r.Refresh() }
+	hubRosterRefresh   = func(ctx context.Context, r *hubcore.Roster) error { return r.RefreshAndWait(ctx) }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
@@ -163,8 +163,16 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
+			if !canUseSpawnEntry {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			}
+			// Spawning already established this daemon's identity. An unrelated
+			// discovery failure must not hide its identity or discard initial input.
+			fmt.Fprintf(os.Stderr, "[hub] spawned session %s; roster refresh failed: %v\n", entry.ThreadID, err)
+		}
 		if entry.ThreadID == "" || entry.SessionID == "" {
 			for _, live := range hubRosterList(cfg.Roster) {
 				if live.PID == entry.PID {
@@ -181,7 +189,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	ref := localSpawnWorkspaceRef(entry)
 	var source appsource.Source
-	if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" {
+	if canUseSpawnEntry {
 		// SpawnDaemon already returned this exact, freshly published rendezvous
 		// entry. Route the initial read and turn through it directly instead of
 		// depending on a concurrent roster status probe to admit the new daemon.
@@ -208,7 +216,22 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
-	threadResp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
+	read := func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref})
+	}
+	var threadResp appwire.ThreadReadResponse
+	if cfg.Roster != nil && canUseSpawnEntry {
+		if !cfg.Roster.HasConfirmedEntry(entry) {
+			threadResp, err = cfg.Roster.ReadSpawnedThread(ctx, entry, read)
+			if err != nil && threadResp.Thread.ID != "" {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
+			}
+		} else {
+			threadResp, err = read(ctx)
+		}
+	} else {
+		threadResp, err = read(ctx)
+	}
 	if err != nil {
 		threadResp.Thread = appwire.Thread{
 			ID: entry.ThreadID, SessionID: entry.SessionID, CWD: workingDir,
@@ -304,6 +327,34 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err := deletionFenceError(cfg, params.Ref, sessionID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
+	var discoveryErr error
+	if cfg.Roster != nil {
+		discoveryErr = hubRosterRefresh(ctx, cfg.Roster)
+	}
+	if err := daemonRestartRequiredError(ctx, cfg, "", sessionID, ""); err != nil {
+		return appwire.ThreadResumeResponse{}, err
+	}
+	if discoveryErr != nil {
+		// Incomplete discovery cannot authorize a replacement, but a direct
+		// probe can establish that a previously confirmed owner still serves
+		// this session. Keep the global discovery failure for other owners.
+		if owner, ok := liveDaemonForThread(cfg.Roster, sessionID); ok && owner.Protocol == appwire.ProtocolVersion {
+			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
+			}
+			return hubResumedThreadResponse(ctx, sources, owner.SessionID, owner.ThreadID)
+		}
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
+	}
+	owner, _, err := lookupDaemonOwner(ctx, cfg, "", sessionID, true)
+	if err != nil {
+		return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+	}
+	if owner.SessionID != "" {
+		if _, directlyOwned := liveDaemonForThread(cfg.Roster, sessionID); !directlyOwned {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable("session is retained by " + localAppRef(owner.SessionID) + "; open the owning session or refresh after it stops")
+		}
+	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}
@@ -320,13 +371,10 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		// has already put the session in the roster, so reuse it instead of
 		// spawning again. Only this Hub's exact flag-day protocol establishes
 		// ownership; an older daemon can be healthy while remaining unroutable
-		// through the current local source. Refresh also preserves a dead daemon
-		// as a crash marker for diagnostics. Both cases must fall through
-		// to spawning.
+		// through the current local source. A dead daemon may remain as a
+		// crash marker and must fall through to spawning.
 		if cfg.Roster != nil {
-			hubRosterRefresh(cfg.Roster)
-			if le, ok := cfg.Roster.Find(sessionID); ok &&
-				!le.Crashed &&
+			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
 				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
 			}
@@ -334,10 +382,29 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
-		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(cfg, sessionID, err).Error())
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
-		hubRosterRefresh(cfg.Roster)
+		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
+		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !cfg.Roster.HasConfirmedEntry(entry) {
+			// A successful scan can still miss an owner whose status probe
+			// failed. Confirm the exact spawned endpoint through its read before
+			// relying on the shared roster for subsequent requests.
+			source := appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry {
+				return []rendezvous.Entry{entry}
+			}, nil)
+			read, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+				return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: localSpawnWorkspaceRef(entry)})
+			})
+			if err != nil {
+				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
+			}
+			annotateThreadProjects([]appwire.Thread{read.Thread})
+			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
+		}
+		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(refreshErr.Error())
+		}
 	}
 	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
 }
@@ -361,11 +428,13 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 // The roster is re-read rather than reused from the pre-spawn check: the spawn
 // attempt takes seconds, and naming a pid that has since exited would send the
 // operator after a process that is not there.
-func resumeFailureError(cfg hubcore.WebConfig, sessionID string, err error) error {
+func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID string, err error) error {
 	if cfg.Roster == nil {
 		return err
 	}
-	hubRosterRefresh(cfg.Roster)
+	if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
+		return errors.Join(err, refreshErr)
+	}
 	blocker, ok := cfg.Roster.Find(sessionID)
 	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
 		return err
@@ -438,7 +507,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if params.Aside {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("aside is only supported for local evener threads")
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (appwire.ThreadForkResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.ThreadForkResponse{}, err
@@ -468,6 +537,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 		if stateDir == "" {
 			return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
+		}
+		if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+			return appwire.ThreadForkResponse{}, err
 		}
 		childID, err := hubAsideSession(stateDir, ref.ThreadID)
 		if err != nil {
@@ -502,6 +574,9 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	}
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
+	}
+	if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return appwire.ThreadForkResponse{}, err
 	}
 	var childID, originalInput string
 	if params.DeferInput {

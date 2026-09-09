@@ -28,7 +28,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 		for _, thread := range resp.Data {
 			sourceID := threadListSourceID(source.ID(), thread)
-			for _, id := range []string{thread.ID, thread.SessionID} {
+			for _, id := range threadListIDs(sourceID, thread) {
 				if key := threadListSourceKey(sourceID, id); key != "" {
 					liveIDs[key] = struct{}{}
 				}
@@ -110,6 +110,14 @@ func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
 	return defaultSourceID
 }
 
+func threadListIDs(sourceID string, thread appwire.Thread) []string {
+	ids := []string{thread.ID, thread.SessionID}
+	if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil && ref.SourceID == sourceID {
+		ids = append(ids, ref.ThreadID)
+	}
+	return ids
+}
+
 func threadListSourceKey(sourceID, threadID string) string {
 	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 }
@@ -139,7 +147,7 @@ func mergePastMetadataForList(ctx context.Context, cfg hubcore.WebConfig, source
 	}
 	var entry hubcore.PastEntry
 	var ok bool
-	for _, id := range []string{live.ID, live.SessionID} {
+	for _, id := range threadListIDs("local", live) {
 		if id == "" {
 			continue
 		}

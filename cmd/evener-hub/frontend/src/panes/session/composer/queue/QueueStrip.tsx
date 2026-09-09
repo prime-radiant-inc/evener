@@ -140,6 +140,7 @@ export function QueueStrip({
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     (entry) => entry.state !== "blockedUnknown",
   );
@@ -393,7 +394,18 @@ export function QueueStrip({
                   <span>{recordPreview(record)}</span>
                 </span>
                 <div className={CLASS.rowActions}>
-                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleRetry(record)}>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    disabled={
+                      rowBusy ||
+                      !mutationAuthority ||
+                      !model ||
+                      model.status.type === "restartRequired" ||
+                      model.status.type === "notLoaded"
+                    }
+                    onClick={() => void handleRetry(record)}
+                  >
                     Retry
                   </Button>
                 </div>

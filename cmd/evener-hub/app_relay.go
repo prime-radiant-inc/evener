@@ -596,7 +596,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
-				_, publicationErr := withDeletionTargetOwnership(cfg, target.ref, target.threadID, "", func() (struct{}, error) {
+				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
 					server.Broadcast(target.relayKey, notification.Method, notification.Params)
 					return struct{}{}, nil
 				})
@@ -1216,7 +1216,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		relayKey := read.relayKey
 		captured, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			read.response.Thread.ID,
 			"",
@@ -1274,7 +1274,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		threadID := read.response.Thread.ID
 		relayKey := read.relayKey
 		registered, err := withDeletionTargetOwnership(
-			cfg,
+			ctx, cfg,
 			params.Ref,
 			threadID,
 			"",
@@ -1373,7 +1373,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				return true, nil
 			}
-			registered, err := withDeletionTargetOwnership(cfg, subscribeParams.Ref, threadID, "", registerExisting)
+			registered, err := withDeletionTargetOwnership(ctx, cfg, subscribeParams.Ref, threadID, "", registerExisting)
 			if err != nil {
 				return err
 			}
@@ -1706,9 +1706,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					return appwire.TurnStartResponse{}, fenceErr
 				}
 			}
+			if daemonOwnershipMayHaveChanged(err) {
+				if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID); restartErr != nil {
+					return appwire.TurnStartResponse{}, restartErr
+				}
+			}
 			return appwire.TurnStartResponse{}, err
 		}
-		return withDeletionTargetOwnership(cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
+		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnStartResponse, error) {
 			return source.StartTurn(ctx, params)
 		})
 	}

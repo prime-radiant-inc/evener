@@ -1330,6 +1330,9 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 		return navigationSourceSnapshot{}, errors.New("navigation web source is unavailable")
 	}
 	snapshot := s.web.navigationSnapshot(ctx)
+	if err := ctx.Err(); err != nil {
+		return navigationSourceSnapshot{}, err
+	}
 	decisions := s.web.archiveDecisions()
 	// Keep the legacy adapter on the exact same seam as the established endpoint;
 	// in particular, test and compatibility fixtures replace these functions.
@@ -1352,6 +1355,15 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
 	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
+	// Retained rows and saved metadata remain positive read evidence during
+	// an incomplete ownership scan. They cannot authorize local daemon writes.
+	if snapshot.ownershipErr != nil {
+		for id := range inputs.Renameable {
+			if isLocalRouteID(id) {
+				inputs.Renameable[id] = false
+			}
+		}
+	}
 	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now)}, nil
 }
 

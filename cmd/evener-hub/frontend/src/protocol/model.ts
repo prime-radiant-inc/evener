@@ -210,6 +210,7 @@ export interface ThreadDiagnostics {
 
 export interface ThreadModel {
   ref: string;
+  parentRef?: string;
   threadId: string;
   // The serving session image bytes belong to (the wire Thread.sessionId at
   // hydrate, falling back to the thread id exactly as the hub's

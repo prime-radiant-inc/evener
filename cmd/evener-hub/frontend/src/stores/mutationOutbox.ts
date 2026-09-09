@@ -48,6 +48,7 @@ export interface MutationRecord extends MutationIntent {
 
 export interface MutationOutboxRecord extends MutationRecord {
   state: MutationOutboxState;
+  attempted?: boolean;
 }
 
 export interface MutationOptimisticRecord extends MutationRecord {
@@ -223,7 +224,7 @@ export class MutationOutbox {
   }
 
   async #discover(targetRefs: string[], reason: MutationDiscoveryReason): Promise<void> {
-    if (targetRefs.length === 0) return;
+    // The consumer may still own failed reconciliation after its last durable record settled.
     await this.#onDiscover(targetRefs, reason);
   }
 }

@@ -1029,6 +1029,68 @@ func TestLocalDaemonResolveRelaySessionCanonicalizesAliasesWithoutAcquiring(t *t
 	}
 }
 
+func TestLocalDaemonListPreservesRestartRequiredStatus(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{
+			Entry:  rendezvous.Entry{Protocol: "evener-appwire-v4", Endpoint: "ws://daemon", SourceID: "local", ThreadID: "owner", SessionID: "owner"},
+			Status: appwire.ThreadStatusRestartRequired,
+		}}
+	}, nil)
+	dials := 0
+	source.dial = func(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
+		dials++
+		return nil, errors.New("unexpected incompatible daemon dial")
+	}
+	response, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data) != 1 {
+		t.Fatalf("threads=%d", len(response.Data))
+	}
+	thread := response.Data[0]
+	if thread.Status.Type != appwire.ThreadStatusRestartRequired {
+		t.Fatalf("status=%s", thread.Status.Type)
+	}
+	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
+	}
+	if _, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "local:owner"}); err == nil {
+		t.Fatal("incompatible daemon was readable through a live route")
+	}
+	if _, err := source.ListModels(t.Context(), appwire.ModelListParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if dials != 0 {
+		t.Fatalf("incompatible daemon dials=%d", dials)
+	}
+
+}
+
+func TestLocalDaemonListsSessionOnlyRestartRequiredEntry(t *testing.T) {
+	for _, observedID := range []string{"", "owner"} {
+		t.Run("observed="+observedID, func(t *testing.T) {
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+				return []LocalDaemonEntry{{Entry: rendezvous.Entry{Protocol: "evener-appwire-v4", Endpoint: "ws://daemon", SourceID: "local", SessionID: "owner"}, SessionID: observedID, Status: appwire.ThreadStatusRestartRequired}}
+			}, nil)
+			response, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Data) != 1 {
+				t.Fatalf("threads=%+v", response.Data)
+			}
+			thread := response.Data[0]
+			if thread.ID != "owner" || thread.Evener.Ref != "local:owner" || thread.Status.Type != appwire.ThreadStatusRestartRequired {
+				t.Fatalf("thread=%+v", thread)
+			}
+			if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+				t.Fatalf("capabilities=%+v", thread.Evener.Capabilities)
+			}
+		})
+	}
+}
+
 func TestLocalDaemonResolveSubscriptionAdmissionSingleSnapshot(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -1074,6 +1136,46 @@ func TestLocalDaemonResolveSubscriptionAdmissionSingleSnapshot(t *testing.T) {
 			}
 			if len(source.relaySessions) != 0 {
 				t.Fatal("admission resolution acquired a relay session")
+			}
+		})
+	}
+}
+
+func TestLocalDaemonListKeepsChildReferencesDistinctFromOwnerWorkspace(t *testing.T) {
+	for _, workspaceRef := range []string{"local:stable", ""} {
+		t.Run(workspaceRef, func(t *testing.T) {
+			entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/rpc", SourceID: "local", ThreadID: "current", SessionID: "current", WorkspaceRef: workspaceRef}
+			source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+				return []LocalDaemonEntry{
+					{Entry: entry},
+					{Entry: entry, SessionID: "child", OwnerSessionID: "current", ReadOnlyAlias: true},
+				}
+			}, nil)
+			response, err := source.ListThreads(context.Background(), appwire.ThreadListParams{IncludeSubagents: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			byRef := map[string]appwire.Thread{}
+			for _, thread := range response.Data {
+				byRef[thread.Evener.Ref] = thread
+			}
+			if len(byRef) != 2 {
+				t.Fatalf("root and child must have distinct references: %+v", response.Data)
+			}
+			rootRef := workspaceRef
+			if rootRef == "" {
+				rootRef = "local:current"
+			}
+			child, ok := byRef["local:child"]
+			if !ok || child.Evener.ParentRef != rootRef || child.Evener.Kind != "subagent" {
+				t.Fatalf("child must target its own transcript under %s: %+v", rootRef, child)
+			}
+			if child.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+				t.Fatalf("child alias must remain read-only: %+v", child.Evener.Capabilities)
+			}
+			admission, err := source.ResolveSubscriptionAdmission(appwire.ThreadReadParams{Ref: child.Evener.Ref})
+			if err != nil || admission.String() != child.Evener.Ref {
+				t.Fatalf("listed child reference must resolve to its own subscription: %v, %v", admission, err)
 			}
 		})
 	}

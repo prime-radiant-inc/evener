@@ -7,8 +7,8 @@ import (
 )
 
 func TestFlagDayProtocolVersion(t *testing.T) {
-	if ProtocolVersion != "evener-appwire-v4" {
-		t.Fatalf("protocol = %q, want %q", ProtocolVersion, "evener-appwire-v4")
+	if ProtocolVersion != "evener-appwire-v5" {
+		t.Fatalf("protocol = %q, want %q", ProtocolVersion, "evener-appwire-v5")
 	}
 }
 

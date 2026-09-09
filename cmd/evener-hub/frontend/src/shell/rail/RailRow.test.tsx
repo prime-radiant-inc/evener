@@ -216,6 +216,8 @@ async function openMenu(name: RegExp | string) {
 
 function normalizedRailResource(
   key: Extract<ResourceKey, { kind: "project_page" | "pin_section" }>,
+  parentOverrides: Partial<RailSession> = {},
+  childOverrides: Partial<RailSession> = {},
 ): NormalizedResource {
   const parentKey = `${navigationViewScope(key)}/entity/${"1".repeat(64)}`;
   const childKey = `${navigationViewScope(key)}/entity/${"2".repeat(64)}`;
@@ -224,8 +226,16 @@ function normalizedRailResource(
     graph: normalizedGraphFromSnapshot({
       metadata: {},
       entities: [
-        { key: parentKey, kind: "session", value: apiNode({ ref: "parent", title: "Parent", children: [] }) },
-        { key: childKey, kind: "session", value: apiNode({ ref: "child", title: "Child", children: [] }) },
+        {
+          key: parentKey,
+          kind: "session",
+          value: apiNode({ ref: "parent", title: "Parent", children: [], ...parentOverrides }),
+        },
+        {
+          key: childKey,
+          kind: "session",
+          value: apiNode({ ref: "child", title: "Child", children: [], ...childOverrides }),
+        },
       ],
       containers: [
         {
@@ -2042,4 +2052,53 @@ describe("pin star follows the same scoping as the pin action", () => {
       expect(screen.queryByTestId("favorite-star")).toBeNull();
     });
   }
+});
+
+test("an incompatible daemon has an attention signal and restart instruction", () => {
+  renderRow({ state: "restartRequired", live: true, branch: "" });
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+  expect(screen.getByTestId("rail-row-activity").textContent).toContain("restart required");
+});
+
+test.each([
+  ["own activity", { state: "active" }, { state: "idle" }, "working"],
+  ["subagent activity", { state: "idle" }, { state: "active" }, "1 subagent working"],
+  [
+    "job activity",
+    { state: "idle", running_jobs: [{ job_id: "job-a", job_type: "shell", status: "running" }] },
+    { state: "idle" },
+    "1 job running",
+  ],
+] as const)("normalized navigation preserves %s in the rendered sidebar", (_name, parentState, childState, gloss) => {
+  const resource = normalizedRailResource(
+    { kind: "project_page", projectKey: "project", tier: "current", offset: 0, limit: 50 },
+    { ...parentState, running_jobs: "running_jobs" in parentState ? [...parentState.running_jobs] : [] },
+    childState,
+  );
+  const parent = [...selectRailModel(resource).sessions.values()].find((session) => session.ref === "parent");
+  if (!parent) throw new Error("missing parent");
+  render(<RailRow node={sessionRailNode(parent)} info={info()} actions={actions()} />);
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  expect(screen.getByTestId("rail-row-activity").textContent).toContain(gloss);
+});
+
+test("restart-required navigation disables daemon actions in the sidebar menu", async () => {
+  renderRow({ state: "restartRequired", rename: false, live: true });
+  await openMenu(/actions for/i);
+  expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+});
+
+test.each(["subagent", "job"] as const)("restart explanation survives %s activity", (kind) => {
+  renderRow({
+    state: "restartRequired",
+    live: true,
+    branch: "",
+    children: kind === "subagent" ? [apiNode({ state: "active" })] : [],
+    running_jobs: kind === "job" ? [{ job_id: "job-a", job_type: "shell", status: "running" }] : [],
+  });
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
+  const gloss = screen.getByTestId("rail-row-activity").textContent;
+  expect(gloss).toContain("restart required");
+  expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
 });

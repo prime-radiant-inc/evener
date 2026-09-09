@@ -37,12 +37,13 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 }
 
 func sourceForThreadWithDeletionFence(cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
-	return withDeletionTargetOwnership(cfg, ref, threadID, "", func() (appsource.Source, error) {
+	return withDeletionTargetOwnership(context.Background(), cfg, ref, threadID, "", func() (appsource.Source, error) {
 		return sourceForThread(sources, ref, threadID)
 	})
 }
 
 func withDeletionTargetOwnership[R any](
+	ctx context.Context,
 	cfg hubcore.WebConfig,
 	ref, threadID, clientMutationID string,
 	action func() (R, error),
@@ -53,7 +54,45 @@ func withDeletionTargetOwnership[R any](
 		var zero R
 		return zero, err
 	}
-	return action()
+	if clientMutationID != "" {
+		if err := daemonRestartRequiredError(ctx, cfg, ref, threadID, clientMutationID); err != nil {
+			var zero R
+			return zero, err
+		}
+	}
+	result, err := action()
+	if clientMutationID != "" && daemonOwnershipMayHaveChanged(err) {
+		if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, ref, threadID, clientMutationID); restartErr != nil {
+			var zero R
+			return zero, restartErr
+		}
+	}
+	return result, err
+}
+
+// withSessionActionOwnership guards actions that have no durable mutation ID.
+// Reads share deletion locking but must remain available for incompatible owners.
+func withSessionActionOwnership[R any](ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, action func() (R, error)) (R, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (R, error) {
+		if err := daemonRestartRequiredError(ctx, cfg, ref, threadID, ""); err != nil {
+			var zero R
+			return zero, err
+		}
+		result, err := action()
+		if daemonOwnershipMayHaveChanged(err) {
+			if restartErr := refreshDaemonRestartRequiredError(ctx, cfg, ref, threadID, ""); restartErr != nil {
+				var zero R
+				return zero, restartErr
+			}
+		}
+		return result, err
+	})
+}
+
+func daemonOwnershipMayHaveChanged(err error) bool {
+	var initialization appsource.DaemonInitializeError
+	var mismatch appwire.ProtocolVersionMismatchError
+	return isSessionUnavailableError(err) || errors.As(err, &mismatch) || errors.As(err, &initialization)
 }
 
 func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {

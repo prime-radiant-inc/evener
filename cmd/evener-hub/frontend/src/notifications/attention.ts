@@ -9,6 +9,7 @@ export function levelFromState(state: string): AttentionLevel {
       return "working";
     case "awaiting":
     case "warning":
+    case "restartRequired":
       return "needs_you";
     case "errored":
       return "error";
