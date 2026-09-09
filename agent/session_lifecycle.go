@@ -2070,7 +2070,10 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 		marker = "Continuing toward: " + snap.Objective
 	}
 	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
-	s.appendTurn(schema.TurnSteering, llm.User(input))
+	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
+	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
+	turn.StableTurnID = stableTurnID
+	s.recordTurn(turn, turn)
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
