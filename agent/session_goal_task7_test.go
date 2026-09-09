@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -849,6 +851,50 @@ func TestGoalSubstrateCheckURLDeniesPrivateRanges(t *testing.T) {
 		if !sub.CheckURL(raw, time.Minute) {
 			t.Fatalf("CheckURL(%q) = false, want allowed (public host)", raw)
 		}
+	}
+}
+
+// TestGoalSubstrateStatFileSandboxContainment pins the sandbox boundary:
+// StatFile resolves against the session working directory and rejects
+// anything escaping the sandbox root — absolute outside paths, parent
+// traversal, and symlinks pointing out — while inside files (absolute,
+// relative, and symlinks staying inside) still stat.
+func TestGoalSubstrateStatFileSandboxContainment(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	dir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withDir(dir))
+	defer sess.Close()
+	sub := &goalSessionSubstrate{sess: sess}
+	for _, path := range []string{
+		"/etc/hostname",
+		"../outside.txt",
+		"subdir/../../outside.txt",
+	} {
+		if _, ok := sub.StatFile(path); ok {
+			t.Fatalf("StatFile(%q) = true, want denied (outside the sandbox)", path)
+		}
+	}
+	inside := filepath.Join(dir, "watched.txt")
+	if err := os.WriteFile(inside, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{inside, "watched.txt"} {
+		if _, ok := sub.StatFile(path); !ok {
+			t.Fatalf("StatFile(%q) = false, want allowed (inside the sandbox)", path)
+		}
+	}
+	if err := os.Symlink("/etc/hostname", filepath.Join(dir, "evil.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sub.StatFile("evil.txt"); ok {
+		t.Fatal("StatFile(symlink escape) = true, want denied (resolves outside the sandbox)")
+	}
+	if err := os.Symlink(inside, filepath.Join(dir, "good.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sub.StatFile("good.txt"); !ok {
+		t.Fatal("StatFile(symlink inside) = false, want allowed (resolves inside the sandbox)")
 	}
 }
 

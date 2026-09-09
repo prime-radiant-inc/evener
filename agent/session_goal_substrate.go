@@ -3,10 +3,12 @@ package agent
 import (
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 )
@@ -90,13 +92,30 @@ func (g *goalSessionSubstrate) LookupDelegate(id string) (live, retainedTerminal
 }
 
 // StatFile resolves a file_modified target inside the session sandbox. The
-// baseline is name+size+mtime (never contents).
+// baseline is name+size+mtime (never contents). The path resolves against
+// the session working directory and must stay under the environment's
+// sandbox root (the same symlink-aware boundary resolveWrite enforces):
+// absolute paths and symlinks escaping the root fail closed here, so a
+// file_modified wait can never observe host filesystem metadata outside
+// the sandbox. This gates registration (RegisterWait validation), every
+// poll-leg evaluation, restore attach-scan, and claim-time re-evaluation
+// in one place — every StatFile caller routes through it.
 func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) {
 	s := g.sess
 	if s == nil || path == "" {
 		return "", false
 	}
-	fi, err := s.delegateRestoreStat(path)
+	abs := path
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(s.currentEnv().WorkingDirectory(), abs)
+	}
+	abs = filepath.Clean(abs)
+	if rb, ok := s.currentEnv().(execenv.RootBoundary); ok {
+		if err := rb.EnsureUnderRoot(abs); err != nil {
+			return "", false
+		}
+	}
+	fi, err := s.delegateRestoreStat(abs)
 	if err != nil {
 		return "", false
 	}
