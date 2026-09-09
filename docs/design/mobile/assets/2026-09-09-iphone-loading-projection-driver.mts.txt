@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import {readFile, writeFile, mkdir} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {performance} from 'node:perf_hooks';
+import os from 'node:os';
+const w="/Users/jesse/.local/state/evener/projects/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/worktrees/Users-jesse-git-prime-radiant-evener-fukrfUwjZk/live-concepts-plan2-integrate";
+const root='/private/tmp/evener-native-performance-corpus-v8';
+const validation=root+'/root-sdk-validation-1788946776953';
+const files={project:'mobile/src/conversation/project.ts',activity:'mobile/src/services/activity.ts',presentation:'mobile-native/src/transcriptPresentation.ts',timeline:'mobile-native/src/timeline.ts',config:'cmd/evener-hub/frontend/src/transcriptDisplay/config.ts'};
+const {projectThread}=await import(w+'/'+files.project);
+const {createActivityService}=await import(w+'/'+files.activity);
+const {projectNativeTranscript}=await import(w+'/'+files.presentation);
+const {groupTimeline}=await import(w+'/'+files.timeline);
+const {shippedMobileConfig}=await import(w+'/'+files.config);
+const out=root+'/root-projection-'+Date.now();await mkdir(out,{mode:0o700});
+const digest=b=>createHash('sha256').update(b).digest('hex');
+const sources={};for(const [name,path]of Object.entries(files)){const b=await readFile(w+'/'+path);sources[name]={path,sha256:digest(b)};await writeFile(out+'/'+name+'.ts',b);}
+const driver=await readFile(import.meta.filename);await writeFile(out+'/driver.mts',driver);
+const first=JSON.parse(await readFile(validation+'/call-036.json','utf8')).result.thread;
+const turns=new Map();for(let i=36;i<49;i++){const r=JSON.parse(await readFile(validation+'/call-'+String(i).padStart(3,'0')+'.json','utf8')).result;for(const turn of (i===36?r.thread.turns:r.data)){const prior=turns.get(turn.id);turns.set(turn.id,{...turn,items:[...(prior?.items??[]),...turn.items]});}}
+const latest=[...turns.values()].flatMap(t=>t.items.map(item=>({turn:t,item}))).sort((a,b)=>a.item.position.entry-b.item.position.entry||a.item.position.item-b.item.position.item).slice(-500);
+const selected=new Map();for(const {turn,item}of latest){const prior=selected.get(turn.id);selected.set(turn.id,{...turn,items:[...(prior?.items??[]),item]});}
+const larger={...first,turns:[...selected.values()]};
+const activity=createActivityService();const samples=[];const summaries=[];
+for(const [label,thread,size]of [['opening40',first,40],['retained500',larger,500]]){
+ const raw=JSON.stringify(thread);await writeFile(out+'/'+label+'-input.json',raw+'\n');
+ const ids=thread.turns.flatMap(t=>t.items.map(i=>i.id));assert.equal(ids.length,size);assert.equal(new Set(ids).size,size);
+ for(let i=0;i<30;i++){
+  const t0=performance.now(),conversation=projectThread(thread),t1=performance.now(),a=activity.projectActivity(thread),t2=performance.now(),p=projectNativeTranscript(conversation,shippedMobileConfig),t3=performance.now(),rows=groupTimeline(p.items),t4=performance.now();
+  assert.equal(conversation.items.length,size+1);assert.equal(p.items.length,size+1);assert.equal(rows.length,size+1);assert(a.capabilities);
+  samples.push({label,index:i,wireItems:size,conversationItems:conversation.items.length,presentationItems:p.items.length,rows:rows.length,projectMs:t1-t0,activityMs:t2-t1,presentationMs:t3-t2,groupMs:t4-t3,totalMs:t4-t0});
+ }
+ summaries.push({label,inputSha256:digest(raw+'\n'),series:Object.fromEntries(['projectMs','activityMs','presentationMs','groupMs','totalMs'].map(key=>{const a=samples.filter(s=>s.label===label).map(s=>s[key]).sort((a,b)=>a-b);return[key,{n:a.length,min:a[0],p50:a[14],p95:a[28],max:a[29]}];}))});
+}
+await writeFile(out+'/samples.json',JSON.stringify(samples,null,2)+'\n');
+const result={status:'passed',scope:'Pure Node projection only; excludes Hermes, React, native layout, image decoding and device timing. 500-wire-item case is a projection input, not a store cap assertion.',machine:{node:process.version,os:os.type(),release:os.release(),cpu:os.cpus()[0]?.model},sources,driverSha256:digest(driver),quantile:'nearest rank',summaries,out};
+await writeFile(out+'/result.json',JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));

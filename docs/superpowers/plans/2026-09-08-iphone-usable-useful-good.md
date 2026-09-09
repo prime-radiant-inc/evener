@@ -408,6 +408,8 @@ npm --prefix mobile-native test -- src/hubUpgrade.test.ts src/hubUpgradeReposito
 - [ ] Investigate sustained input/scroll stalls or memory that continues growing over repeated identical cycles. Profile the bottleneck; do not hide it by raising timeouts, trimming required data or disabling verification.
 - [ ] Add a regression only for the identified mechanism, such as repeated projection work or unbounded retained pages. Repeat the relevant measurement on the same device/data/build conditions and report both before and after.
 
+**9 September progress:** the [loading investigation](../../design/mobile/2026-09-09-iphone-loading-measurements.md) validates the large persisted corpus and separates SDK/Hub/projection measurements. Two observed native positioning defects are corrected and have bounded simulator confirmation. The physical-device, 30-interaction latency, live-stream/input/frame and memory portions remain open.
+
 **Exit:** ordinary work stays responsive on representative data, measured gaps have fixes or explicit product decisions, and repeated use does not show unbounded memory growth. Do not silently relax the proposed budgets to produce a pass.
 
 ### Task 15: Make the complete screen coherent and comfortable

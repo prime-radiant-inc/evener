@@ -1,0 +1,221 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	pnglib "image/png"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
+)
+
+func validPNG() []byte {
+	var b bytes.Buffer
+	im := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	im.Set(0, 0, color.RGBA{R: 32, G: 96, B: 160, A: 255})
+	must(pnglib.Encode(&b, im))
+	return b.Bytes()
+}
+
+var png = validPNG()
+var pngDark = validPNG()
+
+func main() {
+	if len(os.Args) < 2 {
+		panic("usage: generator ROOT | validate ROOT")
+	}
+	if os.Args[1] == "validate" {
+		if len(os.Args) != 3 {
+			panic("usage: generator validate ROOT")
+		}
+		validate(os.Args[2])
+		return
+	}
+	root := os.Args[1]
+	if strings.HasSuffix(root, "-v8") {
+		png = mustRead("/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/2026-09-09-corrected-running-keyboard-light.png")
+		pngDark = mustRead("/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-native-media-tdhrb1pk/2026-09-09-corrected-running-keyboard-dark.png")
+	}
+	now := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	manifest := map[string]any{"root": root, "projects": 5, "sessions": 500, "heavy_items": 10000, "heavy_session": "", "project_ids": []string{}, "media": mediaManifest()}
+	for pi := 0; pi < 5; pi++ {
+		ws := filepath.Join(root, fmt.Sprintf("workspace-%02d", pi))
+		must(os.MkdirAll(ws, 0755))
+		proj := identifier.ProjectFromCanonicalPath(ws)
+		must(os.MkdirAll(filepath.Join(root, proj.ID, "sessions"), 0755))
+		manifest["project_ids"] = append(manifest["project_ids"].([]string), proj.ID)
+		for si := 0; si < 100; si++ {
+			id := identifier.MustNewSessionID()
+			heavy := pi == 0 && si == 0
+			if heavy {
+				manifest["heavy_session"] = id
+				manifest["heavy_transcript"] = filepath.Join(proj.ID, "sessions", id+".transcript.jsonl")
+			}
+			makeSession(root, proj.ID, ws, id, heavy, now)
+		}
+	}
+	b, _ := json.MarshalIndent(manifest, "", "  ")
+	must(os.WriteFile(filepath.Join(root, "manifest.json"), append(b, '\n'), 0644))
+	sum := sha256.Sum256(append(b, '\n'))
+	must(os.WriteFile(filepath.Join(root, "manifest.sha256"), []byte(hex.EncodeToString(sum[:])+"  manifest.json\n"), 0644))
+	fmt.Printf("root=%s heavy=%s png_sha=%s\n", root, manifest["heavy_session"], sha(png))
+}
+func makeSession(root, pid, ws, id string, heavy bool, now time.Time) {
+	dir := filepath.Join(root, pid)
+	turns := 2
+	if heavy {
+		turns = 10000
+	}
+	must(schema.SaveSessionMeta(dir, schema.SessionMeta{ID: id, ProfileID: "ollama", Model: "qwen3", TurnCount: turns, OriginalPrompt: "native corpus session " + id, EnvInfo: schema.EnvironmentInfo{WorkingDir: ws, Platform: "darwin", Today: "2026-01-01"}, CreatedAt: now, UpdatedAt: now}))
+	w, err := transcript.NewWriter(filepath.Join(dir, "sessions", id+".transcript.jsonl"), transcript.Header{SessionID: id, CreatedAt: now, ProfileID: "ollama", Model: "qwen3", WorkingDir: ws})
+	must(err)
+	w.SyncInterval = time.Hour
+	for i := 0; i < turns; i++ {
+		t := schema.Turn{Timestamp: now.Add(time.Duration(i+1) * time.Second)}
+		if i%2 == 0 {
+			t.Kind = schema.TurnUserInput
+			parts := []llm.ContentPart{{Kind: llm.ContentText, Text: fmt.Sprintf("Corpus request %d: inspect the current implementation and report the result.", i)}}
+			if heavy && i == 0 {
+				parts = append(parts, llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{Data: png, MediaType: "image/png", Detail: "low"}})
+			}
+			if heavy && i == turns-2 && strings.HasSuffix(root, "-v8") {
+				parts = append(parts, llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{Data: pngDark, MediaType: "image/png", Detail: "low"}})
+			}
+			t.Message = llm.Message{Role: llm.RoleUser, Content: parts}
+		} else {
+			t.Kind = schema.TurnAssistant
+			parts := []llm.ContentPart{{Kind: llm.ContentText, Text: fmt.Sprintf("Corpus response %d includes this code:\n```go\nfunc explain() string { return \"bounded persisted evidence\" }\n```", i)}}
+			t.Message = llm.Message{Role: llm.RoleAssistant, Content: parts}
+			t.Usage = llm.Usage{InputTokens: 1200, OutputTokens: 340}
+		}
+		must(w.Append(t))
+	}
+	must(w.Close())
+}
+func sha(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+func mustRead(path string) []byte { b, err := os.ReadFile(path); must(err); return b }
+func mediaManifest() any {
+	result := make([]map[string]any, 0, 2)
+	for _, item := range []struct{name string; data []byte}{{"light", png}, {"dark", pngDark}} {
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(item.data)); must(err)
+		result = append(result, map[string]any{"name": item.name, "source_sha256": sha(item.data), "encoded_bytes": len(item.data), "width": cfg.Width, "height": cfg.Height})
+	}
+	return result
+}
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
+var _ = apptranscript.ItemTurnsFromFile
+
+func validate(root string) {
+	if _, _, err := image.Decode(bytes.NewReader(png)); err != nil {
+		panic(fmt.Sprintf("png decode: %v", err))
+	}
+	imageFound := false
+	var metas, transcripts, items, projects, heavyItems, heavyEntries int
+	seen := map[string]bool{}
+	mb, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	must(err)
+	var manifest map[string]any
+	must(json.Unmarshal(mb, &manifest))
+	heavyID, _ := manifest["heavy_session"].(string)
+	entries, err := os.ReadDir(root)
+	must(err)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sessions := filepath.Join(root, e.Name(), "sessions")
+		if st, err := os.Stat(sessions); err != nil || !st.IsDir() {
+			continue
+		}
+		must(identifier.ValidateProjectID(e.Name()))
+		projects++
+		files, _ := os.ReadDir(sessions)
+		for _, f := range files {
+			if filepath.Ext(f.Name()) == ".json" && filepath.Base(f.Name()) != "" {
+				metas++
+				var m schema.SessionMeta
+				b, err := os.ReadFile(filepath.Join(sessions, f.Name()))
+				must(err)
+				must(json.Unmarshal(b, &m))
+				want := f.Name()[:len(f.Name())-len(".meta.json")]
+				if m.ID != want {
+					panic("meta id mismatch " + f.Name())
+				}
+				must(schema.ValidateSessionID(m.ID))
+			}
+			if filepath.Ext(f.Name()) == ".jsonl" {
+				transcripts++
+				path := filepath.Join(sessions, f.Name())
+				ts, err := apptranscript.ItemTurnsFromFile(path, 64*1024*1024, func(t schema.Turn, id string, idx int) []appwire.ThreadItem {
+					return apptranscript.ProjectTurn(id, idx, t, nil, apptranscript.DefaultImageProjector, apptranscript.ToolResultOutputImages)
+				})
+				must(err)
+				items += len(ts)
+				var itemCount int
+				for _, turn := range ts {
+					itemCount += len(turn.Items)
+				}
+				if id := f.Name()[:len(f.Name())-len(".transcript.jsonl")]; id == heavyID {
+					heavyItems = itemCount
+					heavyEntries = len(ts)
+					imageFound = validatePersistedImage(path)
+				}
+				id := f.Name()[:len(f.Name())-len(".transcript.jsonl")]
+				must(schema.ValidateSessionID(id))
+				if seen[id] {
+					panic("duplicate " + id)
+				}
+				seen[id] = true
+			}
+		}
+	}
+	if projects != 5 || metas != 500 || transcripts != 500 {
+		panic(fmt.Sprintf("counts projects=%d metas=%d transcripts=%d", projects, metas, transcripts))
+	}
+	if heavyItems != 10000 {
+		panic(fmt.Sprintf("heavy_items=%d heavy_turns=%d", heavyItems, heavyEntries))
+	}
+	if !imageFound {
+		panic("persisted image payload not found or undecodable")
+	}
+	fmt.Printf("validated projects=%d metas=%d transcripts=%d semantic_turns=%d unique_ids=%d heavy_items=%d heavy_turns=%d\n", projects, metas, transcripts, items, len(seen), heavyItems, heavyEntries)
+}
+
+func validatePersistedImage(path string) bool {
+	b, err := os.ReadFile(path); must(err)
+	var lines []json.RawMessage
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 { continue }; lines = append(lines, json.RawMessage(line))
+	}
+	for _, line := range lines { var v any; if json.Unmarshal(line, &v) != nil { continue }; if d := findImageData(v); len(d) > 0 { _, _, err := image.Decode(bytes.NewReader(d)); if err == nil { return true } } }
+	return false
+}
+func findImageData(v any) []byte {
+	switch x := v.(type) {
+	case map[string]any:
+		if mt, ok := x["media_type"].(string); ok && mt == "image/png" { if s, ok := x["data"].(string); ok { d, err := base64.StdEncoding.DecodeString(s); if err == nil { return d } } }
+		for _, child := range x { if d := findImageData(child); len(d) > 0 { return d } }
+	case []any:
+		for _, child := range x { if d := findImageData(child); len(d) > 0 { return d } }
+	}
+	return nil
+}

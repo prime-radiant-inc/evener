@@ -65,7 +65,7 @@ The composer gives the draft the full width. Its footer holds attachment access,
 the model and reasoning choices, and the primary action. Secondary controls must
 not squeeze the draft. Stop and queue remain available when applicable. Latest
 belongs outside the writing surface. Reading earlier content never follows new
-output automatically; deliberate navigation back restores the previous position.
+output automatically; deliberate navigation back restores the previous position. A conversation without a saved reading position opens at the latest content. If layout initially prevents reaching a saved position, restoration retries as the list grows without changing the saved anchor. The [large-fixture native comparison](2026-09-09-iphone-loading-measurements.md) verifies this bounded behavior on `af72f7bd4`.
 
 ### Act while work runs
 
