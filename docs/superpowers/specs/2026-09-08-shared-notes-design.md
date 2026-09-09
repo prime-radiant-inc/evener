@@ -1,6 +1,8 @@
 # Shared Notes Design
 
 Date: 2026-09-08. Approach A: first-class persisted fields, goal-style RPCs.
+Revision 2 folds in two adversarial review rounds (10 unique significant
+findings plus minors; neither reviewer disqualified).
 
 ## Purpose
 
@@ -19,45 +21,109 @@ in-memory on `Session` (`agent/session.go`). Project onto wire `EvenerThread`
 (`appwire/types.go`), hub `fetchStatus`/`daemonStatus`
 (`cmd/evener-hub/web_session.go`), and frontend `ThreadModel`
 (`protocol/model.ts`, `types.gen.ts`). Old sessions default to empty note and
-empty list. The server enforces ownership: human-note set rejects agent
-callers, agent-note set rejects the human path, url-add accepts agent only,
-url-remove accepts either. A paragraph is one block: normalize whitespace, cap
-at 1000 Unicode characters; the server clamps and returns the stored value.
-URL entry ids are server-assigned UUIDs returned by `urls/add`.
+empty list. URL entry ids are server-assigned UUIDs returned by `urls/add`.
+The URL list caps at 50 entries; beyond that the server rejects with a typed
+error. A paragraph is one block: collapse every run of whitespace (including
+newlines) to a single space, cap at 1000 Unicode characters; the server clamps
+and returns the stored value, and every downstream consumer (including the
+steered text below) uses the post-clamp value.
+
+Ownership is enforced by channel, not by a caller-role flag (neither the tool
+`Exec(ctx, env, args)` args nor the hub mutation envelope carries a role).
+Each verb exists on exactly one invocation channel, and the other channel has
+no route for it:
+
+| verb | hub-to-daemon RPC | agent tool |
+| ---- | ----------------- | ---------- |
+| `notes/human/set` | yes | no |
+| `notes/agent/set` | no | yes |
+| `urls/add` | no | yes |
+| `urls/remove` | yes | yes |
+
+Cross-channel invocation fails by construction (unknown method, unregistered
+tool). Ownership tests exercise the wrong channel and assert rejection.
 
 ## Wire RPCs and pushes
 
-Four mutations plus two pushes, all following the retry-safe-mutations spec
-(clientMutationId, expected-instance fencing, authoritative rejoin):
+Only hub-to-daemon mutations (`notes/human/set`, hub-side `urls/remove`)
+follow the retry-safe-mutations spec (clientMutationId, expected-instance
+fencing, authoritative rejoin). Agent tools carry no mutation envelope, so they
+get at-least-once semantics with server-side convergence instead: `urls/add`
+dedups on the canonical URL key (below), and `notes/agent/set` is idempotent
+by value (repeat sets converge; last writer wins). Wire conformance tests
+(fencing, idempotent retry) cover the hub RPCs only.
 
-- `notes/human/set` (hub to daemon): stores, emits `evener/notes/updated`,
-  and injects a top-level steering message through `AcceptClientMutationSteer`
-  so the update interrupts like steer. Reuse the steering path; do not fork it.
+- `notes/human/set` (hub to daemon): stores the clamped note, appends a
+  session event, emits via the projector path (below), and injects a
+  top-level steering message through `AcceptClientMutationSteer` so the update
+  interrupts like steer. Reuse the steering path; do not fork it. The inner
+  steer derives its mutation id deterministically from the outer
+  clientMutationId (`outer + "/note-steer"`), and the daemon dedupes on it, so
+  a hub retry of the outer RPC never double-interrupts. A save whose text
+  equals the stored note is a no-op: return the current value with no push and
+  no steer. Clearing (empty string) notifies with a "(whiteboard cleared)"
+  marker instead of empty inline text.
+- Idle sessions follow `turn/steer` semantics exactly: the injected steering
+  wakes the session via a steering-carrier turn, which costs a model turn.
+  The Details UI names this when the session is idle ("saving will wake the
+  agent").
 - `notes/agent/set` (agent tool, same family as `update_goal`; handler beside
   `session_tools_goal.go`).
 - `urls/add` (agent tool: url plus optional label). The server validates the
-  scheme (http(s) or `file:`), resolves bare file paths against the session cwd
-  per the `securepath` precedent, and dedups identical URLs.
+  scheme (http(s) or `file:`), resolves bare file paths against the session
+  cwd per the `securepath` precedent, and `securepath`-checks absolute
+  `file:///` URLs the same way. The dedup key is the canonical resolved URL,
+  so `docs/x.md` and `./docs/x.md` collide. Re-adding an existing URL with a
+  different label updates the label and returns the existing entry (id,
+  addedBy, addedAt unchanged).
 - `urls/remove` (agent tool plus hub RPC, by entry id).
 
 Pushes `evener/notes/updated` and `evener/urls/updated` mirror
-`evener/goal/updated`. Daemon handlers sit beside `server/appwire_turns.go`
-and `server/appwire_runtime.go` (immediate receipt, async loop); hub relays via
-`appserver.HandleTyped` like goal and steer. New agent event kinds go in
-`agent/events/events.go` as needed.
+`evener/goal/updated` exactly: the daemon appends `EventNotesUpdated` /
+`EventUrlsUpdated` session events (`agent/events/events.go`) and
+`internal/appprojector` derives the pushes from them
+(`EventGoalUpdated` to `NotifyEvenerGoalUpdated` precedent). Daemon handlers
+never emit pushes directly, so there is exactly one emission path and no
+double-push. Daemon RPC handlers sit beside `server/appwire_turns.go` and
+`server/appwire_runtime.go` (immediate receipt, async loop); hub relays via
+`appserver.HandleTyped` like goal and steer. Frontend handles both pushes in
+`protocol/reducer.ts` and in `threads.ts` dispatch (thread plus watched
+models, fallback invalidation, same as the goal path). Wire checklist for
+all four RPCs plus both pushes: `appwire/protocol.go` catalog entries,
+`appwire/client.go` methods, `docs/appwire-protocol.md`, `make generate` for
+`types.gen.ts` (never hand-edited), and deep-copy support in `appwire/clone.go`
+(the URL slice must not alias across cloned snapshots).
+
+## Agent read path
+
+"Both sides read everything" holds for the agent through two mechanisms.
+First, the daemon injects the current notes plus URL list into agent context
+at turn start and on resume (beside the goal continuation-prompt rendering),
+and the session loop refreshes that context from `EventNotesUpdated` /
+`EventUrlsUpdated` before the next round, so human URL removals reach the
+agent even though the wire pushes travel hub-ward. Second, a `notes/read`
+agent tool returns the current human note, agent note, and URL list for
+mid-turn polling. The human note's one-shot steer injection is delivery, not
+storage: the persisted note is the source of truth the agent re-reads.
 
 ## Hub Details UI
 
 One new "Shared notes" section in `DetailsPanelBody`
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx`), shared
-by the session-chrome sheet and the `sessionDetails` pane. Human paragraph:
-read view plus `GoalControl`-style click-to-edit popover; save dispatches
-`notes/human/set` via `threads.ts` and `mutationDispatcher.ts`, with
-`TasksPanel`-style refetch on `evener/notes/updated`. Agent paragraph:
-read-only, updated by the same push. URL list: rows reuse `ContextCard` and
-transcript-link rendering (http(s) opens a new tab; `file:` and paths use the
-`docContent.ts` builders plus `OpenButton`); each row has a remove button
-dispatching `urls/remove`; agent-added rows appear live via
+by the session-chrome sheet and the `sessionDetails` pane. Unlike other
+Details rows, this section always renders: the empty state shows an explicit
+affordance ("Add a note"), because empty is the default for every old session
+and an omit-when-absent rule would leave no trigger to click. Human
+paragraph: read view plus `GoalControl`-style click-to-edit popover; save
+dispatches `notes/human/set` via `threads.ts` and `mutationDispatcher.ts`,
+with `TasksPanel`-style refetch on `evener/notes/updated`. Save commits on
+success with a generation guard (same as `setGoal`); on failure it shows an
+error toast and keeps the draft in the popover. There is no optimistic
+unsaved-flag state anywhere in the hub precedent, so this design adds none.
+Agent paragraph: read-only, updated by the same push. URL list: rows reuse
+`ContextCard` and transcript-link rendering (http(s) opens a new tab; `file:`
+and paths use the `docContent.ts` builders plus `OpenButton`); each row has a
+remove button dispatching `urls/remove`; agent-added rows appear live via
 `evener/urls/updated`. No human add-URL affordance. New components live under
 `panes/session/chrome/`; Biome scope stays `src/`.
 
@@ -65,39 +131,53 @@ dispatching `urls/remove`; agent-added rows appear live via
 
 The TUI mirrors hub: notes plus URL rows in `cmd/evener-tui/details_drawer.go`
 (read views, human-note edit command, url-remove command) through the existing
-hub-command registry; the reducer in `internal/transcript/reducer.go` handles
-both pushes. Human-note updates render in-thread through the existing
-`notification` steering kind (hub `SteeringItem` to `NotificationCard`, TUI
-`job_notification.go`) with a new source label (e.g. `human-note`) reading
-"human updated their whiteboard: ..." with the new text inline. No new
-transcript card types.
+hub-command registry; the reducer in
+`cmd/evener-tui/internal/transcript/reducer.go` handles both pushes, with a
+dispatch case (or explicit ignore) for each new notification to satisfy
+`TestEveryWireNotificationIsHandledOrExplicitlyIgnored`.
+
+Human-note updates render in-thread as a new steering kind `human-note`
+(Go `events` steering kind, generated union, `KIND_LABELS` entry "Human
+note"): a labeled steering divider carrying the full post-clamp text
+("human updated their whiteboard: ..."), collapsed by default like other
+dividers, with the same TUI label treatment. The exhaustive `KIND_LABELS`
+record fails the build until the new kind gets its label, which keeps the
+frontend's kinds in lockstep. Non-goal clarification: a new steering kind
+plus label is in scope; no new transcript card components
+(`NotificationCard` untouched).
 
 ## Edge cases
 
-Empty note clears the whiteboard; the push still fires so both sides converge.
-Over-length input clamps server-side; the response carries the stored value.
-Same-field races resolve last-writer-wins through mutation fencing
-(expected-instance and queue revision reject stale writes; clients retry like
-goal and steer). Duplicate URL add returns the existing entry. Add performs no
-fetch: unreachable hosts are accepted because the list holds references, which
-also keeps default tests hermetic. Out-of-scope file paths fail `securepath`
+Empty note clears the whiteboard; the push still fires so both sides
+converge. Over-length input clamps server-side; the response carries the
+stored value. Same-field races on hub RPCs resolve last-writer-wins through
+mutation fencing (expected-instance and queue revision reject stale writes;
+clients retry like goal and steer). Duplicate URL add returns the existing
+entry with its label updated. Add performs no fetch: unreachable hosts are
+accepted because the list holds references, which also keeps default tests
+hermetic. Out-of-scope file paths (bare or `file:///`) fail `securepath`
 validation with a typed error the tool surfaces. Rejoin carries the latest
-notes and URLs in the authoritative snapshot; pushes resume after. Daemon down
-at human save fails like goal-set-unavailable: the UI keeps the optimistic text
-and flags it unsaved.
+notes and URLs in the authoritative snapshot; pushes resume after. Daemon
+down at human save behaves exactly like goal-set failure: nothing commits,
+an error toast shows, the draft stays in the popover.
 
 ## Testing
 
 Default tests stay hermetic: scripted provider at the LLM boundary, no live
 fetches. Agent and daemon: `SessionMeta` extension plus migration defaulting,
-ownership rejection matrix (human/agent by note and url verbs),
-steering-injection-on-human-set (held, queued, and idle cases beside
-`session_steering_held_test.go`), URL validation, dedup, and securepath
-rejection, push emission per mutation. Wire: retry-safe-mutation conformance
-(fencing, idempotent retry, rejoin snapshot carries notes and URLs). Hub:
-`DetailsPanel.test.tsx`-style component tests (edit dispatches RPC, remove
-dispatches RPC, push rerenders) plus `threads.ts` push tests. TUI: drawer
-render and command tests beside `hub_goal_test.go`. E2E scenarios in
+ownership tests via wrong-channel invocation, steering-injection-on-human-set
+(held, queued, and idle-carrier cases beside
+`session_steering_held_test.go`), retry of one outer mutation id producing a
+single steer, URL validation, canonical dedup, label-update-on-re-add,
+securepath rejection, 50-entry cap, single push emission per mutation from
+the projector path, agent context injection containing current notes and
+URLs, `notes/read` returning current values. Wire: retry-safe-mutation
+conformance for the two hub RPCs (fencing, idempotent retry, rejoin snapshot
+carries notes and URLs). Hub: `DetailsPanel.test.tsx`-style component tests
+(empty state renders affordance, edit dispatches RPC, remove dispatches
+RPC, push rerenders, failure toasts with draft kept) plus `threads.ts` and
+`reducer.ts` push tests. TUI: drawer render and command tests beside
+`hub_goal_test.go`, plus the notification-coverage gate. E2E scenarios in
 `test/scenarios/` for human-note-interrupts-thread and
 agent-add/human-remove-URL, mirroring the goal set-and-complete scenarios.
 
@@ -105,4 +185,4 @@ agent-add/human-remove-URL, mirroring the goal set-and-complete scenarios.
 
 No edit history or versioning; no human URL add; no rich bookmarks (title,
 description, tags); no availability check at add time; no new transcript card
-types. History can layer onto this model later if wanted.
+components. History can layer onto this model later if wanted.
