@@ -194,7 +194,12 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
       // while state is closed") never reached the server, so it stays
       // an error.
       const msg = err instanceof Error ? err.message : String(err);
-      const sentButLost = /disconnect|fetch|network|abort/i.test(msg) && !/cannot call/i.test(msg);
+      // Match the actual transport errors AppwireClient raises when the
+      // socket drops mid-request: "socket closed (code …)", "fetch"
+      // failures, "network" errors, "abort" from a timeout. Exclude
+      // "cannot call … while state is closed" — that's a pre-request
+      // rejection (the client was already disconnected, nothing was sent).
+      const sentButLost = /socket closed|disconnect|fetch|network|abort/i.test(msg) && !/cannot call/i.test(msg);
       if (sentButLost) {
         set({ applying: false, restarting: true });
         await waitForNewHub(previous);
