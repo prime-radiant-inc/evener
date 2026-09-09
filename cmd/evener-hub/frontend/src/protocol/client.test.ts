@@ -590,3 +590,160 @@ describe("AppwireClient", () => {
     expect(readyCount).toBe(1);
   });
 });
+
+describe("independent force-stop connection", () => {
+  test("slow recovery connection leaves the full request window for the hub response", async () => {
+    const recovery = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => recovery });
+    const stopped = client.forceStop("local:owner");
+    const outcome = stopped.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(25_000);
+    recovery.open();
+    await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    recovery.receive({ id: lastSentFrame(recovery).id, error: { code: -32000, message: "exit unconfirmed" } });
+    expect(await outcome).toMatchObject({ message: "exit unconfirmed" });
+    expect(recovery.closeRequests).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+    client.close();
+  });
+
+  test("bypasses primary backlog, bounds overlap and closes after confirmed recovery", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "wss://hub/rpc?auth=fixture",
+      socketFactory: (url) => {
+        expect(url).toBe("wss://hub/rpc?auth=fixture");
+        const socket = new FakeSocket({ autoInitialize: true });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const connected = client.connect();
+    const primary = sockets[0];
+    if (!primary) throw new Error("missing primary");
+    primary.open();
+    await connected;
+    const backlog = Array.from({ length: 66 }, () => client.request("thread/list", {}).catch(() => undefined));
+    const stopped = client.forceStop("local:owner");
+    const recovery = sockets[1];
+    if (!recovery) throw new Error("missing independent recovery connection");
+    await expect(client.forceStop("local:other")).rejects.toThrow();
+    recovery.open();
+    await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+    const request = lastSentFrame(recovery);
+    expect(request.method).toBe("evener/thread/forceStop");
+    expect(request.params).toEqual({ ref: "local:owner" });
+    expect(sentFrames(primary).some((frame) => frame.method === "evener/thread/forceStop")).toBe(false);
+    recovery.receive({ id: request.id, result: {} });
+    await stopped;
+    expect(recovery.closeRequests).toHaveLength(1);
+    expect(client.state).toBe("ready");
+    expect(primary.closeRequests).toHaveLength(0);
+    client.close();
+    await Promise.all(backlog);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each(["disconnect", "rejected", "handshake timeout", "owner close"])(
+    "cleans up on %s without a recovery retry",
+    async (failure) => {
+      const sockets: FakeSocket[] = [];
+      const client = new AppwireClient({
+        url: "ws://hub/rpc",
+        socketFactory: () => {
+          const socket = new FakeSocket({ autoInitialize: true });
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const stopped = client.forceStop("local:owner");
+      const rejected = expect(stopped).rejects.toThrow();
+      const recovery = sockets[0];
+      if (!recovery) throw new Error("missing recovery connection");
+      if (failure === "disconnect" || failure === "rejected") {
+        recovery.open();
+        await flushUntil(() => sentFrames(recovery).some((frame) => frame.method === "evener/thread/forceStop"));
+        if (failure === "disconnect") recovery.closeFromServer(1006);
+        else recovery.receive({ id: lastSentFrame(recovery).id, error: { code: -32000, message: "exit unconfirmed" } });
+      } else if (failure === "owner close") {
+        client.close();
+      } else {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      await rejected;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sockets).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+      client.close();
+    },
+  );
+});
+
+test("explicit Resume replaces the primary transport and never replays old requests", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const oldMutation = client.request("thread/reasoning-effort/set", { ref: "local:owner", reasoningEffort: "high" });
+  const oldRejected = expect(oldMutation).rejects.toThrow();
+  const resumed = client.resumeThread("local:owner");
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing fresh primary");
+  await oldRejected;
+  expect(primary.closeRequests).toHaveLength(1);
+  await expect(client.resumeThread("local:owner")).rejects.toThrow();
+  replacement.open();
+  await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+  expect(sentFrames(replacement).some((frame) => frame.method === "thread/reasoning-effort/set")).toBe(false);
+  const request = lastSentFrame(replacement);
+  expect(request.method).toBe("thread/resume");
+  replacement.receive({ id: request.id, result: {} });
+  await resumed;
+  expect(client.state).toBe("ready");
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test.each(["closed", "rejected"])("explicit Resume releases its waiters when %s", async (outcome) => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  const resumed = client.resumeThread("local:owner");
+  const rejected = expect(resumed).rejects.toThrow();
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  if (outcome === "closed") client.close();
+  else {
+    replacement.open();
+    await flushUntil(() => sentFrames(replacement).some((frame) => frame.method === "thread/resume"));
+    replacement.receive({ id: lastSentFrame(replacement).id, error: { code: -32000, message: "resume refused" } });
+  }
+  await rejected;
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});

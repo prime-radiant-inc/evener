@@ -1,6 +1,7 @@
 // React context for the single AppwireClientLike the whole app shares
 // (Global Constraints: "One AppwireClient per window, owned by the shell,
-// injected via context"). AppShell constructs the real client and provides
+// injected via context", with one bounded temporary recovery connection owned
+// by that client for force stop). AppShell constructs the real client and provides
 // it here; everything below the shell reads it via useClient() instead of
 // reaching into connectionStore.getState().client, which exists only as a
 // seam for stores that have no connect() path of their own (see

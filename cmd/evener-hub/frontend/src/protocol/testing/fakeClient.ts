@@ -40,6 +40,8 @@ const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
 export interface AppwireClientLike {
   connect: AppwireClient["connect"];
   request: AppwireClient["request"];
+  forceStop: AppwireClient["forceStop"];
+  resumeThread: AppwireClient["resumeThread"];
   onNotification: AppwireClient["onNotification"];
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
@@ -195,6 +197,14 @@ export class FakeClient implements AppwireClientLike {
   retryNowCalls = 0;
   retryNow(): void {
     this.retryNowCalls += 1;
+  }
+
+  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+    return this.request("thread/resume", { ref });
+  }
+
+  async forceStop(ref: string): Promise<void> {
+    await this.request("evener/thread/forceStop", { ref });
   }
 
   // --- test-side injection: simulates the server/transport side ---

@@ -190,6 +190,7 @@ export interface ThreadsStoreState {
   // views switch to the new instance together.
   clearThread(ref: string): Promise<void>;
   shutdown(ref: string): Promise<void>;
+  forceStop(ref: string): Promise<void>;
   // Forks a thread from a source turn, or - with opts.aside - forks the
   // session at its current tip into a side thread (same wire method,
   // mutually exclusive param sets - see ForkFromTurnOptions). The response
@@ -1473,7 +1474,7 @@ async function publishAndReconcileThreadHydration(
     else mutationAuthorityRefs.delete(ref);
     return { mutationAuthorityRefs };
   });
-  if (published.status.type === "restartRequired") {
+  if (published.status.type === "restartRequired" || hydration.response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
     }));
@@ -1543,6 +1544,7 @@ async function publishAndReconcileThreadHydration(
           current() &&
           mutationsReconciled &&
           published.status.type !== "restartRequired" &&
+          hydration.response.thread.evener.resumeRequired !== true &&
           published.status.type !== "notLoaded" &&
           threadsStore.getState().restartBlockingObligations.get(ref) === blockingObligation
         ) {
@@ -2756,6 +2758,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     dispatchableMutationRefs.add(ref);
     await runtime.dispatcher.dispatchTargets([ref]);
     await refreshMutationPins(runtime, [ref]);
+  },
+
+  async forceStop(ref) {
+    try {
+      await requireClient().forceStop(ref);
+    } catch (error) {
+      // The signal may have succeeded despite failed exit confirmation.
+      // Retain the recovery fence until a fresh snapshot proves it can clear.
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+      }));
+      // Reconcile the hub's recovery requirement without delaying this error.
+      void threadsStore
+        .getState()
+        .refreshThread(ref)
+        .catch(() => {});
+      throw error;
+    }
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+    }));
   },
 
   async shutdown(ref) {

@@ -212,6 +212,27 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                   throw err;
                 }
               },
+              onForceStop:
+                sessionRef.startsWith("local:") &&
+                menuSession?.host_id === "local" &&
+                menuSession.top_level !== false &&
+                model.status.type !== "notLoaded" &&
+                model.status.type !== "closed"
+                  ? async () => {
+                      try {
+                        await threadsStore.getState().forceStop(sessionRef);
+                      } catch (err) {
+                        toasts.push("error", sessionActionError("Couldn't force stop session", err));
+                        throw err;
+                      }
+                      try {
+                        await threadsStore.getState().refreshThread(sessionRef);
+                      } catch (err) {
+                        toasts.push("error", sessionActionError("Session stopped; couldn't refresh its view", err));
+                      }
+                    }
+                  : undefined,
+
               onShutdown: async () => {
                 const convergence = buildShutdownConvergence(sessionRef, {
                   pinSectionId: menuSession?.pin_section_id,

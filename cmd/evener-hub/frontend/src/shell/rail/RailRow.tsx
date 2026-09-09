@@ -283,6 +283,7 @@ export interface RailRowActions {
   onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
+  onForceStopSession(session: RailSession): Promise<void>;
   onPinSession(
     session: RailSession,
     target: PinTarget,
@@ -493,6 +494,14 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),
         onShutdown: () => actions.onShutdownSession(session),
+        onForceStop:
+          ref.startsWith("local:") &&
+          session.host_id === "local" &&
+          session.kind === "session" &&
+          session.state !== "notLoaded" &&
+          session.state !== "closed"
+            ? () => actions.onForceStopSession(session)
+            : undefined,
         onPin: (target, section) => actions.onPinSession(session, target, section),
         onUnpin: () => actions.onUnpinRequest(session),
         onToggleArchive: () => actions.onToggleArchiveSession(session),

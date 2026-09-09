@@ -25,6 +25,7 @@ import { useStore } from "zustand";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
+import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { useNavigationStore } from "../../stores/navigation/store";
@@ -119,12 +120,18 @@ function RestartRequiredNotice({
     setRefreshing(true);
     setError(null);
     try {
+      let refreshedRef = sessionRef;
       if (resumeRequired) {
         const { client, state } = connectionStore.getState();
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        await client.request("thread/resume", { ref: sessionRef });
+        const { thread } = await client.resumeThread(sessionRef);
+        refreshedRef = thread.evener.ref;
+        if (refreshedRef !== sessionRef) {
+          const url = paneToURL("session", { ref: refreshedRef });
+          if (url !== null) navigate(url, { replace: true });
+        }
       }
-      await threadsStore.getState().refreshThread(sessionRef);
+      await threadsStore.getState().refreshThread(refreshedRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -136,7 +143,7 @@ function RestartRequiredNotice({
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
-          ? "Resume this session to check whether its uncertain messages were delivered."
+          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
           : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
       <Button disabled={refreshing} onClick={() => void refresh()}>
@@ -144,6 +151,34 @@ function RestartRequiredNotice({
       </Button>
       {error && <span>{error}</span>}
     </div>
+  );
+}
+
+function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stop = async () => {
+    setError(null);
+    try {
+      await threadsStore.getState().forceStop(sessionRef);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+    try {
+      await threadsStore.getState().refreshThread(sessionRef);
+    } catch (err) {
+      setError(`Session stopped; couldn't refresh its view: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return (
+    <>
+      <Button variant="quiet" onClick={() => setOpen(true)}>
+        Force stop…
+      </Button>
+      <ForceStopDialog open={open} onClose={() => setOpen(false)} onConfirm={stop} />
+      {error && <span role="alert">{error}</span>}
+    </>
   );
 }
 
@@ -339,7 +374,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     }
     return (
       <PaneScaffold paneId={paneId} focused={paneFocused} scaffoldMarker={`session:${ref}`} title={title}>
-        <EmptyState title="Loading transcript…" />
+        <EmptyState
+          title="Loading transcript…"
+          hint={
+            ref.startsWith("local:")
+              ? "If the session is unresponsive, you can stop its process to recover it."
+              : undefined
+          }
+          action={ref.startsWith("local:") ? <SessionForceStopRecovery sessionRef={ref} /> : undefined}
+        />
       </PaneScaffold>
     );
   }
@@ -351,6 +394,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     model.parentRef?.startsWith("local:")
       ? model.parentRef
       : undefined;
+
+  const showRestartNotice =
+    model.status.type === "restartRequired" ||
+    restartPending ||
+    (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -438,14 +486,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               retry={model.modelRetry}
               primaryModel={model.model}
             />
-            {(model.status.type === "restartRequired" ||
-              restartPending ||
-              (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative))) && (
+            {showRestartNotice && (
               <RestartRequiredNotice
                 sessionRef={ref}
                 ownerRef={recoveryOwnerRef}
                 resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
               />
+            )}
+            {ref.startsWith("local:") && !recoveryOwnerRef && model.status.type !== "closed" && (
+              <SessionForceStopRecovery sessionRef={ref} />
             )}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>

@@ -110,6 +110,8 @@ export class AppwireClient {
   private readonly clientInfo: { name: string; version: string };
 
   private socket: WebSocketLike | null = null;
+  private recoveryClient: AppwireClient | null = null;
+  private resumePending = false;
   private connectionState: ConnectionState = "idle";
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
@@ -182,6 +184,7 @@ export class AppwireClient {
   }
 
   close(): void {
+    this.recoveryClient?.close();
     if (this.connectionState === "closed") return;
     const socket = this.socket;
     this.socket = null;
@@ -207,6 +210,70 @@ export class AppwireClient {
     this.disarmReconnect();
     this.failAllPending(new ConnectionClosedError("AppwireClient: closed"));
     this.setState("closed");
+  }
+
+  // Explicit Resume discards the old transport backlog before acknowledging
+  // recovery. Pending requests fail normally; they are never replayed here.
+  async resumeThread(ref: string): Promise<MethodTypes["thread/resume"]["result"]> {
+    if (this.resumePending) throw new Error("A session resume is already pending");
+    const socket = this.socket;
+    if (this.connectionState !== "ready" || !socket) throw new Error("Connect to the hub before resuming this session");
+    this.resumePending = true;
+    let stopReady = () => {};
+    let stopState = () => {};
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const connected = new Promise<void>((resolve, reject) => {
+      stopReady = this.onReady(() => resolve());
+      stopState = this.onStateChange((state) => {
+        if (state === "closed") reject(new ConnectionClosedError("AppwireClient: closed"));
+      });
+      timeout = setTimeout(
+        () => reject(new Error("Connection refresh timed out; try Resume again")),
+        DEFAULT_REQUEST_TIMEOUT_MS,
+      );
+    });
+    try {
+      this.handleSocketLoss(socket, 1000);
+      try {
+        socket.close();
+      } catch {
+        /* The retired transport is already detached. */
+      }
+      this.retryNow();
+      await connected;
+      return await this.request("thread/resume", { ref });
+    } finally {
+      clearTimeout(timeout);
+      stopReady();
+      stopState();
+      this.resumePending = false;
+    }
+  }
+
+  // Recovery owns one short-lived connection so a saturated primary request
+  // queue cannot prevent the user's stop request from reaching the hub.
+  async forceStop(ref: string): Promise<void> {
+    if (this.isClosed()) throw new ConnectionClosedError("AppwireClient: closed");
+    if (this.recoveryClient) throw new Error("A force stop is already pending");
+    const recovery = new AppwireClient({
+      url: this.url,
+      socketFactory: this.socketFactory,
+      now: this.now,
+      clientInfo: this.clientInfo,
+    });
+    this.recoveryClient = recovery;
+    // Bound socket-open and handshake waits. The RPC owns a separate timeout
+    // so connection setup cannot consume its response window.
+    const timeout = setTimeout(() => recovery.close(), DEFAULT_REQUEST_TIMEOUT_MS);
+    try {
+      await recovery.connect();
+      clearTimeout(timeout);
+      await recovery.request("evener/thread/forceStop", { ref });
+    } finally {
+      clearTimeout(timeout);
+      recovery.close();
+      this.recoveryClient = null;
+    }
   }
 
   request<M extends MethodName>(

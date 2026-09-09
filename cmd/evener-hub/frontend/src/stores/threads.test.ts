@@ -8879,6 +8879,19 @@ test("clear response fences goal responses from the previous instance", async ()
   expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal?.objective).toBe("new objective");
 });
 
+test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
+  const fake = new FakeClient();
+  connectionStore.setState({ client: fake, state: "ready" });
+  const recover = vi.spyOn(fake, "forceStop").mockRejectedValueOnce(new Error("exit unconfirmed"));
+  await expect(threadsStore.getState().forceStop("local:owner")).rejects.toThrow("exit unconfirmed");
+  expect(threadsStore.getState().restartBlockingObligations.has("local:owner")).toBe(true);
+  recover.mockResolvedValueOnce(undefined);
+  await threadsStore.getState().forceStop("local:owner");
+  expect(recover).toHaveBeenNthCalledWith(2, "local:owner");
+  expect(threadsStore.getState().restartBlockingObligations.has("local:owner")).toBe(true);
+  expect(fake.calls.some((call) => call.method === "evener/thread/forceStop")).toBe(false);
+});
+
 test("clear permits explicit fresh recovery without replaying old-instance input", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -8934,4 +8947,70 @@ test("clear permits explicit fresh recovery without replaying old-instance input
     });
   });
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+});
+
+test.each([false, true])(
+  "failed force stop reconciles without hiding the original error (read fails: %s)",
+  async (readFails) => {
+    const ref = "local:owner";
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse(ref));
+    await threadsStore.getState().ensureThread(ref);
+    const record = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/queue",
+      payload: { ref, expectedInstanceId: `thr_${ref}`, input: [{ type: "text", text: "uncertain input" }] },
+      attachments: [],
+      optimisticDisplay: { text: "uncertain input" },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+    const read = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => read.promise);
+    const original = new Error("exit confirmation failed");
+    vi.spyOn(fake, "forceStop").mockRejectedValueOnce(original);
+    const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+    await expect(threadsStore.getState().forceStop(ref)).rejects.toBe(original);
+    expect(refresh).toHaveBeenCalledWith(ref);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    const refreshing = refresh.mock.results[0]?.value as Promise<void>;
+    if (readFails) {
+      read.reject(new Error("read unavailable"));
+      await expect(refreshing).rejects.toThrow("read unavailable");
+      expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    } else {
+      const saved = readResponse(ref, { status: { type: "notLoaded" } });
+      saved.thread.evener.resumeRequired = true;
+      saved.thread.evener.mutationStateAuthoritative = false;
+      saved.thread.evener.capabilities = {} as ThreadCapabilities;
+      read.resolve(saved);
+      await refreshing;
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    }
+    expect((await storage.getOutbox(record.clientMutationId))?.state).toBe("blockedUnknown");
+    expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/queue")).toHaveLength(
+      0,
+    );
+  },
+);
+
+test("a healthy authoritative refresh releases the fence after refused force stop", async () => {
+  const ref = "local:healthy-owner";
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const read = deferred<ThreadReadResponse>();
+  fake.on("thread/read", () => read.promise);
+  vi.spyOn(fake, "forceStop").mockRejectedValueOnce(new Error("termination refused"));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("termination refused");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  read.resolve(readResponse(ref));
+  await refresh.mock.results[0]?.value;
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
 });

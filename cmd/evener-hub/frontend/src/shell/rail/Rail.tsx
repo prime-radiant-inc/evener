@@ -1128,6 +1128,18 @@ function NavigationRail({
           { kind: "sessionTitle", ref: session.ref, title: name },
           true,
         ),
+      onForceStopSession: async (session) => {
+        await runAction(
+          () => threadsStore.getState().forceStop(session.ref),
+          "Couldn't force stop session",
+          undefined,
+          true,
+        );
+        await runAction(
+          () => threadsStore.getState().refreshThread(session.ref),
+          "Session stopped; couldn't refresh its view",
+        );
+      },
       onShutdownSession: async (session) => {
         const convergence = buildShutdownConvergence(session.ref, {
           pinSectionId: session.pin_section_id,

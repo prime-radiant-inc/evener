@@ -16,6 +16,7 @@ import { Button, Dialog, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { ForceStopDialog } from "./ForceStopDialog";
 import styles from "./sessionmenu.module.css";
 
 export type PinTarget = { section_id: string } | { section_name: string };
@@ -35,6 +36,7 @@ export interface SessionMenuActions {
   onOpenPane(pane: SessionPanelKind): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
+  onForceStop?(): Promise<void>;
   onPin(target: PinTarget, section?: PinSectionInfo): Promise<void>;
   onUnpin(): Promise<void>;
   onToggleArchive(): Promise<void>;
@@ -88,6 +90,7 @@ export function SessionMenu({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [shutdownOpen, setShutdownOpen] = useState(false);
+  const [forceStopOpen, setForceStopOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
@@ -160,6 +163,9 @@ export function SessionMenu({
       onSelect: () => setShutdownOpen(true),
     },
   ];
+  if (actions.onForceStop) {
+    destructiveItems.push({ id: "force-stop", label: "Force stop…", onSelect: () => setForceStopOpen(true) });
+  }
   if (deleteEligible) {
     destructiveItems.push({ id: "delete", label: "Delete…", onSelect: () => setDeleteOpen(true) });
   }
@@ -244,6 +250,10 @@ export function SessionMenu({
           The agent process for this session will stop. You can still read the transcript afterward.
         </p>
       </Dialog>
+
+      {actions.onForceStop && (
+        <ForceStopDialog open={forceStopOpen} onClose={() => setForceStopOpen(false)} onConfirm={actions.onForceStop} />
+      )}
 
       <Dialog
         open={deleteOpen}
