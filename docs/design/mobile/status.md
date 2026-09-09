@@ -37,6 +37,16 @@ The audit found the advertised goal/task/activity, plugin and settings operation
 
 ## Latest verified changes
 
+**Whole-app UX review:** two independent Luna-medium reviewers assessed current
+source and dated native screenshots using Impeccable. The coordinator checked
+their findings against source and narrowed unsupported redesign suggestions.
+The [UX contract](iphone-ux-contract.md) consolidates navigation and whole-screen
+behavior; the [panel](2026-09-08-iphone-ux-panel.md) prioritizes project attention,
+combined running controls, recovery near the composer and recognizable choices.
+The browser/reader direction is concrete, but a matched current-artifact set of
+running, decision and recovery states remains Task 15 work. This documentation
+and review do not change the installed app or close physical/performance gates.
+
 **Project browsing and reading:** the [Impeccable correction](2026-09-08-project-browser-review.md) now has an independently reviewed Release simulator build at `f75411ead`. Main Sessions groups work by project, opens other projects on demand, and automatically appends pages. The native pass verified 20-to-25 paging without duplicate rows, exact project-list position on return, and retained expansion/data through search and Clear. Existing populated conversations are readable in the project hierarchy. Returning from Fork preview preserves earlier loaded history, the separate unsent draft, and reader position within one pixel. The first pass exposed a 183-point jump caused by message controls disappearing on blur and a changing refresh header; the correction keeps geometry stable while reacquiring the subscription. All seven draft tables are unchanged, and the original saved hub and session remain available. The [receipt and screenshots](assets/2026-09-08-native-project-browser.json) record source identity, independent review and evidence limits. Physical-iPhone and real-network loading performance remain unqualified. [TestFlight 0.1.0 (2)](assets/2026-09-08-testflight-browser-update.json) is now `VALID`/`IN_BETA_TESTING` and present in Evener Internal. Its physical install/update and smoke remain open.
 
 **TestFlight delivery:** build `0.1.0 (2)` now contains the reviewed browser and reader corrections at `f75411ead`. The corrected Fastlane lane completed, and independent coordinator GETs confirm the exact build in Evener Internal. Local archive/export used Xcode 26.6; the CI workflow remains pinned to 26.4 and its registration PR still requires review. Export assigned build 2 while the archive metadata retained build 1; the uploaded IPA itself is verified as build 2. Keychain search/default settings were restored exactly. This closes the second upload and internal distribution gate, not physical update acceptance. The [new receipt](assets/2026-09-08-testflight-browser-update.json) keeps those identities separate.
