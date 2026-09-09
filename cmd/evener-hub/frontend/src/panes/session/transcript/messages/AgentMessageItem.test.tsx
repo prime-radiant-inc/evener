@@ -454,6 +454,12 @@ test("the stamp is in-flow by default and leaves the flow only when the transcri
   const rail = /@container\s*\(min-width:\s*55rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
   if (!rail) throw new Error("no container-gated .stamp rail rule");
   expect(rail[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*absolute/);
+  // The wide-measure revert band: the rail's nowrap is not inert on a static
+  // box, so both declarations must be reverted (roborev, PR 1041).
+  const band = /@container\s*\(min-width:\s*55rem\)\s*and\s*\(max-width:\s*75rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  if (!band) throw new Error("no wide-measure .stamp revert band");
+  expect(band[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*static/);
+  expect(band[1]).toMatch(/\.stamp\s*\{[^}]*white-space:\s*normal/);
   // The query resolves against the virtual list's root: it must BE a query
   // container, or the rail never engages anywhere.
   const listCss = readFileSync(join(here, "../../../../widgets/virtuallist/virtuallist.module.css"), "utf8").replace(

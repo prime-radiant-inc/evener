@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>transcript-stamp-rail-wide layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; }
+  .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* Stands in for the transcript pane AND the query container - see the
+     transcript-stamp-rail case's harness for why the container-type is
+     reproduced here instead of linking virtuallist.module.css's .root. */
+  .pane { box-sizing: border-box; background: var(--surface-1); container-type: inline-size; }
+</style>
+</head>
+<body data-font-size="m" data-transcript-measure="wide">
+<!-- The WIDE-measure twin of transcript-stamp-rail: same mid-exchange
+     AgentMessageItem DOM, but body carries data-transcript-measure="wide"
+     (tokens.css's 64rem --session-measure), so the 55-75rem override band
+     (agentmessageitem.module.css) must keep the stamp in flow with wrapping
+     restored until the container reaches 75rem. -->
+<main class="fixtures"></main>
+
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="fixtureLabel"></div>
+    <div class="pane" data-pane>
+      <div class="turn" data-turn>
+        <div class="runContent">
+          <div class="message">
+            <div class="bubble continuation" data-bubble>
+              <div class="root">
+                <p>CI triaged: the only failures are a missing gofmt blank line in my test file (broke lint-gofmt then lint-golangci then static; everything else green including the review pass). One-line fix, lint-gofmt lane verified locally, pushed as a fast-forward. CI re-running; still just your approval after green.</p>
+              </div>
+            </div>
+            <span class="stamp" data-stamp><time class="time" title="14:22:31">9m ago</time></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+const template = document.querySelector("#fixture-template");
+const fixtureRoot = document.querySelector(".fixtures");
+for (const spec of fixtures) {
+  const fragment = template.content.cloneNode(true);
+  const fixture = fragment.querySelector(".fixture");
+  fixture.dataset.width = String(spec.width);
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px container`;
+  fixture.querySelector("[data-pane]").style.width = `${spec.width}px`;
+  fixtureRoot.append(fragment);
+}
+
+window.measure = () =>
+  [...document.querySelectorAll(".fixture")].map((fixture) => {
+    const width = Number(fixture.dataset.width);
+    const turn = fixture.querySelector("[data-turn]").getBoundingClientRect();
+    const bubble = fixture.querySelector("[data-bubble]").getBoundingClientRect();
+    const stampEl = fixture.querySelector("[data-stamp]");
+    const stamp = stampEl.getBoundingClientRect();
+    const style = getComputedStyle(stampEl);
+    return {
+      width,
+      position: style.position,
+      whiteSpace: style.whiteSpace,
+      fontStyle: style.fontStyle,
+      outsideRight: stamp.left >= turn.right,
+      railAligned: Math.abs(stamp.top - bubble.top) <= 24,
+      insideColumn: stamp.right <= turn.right + 1,
+      belowBubble: stamp.top >= bubble.bottom - 1,
+    };
+  });
+</script>
+</body>
+</html>
