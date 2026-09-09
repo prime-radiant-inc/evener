@@ -51,13 +51,34 @@ func adjacentLiveRef(refs []appwire.Ref, current string, step int) (appwire.Ref,
 // session through the ordinary entry path (fetchHubSession's thread/read
 // cut), so the switch lands with the same transcript hydration and
 // subscription a dashboard enter would open.
+//
+// The read is asynchronous: until its hubSessionMsg lands, detail.Ref still
+// names the OLD session. While a cycling read is in flight, further presses
+// step from liveNavPendingRef instead, and the read is tagged with a
+// per-press sequence so Update drops a response a newer press has superseded
+// (roborev PR #1044 finding 2).
 func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 	if m.client == nil {
 		return m, nil
 	}
-	target, ok := adjacentLiveRef(liveSessionRefsInOrder(m.tree), m.detail.Ref, step)
+	base := m.detail.Ref
+	if m.liveNavPendingRef != "" {
+		base = m.liveNavPendingRef
+	}
+	target, ok := adjacentLiveRef(liveSessionRefsInOrder(m.tree), base, step)
 	if !ok {
 		return m, nil
 	}
-	return m, fetchHubSession(m.frames, m.client, target)
+	m.liveNavSeq++
+	m.liveNavPendingRef = target.String()
+	seq := m.liveNavSeq
+	read := fetchHubSession(m.frames, m.client, target)
+	return m, func() tea.Msg {
+		msg := read()
+		if sessionMsg, ok := msg.(hubSessionMsg); ok {
+			sessionMsg.liveNavSeq = seq
+			return sessionMsg
+		}
+		return msg
+	}
 }

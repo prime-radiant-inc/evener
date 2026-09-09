@@ -58,6 +58,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only a read that replaces the transcript takes a capture, so the
 		// early returns below are all reached with nothing held.
 		msg.capture.Release()
+		// A live-session cycling read a newer press has superseded is dropped
+		// here, after Release: the superseding read's capture already adopted
+		// the frames this one's was holding (hub_frames.go's takeLocked), and
+		// Release still enqueues its own after-cut frames into the stream. Its
+		// beforeCut fold and transcript replace are the stale halves that must
+		// not apply.
+		if msg.liveNavSeq > 0 {
+			if msg.liveNavSeq != m.liveNavSeq {
+				return m, nil
+			}
+			m.liveNavPendingRef = ""
+		}
 		var preCut []tea.Cmd
 		for _, notification := range msg.beforeCut {
 			preCut = append(preCut, m.applyHubNotification(notification))

@@ -183,3 +183,51 @@ func TestHubCommandRegistryExposesLiveSessionCycling(t *testing.T) {
 		}
 	}
 }
+
+// Switching sessions is asynchronous: until the read lands, m.detail.Ref
+// still names the OLD session. A second press before then must step from
+// the pending target, not the stale ref, or rapid presses collapse onto one
+// session (roborev PR #1044 finding 2).
+func TestHubSessionLiveCycleBasesRepeatedPressesOnPendingTarget(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)
+	if cmd1 == nil {
+		t.Fatal("first press: expected a fetch command")
+	}
+	m2, cmd2 := m1.switchToAdjacentLiveSession(1)
+	if cmd2 == nil {
+		t.Fatal("second press: expected a fetch command")
+	}
+	_ = m2
+	cmd1()
+	cmd2()
+	if got := reads.get(); len(got) != 2 || got[0] != "local:01C" || got[1] != "local:01A" {
+		t.Fatalf("thread/read refs = %v, want [local:01C local:01A] (second press based on the pending target)", got)
+	}
+}
+
+// Two in-flight navigation reads can complete out of order. The stale one
+// must be dropped, or the final session contradicts the key sequence.
+func TestHubSessionLiveCycleDropsStaleRead(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)   // next: 01C
+	m2, cmd2 := m1.switchToAdjacentLiveSession(-1) // previous from pending 01C: 01B
+
+	// The NEWER read lands first and applies.
+	updated, _ := m2.Update(cmd2())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("after the newer read, viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+
+	// The stale read arrives late; it must not move the view to 01C.
+	updated, _ = m3.Update(cmd1())
+	m4 := updated.(hubModel)
+	if m4.detail.Ref != "local:01B" {
+		t.Fatalf("stale live-nav read overwrote the newer session: viewed ref = %q, want local:01B", m4.detail.Ref)
+	}
+}

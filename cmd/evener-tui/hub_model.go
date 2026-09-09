@@ -251,6 +251,15 @@ type hubModel struct {
 	// from main.go via setSend after tea.NewProgram constructs the
 	// program reference.
 	pending *pendingpkg.PendingCoordinator
+
+	// liveNavPendingRef is the target of the latest live-session cycling
+	// read still in flight; while set, further alt+shift+arrow presses step
+	// FROM it rather than from the stale detail.Ref (roborev PR #1044
+	// finding 2). liveNavSeq is the per-press high-water counter tagged onto
+	// each cycling read's hubSessionMsg so Update can drop a read a newer
+	// press has superseded.
+	liveNavPendingRef string
+	liveNavSeq        int
 }
 
 const hubCtrlCQuitWindow = time.Second

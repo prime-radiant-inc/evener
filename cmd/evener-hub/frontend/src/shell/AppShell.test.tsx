@@ -2785,3 +2785,42 @@ test("mobile: Alt+Shift+Arrow live-session navigation registers nothing and is i
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
   vi.unstubAllGlobals();
 });
+
+// The rail's live section paginates (limit 50 per page). At the last LOADED
+// live session, next must demand-load the following page and continue into
+// it — wrapping over the loaded subset would skip every live session behind
+// the remaining count (roborev PR #1044 finding 1).
+test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next page instead of wrapping", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      if ((params.offset ?? 0) === 0) {
+        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+      }
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => {
+    expect(window.location.pathname).toBe("/s/local%3Alive-b");
+  });
+});

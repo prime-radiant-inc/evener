@@ -31,7 +31,11 @@ type hubSessionMsg struct {
 	ref                  string
 	expectedState        string
 	expectedRefreshToken int
-	err                  error
+	// liveNavSeq tags a read issued by live-session cycling
+	// (switchToAdjacentLiveSession): 0 for every other read. Update drops a
+	// tagged read whose sequence a newer live-nav read has superseded.
+	liveNavSeq int
+	err        error
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the

@@ -531,6 +531,38 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     if (isMobile) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
+    // The live section paginates like needs_you (limit 50 per page). At the
+    // last LOADED live row, next demand-loads the following page and
+    // continues into it rather than wrapping over the loaded subset, which
+    // would skip every live session behind the remaining count (roborev PR
+    // #1044 finding 1; the needs-you handler's openDemandedPage pattern
+    // above). previous wraps within loaded rows: pages only page forward,
+    // so the true last live row is unknowable until every page is in.
+    let liveNavMounted = true;
+    let liveNavIntent = 0;
+    const demandedLivePages = new Set<string>();
+    const demandNextLivePage = (state: ReturnType<typeof navigationStore.getState>, refs: readonly string[]) => {
+      const offset = selectNextSectionOffset("live", state);
+      const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
+      if (demandedLivePages.has(pageID)) return;
+      demandedLivePages.add(pageID);
+      const intentAtPress = ++liveNavIntent;
+      const paneAtPress = workspaceStore.getState().focusedPaneId;
+      const beforeRefs = new Set(refs);
+      void state
+        .loadSection("live", offset)
+        .then(() => {
+          if (
+            !liveNavMounted ||
+            intentAtPress !== liveNavIntent ||
+            workspaceStore.getState().focusedPaneId !== paneAtPress
+          )
+            return;
+          const newlyLoaded = selectLiveRows(navigationStore.getState()).find((row) => !beforeRefs.has(row.ref));
+          if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+        })
+        .catch(() => undefined);
+    };
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
@@ -539,8 +571,15 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       // server order, wrapping. openNeedsYouSession is the shared
       // session-URL navigation seam (needsYouCycle.ts).
       registry.registerAction(ACTIONS.sessionLiveNext, () => {
-        const refs = selectLiveRows(navigationStore.getState()).map((row) => row.ref);
-        const next = adjacentLiveSessionRef(refs, focusedSessionRef(), "next");
+        const state = navigationStore.getState();
+        const refs = selectLiveRows(state).map((row) => row.ref);
+        const current = focusedSessionRef();
+        const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
+        if ((refs.length === 0 || atLastLoaded) && selectSectionRemaining("live", state) > 0) {
+          demandNextLivePage(state, refs);
+          return;
+        }
+        const next = adjacentLiveSessionRef(refs, current, "next");
         if (next !== null) openNeedsYouSession(next);
       }),
       registry.registerAction(ACTIONS.sessionLivePrevious, () => {
@@ -551,6 +590,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
+      liveNavMounted = false;
       for (const dispose of unregister) dispose();
     };
   }, [isMobile]);
