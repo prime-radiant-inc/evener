@@ -260,6 +260,24 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.sessionDetailsRequested = false
 			m.session.refreshViewport()
+			// A live-nav read landing on the same session (a rapid wrap,
+			// A -> B -> A) replaced the server-side subscriptions, culling
+			// the children; watchedChildRefs still marks them, so the set
+			// must be cleared before a re-arm can issue. The deferred
+			// reconcile from a stale recovery dropped while this read was
+			// pending is also settled here (roborev PR #1044 round-16
+			// medium 1).
+			if msg.liveNavSeq > 0 {
+				m.watchedChildRefs = nil
+				reenableChildren := m.subscribeNewChildren()
+				if m.liveNavNeedsReconcile {
+					m.liveNavNeedsReconcile = false
+					retried, reconcile := m.reestablishDisplayedSubscription()
+					retried.liveNavNeedsReconcile = false
+					return retried, tea.Batch(reenableChildren, reconcile)
+				}
+				return m, reenableChildren
+			}
 			return m, tea.Batch(preCut...)
 		}
 		m.clearNoticesByCategory("action-unavailable")

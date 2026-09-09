@@ -889,6 +889,140 @@ func TestHubSessionLiveCycleReconcilesAfterPendingNavigationSettles(t *testing.T
 	}
 }
 
+// Round 16, medium 1: a rapid wrap (A -> B -> A) makes the newest live-nav
+// read's response land on the SAME-ref branch (displayed A, target A). The
+// read's ReplaceSubscription culled the child subscriptions server-side,
+// but the same-ref branch never re-arms them - and watchedChildRefs still
+// marks them, so even the ordinary entry path would skip a re-arm. Child
+// activity must be re-established on the same-ref live-nav apply (roborev
+// PR #1044 round-16 medium 1).
+func TestHubSessionLiveCycleWrapReArmsChildSubscriptions(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01A", liveCycleTree())
+	defer cleanup()
+	// The displayed session's read carries a running child, so a same-ref
+	// apply has something to re-arm.
+	reads.threadByRef = map[string]appwire.Thread{"local:01A": threadWithRunningChild("local:01A")}
+
+	// First press: A -> B (pending: 01B), read in flight.
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)
+	// Rapid second press while the first is pending: B -> A (pending: 01A)
+	// - the previous direction wraps back to the displayed session.
+	m2, cmd2 := m1.switchToAdjacentLiveSession(-1)
+
+	// The newer read (A) lands: same-ref (displayed A, target A) - the
+	// same-ref branch applies it as a resync.
+	updated, cmd := m2.Update(cmd2())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01A" {
+		t.Fatalf("wrap did not stay on A: viewed ref = %q, want local:01A", m3.detail.Ref)
+	}
+	// The child re-arm must issue alongside the resync: the read's
+	// replacement culled the child subscription server-side.
+	if cmd == nil {
+		t.Fatal("same-ref live-nav apply returned no command: the culled child subscription was not re-armed")
+	}
+	var childReadIssued bool
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, child := range msg {
+			_ = child()
+		}
+	case hubSessionMsg:
+		_ = msg
+	default:
+	}
+	for _, ref := range reads.get() {
+		if ref == "local:01CHILD" {
+			childReadIssued = true
+		}
+	}
+	if !childReadIssued {
+		t.Fatalf("child subscription not re-armed: reads = %v, want a read for local:01CHILD", reads.get())
+	}
+	// The older read (B) is superseded; release its capture and drop it.
+	if cmd1 != nil {
+		olderMsg := cmd1()
+		if sessionMsg, ok := olderMsg.(hubSessionMsg); ok && sessionMsg.capture != nil {
+			sessionMsg.capture.Release()
+		}
+		updated2, _ := m3.Update(olderMsg)
+		m3 = updated2.(hubModel)
+		if m3.detail.Ref != "local:01A" {
+			t.Fatalf("older wrap read hijacked: viewed ref = %q, want local:01A", m3.detail.Ref)
+		}
+	}
+}
+
+// Round 16, medium 1 (second half): the deferred reconcile flag must also be
+// processed when the newest navigation settles on the SAME-ref branch - a
+// stale recovery dropped while the newest read was pending sets the flag,
+// and the same-ref apply that clears the pending state is the settle point.
+func TestHubSessionLiveCycleSameRefSettleProcessesReconcileFlag(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01A", liveCycleTree())
+	defer cleanup()
+
+	// A recovery read is issued (via a draft drop), then a newer press
+	// targets A itself through the wrap: displayed A, pending A.
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01B
+	m1.session.input.SetValue("typed while the read was in flight")
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+
+	// The user clears the draft and wraps back to A: pending 01B, then a
+	// previous-direction press from 01B targets 01A.
+	m2.session.input.SetValue("")
+	m3, _ := m2.switchToAdjacentLiveSession(1)       // from 01A, pending: 01B
+	m4, newer2 := m3.switchToAdjacentLiveSession(-1) // from 01B, pending: 01A
+
+	// The stale recovery response drops while the newest read (A) is pending:
+	// sets the deferred reconcile flag.
+	updated3, _ := m4.Update(sessionMsg)
+	m5 := updated3.(hubModel)
+	if m5.detail.Ref != "local:01A" {
+		t.Fatalf("stale recovery hijacked: viewed ref = %q, want local:01A", m5.detail.Ref)
+	}
+	if !m5.liveNavNeedsReconcile {
+		t.Fatal("stale recovery drop while pending did not set the deferred reconcile flag")
+	}
+
+	// The newest read's response lands on the SAME-ref branch (displayed A,
+	// target A): the settle must process the deferred reconcile.
+	newer2Msg := newer2().(hubSessionMsg)
+	updated4, settle := m5.Update(newer2Msg)
+	m6 := updated4.(hubModel)
+	if m6.detail.Ref != "local:01A" {
+		t.Fatalf("newest navigation did not apply: viewed ref = %q, want local:01A", m6.detail.Ref)
+	}
+	if settle == nil {
+		t.Fatal("same-ref settle returned no command: the deferred reconcile was not processed")
+	}
+	var reconcileMsg hubSessionMsg
+	var collect func(msg tea.Msg)
+	collect = func(msg tea.Msg) {
+		switch inner := msg.(type) {
+		case hubSessionMsg:
+			if inner.liveNavRecovery && inner.ref == "local:01A" {
+				reconcileMsg = inner
+			}
+		case tea.BatchMsg:
+			for _, child := range inner {
+				collect(child())
+			}
+		}
+	}
+	collect(settle())
+	if reconcileMsg.ref == "" {
+		t.Fatalf("same-ref settle issued no tagged recovery for local:01A: reads = %v", reads.get())
+	}
+	if reconcileMsg.capture != nil {
+		reconcileMsg.capture.Release()
+	}
+}
+
 // A pending live-nav target must not survive a dashboard round-trip: the
 // mode-exit drop (ctrl+o while the read is in flight) returns without
 // clearing it, and nothing on re-entry clears it either, so the next press
