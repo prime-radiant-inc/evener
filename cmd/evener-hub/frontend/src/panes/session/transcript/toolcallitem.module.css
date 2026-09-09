@@ -309,13 +309,6 @@
   line-height: var(--line-height-title);
 }
 
-/* The FailureGlyph's .glyph class is scoped to its own module, so the
- * line-height override for intent-bearing rows lives here via :global.
- * See the matching overrides on .rowIcon and .status above. */
-.row[data-intent="true"] :global(.glyph) {
-  line-height: var(--line-height-title);
-}
-
 /* Above the breakpoint the row sits inside runContent's --speaker-gutter of
  * reserved padding: pulling the icon one gutter to the left seats it in the
  * rail while the row's text stays at the content edge. The negative margin
