@@ -260,8 +260,7 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 }
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
-// Its refusals — an unknown name, and an entry recorded under a name the store
-// cannot derive directories from — are classified by marketplaceRefusalToWire.
+// Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
@@ -296,9 +295,8 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 
 // Browse returns a marketplace's plugin catalog. Like ListMarketplaces, this
 // is a read (the manager may lazily fetch an unfetched marketplace pointer,
-// but that is serialized by the manager's own flock). Its refusals — an
-// unknown name, and an entry whose recorded name the lazy fetch cannot derive
-// a clone directory from — are classified like RemoveMarketplace's, by
+// but that is serialized by the manager's own flock). Its one refusal, an
+// unknown name, is classified like RemoveMarketplace's, by
 // marketplaceRefusalToWire; a fetch that failed is not a refusal.
 func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 	cat, err := c.mgr.Browse(ctx, params.Name)
