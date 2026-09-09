@@ -184,6 +184,17 @@
   white-space: nowrap;
 }
 
+/* Button intentionally owns no caller className API, so select the one
+ * composer button that directly contains the Send-specific label class. The
+ * shared phone Button rule already supplies this target's block-size floor;
+ * this matching inline-size floor stays local to Send instead of widening
+ * every xs Button consumer. */
+@media (max-width: 899px) {
+  .composer :global(button):has(> .submitLabel) {
+    min-width: var(--tap-min);
+  }
+}
+
 /* The Send button's word. It rides beside the paper-plane glyph while the
  * pane has room; at the compact boundary (the same 559px GoalControl's chip
  * swaps at) the word drops and the glyph carries the button - the button
