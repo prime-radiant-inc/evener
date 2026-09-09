@@ -220,19 +220,24 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 	// The hopeless stop join owns half of the 3s close budget by construction
 	// (agent.closeStopJoinContext reserves LaneClosePassBudget/2 for the
 	// stop and the other half for the bounded joins that follow it), so the
-	// floor under a healthy close here is ~1.5s — asserting elapsed time
-	// against a fixed ceiling can only re-flake under load (2026-09-08
-	// race-root CI: 2.136s on an idle-expected 1.51s mean, 135ms over a 2s
-	// ceiling). The REAL regression — the stop join consuming the joins'
-	// half too, which is what turned an abandoned subtree into a full-budget
-	// shutdown in #420 — is pinned deterministically by
-	// TestCloseStopJoin_HopelessStopLeavesHalfBudget in the agent package.
-	// Here the completion signal is the assertion: run() returned (above),
-	// and Close() released the cascade before the stop could consume it
-	// whole, i.e. well inside the full budget. The 90s TRIPWIRE context
-	// above remains the hang guard.
-	if elapsed := time.Since(drainAt); elapsed >= 3*time.Second {
-		t.Fatalf("Close spent %s after the drain returned; it consumed the entire 3s close budget joining the hopeless stop instead of its reserved half", elapsed)
+	// floor under a healthy close here is ~1.5s: a fixed 2s ceiling re-flaked
+	// under load (2026-09-08 race-root CI: 2.136s on an idle-expected 1.51s
+	// mean, 135ms over). The ceiling below sits halfway between that worst
+	// observed healthy close (2.136s) and the full-budget burn of a stop join
+	// that escaped its half (~3s): ~365ms of scheduling margin above the
+	// flake, ~500ms of detection margin below the failure.
+	// This IS the close-tree wiring check, not just a completion signal:
+	// run() reaches Session.Close() -> closeOwnedDelegateRuntimeTree ->
+	// closeRuntimeTree -> closeStopJoinContext, so if closeRuntimeTree ever
+	// bypassed the helper and joined the hopeless stop on the whole cascade
+	// (the #420 shape: the stop consumes the joins' half too), elapsed lands
+	// at ~3s and trips this ceiling. The exact half is pinned
+	// deterministically by TestCloseStopJoin_HopelessStopLeavesHalfBudget in
+	// the agent package; the 90s TRIPWIRE context above remains the hang
+	// guard.
+	ceiling := agent.LaneClosePassBudget - 500*time.Millisecond
+	if elapsed := time.Since(drainAt); elapsed >= ceiling {
+		t.Fatalf("Close spent %s after the drain returned (ceiling %s); it consumed the joins' half of the close budget joining the hopeless stop instead of its reserved half", elapsed, ceiling)
 	}
 }
 

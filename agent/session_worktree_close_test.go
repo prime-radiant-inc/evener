@@ -50,11 +50,16 @@ func TestCloseStopJoin_HopelessStopLeavesHalfBudget(t *testing.T) {
 		t.Fatal("closeStopJoinContext minted no deadline: the hopeless stop join is unbounded")
 	}
 	// Both halves of the split, read off the two context deadlines with no
-	// wall-clock wait: the stop's own deadline must sit a full joins' half
-	// before the cascade deadline it was derived from.
+	// wall-clock wait: the stop's own deadline must sit a joins' half before
+	// the cascade deadline it was derived from. Derived fresh off
+	// time.Now inside two back-to-back WithTimeout calls, so a 250ms
+	// tolerance is orders of magnitude above any honest scheduling skew
+	// between the two mints — tight enough that an implementation burning 2s
+	// of the 3s budget (reserved ~1s) fails, loose enough to never flake.
+	want := LaneClosePassBudget / 2
 	reserved := cascadeDeadline.Sub(stopDeadline)
-	if reserved < time.Second {
-		t.Fatalf("hopeless stop join reserves only %s of a 3s cascade budget for the joins that follow it; want ~1.5s (LaneClosePassBudget/2)", reserved)
+	if got := reserved - want; got < -250*time.Millisecond || got > 250*time.Millisecond {
+		t.Fatalf("hopeless stop join reserves %s of a %s cascade budget for the joins that follow it; want %s (LaneClosePassBudget/2) within 250ms", reserved, LaneClosePassBudget, want)
 	}
 }
 
