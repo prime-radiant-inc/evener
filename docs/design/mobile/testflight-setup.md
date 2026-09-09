@@ -1,6 +1,6 @@
 # Evener TestFlight setup
 
-Checked 8 September 2026 from `live-concepts-plan2-integrate`. This documents
+Checked 9 September 2026 from `live-concepts-plan2-integrate`. This documents
 setup and acceptance gates. The first signed beta `0.1.0 (1)` is processed and Testing in the internal group. Apple now reports Jesse’s copy Installed on iPhone 16 Pro; the device smoke and update gates remain open.
 
 ## Current delivery
@@ -15,7 +15,12 @@ The original keychain settings and generated project files were restored.
 The upload succeeded. The local lane's final single availability check ran too
 early during Apple's post-compliance transition and exited 1; separate reads
 37 seconds later verified the exact build and group. No reupload was attempted.
-The readiness correction is separate from the already uploaded application.
+The readiness correction at `378d5b20e` now waits for fresh exact build and group
+observations with a monotonic bound. Its separate `verify_testflight` lane passed
+against the already uploaded build 3 at 11:09 UTC on 9 September and wrote the
+expected `VALID`/`IN_BETA_TESTING` receipt. It did not upload again. The deterministic
+transition regression fails against the old lane and passes against the correction.
+Independent Luna review approved the final code and tests.
 Builds 1, 2 and 3 already exist; a future upload must select another unused number.
 
 PR #1039 was updated onto current main at `e0c10be42`; all checks are green,
