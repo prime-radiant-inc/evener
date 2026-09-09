@@ -103,7 +103,11 @@ all four RPCs plus both pushes: `appwire/protocol.go` catalog entries,
 `types.gen.ts` (never hand-edited), and deep-copy support in `appwire/clone.go`
 (the URL slice must not alias across cloned snapshots). Capability: a
 `SharedNotes bool` on `ThreadCapabilities` (beside `Goal`), true for live
-evener sessions whose daemon wires the four verbs. Display rule, in order:
+evener sessions whose daemon wires the four verbs. Display rule, in order (liveness predicate per client: hub uses the
+composer's `ENDED_STATUSES` — `ended|closed|notLoaded` (`Composer.tsx`) —
+so Details and composer agree; TUI uses its existing `Live` derivation
+(`hubNodeFromThread`); a `notLoaded` thread with the capability set therefore
+renders rule 2 everywhere):
 (1) capability unset → the section hides entirely (old daemon, unknown
 source); (2) capability set but session not live → the section shows
 read-only with no edit trigger and no remove buttons; (3) capability set
@@ -129,7 +133,10 @@ so ended sessions display all three read-only with no edit trigger (rule 2:
 capability set, not live — the live-check hides the trigger). Notes RPCs on an ended session behave like `goal/set`: the hub resumes the
 session first (qp94 auto-resume) and the write lands once it runs — a
 human save on an ended session therefore wakes it, exactly like an idle
-session. The close frame (`stampClosedThreadCapabilities`) carries the same
+session. Only out-of-band callers can hit this path (a race with close, a
+stale client holding a pre-close snapshot, or a direct RPC); the UI offers
+no trigger on ended sessions, so every initiator is a client acting on a
+session that ended underneath it. The close frame (`stampClosedThreadCapabilities`) carries the same
 set. Tests: appCapabilities wiring test, hub reject-when-unset test for both
 hub RPCs, hub and TUI gating tests (capability-unset hides the section
 entirely; ended-with-capability shows the section read-only with no
@@ -152,10 +159,11 @@ storage: the persisted note is the source of truth the agent re-reads.
 One new "Shared notes" section in `DetailsPanelBody`
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx`), shared
 by the session-chrome sheet and the `sessionDetails` pane. Unlike other
-Details rows, this section renders whenever the capability is set: the empty
-state shows an explicit
-affordance ("Add a note"), because empty is the default for every old session
-and an omit-when-absent rule would leave no trigger to click. Human
+Details rows, this section renders whenever the capability is set: when live,
+the empty state shows an explicit
+affordance ("Add a note"), because a fresh session starts empty
+and an omit-when-absent rule would leave no trigger to click; when not live
+(rule 2), the empty state renders inert read-only text with no trigger. Human
 paragraph: read view plus `GoalControl`-style click-to-edit popover; save
 dispatches `notes/human/set` via `threads.ts` and `mutationDispatcher.ts`,
 with `TasksPanel`-style refetch on `evener/notes/updated`. Save commits on
