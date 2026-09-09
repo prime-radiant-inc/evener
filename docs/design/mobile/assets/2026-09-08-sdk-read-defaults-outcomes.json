@@ -1,0 +1,174 @@
+{
+  "schema": "evener.sdk.read.outcomes.v1",
+  "status": "four-scoped-successes-and-one-invalid-kind-rejection",
+  "reviewedAt": "2026-09-09T00:24:20.371280+00:00",
+  "fixtureRoot": "/private/tmp/evener-sdk-read-methods-ngWIzD",
+  "sdk": {
+    "root": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "distSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "binaries": {
+    "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+  },
+  "outcomes": {
+    "evener/harnesses/list": {
+      "data": [
+        {
+          "id": "evener",
+          "label": "evener",
+          "kind": "evener"
+        }
+      ]
+    },
+    "evener/launch/resolve": {
+      "effective": {
+        "agent": "default",
+        "contextStrategy": "compact",
+        "openAIResponsesContinuation": "off",
+        "sandbox": "off",
+        "sandboxNet": true,
+        "maxRounds": -1,
+        "maxSubagentDepth": 2,
+        "maxConcurrentDelegateTurns": 50,
+        "maxRetainedTerminal": 2048,
+        "noProjectPrompts": false,
+        "appReplaySize": 1000,
+        "verbose": false,
+        "exportATIFProviderHandles": "redacted"
+      },
+      "layers": {},
+      "provenance": {
+        "agent": "builtin",
+        "app_replay_size": "builtin",
+        "context_strategy": "builtin",
+        "export_atif_provider_handles": "builtin",
+        "max_concurrent_delegate_turns": "builtin",
+        "max_retained_terminal": "builtin",
+        "max_rounds": "builtin",
+        "max_subagent_depth": "builtin",
+        "no_project_prompts": "builtin",
+        "openai_responses_continuation": "builtin",
+        "sandbox": "builtin",
+        "sandbox_net": "builtin",
+        "verbose": "builtin"
+      },
+      "repo": {
+        "path": "/private/tmp/evener-sdk-read-methods-ngWIzD/workspace/.evener/launch.toml",
+        "trust": "absent"
+      }
+    },
+    "evener/launch/schema": {
+      "optionCount": 33,
+      "defaultableOptionCount": 31,
+      "fields": [
+        "agent",
+        "model",
+        "reasoning_effort",
+        "fast_cheap_model",
+        "context_strategy",
+        "openai_responses_continuation",
+        "max_rounds",
+        "max_subagent_depth",
+        "max_concurrent_delegate_turns",
+        "max_retained_terminal",
+        "no_project_prompts",
+        "non_interactive",
+        "app_replay_size",
+        "system_prompt_mode",
+        "system_prompt_file",
+        "system_prompt_text",
+        "system_prompt_append_mode",
+        "system_prompt_append_file",
+        "system_prompt_append_text",
+        "skills_dirs",
+        "plugin_dirs",
+        "mcp_configs",
+        "mcps",
+        "model_fallbacks",
+        "enabled_plugins",
+        "env",
+        "sandbox",
+        "sandbox_net",
+        "verbose",
+        "trace_file",
+        "cpu_profile",
+        "export_atif_path",
+        "export_atif_provider_handles"
+      ],
+      "scope": "Schema read only; option effects remain unqualified."
+    },
+    "evener/settings/overview": {
+      "hub": {
+        "version": "0.1.0",
+        "commit": "6a0278e36",
+        "listenAddr": "127.0.0.1:49906",
+        "runDir": "/private/tmp/evener-sdk-read-methods-ngWIzD/state/evener/run",
+        "spawnTimeout": "30s",
+        "bearerTokenAge": "just now",
+        "pastIndex": {
+          "path": "/private/tmp/evener-sdk-read-methods-ngWIzD/state/evener/index.db",
+          "size": "60 KB",
+          "perPage": 50
+        }
+      },
+      "storage": {
+        "stateDir": "/private/tmp/evener-sdk-read-methods-ngWIzD/state/evener"
+      },
+      "agents": [
+        {
+          "name": "default"
+        },
+        {
+          "name": "explorer"
+        },
+        {
+          "name": "subagent"
+        }
+      ],
+      "mcpDiscovered": {}
+    },
+    "evener/path/validate": {
+      "invalidKind": "directory",
+      "response": {
+        "path": "/private/tmp/evener-sdk-read-methods-ngWIzD/workspace",
+        "valid": false,
+        "error": "unknown path kind: directory"
+      },
+      "scope": "Validation rejection only; valid-directory success not qualified."
+    }
+  },
+  "files": {
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/candidate.json": "f12667a015ec19a4ef685e9a8984c18cb100f46cc967083481d99f69533a243e",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/git-head-request.json": "260ebce0119369d6c9b14d3fa0ed05757c1778af73b3c7062e9057ddf6bbfe31",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/git-head-response.json": "3f92e29c47e0686d686068af211327c92dbafa99a084fd3b71b9cae727bf4bd2",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/harnesses-list-request.json": "e6ed81a0a5f4c7870e858abb8c9c9f9d35fccdc41612b1bc152849957f5e8f1f",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/harnesses-list-response.json": "1b34daa91abf3337dc608a188423bb2c85002105a7da1586ba112d8d3457e66b",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/launch-resolve-request.json": "8b4c13e71f23316d56db62805af4a2b5326991d27e290b5431497b543252f64b",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/launch-resolve-response.json": "8f70d2a4eee1ec073b20d43d420107ab3c2405826720ff98987b44bed0fd83ae",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/launch-schema-request.json": "eed08fea9f5498ba301f35319d02fe9922c343bb324ae6e27d3c6afaa485911b",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/launch-schema-response.json": "f55b8b41dfd3f62565568b6bcd36e0f5595012d617553ae529a85b7c314a3851",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/model-list-request.json": "2513cbdd6ff17f9cb8fa82f39436f821cc2cefff14df52ce9f23e58cf44afa01",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/model-list-response.json": "ecdec2153c4278c037e46dcb0120131426d83a29b578c61fb38281bbf0633072",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/path-validate-request.json": "0b4cb898f385536bca7e501c7036c770c7527e2261fb04179f3759a8ba8e1512",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/path-validate-response.json": "93353047be8a8857b56950aa44348c37d5f5dbbfe590e849cde84dfab8abc321",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/root-cleanup.json": "2bc6b971554ea22111a7cce2439f622ab65fea3e97e65f655bb4e11c216492cc",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/settings-overview-request.json": "b749d1b6e380c2609b6e3975ec205a6199b39837b49e773ed02eaef76d8b8653",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/settings-overview-response.json": "765aac57b2deaff9e95288772cb4f04ab2f803ea400a8c42d285ea47d9a3a41d",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/driver.mjs": "0b2683b820401ae25461668c6e8aeab6dc49eb11623b9cd90aeda63a0c096c20",
+    "/private/tmp/evener-sdk-read-methods-ngWIzD/exit.log": "443e8ec67012d10a2137102af9fd4701996dd03bb9d1d6182d52f37f1f4c2bbd"
+  },
+  "cleanup": {
+    "tokenFoundAfterWorker": true,
+    "tokenRemovedByCoordinator": true,
+    "ownedBinaryProcessesAbsent": true
+  },
+  "limitations": [
+    "Coordinator asserted exact harness, builtin launch defaults and absent repo trust, 33 unique schema fields (31 defaultable), and owned hub paths/commit/agents against raw fields and current handlers. The original shape-only passed-seven candidate is excluded.",
+    "The worker reported token absence incorrectly; the coordinator found and removed the leftover owned fixture token after verifying no owned binary process remained.",
+    "git/head returned an empty string with no owned Git repository; no Git-head success claim.",
+    "model/list contacted default Ollama and an unavailable fixture endpoint; excluded for violating fixture isolation.",
+    "Accepted reads cover builtin/default or empty state only, not populated settings or broader failure/lifecycle outcomes."
+  ]
+}

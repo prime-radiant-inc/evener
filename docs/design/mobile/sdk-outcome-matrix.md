@@ -20,7 +20,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `thread/start` | hub | RECORDED — [attention producer](assets/2026-09-08-sdk-attention-producer.json): returned exact owned session and held turn; working attention notification and authoritative summary. No thread/started notification claim. | U | U | U | U | U |
 | `thread/resume` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): endedParentResumed and outputs resume.json / independent-parent.json. | U | U | U | U | U |
 | `thread/fork` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): regularForkAcknowledged, asideForkAcknowledged, originalInputRetained, independentChildParentLinks. | U | U | U | U | U |
-| `thread/clear` | both | U | U | U | U | U | U |
+| `thread/clear` | both | RECORDED — [clear outcomes](assets/2026-09-08-sdk-clear-outcomes.json): completed seed cleared; stable ref moves to a new instance, old conversation absent and a positive later turn completes. | U | U | U | U | U |
 | `thread/model/set` | both | RECORDED — [sdk-settings-receipt](assets/sdk-settings-receipt.json): mutations[5:7], notifications and settingsRestored; configuration state only, no model execution. | U | U | U | U | U |
 | `evener/thread/name/set` | both | U | U | U | U | U | U |
 | `thread/reasoning-effort/set` | both | RECORDED — [sdk-settings-receipt](assets/sdk-settings-receipt.json): mutations[0:3], notifications and settingsRestored; configuration state only, no model execution. | U | U | U | U | U |
@@ -43,8 +43,8 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/paths/complete` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): exact owned-prefix file and directory completion. | U | U | U | U | U |
 | `evener/dirs/create` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): nested directory exists; second create reports existing. | RECORDED — same receipt: conflicting regular file returns -32013; contents preserved. | U | U | U | U |
 | `evener/projects/recent` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): empty owned-hub response at limit 15; populated ordering unqualified. | U | U | U | U | U |
-| `evener/path/validate` | hub | U | U | U | U | U | U |
-| `evener/git/head` | hub | U | U | U | U | U | U |
+| `evener/path/validate` | hub | RECORDED — [path/Git outcomes](assets/2026-09-08-sdk-path-git-outcomes.json): existing owned directory with kind dir validates true. | RECORDED — same receipt: missing directory validates false with the expected filesystem error; [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): unsupported kind directory returns unknown-path-kind. | U | U | U | U |
+| `evener/git/head` | hub | RECORDED — [path/Git outcomes](assets/2026-09-08-sdk-path-git-outcomes.json): main matches independent Git state of an owned committed repository; non-repository returns empty head. Detached HEAD remains unqualified. | U | U | U | U | U |
 | `evener/mobile/pairing` | hub | U | U | U | U | U | U |
 | `evener/navigation/read` | hub | RECORDED — [attention producer](assets/2026-09-08-sdk-attention-producer.json): authoritative manifest snapshots before/after held turn; final summary equals exact event summary. Other resources and races remain unreviewed. | U | U | U | U | U |
 | `evener/favorite/set` | hub | RECORDED — [saved-item outcomes](assets/2026-09-08-sdk-saved-items-outcomes.json): exact owned project toggles true/false with authoritative catalog readback. | U | U | U | U | U |
@@ -56,7 +56,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/session-pin/assign` | hub | U | U | U | U | U | U |
 | `evener/session-pin/unpin` | hub | U | U | U | U | U | U |
 | `evener/search` | hub | U | U | U | U | U | U |
-| `evener/harnesses/list` | hub | U | U | U | U | U | U |
+| `evener/harnesses/list` | hub | RECORDED — [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): exact builtin evener harness descriptor. | U | U | U | U | U |
 | `evener/upgrade` | hub | U | U | U | U | U | U |
 | `evener/auth/status` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): 45 status requests with stored, environment, ADC, and cleared-state readbacks. | U | U | U | U | U |
 | `evener/auth/test` | hub | U | U | U | U | U | U |
@@ -69,8 +69,8 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/auth/credentialJson/set` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): valid Google credential JSON stored with status readback; ADC preserved after clearing. | U — incomplete JSON produced an uncertain recipe outcome and unchanged ADC-backed state; the retained driver does not assert the underlying RPC error. | U | U | U | U |
 | `evener/auth/device/start` | hub | U | U | U | U | U | U |
 | `evener/auth/device/poll` | hub | U | U | U | U | U | U |
-| `evener/launch/resolve` | hub | U | U | U | U | U | U |
-| `evener/launch/schema` | hub | U | U | U | U | U | U |
+| `evener/launch/resolve` | hub | RECORDED — [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): builtin effective values/provenance, empty layers and absent repository trust. | U | U | U | U | U |
+| `evener/launch/schema` | hub | RECORDED — [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): 33 unique schema fields, 31 defaultable; selected wire/editor mappings checked. | U | U | U | U | U |
 | `evener/launch/getLayer` | hub | RECORDED — [2026-09-08-sdk-launch-producer](assets/2026-09-08-sdk-launch-producer.json): observation.readback maxRounds=7, two project-layer updates and original layer restored. | U | U | U | U | U |
 | `evener/launch/setLayer` | hub | RECORDED — [2026-09-08-sdk-launch-producer](assets/2026-09-08-sdk-launch-producer.json): observation.readback maxRounds=7, two project-layer updates and original layer restored. | U | U | U | U | U |
 | `evener/launch/trustRepo` | hub | U | U | U | U | U | U |
@@ -95,7 +95,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/plugin/disable` | hub | RECORDED — [2026-09-08-sdk-plugin-marketplace-producers](assets/2026-09-08-sdk-plugin-marketplace-producers.json): records[name=plugin-disable]; enabled=false. No executable plugin effect. | U | U | U | U | U |
 | `evener/plugin/setAutoUpgrade` | hub | RECORDED — [2026-09-08-sdk-plugin-marketplace-producers](assets/2026-09-08-sdk-plugin-marketplace-producers.json): records[name=plugin-auto-upgrade]; autoUpgrade=true; scheduled execution untested. No executable plugin effect. | U | U | U | U | U |
 | `evener/command/list` | hub | RECORDED — [sdk-settings-receipt](assets/sdk-settings-receipt.json): commands.empty/populated/restored; one owned user command discovered, not executed. | U | U | U | U | U |
-| `evener/settings/overview` | hub | U | U | U | U | U | U |
+| `evener/settings/overview` | hub | RECORDED — [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): owned hub commit and state/run paths, builtin agents and empty MCP discovery. | U | U | U | U | U |
 | `evener/settings/transcriptDisplay/get` | hub | U | U | U | U | U | U |
 | `evener/settings/transcriptDisplay/patch` | hub | U | U | U | U | U | U |
 | `evener/settings/keybindings/get` | hub | U | U | U | U | U | U |
@@ -104,7 +104,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 ## Review progress and next order
 
-This index has 48 narrowly recorded success/effect cells. The other 42 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
+This index has 55 narrowly recorded success/effect cells. The other 35 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
 
 1. Index existing receipts and raw assertions before creating duplicate fixtures. Verify actual installed SDK execution, exact target/operation and authoritative effect.
 2. Review mutation identity, stale binding and lost-reply outcomes for send, queue, decisions and lifecycle operations needed by the active iPhone journey.

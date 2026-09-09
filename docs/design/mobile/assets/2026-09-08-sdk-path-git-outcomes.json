@@ -1,0 +1,85 @@
+{
+  "schema": "evener.sdk.path-git-outcomes.v1",
+  "observedAt": "2026-09-09T00:41:18.766148+00:00",
+  "backendSource": "6a0278e36",
+  "binarySha256": {
+    "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+  },
+  "fixtureRoot": "/private/tmp/evener-sdk-path-git-current2-cWJmxN",
+  "fixtureGit": {
+    "branch": "main",
+    "commit": "8e1a4af0c30aba47b1b3ded4862f7e16e0c2767d"
+  },
+  "executedCases": {
+    "03-validate-missing-dir-request.json": {
+      "method": "evener/path/validate",
+      "params": {
+        "path": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/missing",
+        "kind": "dir"
+      }
+    },
+    "08-git-head-nonrepo-response.json": {
+      "head": ""
+    },
+    "04-validate-missing-dir-response.json": {
+      "path": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/missing",
+      "valid": false,
+      "error": "stat /private/tmp/evener-sdk-path-git-current2-cWJmxN/missing: no such file or directory"
+    },
+    "07-git-head-nonrepo-request.json": {
+      "method": "evener/git/head",
+      "params": {
+        "cwd": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/nonrepo"
+      }
+    },
+    "06-git-head-response.json": {
+      "head": "main"
+    },
+    "01-validate-existing-dir-request.json": {
+      "method": "evener/path/validate",
+      "params": {
+        "path": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/workspace",
+        "kind": "dir"
+      }
+    },
+    "02-validate-existing-dir-response.json": {
+      "path": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/workspace",
+      "valid": true
+    },
+    "05-git-head-request.json": {
+      "method": "evener/git/head",
+      "params": {
+        "cwd": "/private/tmp/evener-sdk-path-git-current2-cWJmxN/workspace"
+      }
+    }
+  },
+  "sourceSemantics": "hubGitHead canonicalizes cwd and resolveGitHead returns a branch name, or short commit SHA in detached HEAD; failures are empty display metadata. This receipt executes attached branch and non-repository only.",
+  "review": "Luna producer and independent Luna audit; coordinator independently checked exact raw requests/responses, filesystem/git state, hashes, handler semantics and current cleanup. Worker sparse-worktree disappearance report does not describe the coordinator worktree, which remained present.",
+  "cleanup": {
+    "ownedProcessesAbsent": true,
+    "authTokenAbsent": true,
+    "tokenRemoval": "Independent auditor removed the fixture-only token left by the driver; coordinator confirmed absence."
+  },
+  "files": {
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/01-validate-existing-dir-request.json": "5dc67a5f8cf05382a1e9cc3667d47ee7e39c51a8e78f8e19fc7568d65a9263cc",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/02-validate-existing-dir-response.json": "440ba41b4e7614d049282f28f04edabdc7cf1547e4447c96e14f00935111484d",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/03-validate-missing-dir-request.json": "32230692d73be5b9fd3aa6f4bfe0ad144b21a4f3a3a90d525e4b10125c525c08",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/04-validate-missing-dir-response.json": "a6ba76e2999aa66fe3b4efd73e320bac1200fbf6c799709752d424691f9dbb04",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/05-git-head-request.json": "7f48e7fd877c0b6fd24db00152afd82d67630216d1209c0e671f70a38c9d772b",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/06-git-head-response.json": "87d820b7a3f27b02680f2252eaf14555f23b5df2eab77634fb7b7f8a7b3ea231",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/07-git-head-nonrepo-request.json": "dba1ba9122f1c7482fca419c7cbd113434fc672252ed2a1267e1b5aee774dcad",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/08-git-head-nonrepo-response.json": "3f92e29c47e0686d686068af211327c92dbafa99a084fd3b71b9cae727bf4bd2",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/driver.mjs": "e54c6b517d4f165e667b640a10eac867c3b26dee63998e9449d04b53f76165c5",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/candidate.json": "8484d86a246d4192bdf7bf2dc069180ee192658399d9fc74639c4dc2a9bbffd9",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/expected-head": "6403203dd5a0867eb14d104ee8a73730bd72dd9ad92e78d996a6dba0a5dcfc01",
+    "/private/tmp/evener-sdk-path-git-current2-cWJmxN/expected-sha": "1da4fb13642d6603f1da4516747d0c6d1319af79d8fd268a941844c2f58a6213",
+    "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/package.json": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "limitations": [
+    "No detached-head, file-kind, executable-kind, permission, reconnect or transport-failure outcome claim.",
+    "Earlier invalid kind directory result is retained separately; only kind dir establishes this success.",
+    "No remote CI or native UI qualification."
+  ]
+}

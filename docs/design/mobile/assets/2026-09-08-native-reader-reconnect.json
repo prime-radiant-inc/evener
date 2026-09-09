@@ -1,0 +1,159 @@
+{
+  "schema": "evener.native.reader-reconnect.v1",
+  "observedAt": "2026-09-09T00:45:23.683813+00:00",
+  "codeSource": "bfe632f44",
+  "backendSource": "6a0278e36",
+  "device": "iPhone 17 Pro simulator, iOS 26.5",
+  "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+  "bundleId": "com.primeradiant.evener.native",
+  "sessionRef": "local:034LVKwtHytL0Jh8qsVDFb",
+  "conversationInstance": "034LVKwtHytL0Jh8qsVDFb",
+  "ordinaryDraft": "Retain this separate draft",
+  "uiControls": "Jesse explicitly authorized simulator-specific controls; simctl launch/screenshot and idb describe/tap/swipe/set-value used.",
+  "streamObservation": {
+    "preservedVisibleFrames": {
+      "You: Sandbox deny": {
+        "before": {
+          "width": 318,
+          "x": 54,
+          "height": 25,
+          "y": 384.33331298828125
+        },
+        "after": {
+          "x": 54,
+          "height": 25,
+          "y": 384.33331298828125,
+          "width": 318
+        }
+      },
+      "Write /private/tmp/evener-iphone-joined-8MIBV9/requests/request-19.txt": {
+        "before": {
+          "height": 38,
+          "x": 16,
+          "y": 499.33331298828125,
+          "width": 370
+        },
+        "after": {
+          "y": 499.33331298828125,
+          "height": 38.00006103515625,
+          "width": 370,
+          "x": 16
+        }
+      }
+    },
+    "coordinateTolerancePoints": 0.001,
+    "completedTurn": {
+      "id": "turn_m14",
+      "status": "completed",
+      "items": [
+        {
+          "type": "userMessage",
+          "id": "item_user_77",
+          "text": "Reader live anchor settled qualification",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "id": "item_reasoning_78",
+          "text": "REASONING_SENTINEL_NATIVE_JOINED",
+          "status": "completed"
+        },
+        {
+          "type": "agentMessage",
+          "id": "item_communicate_preview_79",
+          "text": "# Fixture response\n\nText, `inline code`, and [a link](https://example.com/fixture).\n\n```\ncode block\n```",
+          "status": "completed"
+        }
+      ]
+    },
+    "latestStillOffered": true,
+    "draftUnchanged": true,
+    "scope": "Settled older viewport during partial communicate preview and after completion. First immediate post-swipe sample excluded because momentum had not settled; repeated run has two stable pre-release AX samples."
+  },
+  "latestObservation": {
+    "nativeAction": "Latest AX press, followed by a coordinate tap confirming the same endpoint",
+    "visibleFinalPromptCount": 1,
+    "finalCodeBlockFullyVisible": true,
+    "completedTurnId": "turn_m14",
+    "exactSingleAuthoritativeAgentMessage": true,
+    "note": "Latest control remains offered by current UI even at the bottom; visibility alone does not indicate that the jump failed."
+  },
+  "reconnectObservation": {
+    "beforeHubPid": 97580,
+    "afterHubPid": 50508,
+    "disconnectedUi": "reconnecting; Reconnect to load the conversation. Your draft is kept.",
+    "automaticReconnect": true,
+    "sameTokenAndState": true,
+    "allDraftRowsPreservedAfterRestart": true,
+    "nativePositiveTurn": {
+      "id": "turn_m15",
+      "status": "completed",
+      "items": [
+        {
+          "type": "userMessage",
+          "id": "item_user_81",
+          "text": "Reconnect continuation proof",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "id": "item_reasoning_82",
+          "text": "REASONING_SENTINEL_NATIVE_JOINED",
+          "status": "completed"
+        },
+        {
+          "type": "agentMessage",
+          "id": "item_communicate_preview_83",
+          "text": "# Fixture response\n\nText, `inline code`, and [a link](https://example.com/fixture).\n\n```\ncode block\n```",
+          "status": "completed"
+        }
+      ]
+    },
+    "providerMainRequestIndex": 45,
+    "providerInputExactlyOnce": true,
+    "ordinaryDraftNeverSent": true,
+    "ordinaryDraftRestoredAfterDeliberatePromptReplacement": true,
+    "allDraftRowsEqualAtFinalCheck": true
+  },
+  "files": {
+    "/private/tmp/evener-native-reader-s7qgm65n/provider.py": "bce337b95668d5f0fb55bccc94434ba89579b3f1cd3d572735b7d297de7021b3",
+    "/private/tmp/evener-native-reader-s7qgm65n/fixture-executed.py": "47d17a37ff35eea276049f563ce3d15c40224a1b21c2c96327ca9c3aca91d211",
+    "/private/tmp/evener-native-reader-s7qgm65n/runtime.json": "0e04d93f2bde5b61d1cddbf72aee42e0663db5bc5b8ae0a7a408c7fca16f113e",
+    "/private/tmp/evener-native-reader-s7qgm65n/start-reader.mjs": "46696e7510486173800955877666fe7e67f0a00cfe080b1aa5234002c5072d49",
+    "/private/tmp/evener-native-reader-s7qgm65n/start-intent.json": "db790af87db1541a409e26e7b57c9b3b8753eee9a34085f0df925b614d419638",
+    "/private/tmp/evener-native-reader-s7qgm65n/start-response.json": "a0d0e55e7a228e626a031374550ac1413aa7c2150657a51338c1b6aba7100ffd",
+    "/private/tmp/evener-native-reader-s7qgm65n/start-reader-repeat.mjs": "48ebc4581d4fca66752384ae86ccdc5ef15b5e74709ae685cf71a64cd18b8d10",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-start-intent.json": "ccd1dc6ba9de7321f36f01a92f963c34e8d873a2958d5afa544f62a7948b1d52",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-start-response.json": "76d6d62fb209616f18a125f8e63f25235837c129ee810f46fdc1b4663ed1b8ca",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-requests-observed.json": "28ad524b4069efd6b44383140154167fad82f8d988c18bd445c439cfb18b166a",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-40.json": "e78dbfe64f1884edee90fcaf037dfeaefcee181154ae4586639102c1c0f2f1bc",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-42.json": "b0cb0a8aa6bec849fee7985463f92d83fc77c098dd252c92a2d4888affba6ae5",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-44.json": "c0f5dba7c31254a1cd05cd1832507f9f347564327f077f51ee1b95d1cfc6f70b",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-paused-summary.json": "c4fe06c30670c034a54ca02a6626a363c72649f7b79a4860076ff8c20b424433",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-completed-summary.json": "7fd6727af6bb072755ce9faaaff514ba46f385bf9e8f61c64e282b962b7a7499",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-paused-ax.json": "876ea011a72a8d5a71d5fdb9b9fb961a3c4276984322aa87a0b3c37419caacf4",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-paused-settled-ax.json": "a4217276b1a49186c05a1084824b7e368ecbef4fe5d0130c38577d0101f2f3c9",
+    "/private/tmp/evener-native-reader-s7qgm65n/repeat-completed-ax.json": "acb66dca0f23c3e5acffb2eac27ffb011df046fd746ac424e6b9c7caa8b1c451",
+    "/private/tmp/evener-native-reader-s7qgm65n/anchor-stream-evidence.json": "0217772b1f9dabce54adefa22bccb3479f81273d6f009d2611b8a1a7798ff9b1",
+    "/private/tmp/evener-native-reader-s7qgm65n/latest-evidence.json": "6a207959d94a6470f1152a870262aedbfe9d0d658bf6516be96cb7ce60b3241e",
+    "/private/tmp/evener-native-reader-s7qgm65n/latest-settled-ax.json": "5760fefa3e97351917c82c99a23cb3646bf20bf17e221fb3e91d7d8aab199113",
+    "/private/tmp/evener-native-reader-s7qgm65n/latest.png": "10575f20c693c49f305aa00225102b8b96f8d26a6c578d55238f2a895c08b608",
+    "/private/tmp/evener-native-reader-s7qgm65n/before-hub-restart.json": "8daebb970d1a699a410c8e42d72bbc5b5999b9b3c2a53694dff4a338bab19a01",
+    "/private/tmp/evener-native-reader-s7qgm65n/restarted-hub-runtime.json": "83561489a6048d02c04ff81120b5cdeeb310281d9c7ba32a52d60f4eb90f3214",
+    "/private/tmp/evener-native-reader-s7qgm65n/hub-disconnected-ax.json": "c551dede17080ceee00ffc3c8a7f65625f7206b8ceda857fdd796d71419aa10d",
+    "/private/tmp/evener-native-reader-s7qgm65n/hub-disconnected.png": "69292f88f9d4fdfcd73583750cc09df5cbd655c32f97af445d0aad92c0c3fd3f",
+    "/private/tmp/evener-native-reader-s7qgm65n/hub-reconnected-ax.json": "95ea9cb9cf520e3e0135d017e99cb61f431bc4cc08d9fa8c796a63ad803f8784",
+    "/private/tmp/evener-native-reader-s7qgm65n/hub-reconnected.png": "7b0e83d63ca45e7b6ae477452a8442aa3eeb7991c71608d400e03c44c3e65038",
+    "/private/tmp/evener-native-reader-s7qgm65n/hub-restarted-summary.json": "7fd6727af6bb072755ce9faaaff514ba46f385bf9e8f61c64e282b962b7a7499",
+    "/private/tmp/evener-native-reader-s7qgm65n/reconnect-before-send-ax.json": "c6700a76bf2383c6dc0554558e2694cbbc3af693e005342ea2f1024212e50b07",
+    "/private/tmp/evener-native-reader-s7qgm65n/reconnect-positive-summary.json": "9e933b594adc002735ff598c0d737f36033c7a51c4a985d6fef30a930b4c8b62",
+    "/private/tmp/evener-native-reader-s7qgm65n/final-native-ax.json": "9da66ceeccbda0e03aea2c9ecae1b35df5aaf8a62323c92adbd18f1509a44f8a",
+    "/private/tmp/evener-native-reader-s7qgm65n/reconnect-evidence.json": "903fb1da88152572105547a5529f2aae0a7a12ff815d2ab11c62f1e3f2e25192"
+  },
+  "limitations": [
+    "The first immediate post-swipe comparison sampled scrolling momentum and was excluded; the repeated stream compared two settled baseline samples to completion with a 0.001-point numerical tolerance.",
+    "The live turn was initiated by another installed public SDK client while native remained reading older content; native Latest and post-reconnect Send were actual app actions.",
+    "Current-source two-hub overlapping-operation isolation, lost-acknowledgment recovery, broader image/paging combinations and physical iPhone acceptance remain open.",
+    "Owned hub and scripted provider remain running for continuing native qualification; no release, remote CI, TestFlight build or complete Usable milestone is claimed."
+  ]
+}
