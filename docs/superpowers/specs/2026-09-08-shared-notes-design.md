@@ -103,10 +103,13 @@ all four RPCs plus both pushes: `appwire/protocol.go` catalog entries,
 `types.gen.ts` (never hand-edited), and deep-copy support in `appwire/clone.go`
 (the URL slice must not alias across cloned snapshots). Capability: a
 `SharedNotes bool` on `ThreadCapabilities` (beside `Goal`), true for live
-evener sessions whose daemon wires the four verbs; hub and TUI gate the
-section, edit affordances, and remove buttons on it, and the two hub RPCs
-reject when unset — so an old daemon with a new hub fails closed instead of
-dropping writes. Hub reject is a pre-flight gate like `goal/set`
+evener sessions whose daemon wires the four verbs. Display rule, in order:
+(1) capability unset → the section hides entirely (old daemon, unknown
+source); (2) capability set but session not live → the section shows
+read-only with no edit trigger and no remove buttons; (3) capability set
+and live → full section with edit and remove. The two hub RPCs reject when
+the capability is unset — so an old daemon with a new hub fails closed
+instead of dropping writes. Hub reject is a pre-flight gate like `goal/set`
 (`TestHubRPCGoalSetGatedByCapability` precedent: the hub reads the
 capabilities from its own thread/read and returns structured Unavailable
 before the call reaches the source), named in the relay beside the goal
@@ -115,15 +118,22 @@ gate. TUI plumbing is explicit because the TUI never reads
 `hubSessionCapabilities` (`cmd/evener-tui/hub_types.go`), copy it in
 `hubDetailFromThread` field-by-field like every other bit, and leave it out
 of the non-live zeroing block (notes stay readable on ended sessions; only
-the edit/remove commands gate on it). Past sessions: `pastThreadCapabilities`
+the edit/remove commands gate on it). The capability gates the daemon verbs;
+session liveness gates the affordances. Hub and TUI hide the edit affordance
+and remove buttons whenever the session is not live, regardless of the
+capability bit — the same status-blind-capability plus live-check layering
+the composer already uses. Past sessions: `pastThreadCapabilities`
 (`cmd/evener-hub/app_threadread.go`) sets `SharedNotes: true`, and
-`pastEntryThread` projects stored notes and URLs into the thread snapshot —
-notes are persisted per-session state, so ended sessions display all three
-read-only, with the edit affordance hidden (same as always-render: the
-section shows, the "Add a note" trigger does not when the capability is
-unset). The close frame (`stampClosedThreadCapabilities`) carries the same
+`pastEntryThread` projects stored notes and URLs into the thread snapshot,
+so ended sessions display all three read-only with no edit trigger (rule 2:
+capability set, not live — the live-check hides the trigger). Notes RPCs on an ended session behave like `goal/set`: the hub resumes the
+session first (qp94 auto-resume) and the write lands once it runs — a
+human save on an ended session therefore wakes it, exactly like an idle
+session. The close frame (`stampClosedThreadCapabilities`) carries the same
 set. Tests: appCapabilities wiring test, hub reject-when-unset test for both
-hub RPCs, hub and TUI gating tests, TUI capability-mapping test.
+hub RPCs, hub and TUI gating tests (capability-unset hides the section
+entirely; ended-with-capability shows the section read-only with no
+trigger), TUI capability-mapping test.
 
 ## Agent read path
 
@@ -142,7 +152,8 @@ storage: the persisted note is the source of truth the agent re-reads.
 One new "Shared notes" section in `DetailsPanelBody`
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx`), shared
 by the session-chrome sheet and the `sessionDetails` pane. Unlike other
-Details rows, this section always renders: the empty state shows an explicit
+Details rows, this section renders whenever the capability is set: the empty
+state shows an explicit
 affordance ("Add a note"), because empty is the default for every old session
 and an omit-when-absent rule would leave no trigger to click. Human
 paragraph: read view plus `GoalControl`-style click-to-edit popover; save
@@ -208,10 +219,11 @@ conformance for the two hub RPCs (fencing, idempotent retry, rejoin snapshot
 carries notes and URLs), hub pre-flight reject-when-unset for both hub RPCs
 (`TestHubRPCGoalSetGatedByCapability` pattern), `pastThreadCapabilities`
 carrying `SharedNotes: true` with past-thread projection of stored notes
-and URLs. Hub: `DetailsPanel.test.tsx`-style component tests
+and URLs, notes RPC on an ended session resuming first (goal/set-resumes-past
+pattern). Hub: `DetailsPanel.test.tsx`-style component tests
 (empty state renders affordance, edit dispatches RPC, remove dispatches
 RPC, push rerenders, failure toasts with draft kept, section hidden when
-capability unset) plus `threads.ts` and
+capability unset, ended-with-capability read-only with no trigger) plus `threads.ts` and
 `reducer.ts` push tests. TUI: drawer render and command tests beside
 `hub_goal_test.go`, plus the notification-coverage gate, plus a
 `hubDetailFromThread` capability-mapping test covering `SharedNotes`. E2E scenarios in
