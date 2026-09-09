@@ -82,6 +82,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
+  const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
   const navigation = useNavigationStore();
@@ -130,6 +131,20 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
   if (!model) return null;
+
+  // Force-stop eligibility mirrors the reach of the retired inline footer
+  // button (Session.tsx): any local session that isn't closed, including
+  // saved notLoaded panes (a pending or failed resume can still own a daemon)
+  // and panes with no navigation identity. The one exclusion is a session
+  // retained by its owning session - its notice directs the user to the owner
+  // instead (same predicate as Session.tsx's recoveryOwnerRef).
+  const recoveryOwnerRef =
+    !mutationStateAuthoritative &&
+    model.status.type !== "notLoaded" &&
+    model.status.type !== "restartRequired" &&
+    model.parentRef?.startsWith("local:")
+      ? model.parentRef
+      : undefined;
 
   const openDetails = () => {
     if (isMobile) detailsRef.current?.open();
@@ -213,11 +228,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
                 }
               },
               onForceStop:
-                sessionRef.startsWith("local:") &&
-                menuSession?.host_id === "local" &&
-                menuSession.top_level !== false &&
-                model.status.type !== "notLoaded" &&
-                model.status.type !== "closed"
+                sessionRef.startsWith("local:") && model.status.type !== "closed" && !recoveryOwnerRef
                   ? async () => {
                       try {
                         await threadsStore.getState().forceStop(sessionRef);

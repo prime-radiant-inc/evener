@@ -493,9 +493,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
                 resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
               />
             )}
-            {ref.startsWith("local:") && !recoveryOwnerRef && model.status.type !== "closed" && (
-              <SessionForceStopRecovery sessionRef={ref} />
-            )}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
