@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -221,6 +224,63 @@ afterEach(() => {
 });
 
 describe("resource-backed Rail", () => {
+  test("static section labels use the canonical eyebrow recipe without uppercasing authored pin names", () => {
+    const name = "Research notes to revisit";
+    installState([
+      sectionResource("live", [summary()]),
+      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
+      projectResource("p", [summary()]),
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        { projects: [{ key: "old", name: "Old project", session_count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "notes", name, count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "notes", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [summary({ ref: "local:pinned" })], remaining: 0 },
+      ),
+    ]);
+    render(<Rail />);
+    for (const label of ["Live", "Projects"]) {
+      expect(screen.getByRole("heading", { name: label }).className).toMatch(/staticSectionLabel/);
+    }
+    expect(screen.getByRole("button", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
+    const authored = screen.getByRole("heading", { name });
+    const disclosure = within(authored).getByRole("button", { name });
+    expect(authored.className).not.toMatch(/staticSectionLabel/);
+    expect(disclosure.className).not.toMatch(/staticSectionLabel/);
+    expect(disclosure.textContent).toContain(name);
+    const expanded = disclosure.getAttribute("aria-expanded");
+    disclosure.focus();
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute("aria-expanded")).not.toBe(expanded);
+    expect(document.activeElement).toBe(disclosure);
+
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const recipe = css.match(/\.staticSectionLabel\s*\{([^}]*)\}/)?.[1];
+    expect(recipe).toBeDefined();
+    for (const declaration of [
+      "font-size: var(--font-size-caption)",
+      "font-weight: var(--font-weight-medium)",
+      "color: var(--ink-mid)",
+      "text-transform: uppercase",
+      "letter-spacing: var(--tracking-eyebrow)",
+    ])
+      expect(recipe).toContain(declaration);
+    for (const shared of ["sectionTitle", "sectionDisclosure"]) {
+      const rule = css.match(new RegExp(`\\.${shared}\\s*\\{([^}]*)\\}`))?.[1];
+      expect(rule).toBeDefined();
+      expect(rule).not.toContain("text-transform: uppercase");
+      expect(rule).not.toContain("letter-spacing:");
+    }
+  });
+
   test("places identity and Settings before Search in the top row and preserves navigation", () => {
     installState();
     connectionStore.setState({ serverInfo: { name: "evener-hub", version: "0.0.0" } });
