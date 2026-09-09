@@ -55,6 +55,10 @@ const (
 	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
 	MethodTurnCancelQueued            = "turn/cancelQueued"
 	MethodGoalSet                     = "goal/set"
+	MethodNotesHumanSet               = "notes/human/set"
+	MethodNotesAgentSet               = "notes/agent/set"
+	MethodUrlsAdd                     = "urls/add"
+	MethodUrlsRemove                  = "urls/remove"
 	MethodEvenerTasksList             = "evener/tasks/list"
 	MethodEvenerJobsList              = "evener/jobs/list"
 	MethodEvenerJobsOutput            = "evener/jobs/output"
@@ -160,6 +164,8 @@ const (
 	NotifyEvenerThreadResync          = "evener/thread/resync"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
 	NotifyEvenerGoalUpdated           = "evener/goal/updated"
+	NotifyEvenerNotesUpdated          = "evener/notes/updated"
+	NotifyEvenerUrlsUpdated           = "evener/urls/updated"
 	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
@@ -638,6 +644,19 @@ type EvenerThread struct {
 	// bespoke transport — like Queue, it is structured per-session state read
 	// from the already-fetched thread snapshot.
 	Goal *GoalState `json:"goal,omitempty"`
+	// HumanNote carries the human's one-paragraph session whiteboard when set,
+	// else empty. It powers the shared-notes display without a bespoke
+	// transport — like Goal, it is structured per-session state read from the
+	// already-fetched thread snapshot.
+	HumanNote string `json:"humanNote,omitempty"`
+	// AgentNote carries the agent's one-paragraph session whiteboard when set,
+	// else empty. It is read from the already-fetched thread snapshot like
+	// HumanNote.
+	AgentNote string `json:"agentNote,omitempty"`
+	// SessionURLs carries the session's shared-notes URL list when set, else
+	// nil. Empty/nil means no links. It is read from the already-fetched
+	// thread snapshot like HumanNote.
+	SessionURLs []SessionURL `json:"sessionUrls,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -731,6 +750,15 @@ type GoalState struct {
 	Iterations int    `json:"iterations"`
 }
 
+// SessionURL is one entry in a session's shared-notes URL list.
+type SessionURL struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Label   string `json:"label,omitempty"`
+	AddedBy string `json:"addedBy,omitempty"`
+	AddedAt int64  `json:"addedAt,omitempty"`
+}
+
 // EvenerUsage carries a evener session's cumulative self-only token totals for
 // the status row. A nil *EvenerUsage on EvenerThread means no token data (an old
 // daemon, a source-backed thread that omits the field, or a session with zero
@@ -793,6 +821,50 @@ type GoalUpdatedParams struct {
 	ThreadID string     `json:"threadId"`
 	Ref      string     `json:"ref"`
 	Goal     *GoalState `json:"goal"`
+}
+
+// NotesHumanSetParams sets the human's session whiteboard. It follows the
+// retry-safe-mutation shape (clientMutationId, expected-instance fencing) so a
+// hub retry of the outer RPC converges instead of double-applying.
+type NotesHumanSetParams struct {
+	Ref                string `json:"ref"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	Note               string `json:"note,omitempty"`
+}
+
+// NotesHumanSetResponse reports the stored whiteboard after a human-note set:
+// the post-clamp value every downstream consumer converges on.
+type NotesHumanSetResponse struct {
+	Note string `json:"note"`
+}
+
+// UrlsRemoveParams removes one URL list entry by id. It follows the
+// retry-safe-mutation shape like NotesHumanSetParams.
+type UrlsRemoveParams struct {
+	Ref                string `json:"ref"`
+	ClientMutationID   string `json:"clientMutationId"`
+	ExpectedInstanceID string `json:"expectedInstanceId"`
+	ID                 string `json:"id"`
+}
+
+// UrlsRemoveResponse acknowledges a URL list removal. It carries no state: the
+// authoritative list arrives via the evener/urls/updated push.
+type UrlsRemoveResponse struct{}
+
+// NotesUpdatedParams is the session whiteboard state after a mutation.
+type NotesUpdatedParams struct {
+	ThreadID  string `json:"threadId"`
+	Ref       string `json:"ref"`
+	HumanNote string `json:"humanNote,omitempty"`
+	AgentNote string `json:"agentNote,omitempty"`
+}
+
+// UrlsUpdatedParams is the session URL list after a mutation.
+type UrlsUpdatedParams struct {
+	ThreadID string       `json:"threadId"`
+	Ref      string       `json:"ref"`
+	URLs     []SessionURL `json:"urls,omitempty"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the
@@ -876,6 +948,11 @@ type ThreadCapabilities struct {
 	// for a evener session that can accept a goal; false for sources that do not
 	// advertise the capability, so goal/set is gated like every other thread action.
 	Goal bool `json:"goal"`
+	// SharedNotes advertises support for the shared-notes verbs (notes/human/set,
+	// notes/agent/set, urls/add, urls/remove). True for a live evener session
+	// whose daemon wires the four verbs; false for sources that do not advertise
+	// the capability, so the notes verbs are gated like every other thread action.
+	SharedNotes bool `json:"sharedNotes"`
 	// Rename advertises support for evener/thread/name/set. True for a live evener
 	// session (the daemon method) and for ended local sessions (the hub edits
 	// meta); false for non-local/source-backed threads that do not advertise it.

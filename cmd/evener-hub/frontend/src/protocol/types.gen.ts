@@ -388,6 +388,9 @@ export interface EvenerThread {
   mutationStateAuthoritative?: boolean;
   tasks?: TaskAggregate;
   goal?: GoalState;
+  humanNote?: string;
+  agentNote?: string;
+  sessionUrls?: SessionURL[];
   usage?: EvenerUsage;
   workMillis?: number;
   activeTurnStartedAt?: number;
@@ -1513,6 +1516,14 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionURL {
+  id: string;
+  url: string;
+  label?: string;
+  addedBy?: string;
+  addedAt?: number;
+}
+
 export interface SettingsAgentEntry {
   name: string;
   editPath?: string;
@@ -1634,6 +1645,7 @@ export interface ThreadCapabilities {
   changeVisionModel: boolean;
   queue: boolean;
   goal: boolean;
+  sharedNotes: boolean;
   rename: boolean;
 }
 
@@ -2322,6 +2334,7 @@ export const STEERING_KINDS = [
   "task-list",
   "notification",
   "provider-failure",
+  "human-note",
 ] as const;
 
 export type SteeringKind = (typeof STEERING_KINDS)[number];
