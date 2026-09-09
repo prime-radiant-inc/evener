@@ -306,11 +306,11 @@ function TaskPromptDisclosure({ task, sessionRef }: { task: TaskRow; sessionRef:
         }}
       >
         <span className={CLASS.promptLabel}>Prompt</span>
-        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          ▸
-        </span>
         <span className={CLASS.promptPreview}>
           <Markdown source={firstLine} />
+        </span>
+        <span className={CLASS.promptChevron} aria-hidden="true" data-open={open ? "true" : "false"}>
+          ▸
         </span>
       </summary>
       {open && (
