@@ -114,8 +114,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.session.refreshViewport()
 				// The children re-arm AFTER the replacement completed
 				// server-side (the response just applied); batched with the
-				// read they would race it (round-12 medium 1).
-				return m, m.subscribeNewChildren()
+				// read they would race it (round-12 medium 1). Evaluate the
+				// mutation before the return: subscribeNewChildren fills
+				// watchedChildRefs on the model the caller keeps.
+				recoveryChildren := m.subscribeNewChildren()
+				return m, recoveryChildren
 			}
 			if msg.liveNavSeq != m.liveNavSeq {
 				// A newer cycling read is still in flight: IT owns the
