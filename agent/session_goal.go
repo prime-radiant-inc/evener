@@ -16,10 +16,35 @@ import (
 // SetKickFunc registers the callback an idle SetGoal uses to start the goal loop
 // immediately by feeding the first continuation prompt back into the serve loop's
 // input channel. The agent module must not import server, so serve.go wires this.
+// Wiring the callback is also the moment a crash-restored wake becomes
+// deliverable (mirroring SetNotifyFunc's pending-work flush): a restored
+// pendingWake with no live waits arms no timer, so without this flush the
+// wake would strand until unrelated input starts a turn whose tail settles
+// it. The flush kicks at most once — the delivered set marks the batch, so
+// the turn tail the kick starts suppresses any repeat.
 func (s *Session) SetKickFunc(f func(prompt string)) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.kickFunc = f
+	s.mu.Unlock()
+	if f == nil {
+		return
+	}
+	s.goalUpdateMu.Lock()
+	store := s.getOrCreateGoalStore()
+	full, ok := store.GoalSnapshot()
+	s.goalUpdateMu.Unlock()
+	if !ok || len(full.PendingWake) == 0 {
+		return
+	}
+	s.mu.Lock()
+	delivered := s.goalWakeDelivered
+	s.mu.Unlock()
+	for _, p := range full.PendingWake {
+		if !delivered[p.WaitID] {
+			s.settleGoalOnIdle()
+			return
+		}
+	}
 }
 
 // SetGoal sets the session's objective and starts (or arms) the goal loop. It

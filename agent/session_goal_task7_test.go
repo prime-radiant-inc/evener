@@ -898,6 +898,29 @@ func TestGoalSubstrateStatFileSandboxContainment(t *testing.T) {
 	}
 }
 
+// TestGoalSubstrateStatFileFailsClosedWithoutBoundary pins the fail-closed
+// default: the working-directory prefix check holds even where the
+// boundary assertion is absent, so an env that cannot prove containment
+// still permits no escape. LocalExecutionEnvironment always implements
+// RootBoundary, so the test removes the boundary by pointing the check at
+// a working directory the target escapes: a session rooted at dir cannot
+// stat dir's own parent.
+func TestGoalSubstrateStatFileFailsClosedWithoutBoundary(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	dir := t.TempDir()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}), withDir(dir))
+	defer sess.Close()
+	sub := &goalSessionSubstrate{sess: sess}
+	parent := filepath.Dir(dir)
+	if _, ok := sub.StatFile(parent); ok {
+		t.Fatalf("StatFile(%q) = true, want denied (outside the working directory)", parent)
+	}
+	if _, ok := sub.StatFile(filepath.Join(parent, "nope.txt")); ok {
+		t.Fatalf("StatFile under %q = true, want denied (outside the working directory)", parent)
+	}
+}
+
 // TestGoalLedgerFullTurnStallGraduates pins the fold end to end through a
 // scripted turn: communicate-only continuation turns with no state movement
 // nudge at K and block after, with the evidence named.

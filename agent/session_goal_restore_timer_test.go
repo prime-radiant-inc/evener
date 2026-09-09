@@ -249,10 +249,11 @@ func TestGoalRestore_ExpiredWaitAttachScanClaimsAtRestore(t *testing.T) {
 }
 
 // TestGoalRestore_SettleKicksRestoredBacklog pins the restore kick-immediately
-// path (spec §7): a restored pendingWake backlog with no kick wired at
-// restore has no scheduled wake turn yet — the first settle after wiring
-// kicks it exactly once (the delivered set distinguishes it from an
-// already-kicked backlog, which suppresses).
+// path (spec §7): a restored pendingWake backlog kicks exactly once. The
+// kick lands at wiring time (SetKickFunc flushes the undelivered backlog —
+// see TestGoalRestore_KickWiringFlushesRestoredBacklog); the first settle
+// after that must suppress the repeat via the delivered set, and a second
+// settle must stay silent too.
 func TestGoalRestore_SettleKicksRestoredBacklog(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
@@ -275,18 +276,73 @@ func TestGoalRestore_SettleKicksRestoredBacklog(t *testing.T) {
 	meta.ID = "restore-settle-kick"
 	restored := restoreGoalTestSession(t, clk2, meta)
 	defer restored.Close()
+	// Wiring flushes the restored backlog immediately (kick #1).
 	kicks := wireKickAndNotify(restored)
+	if *kicks != 1 {
+		t.Fatalf("kicks after wiring = %d, want 1 (restored wake drives at once)", *kicks)
+	}
 
-	if !restored.settleGoalOnIdle() {
-		t.Fatal("first settle over a restored-but-never-kicked backlog must kick")
+	if restored.settleGoalOnIdle() {
+		t.Fatal("first settle must not re-kick the wiring-flushed batch (exactly-once)")
 	}
 	if *kicks != 1 {
-		t.Fatalf("kicks = %d, want 1", *kicks)
+		t.Fatalf("kicks = %d, want still 1 after the first settle", *kicks)
 	}
 	if restored.settleGoalOnIdle() {
 		t.Fatal("second settle must not re-kick the same restored fire (exactly-once)")
 	}
 	if *kicks != 1 {
 		t.Fatalf("kicks = %d, want still 1 after the second settle", *kicks)
+	}
+}
+
+// TestGoalRestore_KickWiringFlushesRestoredBacklog pins the crash-recovery
+// delivery gap: a restored pendingWake with no live waits arms no timer,
+// so wiring the kick callback (the moment a wake becomes deliverable,
+// mirroring SetNotifyFunc's pending-work flush) settles immediately and
+// kicks exactly once — the wake never strands waiting for unrelated input
+// to start a turn. A second wiring (bridge re-established, e.g. on
+// thread/clear) must not re-kick: the delivered set marks the batch.
+func TestGoalRestore_KickWiringFlushesRestoredBacklog(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	src := newWaitGateSession(t, clk)
+	defer src.Close()
+	wireKickAndNotify(src)
+
+	store := src.getOrCreateGoalStore()
+	store.Set("crash mid-wake", clk.Now())
+	w, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Target: "crash-timer", Timeout: time.Minute, Label: "crash-timer"}, clk.Now())
+	if !ok {
+		t.Fatal("precondition: registration should succeed")
+	}
+	clk.Advance(2 * time.Minute)
+	if _, ok := store.ClaimFire(w.Lease.WaitID, "wait expired: crash-timer", clk.Now()); !ok {
+		t.Fatal("precondition: claim should consume the expired lease")
+	}
+	meta := src.Meta()
+	clk2 := agenttest.NewFakeClockAt(clk.Now())
+	meta.ID = "restore-kick-flush"
+	restored := restoreGoalTestSession(t, clk2, meta)
+	defer restored.Close()
+	// No kick wired yet (restore wires none): wiring it now must flush.
+	kicks := 0
+	restored.SetKickFunc(func(string) { kicks++ })
+	restored.SetNotifyFunc(func() {})
+	if kicks != 1 {
+		t.Fatalf("kicks after wiring = %d, want exactly 1 (restored wake drives at once)", kicks)
+	}
+	// Re-wiring must not re-kick the delivered batch.
+	restored.SetKickFunc(func(string) { kicks++ })
+	if kicks != 1 {
+		t.Fatalf("kicks after re-wiring = %d, want still 1 (exactly-once)", kicks)
+	}
+	// No backlog, no kick: wiring on a quiet session stays silent.
+	quiet := newWaitGateSession(t, clk)
+	defer quiet.Close()
+	quietKicks := 0
+	quiet.SetKickFunc(func(string) { quietKicks++ })
+	if quietKicks != 0 {
+		t.Fatalf("kicks on a backlog-free session = %d, want 0", quietKicks)
 	}
 }

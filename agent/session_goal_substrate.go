@@ -29,45 +29,24 @@ type goalSessionSubstrate struct {
 // LookupJob resolves a supervised-job target. Live wake-capable targets (a
 // running non-detached job) park; retained-terminal jobs inside the
 // record-retention window route to terminal catch-up with the terminal
-// outcome excerpt; anything else rejects fail-closed.
+// outcome excerpt; anything else rejects fail-closed. The whole read is one
+// jobManager call: liveness re-verifies under the manager lock inside it,
+// so a status change between the store read and the re-check can never
+// surface a stale terminal excerpt.
 func (g *goalSessionSubstrate) LookupJob(id string) (live, retainedTerminal bool, excerpt string, ok bool) {
 	s := g.sess
 	if s == nil || s.jobManager == nil || id == "" {
 		return false, false, "", false
 	}
-	jm := s.jobManager
-	jm.mu.Lock()
-	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
-		jm.mu.Unlock()
+	status, live, terminal := s.jobManager.goalWaitJobStatus(id)
+	switch {
+	case live:
 		return true, false, "", true
-	}
-	store := jm.store
-	jm.mu.Unlock()
-	if store == nil {
+	case terminal:
+		return false, true, "job " + id + " " + strings.ToLower(string(status)), true
+	default:
 		return false, false, "", false
 	}
-	// Retained-terminal catch-up consults the durable store, which folds
-	// the journal from disk: never hold jm.mu across that I/O (it blocks
-	// every job-manager operation for the read). Re-verify liveness under
-	// the lock after the Load so a start that won the race reads live,
-	// never stale-terminal catch-up.
-	recs, err := store.Load()
-	if err != nil {
-		return false, false, "", false
-	}
-	job, ok := recs[id]
-	if !ok || job == nil || !job.Status.IsTerminal() {
-		return false, false, "", false
-	}
-	// Build the excerpt before the re-verify lock so the folded journal
-	// map is droppable while waiting on jm.mu.
-	excerpt = "job " + id + " " + strings.ToLower(string(job.Status))
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	if r, running := jm.running[id]; running && r != nil && r.rec != nil {
-		return true, false, "", true
-	}
-	return false, true, excerpt, true
 }
 
 // LookupDelegate resolves a delegate target: live (running/settling/stopping)
@@ -116,10 +95,26 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 	} else {
 		abs = filepath.Clean(abs)
 	}
+	// Containment is a working-directory prefix check on the resolved
+	// absolute path: simple, env-independent, fail-closed. The boundary
+	// assertion runs first when the env offers it (authoritative where
+	// present); the prefix check holds regardless, so a non-boundary
+	// env — or a boundary whose root drifts from the working directory
+	// — still cannot escape. filepath.EvalSymlinks resolves a symlink
+	// escape to its outside target before the prefix comparison, so a
+	// link pointing out of the root fails; an unresolvable path keeps
+	// its cleaned form, which the stat below then rejects.
 	if rb, ok := env.(execenv.RootBoundary); ok {
 		if err := rb.EnsureUnderRoot(abs); err != nil {
 			return "", false
 		}
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	wd := filepath.Clean(env.WorkingDirectory())
+	if abs != wd && !strings.HasPrefix(abs, wd+string(filepath.Separator)) {
+		return "", false
 	}
 	fi, err := s.delegateRestoreStat(abs)
 	if err != nil {

@@ -998,6 +998,45 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	return nil
 }
 
+// goalWaitJobStatus reports one job's liveness for the goal-wait substrate:
+// live (running, wake-capable — park), or a terminal status (retained-
+// terminal catch-up — fire with the outcome excerpt). Unknown, unfinished-
+// non-running, and unreadable targets report neither. The store read runs
+// outside jm.mu (disk I/O must never block the manager); liveness
+// re-verifies under the lock before returning, so a start that won the
+// race reads live with no stale terminal status. Terminal statuses are
+// append-only (fold invariant), so a terminal read never regresses.
+func (jm *jobManager) goalWaitJobStatus(id string) (status jobstore.Status, live, terminal bool) {
+	if jm == nil || id == "" {
+		return "", false, false
+	}
+	jm.mu.Lock()
+	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
+		jm.mu.Unlock()
+		return "", true, false
+	}
+	store := jm.store
+	jm.mu.Unlock()
+	if store == nil {
+		return "", false, false
+	}
+	recs, err := store.Load()
+	if err != nil {
+		return "", false, false
+	}
+	rec := recs[id]
+	if rec == nil || !rec.Status.IsTerminal() {
+		return "", false, false
+	}
+	status = rec.Status
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
+		return "", true, false
+	}
+	return status, false, true
+}
+
 // terminalWatchTargetStatus reports the terminal status of a concrete job
 // target, or terminal=false if the target is running, not found, or not
 // readable. It mirrors validateWatchTarget's terminal detection but returns the
