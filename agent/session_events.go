@@ -235,7 +235,7 @@ func goalSeedData(goal *schema.GoalSnapshot) *events.GoalStateData {
 		})
 	}
 	// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
-	if nearest := schema.NearestWait(goal.Waits); nearest != nil {
+	if nearest, ok := schema.NearestWait(goal.Waits); ok {
 		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
 		out.NearestLabel = nearest.Label
 	}

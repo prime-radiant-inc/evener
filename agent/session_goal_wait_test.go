@@ -1709,6 +1709,92 @@ func TestFixWaveLiveLossNoticesOnce(t *testing.T) {
 	}
 }
 
+// TestFixWaveTimerParkedCrossingBinds pins the parked-total timer leg
+// (spec §5): a maxParkedTotal crossing earlier than every lease deadline
+// fires the coalesced timer, which accrues the open stretch so the bound
+// binds — the goal must not park past its cap with the persisted total
+// frozen pre-crossing.
+func TestFixWaveTimerParkedCrossingBinds(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("parked cap crossing", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: 2 * time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: registration should succeed: %q", store.LastRejectReason())
+	}
+	// Tighten the parked cap to 30m (lease runs 2h): the crossing fires the
+	// timer with no lease expiry on this pass.
+	full, _ := store.GoalSnapshot()
+	persisted, _ := goal.PersistedFromSnapshot(full)
+	persisted.Budgets.MaxParkedTotal = 30 * time.Minute
+	store.RestoreSnapshot(persisted)
+	if prompt, cont := sess.armGoalContinuation(false, true); cont || prompt != "" {
+		t.Fatalf("park gate = (%q, %v), want a park", prompt, cont)
+	}
+	clk.Advance(31 * time.Minute)
+	clk.Drain()
+	full, _ = store.GoalSnapshot()
+	if full.Budgets.ParkedTotal < 30*time.Minute {
+		t.Fatalf("ParkedTotal = %v, want ≥30m accrued at the timer crossing: %+v", full.Budgets.ParkedTotal, full.Budgets)
+	}
+	// The bound binds: the next gate blocks budget-exhausted (the crossing
+	// kick scheduled the evaluation; rule 2 enforces the cap).
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if cont || prompt != "" {
+		t.Fatalf("post-crossing gate = (%q, %v), want the parked-total block", prompt, cont)
+	}
+	snap, _ := store.Snapshot()
+	if snap.StopReason != goal.VerdictBudgetExhausted {
+		t.Fatalf("StopReason = %q, want %q (parked-total binds as budget)", snap.StopReason, goal.VerdictBudgetExhausted)
+	}
+}
+
+// TestFixWaveTimerDeadlineKicksFinalTurn pins the timer-leg synthetic claim
+// (spec §1 rule 3): a goal deadline earlier than every wait deadline fires
+// the coalesced timer with no lease expiry — the timer claims the synthetic
+// wake and kicks the final evaluation turn instead of re-arming past the
+// deadline into an indefinite park.
+func TestFixWaveTimerDeadlineKicksFinalTurn(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	var prompts []string
+	sess.SetKickFunc(func(p string) { prompts = append(prompts, p) })
+	sess.SetNotifyFunc(func() {})
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("deadline before waits", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilTime, Timeout: 2 * time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: registration should succeed: %q", store.LastRejectReason())
+	}
+	// Shrink the deadline below the wait deadline (budgets persist the
+	// 4h default; the timer must fire at the deadline, not the lease).
+	full, _ := store.GoalSnapshot()
+	persisted, _ := goal.PersistedFromSnapshot(full)
+	persisted.Budgets.Deadline = clk.Now().Add(time.Hour)
+	store.RestoreSnapshot(persisted)
+	// Park through the gate so production state (holds, timer) is real.
+	if prompt, cont := sess.armGoalContinuation(false, true); cont || prompt != "" {
+		t.Fatalf("park gate = (%q, %v), want a park", prompt, cont)
+	}
+	clk.Advance(time.Hour + time.Second)
+	clk.Drain()
+	if len(prompts) != 1 {
+		t.Fatalf("timer deadline kicks = %d, want exactly 1 (the final evaluation turn)", len(prompts))
+	}
+	if !strings.Contains(prompts[0], goal.DeadlineExpiryTrigger) {
+		t.Fatalf("timer kick must carry %q:\n%.200q...", goal.DeadlineExpiryTrigger, prompts[0])
+	}
+	if full, _ := store.GoalSnapshot(); !full.DeadlineFinalDelivered || len(full.PendingWake) != 1 {
+		t.Fatalf("backlog after timer fire = %+v, want the one-shot marker + one synthetic entry", full)
+	}
+}
+
 // TestFixWaveRetargetCarriesDeadlineWake pins the retarget/deadline one-shot
 // alignment (spec §§1, 3): store.Set carries the undelivered synthetic
 // backlog (marked Superseded) alongside the reset DeadlineFinalDelivered

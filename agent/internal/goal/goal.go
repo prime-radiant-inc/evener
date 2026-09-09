@@ -1267,6 +1267,26 @@ func (s *Store) TakeLossCause() (string, bool) {
 	return cause, true
 }
 
+// ParkedTotalAt reports the parked total as of now, including the live
+// stretch when the goal is currently parked (spec §5): ParkedTotal accrues
+// at segment boundaries (claim/cancel/retarget/block), so a reader between
+// boundaries must add the open entry→now delta — otherwise a projection
+// from the persisted total alone drifts (every poll re-projects from a
+// stale base and the crossing never arrives). Pure read: no mutation, no
+// anchor movement.
+func (s *Store) ParkedTotalAt(now time.Time) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return 0
+	}
+	total := s.goal.Budgets.ParkedTotal
+	if s.goal.Status == StatusWaiting && !s.parkEnter.IsZero() {
+		total += max(now.Sub(s.parkEnter), 0)
+	}
+	return total
+}
+
 // AccrueParkedAtRegistration folds one parked stretch ending at a
 // same-target replacement registration (spec §5): the replaced lease's
 // entry→now delta accrues toward maxParkedTotal under the store lock, and
@@ -1306,6 +1326,16 @@ func (s *Store) ClaimDeadlineExpiry(now time.Time) (PendingWake, bool) {
 	}
 	if g.Budgets.Deadline.IsZero() || now.Before(g.Budgets.Deadline) {
 		return PendingWake{}, false
+	}
+	// Idempotent on a standing synthetic entry: the backlog already carries
+	// the final turn (a retarget-carried entry included — the superseded
+	// branch owns the carried entry's drive). A second append would pile a
+	// duplicate beside it. Report the standing entry without claiming; the
+	// marker sets only on a fresh claim below.
+	for _, p := range g.PendingWake {
+		if p.WaitID == DeadlineWakeID {
+			return p, true
+		}
 	}
 	g.DeadlineFinalDelivered = true
 	trigger := DeadlineExpiryTrigger

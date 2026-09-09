@@ -87,6 +87,16 @@ func (s *Session) restoreGoalAttachScan() {
 // maxParkedTotal-crossing, next poll due). ok is false when nothing is
 // armed (no live waits and no pending poll obligation while waiting).
 func goalWaitNextFire(full goal.GoalSnapshot, now time.Time) (fire time.Time, ok bool) {
+	return goalWaitNextFireAt(full, full.Budgets.ParkedTotal, now)
+}
+
+// goalWaitNextFireAt is goalWaitNextFire with the parked total supplied by
+// the caller. Pass the LIVE total (store.ParkedTotalAt(now) — persisted
+// plus the open entry→now stretch), never the persisted field alone: the
+// persisted total only accrues at segment boundaries, so projecting from it
+// re-bases every poll and the maxParkedTotal crossing drifts forward
+// forever. Pure over (full, parkedTotal, now).
+func goalWaitNextFireAt(full goal.GoalSnapshot, parkedTotal time.Duration, now time.Time) (fire time.Time, ok bool) {
 	if full.Status != goal.StatusWaiting {
 		return time.Time{}, false
 	}
@@ -107,7 +117,7 @@ func goalWaitNextFire(full goal.GoalSnapshot, now time.Time) (fire time.Time, ok
 		fire = full.Budgets.Deadline
 	}
 	if full.Budgets.MaxParkedTotal > 0 {
-		remaining := full.Budgets.MaxParkedTotal - full.Budgets.ParkedTotal
+		remaining := full.Budgets.MaxParkedTotal - parkedTotal
 		remaining = max(remaining, 0)
 		if crossing := now.Add(remaining); crossing.Before(fire) {
 			fire = crossing

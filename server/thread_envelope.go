@@ -491,7 +491,7 @@ func goalStateFromMeta(g *schema.GoalSnapshot) *appwire.GoalState {
 		})
 	}
 	// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
-	if nearest := schema.NearestWait(g.Waits); nearest != nil {
+	if nearest, ok := schema.NearestWait(g.Waits); ok {
 		out.NearestDeadlineUnixMilli = nearest.Deadline.UnixMilli()
 		out.NearestLabel = nearest.Label
 	}

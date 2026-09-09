@@ -205,6 +205,7 @@ func goalConditionsFromSchema(in []schema.GoalConditionSnapshot) []goal.Conditio
 			Predicate: goal.WaitKind{
 				Kind:          goal.Kind(c.Kind),
 				Target:        c.Target,
+				Timeout:       time.Duration(c.TimeoutNanos),
 				Matcher:       c.Matcher,
 				EventSubtype:  goal.EventSubtype(c.EventSubtype),
 				AskGeneration: c.AskGeneration,

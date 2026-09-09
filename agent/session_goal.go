@@ -346,18 +346,28 @@ func (s *Session) goalKickState() (kick func(prompt string), pendingAsk bool) {
 
 // boundsBreached reports whether any spec section-1 rule-2/3 spend bound is
 // exceeded for full at now: maxContinuations consumed, maxParkedTotal
-// exhausted, or the wall-clock deadline passed. The terminal-pending latch
+// exhausted, or the wall-clock deadline passed. parkedTotal is the LIVE
+// total (persisted plus the open entry→now stretch): the persisted field
+// alone accrues only at segment boundaries, so a boundary read would let a
+// goal sit parked past its cap between claims. The terminal-pending latch
 // consults this so the wake turn still runs while a budget is also exceeded,
 // with enforcement deferred to the next gate (no starvation by flapping
 // predicates).
-func boundsBreached(full goal.GoalSnapshot, now time.Time) bool {
+func boundsBreachedAt(full goal.GoalSnapshot, parkedTotal time.Duration, now time.Time) bool {
 	if full.Budgets.MaxContinuations > 0 && full.Budgets.UsedContinuations >= full.Budgets.MaxContinuations {
 		return true
 	}
-	if full.Budgets.MaxParkedTotal > 0 && full.Budgets.ParkedTotal >= full.Budgets.MaxParkedTotal {
+	if full.Budgets.MaxParkedTotal > 0 && parkedTotal >= full.Budgets.MaxParkedTotal {
 		return true
 	}
 	return !full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline)
+}
+
+// boundsBreached is boundsBreachedAt over the persisted total (segment
+// boundaries: folds, claims, timer fires that already accrued the stretch).
+// Gates and timer paths with a live parked stretch pass ParkedTotalAt.
+func boundsBreached(full goal.GoalSnapshot, now time.Time) bool {
+	return boundsBreachedAt(full, full.Budgets.ParkedTotal, now)
 }
 
 // armGoalContinuation runs in the drain-loop gate (on the turn goroutine) after a
@@ -499,7 +509,10 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 	// Substrate reads run before goalUpdateMu/s.mu (the §3-top pre-read
 	// discipline); the claim loop below holds goalUpdateMu only.
 	s.mu.Lock()
-	delivered := s.goalWakeDelivered
+	delivered := make(map[string]bool, len(s.goalWakeDelivered))
+	for id := range s.goalWakeDelivered {
+		delivered[id] = true
+	}
 	latched := s.goalTerminalPending || full.TerminalPending
 	s.mu.Unlock()
 	var liveForClassify []goal.Wait
@@ -1248,6 +1261,35 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 	for _, cause := range losses {
 		store.RecordLoss(cause, now)
 	}
+	// Accrue the open parked stretch at the crossing (spec §5): the timer
+	// fires exactly at the projected maxParkedTotal instant, so fold
+	// entry→now into the persisted total now — otherwise the persisted field
+	// still reads pre-crossing and the bound never binds on this pass.
+	// ClaimClassified's per-claim settles already folded the stretch when
+	// leases fired (anchor re-stamped); this covers the no-claim crossing
+	// (pure budget fire). Either way the stretch ends here: re-stamp the
+	// anchor when still waiting so the next segment accrues from now rather
+	// than double-counting entry→now.
+	if full.Status == goal.StatusWaiting {
+		store.AccrueParked(now)
+		store.NoteParkEnter(now)
+	}
+	// Synthetic deadline claim (spec §1 rule 3 — the timer leg mirrors the
+	// gate): past the wall-clock deadline with the one-shot unspent and no
+	// standing synthetic entry, claim the final evaluation turn through the
+	// same exactly-once backlog. Without this a deadline earlier than every
+	// wait deadline fires the timer with nothing to claim, and the goal
+	// parks past its deadline with no final turn. The delivered-set + store
+	// marker dedupe (shared with the gate) keeps it one-shot: a re-drive
+	// after delivery never re-claims, and a carried (retarget-Superseded)
+	// entry suppresses a duplicate append via ClaimDeadlineExpiry's
+	// standing-entry report.
+	if !delivered[goal.DeadlineWakeID] && !full.DeadlineFinalDelivered &&
+		!full.Budgets.Deadline.IsZero() && !now.Before(full.Budgets.Deadline) {
+		if entry, ok := store.ClaimDeadlineExpiry(now); ok {
+			claimed = append(claimed, entry)
+		}
+	}
 	return claimed, full.Objective, losses
 }
 
@@ -1261,13 +1303,17 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 // generation counter. Lock order: goalUpdateMu, then s.mu (the SetGoal order).
 func (s *Session) armGoalWaitTimer() {
 	s.goalUpdateMu.Lock()
-	full, ok := s.getOrCreateGoalStore().GoalSnapshot()
+	store := s.getOrCreateGoalStore()
+	full, ok := store.GoalSnapshot()
 	s.goalUpdateMu.Unlock()
 	now := s.sclock().Now()
 	var fire time.Time
 	var armed bool
 	if ok {
-		fire, armed = goalWaitNextFire(full, now)
+		// Live parked total (persisted + open stretch): projecting the
+		// maxParkedTotal crossing from the persisted field alone re-bases
+		// every poll and the crossing never arrives.
+		fire, armed = goalWaitNextFireAt(full, store.ParkedTotalAt(now), now)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -81,7 +81,7 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 	if err != nil {
 		return "", false
 	}
-	return fi.Name() + "/" + itoa(fi.Size()) + "/" + fi.ModTime().UTC().Format(time.RFC3339), true
+	return fi.Name() + "/" + itoa(fi.Size()) + "/" + fi.ModTime().UTC().Format(time.RFC3339Nano), true
 }
 
 // LookupApproval reports whether the (content key, ask generation) pair

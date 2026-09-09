@@ -310,19 +310,22 @@ func LiveWaits(waits []GoalWaitSnapshot) []GoalWaitSnapshot {
 }
 
 // NearestWait resolves the chip summary over live waits (spec §6): earliest
-// deadline wins, ties break on the smallest wait_id. Reports nil when no
-// live wait stands.
-func NearestWait(waits []GoalWaitSnapshot) *GoalWaitSnapshot {
+// deadline wins, ties break on the smallest wait_id. Reports false when no
+// live wait stands. Returns by value: the winner is copied out of the
+// filtered live set, so callers can never mutate through it into a temporary.
+func NearestWait(waits []GoalWaitSnapshot) (GoalWaitSnapshot, bool) {
 	live := LiveWaits(waits)
-	var best *GoalWaitSnapshot
+	var best GoalWaitSnapshot
+	found := false
 	for i := range live {
-		w := &live[i]
-		if best == nil || w.Deadline.Before(best.Deadline) ||
+		w := live[i]
+		if !found || w.Deadline.Before(best.Deadline) ||
 			(w.Deadline.Equal(best.Deadline) && w.WaitID < best.WaitID) {
 			best = w
+			found = true
 		}
 	}
-	return best
+	return best, found
 }
 
 // GoalBudgetsSnapshot is the persisted spend-budget triple (spec section 5).

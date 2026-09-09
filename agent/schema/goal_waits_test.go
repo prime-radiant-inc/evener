@@ -35,22 +35,22 @@ func TestNearestWaitEarliestDeadlineTieBreaksOnWaitID(t *testing.T) {
 		{WaitID: "wait_3", Label: "late", Deadline: later},
 		{WaitID: "wait_9", Label: "fired", Deadline: now.Add(-time.Hour), FiredEpoch: 1},
 	}
-	nearest := NearestWait(waits)
-	if nearest == nil || nearest.WaitID != "wait_1" || nearest.Label != "alpha" {
-		t.Fatalf("NearestWait = %+v, want wait_1/alpha (tie breaks on smallest id)", nearest)
+	nearest, ok := NearestWait(waits)
+	if !ok || nearest.WaitID != "wait_1" || nearest.Label != "alpha" {
+		t.Fatalf("NearestWait = %+v ok=%v, want wait_1/alpha (tie breaks on smallest id)", nearest, ok)
 	}
 	// Earliest deadline beats registration order.
 	early := []GoalWaitSnapshot{
 		{WaitID: "wait_1", Label: "later", Deadline: later},
 		{WaitID: "wait_2", Label: "earlier", Deadline: now},
 	}
-	if nearest := NearestWait(early); nearest == nil || nearest.WaitID != "wait_2" {
-		t.Fatalf("NearestWait = %+v, want wait_2 (earliest deadline wins)", nearest)
+	if nearest, ok := NearestWait(early); !ok || nearest.WaitID != "wait_2" {
+		t.Fatalf("NearestWait = %+v ok=%v, want wait_2 (earliest deadline wins)", nearest, ok)
 	}
-	if nearest := NearestWait(nil); nearest != nil {
-		t.Fatalf("NearestWait(nil) = %+v, want nil", nearest)
+	if _, ok := NearestWait(nil); ok {
+		t.Fatal("NearestWait(nil) = ok, want false")
 	}
-	if nearest := NearestWait([]GoalWaitSnapshot{{WaitID: "wait_1", FiredEpoch: 1}}); nearest != nil {
-		t.Fatalf("NearestWait(all fired) = %+v, want nil", nearest)
+	if _, ok := NearestWait([]GoalWaitSnapshot{{WaitID: "wait_1", FiredEpoch: 1}}); ok {
+		t.Fatal("NearestWait(all fired) = ok, want false")
 	}
 }

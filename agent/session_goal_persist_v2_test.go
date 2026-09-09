@@ -109,7 +109,7 @@ func TestGoalPersistV2_ConditionsAndWakeKindRoundTrip(t *testing.T) {
 	store.SetSubstrate(&goalPersistCondSubstrate{files: map[string]string{"/work/spec.md": "v1"}})
 	if _, ok := store.RegisterExpect(goal.ExpectRequest{
 		Desc:      "spec changed",
-		Predicate: goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/work/spec.md"},
+		Predicate: goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/work/spec.md", Timeout: 5 * time.Minute},
 	}, now); !ok {
 		t.Fatalf("precondition: file condition must register: %q", store.LastRejectReason())
 	}
@@ -153,6 +153,9 @@ func TestGoalPersistV2_ConditionsAndWakeKindRoundTrip(t *testing.T) {
 	}
 	if full.Conditions[0].Predicate.Target != "/work/spec.md" || full.Conditions[0].Baseline != "v1" {
 		t.Fatalf("restored condition = %+v, want predicate + baseline", full.Conditions[0])
+	}
+	if full.Conditions[0].Predicate.Timeout != 5*time.Minute {
+		t.Fatalf("restored condition timeout = %v, want 5m (persisted TimeoutNanos must restore)", full.Conditions[0].Predicate.Timeout)
 	}
 	if len(full.PendingWake) != 1 || full.PendingWake[0].Kind != goal.WaitUntilTime {
 		t.Fatalf("restored pendingWake = %+v, want the structural kind", full.PendingWake)
