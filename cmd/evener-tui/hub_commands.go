@@ -35,7 +35,14 @@ type hubSessionMsg struct {
 	// (switchToAdjacentLiveSession): 0 for every other read. Update drops a
 	// tagged read whose sequence a newer live-nav read has superseded.
 	liveNavSeq int
-	err        error
+	// liveNavRecovery marks a tagged read issued by
+	// reestablishDisplayedSubscription: it re-enters the session already
+	// displayed, so the draft/overlay guards and the pending-ref stepping
+	// semantics do not apply to it — its response refreshes the transcript
+	// and re-arms child subscriptions, then drops, never switching sessions
+	// (roborev PR #1044 round-12 medium 2).
+	liveNavRecovery bool
+	err             error
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the

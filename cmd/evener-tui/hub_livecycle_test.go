@@ -8,13 +8,13 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
-	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -41,14 +41,22 @@ type liveCycleReads struct {
 	// refs: a cycling/resub read replaces the connection's subscriptions; a
 	// child-activity subscription is additive.
 	replace []bool
+	// threadByRef overrides the returned thread per ref: a test can hand a
+	// read's response a running subagent child so the recovery response's
+	// child re-arm has something to find.
+	threadByRef map[string]appwire.Thread
 }
 
 func (r *liveCycleReads) record(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
 	r.mu.Lock()
 	r.refs = append(r.refs, params.Ref)
 	r.replace = append(r.replace, params.ReplaceSubscription)
+	thread := responseOnlyHubThread(params.Ref)
+	if override, ok := r.threadByRef[params.Ref]; ok {
+		thread = override
+	}
 	r.mu.Unlock()
-	return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}
+	return appwire.ThreadReadResponse{Thread: thread}
 }
 
 func (r *liveCycleReads) get() []string {
@@ -373,11 +381,10 @@ func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
 	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
 	m1.session.input.SetValue("typed while the read was in flight")
 	// A watched, still-running subagent child: the dropped read's server-side
-	// subscription replacement culled it too, so the resub must restore it.
-	m1.session.messages = append(m1.session.messages, transcript.ChatMessage{
-		Kind: transcript.MsgTool,
-		Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "local:01CHILD", Status: "running"}},
-	})
+	// subscription replacement culled it too, so the recovery response must
+	// restore it. The child rides the recovery read's own response thread —
+	// the re-arm scans the refreshed transcript (round-12 medium 1).
+	reads.threadByRef = map[string]appwire.Thread{"local:01B": threadWithRunningChild("local:01B")}
 
 	updated, resub := m1.Update(cmd())
 	m2 := updated.(hubModel)
@@ -387,29 +394,44 @@ func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
 	if got := m2.session.input.Value(); got != "typed while the read was in flight" {
 		t.Fatalf("draft = %q, want preserved", got)
 	}
-	// Round 11, medium 2: the dropped read's ThreadRead still replaced the
-	// connection's subscriptions server-side (main AND children), so the drop
-	// must re-establish the displayed session's subscription and re-subscribe
-	// the still-running child (roborev PR #1044 round-11 medium 2).
+	// Round 11, medium 2 (re-scoped by round 12): the dropped read's
+	// ThreadRead still replaced the connection's subscriptions server-side
+	// (main AND children), so the drop must re-establish the displayed
+	// session's subscription. The resub is a single tagged recovery read;
+	// the still-running child re-arms from the recovery response, after the
+	// replacement completed (round-12 medium 1).
 	if resub == nil {
 		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
 	}
 	msg := resub()
-	batch, ok := msg.(tea.BatchMsg)
+	sessionMsg, ok := msg.(hubSessionMsg)
 	if !ok {
-		t.Fatalf("resub command result = %T, want tea.BatchMsg", msg)
+		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
 	}
-	if len(batch) < 2 {
-		t.Fatalf("resub batch = %d cmds, want the session read plus the child re-subscription", len(batch))
+	if sessionMsg.ref != "local:01B" {
+		t.Fatalf("resub read ref = %q, want local:01B", sessionMsg.ref)
 	}
-	// A BatchMsg holds the child commands; run each so its thread/read is
-	// actually issued against the recorded fixture.
-	for _, child := range batch {
-		_ = child()
+	if !sessionMsg.liveNavRecovery {
+		t.Fatal("resub read is not tagged as a recovery read")
+	}
+	// Deliver the recovery response: the transcript refreshes and the child
+	// re-arm issues from the response, sequenced after the replacement.
+	updated2, childCmd := m2.Update(sessionMsg)
+	m3 := updated2.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("recovery read switched sessions: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if childCmd == nil {
+		t.Fatal("recovery response returned no command: the still-running child was not re-subscribed")
+	}
+	if batch, isBatch := childCmd().(tea.BatchMsg); isBatch {
+		for _, child := range batch {
+			_ = child()
+		}
 	}
 	got, replaces := reads.get(), reads.replaces()
-	// read 1: the cycling read (01C, replace). resub read 2: displayed 01B,
-	// replace. child read 3: 01CHILD, additive.
+	// read 1: the cycling read (01C, replace). read 2: the recovery read
+	// (01B, replace). read 3: the child re-arm (01CHILD, additive).
 	if len(got) < 3 || got[1] != "local:01B" || !replaces[1] {
 		t.Fatalf("resub read missing: reads = %v replaces = %v, want a replacing read for local:01B", got, replaces)
 	}
@@ -441,26 +463,174 @@ func TestHubSessionLiveCycleDropsReadWhenOverlayOpenedMidFlight(t *testing.T) {
 	if m2.commandPalette == nil {
 		t.Fatal("expected the palette to remain open")
 	}
-	// Round 11, medium 2: same as the draft drop - the subscription for the
-	// displayed session must be re-established after the read dropped.
+	// Round 11, medium 2 (re-scoped by round 12): same as the draft drop -
+	// the subscription for the displayed session must be re-established
+	// after the read dropped. The resub is a single tagged recovery read;
+	// no watched children in this fixture, so its response just refreshes.
 	if resub == nil {
 		t.Fatal("overlay drop returned no command: the displayed session's subscription was not re-established")
 	}
 	msg := resub()
-	// No watched children in this fixture, so the batch may collapse to the
-	// single session read.
-	switch m := msg.(type) {
-	case hubSessionMsg:
-	case tea.BatchMsg:
-		for _, child := range m {
-			_ = child()
-		}
-	default:
-		t.Fatalf("resub command result = %T, want hubSessionMsg or tea.BatchMsg", msg)
+	sessionMsg, ok := msg.(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
+	}
+	if !sessionMsg.liveNavRecovery {
+		t.Fatal("resub read is not tagged as a recovery read")
+	}
+	// The recovery response applies under the still-open palette: it
+	// refreshes the transcript without closing the overlay or switching
+	// sessions.
+	updated2, _ := m2.Update(sessionMsg)
+	m3 := updated2.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("recovery read switched sessions: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if m3.commandPalette == nil {
+		t.Fatal("recovery response closed the palette")
 	}
 	got, replaces := reads.get(), reads.replaces()
 	if len(got) < 2 || got[1] != "local:01B" || !replaces[1] {
 		t.Fatalf("resub read missing: reads = %v replaces = %v, want a replacing read for local:01B", got, replaces)
+	}
+}
+
+// threadWithRunningChild is a response thread carrying one running subagent
+// delegate, so a read's response re-arms the child subscription when applied
+// (round-12 medium 1's sequencing contract).
+func threadWithRunningChild(ref string) appwire.Thread {
+	thread := responseOnlyHubThread(ref)
+	thread.Turns = append(thread.Turns, appwire.Turn{
+		ID: "turn-child",
+		Items: []appwire.ThreadItem{{
+			ID:       "item-child",
+			TurnID:   "turn-child",
+			Type:     "commandExecution",
+			ToolName: "delegate",
+			Raw:      json.RawMessage(`{"delegate_id":"dlg_child","type":"subagent","status":"running","transcript_ref":"local:01CHILD"}`),
+		}},
+	})
+	return thread
+}
+
+// Round 12, medium 1: the replacing parent read and the additive child
+// re-subscriptions were batched with tea.Batch, which has no ordering
+// guarantee: if the replacing read executes after a child subscription, it
+// culls that child server-side, and watchedChildRefs already marks it, so
+// its live activity stays dead. The child re-arm must be issued from the
+// recovery read's own response, after the replacement completed (roborev
+// PR #1044 round-12 medium 1).
+func TestHubSessionLiveCycleResubSequencesChildrenAfterParent(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+	// The displayed session's re-read carries the running child, so the
+	// recovery response has something to re-arm.
+	reads.threadByRef = map[string]appwire.Thread{"local:01B": threadWithRunningChild("local:01B")}
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	msg := resub()
+	// The recovery read is now the ONLY issued read: child re-arm moves to
+	// the recovery response, so issuing the resub must not yet subscribe
+	// the child.
+	if _, ok := msg.(tea.BatchMsg); ok {
+		t.Fatal("resub still batches child subscriptions with the replacing read")
+	}
+	sessionMsg, ok := msg.(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
+	}
+	if sessionMsg.ref != "local:01B" {
+		t.Fatalf("resub read ref = %q, want local:01B", sessionMsg.ref)
+	}
+	// Deliver the recovery response: the child re-arm is sequenced AFTER
+	// the replacement completed server-side, so it must issue now.
+	updated2, childCmd := m2.Update(sessionMsg)
+	m3 := updated2.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("recovery read switched sessions: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if m3.session.input.Value() != "typed while the read was in flight" {
+		t.Fatalf("draft = %q, want preserved through the recovery response", m3.session.input.Value())
+	}
+	if childCmd == nil {
+		t.Fatal("recovery response returned no command: child re-subscription was not sequenced after the replacing read")
+	}
+	// One child collapses tea.Batch to the single subscribe command; a
+	// batch (multiple children) holds lazy children to run.
+	if batch, isBatch := childCmd().(tea.BatchMsg); isBatch {
+		for _, child := range batch {
+			_ = child()
+		}
+	}
+	got, replaces := reads.get(), reads.replaces()
+	// read 1: cycling read (01C, replace). read 2: recovery read (01B,
+	// replace). read 3: child re-arm (01CHILD, additive) — after the
+	// recovery response, not batched with the read.
+	if len(got) < 3 || got[1] != "local:01B" || !replaces[1] {
+		t.Fatalf("recovery read missing: reads = %v replaces = %v, want a replacing read for local:01B", got, replaces)
+	}
+	if got[len(got)-1] != "local:01CHILD" || replaces[len(replaces)-1] {
+		t.Fatalf("child re-subscription missing or replacing: reads = %v replaces = %v, want an additive read for local:01CHILD last", got, replaces)
+	}
+}
+
+// Round 12, medium 2: the recovery read is created with the ordinary
+// fetchHubSession, so its response is an untagged hubSessionMsg. If the user
+// navigates away while the recovery read is in flight, the late response is
+// processed as a normal session entry and can hijack the UI back to the
+// previously displayed session. Recovery reads must be tagged so Update
+// discards them when the navigation intent has moved on (roborev PR #1044
+// round-12 medium 2).
+func TestHubSessionLiveCycleRecoveryReadDoesNotHijackNavigation(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	msg := resub()
+	sessionMsg, ok := msg.(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
+	}
+
+	// The user clears the draft and navigates away while the recovery read
+	// is in flight: a newer live-nav press for a different session, whose
+	// response APPLIES (the newer intent takes the display).
+	m2.session.input.SetValue("")
+	m3, newer := m2.switchToAdjacentLiveSession(1) // from 01B, pending: 01C
+	if newer == nil {
+		t.Fatal("expected a newer live-nav command")
+	}
+	newerMsg := newer().(hubSessionMsg)
+	if newerMsg.ref != "local:01C" {
+		t.Fatalf("newer read ref = %q, want local:01C", newerMsg.ref)
+	}
+	updatedNewer, _ := m3.Update(newerMsg)
+	mApplied := updatedNewer.(hubModel)
+	if mApplied.detail.Ref != "local:01C" {
+		t.Fatalf("newer navigation did not apply: viewed ref = %q, want local:01C", mApplied.detail.Ref)
+	}
+
+	// The recovery response now lands stale. It must be discarded, not
+	// processed as an ordinary session entry that reverts the UI to 01B
+	// while the user is viewing 01C.
+	updated3, _ := mApplied.Update(sessionMsg)
+	m4 := updated3.(hubModel)
+	if m4.detail.Ref != "local:01C" {
+		t.Fatalf("stale recovery response hijacked navigation: viewed ref = %q, want local:01C", m4.detail.Ref)
 	}
 }
 

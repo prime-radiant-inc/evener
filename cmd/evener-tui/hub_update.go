@@ -86,6 +86,37 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.liveNavPendingRef = ""
 				return m, nil
 			}
+			// A recovery read (reestablishDisplayedSubscription) re-enters
+			// the session already displayed: no hijack to guard, no pending
+			// target to step from. A stale one drops; a current one applies
+			// below as an ordinary same-ref resync whose success re-arms
+			// the children sequenced after the replacement. The draft and
+			// overlay guards do not apply: the read was issued BECAUSE a
+			// draft or overlay dropped the cycling read, and re-entering
+			// those guards would loop recovery forever (roborev PR #1044
+			// round-12 medium 2).
+			if msg.liveNavRecovery {
+				if msg.liveNavSeq != m.liveNavSeq || m.detail.Ref != msg.ref {
+					return m, nil
+				}
+				if msg.err != nil {
+					// A failed recovery read left the connection's
+					// subscriptions culled server-side; nothing restores
+					// them, so retry the recovery once more.
+					retried, retry := m.reestablishDisplayedSubscription()
+					return retried, retry
+				}
+				m.mode = hubModeSession
+				m.detail = msg.detail
+				m.replaceSessionTranscript(msg.messages)
+				m.surfaceEscalationsOnEntry()
+				m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
+				m.session.refreshViewport()
+				// The children re-arm AFTER the replacement completed
+				// server-side (the response just applied); batched with the
+				// read they would race it (round-12 medium 1).
+				return m, m.subscribeNewChildren()
+			}
 			if msg.liveNavSeq != m.liveNavSeq {
 				// A newer cycling read is still in flight: IT owns the
 				// server-side subscription when it lands, and a resub here

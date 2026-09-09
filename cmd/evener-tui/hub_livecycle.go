@@ -97,18 +97,31 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 // currently displayed after a dropped or failed cycling read whose request
 // already replaced the connection's subscriptions server-side. Replace: true
 // culls the child-transcript subscriptions too (subscriptions.go's
-// removeConnectionLocked), so the watched-children set is cleared first and
-// the still-running children re-subscribed additively - the same restore the
-// session-entry path performs (roborev PR #1044 round-11 medium 2). The
-// read's own response lands as an ordinary same-ref session entry, which
-// refreshes the transcript without switching sessions or touching the
-// composer's draft.
+// removeConnectionLocked), so the read is tagged with the current live-nav
+// sequence and a recovery flag: Update drops its response when a newer
+// navigation intent has since applied (it re-enters the SAME session, so an
+// untagged response would be processed as an ordinary entry and could revert
+// a newer switch), and its success path re-arms the still-running children
+// AFTER the replacement completed server-side — tea.Batch would give the
+// child subscriptions no ordering guarantee against the replacing read, and
+// one landing after it would be culled with watchedChildRefs already marked,
+// leaving the child's live activity dead (roborev PR #1044 round-12 mediums 1
+// and 2).
 func (m hubModel) reestablishDisplayedSubscription() (hubModel, tea.Cmd) {
 	ref, ok := m.currentRef()
 	if !ok || m.frames == nil {
 		return m, nil
 	}
+	seq := m.liveNavSeq
+	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
 	resub := fetchHubSession(m.frames, m.client, ref)
-	m.watchedChildRefs = nil // subscribeNewChildren re-fills it below
-	return m, tea.Batch(resub, m.subscribeNewChildren())
+	return m, func() tea.Msg {
+		msg := resub()
+		if sessionMsg, ok := msg.(hubSessionMsg); ok {
+			sessionMsg.liveNavSeq = seq
+			sessionMsg.liveNavRecovery = true
+			return sessionMsg
+		}
+		return msg
+	}
 }
