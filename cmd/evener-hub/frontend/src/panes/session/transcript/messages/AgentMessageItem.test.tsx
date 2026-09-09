@@ -436,20 +436,29 @@ test("an exchange opener keeps its time inline in the speaker header - no stamp 
 
 // jsdom computes no cascade, so the stamp's layout contract is checked at
 // the declaration level - but only its STRUCTURAL load-bearing edges (the
-// same technique the caret tests above use, kept minimal per roborev PR
-// #1041 review: exact offsets, gaps, and alignment tokens are geometry the browser
+// same technique the caret tests above use, kept minimal per the PR 1041
+// review: exact offsets, gaps, and alignment tokens are geometry the browser
 // guards own, not behavior regexes should pin). The contract: in-flow on
-// its own line by default, out of flow (no added height) only when a right
-// margin provably exists, .message as its containing block.
-test("the stamp is in-flow by default and leaves the flow for the right margin only on wide windows (declaration-level)", () => {
+// its own line by default, out of flow (no added height) only when the
+// transcript list itself has room - a CONTAINER query, so a narrow dock
+// split can never leave the flow and clip the stamp away - and .message as
+// its containing block.
+test("the stamp is in-flow by default and leaves the flow only when the transcript list has room (declaration-level)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css).toMatch(/\.message\s*\{[^}]*position:\s*relative/);
   const base = /\.stamp\s*\{([^}]*)\}/.exec(css);
-  if (!base) throw new Error("no base .stamp rule outside the media queries");
+  if (!base) throw new Error("no base .stamp rule outside the container queries");
   expect(base[1]).toMatch(/display:\s*block/);
   expect(base[1]).toMatch(/font-style:\s*italic/);
-  const rail = /@media\s*\(min-width:\s*1200px\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  if (!rail) throw new Error("no wide-window .stamp rail media query");
+  const rail = /@container\s*\(min-width:\s*55rem\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  if (!rail) throw new Error("no container-gated .stamp rail rule");
   expect(rail[1]).toMatch(/\.stamp\s*\{[^}]*position:\s*absolute/);
+  // The query resolves against the virtual list's root: it must BE a query
+  // container, or the rail never engages anywhere.
+  const listCss = readFileSync(join(here, "../../../../widgets/virtuallist/virtuallist.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(listCss).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size/);
 });
