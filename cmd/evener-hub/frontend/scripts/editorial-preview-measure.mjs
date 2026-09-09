@@ -20,7 +20,7 @@ export function measureEditorial() {
     lifecycle:[...document.querySelectorAll('[data-testid="delegate-lifecycle"]')].map(e=>({text:e.textContent,...rect(e)}))};
 }
 
-export function assertEditorialGeometry(assert, m, label) {
+export function assertEditorialGeometry(assert, m, label, {collaborators = false} = {}) {
   assert(m.document.scrollWidth <= m.document.width + 1, `${label}: document horizontal overflow`);
   assert(m.document.scrollHeight <= m.document.height + 1, `${label}: document vertical overflow`);
   assert(m.composer && m.input && m.transcript, `${label}: real composer/transcript missing`);
@@ -29,7 +29,9 @@ export function assertEditorialGeometry(assert, m, label) {
   for (const b of m.buttons) assert(b.x>=-1 && b.right<=m.viewport.width+1, `${label}: horizontal control clipping: ${b.label}`);
   if (m.viewport.width<900) {
     assert(parseFloat(m.input.fontSize)>=16, `${label}: editable font below phone floor`);
-    for (const b of m.buttons.filter(b=>b.label==="Send" || b.label==="Open")) assert(b.width>=44 && b.height>=44, `${label}: phone ${b.label} below 44px`);
+    assert(m.buttons.some(b=>b.label==="Send"), `${label}: phone Send sample missing`);
+    if (collaborators) assert(m.buttons.some(b=>b.label==="Open transcript"), `${label}: collaborator Open transcript sample missing`);
+    for (const b of m.buttons.filter(b=>b.label==="Send" || b.label==="Open" || b.label==="Open transcript")) assert(b.width>=44 && b.height>=44, `${label}: phone ${b.label} below 44px`);
   }
   for (const s of m.stamps) {
     if (m.transcript.width>=880) {

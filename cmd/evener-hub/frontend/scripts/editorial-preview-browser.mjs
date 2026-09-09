@@ -278,7 +278,7 @@ try {
       const geometry = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label, ...geometry});
       assertWideSetup(geometry, viewport, label);
-      try { assertEditorialGeometry(assert,geometry,label); } catch(error) { observations.geometryFailures.push(error.message); }
+      try { assertEditorialGeometry(assert,geometry,label,{collaborators:false}); } catch(error) { observations.geometryFailures.push(error.message); }
       if (viewport.narrow) assert(geometry.transcript.width<=600, `${label}: did not create a narrow desktop pane`);
       await evalJS("(() => { const row=document.querySelector('[data-tool-name=read_file]'); if (!row.querySelector('[data-testid=tool-row-body-trigger]')) row.querySelector('[data-testid=tool-row-trigger]').click(); })()");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]')");
@@ -288,7 +288,7 @@ try {
       const collaborators = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label:`${label}-collaborators`,...collaborators});
       assertWideSetup(collaborators, viewport, `${label}-collaborators`);
-      try { assertEditorialGeometry(assert,collaborators,label); } catch(error) { observations.geometryFailures.push(error.message); }
+      try { assertEditorialGeometry(assert,collaborators,label,{collaborators:true}); } catch(error) { observations.geometryFailures.push(error.message); }
       fs.writeFileSync(path.join(evidence, `${label}-collaborators.png`), Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
       assert.deepEqual(await evalJS("window.editorialPreview.client.rejectedRequests"),[]);
     }
