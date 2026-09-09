@@ -1,0 +1,101 @@
+{
+  "schema": "evener.native.connection-errors.receipt.v1",
+  "status": "qualified-scoped",
+  "verifiedAt": "2026-09-09T03:49:20.201531+00:00",
+  "scope": "iPhone native connection recovery against an isolated scripted fixture; no live provider or shared hub",
+  "source": {
+    "worktreeHead": "bd1682e37a2f70036f76019d3dcb56c0c9a430a9",
+    "sourceIdentity": "bfe632f44",
+    "bundleId": "com.primeradiant.evener.native",
+    "simulatorDevice": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "nativeArtifactHashes": {
+      "Evener": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+      "main.jsbundle": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b"
+    },
+    "evidenceRoot": "/private/tmp/evener-native-connection-errors-3vnmtxec",
+    "evidenceHashes": {
+      "identity.json": "dfe5a72fb0ae7cc2de5ee7b877717db1124112ffd68d523fb67b2471e22b7d3b",
+      "before-cold.json": "4a0eb6a44be4de29964a408393ea40561bcfd2b0e5f3d3018062e31bc4a453f0",
+      "after-cold.json": "7b07d5f5101e845f5d41ea1426ab356692ef12a84fc9902841310fcf4a47aeef",
+      "cold-launch-process.json": "4dfa1210c7bb45cdfef9be7995c62fae0fd7f470eabab1738a5273bbc1e743c1",
+      "invalid-bearer-server-probe.json": "fad32d9253524c7dc5a7cff7932edd3dccbc362c7f2308bd37852bd3688dd76e",
+      "unreachable-probe.json": "6328f3a2feafb7cd18d077112934d217621d24a9a502c048322a591568a2ca6b",
+      "protocol-capture.json": "0ad7c50f85b4ee54459343d57abed4a1ded9f5405bc3771dd60adbf33d07b2bd",
+      "protocol-server.mjs": "db40018b05bdc4a1ff6fce6dd9e6e37641f1c3f7195a5b4fe47a34229c5750ce",
+      "invalid-bearer-ax.json": "52eb91ceba950f874dfe7c309028b609a4dc9c1ca367640823e50d7bd5c41599",
+      "invalid-bearer.png": "e61389107b27c69c42da65a7ab00ec0c87986c9e1046a763a3eefe2ff7ccce61",
+      "unreachable-ax.json": "de635ed3beb6c62c104dca999f97a4dc31f8544f17a57e0680eb5d757f23455f",
+      "unreachable.png": "2849dfc12c3ee77f3a3e2c45d15ee03aed67cdf248b775687eff9018bc5d1239",
+      "protocol-mismatch-ax.json": "fa72d581fc67abb77f08d207ab81122c1a480497e6dee62ae4dbdab1ca8e72f3",
+      "protocol-mismatch.png": "10b66515d50f9a2f9c15ae4bb73edf87282687784c2be72d9217453a679f5e10",
+      "after-cold-ax.json": "3ecfdca86247a77da6477247cd9fc5f33969661a0f26e8807be2d67fe394f986",
+      "after-cold.png": "f9a177062389345ba686449e8d94d45a2839c0e5c82367b270554ec4a5345b13",
+      "check-preservation.py": "8d514e3e0009a0fa74a3f66864b3b7ed9bba4a42cca17964a2e2cdd7e529bad3",
+      "unreachable-cleanup-start.json": "11dbe4eacb3e90a9c63901fd485c80ef276168bdba793a7932c78a3825d090b6",
+      "unreachable-cleanup-complete.json": "0ed9b82ca815de1543b923fc8d2cc2e14dc0763122f4c7510d42513f22efa90a"
+    },
+    "simulatorModel": "iPhone 17 Pro",
+    "simulatorOS": "iOS 26.5",
+    "backendRevision": "6a0278e36331",
+    "backendBuildDirty": true,
+    "backendScope": "Existing owned real Evener hub, distinct from the native build and current checkout."
+  },
+  "preservation": {
+    "beforeCapture": "before-cold.json",
+    "afterCapture": "after-cold.json",
+    "draftTables": 7,
+    "storageKeys": 3,
+    "allDraftRowsPreserved": true,
+    "allStorageValuesPreserved": true,
+    "readerTouchedAtExcluded": true,
+    "nativeArtifactsUnchanged": true,
+    "check": "check-preservation.py"
+  },
+  "recoveryObservations": {
+    "coldLaunch": "Connected state, the original Ordinary response conversation, its retained reading position, and exact separate draft were observed after app termination and launch.",
+    "nativeProcess": {
+      "priorPid": 18456,
+      "coldLaunchPid": 17755,
+      "identityEvidence": "cold-launch-process.json"
+    },
+    "invalidBearer": {
+      "httpStatus": 401,
+      "evidence": "invalid-bearer-server-probe.json",
+      "qualification": "Independent server probe, not a native WebSocket packet trace",
+      "nativeError": "Could not connect. Check the hub address, token, and network, then retry.",
+      "recovery": "Reconnect and Hubs remained available; saved-token replacement form opened and was canceled."
+    },
+    "unreachable": {
+      "endpointPort": 58336,
+      "connectExResult": 35,
+      "qualification": "Independent direct TCP connection probe returned nonzero; error 35 is not claimed as ECONNREFUSED.",
+      "cleanup": [
+        "unreachable-cleanup-start.json",
+        "unreachable-cleanup-complete.json"
+      ],
+      "nativeError": "Could not connect. Check the hub address, token, and network, then retry.",
+      "recovery": "Reconnect and saved-hub navigation remained available."
+    },
+    "protocolMismatch": {
+      "serverProtocol": "3",
+      "clientProtocol": "evener-appwire-v4",
+      "capture": "protocol-capture.json",
+      "qualification": "Direct fixed-response protocol fixture, not a real older hub",
+      "fixtureCleanupProof": {
+        "path": "/tmp/evener-incompatible-protocol-fixture-1788924641/cleanup.json",
+        "sha256": "aab424b3def673537dc663c92a8c87860920cab4f7a9f6bf011f1740274f159a"
+      },
+      "nativeError": "This app and hub need compatible versions. Update them together, then reconnect."
+    },
+    "profileRestoration": {
+      "newProfilesRemoved": 3,
+      "originalProfilesRestoredExactly": true
+    },
+    "tokenReplacement": "Token replacement form was inspected and canceled; no credential rotation is claimed."
+  },
+  "limits": [
+    "The invalid-bearer and unreachable results are corroborating probes rather than native transport traces.",
+    "Protocol mismatch is qualified only against the synthetic fixed-response fixture.",
+    "Saved hub credentials and baseline databases are intentionally omitted from this public receipt."
+  ]
+}
