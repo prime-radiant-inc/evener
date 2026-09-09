@@ -43,12 +43,14 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "./tools/subagentModuleStore";
+import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
+  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
 type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
@@ -58,7 +60,15 @@ const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
   done: "ended",
   stopped: "ended",
   failed: "failed",
-  unknown: "needs-you",
+  unknown: "idle",
+};
+
+const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
+  running: "Running",
+  done: "Idle · reported",
+  stopped: "Stopped",
+  failed: "Failed",
+  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -128,19 +138,38 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     return delegate.delegateId === stableDelegateId;
   });
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
-  const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const delegateStatus =
+    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+  const lifecycleStatus = stableDelegate
+    ? stableDelegateDisplayStatus(stableDelegate)
+    : delegateOutput && str(delegateOutput, "status");
+  const lifecycle = isDelegate ? (
+    <div
+      className={CLASS.lifecycle}
+      data-testid="delegate-lifecycle"
+      data-kind={delegateKind}
+      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
+    >
+      {lifecycleStatus === "exhausted"
+        ? "Exhausted"
+        : lifecycleStatus === "idle"
+          ? "Idle"
+          : DELEGATE_LABEL[delegateKind]}
+      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
+    </div>
+  ) : null;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
     if (!isDelegate) return;
-    const projected = rowFromDelegateItem(item);
+    const projected = rowFromDelegateItem(item, live);
     if (!projected) {
       removeSubagentRow(delegateScopeKey, rowKeyForDelegateItem(item));
       return;
     }
     const { rowKey, migrateFromRowKey, row } = projected;
     upsertSubagentRow(delegateScopeKey, { rowKey, ...row }, migrateFromRowKey);
-  }, [delegateScopeKey, isDelegate, item]);
+  }, [delegateScopeKey, isDelegate, item, live]);
 
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
@@ -341,6 +370,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
           title={detail}
         />
+        {lifecycle}
       </div>
     );
   }
@@ -395,6 +425,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         title={detail}
         bodyId={bodyId}
       />
+      {lifecycle}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
 import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, IconButton, Timestamp } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -115,10 +116,9 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   return out;
 }
 
-// The stable projection owns timing after hydration. Frozen tool output is the
-// pre-hydration fallback. Only running rows consume the shared `now` value.
+// Only the stable projection supplies a child's run window. The launch call's
+// timestamps measure the invocation, not the child's runtime.
 function cardClock(
-  row: SubagentRow,
   stable: EvenerDelegateInfo | undefined,
   displayKind: SubagentRowKind,
   nowMs: number,
@@ -131,13 +131,7 @@ function cardClock(
     startMs = stableStart;
     const stableEnd = Date.parse(stable.runEndedAt ?? "");
     if (!Number.isNaN(stableEnd)) endMs = stableEnd;
-  } else {
-    const itemStart = Date.parse(row.startedAt ?? "");
-    if (Number.isNaN(itemStart)) return undefined;
-    startMs = itemStart;
-    const itemEnd = Date.parse(row.completedAt ?? "");
-    if (!Number.isNaN(itemEnd)) endMs = itemEnd;
-  }
+  } else return undefined;
   if (endMs !== undefined && endMs >= startMs) return formatElapsed(endMs - startMs);
   if (displayKind !== "running") return undefined;
   return formatElapsed(nowMs - startMs);
@@ -178,25 +172,30 @@ function SubagentCard({
   sessionRef: string | undefined;
 }) {
   const scopeKey = turnScopeKey(sessionRef, turnId);
+  const context = useTranscriptRenderContext();
   // Captured once so the effect closures below reference this narrowed local,
   // not row.transcriptRef re-read through a closure TS can't narrow.
   const transcriptRef = row.transcriptRef;
 
   useEffect(() => {
-    if (transcriptRef === undefined) return;
+    if (transcriptRef === undefined || context.surface === "preview") return;
     threadsStore
       .getState()
       .watchThread(transcriptRef, { includeTurns: true })
       .catch(() => {});
     return () => threadsStore.getState().releaseWatchedThread(transcriptRef);
-  }, [transcriptRef]);
+  }, [transcriptRef, context.surface]);
 
   const model = useThreadsStore((s) => (transcriptRef !== undefined ? s.watchedThreads.get(transcriptRef) : undefined));
-  const stable = useThreadsStore((s) => {
+  const storedStable = useThreadsStore((s) => {
     if (sessionRef === undefined || row.delegateId === undefined) return undefined;
     const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
     return owner?.delegates?.find((delegate) => delegate.delegateId === row.delegateId);
   });
+  const stable =
+    context.thread !== undefined
+      ? context.thread.delegates?.find((delegate) => delegate.delegateId === row.delegateId)
+      : storedStable;
   const displayKind = effectiveRowKind(row, stable);
   const attention = stable?.needsAttention ?? false;
   const childRunning = model ? cadenceStateForStatus(model.status.type) === "working" : displayKind === "running";
@@ -226,7 +225,7 @@ function SubagentCard({
   if (usage) statsSegments.push(usage);
 
   const nowMs = useSessionNow();
-  const clock = cardClock(row, stable, displayKind, nowMs);
+  const clock = cardClock(stable, displayKind, nowMs);
 
   // Deterministic scoping preserves disclosure state across virtualization.
   const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
@@ -246,10 +245,12 @@ function SubagentCard({
     >
       <span className={CLASS.srOnly}>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</span>
       <span className={CLASS.srOnly}>{`Status: ${effectiveStatus}`}</span>
-      {quoteText && (
+      {quoteText ? (
         <em className={CLASS.quote} data-testid="subagent-quote">
           {quoteText}
         </em>
+      ) : (
+        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
       )}
       <div className={CLASS.stats} data-testid="subagent-stats">
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
@@ -323,7 +324,7 @@ function SubagentCard({
               })}
             </ol>
           ) : (
-            <div className={CLASS.quotesEmpty}>No activity yet</div>
+            <div className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Activity unavailable"}</div>
           )}
           <JobDetailSection row={row} stable={stable} />
         </section>
@@ -332,7 +333,10 @@ function SubagentCard({
   );
 }
 
-export function rowFromDelegateItem(item: ItemModel): {
+export function rowFromDelegateItem(
+  item: ItemModel,
+  live = false,
+): {
   rowKey: string;
   migrateFromRowKey?: string;
   row: Omit<SubagentRow, "rowKey">;
@@ -355,7 +359,7 @@ export function rowFromDelegateItem(item: ItemModel): {
     rowKey,
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
-      kind: classifyJobStatus(status),
+      kind: status === undefined && (live || item.status === "inProgress") ? "running" : classifyJobStatus(status),
       delegateId,
       transcriptRef,
       startedAt: item.startedAt,
@@ -368,9 +372,9 @@ export function rowFromDelegateItem(item: ItemModel): {
   };
 }
 
-function DelegateBody({ item, sessionRef }: ToolRenderProps) {
+function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
   const scopeKey = turnScopeKey(sessionRef, item.turnId);
-  const projected = rowFromDelegateItem(item);
+  const projected = rowFromDelegateItem(item, live);
   const storedRow = useSubagentRow(scopeKey, projected?.rowKey ?? "");
 
   if (!projected) return null;

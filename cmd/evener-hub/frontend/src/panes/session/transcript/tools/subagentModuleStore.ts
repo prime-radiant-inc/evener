@@ -86,12 +86,11 @@ export function removeSubagentRow(scopeKey: string, rowKey: string): void {
 
 // A deliberate stop is terminal but distinct from success or failure.
 export function classifyJobStatus(status: string | undefined): SubagentRowKind {
-  if (status === undefined) return "running";
+  if (status === undefined) return "unknown";
   if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
   if (["cancelled", "stopped"].includes(status)) return "stopped";
-  if (["completed", "done", "succeeded"].includes(status)) return "done";
-  if (status === "unknown") return "unknown";
-  return "running";
+  if (["completed", "done", "succeeded", "idle"].includes(status)) return "done";
+  return status === "running" ? "running" : "unknown";
 }
 
 // Prefixes prevent equal raw ids from different identity classes colliding.

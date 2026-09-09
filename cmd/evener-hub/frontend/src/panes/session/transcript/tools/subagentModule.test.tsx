@@ -80,10 +80,37 @@ test("classifyJobStatus: literal unknown maps to unknown", () => {
   expect(classifyJobStatus("unknown")).toBe("unknown");
 });
 
-test("classifyJobStatus: running, and anything undetermined (including undefined), maps to running", () => {
+test("classifyJobStatus: only known running input means running", () => {
   expect(classifyJobStatus("running")).toBe("running");
-  expect(classifyJobStatus(undefined)).toBe("running");
-  expect(classifyJobStatus("some-future-status")).toBe("running");
+  expect(classifyJobStatus(undefined)).toBe("unknown");
+  expect(classifyJobStatus("unrecognized-status")).toBe("unknown");
+});
+
+test.each([undefined, "inProgress"])(
+  "a genuinely in-flight launch still renders running without lifecycle output (%s)",
+  (status) => {
+    const turn: TurnModel = { id: "launch", status: "inProgress", items: [] };
+    const launch = delegateItem({ turnId: turn.id, status, output: "" });
+    render(<ToolCallItem item={launch} turn={turn} live={true} />);
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
+  },
+);
+
+test("unknown lifecycle is unavailable, never a human question, even collapsed", async () => {
+  const turn: TurnModel = { id: "unknown", status: "completed", items: [] };
+  const unknown = delegateItem({
+    turnId: turn.id,
+    output: JSON.stringify({ delegate_id: "dlg_unknown", status: "unknown" }),
+  });
+  const user = userEvent.setup();
+  render(<ToolCallItem item={unknown} turn={turn} live={false} />);
+  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+  await user.click(screen.getByTestId("tool-row").querySelector("button[aria-expanded]")!);
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
 });
 
 test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
@@ -179,14 +206,9 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
 
 // --- row content ----------------------------------------------------------
 
-// Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
-// reducer produces via epochMsToISO from the wire's epoch-MILLISECONDS
-// ThreadItem timestamps (reducer.ts:124-125; appwire/types.go stamps them via
-// time.Time.UnixMilli). durationLabel diffs those two ISO instants, so a real
-// 12-second span at a realistic ms epoch must read "12s" — reading the wire as
-// seconds would place both instants ~12ms apart (1970-relative) and floor to
-// "12ms". This locks the honest ms duration end to end at the consumer.
-test("a settled delegate row renders an honest ms-scale duration", () => {
+// Approved editorial specification §Delegates: invocation timestamps are not
+// child runtime. Stable projection timing is tested independently below.
+test("a settled delegate never presents the launch-call duration as child runtime", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const startedMs = 1_700_000_000_000; // 2023-11-14T22:13:20Z — a realistic epoch-ms
@@ -200,7 +222,7 @@ test("a settled delegate row renders an honest ms-scale duration", () => {
   });
   render(<Body item={settled} live={false} />);
   const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByText("12s")).toBeTruthy();
+  expect(within(row).queryByText("12s")).toBeNull();
 });
 
 test("a failed card carries the danger rail itself - there is no module chrome to average it away", () => {
@@ -540,7 +562,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const quotes = await within(row).findByTestId("subagent-quotes");
-  expect(within(quotes).getByText(/no activity yet/i)).toBeTruthy();
+  expect(within(quotes).getByText(/activity unavailable/i)).toBeTruthy();
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
@@ -779,7 +801,7 @@ test("the stats line singularizes a single turn and a single call", async () => 
   expect(stats.textContent).not.toContain("1 turns");
 });
 
-test("a running card's stats line closes with a live elapsed clock from its start time", () => {
+test("a running receipt without stable run timing does not invent a child clock", () => {
   const Body = toolRendererFor("delegate").body!;
   const now = 1_700_000_221_000;
   const running = delegateItem({
@@ -795,7 +817,47 @@ test("a running card's stats line closes with a live elapsed clock from its star
     </SessionNowContext.Provider>,
   );
   const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("3m41s");
+  expect(stats.textContent).not.toContain("3m41s");
+});
+
+test("resumed work keeps its identity and historical report but uses the current run clock", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "idle"));
+  connectionStore.getState().connect(fake);
+  const now = 1_700_000_221_000;
+  const stable = {
+    delegateId: "dlg_resumed",
+    status: "running",
+    outcome: "exhausted",
+    terminal: false,
+    runStartedAt: new Date(now - 12_000).toISOString(),
+  } as EvenerDelegateInfo;
+  threadsStore.setState({ threads: new Map([["parent_resumed", { delegates: [stable] } as ThreadModel]]) });
+  const turn: TurnModel = { id: "resumed", status: "completed", items: [] };
+  render(
+    <SessionNowContext.Provider value={now}>
+      <ToolCallItem
+        item={delegateItem({
+          turnId: turn.id,
+          startedAt: new Date(now - 221_000).toISOString(),
+          output: JSON.stringify({
+            delegate_id: stable.delegateId,
+            status: "exhausted",
+            transcript_ref: "child_resumed",
+          }),
+        })}
+        turn={turn}
+        live={false}
+        sessionRef="parent_resumed"
+      />
+    </SessionNowContext.Provider>,
+  );
+  const row = screen.getByTestId("subagent-row");
+  expect(row.dataset.kind).toBe("running");
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+  expect(within(row).getByText("12s")).toBeTruthy();
+  expect(within(row).queryByText("3m41s")).toBeNull();
+  expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
 });
 
 test("stable delegate attention and lifecycle own the card while child content status changes", async () => {
@@ -830,6 +892,15 @@ test("stable delegate attention and lifecycle own the card while child content s
   });
   render(<ToolCallItem item={running} turn={turn} live={false} sessionRef="ref_attention_parent" />);
 
+  const user = userEvent.setup();
+  const lifecycle = screen.getByTestId("delegate-lifecycle");
+  expect(lifecycle.textContent).toContain("Needs attention");
+  const bodyId = screen.getByTestId("tool-call-body").id;
+  const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!;
+  await user.click(toggle);
+  expect(screen.queryByTestId("subagent-row")).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").textContent).toContain("Needs attention");
+  await user.click(toggle);
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.attention).toBe("true"));
   expect(row.dataset.kind).toBe("running");
