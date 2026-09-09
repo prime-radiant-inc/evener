@@ -240,6 +240,13 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "i", "q":
 			m.exitSessionBrowse()
+		// Unmodified arrows scroll and select in browse; the alt+shift pair
+		// is not browse input, so live-session cycling stays live here
+		// (roborev PR #1044 round-4 low).
+		case "alt+shift+right":
+			return m.switchToAdjacentLiveSession(1)
+		case "alt+shift+left":
+			return m.switchToAdjacentLiveSession(-1)
 		case "up", "down", "left", "right":
 			return m.updateSessionBrowseComposerKey(msg)
 		case "k":

@@ -537,30 +537,33 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // would skip every live session behind the remaining count (roborev PR
     // #1044 finding 1; the needs-you handler's openDemandedPage pattern
     // above). previous wraps within loaded rows: pages only page forward,
-    // so the true last live row is unknowable until every page is in.
+    // so the true last live row is unknowable until every page is in; the
+    // exception is an UNLOADED section, where previous demand-loads through
+    // the remaining pages to the tail (round-4 medium 1).
     //
-    // Lifecycle rules (PR #1044 round 2): the demanded-page cache clears on
-    // a client generation change and on load failure (the revalidator
-    // resolves with an error state rather than rejecting), every press -
-    // ordinary or demand - bumps the intent counter, and a completing demand
-    // goes inert when the press that started it no longer owns the intent,
-    // the focused session or pane moved on, or a palette/modal is open.
+    // Lifecycle rules (PR #1044 rounds 2 and 4): the demanded-page cache
+    // clears on a client generation change and on load failure (the
+    // revalidator resolves with an error state rather than rejecting);
+    // starting a NEW demand or navigating directly bumps the intent counter,
+    // but a press that dedupes against an in-flight demand does NOT - it is
+    // the same intent, and bumping would make the demand's own completion
+    // go inert (round-4 medium 2). A completing demand goes inert when the
+    // press that started it no longer owns the intent, the focused session
+    // or pane moved on, or a palette/modal is open.
     let liveNavMounted = true;
     let liveNavIntent = 0;
     let liveNavGeneration = navigationStore.getState().clientGenerationID;
     const demandedLivePages = new Set<string>();
-    const demandNextLivePage = (
-      state: ReturnType<typeof navigationStore.getState>,
-      refs: readonly string[],
-      refAtPress: string | null,
-    ) => {
+    const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
+      const state = navigationStore.getState();
       const offset = selectNextSectionOffset("live", state);
       const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
-      if (demandedLivePages.has(pageID)) return;
+      if (demandedLivePages.has(pageID)) return; // waiting on this page already; not newer intent
       demandedLivePages.add(pageID);
+      liveNavIntent++;
       const intentAtPress = liveNavIntent;
       const paneAtPress = workspaceStore.getState().focusedPaneId;
-      const beforeRefs = new Set(refs);
+      const refAtPress = focusedSessionRef();
       void state
         .loadSection("live", offset)
         .then((page) => {
@@ -577,8 +580,19 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             document.querySelector('[aria-modal="true"]') !== null
           )
             return;
-          const newlyLoaded = selectLiveRows(navigationStore.getState()).find((row) => !beforeRefs.has(row.ref));
-          if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+          const rows = selectLiveRows(navigationStore.getState());
+          if (direction === "next") {
+            const newlyLoaded = rows.find((row) => !beforeRefs.has(row.ref));
+            if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+            return;
+          }
+          // previous: the tail sits behind any remaining pages.
+          if (selectSectionRemaining("live", navigationStore.getState()) > 0) {
+            demandLivePage("previous", beforeRefs);
+            return;
+          }
+          const last = rows[rows.length - 1];
+          if (last) openNeedsYouSession(last.ref);
         })
         .catch(() => {
           demandedLivePages.delete(pageID);
@@ -597,7 +611,6 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           liveNavGeneration = state.clientGenerationID;
           demandedLivePages.clear();
         }
-        liveNavIntent++; // every press supersedes an in-flight demand
         const refs = selectLiveRows(state).map((row) => row.ref);
         const current = focusedSessionRef();
         const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
@@ -608,9 +621,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         // initial read and retries a failed one.
         const unloaded = refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0;
         if (unloaded || (atLastLoaded && selectSectionRemaining("live", state) > 0)) {
-          demandNextLivePage(state, refs, current);
+          demandLivePage("next", new Set(refs));
           return;
         }
+        liveNavIntent++; // a direct navigation supersedes an in-flight demand
         const next = adjacentLiveSessionRef(refs, current, "next");
         if (next !== null) openNeedsYouSession(next);
       }),
@@ -620,13 +634,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           liveNavGeneration = state.clientGenerationID;
           demandedLivePages.clear();
         }
-        liveNavIntent++;
         const refs = selectLiveRows(state).map((row) => row.ref);
         const current = focusedSessionRef();
         if (refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0) {
-          demandNextLivePage(state, refs, current);
+          demandLivePage("previous", new Set(refs));
           return;
         }
+        liveNavIntent++;
         const previous = adjacentLiveSessionRef(refs, current, "previous");
         if (previous !== null) openNeedsYouSession(previous);
       }),

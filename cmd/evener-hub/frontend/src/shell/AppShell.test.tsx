@@ -2956,6 +2956,117 @@ test("live-next with an unloaded live section re-requests page zero when the man
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
 });
 
+// Round 4: the previous direction must reach the live TAIL, not the first
+// newly loaded row (roborev PR #1044 round-4 medium 1).
+test("live-previous with an unloaded live section demand-loads to the tail", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "manifest") {
+        return wireV2(
+          params,
+          { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 2 } } },
+          '"test"',
+        );
+      }
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return new Promise<NavigationReadResponse>((resolve) => {
+            deferred.params = params;
+            deferred.resolve = resolve;
+          });
+        }
+        return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("No session open");
+  // Page zero's read (the manifest hydration's) is in flight, deferred.
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // Page zero resolves with one row and one more page behind it: the
+  // previous direction must keep loading to the tail, not land on A.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-zero request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 4: a second same-direction press while the demanded page is still in
+// flight must not invalidate the demand it is waiting on (roborev PR #1044
+// round-4 medium 2).
+test("rapid live-next presses at the boundary still navigate when the demand lands", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+        }
+        return new Promise<NavigationReadResponse>((resolve) => {
+          deferred.params = params;
+          deferred.resolve = resolve;
+        });
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Two presses before the demanded page lands: one demand, kept live.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
 test("an in-flight live demand-load goes inert while the palette is open", async () => {
   const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
     params: null,

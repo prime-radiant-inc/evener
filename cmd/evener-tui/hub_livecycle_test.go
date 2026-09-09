@@ -287,3 +287,49 @@ func TestHubSessionLiveCycleDropsReadAfterModeExit(t *testing.T) {
 		t.Fatalf("in-flight live-nav read re-entered session mode after ctrl+o (viewing %q)", m2.detail.Ref)
 	}
 }
+
+// The composer is a text surface: switching sessions mid-draft replaces
+// m.session (input included) and discards an unsent prompt. The chords hold
+// while a draft is present — the web side's allowInEditable:false policy
+// mapped to the TUI (roborev PR #1044 round-4 medium 3).
+func TestHubSessionLiveCycleSuppressedWithDraft(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+	m.session.input.SetValue("unsent draft")
+
+	updated, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cmd != nil {
+		t.Fatal("expected no fetch command with a draft present")
+	}
+	m2 := updated.(hubModel)
+	if got := m2.session.input.Value(); got != "unsent draft" {
+		t.Fatalf("draft = %q, want preserved", got)
+	}
+	if got := reads.get(); len(got) != 0 {
+		t.Fatalf("issued thread/read %v with a draft present", got)
+	}
+}
+
+// Browse mode (esc) must not swallow the chords: unmodified arrows scroll and
+// select there, but alt+shift+arrows still switch live sessions (roborev
+// PR #1044 round-4 low).
+func TestHubSessionLiveCycleWorksInBrowseMode(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+	m.enterSessionBrowse(false)
+
+	_, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cmd == nil {
+		t.Fatal("browse mode: expected a fetch command")
+	}
+	msg := cmd().(hubSessionMsg)
+	if msg.capture != nil {
+		msg.capture.Release()
+	}
+	if msg.ref != "local:01C" {
+		t.Fatalf("browse mode switched to %q, want local:01C", msg.ref)
+	}
+	if got := reads.get(); len(got) != 1 || got[0] != "local:01C" {
+		t.Fatalf("thread/read refs = %v, want [local:01C]", got)
+	}
+}
