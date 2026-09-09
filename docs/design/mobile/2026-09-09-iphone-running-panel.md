@@ -63,3 +63,51 @@ conversation coverage, similar hub destinations, representative scale, physical
 network performance and the signed physical-device update remain separate open
 requirements. The first two-person panel and project-attention follow-through
 remain linked from the whole-app contract.
+
+
+## Implemented and confirmed follow-through
+
+The [correction receipt](assets/2026-09-09-native-running-correction.json) and
+[independent confirmation](assets/2026-09-09-native-running-confirmation-review.md)
+record the bounded result. The current signed simulator artifact is
+`c5fb198a9`; busy/queue/recovery interactions were confirmed at `5c253d512`,
+before the final project-only stale/error predicate fix. These identities are
+kept separate in the receipt and screenshots.
+
+Queue and Goal share a quiet row, the draft remains full width, model settings
+have readable space, and Steer, Stop and Queue remain distinct above the
+keyboard. Native queue inspection worked. After releasing the held fixture,
+both turns completed and the queue/goal cleared.
+
+A real connection fault initially exposed a 25-point transcript shift: the
+connection row grew when Reconnect appeared offscreen. Reserving its action
+height fixed that cause. The confirmed run kept the same anchor at
+267.333 points before disconnect, after settling, after tapping Reconnect and
+after recovery. The draft was unchanged and provider requests stayed at nine.
+This was an idle unsent draft; the actual unconfirmed-delivery sheet remains a
+separate runtime requirement.
+
+Project invalidation exposed another concrete mistake: stale snapshots also
+carry informational error text, which was being misclassified as two failed
+pages. The final predicate fixes that distinction. Renaming the owned session
+now produces one update notice per expanded project, retains cached content,
+and reveals the changed name after native Refresh. Restoring the name and
+refreshing again also passed. Genuine non-stale load-error handling remains;
+the existing catalog-level refresh notice is separate.
+
+All original draft rows and saved reader entries are unchanged. Other stored
+values match exactly, and the original conversation and dark appearance were
+restored. The 703 native tests, TypeScript, touched-file formatting and signed
+Release build pass. This work has not been uploaded as a new TestFlight build.
+
+| Corrected running composer, light | Corrected running composer, dark |
+| --- | --- |
+| ![Readable running controls in light mode](assets/2026-09-09-corrected-running-keyboard-light.png) | ![Readable running controls in dark mode](assets/2026-09-09-corrected-running-keyboard-dark.png) |
+
+| Local recovery preserves reading position | One project update notice |
+| --- | --- |
+| ![Reconnect beside the draft](assets/2026-09-09-corrected-recovery-dark.png) | ![Project update without false Retry rows](assets/2026-09-09-corrected-project-stale-dark.png) |
+
+The next complete specimen still needs image content and recognizable
+similarly named hub destinations; representative-data performance and physical
+install/update require their own evidence. iPad and accessibility stay paused.
