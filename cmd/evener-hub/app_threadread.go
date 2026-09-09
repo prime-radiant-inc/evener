@@ -442,7 +442,10 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 	return caps
 }
 
-func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry) (appwire.Thread, error) {
+	if err := ctx.Err(); err != nil {
+		return appwire.Thread{}, err
+	}
 	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
@@ -511,7 +514,6 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 			ParentRef:    parentRef,
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
-			Tasks:        persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
 			Goal:         persistedGoalState(entry.Meta.Goal),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
@@ -532,6 +534,15 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
+	return thread, nil
+}
+
+func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+	thread, err := pastEntryThreadForList(ctx, cfg, entry)
+	if err != nil {
+		return appwire.Thread{}, err
+	}
+	thread.Evener.Tasks = persistedTaskAggregate(entry.StateDir, entry.Meta.ID)
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
 	if err != nil {
 		return appwire.Thread{}, err
@@ -555,14 +566,15 @@ func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.P
 		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
 	if includeTurns {
-		var err error
 		thread.Turns, err = pastEntryTurns(cfg, entry)
 		if err != nil {
 			return appwire.Thread{}, err
 		}
 		thread = reconcileAndEnrichPastThread(entry, thread)
 	}
-	annotateThreadProjects([]appwire.Thread{thread})
+	annotated := []appwire.Thread{thread}
+	annotateThreadProjects(annotated)
+	thread = annotated[0]
 	return thread, nil
 }
 
