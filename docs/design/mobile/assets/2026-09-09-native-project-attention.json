@@ -1,0 +1,181 @@
+{
+  "schema": "evener.native-project-attention.v1",
+  "verifiedAt": "2026-09-09T06:42:27.736316+00:00",
+  "status": "bounded-simulator-checks-passed",
+  "sourceCommit": "b9990e5c17c9618b0b5dcc2b6fea75852d77aa3c",
+  "change": "Show positive existing project rollup_attn below the project name; keep zero rows quiet.",
+  "artifact": {
+    "configuration": "Release",
+    "device": "iPhone 17 Pro",
+    "runtime": "iOS 26.5",
+    "udid": "F9170898-2B92-4420-BD12-9B54B3FC4AE0",
+    "bundleId": "com.primeradiant.evener.native",
+    "javascriptSha256": "c0bfb4c8cb695cac4246d3ed84b4ca4d0b1960b1ce1f9851a8f4bcfae1464b4b",
+    "executableSha256": "ae3c07c6ccea33d58aeef80aa578e22dc88aea229c5f0ae7ac0891b3506d90f0",
+    "installedJavaScriptMatchesBuiltArtifact": true
+  },
+  "validation": {
+    "nativeTests": {
+      "passed": 703,
+      "files": 75,
+      "exitCode": 0
+    },
+    "typecheckExitCode": 0,
+    "biomeExitCode": 0,
+    "releaseBuild": {
+      "command": [
+        "xcodebuild",
+        "-workspace",
+        "mobile-native/ios/Evener.xcworkspace",
+        "-scheme",
+        "Evener",
+        "-configuration",
+        "Release",
+        "-sdk",
+        "iphonesimulator",
+        "-destination",
+        "id=F9170898-2B92-4420-BD12-9B54B3FC4AE0,arch=arm64",
+        "-derivedDataPath",
+        "mobile-native/ios/build",
+        "-jobs",
+        "2",
+        "ONLY_ACTIVE_ARCH=YES",
+        "build"
+      ],
+      "exitCode": 0
+    },
+    "independentSourceReview": "approved bounded change",
+    "independentVisualReview": {
+      "path": "2026-09-09-project-attention-review.md",
+      "sha256": "59813e1095ec648560eb855f2d5113289bb2442e9a5816116d3c82179fd55237"
+    }
+  },
+  "catalog": {
+    "verifiedAt": "2026-09-09T06:39:09.067Z",
+    "projects": [
+      {
+        "key": "hone-joined-8MIBV9-workspace-browser-review-20260908-6457-workspace-c-EPWJC80u57",
+        "name": "workspace-c",
+        "count": 3,
+        "attention": 0
+      },
+      {
+        "key": "hone-joined-8MIBV9-workspace-browser-review-20260908-6457-workspace-b-qKDV6UvurA",
+        "name": "workspace-b",
+        "count": 3,
+        "attention": 0
+      },
+      {
+        "key": "hone-joined-8MIBV9-workspace-browser-review-20260908-6457-workspace-a-03ZGvHx1Gf",
+        "name": "workspace-a",
+        "count": 25,
+        "attention": 0
+      },
+      {
+        "key": "private-tmp-evener-iphone-joined-8MIBV9-workspace-NwQ6RnfBkG",
+        "name": "workspace",
+        "count": 3,
+        "attention": 3
+      }
+    ]
+  },
+  "nativeObservations": [
+    "Collapsed workspace shows 3 need attention, matching its catalog rollup_attn of 3.",
+    "Three projects with zero attention show no attention text.",
+    "Light and dark screenshots show legible secondary text with no clipping or action overlap.",
+    "Separate project details action opens workspace with the same three sessions.",
+    "Project disclosure expands and the original Ordinary response conversation opens.",
+    "The existing separate unsent draft remains visible and no message was sent.",
+    "Dark appearance and the original conversation were restored."
+  ],
+  "preservation": {
+    "dataContainerUnchanged": false,
+    "tables": {
+      "drafts": {
+        "beforeRows": 12,
+        "afterRows": 12,
+        "allRowsEqual": true
+      },
+      "question_drafts": {
+        "beforeRows": 10,
+        "afterRows": 10,
+        "allRowsEqual": true
+      },
+      "question_positions": {
+        "beforeRows": 3,
+        "afterRows": 3,
+        "allRowsEqual": true
+      },
+      "draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allRowsEqual": true
+      },
+      "draft_image_sets": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allRowsEqual": true
+      },
+      "creation_drafts": {
+        "beforeRows": 1,
+        "afterRows": 1,
+        "allRowsEqual": true
+      },
+      "creation_draft_images": {
+        "beforeRows": 0,
+        "afterRows": 0,
+        "allRowsEqual": true
+      },
+      "storage": {
+        "beforeRows": 3,
+        "afterRows": 3,
+        "allRowsEqual": true
+      }
+    },
+    "kvChangedKeys": [],
+    "installedJsSha256": "c0bfb4c8cb695cac4246d3ed84b4ca4d0b1960b1ce1f9851a8f4bcfae1464b4b"
+  },
+  "screenshots": {
+    "light": {
+      "path": "2026-09-09-projects-attention-light.png",
+      "sha256": "103918321760569829c3b7fe5aee36d7e44f78f9f94e359b04a289e78c2a984c"
+    },
+    "dark": {
+      "path": "2026-09-09-projects-attention-dark.png",
+      "sha256": "997ef41f32decc3935ac6d08ef86fbd3389622998a977e6c7213712070041ff6"
+    }
+  },
+  "privateEvidence": {
+    "before-install.json": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/before-install.json",
+      "sha256": "80465e3158367004db45a994aab19ed42b3a181d5984c45d85092b8a39acb6f2"
+    },
+    "preservation.json": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/preservation.json",
+      "sha256": "385faef9c4d4fc724d6ddd48e1183f97f8a6292c2b56bb92a587701ea0b5d854"
+    },
+    "catalog-readback.ts": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/catalog-readback.ts",
+      "sha256": "032658eca85124a23795114e75999d3b7c5efe8da273773cd96bdf0e69254bc9"
+    },
+    "catalog-readback.json": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/catalog-readback.json",
+      "sha256": "8fad242c931b69cde76dc2d958395a8abb8a64f41c893bab60279247613c3e82"
+    },
+    "build-result.json": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/build-result.json",
+      "sha256": "9262c6449ca8bd8de247f260012d63a5ba0495d3615cd54b534b9862a5e2ac82"
+    },
+    "build.log": {
+      "path": "/private/tmp/evener-project-attention-vzgj_qc_/build.log",
+      "sha256": "04179c386574dd7449edb41af3f7e88f78dcfe91d10715d150f43488b0f96d15"
+    }
+  },
+  "limits": [
+    "This is scoped simulator and screenshot evidence, not the whole-app running/decision/recovery design gate.",
+    "No physical-device, performance, singular-count runtime, or live invalidation transition was exercised.",
+    "The simulator install changed its data-container UUID; all seven draft tables and all three key-value entries remained exactly equal.",
+    "Dedicated accessibility and iPad work remain paused.",
+    "This change is not in TestFlight build 2, which retains native source f75411ead."
+  ]
+}
