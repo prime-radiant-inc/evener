@@ -272,8 +272,11 @@ func hubRestartArgs(args []string) []string {
 func restartBinary(installed string) string {
 	if args := hubProcessArgs(); len(args) > 0 && args[0] != "" {
 		entry := canonicalInvocationPath(args[0])
-		if resolved, err := filepath.EvalSymlinks(entry); err == nil && resolved == installed {
-			return entry
+		if resolved, err := filepath.EvalSymlinks(entry); err == nil {
+			installedResolved, installedErr := filepath.EvalSymlinks(installed)
+			if installedErr == nil && resolved == installedResolved {
+				return entry
+			}
 		}
 	}
 	return installed
