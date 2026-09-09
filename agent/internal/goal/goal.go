@@ -11,10 +11,14 @@ import (
 // Status represents the lifecycle state of a goal.
 //
 // Invariant (spec §1): status==waiting iff len(waits)>0 on every read outside
-// the atomic claim step. ClaimFire holds the store lock across the whole
-// remove-and-append consume, so no live read observes the interim — there is
-// no "suspension," only the pre/post states. Every mutator below restores the
-// invariant before releasing the lock.
+// the atomic claim step — except the deadline synthetic claim, which flips a
+// waiting goal to active while its live leases stand (the final evaluation
+// turn runs against current state with the waits still named in the trigger;
+// the following gate lands on rule 3 and clears them at block). ClaimFire
+// holds the store lock across the whole remove-and-append consume, so no
+// live read observes the interim — there is no "suspension," only the
+// pre/post states. Every mutator below restores the invariant (modulo the
+// deadline exception) before releasing the lock.
 type Status string
 
 const (

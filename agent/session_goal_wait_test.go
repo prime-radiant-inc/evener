@@ -1719,7 +1719,7 @@ func TestFixWaveTimerParkedCrossingBinds(t *testing.T) {
 	clk := agenttest.NewFakeClock()
 	sess := newWaitGateSession(t, clk)
 	defer sess.Close()
-	wireKickAndNotify(sess)
+	kicks := wireKickAndNotify(sess)
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("parked cap crossing", clk.Now())
@@ -1737,6 +1737,9 @@ func TestFixWaveTimerParkedCrossingBinds(t *testing.T) {
 	}
 	clk.Advance(31 * time.Minute)
 	clk.Drain()
+	if *kicks != 1 {
+		t.Fatalf("timer crossing kicks = %d, want exactly 1 (the budget evaluation turn)", *kicks)
+	}
 	full, _ = store.GoalSnapshot()
 	if full.Budgets.ParkedTotal < 30*time.Minute {
 		t.Fatalf("ParkedTotal = %v, want ≥30m accrued at the timer crossing: %+v", full.Budgets.ParkedTotal, full.Budgets)

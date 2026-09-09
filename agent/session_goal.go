@@ -1397,6 +1397,20 @@ func (s *Session) fireGoalWaitTimer(gen uint64) {
 		return
 	}
 	if len(claimed) == 0 {
+		// Parked-cap crossing (spec §5): the accrual above bound the cap
+		// with nothing claimed — kick the budget evaluation turn so rule 2
+		// enforces it now, instead of re-arming into a disarm (fire==now)
+		// that strands the goal parked past its cap.
+		s.goalUpdateMu.Lock()
+		bound := false
+		if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok {
+			bound = full.Budgets.MaxParkedTotal > 0 && full.Budgets.ParkedTotal >= full.Budgets.MaxParkedTotal
+		}
+		s.goalUpdateMu.Unlock()
+		if bound {
+			s.kickGoalWaitBudgetBound(objective)
+			return
+		}
 		s.armGoalWaitTimer()
 		return
 	}
@@ -1484,6 +1498,40 @@ func (s *Session) kickClaimedGoalWake(claimed []goal.PendingWake, objective stri
 	// itself resets the stretch, even when the wake's own fold carries no
 	// advancement.
 	s.noteGoalWatchdogActivity(s.sclock().Now())
+	kick(prompt)
+}
+
+// kickGoalWaitBudgetBound kicks the budget evaluation turn when the parked
+// cap binds with no lease fire (spec §5): the timer accrued the crossing
+// but nothing claimed, so no wake is scheduled — without this kick the goal
+// would sit parked past its cap (the re-arm disarms at fire==now). No loss
+// notice (nothing was lost); the next gate's rule-2 read owns the
+// budget-exhausted verdict. Resets the watchdog stretch like any wake (spec
+// §6 signal 2). Call with no locks held; kicks fire outside all locks.
+func (s *Session) kickGoalWaitBudgetBound(objective string) {
+	kick, pendingAsk := s.goalKickState()
+	if pendingAsk {
+		// Arm, don't kick past an unanswered ask: the bound persists and
+		// the reply turn's gate enforces it.
+		s.armGoalWaitTimer()
+		return
+	}
+	s.goalUpdateMu.Lock()
+	full, ok := s.getOrCreateGoalStore().GoalSnapshot()
+	s.goalUpdateMu.Unlock()
+	if !ok || full.Objective != objective {
+		// Cleared or retargeted between accrue and kick: the new goal owns
+		// its own bounds — §3 clear drops silently, retarget routes via
+		// the gate's superseded path.
+		s.armGoalWaitTimer()
+		return
+	}
+	prompt := goal.Render(full.Objective)
+	s.noteGoalWatchdogActivity(s.sclock().Now())
+	s.armGoalWaitTimer()
+	if kick == nil {
+		return
+	}
 	kick(prompt)
 }
 
