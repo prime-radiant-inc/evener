@@ -135,7 +135,11 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (page.loading || page.error || (page.remaining > 0 && !page.stale)) {
+				if (
+					page.loading ||
+					(page.error && !page.stale) ||
+					(page.remaining > 0 && !page.stale)
+				) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
