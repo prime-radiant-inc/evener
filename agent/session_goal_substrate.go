@@ -35,18 +35,34 @@ func (g *goalSessionSubstrate) LookupJob(id string) (live, retainedTerminal bool
 	}
 	jm := s.jobManager
 	jm.mu.Lock()
+	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
+		jm.mu.Unlock()
+		return true, false, "", true
+	}
+	store := jm.store
+	jm.mu.Unlock()
+	if store == nil {
+		return false, false, "", false
+	}
+	// Retained-terminal catch-up consults the durable store, which folds
+	// the journal from disk: never hold jm.mu across that I/O (it blocks
+	// every job-manager operation for the read). Re-verify liveness under
+	// the lock after the Load so a start that won the race reads live,
+	// never stale-terminal catch-up.
+	recs, err := store.Load()
+	if err != nil {
+		return false, false, "", false
+	}
+	job, ok := recs[id]
+	if !ok || job == nil || !job.Status.IsTerminal() {
+		return false, false, "", false
+	}
+	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
 		return true, false, "", true
 	}
-	// Retained-terminal catch-up: consult the durable store for a terminal
-	// record inside the retention window.
-	if recs, err := jm.store.Load(); err == nil {
-		if job, ok := recs[id]; ok && job != nil && job.Status.IsTerminal() {
-			return false, true, "job " + id + " " + strings.ToLower(string(job.Status)), true
-		}
-	}
-	return false, false, "", false
+	return false, true, "job " + id + " " + strings.ToLower(string(job.Status)), true
 }
 
 // LookupDelegate resolves a delegate target: live (running/settling/stopping)
@@ -221,7 +237,14 @@ func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bo
 	if !goal.ValidHTTPURL(rawURL) {
 		return false
 	}
-	_ = timeout
+	// The timeout is the fetch bound the deferred fetch leg enforces
+	// (registration passes the lease TTL, the poll leg the per-fetch
+	// default): only the fail-closed floor lives here — a non-positive
+	// bound can never permit a fetch, so it rejects. A positive upper
+	// clamp lands with the fetch leg, which owns the per-fetch default.
+	if timeout <= 0 {
+		return false
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false

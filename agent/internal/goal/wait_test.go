@@ -209,6 +209,21 @@ func TestRegisterWaitFileBaselineAndURL(t *testing.T) {
 	}
 }
 
+func TestValidHTTPURLRejectsUserinfo(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pass@example.com/hook",
+		"https://user@example.com/hook",
+		"http://user:pass@10.0.0.1/hook",
+	} {
+		if goal.ValidHTTPURL(raw) {
+			t.Fatalf("ValidHTTPURL(%q) = true, want rejected (embedded credentials)", raw)
+		}
+	}
+	if !goal.ValidHTTPURL("https://example.com/hook") {
+		t.Fatal("ValidHTTPURL must still accept a credential-free public URL")
+	}
+}
+
 func TestRegisterWaitMax8(t *testing.T) {
 	s := goal.NewStore()
 	s.Set("x", waveBClock())

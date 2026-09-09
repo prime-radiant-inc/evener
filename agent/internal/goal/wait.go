@@ -225,7 +225,9 @@ func defaultLabelFor(req WaitKind) string {
 // ValidHTTPURL reports whether raw is a well-formed absolute http(s) URL.
 // This is the syntactic gate inside validation; the session egress policy
 // (deny link-local/loopback, redirect handling — spec §2) lives behind
-// Substrate.CheckURL, which validation additionally requires.
+// Substrate.CheckURL, which validation additionally requires. URLs carrying
+// userinfo are rejected: embedded credentials must never survive into the
+// stored target or a future fetch.
 func ValidHTTPURL(raw string) bool {
 	if len(raw) > MaxURLBytes || raw == "" {
 		return false
@@ -235,6 +237,9 @@ func ValidHTTPURL(raw string) bool {
 		return false
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	if u.User != nil {
 		return false
 	}
 	return u.Host != ""

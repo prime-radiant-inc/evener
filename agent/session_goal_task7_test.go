@@ -488,6 +488,13 @@ func TestGoalChildForwardSiblingWakeDelivers(t *testing.T) {
 	if waiter == nil {
 		t.Fatal("precondition: waiter child should be tracked")
 	}
+	// Pin the synthetic waiter to the test clock: its session is built
+	// outside the wait-gate helper (real clock by default), and the
+	// forward's async notification drive settles on it with sclock time.
+	// Real-clock time (2026) is past the fake-anchored goal deadline
+	// (fake epoch + 4h), so a raced drive would claim the synthetic
+	// deadline wake alongside the forwarded claim.
+	waiter.sess.clock = clk
 	waiter.sess.getOrCreateGoalStore().Set("wait on sibling", clk.Now())
 	trackSyntheticChild(t, sess, "fwd_done", SubagentCompleted, false, false, clk.Now(), false)
 	var doneChild *subagent
@@ -819,9 +826,19 @@ func TestGoalSubstrateCheckURLDeniesPrivateRanges(t *testing.T) {
 		"http://172.016.0.1/hook",
 		"http://0xac.0x10.0.1/hook",
 		"http://127.1/hook",
+		// Embedded credentials must never survive into the stored target:
+		// userinfo rejects even on a public host.
+		"https://user:pass@example.com/hook",
+		"https://user@example.com/hook",
 	} {
 		if sub.CheckURL(raw, time.Minute) {
 			t.Fatalf("CheckURL(%q) = true, want denied (private/loopback)", raw)
+		}
+	}
+	// A non-positive fetch bound can never permit a fetch: fail closed.
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		if sub.CheckURL("https://example.com/hook", timeout) {
+			t.Fatalf("CheckURL(public, %v) = true, want denied (non-positive timeout)", timeout)
 		}
 	}
 	for _, raw := range []string{
