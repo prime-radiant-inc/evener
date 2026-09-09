@@ -59,12 +59,15 @@ func (g *goalSessionSubstrate) LookupJob(id string) (live, retainedTerminal bool
 	if !ok || job == nil || !job.Status.IsTerminal() {
 		return false, false, "", false
 	}
+	// Build the excerpt before the re-verify lock so the folded journal
+	// map is droppable while waiting on jm.mu.
+	excerpt = "job " + id + " " + strings.ToLower(string(job.Status))
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if r, ok := jm.running[id]; ok && r != nil && r.rec != nil {
+	if r, running := jm.running[id]; running && r != nil && r.rec != nil {
 		return true, false, "", true
 	}
-	return false, true, "job " + id + " " + strings.ToLower(string(job.Status)), true
+	return false, true, excerpt, true
 }
 
 // LookupDelegate resolves a delegate target: live (running/settling/stopping)
@@ -105,12 +108,15 @@ func (g *goalSessionSubstrate) StatFile(path string) (baseline string, ok bool) 
 	if s == nil || path == "" {
 		return "", false
 	}
+	env := s.currentEnv()
 	abs := path
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(s.currentEnv().WorkingDirectory(), abs)
+		// filepath.Join already returns a Cleaned path.
+		abs = filepath.Join(env.WorkingDirectory(), abs)
+	} else {
+		abs = filepath.Clean(abs)
 	}
-	abs = filepath.Clean(abs)
-	if rb, ok := s.currentEnv().(execenv.RootBoundary); ok {
+	if rb, ok := env.(execenv.RootBoundary); ok {
 		if err := rb.EnsureUnderRoot(abs); err != nil {
 			return "", false
 		}
@@ -253,15 +259,17 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 // name. Resolution-time (DNS rebinding) checks belong at the deferred fetch
 // leg, which resolves and re-checks the destination IP.
 func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
-	if !goal.ValidHTTPURL(rawURL) {
-		return false
-	}
 	// The timeout is the fetch bound the deferred fetch leg enforces
 	// (registration passes the lease TTL, the poll leg the per-fetch
 	// default): only the fail-closed floor lives here — a non-positive
 	// bound can never permit a fetch, so it rejects. A positive upper
 	// clamp lands with the fetch leg, which owns the per-fetch default.
+	// Checked first so a bound that can never permit a fetch skips the
+	// URL parse.
 	if timeout <= 0 {
+		return false
+	}
+	if !goal.ValidHTTPURL(rawURL) {
 		return false
 	}
 	u, err := url.Parse(rawURL)
@@ -335,14 +343,7 @@ func isLegacyIPv4Literal(host string) bool {
 // isDNSLabelChar reports whether c is valid inside a DNS label:
 // lowercase letter, digit, or hyphen.
 func isDNSLabelChar(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	default:
-		return c == '-'
-	}
+	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
 }
 
 // isValidDNSName reports whether host is a syntactically valid DNS name:
