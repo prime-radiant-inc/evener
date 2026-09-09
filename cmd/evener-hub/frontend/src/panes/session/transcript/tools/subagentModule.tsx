@@ -11,7 +11,7 @@ import { Chevron, IconButton, Timestamp } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
-import { cadenceStateForStatus, useSessionNow } from "../../liveness";
+import { useSessionNow } from "../../liveness";
 import { formatElapsed, plainQuoteLine } from "../messages/format";
 import { statedIntentOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -198,7 +198,7 @@ function SubagentCard({
       : storedStable;
   const displayKind = effectiveRowKind(row, stable);
   const attention = stable?.needsAttention ?? false;
-  const childRunning = model ? cadenceStateForStatus(model.status.type) === "working" : displayKind === "running";
+  const childRunning = displayKind === "running";
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
   const quotes = deriveQuotes(items);
@@ -326,6 +326,12 @@ function SubagentCard({
           ) : (
             <div className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Activity unavailable"}</div>
           )}
+          {row.receiptStatus !== undefined && (
+            <div className={CLASS.mandate} data-testid="subagent-receipt">
+              <div>Launch receipt: {row.receiptStatus}</div>
+              {row.resultPreview && <div>{row.resultPreview}</div>}
+            </div>
+          )}
           <JobDetailSection row={row} stable={stable} />
         </section>
       )}
@@ -360,6 +366,8 @@ export function rowFromDelegateItem(
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,
     row: {
       kind: status === undefined && (live || item.status === "inProgress") ? "running" : classifyJobStatus(status),
+      receiptStatus: status,
+      launching: live || item.status === "inProgress",
       delegateId,
       transcriptRef,
       startedAt: item.startedAt,

@@ -7,7 +7,6 @@
 import { memo, useId, useLayoutEffect, useState } from "react";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
@@ -34,14 +33,11 @@ import { supersededBySuccess } from "./toolSupersession";
 import { parseArgs, parseJSONObject, str } from "./tools/helpers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  classifyJobStatus,
   effectiveRowKind,
   removeSubagentRow,
   rowKeyForDelegateItem,
-  type SubagentRow,
   turnScopeKey,
   upsertSubagentRow,
-  useSubagentRow,
 } from "./tools/subagentModuleStore";
 import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
@@ -88,27 +84,6 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
-// Both status readers take the delegate call's ALREADY-PARSED output envelope
-// rather than the item: three separate reads (delegate_id, transcript_ref,
-// status) want the same JSON string, and taking the item made each one parse
-// it again - the status read worst of all, since it ran on every tool row,
-// delegate or not, for a value only a delegate row ever displays.
-function delegateStatusFromOutput(parsedOutput: Record<string, unknown> | undefined): DelegateStatusKey {
-  return classifyJobStatus(parsedOutput === undefined ? undefined : str(parsedOutput, "status"));
-}
-
-function delegateStatusForOutput(
-  parsedOutput: Record<string, unknown> | undefined,
-  delegateRow: SubagentRow | undefined,
-  stableDelegate: EvenerDelegateInfo | undefined,
-  live: boolean,
-): DelegateStatusKey {
-  if (stableDelegate) return classifyJobStatus(stableDelegateDisplayStatus(stableDelegate));
-  const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
-  if (live && !hasSettledOutputStatus) return "running";
-  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromOutput(parsedOutput);
-}
-
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
 // below - the descriptor's Body only ever gets `item`/`live` too, see
@@ -129,20 +104,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const isDelegate = item.toolName === "delegate";
   const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
   const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const delegateRow = useSubagentRow(
-    isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
-    isDelegate ? rowKeyForDelegateItem(item) : "",
-  );
   const stableDelegate = thread?.delegates?.find((delegate) => {
     if (sessionRef === undefined || stableDelegateId === undefined) return false;
     return delegate.delegateId === stableDelegateId;
   });
-  const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
+  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
   const delegateStatus =
     isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
-  const lifecycleStatus = stableDelegate
-    ? stableDelegateDisplayStatus(stableDelegate)
-    : delegateOutput && str(delegateOutput, "status");
+  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
   const lifecycle = isDelegate ? (
     <div
       className={CLASS.lifecycle}

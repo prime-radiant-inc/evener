@@ -11,7 +11,10 @@ export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unkno
 
 export interface SubagentRow {
   rowKey: string;
+  /** Historical receipt classification; never proof of current lifecycle. */
   kind: SubagentRowKind;
+  receiptStatus?: string;
+  launching?: boolean;
   resumable?: boolean;
   exhaustionBudget?: string;
   exhaustionLimit?: number;
@@ -47,11 +50,11 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
   return resolveRowKey(delegateId, undefined, item.callId ?? item.id);
 }
 
-// The stable projection owns lifecycle after hydration. Frozen tool output is
-// the pre-hydration fallback.
-export function effectiveRowKind(row: SubagentRow, stable?: EvenerDelegateInfo): SubagentRowKind {
+// Only the owner projection or an explicitly in-flight launch proves current
+// activity. A frozen receipt remains evidence about the past, not a fallback.
+export function effectiveRowKind(row: Pick<SubagentRow, "launching">, stable?: EvenerDelegateInfo): SubagentRowKind {
   if (stable) return classifyJobStatus(stableDelegateDisplayStatus(stable));
-  return row.kind;
+  return row.launching ? "running" : "unknown";
 }
 
 // The delegate call creates a row; later renders update it in place. A

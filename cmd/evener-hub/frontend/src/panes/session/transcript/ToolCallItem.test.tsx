@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
   createTranscriptRenderContext,
   defaultDisclosureScope,
@@ -20,6 +21,7 @@ import "./tools/jobTools"; // registers the real "delegate_send" (openTranscript
 import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
 
 // The expand/collapse state now lives in the shared disclosureStore keyed by
@@ -29,6 +31,7 @@ afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
   resetSubagentModuleStoreForTests();
+  resetThreadsStoreForTests();
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
@@ -36,6 +39,46 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
+
+test.each(["running", "completed"])(
+  "a historical %s receipt is not current lifecycle without an owner projection",
+  (status) => {
+    const thread = makeTranscriptPreviewModel();
+    thread.delegates = [];
+    const output = JSON.stringify({ delegate_id: "dlg_receipt", status, transcript_ref: "local:receipt_child" });
+    const receipt = item({ toolName: "delegate", status: "completed", output });
+    const context = createTranscriptRenderContext({
+      config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+      surface: "preview",
+      thread,
+    });
+    render(
+      <TranscriptRenderProvider value={context}>
+        <ToolCallItem
+          item={receipt}
+          turn={turn}
+          live={false}
+          sessionRef={thread.ref}
+          thread={thread}
+          renderContext={context}
+        />
+      </TranscriptRenderProvider>,
+    );
+
+    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
+    expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show recent activity" }));
+    expect(screen.getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
+    expect(receipt.output).toBe(output);
+    const body = screen.getByTestId("tool-call-body");
+    fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  },
+);
 
 test('self-registers under the wire\'s tool-call item type ("commandExecution")', () => {
   expect(itemRendererFor("commandExecution")).toBe(ToolCallItem);
@@ -1103,6 +1146,7 @@ test("task-only delegate intent previews preserve an emoji at the Unicode clippi
 });
 
 test("delegate controls require stable delegate_id and reject activation-only job_id", () => {
+  seedCurrentDelegate("ref_current", "dlg_stable", "running");
   render(
     <>
       <ToolCallItem
@@ -1118,6 +1162,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
           }),
         })}
         turn={turn}
+        sessionRef="ref_current"
         live={false}
       />
       <ToolCallItem
@@ -1144,15 +1189,17 @@ test("delegate controls require stable delegate_id and reject activation-only jo
 });
 
 test("malformed delegate arguments keep status without inventing an intent", () => {
+  seedCurrentDelegate("ref_current", "dlg_current", "completed");
   render(
     <ToolCallItem
       item={item({
         id: "malformed_delegate",
         toolName: "delegate",
         argumentsJSON: "{not-json",
-        output: JSON.stringify({ status: "completed" }),
+        output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
       })}
       turn={turn}
+      sessionRef="ref_current"
       live={false}
     />,
   );
@@ -1164,22 +1211,23 @@ test("malformed delegate arguments keep status without inventing an intent", () 
 });
 
 test("blank and non-string delegate tasks keep status without inventing an intent", () => {
+  seedCurrentDelegate("ref_current", "dlg_current", "completed");
   const blank = item({
     id: "blank_delegate",
     toolName: "delegate",
     argumentsJSON: JSON.stringify({ prompt: " \n\t " }),
-    output: JSON.stringify({ status: "completed" }),
+    output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
   });
   const nonString = item({
     id: "non_string_delegate",
     toolName: "delegate",
     argumentsJSON: JSON.stringify({ prompt: ["not", "text"] }),
-    output: JSON.stringify({ status: "completed" }),
+    output: JSON.stringify({ delegate_id: "dlg_current", status: "completed" }),
   });
   render(
     <>
-      <ToolCallItem item={blank} turn={turn} live={false} />
-      <ToolCallItem item={nonString} turn={turn} live={false} />
+      <ToolCallItem item={blank} sessionRef="ref_current" turn={turn} live={false} />
+      <ToolCallItem item={nonString} sessionRef="ref_current" turn={turn} live={false} />
     </>,
   );
 

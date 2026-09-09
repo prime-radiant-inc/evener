@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
+import { seedCurrentDelegate } from "./currentDelegate.testFixture";
 import { classifyJobStatus, resolveRowKey, rowFromDelegateItem } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
@@ -234,7 +235,8 @@ test("a failed card carries the danger rail itself - there is no module chrome t
     argumentsJSON: JSON.stringify({ prompt: "will fail" }),
     output: JSON.stringify({ delegate_id: "job_f", status: "failed", transcript_ref: "ref_f", reason: "build error" }),
   });
-  render(<Body item={failed} live={false} />);
+  seedCurrentDelegate("ref_current", "job_f", "failed", "build error");
+  render(<Body item={failed} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
   // The folded quote IS the failure reason, verbatim, ✕-marked - the exception
@@ -256,7 +258,8 @@ test("3zf8: a cancelled child gets its own distinct stopped kind", () => {
     argumentsJSON: JSON.stringify({ prompt: "misbehaving, killed" }),
     output: JSON.stringify({ delegate_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
   });
-  render(<Body item={stopped} live={false} />);
+  seedCurrentDelegate("ref_current", "job_stopped", "cancelled");
+  render(<Body item={stopped} live={false} sessionRef="ref_current" />);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("stopped");
   // The card is headless - no tag, no task text inside; identity lives on the
@@ -456,6 +459,31 @@ function childThreadRead(params: unknown, childStatus: string) {
     },
   };
 }
+
+test.each(["running", "completed"])(
+  "a historical %s receipt preserves child reports without inventing current body lifecycle",
+  async (status) => {
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", (params) => childThreadRead(params, "active"));
+    connectionStore.getState().connect(fake);
+    const Body = toolRendererFor("delegate").body!;
+    const receipt = delegateItem({
+      output: JSON.stringify({ delegate_id: "dlg_old", status, transcript_ref: "local:old_child" }),
+    });
+    render(<Body item={receipt} live={false} />);
+    const row = screen.getByTestId("subagent-row");
+    expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
+    expect(row.dataset.kind).toBe("unknown");
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Show recent activity" }));
+    expect(within(row).getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
+    expect(
+      within(row)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["step one", "step two", "all done"]);
+  },
+);
 
 test("a folded card quotes the child's newest own words from the full event stream - verbatim, no quote-mark dressing", async () => {
   const fake = new FakeClient("ready");
@@ -977,6 +1005,7 @@ test("the card is headless: no tag, no open button inside it", () => {
 test("a headless card exposes hidden identity and status, a visible status shape, and a controlled disclosure", async () => {
   const Body = toolRendererFor("delegate").body!;
   const user = userEvent.setup();
+  seedCurrentDelegate("ref_accessible", "dlg_accessible", "completed");
   render(
     <Body
       item={delegateItem({

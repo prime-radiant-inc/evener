@@ -11,6 +11,20 @@ function required<T>(value: T | null | undefined): T {
   return value;
 }
 
+function visibleWithin(element: HTMLElement, box: DOMRect) {
+  const rect = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  return (
+    rect.width > 0 &&
+    rect.height > 0 &&
+    style.visibility === "visible" &&
+    style.display !== "none" &&
+    style.opacity !== "0" &&
+    rect.left >= box.left - 1 &&
+    rect.right <= box.right + 1
+  );
+}
+
 /** Real-component geometry fixture, imported only by the transcript browser case. */
 export async function measureEditorialTranscript() {
   const host = required(document.getElementById("root"));
@@ -47,7 +61,7 @@ export async function measureEditorialTranscript() {
           })
           .map((element) => element.outerHTML.slice(0, 180));
         const attention = required(lifecycle.find((element) => element.dataset.attention === "true"));
-        const attentionRect = attention.getBoundingClientRect();
+        const attentionVisible = visibleWithin(attention, box);
         const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
         const userText = required(user.firstElementChild);
         const agent = host.querySelector<HTMLElement>('[data-testid="agent-bubble"] p');
@@ -75,7 +89,8 @@ export async function measureEditorialTranscript() {
           overflow: host.scrollWidth - host.clientWidth,
           toolCount: tools.length,
           openControls,
-          attentionVisible: attentionRect.height > 0 && getComputedStyle(attention).visibility === "visible",
+          attentionVisible,
+          collapsedAttentionVisible: visibleWithin(collapsedAttention, box),
           collapsed: !attentionTool.querySelector('[data-testid="tool-call-body"]'),
           collapsedAttention: collapsedAttention.textContent,
           userFont: getComputedStyle(userText).fontFamily,
