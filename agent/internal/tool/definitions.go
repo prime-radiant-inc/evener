@@ -1043,3 +1043,93 @@ func DefUpdateGoal() llm.ToolDefinition {
 		},
 	}
 }
+
+// DefNotesAgentSet returns the tool definition for notes_agent_set.
+// The model calls this to record its one-paragraph session whiteboard.
+// (Wire RPC method: notes/agent/set. Tool names cannot contain slashes —
+// see llm.ValidateToolName — so the agent tool uses snake_case.)
+func DefNotesAgentSet() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "notes_agent_set",
+		Description: `Record your one-paragraph session whiteboard. ` +
+			`Whitespace is collapsed and the note is clamped to 1000 characters. ` +
+			`Setting the same text again is a no-op.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"note": map[string]any{
+					"type":        "string",
+					"description": "The agent's session note. Empty clears it.",
+				},
+			},
+			"required": []string{"note"},
+		},
+	}
+}
+
+// DefUrlsAdd returns the tool definition for urls_add.
+// The model calls this to add a URL to the session's shared URL list.
+// (Wire RPC method: urls/add.)
+func DefUrlsAdd() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "urls_add",
+		Description: `Add a URL to the session's shared URL list. ` +
+			`Accepts http(s) URLs, file:/// URLs, and bare paths under the session ` +
+			`working directory. Re-adding an existing URL updates its label and ` +
+			`returns the existing entry.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"url": map[string]any{
+					"type":        "string",
+					"description": "The URL or session-relative file path to add.",
+				},
+				"label": map[string]any{
+					"type":        "string",
+					"description": "Optional short label for the URL.",
+				},
+			},
+			"required": []string{"url"},
+		},
+	}
+}
+
+// DefUrlsRemove returns the tool definition for urls_remove.
+// The model calls this to remove a URL list entry by its id.
+// (Wire RPC method: urls/remove.)
+func DefUrlsRemove() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "urls_remove",
+		Description: `Remove a URL from the session's shared URL list by entry id ` +
+			`(the id returned when the URL was added).`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":        "string",
+					"description": "The id of the URL list entry to remove.",
+				},
+			},
+			"required": []string{"id"},
+		},
+	}
+}
+
+// DefNotesRead returns the tool definition for notes_read.
+// The model calls this to read the current shared notes and URL list.
+// (Wire read: notes/read.)
+func DefNotesRead() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "notes_read",
+		Description: `Read the session's shared notes: the human's whiteboard, ` +
+			`your whiteboard, and the shared URL list.`,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+	}
+}
