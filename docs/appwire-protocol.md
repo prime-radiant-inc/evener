@@ -162,6 +162,7 @@ no router (reserved).
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
 | `evener/marketplace/refresh` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Pulls a marketplace's latest catalog; returns the updated list. |
+| `evener/marketplace/edit` | hub | `MarketplaceEditParams` | `MarketplaceListResponse` | Renames a registered marketplace and/or replaces its source, re-fetching it; returns the updated list and broadcasts evener/marketplace/updated and evener/plugin/updated. |
 | `evener/marketplace/browse` | hub | `MarketplaceBrowseParams` | `MarketplaceBrowseResponse` | Lists a marketplace's plugin catalog for browsing/install. |
 | `evener/plugin/list` | hub | `EmptyParams` | `PluginListResponse` | Lists installed plugins. |
 | `evener/plugin/install` | hub | `PluginRefParams` | `PluginListResponse` | Installs a plugin from a marketplace; returns the updated list. |
@@ -214,8 +215,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
-| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
-| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
+| `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
@@ -1104,6 +1105,15 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `description` | `string` | yes |  |
 | `plugins` | `[]appwire.MarketplaceCatalogPlugin` |  |  |
+
+
+### `MarketplaceEditParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `newName` | `string` | yes |  |
+| `source` | `*appwire.MarketplaceSourceInput` | yes |  |
 
 
 ### `MarketplaceListResponse`

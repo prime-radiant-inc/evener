@@ -107,6 +107,7 @@ const (
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
 	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
 	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
 	MethodEvenerPluginList            = "evener/plugin/list"
 	MethodEvenerPluginInstall         = "evener/plugin/install"
@@ -3062,8 +3063,8 @@ type MarketplaceEntry struct {
 }
 
 // MarketplaceListResponse is the result of evener/marketplace/list. Every
-// marketplace mutation (add/remove/refresh) also returns this, so a client
-// can re-render from the response without a separate list round-trip.
+// marketplace mutation (add/edit/remove/refresh) also returns this, so a
+// client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
 }
@@ -3073,6 +3074,17 @@ type MarketplaceListResponse struct {
 type MarketplaceAddParams struct {
 	Name   string                 `json:"name,omitempty"`
 	Source MarketplaceSourceInput `json:"source"`
+}
+
+// MarketplaceEditParams is the params for evener/marketplace/edit (spec
+// 2026-09-07 §3). NewName renames the registered marketplace (empty means
+// unchanged); Source replaces its source and re-fetches it (absent means
+// unchanged). Installed plugins are unaffected beyond being re-keyed under
+// the new name.
+type MarketplaceEditParams struct {
+	Name    string                  `json:"name"`
+	NewName string                  `json:"newName,omitempty"`
+	Source  *MarketplaceSourceInput `json:"source,omitempty"`
 }
 
 // MarketplaceNameParams identifies one registered marketplace by name — the

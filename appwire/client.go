@@ -687,6 +687,12 @@ func (c *Client) MarketplaceAdd(ctx context.Context, params MarketplaceAddParams
 	return out, err
 }
 
+func (c *Client) MarketplaceEdit(ctx context.Context, params MarketplaceEditParams) (MarketplaceListResponse, error) {
+	var out MarketplaceListResponse
+	err := c.request(ctx, MethodEvenerMarketplaceEdit, params, &out)
+	return out, err
+}
+
 func (c *Client) MarketplaceRemove(ctx context.Context, params MarketplaceNameParams) (MarketplaceListResponse, error) {
 	var out MarketplaceListResponse
 	err := c.request(ctx, MethodEvenerMarketplaceRemove, params, &out)
