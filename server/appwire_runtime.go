@@ -1802,7 +1802,7 @@ func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesH
 	}
 	stored, err := fn(params.ClientMutationID, params.Note)
 	if err != nil {
-		return appwire.NotesHumanSetResponse{}, err
+		return appwire.NotesHumanSetResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
 	return appwire.NotesHumanSetResponse{Note: stored}, nil
 }
@@ -1838,7 +1838,7 @@ func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemov
 	}
 	removed, err := fn(params.ClientMutationID, params.ID)
 	if err != nil {
-		return appwire.UrlsRemoveResponse{}, err
+		return appwire.UrlsRemoveResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
 	if !removed {
 		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + strings.TrimSpace(params.ID))

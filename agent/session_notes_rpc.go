@@ -57,6 +57,13 @@ const (
 // the success journal: a persistence failure releases the reservation with
 // no recorded result, so a retry (or restart recovery) still owns the write.
 //
+// The metadata save commits the note ALONGSIDE this attempt's pending
+// delivery intent in one atomic write, so recovery needs no second write to
+// be safe: a journal-write failure (or crash) after the metadata save still
+// resumes delivery from the committed intent. A retry with the same outer
+// ID delivers the recorded value without rewriting the store; a retry with
+// a different ID conflicts via the mutation journal without clobbering.
+//
 // Daemon handlers never emit pushes directly: the EventNotesUpdated emission
 // here is the projector's only input for the evener/notes/updated push.
 func (s *Session) SetHumanNote(outerID, note string) (string, error) {
@@ -105,13 +112,25 @@ func (s *Session) SetHumanNote(outerID, note string) (string, error) {
 }
 
 // completeNotesHumanSet applies one owned notes/human/set attempt. A takeover
-// (AttemptGeneration above 1) completes the pending delivery the previous
-// attempt journaled — stored value, emission, steer — without repeating the
-// storage write, so an intervening save is never clobbered.
+// (AttemptGeneration above 1, or a pending intent the metadata save
+// committed) completes the previous attempt's delivery — recorded value,
+// emission, steer — without repeating the storage write, so an intervening
+// save is never clobbered.
 func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, note string, generation uint64) (string, error) {
-	// A takeover resumes the previous attempt's committed storage: the record
-	// it takes over already carries the stored value with delivery pending.
+	// A retry resumes the previous attempt's committed storage without
+	// rewriting it. The metadata save commits the note ALONGSIDE this
+	// attempt's pending intent in one atomic write, so any of these is
+	// enough to prove the first attempt's write landed: a journaled
+	// delivery-pending record, or a metadata-committed pending intent for
+	// this outer ID. The recorded value wins over the caller's (possibly
+	// older) input, so an intervening save is never clobbered.
 	if generation > 1 {
+		if stored, changed, ok := s.pendingNotesHumanIntent(outerID); ok {
+			if !changed {
+				return s.applyNotesHumanSetResult(lease, outerID, stored)
+			}
+			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
+		}
 		if stored, ok := s.notesDeliveryPending(outerID); ok {
 			return s.resumeNotesHumanSetDelivery(lease, outerID, stored)
 		}
@@ -125,7 +144,11 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	defer s.notesUpdateMu.Unlock()
 	prev, _ := s.notesSnapshot()
 	stored, changed := s.setHumanNote(note)
-	if err := s.persistNotesMeta(); err != nil {
+	// The note and this attempt's pending intent commit in ONE atomic
+	// metadata write. A crash or journal-write failure after it still
+	// recovers delivery from the intent — no second write is needed for
+	// safety, and the retry never rewrites the store.
+	if err := s.persistNotesMetaWithIntent(outerID, stored, changed); err != nil {
 		// The write never landed, so the store rolls back to the value the
 		// persistence still holds: a retry must see the write as unfinished
 		// (changed) and complete its emission + steer, instead of converging
@@ -137,9 +160,17 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	if !changed {
 		return s.applyNotesHumanSetResult(lease, outerID, stored)
 	}
-	// Storage is durable now; journal the stored value with delivery pending
-	// BEFORE emitting or steering, so a crash or refusal between here and
-	// the applied result still resumes delivery for this value.
+	// Storage and intent are durable now; journal the stored value with
+	// delivery pending BEFORE emitting or steering, so a refusal between
+	// here and the applied result still resumes delivery for this value.
+	// A failure here leaves the metadata-committed intent behind, and the
+	// retry resumes from it — without rewriting the store.
+	if fault := s.cfg.testOnly.notesJournalFault; fault != nil {
+		if err := fault(); err != nil {
+			lease.Release()
+			return stored, err
+		}
+	}
 	if err := s.markNotesDeliveryPending(outerID, stored); err != nil {
 		lease.Release()
 		return stored, NormalizeClientMutationError(outerID, err)
@@ -293,6 +324,74 @@ func (s *Session) markNotesDeliveryPending(outerID, stored string) error {
 	})
 }
 
+// pendingNotesHumanIntent reports the notes/human/set intent the last atomic
+// metadata write committed alongside the note for outerID, if any.
+func (s *Session) pendingNotesHumanIntent(outerID string) (stored string, changed bool, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.pendingNotesHuman[outerID]
+	if !ok {
+		return "", false, false
+	}
+	return pending.Note, pending.Changed, true
+}
+
+// persistNotesMetaWithIntent commits the note ALONGSIDE this attempt's
+// pending delivery intent in one atomic metadata write: the intent is
+// stamped under mu before Meta() renders, so the single meta.json save
+// carries both. A no-op save (post-clamp text already stored) records its
+// intent as delivery-complete: the retry journals success with no event
+// and no steer, matching applyNotesHumanSetResult below.
+func (s *Session) persistNotesMetaWithIntent(outerID, stored string, changed bool) error {
+	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
+		if err := fault(); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	if s.pendingNotesHuman == nil {
+		s.pendingNotesHuman = make(map[string]schema.PendingNotesHuman)
+	}
+	s.pendingNotesHuman[outerID] = schema.PendingNotesHuman{Note: stored, Changed: changed}
+	s.mu.Unlock()
+	if err := s.autoSaveMeta(); err != nil {
+		s.mu.Lock()
+		delete(s.pendingNotesHuman, outerID)
+		if len(s.pendingNotesHuman) == 0 {
+			s.pendingNotesHuman = nil
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// clearPendingNotesHuman drops the committed intent for outerID. It runs when
+// the mutation's applied result journals, and only in memory: the next
+// metadata save persists its absence. Delivery already completed, so a crash
+// before that save replays the APPLIED record — never the intent.
+func (s *Session) clearPendingNotesHuman(outerID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingNotesHuman, outerID)
+	if len(s.pendingNotesHuman) == 0 {
+		s.pendingNotesHuman = nil
+	}
+}
+
+// clonePendingNotesHuman copies a pending-intent map, preserving nil so a
+// session that never staged an intent persists nothing.
+func clonePendingNotesHuman(src map[string]schema.PendingNotesHuman) map[string]schema.PendingNotesHuman {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]schema.PendingNotesHuman, len(src))
+	for id, pending := range src {
+		dst[id] = pending
+	}
+	return dst
+}
+
 // markNotesSteerAccepted records which inner steer id the outer notes/human/set
 // attempt accepted, beside the owner's still-open reservation. It runs inside
 // the store serializer via mutate, so it cannot interleave with a concurrent
@@ -409,6 +508,10 @@ func (s *Session) applyNotesHumanSetResult(lease *clientMutationLease, outerID, 
 	}); err != nil {
 		return stored, NormalizeClientMutationError(outerID, err)
 	}
+	// Delivery completed: the committed intent is spent. A later save under
+	// a different outer ID stages its own intent; a replay of this ID takes
+	// the applied-record path in SetHumanNote and never reaches here.
+	s.clearPendingNotesHuman(outerID)
 	return stored, nil
 }
 
@@ -661,6 +764,24 @@ func (s *Session) applyUrlsRemoveResult(lease *clientMutationLease, outerID stri
 // for the daemon's server-side tests (which live outside package agent).
 func (s *Session) AddSessionURLForTest(rawURL, label string) (schema.SessionURL, error) {
 	return s.addSessionURL(rawURL, label)
+}
+
+// HumanNoteForTest reports the stored human note, exposing the unexported
+// store for the daemon's server-side tests (which live outside package
+// agent).
+func (s *Session) HumanNoteForTest() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.humanNote
+}
+
+// SessionURLsForTest reports a copy of the session URL list, exposing the
+// unexported store for the daemon's server-side tests (which live outside
+// package agent).
+func (s *Session) SessionURLsForTest() []schema.SessionURL {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]schema.SessionURL(nil), s.sessionURLs...)
 }
 
 // notesSnapshot reads the human and agent notes under s.mu.

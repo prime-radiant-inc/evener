@@ -166,6 +166,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		HumanNote:                s.humanNote,
 		AgentNote:                s.agentNote,
 		SessionURLs:              append([]schema.SessionURL(nil), s.sessionURLs...),
+		PendingNotesHuman:        clonePendingNotesHuman(s.pendingNotesHuman),
 		WorktreePath:             s.worktreeCurrentPath,
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,

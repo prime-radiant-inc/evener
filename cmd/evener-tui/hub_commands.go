@@ -1160,13 +1160,19 @@ func sendHubNotes(client *appwire.Client, ref appwire.Ref, note string, expected
 }
 
 // runHubNotes dispatches the /notes command: `clear` clears the human note
-// and anything else sets it as the note text.
+// and anything else sets it as the note text. Empty args show usage instead
+// of clearing: a palette-invoked /notes with no text must never wipe the
+// note (nor wake the agent with a steer for a clear nobody asked for).
 func (m *hubModel) runHubNotes(args string) tea.Cmd {
 	if !m.detail.Live {
 		m.addSessionSystem("Note editing is not available for this session.")
 		return nil
 	}
 	arg := strings.TrimSpace(args)
+	if arg == "" {
+		m.addSessionSystem("Usage: /notes <text> or /notes clear")
+		return nil
+	}
 	ref, ok := m.currentRef()
 	if !ok {
 		m.addSessionSystem("Session ref is invalid.")
