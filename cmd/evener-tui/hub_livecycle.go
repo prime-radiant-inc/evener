@@ -108,13 +108,29 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 // leaving the child's live activity dead (roborev PR #1044 round-12 mediums 1
 // and 2).
 func (m hubModel) reestablishDisplayedSubscription() (hubModel, tea.Cmd) {
+	return m.reestablishDisplayedSubscriptionRead(true)
+}
+
+// resubscribeDisplayedSessionAfterReconnect is the reconnect flavor: the
+// replacement connection carries no subscriptions (the dead connection's died
+// with it), so the read stays ADDITIVE — a replacing one has nothing to cull,
+// and additive keeps the reconnect path's long-standing contract. It still
+// carries the recovery tag, so a late response drops when the user
+// live-navigates while it is in flight (roborev PR #1044 round-13 medium 1),
+// and its response re-arms the children sequenced after the subscribe.
+func (m hubModel) resubscribeDisplayedSessionAfterReconnect() (hubModel, tea.Cmd) {
+	return m.reestablishDisplayedSubscriptionRead(false)
+}
+
+func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, tea.Cmd) {
 	ref, ok := m.currentRef()
 	if !ok || m.frames == nil {
 		return m, nil
 	}
 	seq := m.liveNavSeq
 	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
-	resub := fetchHubSession(m.frames, m.client, ref)
+	m.liveNavRecoveryRetries = 0
+	resub := fetchHubSessionRead(m.frames, m.client, ref, "", 0, true, replace)
 	return m, func() tea.Msg {
 		msg := resub()
 		if sessionMsg, ok := msg.(hubSessionMsg); ok {

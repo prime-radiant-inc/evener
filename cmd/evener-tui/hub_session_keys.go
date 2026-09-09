@@ -189,6 +189,18 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The live-nav chords are global session-view bindings: they must fire
+	// even while a child transcript view has the viewport, or they are
+	// unreachable there (roborev PR #1044 round-13 low 4). The switch they
+	// would otherwise reach (below the transcriptView early return) never
+	// sees them.
+	switch msg.String() {
+	case "alt+shift+right":
+		return m.switchToAdjacentLiveSession(1)
+	case "alt+shift+left":
+		return m.switchToAdjacentLiveSession(-1)
+	}
+
 	if m.transcriptView != nil {
 		switch msg.String() {
 		case "esc", "i", "q":

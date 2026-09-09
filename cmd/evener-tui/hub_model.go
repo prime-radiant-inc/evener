@@ -260,7 +260,20 @@ type hubModel struct {
 	// press has superseded.
 	liveNavPendingRef string
 	liveNavSeq        int
+	// liveNavRecoveryRetries counts consecutive failed recovery reads
+	// (reestablishDisplayedSubscription). A persistent RPC failure must not
+	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure
+	// surfaces as the model's error and the loop stops. Reset whenever a
+	// fresh drop-driven recovery starts (a new event, not the same failure
+	// again) or a recovery response succeeds (roborev PR #1044 round-13
+	// medium 2).
+	liveNavRecoveryRetries int
 }
+
+// hubLiveNavRecoveryMaxRetries bounds consecutive recovery-read retries: the
+// first failure is likely transient (the connection settled mid-cull), the
+// next two give a flaky RPC its chance; past that, surfacing beats spinning.
+const hubLiveNavRecoveryMaxRetries = 3
 
 const hubCtrlCQuitWindow = time.Second
 

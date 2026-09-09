@@ -101,10 +101,29 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if msg.err != nil {
 					// A failed recovery read left the connection's
-					// subscriptions culled server-side; nothing restores
-					// them, so retry the recovery once more.
+					// subscriptions culled server-side; retry so a transient
+					// failure does not strand them — but bound the retries: a
+					// persistent RPC failure must surface as the model's
+					// error rather than spin a tight command loop (roborev
+					// PR #1044 round-13 medium 2).
+					if m.liveNavRecoveryRetries >= hubLiveNavRecoveryMaxRetries {
+						m.err = msg.err
+						m.liveNavRecoveryRetries = 0
+						return m, nil
+					}
+					m.liveNavRecoveryRetries++
 					retried, retry := m.reestablishDisplayedSubscription()
+					retried.liveNavRecoveryRetries = m.liveNavRecoveryRetries
 					return retried, retry
+				}
+				// The read's response is an exact cut: fold the frames the
+				// connection delivered AHEAD of it (escalations, resync
+				// requests, other hub updates) before applying the snapshot,
+				// the same order the ordinary entry path uses (roborev PR
+				// #1044 round-13 medium 3).
+				var recoveryPreCut []tea.Cmd
+				for _, notification := range msg.beforeCut {
+					recoveryPreCut = append(recoveryPreCut, m.applyHubNotification(notification))
 				}
 				m.mode = hubModeSession
 				m.detail = msg.detail
@@ -112,13 +131,14 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.surfaceEscalationsOnEntry()
 				m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 				m.session.refreshViewport()
+				m.liveNavRecoveryRetries = 0
 				// The children re-arm AFTER the replacement completed
 				// server-side (the response just applied); batched with the
 				// read they would race it (round-12 medium 1). Evaluate the
 				// mutation before the return: subscribeNewChildren fills
 				// watchedChildRefs on the model the caller keeps.
 				recoveryChildren := m.subscribeNewChildren()
-				return m, recoveryChildren
+				return m, tea.Batch(append(recoveryPreCut, recoveryChildren)...)
 			}
 			if msg.liveNavSeq != m.liveNavSeq {
 				// A newer cycling read is still in flight: IT owns the
@@ -133,11 +153,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.liveNavPendingRef != "" {
 					return m, nil
 				}
-				var resub tea.Cmd
-				if ref, ok := m.currentRef(); ok && m.frames != nil {
-					resub = fetchHubSession(m.frames, m.client, ref)
-				}
-				return m, resub
+				// The settled-display resub goes through the tagged recovery
+				// path for the same reason as the newer-read drop above: an
+				// untagged resub response can land after a yet-newer press
+				// applied and revert the UI (roborev PR #1044 round-13
+				// medium 1).
+				return m.reestablishDisplayedSubscription()
 			}
 			// Composing began while the read was in flight: the draft is newer
 			// intent than the navigation. The press-time guard cannot cover

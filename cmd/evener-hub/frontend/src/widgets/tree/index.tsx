@@ -186,18 +186,17 @@ export function Tree<T extends TreeNode = TreeNode>({
     // navigation working where nothing else would handle them (round-8
     // low 2). Home/End release too: Alt+Home/End are global chords while
     // plain Home/End stay tree-owned (round-9 medium 2).
-    // The release is exact-modifier: Alt must be the ONLY modifier, since no
-    // global chord stacks another modifier onto Alt - an Alt+Ctrl or Alt+Meta
-    // arrow matches neither a global binding nor (with the release) a tree
-    // handler, and would be a dead key (roborev PR #1044 round-11 low).
-    if (
-      releaseModifierKeys &&
-      event.altKey &&
-      !event.ctrlKey &&
-      !event.metaKey &&
-      (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End")
-    )
-      return;
+    // The release is exact-CHORD (round-13 low 6): arrows release with Alt
+    // alone or Alt+Shift - Alt+Shift+Arrow is the live-session chord - but
+    // Home/End release ONLY on plain Alt, because the transcript-scroll
+    // chords (Alt+Home/End) bind no Shift: an Alt+Shift+Home matches neither
+    // a global binding nor, released, a tree handler, and would be a dead
+    // key. Ctrl/Meta never stack onto the release either - no global chord
+    // stacks them onto Alt (round-11 low).
+    if (releaseModifierKeys && event.altKey && !event.ctrlKey && !event.metaKey) {
+      if (event.key.startsWith("Arrow")) return;
+      if ((event.key === "Home" || event.key === "End") && !event.shiftKey) return;
+    }
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 
@@ -232,6 +231,18 @@ export function Tree<T extends TreeNode = TreeNode>({
         } else if (parent) {
           moveTo(parent.id);
         }
+        break;
+      }
+      case "Home": {
+        event.preventDefault();
+        const first = flat[0];
+        if (first) moveTo(first.node.id);
+        break;
+      }
+      case "End": {
+        event.preventDefault();
+        const last = flat[flat.length - 1];
+        if (last) moveTo(last.node.id);
         break;
       }
       case "Enter": {

@@ -9,8 +9,10 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
@@ -45,9 +47,12 @@ type liveCycleReads struct {
 	// read's response a running subagent child so the recovery response's
 	// child re-arm has something to find.
 	threadByRef map[string]appwire.Thread
+	// failRef, when set, makes reads for that ref fail (round-13 medium 2's
+	// bounded-retry coverage).
+	failRef string
 }
 
-func (r *liveCycleReads) record(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
+func (r *liveCycleReads) record(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	r.mu.Lock()
 	r.refs = append(r.refs, params.Ref)
 	r.replace = append(r.replace, params.ReplaceSubscription)
@@ -55,8 +60,12 @@ func (r *liveCycleReads) record(params appwire.ThreadReadParams) appwire.ThreadR
 	if override, ok := r.threadByRef[params.Ref]; ok {
 		thread = override
 	}
+	fail := r.failRef != "" && r.failRef == params.Ref
 	r.mu.Unlock()
-	return appwire.ThreadReadResponse{Thread: thread}
+	if fail {
+		return appwire.ThreadReadResponse{}, errors.New("thread/read failed")
+	}
+	return appwire.ThreadReadResponse{Thread: thread}, nil
 }
 
 func (r *liveCycleReads) get() []string {
@@ -76,7 +85,7 @@ func newLiveCycleModel(t *testing.T, currentRef string, tree hubTreeResponse) (h
 	reads := &liveCycleReads{}
 	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return reads.record(params), nil
+			return reads.record(params)
 		})
 	})
 	m := newHubModel(client, "")
@@ -784,8 +793,18 @@ func TestHubSessionLiveCycleStaleReadReEstablishesCurrentSubscription(t *testing
 	}
 	// Running it re-issues thread/read for the session now displayed.
 	msg := resub()
-	if _, ok := msg.(hubSessionMsg); !ok {
+	sessionMsg, ok := msg.(hubSessionMsg)
+	if !ok {
 		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
+	}
+	// Round 13, medium 1: the settled-display resub must be a TAGGED recovery
+	// read — an untagged response can land after a newer live-nav response
+	// and revert the UI through the ordinary session-entry branch.
+	if !sessionMsg.liveNavRecovery {
+		t.Fatal("settled-display resub is not tagged as a recovery read")
+	}
+	if sessionMsg.ref != "local:01A" {
+		t.Fatalf("resub read ref = %q, want local:01A", sessionMsg.ref)
 	}
 	got := reads.get()
 	if len(got) < 3 || got[len(got)-1] != "local:01A" {
@@ -849,4 +868,226 @@ func applyHubReconnectOnCopy(t *testing.T, m hubModel) hubModel {
 		_ = cmd()
 	}
 	return m
+}
+
+// Round 13, medium 3: the recovery branch returned before the common
+// msg.beforeCut fold, so notifications the connection delivered AHEAD of the
+// recovery read — escalations, resync requests, other hub updates — were
+// silently discarded. The fold must run before the recovery apply, with any
+// resulting commands batched alongside the child re-arm (roborev PR #1044
+// round-13 medium 3).
+func TestHubSessionLiveCycleRecoveryFoldsBeforeCut(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	sessionMsg, ok := resub().(hubSessionMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", resub())
+	}
+
+	// An escalation the connection delivered ahead of the recovery read: it
+	// rides the response's beforeCut and must be enqueued when the recovery
+	// applies.
+	escalationParams, err := json.Marshal(appwire.SandboxEscalationRequested{
+		Ref:          "local:01B",
+		EscalationID: "esc-1",
+		Tool:         "exec_command",
+		DeniedPath:   "/tmp/denied",
+		Mode:         "write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionMsg.beforeCut = []appwire.Notification{{
+		Method: appwire.NotifyEvenerSandboxEscalationRequested,
+		Params: escalationParams,
+	}}
+
+	updated2, _ := m2.Update(sessionMsg)
+	m3 := updated2.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("recovery read switched sessions: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if len(m3.escalationsByRef["local:01B"]) != 1 {
+		t.Fatalf("beforeCut escalation was not folded: escalationsByRef = %v, want one for local:01B", m3.escalationsByRef)
+	}
+	_ = reads
+}
+
+// Round 13, low 4: the transcriptView early return handles only esc/i/q and
+// passes everything else to the viewport, so the Alt+Shift+Arrow live-nav
+// chords were unreachable while viewing a child transcript (roborev PR #1044
+// round-13 low 4).
+func TestHubSessionLiveCycleChordWorksInTranscriptView(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m.transcriptView = &hubTranscriptViewState{
+		Ref:    "local:01CHILD",
+		Title:  "Child transcript",
+		Source: "subagent",
+	}
+
+	_, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cmd == nil {
+		t.Fatal("transcript view: expected a live-nav fetch command, got none")
+	}
+	msg := cmd().(hubSessionMsg)
+	if msg.ref != "local:01C" {
+		t.Fatalf("transcript view chord switched to %q, want local:01C", msg.ref)
+	}
+	if msg.capture != nil {
+		msg.capture.Release()
+	}
+	if got := reads.get(); len(got) != 1 || got[0] != "local:01C" {
+		t.Fatalf("thread/read refs = %v, want [local:01C]", got)
+	}
+	if m.transcriptView == nil {
+		t.Fatal("chord handling cleared the transcript view")
+	}
+}
+
+// runBatchChildren executes a command's result children (tea.Batch holds
+// them lazily), collecting whatever finishes within the timeout. The
+// notification-wait child blocks on its channel and simply times out; the
+// session read the caller wants responds immediately.
+func runBatchChildren(t *testing.T, cmd tea.Cmd, timeout time.Duration) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	results := make(chan tea.Msg, len(batch))
+	for _, child := range batch {
+		go func(child tea.Cmd) {
+			if child != nil {
+				results <- child()
+			}
+		}(child)
+	}
+	var collected []tea.Msg
+	deadline := time.After(timeout)
+collect:
+	for len(collected) < len(batch) {
+		select {
+		case result := <-results:
+			collected = append(collected, result)
+		case <-deadline:
+			break collect
+		}
+	}
+	return collected
+}
+
+// Round 13, medium 1: the reconnect resync re-reads the viewed session with
+// an untagged resyncHubSession. If the user live-navigates while that resync
+// response is in flight (a newer live-nav read applies), the late resync
+// response can land afterwards and revert the UI through the ordinary
+// session-entry branch, replacing the newer subscription. The reconnect resync
+// must carry the recovery tag so a late response drops as stale (roborev PR
+// #1044 round-13 medium 1).
+func TestHubSessionLiveCycleReconnectResyncIsTaggedRecovery(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	_, feed, cleanup2 := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
+		})
+	})
+	defer cleanup2()
+	msg := hubReconnectMsg{client: m.client, frames: feed}
+	cmd := m.applyHubReconnect(msg)
+
+	// Collect the reconnect batch's responding children and find the
+	// session read for the displayed session.
+	var resyncMsg tea.Msg
+	for _, result := range runBatchChildren(t, cmd, 2*time.Second) {
+		if sessionMsg, ok := result.(hubSessionMsg); ok && sessionMsg.ref == "local:01B" {
+			resyncMsg = sessionMsg
+		}
+	}
+	if resyncMsg == nil {
+		t.Fatal("reconnect issued no session resync read for the displayed session")
+	}
+	sessionMsg := resyncMsg.(hubSessionMsg)
+	if !sessionMsg.liveNavRecovery {
+		t.Fatal("reconnect resync is not tagged as a recovery read")
+	}
+	if sessionMsg.capture != nil {
+		sessionMsg.capture.Release()
+	}
+}
+
+// Round 13, medium 2: a failed recovery read immediately started another
+// recovery read with no backoff, retry limit, error reporting, or
+// connection-state check. A persistent RPC failure would loop recovery
+// forever. Recovery retries must be bounded; after the bound the failure
+// surfaces through the model's error path and the loop stops (roborev PR
+// #1044 round-13 medium 2).
+func TestHubSessionLiveCycleRecoveryRetryIsBounded(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+	// Every read for the displayed session fails.
+	reads.failRef = "local:01B"
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, resub := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+
+	// Drive the recovery retry loop to its bound: each failed recovery
+	// response may retry, but only a bounded number of times.
+	model := m2
+	retries := 0
+	cmd2 := resub
+	for cmd2 != nil && retries < 10 {
+		msg := cmd2()
+		sessionMsg, ok := msg.(hubSessionMsg)
+		if !ok {
+			break
+		}
+		if sessionMsg.capture != nil {
+			sessionMsg.capture.Release()
+		}
+		updated2, next := model.Update(sessionMsg)
+		model = updated2.(hubModel)
+		cmd2 = next
+		retries++
+	}
+	if retries >= 10 {
+		t.Fatalf("recovery retried %d times without bound", retries)
+	}
+	// The bound must be small and the loop must end with the failure
+	// surfaced (m.err set) rather than silently dropped.
+	if retries == 0 {
+		t.Fatal("recovery did not retry at all")
+	}
+	if model.err == nil {
+		t.Fatal("persistent recovery failure did not surface an error")
+	}
+	// And no further reads were issued past the bound.
+	before := len(reads.get())
+	if cmd2 != nil {
+		_ = cmd2()
+	}
+	if after := len(reads.get()); after > before {
+		t.Fatalf("recovery issued another read after surfacing failure: %d -> %d", before, after)
+	}
 }

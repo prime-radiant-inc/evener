@@ -3469,6 +3469,62 @@ test("a demand that completes inert does not leave the live chord stuck", async 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
 
+// Round 13, low 5: the demand's completion never re-checks editable focus.
+// The chord is suppressed while an editable target has focus at PRESS time,
+// but a demand pressed from a non-editable target still navigates when it
+// completes even if the user focused the composer mid-flight - the keydown
+// was swallowed then, so the navigation surprises a typing user. The
+// completion must go inert (delete the in-flight key, no navigation) when
+// focus is editable (roborev PR #1044 round-13 low 5).
+test("a demand that completes while the composer has focus goes inert", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The press comes from a non-editable target: the demand issues.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  // The user focuses an editable surface (the composer) while the demand is
+  // in flight. The pane's real composer mounts lazily in this fixture, so
+  // the test focuses a plain input: the completion guard checks
+  // isEditableTarget(document.activeElement), which any editable element
+  // satisfies identically.
+  const editable = document.createElement("input");
+  document.body.appendChild(editable);
+  await act(async () => {
+    editable.focus();
+  });
+
+  // The completion must not navigate: focus is editable.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
 // Round 9, medium 4: leaving the session and returning before a demand
 // resolves restores an identical focused pane and session ref, so the
 // press-time guards alone read as "never left" and the stale completion

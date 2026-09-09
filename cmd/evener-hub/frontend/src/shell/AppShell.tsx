@@ -4,6 +4,7 @@
 // place for a path urlToPane() can't resolve at all.
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ACTIONS } from "../keybindings/actions";
+import { isEditableTarget } from "../keybindings/dispatcher";
 import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
@@ -652,12 +653,17 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             workspaceStore.getState().focusedPaneId !== owner.pane ||
             focusedSessionRef() !== owner.ref ||
             paletteStore.getState().open ||
-            document.querySelector('[aria-modal="true"]') !== null
+            document.querySelector('[aria-modal="true"]') !== null ||
+            isEditableTarget(document.activeElement)
           ) {
             // Went inert: this demand is no longer in flight, so the set
             // must not retain its key (the set tracks in-flight demands
             // only - same invariant as the success and error paths).
-            // Roborev PR #1044 round-9 medium 3.
+            // Roborev PR #1044 round-9 medium 3. The editable re-check is
+            // the press-time suppression's completion half: focus moving
+            // into the composer mid-flight means the keydown was swallowed
+            // then, so the navigation would surprise a typing user
+            // (round-13 low 5).
             demandedLivePages.delete(demandKey);
             return;
           }
