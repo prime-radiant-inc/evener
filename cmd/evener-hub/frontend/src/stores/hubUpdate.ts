@@ -32,6 +32,10 @@ export const RESTART_TIMEOUT_MS = 30_000;
 // poll always starts.
 export const APPLY_TIMEOUT_MS = 6 * 60_000;
 
+// ALREADY_UP_TO_DATE is the message both the store-level guard and the
+// server's restarting:false response surface when the channel is current.
+const ALREADY_UP_TO_DATE = "Already up to date";
+
 export interface HubUpdateStoreState {
   // null until the section seeds it from the overview's buildChannel; the
   // hub then falls back to its own upgrade channel for an empty request.
@@ -163,22 +167,22 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
     // call too: never issue a download + exec restart for an up-to-date
     // check the button state let through.
     if (!check.updateAvailable) {
-      set({ applyError: "Already up to date" });
+      set({ applyError: ALREADY_UP_TO_DATE });
       return;
     }
     set({ applying: true, applyError: null, restartTimedOut: false });
     const previous = check.currentVersion;
     try {
-      const resp = (await requireClient().request(
+      const resp = await requireClient().request(
         "evener/update/apply",
         { channel: get().channel ?? "" },
         { timeoutMs: APPLY_TIMEOUT_MS },
-      )) as { restarting?: boolean };
+      );
       // The server re-checks before installing and answers restarting:false
       // when the channel was already current: no download, no exec, no new
       // version to poll for. Report it instead of polling into a timeout.
-      if (resp && resp.restarting === false) {
-        set({ applying: false, applyError: "Already up to date" });
+      if (!resp.restarting) {
+        set({ applying: false, applyError: ALREADY_UP_TO_DATE });
         return;
       }
     } catch (err) {

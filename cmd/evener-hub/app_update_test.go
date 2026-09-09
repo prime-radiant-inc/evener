@@ -53,6 +53,20 @@ func setBuild(t *testing.T, sha, channel string) {
 	// hubUpdateApply deliberately leaves hubUpdateMu locked after a
 	// successful apply; reset it so tests stay independent of run order.
 	hubUpdateMu = sync.Mutex{}
+	// Default the check seam to an offline "update available" stub so
+	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
+	// forbids network in default tests). Tests that need a specific check
+	// result override this via stubUpdateCheck/stubUpdateAvailable.
+	prevCheck := runHubUpdateCheck
+	runHubUpdateCheck = func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       opts.Channel,
+			LatestCommit:    "ffffffffffffffffffffffffffffffffffffffff",
+			UpdateAvailable: true,
+		}, nil
+	}
+	t.Cleanup(func() { runHubUpdateCheck = prevCheck })
 }
 
 func stubUpdateCheck(t *testing.T, fn func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error)) *int {

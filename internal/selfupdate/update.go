@@ -445,6 +445,18 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 	return nil
 }
 
+// chargeExtractionBudget adds n decompressed bytes to the running total and
+// refuses a decompression bomb when the cumulative extraction exceeds the
+// cap. Shared by the drain (ignored entries) and copy (wanted entries) paths
+// so both observe the same bound.
+func chargeExtractionBudget(total *int64, n int64) error {
+	*total += n
+	if *total > maxExtractedBytes {
+		return fmt.Errorf("release archive expands past %d bytes, refusing a decompression bomb", maxExtractedBytes)
+	}
+	return nil
+}
+
 func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot string) error {
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -488,13 +500,15 @@ func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot stri
 			// discards the previous entry's body on the following
 			// call, so an unbounded `continue` would decompress a
 			// giant ignored member outside the cap and ctx checks.
-			n, err := io.Copy(io.Discard, ctxReader(ctx, io.LimitReader(tr, maxExtractedBytes-extractedTotal+1)))
+			// Use copyStream (the test seam) so failure-injection
+			// covers the drain path too.
+			remaining := maxExtractedBytes - extractedTotal
+			n, err := copyStream(io.Discard, ctxReader(ctx, io.LimitReader(tr, remaining+1)))
 			if err != nil {
 				return err
 			}
-			extractedTotal += n
-			if extractedTotal > maxExtractedBytes {
-				return fmt.Errorf("release archive expands past %d bytes, refusing a decompression bomb", maxExtractedBytes)
+			if err := chargeExtractionBudget(&extractedTotal, n); err != nil {
+				return err
 			}
 			continue
 		}
@@ -518,9 +532,8 @@ func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot stri
 		if closeErr != nil {
 			return closeErr
 		}
-		extractedTotal += n
-		if extractedTotal > maxExtractedBytes {
-			return fmt.Errorf("release archive expands past %d bytes, refusing a decompression bomb", maxExtractedBytes)
+		if err := chargeExtractionBudget(&extractedTotal, n); err != nil {
+			return err
 		}
 		seen[bin] = true
 	}
@@ -561,13 +574,15 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		previous []byte // pre-install content, nil when dst is new
 		hadPrev  bool
 		// linkHadEntry reports a pre-install binDir entry; linkTarget and
-		// linkIsLink describe it. linkFile holds the bytes of a regular
-		// file entry (a copied executable is a supported layout), so
-		// rollback can restore it after swapSymlink's rename-over.
-		linkHadEntry bool
-		linkTarget   string
-		linkIsLink   bool
-		linkFile     []byte
+		// linkIsLink describe it. linkIsRegular marks a regular-file entry
+		// (a copied executable is a supported layout) for lazy snapshot:
+		// linkFile is read just before swapSymlink destroys it, so a commit
+		// that aborts earlier never pays the I/O.
+		linkHadEntry  bool
+		linkTarget    string
+		linkIsLink    bool
+		linkIsRegular bool
+		linkFile      []byte
 	}
 	var stagedBins []staged
 	rollback := func() {
@@ -597,11 +612,10 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 					s.linkTarget = target
 				}
 			} else if fi.Mode().IsRegular() {
-				// Snapshot now: the commit loop's rename-over destroys
-				// these bytes, and rollback must restore them.
-				if data, rerr := os.ReadFile(filepath.Join(binDir, bin)); rerr == nil {
-					s.linkFile = data
-				}
+				// Mark for lazy snapshot: the commit loop reads the
+				// bytes just before swapSymlink destroys them, so a
+				// commit that aborts earlier never pays the I/O.
+				s.linkIsRegular = true
 			}
 		}
 		stagedBins = append(stagedBins, s)
@@ -626,7 +640,7 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			case s.linkIsLink:
 				_ = os.Remove(link)
 				_ = os.Symlink(s.linkTarget, link)
-			case s.linkFile != nil:
+			case s.linkIsRegular && s.linkFile != nil:
 				// A copied executable: restore the snapshotted bytes
 				// over the swapped-in link.
 				_ = os.Remove(link)
@@ -645,7 +659,8 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			_ = os.WriteFile(dst, s.previous, 0o755)
 		}
 	}
-	for _, s := range stagedBins {
+	for i := range stagedBins {
+		s := &stagedBins[i]
 		if err := ctx.Err(); err != nil {
 			restore()
 			return nil, err
@@ -655,6 +670,14 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 			_ = os.Remove(s.tmp)
 			restore()
 			return nil, err
+		}
+		// Snapshot a regular-file entrypoint just before swapSymlink
+		// destroys it: deferred from stage time so an earlier abort
+		// (ctx error, this rename failure) never pays the read.
+		if s.linkIsRegular && s.linkFile == nil {
+			if data, rerr := os.ReadFile(filepath.Join(binDir, s.bin)); rerr == nil {
+				s.linkFile = data
+			}
 		}
 		if err := swapSymlink(dst, filepath.Join(binDir, s.bin)); err != nil {
 			restore()

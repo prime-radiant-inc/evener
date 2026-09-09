@@ -135,12 +135,11 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	// checks, but a direct RPC (or a check that went stale in flight)
 	// would otherwise download, reinstall, and exec an identical build --
 	// and the frontend poll keys on a version change, so a no-op restart
-	// ends in a misleading restart-timeout. Runs before the lock: there
-	// is nothing to serialize when no install follows.
-	fresh, err := runHubUpdateCheck(ctx, selfupdate.CheckOptions{
-		Channel:    channel,
-		CurrentSHA: buildinfo.GitSHA,
-	})
+	// ends in a misleading restart-timeout. Compose through hubUpdateCheck
+	// (the typed handler) so the option-build and result interpretation
+	// stay in one place. Runs before the lock: there is nothing to
+	// serialize when no install follows.
+	fresh, err := hubUpdateCheck(ctx, appwire.UpdateCheckParams{Channel: channel})
 	if err != nil {
 		return appwire.UpdateApplyResponse{}, err
 	}
