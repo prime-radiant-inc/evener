@@ -13,7 +13,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { friendlyErrorMessage } from "../protocol/errors";
+import { friendlyErrorMessage, WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { UpdateCheckResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -186,21 +186,19 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>((set, get) => ({
         return;
       }
     } catch (err) {
-      // A transport disconnect after the server received the apply
-      // request may still result in a successful install + restart —
-      // the response frame is lost, not the work. Treat a mid-request
-      // disconnect as an unknown outcome and poll for the new hub
-      // before declaring failure. A pre-request failure ("cannot call
-      // while state is closed") never reached the server, so it stays
-      // an error.
+      // A transport failure after the server received the apply request
+      // may still result in a successful install + restart — the response
+      // frame is lost, not the work. Classify by error type: a WireError
+      // means the server responded with a failure (not a transport drop),
+      // so it stays an error. A RequestTimeoutError or a plain Error
+      // (socket closed, network unreachable) means the response was lost,
+      // so poll for the new hub before declaring failure. A pre-request
+      // "cannot call … while state is closed" never reached the server,
+      // so it stays an error too.
       const msg = err instanceof Error ? err.message : String(err);
-      // Match the actual transport errors AppwireClient raises when the
-      // socket drops mid-request: "socket closed (code …)", "fetch"
-      // failures, "network" errors, "abort" from a timeout. Exclude
-      // "cannot call … while state is closed" — that's a pre-request
-      // rejection (the client was already disconnected, nothing was sent).
-      const sentButLost = /socket closed|disconnect|fetch|network|abort/i.test(msg) && !/cannot call/i.test(msg);
-      if (sentButLost) {
+      const neverSent = /cannot call/i.test(msg);
+      const serverResponded = err instanceof WireError;
+      if (!neverSent && !serverResponded) {
         set({ applying: false, restarting: true });
         await waitForNewHub(previous);
         return;
