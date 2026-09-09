@@ -4,8 +4,9 @@ import type {
 	ThreadListResponse,
 } from "../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { RosterEntry } from "../../mobile/src/services/roster";
 import { createRosterService } from "../../mobile/src/services/roster";
-import { RosterSearch } from "./rosterSearch";
+import { RosterSearch, searchProjectLabels } from "./rosterSearch";
 
 function boundary() {
 	const listeners = new Set<
@@ -51,6 +52,67 @@ function boundary() {
 	};
 }
 describe("roster search", () => {
+	const row = (ref: string, project: string): RosterEntry => ({
+		ref,
+		title: ref,
+		project,
+		status: "idle",
+		updatedAt: 0,
+		attention: "recent",
+	});
+	it("adds enough path context only when search destinations share a basename", () => {
+		const labels = searchProjectLabels([
+			row("one", "/Users/jesse/client-a/app"),
+			row("two", "/Users/jesse/client-b/app"),
+			row("three", "/Users/jesse/other/notes"),
+		]);
+		expect(labels.get("one")).toBe("client-a / app");
+		expect(labels.get("two")).toBe("client-b / app");
+		expect(labels.get("three")).toBe("notes");
+	});
+	it("keeps ordinary sessions quiet when only their project repeats", () => {
+		const labels = searchProjectLabels([
+			row("one", "/Users/jesse/client/app"),
+			row("two", "/Users/jesse/client/app"),
+		]);
+		expect(labels.get("one")).toBe("app");
+		expect(labels.get("two")).toBe("app");
+	});
+	it("distinguishes duplicate projects while preserving repeated rows", () => {
+		const labels = searchProjectLabels([
+			row("one", "/Users/jesse/team-a/app"),
+			row("two", "/Users/jesse/team-a/app"),
+			row("three", "/Users/jesse/team-b/app"),
+			row("four", "/Users/jesse/team-b/app"),
+		]);
+		expect(labels.get("one")).toBe("team-a / app");
+		expect(labels.get("two")).toBe("team-a / app");
+		expect(labels.get("three")).toBe("team-b / app");
+		expect(labels.get("four")).toBe("team-b / app");
+	});
+	it("leaves an empty project path empty", () => {
+		expect(searchProjectLabels([row("empty", "")]).get("empty")).toBe("");
+	});
+	it("preserves raw paths through RosterSearch while adding display labels", async () => {
+		const raw = row("one", "/Users/jesse/team-a/app");
+		const search = new RosterSearch({
+			list: async () => ({ threads: [raw], hasMore: false }),
+			refresh: async () => {},
+		});
+		await search.load();
+		expect(search.getSnapshot().rows[0]).toMatchObject({
+			project: "/Users/jesse/team-a/app",
+			projectLabel: "app",
+		});
+	});
+	it("keeps deeper context when duplicate paths share their immediate parent", () => {
+		const labels = searchProjectLabels([
+			row("one", "/Users/jesse/team-a/client/app"),
+			row("two", "/Users/jesse/team-b/client/app"),
+		]);
+		expect(labels.get("one")).toBe("team-a / client / app");
+		expect(labels.get("two")).toBe("team-b / client / app");
+	});
 	it("refreshes the current query after invalidations during an initial load and coalesces in-flight changes", async () => {
 		const f = boundary();
 		const stop = f.search.watch(f.client);
