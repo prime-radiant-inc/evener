@@ -52,7 +52,7 @@ export interface SessionMenuProps {
   session?: NavigationSessionModel;
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
-  panesOpen: { details: boolean; tasks: boolean; activity: boolean };
+  panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
   taskLabel?: string; // e.g. "Tasks 3/7"; defaults to "Tasks"
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
@@ -128,6 +128,7 @@ export function SessionMenu({
       label: checked(activityLabel ?? "Activity", panesOpen.activity),
       onSelect: () => actions.onOpenPane("activity"),
     },
+    { id: "notes", label: checked("Notes", panesOpen.notes), onSelect: () => actions.onOpenPane("notes") },
   ];
   if (onOpenVerbosity) {
     paneItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });

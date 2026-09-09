@@ -29,13 +29,9 @@
 // never re-formatted, and never derived client-side even when the token total
 // beside it was. An absent cost (no token data, or an uncataloged model) is an
 // honest unknown and renders no row at all.
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
-import type { SessionURL } from "../../../protocol/types.gen";
-import { threadsStore } from "../../../stores/threads";
-import { Button, InspectorCard, Meter, Popover, Sheet, Textarea, useToasts } from "../../../widgets";
-import { isWebHref } from "../../../widgets/contextcard";
+import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
@@ -57,7 +53,6 @@ export interface DetailsPanelProps {
 }
 
 export interface DetailsPanelBodyProps {
-  sessionRef: string;
   model: ThreadModel;
   now: number;
 }
@@ -92,17 +87,6 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
-// The wire statuses that mean this session's story is over for shared-notes
-// affordances. Restated here (not imported) because Composer.tsx's
-// ENDED_STATUSES is module-private by reviewer decision (reviewer L: the
-// section owns its copy so the two cannot drift silently — a change to the
-// composer's set must consciously update this one too). The three values are
-// "ended" (derived terminal, like the composer), "closed" (a live session
-// that shut down), and "notLoaded" (the shape a cold exited evener session
-// arrives in — pastEntryThread stamps it). Matches Composer.tsx's
-// ENDED_STATUSES exactly; keep them in sync.
-const SHARED_NOTES_ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
 function DetailRow({ label, testId, children }: { label: string; testId: string; children: React.ReactNode }) {
   return (
     <div className={CLASS.row} data-testid={testId}>
@@ -127,170 +111,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-// SharedNotesSection renders the "Shared notes" group per the ordered
-// display rule (design spec §Hub Details UI): (1) capability unset hides
-// the section entirely; (2) capability set but session not live shows
-// read-only with no edit trigger and no remove buttons; (3) capability set
-// and live shows full editing. Unlike other Details rows this section
-// renders whenever the capability is set: when live, the empty state shows
-// an explicit "Add a note" affordance (a fresh session starts empty and an
-// omit-when-absent rule would leave no trigger); when not live, the empty
-// state renders inert read-only text with no trigger.
-function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
-  const toasts = useToasts();
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [draft, setDraft] = useState(model.humanNote);
-  const [saving, setSaving] = useState(false);
-
-  const live = !SHARED_NOTES_ENDED_STATUSES.has(model.status.type);
-  const hasContent = model.humanNote !== "" || model.agentNote !== "" || model.sessionUrls.length > 0;
-  // Idle sessions follow turn/steer semantics: saving injects a
-  // steering-carrier turn that wakes the session and costs a model turn
-  // (design spec §Wire RPCs). Name it in the editor while idle so the cost
-  // is visible before the save, mirroring the composer's status-driven copy.
-  const idleWake = live && model.status.type === "idle";
-
-  // A different session starts a fresh transient-UI lifetime.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionRef is the deliberate popover reset boundary
-  useEffect(() => {
-    setPopoverOpen(false);
-  }, [sessionRef]);
-
-  // Opening the editor seeds the draft from the current note; the draft is
-  // otherwise owned by the textarea until save or close (a failed save
-  // keeps the draft in the popover per the no-optimistic-state rule).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: popover open is the deliberate draft-seed boundary (model.humanNote read only on open)
-  useEffect(() => {
-    if (popoverOpen) setDraft(model.humanNote);
-  }, [popoverOpen]);
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      await threadsStore.getState().setHumanNote(sessionRef, draft);
-      setPopoverOpen(false);
-    } catch (err) {
-      toasts.push("error", sessionActionError("Couldn't save note", err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleRemoveURL(url: SessionURL) {
-    try {
-      await threadsStore.getState().removeURL(sessionRef, url.id);
-    } catch (err) {
-      toasts.push("error", sessionActionError("Couldn't remove link", err));
-    }
-  }
-
-  // Rule 1 of the ordered display rule: capability unset hides the section
-  // entirely. After the hooks above (Rules of Hooks: hooks before returns).
-  if (!model.capabilities.sharedNotes) return null;
-
-  return (
-    <section className={CLASS.section} data-testid="shared-notes-section">
-      <h3 className={CLASS.sectionTitle}>Shared notes</h3>
-      <dl className={CLASS.list}>
-        {/* The human row renders for every live session with the capability,
-            independent of existing content: otherwise the first human note
-            could never be created once an agent note or URL existed (the
-            trigger disappeared with hasContent), and the Add trigger set
-            popoverOpen with no mounted editor to open. */}
-        {model.humanNote !== "" || live ? (
-          <DetailRow label="human note" testId="shared-notes-human">
-            {model.humanNote !== "" ? <span>{model.humanNote}</span> : null}
-            {live && (
-              <Popover
-                open={popoverOpen}
-                onClose={() => setPopoverOpen(false)}
-                data-testid="shared-notes-editor"
-                trigger={
-                  // Live but no human note yet (a fresh session, or only
-                  // agent content so far): the first-note affordance. The
-                  // trigger seeds the draft via the popover-open effect
-                  // above.
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    onClick={() => setPopoverOpen((v) => !v)}
-                    data-testid={model.humanNote !== "" ? "shared-notes-edit" : "shared-notes-add-note"}
-                  >
-                    {model.humanNote !== "" ? "Edit" : "Add a note"}
-                  </Button>
-                }
-              >
-                <Textarea
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  aria-label="Human note"
-                  rows={4}
-                />
-                {idleWake && (
-                  <p className={CLASS.dim} data-testid="shared-notes-idle-wake">
-                    Saving will wake the agent.
-                  </p>
-                )}
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  onClick={() => void handleSave()}
-                  disabled={saving}
-                  data-testid="shared-notes-save"
-                >
-                  {saving ? "Saving…" : "Save"}
-                </Button>
-              </Popover>
-            )}
-          </DetailRow>
-        ) : null}
-        {model.agentNote !== "" && (
-          <DetailRow label="agent note" testId="shared-notes-agent">
-            <span>{model.agentNote}</span>
-          </DetailRow>
-        )}
-        {model.sessionUrls.length > 0 && (
-          <DetailRow label="links" testId="shared-notes-urls">
-            <ul>
-              {model.sessionUrls.map((url) => (
-                <li key={url.id} data-testid={`shared-notes-url-${url.id}`}>
-                  {isWebHref(url.url) ? (
-                    <a href={url.url} target="_blank" rel="noopener noreferrer">
-                      {url.label || url.url}
-                    </a>
-                  ) : (
-                    <span>
-                      {url.label || url.url} <span className={CLASS.dim}>{url.url}</span>
-                    </span>
-                  )}
-                  {live && (
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onClick={() => void handleRemoveURL(url)}
-                      aria-label={`Remove ${url.label || url.url}`}
-                      data-testid={`shared-notes-url-remove-${url.id}`}
-                    >
-                      Remove
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </DetailRow>
-        )}
-        {!live && !hasContent && (
-          <DetailRow label="notes" testId="shared-notes-empty">
-            <span className={CLASS.dim}>No shared notes</span>
-          </DetailRow>
-        )}
-      </dl>
-    </section>
-  );
-}
-
 /** Shared stateless details body used by the mobile Sheet and desktop pane. */
-export function DetailsPanelBody({ sessionRef, model, now }: DetailsPanelBodyProps) {
+export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
   // daemon's own definition of the figure (agent/schema/context_metrics.go's
@@ -394,7 +216,6 @@ export function DetailsPanelBody({ sessionRef, model, now }: DetailsPanelBodyPro
           </DetailRow>
         )}
       </Section>
-      <SharedNotesSection sessionRef={sessionRef} model={model} />
     </>
   );
 }
@@ -418,7 +239,7 @@ export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(fu
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        {open ? <DetailsPanelBody sessionRef={model.ref} model={model} now={now} /> : null}
+        {open ? <DetailsPanelBody model={model} now={now} /> : null}
       </Sheet>
     </>
   );

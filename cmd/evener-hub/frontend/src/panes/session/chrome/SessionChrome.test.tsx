@@ -281,7 +281,7 @@ test("default placement preserves the standalone session chrome presentation", a
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
 });
 
-test("status row has no inline Details/Tasks/Activity buttons; they live in the menu", async () => {
+test("status row has no inline Details/Tasks/Activity/Notes buttons; they live in the menu", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -292,11 +292,13 @@ test("status row has no inline Details/Tasks/Activity buttons; they live in the 
   expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
   expect(screen.queryByRole("button", { name: /Tasks/ })).toBeNull();
   expect(screen.queryByRole("button", { name: /Activity/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Notes" })).toBeNull();
 
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Tasks/ })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Notes" })).toBeTruthy();
 });
 
 test("SessionChrome shows task outcome aggregates in its actions menu", async () => {

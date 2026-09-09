@@ -159,7 +159,7 @@ export function splitModelId(id: string): { provider: string; model: string } {
 // now owns Details/Tasks/Activity at every width, so those triggers never
 // render and the mobile path was a guaranteed no-op. Like the rail adapter,
 // both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails" | "sessionNotes"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -587,6 +587,14 @@ export function buildCommands(): Command[] {
       keywords: ["details", "info"],
       scope: "session",
       run: (ctx) => toggleSessionPane(ctx, "sessionDetails"),
+    },
+    {
+      id: "notes",
+      title: "Toggle session notes",
+      hint: "",
+      keywords: ["notes", "shared"],
+      scope: "session",
+      run: (ctx) => toggleSessionPane(ctx, "sessionNotes"),
     },
     {
       id: "project",

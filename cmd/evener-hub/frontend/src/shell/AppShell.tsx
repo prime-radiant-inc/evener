@@ -197,7 +197,8 @@ function routePlacementIsApplied(
   const focusedPanel =
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionActivity" ||
-    focusedPane?.type === "sessionDetails";
+    focusedPane?.type === "sessionDetails" ||
+    focusedPane?.type === "sessionNotes";
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedPanel && focusedPanel);
 

@@ -1319,7 +1319,7 @@ describe("session row", () => {
     renderRow({ kind: "subagent", rename: false });
     await openMenu(/actions for/i);
     const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
-    expect(items).toEqual(["Details", "Tasks", "Activity", "Rename", "Shut down"]);
+    expect(items).toEqual(["Details", "Tasks", "Activity", "Notes", "Rename", "Shut down"]);
   });
 
   // The row's menu is THE shared SessionMenu now - the same item list, in the
@@ -1333,6 +1333,7 @@ describe("session row", () => {
       "Details",
       "Tasks",
       "Activity",
+      "Notes",
       "Rename",
       "Pin this session…",
       "Archive",

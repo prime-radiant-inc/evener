@@ -1,0 +1,99 @@
+/* Notes panel: the session's shared notes as their own surface. Three stacked
+ * cards (yours / agent / links) on the details section rhythm, so the panel
+ * reads as one family with DetailsPanel while giving the human textarea the
+ * room a popover never had. Token colors and spacing only. */
+
+.section {
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--edge);
+}
+
+.section:last-child {
+  padding-block-end: 0;
+  border-block-end: none;
+}
+
+.section + .section {
+  padding-block-start: var(--space-4);
+}
+
+.sectionTitle {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--ink-mid);
+}
+
+/* The human note's writing surface claims the card's full width; autoGrow
+ * (not a fixed rows count) lets a long note breathe without a scrollbar
+ * appearing at an arbitrary line. */
+.editor {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* The one-line status under the textarea: saving progress, the saved
+ * confirmation, the idle-wake cost warning, or the failure report. Caption
+ * size and mid ink keep it a whisper beside the note itself; the error
+ * variant is the only state allowed the danger color. */
+.status {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.statusError {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--danger);
+}
+
+/* Read-only note prose: the agent's words and a finished session's human
+ * note render as wrapped body text, not mono - they are meant to be read,
+ * not copied as figures. */
+.prose {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Links list: one row per entry, label link leading and the quiet Remove
+ * trailing. Long URLs wrap at a separator rather than overflowing the card. */
+.linkList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.linkRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
+.linkUrl {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* Empty states recede: "no agent note yet" is the absence of a fact, not a
+ * fact, so it never takes the hi-ink voice real content gets. */
+.dim {
+  color: var(--ink-mid);
+}

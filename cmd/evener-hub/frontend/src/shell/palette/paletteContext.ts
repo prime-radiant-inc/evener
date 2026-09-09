@@ -31,6 +31,7 @@ function onPageForType(type: string): OnPage {
     case "sessionTasks":
     case "sessionActivity":
     case "sessionDetails":
+    case "sessionNotes":
       return "session";
     case "spawn":
       return "spawn";
@@ -54,7 +55,8 @@ export function buildPaletteContext(): PaletteContext {
     focused.type === "session" ||
     focused.type === "sessionTasks" ||
     focused.type === "sessionActivity" ||
-    focused.type === "sessionDetails"
+    focused.type === "sessionDetails" ||
+    focused.type === "sessionNotes"
       ? refFromParams(focused.params)
       : null;
   return {

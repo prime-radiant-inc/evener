@@ -326,7 +326,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // session directly - the generic stack stays suppressed for them (it resets
   // across the host swap that typically lands a panel pane here, and would
   // walk somewhere unrelated).
-  const panelPaneTypes = new Set(["sessionTasks", "sessionActivity", "sessionDetails"]);
+  const panelPaneTypes = new Set(["sessionTasks", "sessionActivity", "sessionDetails", "sessionNotes"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
   const showBack = focusedPane !== null && focusedPane.type !== "welcome";
 

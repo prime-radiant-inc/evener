@@ -432,14 +432,15 @@ function saysNotStarted(session: RailSession, showsGloss: boolean): boolean {
 // ActionsMenu's own comment, which this replaces for session rows).
 function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
-  // Three separate boolean selectors, NOT one object-literal selector: a
-  // fresh { details, tasks, activity } object every call would fail the
+  // Four separate boolean selectors, NOT one object-literal selector: a
+  // fresh { details, tasks, activity, notes } object every call would fail the
   // store's reference-equality check and re-render the row on every
-  // workspace change (SessionChrome selects the same three booleans the
+  // workspace change (SessionChrome selects the same four booleans the
   // same way).
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
+  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref }));
   return (
     <SessionMenu
       sessionRef={ref}
@@ -448,7 +449,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
       canRename={session.rename === true}
       canShutdown={session.live && session.state !== "restartRequired"}
       treeNode={session}
-      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
+      panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
       actions={{
         onOpenPane: (pane) => actions.onOpenSessionPane(session, pane),
         onRename: (name) => actions.onRenameSession(session, name),
