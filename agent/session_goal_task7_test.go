@@ -806,8 +806,19 @@ func TestGoalSubstrateCheckURLDeniesPrivateRanges(t *testing.T) {
 		"http://192.168.1.2/hook",
 		"http://127.0.0.1/hook",
 		"http://localhost/hook",
+		"http://LOCALHOST/hook",
+		"http://localhost./hook",
 		"http://0.0.0.0/hook",
 		"http://[::1]/hook",
+		"http://[::ffff:127.0.0.1]/hook",
+		// Non-canonical numerics resolvers may interpret as IPs.
+		"http://2130706433/hook",
+		"http://0x7f.0.0.1/hook",
+		"http://0177.0.0.1/hook",
+		"http://0x7f000001/hook",
+		"http://172.016.0.1/hook",
+		"http://0xac.0x10.0.1/hook",
+		"http://127.1/hook",
 	} {
 		if sub.CheckURL(raw, time.Minute) {
 			t.Fatalf("CheckURL(%q) = true, want denied (private/loopback)", raw)

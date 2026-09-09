@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"net"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -209,10 +210,13 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 // CheckURL validates an http_match URL under the session egress policy:
 // well-formed absolute http(s) (goal.ValidHTTPURL) with loopback,
 // link-local, and private ranges denied (matcher/fetch evaluation itself is
-// a deferred slice — this gate is validation-only). The host is parsed
-// (never substring-matched over the raw URL): literal IPs deny by range
-// (incl. 172.16/12, which a substring list misses, and 0.0.0.0/::),
-// hostnames deny loopback/link-local literals, and "localhost" names.
+// a deferred slice — this gate is validation-only). The host parses
+// strictly: canonical IP literals deny by range; legacy numeric spellings
+// (decimal/octal/hex parts, short forms like 127.1, bare integers like
+// 2130706433) deny outright since resolvers may interpret them as IPs;
+// localhost names deny; anything else must be a syntactically valid DNS
+// name. Resolution-time (DNS rebinding) checks belong at the deferred fetch
+// leg, which resolves and re-checks the destination IP.
 func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bool {
 	if !goal.ValidHTTPURL(rawURL) {
 		return false
@@ -222,26 +226,101 @@ func (g *goalSessionSubstrate) CheckURL(rawURL string, timeout time.Duration) bo
 	if err != nil {
 		return false
 	}
-	host := u.Hostname()
+	host := strings.TrimSuffix(u.Hostname(), ".")
 	if host == "" {
 		return false
 	}
-	if strings.EqualFold(host, "localhost") {
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
 		return false
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() || ip.IsUnspecified() {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsPrivate() || !addr.IsValid() || addr.IsUnspecified() {
 			return false
 		}
 		return true
 	}
-	lower := strings.ToLower(host)
-	for _, denied := range []string{"localhost", "127.", "0.0.0.0", "::1", "[::1]", "10.", "192.168.", "169.254.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31."} {
-		if strings.Contains(lower, denied) {
+	// Not a canonical IP literal: deny legacy numeric spellings resolvers
+	// may still interpret as IPs (isLegacyIPv4Literal mirrors the mobile
+	// pairing gate in cmd/evener-hub/app_mobile.go), then require a valid
+	// DNS name so encoded/odd spellings fail closed.
+	if isLegacyIPv4Literal(host) {
+		return false
+	}
+	if !isValidDNSName(lower) {
+		return false
+	}
+	return true
+}
+
+// isLegacyIPv4Literal reports whether host looks like an inet_aton-style
+// numeric address (decimal/octal/hex parts, 1-4 parts, bare integers like
+// 2130706433 or 0x7f000001). Mirrors the mobile pairing gate: such
+// spellings are denied deterministically rather than resolved.
+func isLegacyIPv4Literal(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for i, part := range parts {
+		base := 10
+		digits := part
+		if len(part) > 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
+			base = 16
+			digits = part[2:]
+		} else if len(part) > 1 && part[0] == '0' {
+			base = 8
+		}
+		if digits == "" {
+			return false
+		}
+		value, err := strconv.ParseUint(digits, base, 32)
+		if err != nil {
+			return false
+		}
+		bits := 8
+		if i == len(parts)-1 {
+			bits = 8 * (5 - len(parts))
+		}
+		if value >= uint64(1)<<bits {
 			return false
 		}
 	}
 	return true
+}
+
+// isValidDNSName reports whether host is a syntactically valid DNS name:
+// dot-separated labels of letters/digits/hyphens, no empty labels, no
+// leading/trailing hyphens, TLD not all-numeric (numeric TLDs are IP-like).
+func isValidDNSName(host string) bool {
+	if len(host) == 0 || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+	}
+	tld := labels[len(labels)-1]
+	allDigits := true
+	for i := 0; i < len(tld); i++ {
+		if tld[i] < '0' || tld[i] > '9' {
+			allDigits = false
+			break
+		}
+	}
+	return !allDigits
 }
 
 // itoa renders an int64 without importing strconv at this site.
