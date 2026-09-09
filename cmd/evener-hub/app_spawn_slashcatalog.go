@@ -29,7 +29,7 @@ import (
 func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params appwire.SpawnSlashCatalogParams) (appwire.SpawnSlashCatalogResponse, error) {
 	harness := strings.TrimSpace(params.Harness)
 	if harness != "" && harness != "evener" {
-		return appwire.SpawnSlashCatalogResponse{Commands: []appwire.CommandDescriptor{}}, nil
+		return appwire.SpawnSlashCatalogResponse{Commands: []appwire.CommandDescriptor{}, Skills: []appwire.EvenerSkillInfo{}}, nil
 	}
 	var overrides launchconfig.Layer
 	if params.LaunchOverrides != nil {
