@@ -165,6 +165,7 @@ export function Composer({ ref }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
@@ -1092,6 +1093,17 @@ export function Composer({ ref }: ComposerProps) {
       toasts.push("error", "Send is not available for this session");
       return;
     }
+    // Hand off before Send becomes disabled. Never refocus on completion:
+    // the user may have moved to another control or session while submitting.
+    const initiator = submitButtonRef.current;
+    if (
+      initiator &&
+      !initiator.disabled &&
+      (event.nativeEvent as SubmitEvent).submitter === initiator &&
+      initiator.ownerDocument.activeElement === initiator
+    ) {
+      textareaRef.current?.focus();
+    }
     void submitAction(route);
   }
 
@@ -1419,6 +1431,7 @@ export function Composer({ ref }: ComposerProps) {
                         action is Steer, and Send's job is the patient one. */}
                       <Tooltip label={submitTooltip}>
                         <Button
+                          ref={submitButtonRef}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"
