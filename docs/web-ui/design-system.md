@@ -616,9 +616,10 @@ the same row explains that there's nowhere to hand off to yet, rather than silen
 never stack them.** The first collection page this shipped on is Settings → Marketplaces &
 Plugins (`panes/settings/sections/marketplacesPlugins/`), which previously stacked three
 sections (registered marketplaces, the browse tree, the installed list) down one long scroll.
-It is now the reference implementation for the two idioms below; any future page with the same
-shape (several sibling lists, plus per-item detail and actions) should reuse them rather than
-inventing a third layout.
+It is the reference implementation for the two idioms below, with Settings → Providers &
+credentials (`panes/settings/sections/credentials/InstanceSheet.tsx`) the reference for the
+sheet-as-editor form; any future page with the same shape (several sibling lists, plus per-item
+detail and actions) should reuse them rather than inventing a third layout.
 
 **One list at a time, chosen by a page-level SegmentedControl.** Each sibling collection becomes
 a segment; the segment labels carry the counts (`Installed (7)`, `Marketplaces (3)`), and the
@@ -629,32 +630,41 @@ the outgoing segment close (see the sheet rule below), while per-segment UI stat
 expensive to rebuild (the browse tree's expansion and its lazy catalog cache) is lifted to the
 page so it survives the round trip.
 
-**Rows are single tappable targets; actions live in a detail sheet.** A collection row carries
-identity and status only — `StatusDot`, name, state chips, one mono meta line
+**Rows are single tappable targets; the detail sheet is the item's editor.** A collection row
+carries identity and status only — `StatusDot`, name, state chips, one mono meta line
 (`@ marketplace · v1.2.0`) — and a trailing chevron; it is one full-width `<button>`, so the
 whole row is the target on desktop and touch alike. A row NEVER grows a trailing cluster of
-small action buttons (the pre-redesign installed row had four): every action on the item moves
-into the item's **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"`
-at the mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses). The sheet
-is the item's inspector: state chips, its catalog description (pulled lazily through the browse
-cache — re-open is free), a meta table, and its actions. Binary state (Enabled, Auto-upgrade)
-is a `Switch` row inside the sheet, disabled while its RPC is in flight; the primary mutation
-is a footer `Button`; the destructive action keeps its `ConfirmDialog` even though that nests a
-second modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and
-restores focus down the stack, and its `preventDefault` on Escape is what keeps the settings
-pane's own document-level Escape handler from closing the pane out from under an open overlay.
+small action buttons (the pre-redesign installed row had four): everything about the item lives
+in its **detail sheet**, a `Sheet` with `side="right"` on desktop and `side="bottom"` at the
+mobile breakpoint (chosen via `useIsMobile`, the same source the shell uses), `size="wide"`
+when it carries a form. The sheet is the item's editor, not an inspector (2026-09-07): every
+authored, editable fact renders as a prefilled form field in place — `FormRow` over `Input` /
+`Select`, one column — with a dirty-gated **Save** as the footer's primary `Button`, and
+renaming is editing the name field. Read-only facts keep the meta-table idiom below.
+Display-only content a row does not carry (a plugin's catalog description) is pulled lazily
+through the browse cache — one store-level entry per marketplace, so re-open is free.
+A separate `Dialog` is reserved for write-only secret entry (an API key, a credential JSON) and
+multi-step flows (OAuth); it never exists to edit a field the sheet could show. Binary state
+(Enabled, Auto-upgrade) is a `Switch` row that applies immediately, disabled while its RPC is
+in flight; the destructive action keeps its `ConfirmDialog` even though that nests a second
+modal over the sheet — `OverlayPanel` instances stack in DOM order, each traps and restores
+focus down the stack, and its `preventDefault` on Escape is what keeps the settings pane's own
+document-level Escape handler from closing the pane out from under an open overlay. Closing a
+sheet with unsaved edits discards them silently; the sheet reseeds only when a different item
+opens or its own save lands, so another client's refresh never clobbers a draft.
 
-**The meta table idiom.** Inside an inspector, facts render as label/value rows: a fixed-width
-(96px) caption-color label column, values in the UI font, and `var(--font-mono)` for anything
-machine-shaped — versions, sources, paths — truncating with ellipsis rather than wrapping.
-This is the same vocabulary as the list row's meta line, one zoom level up.
+**The meta table idiom.** Inside a detail sheet, read-only facts render as label/value rows: a
+fixed-width (96px) caption-color label column, values in the UI font, and `var(--font-mono)` for
+anything machine-shaped — versions, sources, paths — truncating with ellipsis rather than
+wrapping. This is the same vocabulary as the list row's meta line, one zoom level up.
 
-**An inspector is only as alive as its subject.** The detail sheet reads its entity from the
+**A detail sheet is only as alive as its subject.** The detail sheet reads its entity from the
 store rather than a prop snapshot, so cross-client changes land while it is open; when the
 entity disappears from the store (its own Remove completing, or another client's), the sheet
-closes itself instead of offering actions on a ghost, and a failed Remove keeps the sheet and
-dialog open for retry. Segments own their overlays: switching away closes the sheet, coming
-back does not reopen it.
+closes itself instead of offering actions on a ghost — except when the disappearance is the
+sheet's own rename landing, where the section re-selects the item under its new name and the
+sheet stays open — and a failed Remove keeps the sheet and dialog open for retry. Segments own
+their overlays: switching away closes the sheet, coming back does not reopen it.
 
 ## 11. Mobile forms and honest cold starts
 
