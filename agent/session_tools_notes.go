@@ -15,6 +15,11 @@ import (
 // mirroring registerGoalTools: notes_agent_set, urls_add, urls_remove,
 // notes_read. There is deliberately no notes_human_set tool — the human
 // whiteboard is owned by the hub channel (ownership by channel absence).
+//
+// Each mutating tool runs its mutation, persistence, and announcement as one
+// serialized unit through the notesGuard mutate* helpers (notesUpdateMu from
+// store through emission), so concurrent mutations publish in store order and
+// a stale event never wins at the projector (G1).
 func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefNotesAgentSet(),
@@ -22,12 +27,9 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 			note, _ := args["note"].(string)
-			stored, changed, human, agent := deps.notesGuard.setAgentNoteSerialized(note)
-			if err := deps.notesGuard.saveMeta(); err != nil {
+			stored, _, _, _, err := deps.notesGuard.mutateAgentNote(note)
+			if err != nil {
 				return nil, err
-			}
-			if changed {
-				deps.emit(events.EventNotesUpdated, notesUpdatedData(human, agent))
 			}
 			return tool.StateResult{
 				Output: "Agent note recorded.",
@@ -42,14 +44,10 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = env
 			rawURL, _ := args["url"].(string)
 			label, _ := args["label"].(string)
-			entry, urls, err := deps.notesGuard.addURLSerialized(rawURL, label)
+			entry, _, err := deps.notesGuard.mutateAddURL(rawURL, label)
 			if err != nil {
 				return nil, err
 			}
-			if err := deps.notesGuard.saveMeta(); err != nil {
-				return nil, err
-			}
-			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 			return tool.StateResult{
 				// The model never sees the State side-channel (only Output
 				// reaches it), yet urls_remove requires the entry id — so the
@@ -65,14 +63,13 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 			_ = ctx
 			_ = env
 			id, _ := args["id"].(string)
-			removed, urls := deps.notesGuard.removeURLSerialized(id)
+			removed, _, err := deps.notesGuard.mutateRemoveURL(id)
+			if err != nil {
+				return nil, err
+			}
 			if !removed {
 				return nil, fmt.Errorf("urls/remove: no URL entry with id %q", id)
 			}
-			if err := deps.notesGuard.saveMeta(); err != nil {
-				return nil, err
-			}
-			deps.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 			return tool.StateResult{
 				Output: "URL removed.",
 				State:  map[string]any{"id": id},

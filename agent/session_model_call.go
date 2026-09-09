@@ -317,10 +317,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// covers entry paths whose accept step projects nothing.
 	s.maybeAppendNotesContext()
 	// Re-snapshot so the request expands the refreshed history. The
-	// in-flight boundary stands: the appended turn is plain user-role text,
-	// unaffected by the N4 replay-provenance exemption either way.
+	// in-flight boundary is re-captured alongside the final history copy
+	// under the same lock: a concurrent compaction landing between the two
+	// snapshots would otherwise shrink history and update turnHistoryBaseline
+	// against the new history while this round expands the old one with the
+	// stale boundary, losing thinking/signature content on live fallback
+	// rounds (G4). The appended turn is plain user-role text, unaffected by
+	// the N4 replay-provenance exemption either way, so re-reading the
+	// baseline here changes no exemption decision — it only re-pairs the
+	// boundary with the exact history it guards.
 	s.mu.Lock()
 	historyTurns = append([]schema.Turn{}, s.history...)
+	inFlightFrom = s.turnHistoryBaseline
 	s.mu.Unlock()
 
 	// Reuse historyTurns from context management — no redundant copy.

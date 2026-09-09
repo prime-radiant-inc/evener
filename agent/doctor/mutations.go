@@ -188,6 +188,7 @@ type clientMutationStoreRecord struct {
 	SteeringKind         string                        `json:"steering_kind"`
 	NotesDeliveryPending bool                          `json:"notes_delivery_pending"`
 	NotesStoredValue     string                        `json:"notes_stored_value"`
+	NotesInnerSteerID    string                        `json:"notes_inner_steer_id"`
 }
 
 type clientMutationStoreRejection struct {

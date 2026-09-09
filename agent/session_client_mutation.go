@@ -123,6 +123,13 @@ type clientMutationRecord struct {
 	// for that value without re-reading (and possibly rewriting) the live
 	// store. Empty for urls/remove, which has no stored value.
 	NotesStoredValue string `json:"notes_stored_value,omitempty"`
+	// NotesInnerSteerID names the inner steer id the outer notes/human/set
+	// attempt accepted, recorded before the outer success journals. A later
+	// attempt of the same outer id reuses it instead of allocating a fresh
+	// one, so crash recovery between the inner acceptance and the outer
+	// success cannot accept a second steer. Empty until the first inner
+	// acceptance. Never part of the dedupe payload.
+	NotesInnerSteerID string `json:"notes_inner_steer_id,omitempty"`
 }
 
 type clientMutationFailure struct {
