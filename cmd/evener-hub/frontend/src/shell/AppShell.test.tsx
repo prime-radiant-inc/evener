@@ -3275,3 +3275,140 @@ test("an in-flight live demand-load goes inert when the client generation change
   // The stale-generation continuation must not navigate.
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 });
+
+// Round 8, medium 3: live navigation must FOCUS the target session even
+// when the URL already matches - a secondary panel or another pane can hold
+// focus while the route names the session (roborev PR #1044 round-8 medium 3).
+test("live-next focuses the session pane even when the URL already matches", async () => {
+  // Two live rows on one page: A, B.
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Focus a secondary session panel over the same session: the URL stays
+  // /s/local:live-a while the focused pane is the panel.
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-a" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/));
+
+  // Navigate to B so the URL differs from the wrap target, then wrap
+  // previous. But focus first: the route's own reconciliation would fight
+  // the panel focus, so drive the navigation by CLICKING the row (focus
+  // follows), then re-focus the panel.
+  await user.click(screen.getByText("Live B"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+  act(() => {
+    const panelId = workspaceStore.getState().openPane("sessionTasks", { ref: "local:live-b" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(panelId);
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+  // The URL now matches B while the PANEL holds focus.
+  expect(workspaceStore.getState().focusedPaneId).toMatch(/^pane_sessionTasks_/);
+
+  // The URL-equal press: previous from the panel. focusedSessionRef() is
+  // null (the panel is not a session pane), so previous wraps to the list
+  // HEAD... which is A, not the panel's B. Hmm - the URL changes to A. The
+  // decisive URL-equal case is NEXT from B's panel: null current targets
+  // the FIRST live row (A), and the URL is ALREADY /s/local%3Alive-b only
+  // if... no. The decisive case as documented: pressing next with the URL
+  // already on the TARGET. Target A, URL /s/local%3Alive-b -> differs.
+  // Target B, URL on B: previous with current=null targets the LAST row
+  // (B): URL EQUAL. That press must still refocus the session pane.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  // The press must refocus the session pane (the navigation the user asked
+  // for), even though the URL did not move - it already named B.
+  const focused = workspaceStore.getState().panes.find((p) => p.id === workspaceStore.getState().focusedPaneId);
+  expect(focused?.type).toBe("session");
+});
+
+// Round 8, low 1: a COMPLETED demand's dedupe key must leave the in-flight
+// set. After an invalidation (not a generation change) re-stales the live
+// pages, the same page+direction demand must be issuable again instead of
+// being silently swallowed by the stale key (roborev PR #1044 round-8 low 1).
+test("a live demand can be re-issued after an invalidation restales the pages", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // First demand: page two loads and navigates to B.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+
+  // Go back to A, then invalidate the live section (same generation): the
+  // loaded pages go stale, so the boundary press must re-demand page two.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  const beforeDemandPress = pageTwoLoads; // count BEFORE the invalidation's own refresh
+  await act(async () => {
+    client.emitNotification({
+      method: "evener/navigation/invalidated",
+      params: {
+        generationId: "generation_test",
+        sequence: 1,
+        targets: [{ kind: "section", section: "live" }],
+      },
+    });
+  });
+  // The invalidation re-requests the stale live pages (the revalidator's
+  // own refresh) - wait for that to settle before the boundary press.
+  await waitFor(() => expect(pageTwoLoads).toBeGreaterThan(0));
+  await waitFor(() => expect(pageTwoLoads).toBeGreaterThanOrEqual(beforeDemandPress));
+
+  // Press next at the same boundary: a fresh demand for the same
+  // page+direction must be issued.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(beforeDemandPress + 1));
+  const resolve2 = deferred.resolve;
+  const params2 = deferred.params;
+  if (!params2 || !resolve2) throw new Error("second page-two request was not issued");
+  await act(async () => {
+    resolve2(wireV2(params2, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});

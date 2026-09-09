@@ -157,14 +157,17 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
     // practice - but that's an invariant between two separate functions,
     // not something the type system enforces, so it's worth a real check.
     if (index === undefined) return;
-    // Alt/Ctrl/Meta mean an ARROW belongs to a global chord (Alt+Arrow session
-    // pane cycling, Alt+Shift+Arrow live-session navigation and transcript
-    // scroll, Alt+Home/End); a blanket preventDefault below would swallow all
-    // of them while a rail row has focus - the same trap RailResizeHandle's
-    // own guard (roborev PR #884 round 3) names. Arrows only: no global chord
-    // binds a modifier+Enter, so activation stays tree-owned (PR #1044
-    // round-2 low). Shift stays tree-owned.
-    if ((event.altKey || event.ctrlKey || event.metaKey) && event.key.startsWith("Arrow")) return;
+    // Alt means an ARROW belongs to a global chord (Alt+Arrow session pane
+    // cycling, Alt+Shift+Arrow live-session navigation and transcript
+    // scroll, Alt+Home/End); a blanket preventDefault below would swallow
+    // all of them while a rail row has focus - the same trap
+    // RailResizeHandle's own guard (roborev PR #884 round 3) names. Arrows
+    // only: no global chord binds a modifier+Enter, so activation stays
+    // tree-owned (PR #1044 round-2 low). Shift, Ctrl and Meta stay
+    // tree-owned: the defaults map binds no Ctrl/Meta arrow chord, so
+    // releasing them to the tree keeps its navigation working where nothing
+    // else would handle them (roborev PR #1044 round-8 low 2).
+    if (event.altKey && event.key.startsWith("Arrow")) return;
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 

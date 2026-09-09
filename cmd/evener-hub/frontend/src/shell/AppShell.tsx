@@ -560,6 +560,23 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     let liveNavIntent = 0;
     let liveNavGeneration = navigationStore.getState().clientGenerationID;
     const demandedLivePages = new Set<string>();
+    // Opens (or re-focuses) a live session by URL, then guarantees the
+    // session pane holds focus even when the URL already named the target -
+    // navigate() no-ops on an unchanged pathname, so a secondary panel or
+    // another pane holding focus would otherwise survive the press
+    // (roborev PR #1044 round-8 medium 3). replacePrimary both opens the
+    // pane and focuses it (workspace.ts), making it the URL-change and
+    // URL-equal paths' shared seam.
+    const openLiveSession = (ref: string): void => {
+      openNeedsYouSession(ref);
+      const workspace = workspaceStore.getState();
+      const main = workspace.mainPane();
+      if (main === null || main.type !== "session" || sessionRefFromRouteParams(main.params) !== ref) {
+        openTopLevelSession(ref);
+        return;
+      }
+      if (workspace.focusedPaneId !== main.id) workspace.focusPane(main.id);
+    };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();
       const offset = selectNextSectionOffset("live", state);
@@ -590,9 +607,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           )
             return;
           const rows = selectLiveRows(navigationStore.getState());
+          demandedLivePages.delete(demandKey); // completed: the set tracks in-flight only (round-8 low 1)
           if (direction === "next") {
             const newlyLoaded = rows.find((row) => !beforeRefs.has(row.ref));
-            if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+            if (newlyLoaded) openLiveSession(newlyLoaded.ref);
             return;
           }
           // previous: the tail sits behind any remaining pages.
@@ -601,7 +619,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             return;
           }
           const last = rows[rows.length - 1];
-          if (last) openNeedsYouSession(last.ref);
+          if (last) openLiveSession(last.ref);
         })
         .catch(() => {
           demandedLivePages.delete(demandKey);
@@ -635,7 +653,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         }
         liveNavIntent++; // a direct navigation supersedes an in-flight demand
         const next = adjacentLiveSessionRef(refs, current, "next");
-        if (next !== null) openNeedsYouSession(next);
+        if (next !== null) openLiveSession(next);
       }),
       registry.registerAction(ACTIONS.sessionLivePrevious, () => {
         const state = navigationStore.getState();
@@ -662,7 +680,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         }
         liveNavIntent++;
         const previous = adjacentLiveSessionRef(refs, current, "previous");
-        if (previous !== null) openNeedsYouSession(previous);
+        if (previous !== null) openLiveSession(previous);
       }),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];

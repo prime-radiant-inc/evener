@@ -432,3 +432,136 @@ func TestHubSessionLiveCycleClearsPendingRefAcrossDashboardRoundTrip(t *testing.
 		t.Fatalf("next press after dashboard round-trip viewed %q, want local:01C (stepped from the displayed session)", m4.detail.Ref)
 	}
 }
+
+// Round 8, medium 1: a STALE live-nav read (one a newer press superseded)
+// must not clear the pending target the newer read still needs as its
+// stepping base. Two presses in flight, the older lands first: the older is
+// dropped WITHOUT clearing, so the newer's target survives (roborev PR #1044
+// round-8 medium 1).
+func TestHubSessionLiveCycleStaleReadKeepsNewerPendingTarget(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)  // pending: 01C
+	m2, cmd2 := m1.switchToAdjacentLiveSession(1) // pending: 01A (newer intent)
+
+	// The STALE read (01C) lands first: dropped, and the newer pending (01A)
+	// must survive it.
+	updated, _ := m2.Update(cmd1())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01B" {
+		t.Fatalf("stale read applied: viewed ref = %q, want local:01B", m3.detail.Ref)
+	}
+	if m3.liveNavPendingRef != "local:01A" {
+		t.Fatalf("stale read cleared the newer pending target: liveNavPendingRef = %q, want local:01A", m3.liveNavPendingRef)
+	}
+
+	// The NEWER read (01A) then lands and applies.
+	updated2, _ := m3.Update(cmd2())
+	m4 := updated2.(hubModel)
+	if m4.detail.Ref != "local:01A" {
+		t.Fatalf("newer read did not apply: viewed ref = %q, want local:01A", m4.detail.Ref)
+	}
+	if m4.liveNavPendingRef != "" {
+		t.Fatalf("liveNavPendingRef = %q after the newer read applied, want cleared", m4.liveNavPendingRef)
+	}
+}
+
+// Round 8, medium 2: every cycling read replaces the server-side
+// subscription. Two rapid presses issue two ThreadReads; when the older
+// lands AFTER the newer, its subscription replacement must not stand - the
+// re-read of the now-current session re-issues it (roborev PR #1044 round-8
+// medium 2).
+func TestHubSessionLiveCycleStaleReadReEstablishesCurrentSubscription(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1)  // pending: 01C
+	m2, cmd2 := m1.switchToAdjacentLiveSession(1) // pending: 01A (applies)
+
+	// The newer read lands first and applies.
+	updated, _ := m2.Update(cmd2())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01A" {
+		t.Fatalf("newer read did not apply: viewed ref = %q, want local:01A", m3.detail.Ref)
+	}
+
+	// The STALE read (01C, subscription-replacing) lands after: dropped for
+	// the transcript, but its server-side subscription must be re-pointed at
+	// the session now displayed.
+	updated2, resub := m3.Update(cmd1())
+	m4 := updated2.(hubModel)
+	if m4.detail.Ref != "local:01A" {
+		t.Fatalf("stale read applied over the newer: viewed ref = %q, want local:01A", m4.detail.Ref)
+	}
+	if resub == nil {
+		t.Fatal("expected a re-subscription read for the displayed session after a stale read dropped")
+	}
+	// Running it re-issues thread/read for the session now displayed.
+	msg := resub()
+	if _, ok := msg.(hubSessionMsg); !ok {
+		t.Fatalf("resub command result = %T, want hubSessionMsg", msg)
+	}
+	got := reads.get()
+	if len(got) < 3 || got[len(got)-1] != "local:01A" {
+		t.Fatalf("final thread/read = %v, want the last read re-targeting local:01A (subscription re-established)", got)
+	}
+}
+
+// Round 8, medium 4: a live-nav read started on the pre-reconnect client
+// must not overwrite the fresh connection's resynchronized session. The
+// reconnect replaces client and frames; the stale read then lands and must
+// be dropped (roborev PR #1044 round-8 medium 4).
+func TestHubSessionLiveCycleDropsReadFromBeforeReconnect(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C on the OLD client
+	// The read SUCCEEDS on the old connection and its message is in flight;
+	// bubbletea can deliver it after the reconnect has already replaced the
+	// client and frames.
+	msg := cmd()
+	if _, ok := msg.(hubSessionMsg); !ok {
+		t.Fatalf("command result = %T, want hubSessionMsg", msg)
+	}
+
+	// A reconnect lands: applyHubReconnect replaces client and frames and
+	// resynchronizes the viewed session.
+	reconnected := applyHubReconnectOnCopy(t, m1)
+	if reconnected.detail.Ref != "local:01B" {
+		t.Fatalf("resync changed the viewed session: %q, want local:01B", reconnected.detail.Ref)
+	}
+
+	// The pre-reconnect read lands after the reconnect: it must be dropped.
+	updated, _ := reconnected.Update(msg)
+	m4 := updated.(hubModel)
+	if m4.detail.Ref != "local:01B" {
+		t.Fatalf("pre-reconnect live-nav read overwrote the resynchronized session: viewed ref = %q, want local:01B", m4.detail.Ref)
+	}
+	if m4.liveNavPendingRef != "" {
+		t.Fatalf("liveNavPendingRef = %q after dropping a pre-reconnect read, want cleared", m4.liveNavPendingRef)
+	}
+}
+
+// applyHubReconnectOnCopy drives a successful reconnect through the real
+// applyHubReconnect path on a copy of the model: a fresh client/frames pair
+// (the same feed's channel keeps the resync's read answerable), the viewed
+// session resynchronized. The resync read is drained so the model is stable
+// for assertions.
+func applyHubReconnectOnCopy(t *testing.T, m hubModel) hubModel {
+	t.Helper()
+	_, feed, cleanup2 := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
+		})
+	})
+	t.Cleanup(cleanup2)
+	msg := hubReconnectMsg{client: m.client, frames: feed}
+	cmd := m.applyHubReconnect(msg)
+	// Drain the reconnect's commands (tree fetch, resync read) so their
+	// messages cannot interleave with the test's own Update calls.
+	if cmd != nil {
+		_ = cmd()
+	}
+	return m
+}

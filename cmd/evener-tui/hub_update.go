@@ -72,9 +72,26 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// round-trip clears it, and the next press must step from the
 			// session actually displayed, not the abandoned target (roborev
 			// PR #1044 round-7 medium 1).
-			if m.mode != hubModeSession || msg.liveNavSeq != m.liveNavSeq {
+			//
+			// A SEQUENCE mismatch in session mode is different: a newer
+			// press is in flight and owns the pending target as its stepping
+			// base. The stale read drops WITHOUT clearing, so the newer
+			// intent keeps its base (roborev PR #1044 round-8 medium 1).
+			// Its subscription replacement still took effect server-side,
+			// so re-issue the read for the session now displayed to
+			// re-establish it (round-8 medium 2). A read from before a
+			// reconnect also lands here - but its seq cannot match, because
+			// applyHubReconnect bumps liveNavSeq (round-8 medium 4).
+			if m.mode != hubModeSession {
 				m.liveNavPendingRef = ""
 				return m, nil
+			}
+			if msg.liveNavSeq != m.liveNavSeq {
+				var resub tea.Cmd
+				if ref, ok := m.currentRef(); ok && m.frames != nil {
+					resub = fetchHubSession(m.frames, m.client, ref)
+				}
+				return m, resub
 			}
 			// Composing began while the read was in flight: the draft is newer
 			// intent than the navigation. The press-time guard cannot cover

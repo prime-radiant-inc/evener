@@ -76,6 +76,13 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	m.frames = msg.frames
 	m.connectionLost = false
 	m.reconnectAttempt = 0
+	// A live-nav read started on the dead connection can still be in flight
+	// and land after this resync: bump the sequence so it drops as stale
+	// instead of overwriting the fresh connection's resynchronized session
+	// (roborev PR #1044 round-8 medium 4). The pending target goes with it -
+	// the new connection has no cycling read in flight.
+	m.liveNavSeq++
+	m.liveNavPendingRef = ""
 	if m.pending != nil {
 		m.client.SetPendingCoordinator(m.pending)
 	}

@@ -154,10 +154,10 @@ test("ArrowLeft on an expanded branch collapses it via onToggle and does not mov
 // while a rail row has focus (same trap RailResizeHandle.tsx's own guard
 // documents). Shift stays tree-owned: no global chord is Shift+Arrow without
 // Alt.
-test("arrow keys with Alt/Ctrl/Meta held are left for global chords (no preventDefault, no tree action)", () => {
+test("arrow keys with Alt held are left for global chords (no preventDefault, no tree action)", () => {
   const { onToggle } = renderTree();
   act(() => row("b").focus());
-  for (const mod of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { altKey: true, shiftKey: true }]) {
+  for (const mod of [{ altKey: true }, { altKey: true, shiftKey: true }]) {
     // b is an expanded branch: without the guard, ArrowRight would move focus
     // into b1 and ArrowLeft would collapse via onToggle.
     const right = fireEvent.keyDown(row("b"), { key: "ArrowRight", ...mod });
@@ -167,6 +167,22 @@ test("arrow keys with Alt/Ctrl/Meta held are left for global chords (no preventD
     expect(left).toBe(true);
     expect(onToggle).not.toHaveBeenCalled();
   }
+});
+
+// Round 8, low 2: only the ALT family has global arrow chords; Ctrl/Meta+
+// Arrow must stay tree-owned so the tree's own navigation still works with
+// those modifiers held (roborev PR #1044 round-8 low 2).
+test("arrow keys with Ctrl or Meta held still navigate the tree", () => {
+  const { onToggle } = renderTree();
+  act(() => row("b").focus());
+  // b is an expanded branch: ArrowLeft with Ctrl collapses it via onToggle.
+  const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", ctrlKey: true });
+  expect(left).toBe(false); // preventDefaulted: the tree owns the key now
+  expect(onToggle).toHaveBeenCalledExactlyOnceWith(NODES[1]);
+  // And ArrowDown with Meta moves focus to the next row.
+  const down = fireEvent.keyDown(row("b"), { key: "ArrowDown", metaKey: true });
+  expect(down).toBe(false);
+  expect(document.activeElement).toBe(row("b1"));
 });
 
 // The modifier guard covers the arrow chords the global dispatcher owns.
