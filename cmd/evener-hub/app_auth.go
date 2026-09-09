@@ -64,8 +64,8 @@ type hubAuthController struct {
 	// record written between those two steps is one the check never saw and
 	// the move would overwrite. Writers take the read side — they are
 	// already safe against each other through the credentials store's own
-	// mutex and the OAuth state files — and the rename takes it exclusively
-	// for the whole check-then-move (hubInstancesController.Edit).
+	// mutex and the OAuth state files. Rename and logout take it exclusively
+	// for their complete check-and-write operations.
 	credMu sync.RWMutex
 
 	mu          sync.Mutex
@@ -341,13 +341,14 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// authenticates from.
 	codex := false
 	removed := false
-	if err := c.credentialWrite(func() error {
+	if err := c.credentialWriteExclusive(func() error {
 		codex = c.instanceIsCodex(name)
 		if !codex {
+			_, hadFile := c.creds.Get(name)
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return clrErr
 			}
-			removed = true
+			removed = hadFile
 			return nil
 		}
 		// The Codex transport: clear the effective layer only. An OAuth record
@@ -395,6 +396,14 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 func (c *hubAuthController) credentialWrite(write func() error) error {
 	c.credMu.RLock()
 	defer c.credMu.RUnlock()
+	return write()
+}
+
+// credentialWriteExclusive keeps a check-and-remove operation together against
+// other controller credential writers.
+func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
 	return write()
 }
 
