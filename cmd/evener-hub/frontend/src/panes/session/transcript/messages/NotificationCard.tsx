@@ -131,6 +131,33 @@ function Field({ label, value, testId }: { label: string; value: string | number
 }
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
+  // Mockups 23-job-watch §E: a watch notification's title names what happened
+  // and its note is the payload — the producer's echo attrs (status, job
+  // type, output count, reason) are metadata soup that says nothing, so the
+  // card shows none of them. Identity is the exception: the originating
+  // watch id (the producer stamps every watch frame — timers, job-targeted
+  // fires, teardown notices, send-rail diagnostics) names which watch to
+  // inspect or clear, and a job-targeted fire additionally names its watched
+  // job. Both render as what they are; the raw disclosure keeps the full
+  // frame. Job, delegate, watch-send, and observer-callback paths are
+  // untouched.
+  // A job-targeted watch fire carries NO watch_id attr on older frames
+  // (formatJobNotificationBlock emitted watch_id only when JobID == ""), so
+  // the watched job id is the only recoverable identity there — it renders
+  // as the card's one identity line, labelled as what it is (never a watch
+  // id). A job-less watch names nothing.
+  if (notification.type === "watch") {
+    const fields = [
+      notification.watchId && (
+        <Field key="watch-id" label="Watch id" value={notification.watchId} testId="notification-field-watch-id" />
+      ),
+      notification.jobId && notification.jobId !== "self" && (
+        <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
+      ),
+    ].filter(Boolean);
+    if (fields.length === 0) return null;
+    return <div className={CLASS.metadata}>{fields}</div>;
+  }
   const fields = [
     notification.delegateId && (
       <Field
@@ -169,15 +196,35 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
 export function NotificationCard({
   notification,
   sessionRef,
+  disclosureId,
 }: {
   notification: ParsedNotification;
   sessionRef?: string;
+  // Stable per-delivery discriminator (transcript item id + fragment index,
+  // threaded from SteeringItem). Byte-identical repeat deliveries share
+  // watch id and raw text; without this they share one disclosure key and
+  // toggle together. Optional for backward compatibility — existing callers
+  // render without it and keep today's keys.
+  disclosureId?: string;
 }) {
   const context = useTranscriptRenderContext();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  const notificationId = notification.delegateId ?? notification.jobId ?? notification.rawText;
-  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}`;
+  // The disclosure identity prefers the watch id for watch cards: two
+  // watches on the same job share a jobId, and keying by it couples their
+  // expand/collapse state. Content joins identity — repeat firings of one
+  // watch (timer repeats especially) are distinct deliveries that expand
+  // independently; keying by watch id alone re-collapses them into one.
+  // Legacy frames without a watch id fall back to the job id, then the raw
+  // text, exactly as before. Non-watch cards keep delegate → job → raw
+  // identity untouched.
+  const notificationId =
+    notification.type === "watch"
+      ? notification.watchId
+        ? `${notification.watchId}:${notification.rawText}`
+        : (notification.jobId ?? notification.rawText)
+      : (notification.delegateId ?? notification.jobId ?? notification.rawText);
+  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}${disclosureId ? `:${disclosureId}` : ""}`;
   const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
