@@ -11889,6 +11889,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerMobilePairing,
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
+		appwire.MethodEvenerSpawnSlashCatalog,
 		appwire.MethodEvenerSettingsOverview,
 		appwire.MethodEvenerSettingsTranscriptDisplayGet,
 		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
