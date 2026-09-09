@@ -2,7 +2,7 @@
 target: Evener whole iPhone UX
 total_score: 28
 max_score: 40
-na_heuristics: 
+na_heuristics: ""
 p0_count: 0
 p1_count: 1
 timestamp: 2026-09-09T06-11-17Z
