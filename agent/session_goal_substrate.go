@@ -163,10 +163,21 @@ func (g *goalSessionSubstrate) LookupChild(id string) bool {
 		}
 	}
 	if c := s.delegateController; c != nil {
+		// Durable aggregates are keyed by DELEGATE id, but until_child
+		// targets CHILD SESSION ids: match on
+		// Aggregate.Descriptor.ChildSessionID (a raw delegate-id hit
+		// would wrongly accept a non-child target). Restored children
+		// whose runtime is untracked still resolve here.
 		c.mu.Lock()
-		_, ok := c.durable[id]
+		childKnown := false
+		for _, agg := range c.durable {
+			if agg != nil && agg.Descriptor.ChildSessionID == id {
+				childKnown = true
+				break
+			}
+		}
 		c.mu.Unlock()
-		if ok {
+		if childKnown {
 			return true
 		}
 		// Sibling shape: walk the tracked sets of the controller's live

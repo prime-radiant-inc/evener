@@ -1302,17 +1302,27 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 // generation counter. Lock order: goalUpdateMu, then s.mu (the SetGoal order).
 func (s *Session) armGoalWaitTimer() {
 	s.goalUpdateMu.Lock()
-	defer s.goalUpdateMu.Unlock()
-	s.armGoalWaitTimerLocked()
+	boundObjective, bound := s.armGoalWaitTimerLocked()
+	s.goalUpdateMu.Unlock()
+	// Bound-at-arm kick outside all locks (kick path sequences the locks
+	// itself): the parked cap already bound, so the budget evaluation turn
+	// is due now instead of a silent disarm.
+	if bound {
+		s.kickGoalWaitBudgetBound(boundObjective)
+	}
 }
 
 // armGoalWaitTimerLocked arms the single coalesced wait timer under the
 // goal serializer: snapshot, four-way-min computation, and timer
 // replacement happen atomically, so a newer arm can never be overwritten by
 // an older arm's stale later deadline (the reported stale-snapshot race).
-// Caller must hold goalUpdateMu; takes s.mu for the timer swap (the SetGoal
+// Reports the bound-at-arm objective ("" when the parked cap did not bind):
+// waiting + live total at/over maxParkedTotal with fire==now means silent
+// disarm would strand the goal parked past its cap with no kick scheduled
+// (the settle suppresses parked kicks with no claim). Caller must hold
+// goalUpdateMu; takes s.mu for the timer swap (the SetGoal
 // goalUpdateMu-then-s.mu order).
-func (s *Session) armGoalWaitTimerLocked() {
+func (s *Session) armGoalWaitTimerLocked() (string, bool) {
 	store := s.getOrCreateGoalStore()
 	full, ok := store.GoalSnapshot()
 	now := s.sclock().Now()
@@ -1336,11 +1346,17 @@ func (s *Session) armGoalWaitTimerLocked() {
 		// - disarm, stranding any in-flight callback via the generation
 		// bump.
 		s.goalWaitTimerGen++
-		return
+		if ok && full.Status == goal.StatusWaiting &&
+			full.Budgets.MaxParkedTotal > 0 &&
+			store.ParkedTotalAt(now) >= full.Budgets.MaxParkedTotal {
+			return full.Objective, true
+		}
+		return "", false
 	}
 	s.goalWaitTimerGen++
 	gen := s.goalWaitTimerGen
 	s.goalWaitTimer = s.sclock().AfterFunc(fire.Sub(now), func() { s.fireGoalWaitTimer(gen) })
+	return "", false
 }
 
 // stopGoalWaitTimerLocked disarms the coalesced wait timer. Caller must hold
@@ -1528,7 +1544,10 @@ func (s *Session) kickGoalWaitBudgetBound(objective string) {
 	}
 	prompt := goal.Render(full.Objective)
 	s.noteGoalWatchdogActivity(s.sclock().Now())
-	s.armGoalWaitTimer()
+	// No re-arm here: the cap is already bound, so re-arming re-reports
+	// bound-at-arm and recurses (arm→kick→arm stack overflow). The kicked
+	// evaluation turn's own gate/tail owns the next arming decision — after
+	// the rule-2 block there is nothing to arm.
 	if kick == nil {
 		return
 	}
@@ -1826,17 +1845,25 @@ func (s *Session) settleGoalOnIdle() bool {
 	backlogPending := false
 	restoredBacklog := false
 	if len(claimed) == 0 && preHasGoal && (preParked || preSnap.Status == goal.StatusActive) {
+		// Delivered-set snapshot BEFORE the goalUpdateMu section below
+		// (s.mu only, never nested): the established order is
+		// goalUpdateMu-then-s.mu (SetGoal), so nesting s.mu inside
+		// goalUpdateMu here would deadlock against a concurrent retarget.
+		s.mu.Lock()
+		deliveredHere := make(map[string]bool, len(s.goalWakeDelivered))
+		for id := range s.goalWakeDelivered {
+			deliveredHere[id] = true
+		}
+		s.mu.Unlock()
 		s.goalUpdateMu.Lock()
 		if full, ok := s.getOrCreateGoalStore().GoalSnapshot(); ok && len(full.PendingWake) > 0 {
 			backlogPending = true
-			s.mu.Lock()
 			for _, p := range full.PendingWake {
-				if !s.goalWakeDelivered[p.WaitID] {
+				if !deliveredHere[p.WaitID] {
 					restoredBacklog = true
 					break
 				}
 			}
-			s.mu.Unlock()
 			if restoredBacklog {
 				backlogPending = false
 			}

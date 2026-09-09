@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -685,6 +686,39 @@ func TestGoalChildWaitRegistrationRequiresKnownDescendant(t *testing.T) {
 	}
 	if snap, _ := store.Snapshot(); snap.Status != goal.StatusWaiting {
 		t.Fatalf("status = %q, want waiting", snap.Status)
+	}
+}
+
+// TestGoalChildDurableMatchesSessionID pins the durable ID space (spec §8):
+// LookupChild matches Aggregate.Descriptor.ChildSessionID — never the raw
+// delegate-id map key, which would wrongly accept a non-child target.
+func TestGoalChildDurableMatchesSessionID(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	controller := &delegateTreeController{
+		durable: delegatestore.State{
+			"dlg_only": &delegatestore.Aggregate{
+				DelegateID: "dlg_only",
+				Descriptor: delegatestore.Descriptor{ChildSessionID: "child-dlg_only"},
+			},
+		},
+	}
+	sess.delegateController = controller
+	sub := &goalSessionSubstrate{sess: sess}
+	rawAccepted := sub.LookupChild("dlg_only")
+	childAccepted := sub.LookupChild("child-dlg_only")
+	// Detach before Close: the hand-built controller owns no store/locks
+	// for the session teardown path.
+	sess.delegateController = nil
+	if rawAccepted {
+		t.Fatal("raw delegate id must not validate as a child session (match ChildSessionID, not the map key)")
+	}
+	if !childAccepted {
+		t.Fatal("ChildSessionID must validate as a known descendant through the durable path")
 	}
 }
 

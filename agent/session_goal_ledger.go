@@ -132,7 +132,13 @@ func goalArgScalar(v any) string {
 }
 
 // goalObservationClass maps one tool result onto the §4 observation class.
-func goalObservationClass(result tool.ExecResult) string {
+// The substring signals below are control-plane phrases (shell timeout
+// footers, approval gates, unchanged markers): they classify ONLY when the
+// emitting tool is a control-plane tool (shell/ask/finish), never for
+// arbitrary content tools — a grep result containing "timed out" or file
+// contents mentioning "unchanged" must not misclassify as timeout or
+// external-unchanged and route a stuck loop to auto-park instead of block.
+func goalObservationClass(toolName string, result tool.ExecResult) string {
 	if result.IsError {
 		return "error"
 	}
@@ -140,14 +146,19 @@ func goalObservationClass(result tool.ExecResult) string {
 	if out == "" {
 		return "empty"
 	}
-	lower := strings.ToLower(out)
-	switch {
-	case strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline exceeded"):
-		return "timeout"
-	case strings.Contains(lower, "awaiting approval") || strings.Contains(lower, "approval-pending") || strings.Contains(lower, "approval pending"):
-		return "approval-pending"
-	case strings.Contains(lower, "unchanged") || strings.Contains(lower, "no new") || strings.Contains(lower, "not modified"):
-		return "external-unchanged"
+	switch toolName {
+	case "shell", "ask_user", "communicate":
+		lower := strings.ToLower(out)
+		switch {
+		case strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline exceeded"):
+			return "timeout"
+		case strings.Contains(lower, "awaiting approval") || strings.Contains(lower, "approval-pending") || strings.Contains(lower, "approval pending"):
+			return "approval-pending"
+		case strings.Contains(lower, "unchanged") || strings.Contains(lower, "no new") || strings.Contains(lower, "not modified"):
+			return "external-unchanged"
+		default:
+			return "ok"
+		}
 	default:
 		return "ok"
 	}
@@ -172,7 +183,7 @@ func (s *Session) recordGoalTurnEvidence(calls []llm.ToolCallData, results []too
 		}
 		class, hash := "ok", ""
 		if i < len(results) {
-			class = goalObservationClass(results[i])
+			class = goalObservationClass(call.Name, results[i])
 			if out := strings.TrimSpace(results[i].Output); out != "" {
 				sum := sha256.Sum256([]byte(out))
 				hash = hex.EncodeToString(sum[:])
