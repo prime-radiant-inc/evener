@@ -14,6 +14,7 @@ import type {
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionLocation,
+  NavigationSessionSummary,
   ThreadStartResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
@@ -2676,5 +2677,111 @@ test("mobile: Alt+Arrow cycling registers nothing and is inert", async () => {
 
   await user.keyboard("{Alt>}{ArrowRight}{/Alt}");
   expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  vi.unstubAllGlobals();
+});
+
+// --- Alt+Shift+ArrowRight/Left live-session navigation
+//
+// AppShell registers session.liveNext/session.livePrevious against the
+// keybindings registry; the actions navigate across the rail's live section
+// in server order through shell/rail/liveSessionCycle.ts. These tests pin
+// the WIRING (real dispatcher, real defaults, real shell); the cycling
+// order/wrap/no-op semantics themselves are liveSessionCycle.test.ts's.
+
+const LIVE_CYCLE_A: NavigationSessionSummary = {
+  ref: "local:live-a",
+  host_id: "local",
+  session_id: "live-a",
+  title: "Live A",
+  project: "prime-radiant",
+  state: "idle",
+  kind: "session",
+  live: true,
+  children: [],
+};
+const LIVE_CYCLE_B: NavigationSessionSummary = {
+  ref: "local:live-b",
+  host_id: "local",
+  session_id: "live-b",
+  title: "Live B",
+  project: "prime-radiant",
+  state: "idle",
+  kind: "session",
+  live: true,
+  children: [],
+};
+
+// navClient, but with a two-row live section: everything else delegates to
+// the shared navigationRead.
+function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      return wireV2(params, { sessions, remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  return client;
+}
+
+test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrapping", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-b");
+
+  // Wrap: the last live session's next is the first.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-b");
+});
+
+test("Alt+Shift+Arrow live-session navigation is suppressed from an editable target", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  const input = document.createElement("input");
+  document.body.appendChild(input);
+  input.focus();
+  try {
+    await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+    expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  } finally {
+    input.remove();
+  }
+});
+
+test("mobile: Alt+Shift+Arrow live-session navigation registers nothing and is inert", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  render(<AppShell client={navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B])} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
   vi.unstubAllGlobals();
 });

@@ -28,6 +28,8 @@ describe("default binding map", () => {
       ACTIONS.settingsOpen,
       ACTIONS.sessionNext,
       ACTIONS.sessionPrevious,
+      ACTIONS.sessionLiveNext,
+      ACTIONS.sessionLivePrevious,
       ACTIONS.transcriptLineUp,
       ACTIONS.transcriptLineDown,
       ACTIONS.transcriptPageUp,
@@ -60,6 +62,8 @@ describe("default binding map", () => {
     [ACTIONS.settingsClose, "[Control]+[Alt]+[Shift]+[Meta]+Escape"],
     [ACTIONS.sessionNext, "Alt+ArrowRight"],
     [ACTIONS.sessionPrevious, "Alt+ArrowLeft"],
+    [ACTIONS.sessionLiveNext, "Alt+Shift+ArrowRight"],
+    [ACTIONS.sessionLivePrevious, "Alt+Shift+ArrowLeft"],
     [ACTIONS.transcriptLineUp, "Alt+ArrowUp"],
     [ACTIONS.transcriptLineDown, "Alt+ArrowDown"],
     [ACTIONS.transcriptPageUp, "Alt+Shift+ArrowUp"],
@@ -96,6 +100,10 @@ describe("default binding map", () => {
     // start/end) inside inputs and the composer.
     expect(policy.get(ACTIONS.sessionNext)).toBe(false);
     expect(policy.get(ACTIONS.sessionPrevious)).toBe(false);
+    // Alt+Shift+ArrowLeft/Right are native word-selection chords in text
+    // fields, so the live-session navigation pair suppresses there too.
+    expect(policy.get(ACTIONS.sessionLiveNext)).toBe(false);
+    expect(policy.get(ACTIONS.sessionLivePrevious)).toBe(false);
     expect(policy.get(ACTIONS.transcriptLineUp)).toBe(false);
     expect(policy.get(ACTIONS.transcriptLineDown)).toBe(false);
     expect(policy.get(ACTIONS.transcriptPageUp)).toBe(false);

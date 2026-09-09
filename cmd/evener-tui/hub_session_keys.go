@@ -335,6 +335,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "alt+shift+right":
+		return m.switchToAdjacentLiveSession(1)
+	case "alt+shift+left":
+		return m.switchToAdjacentLiveSession(-1)
 	case "ctrl+c":
 		now := time.Now()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {

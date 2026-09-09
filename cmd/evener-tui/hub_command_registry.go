@@ -482,6 +482,31 @@ var hubCommandRegistry = []hubCommandDefinition{
 			return nil
 		},
 	},
+
+	{
+		Name:          "next-live-session",
+		Summary:       "Switch to the next live session",
+		PaletteLabel:  "/next-live-session",
+		PaletteDetail: "switch to the next live session (alt+shift+right)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(1)
+			*m = next
+			return cmd
+		},
+	},
+	{
+		Name:          "previous-live-session",
+		Summary:       "Switch to the previous live session",
+		PaletteLabel:  "/previous-live-session",
+		PaletteDetail: "switch to the previous live session (alt+shift+left)",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			next, cmd := m.switchToAdjacentLiveSession(-1)
+			*m = next
+			return cmd
+		},
+	},
 	{
 		Name:          "quit",
 		Summary:       "Exit evener-tui",
@@ -586,6 +611,8 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 	}
 	lines = append(lines,
 		"  ctrl+o           Go to live dashboard",
+		"  alt+shift+right  Next live session",
+		"  alt+shift+left   Previous live session",
 		"  tab / enter      Expand/collapse focused tool call",
 	)
 	return strings.Join(lines, "\n")

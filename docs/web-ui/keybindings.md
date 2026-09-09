@@ -216,6 +216,33 @@ each:
 - Desktop only: AppShell registers nothing on mobile (RailHost's
   `rail.toggle` no-registration pattern), so the bindings are inert there.
 
+## Live-session navigation
+
+`session.liveNext` / `session.livePrevious` (Alt+Shift+ArrowRight /
+Alt+Shift+ArrowLeft) **navigate** across the rail's live section — unlike
+`session.next`/`previous`, which only move focus between already-open panes.
+The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
+(`adjacentLiveSessionRef`); AppShell's handlers read
+`selectLiveRows(navigationStore)` and navigate via the same
+`openNeedsYouSession` URL seam ⌘J uses:
+
+- Order is the live section's server order, wrapping at both ends.
+- When the focused pane is not a live session (settings, a doc, a recent
+  session, nothing focused), `next` lands on the FIRST live session and
+  `previous` on the LAST — the `nextNeedsYouRef` precedent.
+- Empty live list is a no-op; a single live session cycles onto itself,
+  which the same-URL navigation no-ops.
+- Both chords suppress in editable targets: Alt+Shift+ArrowLeft/Right are
+  native word-selection chords in text fields.
+- Desktop only, same as pane cycling.
+- The TUI binds the same chords in session view
+  (`cmd/evener-tui/hub_livecycle.go`), cycling live sessions in dashboard
+  order through the ordinary session-entry read.
+- Tree-keyboard note: the rail's Tree widget leaves Alt/Ctrl/Meta-held
+  arrows alone (no `preventDefault`) so these and every other global
+  Alt+Arrow chord still fire while a rail row has focus — the same guard
+  RailResizeHandle carries.
+
 ## Phase 3: transcript scroll
 
 `transcript.lineUp/lineDown` (Alt+ArrowUp/Down) and

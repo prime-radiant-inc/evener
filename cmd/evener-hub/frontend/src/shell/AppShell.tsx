@@ -13,6 +13,7 @@ import { rpcURLFromLocation } from "../protocol/transport";
 import type { NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
+  selectLiveRows,
   selectLocation,
   selectNeedsYouRows,
   selectNextSectionOffset,
@@ -33,6 +34,7 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
+import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { navigate, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
@@ -532,6 +534,20 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     const unregister = [
       registry.registerAction(ACTIONS.sessionNext, () => cycleSessionPane("next")),
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
+      // Live-session navigation: unlike session.next/previous (pane focus),
+      // these open the adjacent session from the rail's live section in
+      // server order, wrapping. openNeedsYouSession is the shared
+      // session-URL navigation seam (needsYouCycle.ts).
+      registry.registerAction(ACTIONS.sessionLiveNext, () => {
+        const refs = selectLiveRows(navigationStore.getState()).map((row) => row.ref);
+        const next = adjacentLiveSessionRef(refs, focusedSessionRef(), "next");
+        if (next !== null) openNeedsYouSession(next);
+      }),
+      registry.registerAction(ACTIONS.sessionLivePrevious, () => {
+        const refs = selectLiveRows(navigationStore.getState()).map((row) => row.ref);
+        const previous = adjacentLiveSessionRef(refs, focusedSessionRef(), "previous");
+        if (previous !== null) openNeedsYouSession(previous);
+      }),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),
     ];
     return () => {
