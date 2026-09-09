@@ -1181,6 +1181,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
 		return hubCommandList(ctx, cfg)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSpawnSlashCatalog, func(ctx context.Context, params appwire.SpawnSlashCatalogParams) (appwire.SpawnSlashCatalogResponse, error) {
+		return hubSpawnSlashCatalog(ctx, cfg, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
 		return hubSettingsOverview(ctx, cfg)
 	})

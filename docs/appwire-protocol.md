@@ -174,6 +174,7 @@ no router (reserved).
 | `evener/plugin/disable` | hub | `PluginRefParams` | `PluginListResponse` | Disables an installed plugin; returns the updated list. |
 | `evener/plugin/setAutoUpgrade` | hub | `PluginSetAutoUpgradeParams` | `PluginListResponse` | Sets an installed plugin's auto-upgrade flag; returns the updated list. |
 | `evener/command/list` | hub | `EmptyParams` | `CommandListResponse` | Lists loaded slash commands (name, plugin, description, source: plugin, project, or user) for catalog/autocomplete display. |
+| `evener/spawn/slashCatalog` | hub | `SpawnSlashCatalogParams` | `SpawnSlashCatalogResponse` | Pre-session slash catalog for the spawn form: the commands and skills a session started with this cwd, harness, and launch overrides would offer. |
 | `evener/settings/overview` | hub | `EmptyParams` | `SettingsOverviewResponse` | Returns the settings overview field bag: hub/runtime, storage, agent roster, and probed MCP servers — the five template-only settings sections' data. |
 | `evener/settings/transcriptDisplay/get` | hub | `EmptyParams` | `TranscriptDisplayDefaults` | Reads the canonical Desktop and Mobile transcript-display defaults. |
 | `evener/settings/transcriptDisplay/patch` | hub | `TranscriptDisplayDefaultsPatchParams` | `TranscriptDisplayPatchResponse` | Updates one transcript-display default using an expected revision and returns the canonical value. |
@@ -1472,6 +1473,23 @@ _(no fields)_
 | `storage` | `*appwire.SettingsStorageOverview` | yes |  |
 | `agents` | `[]appwire.SettingsAgentEntry` | yes |  |
 | `mcpDiscovered` | `*appwire.SettingsMCPOverview` | yes |  |
+
+
+### `SpawnSlashCatalogParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `harness` | `string` | yes |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `SpawnSlashCatalogResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `commands` | `[]appwire.CommandDescriptor` |  |  |
+| `skills` | `[]appwire.EvenerSkillInfo` | yes |  |
 
 
 ### `TaskListParams`

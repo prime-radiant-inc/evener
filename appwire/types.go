@@ -119,6 +119,7 @@ const (
 	MethodEvenerPluginDisable         = "evener/plugin/disable"
 	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
 	MethodEvenerCommandList           = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -3040,6 +3041,26 @@ type PluginCheckNowResponse struct {
 type PluginPreviewParams struct {
 	CWD             string             `json:"cwd"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogParams requests the slash catalog a spawn with these
+// inputs would load. Field names and shapes match ThreadStartParams exactly:
+// when this call and a thread/start agree on all three, the menu shows what
+// that start would load. Model, effort, access mode, and prompt text do not
+// affect the inventory and are deliberately absent.
+type SpawnSlashCatalogParams struct {
+	CWD             string             `json:"cwd"`
+	Harness         string             `json:"harness,omitempty"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// SpawnSlashCatalogResponse is the pre-session slash inventory: the commands
+// and skills a session started with the params would offer. Row shapes reuse
+// CommandDescriptor and EvenerSkillInfo verbatim so the web composer merges
+// them with mergeSlashCommands unchanged.
+type SpawnSlashCatalogResponse struct {
+	Commands []CommandDescriptor `json:"commands"`
+	Skills   []EvenerSkillInfo   `json:"skills,omitempty"`
 }
 
 // PluginPreviewResponse is the launch plugin inventory and structured
