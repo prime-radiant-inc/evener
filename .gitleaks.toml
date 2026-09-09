@@ -23,6 +23,12 @@ description = "fuzz-toolkit test fixtures and shape-scrubbed seed corpora"
 # fake "sk-LIVETEST…" key used in subagent test fixtures and design docs.
 regexTarget = "match"
 regexes = [
+  # Exact SHA-256 metadata in 2026-09-08-native-unaccepted-delivery.json; retained evidence, not a credential.
+  '''1250f840b4a38534ea3077cc33e972b9a39a3d490c4a89e1c07cc4c9d10a5d67''',
+  # Exact SHA-256 metadata in 2026-09-08-native-project-browser.json; retained evidence, not a credential.
+  '''e7db14ef41d1deb660f3d108f6ac972a648fb310edc39ae17b848ec62d73d692''',
+  # Exact SHA-256 metadata in 2026-09-08-testflight-first-demo.json; retained evidence, not a credential.
+  '''1d4a1b6e715165a236aa185056c5d3c02a27b071157b478dfb9efedb53284be3''',
   # Exact deterministic native redaction-test fixtures; no live credentials.
   '''AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8''',
   '''sk-proj-PLANT3D[A-Za-z0-9]+''',
