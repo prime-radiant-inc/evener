@@ -6,6 +6,7 @@ import {
   APPWIRE_PROTOCOL_VERSION,
   AppwireClient,
   type ConnectionState,
+  decodeInitializeResponse,
   RECONNECT_BASE_MS,
 } from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
@@ -61,6 +62,68 @@ describe("rpcURLFromLocation", () => {
 
   test("upgrades http to ws", () => {
     expect(rpcURLFromLocation({ protocol: "http:", host: "localhost:5173" })).toBe("ws://localhost:5173/rpc");
+  });
+});
+
+describe("decodeInitializeResponse", () => {
+  test("accepts and preserves the exact typed handshake identity", () => {
+    expect(decodeInitializeResponse(FAKE_INITIALIZE_RESULT)).toEqual(FAKE_INITIALIZE_RESULT);
+  });
+
+  test("accepts and preserves known optional navigation and feature fields", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, transcriptDisplaySettings: true },
+      navigation: { version: 1, generationId: "test-navigation-generation", sequence: 0 },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test.each([true, false])("accepts the v4 keybindings capability %s", (keybindingsSettings) => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("rejects a malformed v4 keybindings capability", () => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings: "yes" },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
+  test("accepts and preserves maximum safe navigation integers", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      navigation: {
+        version: Number.MAX_SAFE_INTEGER,
+        generationId: "maximum-safe-navigation-generation",
+        sequence: Number.MAX_SAFE_INTEGER,
+      },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test.each([
+    ["missing server version", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
+    ["empty protocol", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
+    [
+      "malformed features",
+      { ...FAKE_INITIALIZE_RESULT, features: { ...FAKE_INITIALIZE_RESULT.features, tasks: "yes" } },
+    ],
+    ["extra top-level key", { ...FAKE_INITIALIZE_RESULT, bearerToken: "never" }],
+    ["null navigation", { ...FAKE_INITIALIZE_RESULT, navigation: null }],
+    ["incomplete navigation", { ...FAKE_INITIALIZE_RESULT, navigation: { version: 1, generationId: "generation" } }],
+    [
+      "malformed navigation",
+      { ...FAKE_INITIALIZE_RESULT, navigation: { version: "1", generationId: "generation", sequence: 0 } },
+    ],
+  ])("rejects %s", (_name, value) => {
+    expect(() => decodeInitializeResponse(value)).toThrow("invalid initialize response");
   });
 });
 
@@ -285,6 +348,74 @@ describe("AppwireClient", () => {
 
     await terminalRejection;
     expect(socketsCreated).toBe(1);
+  });
+
+  test("publishes each strictly decoded initial and reconnect handshake exactly once", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => versions.push(result.serverInfo.version));
+
+    const connecting = client.connect();
+    const initialSocket = sockets[0];
+    if (!initialSocket) throw new Error("expected initial socket");
+    initialSocket.open();
+    await flushUntil(() => initialSocket.sent.length > 0);
+    const initial = lastSentFrame(initialSocket);
+    initialSocket.receive({ id: initial.id, result: FAKE_INITIALIZE_RESULT });
+    await connecting;
+    expect(versions).toEqual(["0.0.0-test"]);
+
+    initialSocket.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      result: { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "new-hub", version: "2.0.0" } },
+    });
+    await flushUntil(() => client.state === "ready");
+
+    expect(versions).toEqual(["0.0.0-test", "2.0.0"]);
+  });
+
+  test("does not publish a malformed reconnect handshake", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const versions: string[] = [];
+    client.onHandshakeResult((result) => versions.push(result.serverInfo.version));
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({ id: reconnect.id, result: { protocolVersion: APPWIRE_PROTOCOL_VERSION } });
+    await flushUntil(() => client.state === "reconnecting");
+
+    expect(versions).toEqual(["0.0.0-test"]);
   });
 
   test("request resolves the matching id and types the result", async () => {
