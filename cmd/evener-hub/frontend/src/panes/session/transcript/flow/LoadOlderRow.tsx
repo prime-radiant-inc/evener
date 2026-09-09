@@ -10,14 +10,14 @@
 // that fires without a scroll event at all, which is what makes a short first
 // page fill itself in.
 //
-// The row itself renders one of three things, and never nothing: a quiet
-// "Loading older turns…" while a page is in flight, an error with a retry
-// button when one failed, or - idle, with more history to fetch - a quiet
-// "Older turns" label. The idle label is deliberately not a button: it is a
-// place-marker for automatic work, and the only pressable thing here is the
-// retry, which exists because Jesse ruled out a fallback "load more" button but
-// silent failure is not an option. Retry is also the accessible escape hatch: a
-// failed fetch must be recoverable without pixel-precise scrolling.
+// The row itself renders one of two things, and never less when it matters: a
+// quiet "Loading older turns…" while a page is in flight, or an error with a
+// retry button when one failed. Idle - with more history to fetch - it renders
+// nothing: paging is automatic, so a standing "Older turns" banner would only
+// narrate work the reader never asked about. The only pressable thing here is
+// the retry, which exists because Jesse ruled out a fallback "load more" button
+// but silent failure is not an option. Retry is also the accessible escape
+// hatch: a failed fetch must be recoverable without pixel-precise scrolling.
 import { useEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./loadolderrow.module.css";
@@ -92,9 +92,9 @@ export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
             Retry
           </button>
         </>
-      ) : (
-        <span className={CLASS.label}>{loading ? "Loading older turns…" : "Older turns"}</span>
-      )}
+      ) : loading ? (
+        <span className={CLASS.label}>Loading older turns…</span>
+      ) : null}
     </div>
   );
 }

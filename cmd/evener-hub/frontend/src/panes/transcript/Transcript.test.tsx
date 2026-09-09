@@ -229,7 +229,10 @@ test("keeps transcript/history and projection announcements without standalone D
   );
 
   expect(await screen.findByText("read me")).toBeTruthy();
-  expect(screen.getByTestId("load-older-row").textContent).not.toBe("");
+  // Idle paging is silent now (no "Older turns" banner); the row and its
+  // automatic-fetch sentinel are what must remain reachable.
+  expect(screen.getByTestId("load-older-row")).toBeTruthy();
+  expect(screen.getByTestId("load-older-sentinel")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
   transcriptDisplayStore.setState({ viewport: "desktop" });
