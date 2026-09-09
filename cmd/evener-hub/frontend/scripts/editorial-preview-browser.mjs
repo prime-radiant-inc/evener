@@ -190,14 +190,90 @@ try {
       const label = `${viewport.width}-${theme}-${size}`;
       await waitForFonts(send);
       assertWideSetup(await evalJS(`(${measureEditorial.toString()})()`), viewport, label);
-      await evalJS("document.querySelector('[data-testid=transcript-virtual-list]').scrollTop=0");
+      // TranscriptBody's test-id section wraps VirtualList; its first child is
+      // VirtualList's actual scrollRef, not the measured outer section.
+      await evalJS("document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild.scrollTop=0");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-trigger]')");
       await evalJS("(() => { const row=document.querySelector('[data-tool-name=read_file]'); if (!row.querySelector('[data-testid=tool-row-body-trigger]')) row.querySelector('[data-testid=tool-row-trigger]').click(); })()");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]')");
       await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]').click()");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-call-body]')");
+      // Native output initially retains only its tail. The long source line is
+      // earlier: exercise the renderer's actual disclosure, not just body-open.
+      // Opening a native body can still move the virtualizer to its end. Use
+      // real user scrolling before positioning the disclosure; retain the
+      // trusted event and changed actual offset instead of assuming 2RAF is ready.
+      const beforeWheel = await evalJS("(() => {const e=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;const r=e.getBoundingClientRect();window.nativePrepareWheel=null;document.addEventListener('wheel',event=>{window.nativePrepareWheel={trusted:event.isTrusted,deltaY:event.deltaY,target:event.target.tagName};},{once:true,capture:true});return {top:e.scrollTop,x:r.x+r.width/2,y:r.y+r.height/2};})()");
+      await send("Input.dispatchMouseEvent",{type:"mouseWheel",x:beforeWheel.x,y:beforeWheel.y,deltaX:0,deltaY:beforeWheel.top>0?-300:300});
+      await until(`window.nativePrepareWheel?.trusted && document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild.scrollTop !== ${beforeWheel.top}`);
+      (observations.wheelPreparation ??= []).push({label,before:beforeWheel,...await evalJS("({event:window.nativePrepareWheel,after:document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild.scrollTop})")});
+      const earlier = await evalJS("Array.from(document.querySelectorAll('[data-tool-name=read_file] button')).find(e=>/^Show \\d+ earlier lines$/.test(e.textContent.trim()))?.textContent.trim()");
+      if (earlier) {
+        const target = `Array.from(document.querySelectorAll('[data-tool-name=read_file] button')).find(e=>e.textContent.trim()===${JSON.stringify(earlier)})`;
+        await evalJS(`(() => {
+          const target=${target}; const list=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;
+          window.nativeTrace ??= [];
+          const node=target; const label=${JSON.stringify(label)};
+          const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+          const identity=e=>e?{tag:e.tagName,text:e.textContent.slice(0,100),classes:String(e.className),connected:e.isConnected}:null;
+          const sample=stage=>{
+            const box=rect(node);let hit=document.elementFromPoint(box.x+box.width/2,box.y+box.height/2);const ancestry=[];
+            for(let e=hit;e&&ancestry.length<6;e=e.parentElement)ancestry.push(identity(e));
+            const current=${target};const row=node.closest('[data-row-id]');
+            window.nativeTrace.push({label,stage,at:performance.now(),sameTarget:current===node,target:identity(node),targetRect:box,scrollRect:rect(list),scrollTop:list.scrollTop,scrollHeight:list.scrollHeight,clientHeight:list.clientHeight,ancestry,hitSame:hit?.closest('button')===node,row:row?{id:row.dataset.rowId,rect:rect(row),parentTransform:row.parentElement.style.transform}:null});
+          };
+          window.nativeSample=sample;sample('before-scroll');
+          const resize=new ResizeObserver(()=>sample('resize'));resize.observe(node);resize.observe(list);if(node.closest('[data-row-id]'))resize.observe(node.closest('[data-row-id]'));
+          const mutation=new MutationObserver(()=>sample('mutation'));mutation.observe(list,{childList:true,subtree:true});
+          const scroll=()=>sample('scroll');list.addEventListener('scroll',scroll);
+          const pointer=e=>{sample(e.type);window.nativeTrace.push({label,event:e.type,trusted:e.isTrusted,target:identity(e.target),sameTarget:e.target===node||node.contains(e.target),clientX:e.clientX,clientY:e.clientY});};
+          document.addEventListener('pointerdown',pointer,true);document.addEventListener('pointerup',pointer,true);
+          window.nativeTraceCleanup=()=>{resize.disconnect();mutation.disconnect();list.removeEventListener('scroll',scroll);document.removeEventListener('pointerdown',pointer,true);document.removeEventListener('pointerup',pointer,true);};
+          node.scrollIntoView({block:'center'});sample('after-scroll');
+        })()`);
+        await evalJS("new Promise(resolve=>requestAnimationFrame(()=>{window.nativeSample('raf1');requestAnimationFrame(()=>{window.nativeSample('raf2');resolve();});}))");
+        const box = await evalJS(`(() => {const r=${target}.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+        (observations.disclosureTargets ??= []).push(await evalJS(`(() => {const e=${target};const hit=document.elementFromPoint(${box.x},${box.y});const scroller=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;return {label:${JSON.stringify(label)},box:${JSON.stringify(box)},target:e.outerHTML,hit:hit?.outerHTML.slice(0,500),scrollTop:scroller.scrollTop,scrollHeight:scroller.scrollHeight,clientHeight:scroller.clientHeight};})()`));
+        await evalJS("window.nativeSample('before-hit-assert')");
+        assert(await evalJS(`document.elementFromPoint(${box.x},${box.y})?.closest('button') === ${target}`), `${label}: earlier-lines target hit-test`);
+        await evalJS("window.nativeSample('before-dispatch')");
+        await send("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,...box});
+        await send("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,...box});
+      }
+      await until("document.querySelector('[data-tool-name=read_file] [data-testid=tool-call-body]').innerText.includes('long-path/long-path/')");
+      await evalJS("window.nativeSample?.('after-reveal');window.nativeTraceCleanup?.()");
+      const nativePointerTrace = await evalJS("window.nativeTrace??[]");
+      (observations.pointerTrace ??= []).push(...nativePointerTrace);
+      if (earlier) {
+        const events = nativePointerTrace.filter(entry=>entry.event);
+        assert.deepEqual(events.map(entry=>entry.event), ["pointerdown","pointerup"], `${label}: native disclosure pointer event pair`);
+        assert(events.every(entry=>entry.trusted&&entry.sameTarget), `${label}: native disclosure pointer reached a different control`);
+      }
+      await evalJS("window.nativeTrace=[]");
       const native = await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-call-body]').innerText");
       assert(native.includes('retained native source evidence'), `${label}: native evidence missing`);
+      assert(native.includes('long-path/'.repeat(90)), `${label}: complete long native source line missing`);
+      const scrollStart = await evalJS("(() => {const e=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;const r=e.getBoundingClientRect();return {top:e.scrollTop,x:r.x+r.width/2,y:r.y+r.height/2};})()");
+      assert(await evalJS(`document.elementFromPoint(${scrollStart.x},${scrollStart.y})?.closest('[data-testid=transcript-virtual-list]') !== null`), `${label}: native scroll target hit-test`);
+      await send("Input.dispatchMouseEvent",{type:"mouseWheel",x:scrollStart.x,y:scrollStart.y,deltaX:0,deltaY:scrollStart.top>0?-300:300});
+      await until(`document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild.scrollTop !== ${scrollStart.top}`);
+      const scrollAfterWheel = await evalJS("document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild.scrollTop");
+      await evalJS("Array.from(document.querySelectorAll('[data-tool-name=read_file] pre span')).find(e=>e.children.length===0&&e.textContent.includes('long-path/'.repeat(90))).scrollIntoView({block:'center'})");
+      await evalJS("new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))");
+      const longLine = await evalJS(`(() => {
+        const e=Array.from(document.querySelectorAll('[data-tool-name=read_file] pre span')).find(e=>e.children.length===0&&e.textContent.includes('long-path/'.repeat(90)));
+        const range=document.createRange();range.selectNodeContents(e);
+        const rect=r=>({x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,height:r.height});
+        const lines=Array.from(range.getClientRects()).map(rect);
+        const pre=e.closest('pre');const list=document.querySelector('[data-testid=transcript-virtual-list]');const view=list.getBoundingClientRect();
+        return {text:e.textContent,scrollTop:list.firstElementChild.scrollTop,lines,pre:rect(pre.getBoundingClientRect()),scrollWidth:pre.scrollWidth,clientWidth:pre.clientWidth,transcript:rect(view),
+          visibleHits:lines.filter(r=>r.y>=view.top&&r.bottom<=view.bottom).map(r=>{const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e||e.contains(hit);})};
+      })()`);
+      (observations.nativeEvidence ??= []).push({label,scrollBefore:scrollStart.top,scrollAfterWheel,...longLine});
+      assert(longLine.lines.length > 0, `${label}: native long line has no text boxes`);
+      assert(longLine.scrollWidth <= longLine.clientWidth + 1, `${label}: native long line does not wrap within code block`);
+      assert(longLine.lines.every(r=>r.x>=longLine.pre.x-1&&r.right<=longLine.pre.right+1), `${label}: native long line escapes code block`);
+      assert(longLine.visibleHits.some(Boolean), `${label}: native long line is not inspectable in transcript viewport`);
       fs.writeFileSync(path.join(evidence, `${label}-evidence.png`), Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
       const geometry = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label, ...geometry});
@@ -207,7 +283,7 @@ try {
       await evalJS("(() => { const row=document.querySelector('[data-tool-name=read_file]'); if (!row.querySelector('[data-testid=tool-row-body-trigger]')) row.querySelector('[data-testid=tool-row-trigger]').click(); })()");
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]')");
       await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]').click()");
-      await evalJS("const list=document.querySelector('[data-testid=transcript-virtual-list]');list.scrollTop=list.scrollHeight");
+      await evalJS("const list=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;list.scrollTop=list.scrollHeight");
       await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length===3");
       const collaborators = await evalJS(`(${measureEditorial.toString()})()`);
       observations.geometry.push({label:`${label}-collaborators`,...collaborators});
@@ -241,6 +317,7 @@ try {
   assert.deepEqual(observations.geometryFailures, [], "Full-AppShell geometry matrix");
   console.log("PASS editorial-preview full-AppShell workflows and geometry matrix");
 } finally {
+  if(page) (observations.pointerTrace ??= []).push(...await evaluate(page.send,"window.nativeTrace??[]"));
   fs.writeFileSync(path.join(evidence, "browser.json"), JSON.stringify(observations, null, 2));
   page?.close();
   await run.cleanup();
