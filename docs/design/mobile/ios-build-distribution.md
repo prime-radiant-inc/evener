@@ -7,10 +7,10 @@ Status checked 8 September 2026. Jesse confirmed that `prime-radiant-inc` alread
 - Evener already runs native TypeScript tests and SDK package checks in GitHub Actions. The manual iOS archive/TestFlight workflow is documented below; it has not yet been dispatched.
 - The [Clipfan release workflow at `093f37e9`](https://github.com/prime-radiant-inc/clipfan/blob/093f37e9b56e5d1c4faa42e217a7c595abc53aa8/.github/workflows/release.yml) uses `macos-26`, shared Apple secret references, a temporary signing keychain and cleanup. Its Developer ID Application certificate and notarization steps serve Mac distribution; they do not establish iOS distribution signing.
 - The current Evener iPhone Release development build succeeded and its signature verified. The [build receipt](assets/2026-09-08-iphone-device-build.json) records the source, generated-project and artifact hashes, team and embedded provisioning profile. This is an arm64 device build, separate from the installed simulator artifact.
-- The paired phone still reports locked. Physical installation, keychain/network behavior and updating remain unqualified. No App Store Connect upload has been made.
-- The current GitHub identity can read the organization workflows but receives HTTP 403 when listing organization secret/variable metadata. Existing secret availability to the Evener repository and App Store Connect permissions therefore remain unverified. Secret values were not requested or exposed.
-- A fresh read-only GitHub check on 8 September enumerated 95 non-archived, non-fork organization repositories. Organization code searches for `APP_STORE_CONNECT_API_KEY_CONTENT`, `IOS_DISTRIBUTION_CERTIFICATE`, and `app-store-connect` workflow references returned no matches. Direct workflow inspection covered `prime-radiant-inc/clipfan:.github/workflows/release.yml` and the local Evener workflow at `8a1b1826b`/`aff5561bb`; no additional accessible iOS/TestFlight precedent was found. Clipfan has a Mac-only Developer ID certificate secret (`DEVELOPER_ID_APPLICATION_CERT_BASE64`, with its password and signing identity); its `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` may be reusable for App Store Connect if that account has the required access, which remains unverified. Evener still has no repository-level secrets or variables, and organization-level Actions metadata remains unavailable to the current account (HTTP 403), so organization asset availability is unknown.
-- Local Apple metadata shows one cached wildcard development profile at `~/Library/Developer/Xcode/UserData/Provisioning Profiles/9e93be5d-e06f-4e76-8236-d18c27d90473.mobileprovision`, named `iOS Team Provisioning Profile: *`, for team `87WJ58S66M`; the existing signed device build embeds the same profile and team. The only installed codesigning identity is `Apple Development: Jesse Vincent (P82MJJHK76)`. No Apple Distribution identity or distribution profile has been verified locally, so the shared Mac Developer ID certificate cannot be reused for the iPhone archive and the workflow remains blocked on iOS distribution assets.
+- A first signed distribution IPA (`0.1.0 (1)`) was accepted by App Store Connect and processed as `VALID`, `IN_BETA_TESTING`, with exact membership in the `Evener Internal` group. The original local lane exited 1 after successful upload and processing because Fastlane 2.228.0 attempted an unsupported manual internal-group assignment; the deterministic fix passes, but no live upload through the fixed lane is claimed. See the [first TestFlight demo receipt](assets/2026-09-08-testflight-first-demo.json).
+- The configured App Store Connect API authentication, distribution certificate/profile and seven repository secrets plus two workflow variables are verified. PR [#1039](https://github.com/prime-radiant-inc/evener/pull/1039) passed all checks on its initial head and was updated to current main at `1f1bd61353`; checks are rerunning and an approving review remains required; the workflow has not been registered on the default branch, dispatched or run. Dispatch must select `codex/evener-iphone-v1` because `main` does not yet contain the native app subtree.
+- A fresh read-only GitHub check on 8 September enumerated 95 non-archived, non-fork organization repositories. Organization code searches for `APP_STORE_CONNECT_API_KEY_CONTENT`, `IOS_DISTRIBUTION_CERTIFICATE`, and `app-store-connect` workflow references returned no matches. Direct workflow inspection covered `prime-radiant-inc/clipfan:.github/workflows/release.yml` and the local Evener workflow at `8a1b1826b`/`aff5561bb`; no additional accessible iOS/TestFlight precedent was found. Clipfan has a Mac-only Developer ID certificate secret (`DEVELOPER_ID_APPLICATION_CERT_BASE64`, with its password and signing identity); it is unrelated to the verified iOS distribution assets.
+- Local Apple metadata retains the earlier wildcard development profile and device-build evidence. The separately signed distribution IPA and active App Store Connect distribution profile are recorded in the first TestFlight demo receipt; the shared Mac Developer ID certificate remains unrelated to iPhone signing.
 
 ## Delivery sequence
 
@@ -20,7 +20,7 @@ Status checked 8 September 2026. Jesse confirmed that `prime-radiant-inc` alread
 4. Install from TestFlight on the physical iPhone and complete the hub/credential/draft smoke journey. Deliver a second build and verify update, launch and data preservation. This is the completion gate for the automation, beyond a successful upload command.
 5. Add external testers when needed, including beta test information and review access to a usable hub. Apple's first external-testing build requires review; later builds of the same version may not require a full review. [External testing](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers)
 
-The source configuration now generates an iPhone-only app (`supportsTablet: false`), and the distribution helper sets device family 1 on the Evener Release target. Previously generated and installed artifacts retain their recorded device families. The first manual run requires an unused build number; automatic allocation remains pending. App Store processing requirements, including the app's encryption declaration, also need to be settled for unattended delivery.
+The source configuration now generates an iPhone-only app (`supportsTablet: false`), and the distribution helper sets device family 1 on the Evener Release target. Previously generated and installed artifacts retain their recorded device families. The first manual run requires an unused build number; automatic allocation remains pending. The first build passed Apple processing with `usesNonExemptEncryption: false`; Fastlane submitted that declaration during processing. Future builds must keep the declaration consistent with their encryption use.
 
 The proposed route is GitHub Actions plus Fastlane, using the existing organization infrastructure. EAS remains an available alternative, not a prerequisite.
 
@@ -35,8 +35,10 @@ project with Expo prebuild, copies the tracked CocoaPods lock and installs in
 deployment mode, imports a temporary App Store
 distribution certificate and provisioning profile, archives and exports an IPA,
 retains archive/log/source/hash artifacts, then uploads with an App Store
-Connect API key, waits for processing, and explicitly assigns the processed
-build to the configured internal TestFlight group. The temporary keychain and profile
+Connect API key, waits for processing, and verifies the processed build belongs
+to the configured internal TestFlight group. The group must have automatic
+build access; the lane does not call Apple’s unsupported manual internal-group
+assignment endpoint. The temporary keychain and profile
 are removed in an always-run cleanup step.
 
 The repository must have access to these values before dispatch, through
@@ -50,15 +52,11 @@ existing organization secrets where available or repository configuration:
 - Variables: `IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME` and
   `IOS_INTERNAL_TESTFLIGHT_GROUP`.
 
-These names describe required types and do not assert that the organization or
-repository currently has them. Repository-level secret and variable listings
-currently return empty; inherited organization values are separate and their
-metadata remains inaccessible to the current account. App Store Connect
-app-record, API-key, distribution certificate and profile access remain
-unverified. The workflow therefore fails closed during credential preflight and
-has not been dispatched or uploaded. Automatic build-number allocation from
-App Store Connect is intentionally still pending; the first manual setup
-requires an unused build number for the app version.
+These names describe the verified repository configuration for CI. The first
+local upload used the protected local copies of the same credentials. The workflow remains manual-only and has not been dispatched;
+automatic build-number allocation from App Store Connect is intentionally still
+pending. The first demo used the signed `0.1.0 (1)` artifact and must not be
+reuploaded.
 
 ## Local verification and remaining delivery gate
 
@@ -103,23 +101,22 @@ The local Xcode version is 26.6; the workflow's pinned 26.4 runner still require
 an actual CI run. The native gate passed 692 tests across 74 files plus TypeScript,
 and distribution behavior checks passed again with the external boundary faked.
 
-The remaining external setup is the App Store Connect app/team and internal
-group, access to the iOS distribution certificate/profile and API key, and the
-first unused build number. The Mac signing certificate cannot sign the iPhone
-app; the existing Apple account may have suitable App Store Connect access,
-which has not been verified. No signed distribution archive, upload, processed
-TestFlight build, or TestFlight install/update has been verified. The setup is
-complete only after the physical iPhone completes the delivery sequence above.
+The remaining delivery gate is physical TestFlight installation on the iPhone,
+followed by hub/credential/draft smoke checks and a second build that verifies
+updating while retaining app data. The first demo's own-tester invitation
+returned HTTP 201 and appears as Invited in All Testers, but the group-specific
+tester UI still reports No Builds Available; no physical installation has been
+verified. The original upload lane's post-upload failure and the deterministic
+fix are recorded in the [first TestFlight demo receipt](assets/2026-09-08-testflight-first-demo.json).
 
 ## Authenticated setup follow-up
 
-Safari now reaches App Store Connect using Jesse’s authorized Apple account.
-The developer portal reports individual team `87WJ58S66M`, matching the earlier
-development profile. No Evener app was found in the visible app listing or a
-bundle-ID search. Apple requires Account Holder acceptance of an updated program
-agreement before app submissions; the coordinator opened the agreement review
-page and left Agree untouched. App/group creation, distribution signing assets
-and API-key setup remain open. The [current checklist](testflight-setup.md)
-records the exact inputs and first delivery gates. The earlier signed device
-artifact path is now absent after project regeneration; its receipt is historical
-build evidence, while the current installed simulator artifact is retained.
+Safari reaches App Store Connect using Jesse’s authorized Apple account. The
+developer portal reports individual team `87WJ58S66M`, matching the earlier
+development profile. The Evener app, internal group, distribution signing
+assets, API authentication and tester invitation are recorded in the [first
+TestFlight demo receipt](assets/2026-09-08-testflight-first-demo.json). The
+[current checklist](testflight-setup.md) records the remaining physical-device
+gates. The earlier signed device-artifact path is now absent after project
+regeneration; its receipt is historical build evidence, while the current
+installed simulator artifact is retained.

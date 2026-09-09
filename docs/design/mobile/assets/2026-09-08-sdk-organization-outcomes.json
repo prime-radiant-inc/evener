@@ -1,0 +1,114 @@
+{
+  "schema": "evener.sdk.organization-outcomes.v1",
+  "observedAt": "2026-09-09T02:27:36.868423+00:00",
+  "scope": "Six metadata operations through the public installed SDK and a real private hub; no completed seed model turn claimed.",
+  "fixtureRoot": "/private/tmp/evener-sdk-organization-replay-Rw4mQO",
+  "workspace": "/private/tmp/evener-sdk-organization-replay-Rw4mQO/workspace",
+  "backend": {
+    "source": "6a0278e36",
+    "binaryDirectory": "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/bin",
+    "hashes": {
+      "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+      "evenerDev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+    }
+  },
+  "sdk": {
+    "path": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client",
+    "entrySha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "ref": "local:034LZUY8SGxWzfEFC8QCz6",
+  "sectionId": "94e8becf9f40b4f69964cd0d6e3d4787",
+  "navigationGeneration": "892c6822d3351dd0ca6b4fa962543606",
+  "methods": {
+    "evener/thread/name/set": {
+      "requests": [
+        4
+      ],
+      "readbacks": [
+        5
+      ],
+      "effect": "Exact submitted name at the same thread identity."
+    },
+    "evener/session-pin/assign": {
+      "requests": [
+        9,
+        13,
+        18
+      ],
+      "readbacks": [
+        12,
+        22
+      ],
+      "effect": "Assign by name, idempotent ID assignment, and reassign after unpin with exact section/location."
+    },
+    "evener/session-pin/unpin": {
+      "requests": [
+        14
+      ],
+      "readbacks": [
+        17
+      ],
+      "effect": "changed=true and section absent from location."
+    },
+    "evener/pin-section/rename": {
+      "requests": [
+        19
+      ],
+      "readbacks": [
+        21
+      ],
+      "effect": "Exact section ID and new catalog name."
+    },
+    "evener/pin-section/delete": {
+      "requests": [
+        24
+      ],
+      "readbacks": [
+        26,
+        27
+      ],
+      "effect": "One-member section removed from catalog and location."
+    },
+    "evener/search": {
+      "requests": [
+        23
+      ],
+      "effect": "Exact title/ref returned in both live and past categories; category consistency is unqualified."
+    }
+  },
+  "providerRequestObserved": true,
+  "modelTurnCompletionQualified": false,
+  "cleanup": {
+    "hubExit": 0,
+    "providerExit": 0,
+    "remainingOwnedProcesses": [],
+    "authTokenRemoved": true
+  },
+  "files": {
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/candidate.json": "2f076be2f69f2600524e950ac780e42b1cb3a1ecddc7ac91858d03e5096de5a3",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/requests.json": "5f24955d23389d00935dfe03655e4fe505694eb6524cd61ba4f194ad3315fd47",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/responses.json": "81dd359d112e6b7337fb7bd55e3690664cf15851a76cd41a0e93e90f1d3b5746",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/notifications.json": "2de5271d0457ed5adcd37ea559e4447824bb279ade84fb4b69a90323f71cd843",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/initialize.json": "da811486512e5ef65e018c7d5f7648fa543a04349ae0f354268f0fa3a4ae3252",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/driver.mjs": "d6084aafa176f786e5a22bf75040639c0214fb68eeb88b29054569f71d40bc4e",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/provider-output.txt": "983fe80e3d11e5cd14bc992b9ea7db190d22eb3518c170959e17f7eac97055f6",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/hub-output.txt": "db9cb7be294b38b06b0370dafb065dc315ab47babb94c4eb8cb49f92c03912a7",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/cleanup.json": "6905d6154f5ce303376f30cffca279ffe6e6f5b049eef1718c78676143155721",
+    "/private/tmp/evener-sdk-organization-replay-Rw4mQO/independent-review.json": "bd289cb7ab546fa19578657333363ceabfd97fa9d410d442644cc24a778f4e00"
+  },
+  "reviewDisposition": [
+    "Independent review agrees with metadata effects and cleanup; its original capture is preserved unchanged.",
+    "Coordinator correction: fakellm session call_fakellm_1 round 1 and exact user input prove a received provider request, not a completed response.",
+    "Coordinator correction: turn/start returned turn_m1 inProgress, but captured thread/read contains only completed system/environment turns. The driver incorrectly accepted the unrelated environment completion.",
+    "Binary hashes identify source-6a0278e36 artifacts, not a compilation at the later documentation HEAD.",
+    "The credentials file contains only its schema field, no credentials; coordinator replaced an overly strict empty-file audit assertion with the parsed contract."
+  ],
+  "limitations": [
+    "Seed user-turn completion is unqualified; metadata effects are recorded independently.",
+    "Same search ref appears in both live and past categories. Category consistency and deduplication remain open.",
+    "thread/shutdown acknowledged only; evener/session/delete skipped resumed-live target. Neither qualifies successful termination/deletion.",
+    "Native UI, exhaustive failures, lost replies and full lifecycle remain open.",
+    "Earlier fixture /private/tmp/evener-sdk-organization-qual-Z2SiDd used an existing checkout as cwd and is excluded."
+  ]
+}
