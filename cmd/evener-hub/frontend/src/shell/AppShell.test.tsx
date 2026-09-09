@@ -2574,6 +2574,100 @@ test.each([
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
 });
 
+test.each(["local:owner", "local:child"])(
+  "Open next descendant retains mixed-chain context on route %s",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    window.history.pushState({}, "", `/s/${routeRef}`);
+    installLocationForRoute(routeRef);
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={navClient()} />
+        {routeRef === "local:owner" && (
+          <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        )}
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" />
+        <OpenTranscriptButton
+          transcriptRef="local:great-grandchild"
+          parentRef="local:grandchild"
+          label="Open next descendant"
+        />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    if (routeRef === "local:owner") {
+      await user.click(screen.getByRole("button", { name: "Open child" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+    }
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    const grandchild = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild");
+    expect(grandchild).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+    const originalOwner = workspaceStore.getState().mainPane();
+    expect(originalOwner).toMatchObject({ type: "session", params: { ref: "local:owner" } });
+    expect(
+      navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:grandchild" }))?.data,
+    ).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Open next descendant" }));
+    const next = workspaceStore
+      .getState()
+      .panes.find(
+        (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:great-grandchild",
+      );
+    expect(next).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(next?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(originalOwner);
+    expect(next?.params).toEqual({ ref: "local:great-grandchild", parentRef: "local:grandchild" });
+    expect(paneFor("local:grandchild")).toEqual(grandchild);
+    await user.click(screen.getByRole("button", { name: "Open next descendant" }));
+    expect(
+      workspaceStore
+        .getState()
+        .panes.filter(
+          (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:great-grandchild",
+        ),
+    ).toEqual([next]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(next?.id);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(originalOwner);
+  },
+);
+
+test.each(["missing", "cycle"])(
+  "Open next descendant rejects %s context despite a known unrelated session owner",
+  async (context) => {
+    window.history.pushState({}, "", "/s/local:child");
+    installLocationForRoute("local:child");
+    render(
+      <>
+        <AppShell client={navClient()} />
+        <OpenTranscriptButton transcriptRef="local:next" parentRef="local:detached" />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+    act(() => {
+      workspaceStore
+        .getState()
+        .openPane("transcript", { ref: "local:detached", parentRef: "local:bridge" }, { slot: "secondary" });
+      if (context === "cycle")
+        workspaceStore
+          .getState()
+          .openPane("transcript", { ref: "local:bridge", parentRef: "local:detached" }, { slot: "secondary" });
+      fireEvent.click(screen.getByRole("button", { name: "Open transcript" }));
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
+    expect(paneFor("local:next")).toBeUndefined();
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+  },
+);
+
 function installSwitchableViewport(): (mobile: boolean) => void {
   let mobile = false;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();

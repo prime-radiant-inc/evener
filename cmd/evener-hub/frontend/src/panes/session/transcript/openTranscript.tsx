@@ -17,18 +17,21 @@ function sameParams(a: unknown, b: unknown): boolean {
 
 // Follow only retained read-only parent context, not arbitrary focused panes.
 // This also works before a child's navigation location has been fetched.
-export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
+function transcriptContextRefs(ref: string): string[] {
   const panes = workspaceStore.getState().panes;
   const visited = new Set<string>();
   let current: string | undefined = ref;
   while (current !== undefined && !visited.has(current)) {
-    if (current === ancestorRef) return true;
     visited.add(current);
     const pane = panes.find((pane) => pane.type === "transcript" && transcriptRefOf(pane.params) === current);
     const parentRef = (pane?.params as { parentRef?: unknown } | undefined)?.parentRef;
     current = typeof parentRef === "string" ? parentRef : undefined;
   }
-  return false;
+  return [...visited];
+}
+
+export function transcriptContextIncludes(ref: string, ancestorRef: string): boolean {
+  return transcriptContextRefs(ref).includes(ancestorRef);
 }
 
 // Workspace deduplication deliberately compares the entire params bag. That
@@ -57,14 +60,22 @@ export function openTranscript(ref: string, parentRef?: string): void {
   if (parentRef !== undefined) {
     const main = workspaceStore.getState().mainPane();
     const mainRef = main?.type === "session" ? transcriptRefOf(main.params) : undefined;
-    const parentLocation = selectLocation(parentRef)(navigationStore.getState())?.data as
-      | NavigationSessionLocation
-      | undefined;
+    const context = transcriptContextRefs(parentRef);
     // parentRef stays the immediate Back target. It is not necessarily the
     // owner: a retained transcript chain or a routed nested session identifies
     // the real main session without promoting the immediate parent into it.
-    if (mainRef === undefined || !transcriptContextIncludes(parentRef, mainRef)) {
-      openTopLevelSession(parentLocation?.top_level_ref ?? parentRef);
+    if (mainRef === undefined || !context.includes(mainRef)) {
+      let ownerRef = parentRef;
+      for (const contextRef of context) {
+        const location = selectLocation(contextRef)(navigationStore.getState())?.data as
+          | NavigationSessionLocation
+          | undefined;
+        if (location) {
+          ownerRef = location.top_level_ref ?? contextRef;
+          break;
+        }
+      }
+      openTopLevelSession(ownerRef);
     }
   }
   if (exactPaneId !== undefined) {
