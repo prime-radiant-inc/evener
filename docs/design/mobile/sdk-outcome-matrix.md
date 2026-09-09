@@ -22,7 +22,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `thread/fork` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): regularForkAcknowledged, asideForkAcknowledged, originalInputRetained, independentChildParentLinks. | U | U | U | U | U |
 | `thread/clear` | both | RECORDED — [clear outcomes](assets/2026-09-08-sdk-clear-outcomes.json): completed seed cleared; stable ref moves to a new instance, old conversation absent and a positive later turn completes. | U | U | U | U | U |
 | `thread/model/set` | both | RECORDED — [sdk-settings-receipt](assets/sdk-settings-receipt.json): mutations[5:7], notifications and settingsRestored; configuration state only, no model execution. | U | U | U | U | U |
-| `evener/thread/name/set` | both | U | U | U | U | U | U |
+| `evener/thread/name/set` | both | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): Exact submitted name at the same thread identity. | U | U | U | U | U |
 | `thread/reasoning-effort/set` | both | RECORDED — [sdk-settings-receipt](assets/sdk-settings-receipt.json): mutations[0:3], notifications and settingsRestored; configuration state only, no model execution. | U | U | U | U | U |
 | `thread/vision-model/set` | both | RECORDED — [2026-09-08-iphone-execution](assets/2026-09-08-iphone-execution.json): realController.assertions; off, catalog model, second-client change and restoration. No native interaction. | U | U | U | U | U |
 | `thread/compact/start` | both | U | U | U | U | U | U |
@@ -51,11 +51,11 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/archive/set` | hub | RECORDED — [saved-item outcomes](assets/2026-09-08-sdk-saved-items-outcomes.json): exact owned project moves to archived catalog and returns to active catalog; navigation targets and revisions retained. | U | U | U | U | U |
 | `evener/project/delete` | hub | U | U | U | U | U | U |
 | `evener/session/delete` | hub | U | U | U | U | U | U |
-| `evener/pin-section/rename` | hub | U | U | U | U | U | U |
-| `evener/pin-section/delete` | hub | U | U | U | U | U | U |
-| `evener/session-pin/assign` | hub | U | U | U | U | U | U |
-| `evener/session-pin/unpin` | hub | U | U | U | U | U | U |
-| `evener/search` | hub | U | U | U | U | U | U |
+| `evener/pin-section/rename` | hub | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): Exact section ID and new catalog name. | U | U | U | U | U |
+| `evener/pin-section/delete` | hub | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): One-member section removed from catalog and location. | U | U | U | U | U |
+| `evener/session-pin/assign` | hub | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): Assign by name, idempotent ID assignment, and reassign after unpin with exact section/location. | U | U | U | U | U |
+| `evener/session-pin/unpin` | hub | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): changed=true and section absent from location. | U | U | U | U | U |
+| `evener/search` | hub | RECORDED — [organization metadata](assets/2026-09-08-sdk-organization-outcomes.json): Exact title/ref returned in both live and past categories; category consistency is unqualified. | U | U | U | U | U |
 | `evener/harnesses/list` | hub | RECORDED — [default read outcomes](assets/2026-09-08-sdk-read-defaults-outcomes.json): exact builtin evener harness descriptor. | U | U | U | U | U |
 | `evener/upgrade` | hub | U | U | U | U | U | U |
 | `evener/auth/status` | hub | RECORDED — [sdk-credentials-receipt](assets/sdk-credentials-receipt.json): 45 status requests with stored, environment, ADC, and cleared-state readbacks. | U | U | U | U | U |
@@ -104,7 +104,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 ## Review progress and next order
 
-This index has 59 narrowly recorded success/effect cells. The other 31 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The preferences receipt includes two independent replays and coordinator checks of exact requests, responses, notifications and cleanup. Its initial marketplace finding was withdrawn after source inspection distinguished local pointer seeding from network fetching; no packet monitoring is claimed. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
+This index has 65 narrowly recorded success/effect cells. The other 25 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The organization receipt records six metadata effects with exact readback. Its environment-turn completion was excluded from user-turn qualification; search category consistency, session deletion and shutdown remain open. The preferences receipt includes two independent replays and coordinator checks of exact requests, responses, notifications and cleanup. Its initial marketplace finding was withdrawn after source inspection distinguished local pointer seeding from network fetching; no packet monitoring is claimed. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
 
 1. Index existing receipts and raw assertions before creating duplicate fixtures. Verify actual installed SDK execution, exact target/operation and authoritative effect.
 2. Review mutation identity, stale binding and lost-reply outcomes for send, queue, decisions and lifecycle operations needed by the active iPhone journey.
