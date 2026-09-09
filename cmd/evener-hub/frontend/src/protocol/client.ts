@@ -34,9 +34,12 @@ class ProtocolVersionMismatchError extends Error {
 }
 
 class InitializeValidationError extends Error {
-  constructor() {
-    super("invalid initialize response");
+  readonly field: string;
+
+  constructor(field: string) {
+    super(`invalid initialize response at ${field}`);
     this.name = "InitializeValidationError";
+    this.field = field;
   }
 }
 
@@ -146,7 +149,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     !isRecord(value) ||
     !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
   ) {
-    throw new InitializeValidationError();
+    throw new InitializeValidationError("response");
   }
   const serverInfo = value.serverInfo;
   const features = value.features;
@@ -157,31 +160,50 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
     typeof serverInfo.version !== "string" ||
-    serverInfo.version.trim() === "" ||
-    typeof value.protocolVersion !== "string" ||
-    value.protocolVersion.trim() === "" ||
-    typeof value.sourceId !== "string" ||
-    value.sourceId.trim() === "" ||
+    serverInfo.version.trim() === ""
+  ) {
+    throw new InitializeValidationError("serverInfo");
+  }
+  if (typeof value.protocolVersion !== "string" || value.protocolVersion.trim() === "") {
+    throw new InitializeValidationError("protocolVersion");
+  }
+  if (typeof value.sourceId !== "string" || value.sourceId.trim() === "") {
+    throw new InitializeValidationError("sourceId");
+  }
+  if (
     !isRecord(features) ||
     !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
-    FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean") ||
-    (Object.hasOwn(value, "navigation") &&
-      (!isRecord(navigation) ||
-        !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"]) ||
-        (Object.hasOwn(navigation, "readVersions") &&
-          (!Array.isArray(navigation.readVersions) ||
-            navigation.readVersions.some((version) => !Number.isSafeInteger(version) || version < 1))) ||
-        typeof navigation.version !== "number" ||
-        !Number.isSafeInteger(navigation.version) ||
-        navigation.version < 1 ||
-        typeof navigation.generationId !== "string" ||
-        navigation.generationId.trim() === "" ||
-        typeof navigation.sequence !== "number" ||
-        !Number.isSafeInteger(navigation.sequence) ||
-        navigation.sequence < 0))
+    FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
   ) {
-    throw new InitializeValidationError();
+    throw new InitializeValidationError("features");
+  }
+  if (Object.hasOwn(value, "navigation")) {
+    if (
+      !isRecord(navigation) ||
+      !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
+    ) {
+      throw new InitializeValidationError("navigation");
+    }
+    if (
+      Object.hasOwn(navigation, "readVersions") &&
+      (!Array.isArray(navigation.readVersions) ||
+        navigation.readVersions.some((version) => !Number.isSafeInteger(version) || version < 1))
+    ) {
+      throw new InitializeValidationError("navigation.readVersions");
+    }
+    if (
+      typeof navigation.version !== "number" ||
+      !Number.isSafeInteger(navigation.version) ||
+      navigation.version < 1 ||
+      typeof navigation.generationId !== "string" ||
+      navigation.generationId.trim() === "" ||
+      typeof navigation.sequence !== "number" ||
+      !Number.isSafeInteger(navigation.sequence) ||
+      navigation.sequence < 0
+    ) {
+      throw new InitializeValidationError("navigation");
+    }
   }
   return value as unknown as InitializeResponse;
 }

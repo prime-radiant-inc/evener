@@ -96,6 +96,30 @@ describe("decodeInitializeResponse", () => {
     ).toThrow("invalid initialize response");
   });
 
+  test.each([
+    ["serverInfo", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
+    ["protocolVersion", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
+    ["sourceId", { ...FAKE_INITIALIZE_RESULT, sourceId: "" }],
+    ["features", { ...FAKE_INITIALIZE_RESULT, features: { ...FAKE_INITIALIZE_RESULT.features, tasks: "yes" } }],
+    ["navigation", { ...FAKE_INITIALIZE_RESULT, navigation: null }],
+    [
+      "navigation.readVersions",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "generation", sequence: 0, readVersions: [0] },
+      },
+    ],
+  ])("reports the malformed initialize field %s without payload values", (field, value) => {
+    let error: unknown;
+    try {
+      decodeInitializeResponse(value);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ field, name: "InitializeValidationError" });
+    expect(error).toHaveProperty("message", `invalid initialize response at ${field}`);
+  });
+
   test("accepts and preserves maximum safe navigation integers", () => {
     const response = {
       ...FAKE_INITIALIZE_RESULT,
@@ -464,8 +488,10 @@ describe("AppwireClient", () => {
     await flushUntil(() => reconnectSocket.sent.length > 0);
     const reconnect = lastSentFrame(reconnectSocket);
     reconnectSocket.receive({ id: reconnect.id, result: { protocolVersion: APPWIRE_PROTOCOL_VERSION } });
-    await flushUntil(() => client.state === "reconnecting");
+    await flushUntil(() => client.state === "closed");
 
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("protocol");
     expect(versions).toEqual(["0.0.0-test"]);
   });
 
