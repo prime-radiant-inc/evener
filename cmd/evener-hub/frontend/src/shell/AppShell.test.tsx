@@ -3232,3 +3232,46 @@ test("an opposite-direction press while a demanded page is in flight supersedes 
   // continuation must not run past it toward the tail.
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
 });
+
+// Round 7: the demand-load continuation never re-checked the navigation
+// client generation. A reconnect bumps clientGenerationID while the demanded
+// page is in flight; the handler's press-time reset only covers NEW presses,
+// so the old promise resolving with retained (provisional) rows navigated
+// into the previous generation (roborev PR #1044 round-7 medium 2).
+test("an in-flight live demand-load goes inert when the client generation changes", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // A reconnect boots a new generation while the demand is still in flight.
+  act(() => {
+    navigationStore.setState({ clientGenerationID: "generation_reconnected" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  // The stale-generation continuation must not navigate.
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});

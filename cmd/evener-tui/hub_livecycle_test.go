@@ -395,3 +395,40 @@ func TestHubSessionLiveCycleDropsReadWhenOverlayOpenedMidFlight(t *testing.T) {
 		t.Fatal("expected the palette to remain open")
 	}
 }
+
+// A pending live-nav target must not survive a dashboard round-trip: the
+// mode-exit drop (ctrl+o while the read is in flight) returns without
+// clearing it, and nothing on re-entry clears it either, so the next press
+// steps from the stale target instead of the session actually displayed
+// (roborev PR #1044 round-7 medium 1: B -> C fails, next press skips C).
+func TestHubSessionLiveCycleClearsPendingRefAcrossDashboardRoundTrip(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C, read in flight
+	m1.returnToDashboard()
+	// The in-flight read lands and is dropped (mode exit). The pending ref
+	// it keyed must be gone: the user re-entered the same session B.
+	updated, _ := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if m2.mode != hubModeDashboard {
+		t.Fatalf("mode = %v, want dashboard", m2.mode)
+	}
+	if m2.liveNavPendingRef != "" {
+		t.Fatalf("liveNavPendingRef = %q after mode-exit drop, want cleared", m2.liveNavPendingRef)
+	}
+
+	// Re-enter session B (the dashboard's ordinary entry path), then press
+	// next: it must step from B to C, not from the stale pending C to A.
+	m2.mode = hubModeSession
+	m2.detail.Ref = "local:01B"
+	m3, cmd2 := m2.switchToAdjacentLiveSession(1)
+	if cmd2 == nil {
+		t.Fatal("expected a fetch command for the next live session")
+	}
+	updated2, _ := m3.Update(cmd2())
+	m4 := updated2.(hubModel)
+	if m4.detail.Ref != "local:01C" {
+		t.Fatalf("next press after dashboard round-trip viewed %q, want local:01C (stepped from the displayed session)", m4.detail.Ref)
+	}
+}

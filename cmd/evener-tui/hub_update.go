@@ -68,7 +68,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Also dropped when session mode was exited (ctrl+o) while the read
 			// was in flight: applying it would yank the dashboard back into
 			// the fetched session (roborev PR #1044 round-3 medium 2).
+			// The pending target is cleared with it: nothing on a dashboard
+			// round-trip clears it, and the next press must step from the
+			// session actually displayed, not the abandoned target (roborev
+			// PR #1044 round-7 medium 1).
 			if m.mode != hubModeSession || msg.liveNavSeq != m.liveNavSeq {
+				m.liveNavPendingRef = ""
 				return m, nil
 			}
 			// Composing began while the read was in flight: the draft is newer

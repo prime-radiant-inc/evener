@@ -553,6 +553,9 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // (round-6 medium). A completing demand goes inert when the press that
     // started it no longer owns the intent, the focused session or pane
     // moved on, or a palette/modal is open.
+    // A completing demand also goes inert when the client generation changed
+    // mid-flight (reconnect): the rows it resolved with belong to the previous
+    // generation, and the handlers' press-time reset only covers new presses.
     let liveNavMounted = true;
     let liveNavIntent = 0;
     let liveNavGeneration = navigationStore.getState().clientGenerationID;
@@ -566,6 +569,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       demandedLivePages.add(demandKey);
       liveNavIntent++;
       const intentAtPress = liveNavIntent;
+      const generationAtPress = state.clientGenerationID;
       const paneAtPress = workspaceStore.getState().focusedPaneId;
       const refAtPress = focusedSessionRef();
       void state
@@ -578,6 +582,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           if (
             !liveNavMounted ||
             intentAtPress !== liveNavIntent ||
+            navigationStore.getState().clientGenerationID !== generationAtPress ||
             workspaceStore.getState().focusedPaneId !== paneAtPress ||
             focusedSessionRef() !== refAtPress ||
             paletteStore.getState().open ||
