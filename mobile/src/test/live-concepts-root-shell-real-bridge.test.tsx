@@ -567,7 +567,7 @@ function decodeTextFrame(payload: JsonObject): ServerFrame | null {
 // Shared fixtures.
 // ---------------------------------------------------------------------------
 const INITIALIZE_RESPONSE: InitializeResponse = {
-  protocolVersion: "evener-appwire-v4",
+  protocolVersion: "evener-appwire-v5",
   serverInfo: { name: "root-shell-hub", version: "1.0.0" },
   sourceId: "root-shell-source",
   features: {
@@ -766,7 +766,7 @@ describe("production App/RootShell vertical slice over the real native AppWire b
       // is the initial surface.
       const initialize = await bridge.waitForServerRequest("initialize", 1);
       expect(initialize.params).toEqual({
-        protocolVersion: "evener-appwire-v4",
+        protocolVersion: "evener-appwire-v5",
         clientInfo: { name: "evener-mobile", version: "0.1.0" },
         capabilities: { experimentalApi: false },
       });

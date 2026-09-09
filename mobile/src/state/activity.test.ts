@@ -235,7 +235,6 @@ function turnCompletedNotification(
     params: {
       threadId: id.threadId,
       ref: id.ref,
-      turnId: "t1",
       turn: {
         id: "t1",
         itemsView: "default",

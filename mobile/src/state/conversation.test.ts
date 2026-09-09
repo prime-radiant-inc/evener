@@ -808,7 +808,6 @@ describe("ConversationStore", () => {
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          turnId: "t1",
           turn: {
             id: "t1",
             itemsView: "default",
@@ -3751,7 +3750,6 @@ describe("ConversationStore", () => {
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          turnId: "t1",
           turn: {
             id: "t1",
             itemsView: "default",

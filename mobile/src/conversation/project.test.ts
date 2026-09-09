@@ -243,6 +243,22 @@ describe("completed question recaps", () => {
 });
 
 describe("projectThread", () => {
+  it("projects v5 runtime recovery state without hiding saved history", () => {
+    const c = projectThread(
+      thread([], {
+        status: { type: "restartRequired" },
+        evener: evenerThread({
+          resumeRequired: true,
+          mutationStateAuthoritative: false,
+        }),
+      }),
+    );
+    expect(c.status).toBe("restartRequired");
+    expect(c.resumeRequired).toBe(true);
+    expect(c.mutationStateAuthoritative).toBe(false);
+    expect(c.items).toEqual([]);
+  });
+
   describe("user text items", () => {
     it("projects a userMessage as a user item", () => {
       const t = thread([

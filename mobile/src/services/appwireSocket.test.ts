@@ -11,7 +11,7 @@ import type { TauriBridge, TauriChannel } from "./tauri";
 
 const INITIALIZE_RESULT = {
   serverInfo: { name: "scripted-hub", version: "1.0.0" },
-  protocolVersion: "evener-appwire-v4",
+  protocolVersion: "evener-appwire-v5",
   sourceId: "scripted-source",
   features: {
     threadList: true,
@@ -798,7 +798,7 @@ describe("appwireSocket — imported AppwireClient scripted Tauri integration", 
       expect(initialize).toMatchObject({
         method: "initialize",
         params: {
-          protocolVersion: "evener-appwire-v4",
+          protocolVersion: "evener-appwire-v5",
           clientInfo: { name: "evener-mobile", version: "0.1.0" },
         },
       });

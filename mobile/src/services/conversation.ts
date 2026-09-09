@@ -58,6 +58,8 @@ export interface ConversationClientLike {
     opts?: { timeoutMs?: number },
   ): Promise<MethodTypes[M]["result"]>;
   onNotification(cb: (n: AnyNotification) => void): () => void;
+  forceStop?(ref: string): Promise<void>;
+  resumeThread?(ref: string): Promise<MethodTypes["thread/resume"]["result"]>;
 }
 
 // A function that generates a clientMutationId. Default uses crypto.randomUUID
@@ -106,6 +108,11 @@ export interface ConversationService {
     expectedInstanceId: string,
   ): Promise<TurnCancelQueuedResponse>;
   close(): void;
+}
+
+export interface ConversationRecoveryActions {
+  forceStop(): Promise<void>;
+  resume(): Promise<void>;
 }
 
 // Required live behavior interface for the live read/projection path. This
@@ -434,7 +441,8 @@ export function createConversationService(
   ConversationGoalActions &
   ConversationForkActions &
   ConversationTurnForkActions &
-  ConversationClearActions {
+  ConversationClearActions &
+  ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -986,6 +994,22 @@ export function createConversationService(
       await withCapabilityRefresh("shutdown", () =>
         client.request("thread/shutdown", { ref: threadRef }),
       );
+    },
+
+    async forceStop() {
+      const threadRef = requireRef();
+      if (typeof client.forceStop !== "function") {
+        throw new Error("ConversationService: force stop is unavailable");
+      }
+      await client.forceStop(threadRef);
+    },
+
+    async resume() {
+      const threadRef = requireRef();
+      if (typeof client.resumeThread !== "function") {
+        throw new Error("ConversationService: resume is unavailable");
+      }
+      await client.resumeThread(threadRef);
     },
 
     async models() {

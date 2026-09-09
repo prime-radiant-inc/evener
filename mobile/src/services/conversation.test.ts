@@ -49,6 +49,8 @@ type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
 
 class FakeAppwireClient {
   readonly calls: { method: string; params: unknown }[] = [];
+  forceStopCalls: string[] = [];
+  resumeThreadCalls: string[] = [];
   private readonly handlers = new Map<string, RequestHandler>();
   private readonly notificationHandlers = new Set<
     (n: AnyNotification) => void
@@ -84,6 +86,16 @@ class FakeAppwireClient {
     return () => {
       this.notificationHandlers.delete(cb);
     };
+  }
+
+  forceStop(ref: string): Promise<void> {
+    this.forceStopCalls.push(ref);
+    return Promise.resolve();
+  }
+
+  resumeThread(ref: string): Promise<{ thread: Thread }> {
+    this.resumeThreadCalls.push(ref);
+    return Promise.resolve({ thread: makeThread() });
   }
 
   emitNotification(n: AnyNotification): void {
@@ -257,6 +269,30 @@ function textInput(text: string): InputItem[] {
 // --- service tests ------------------------------------------------------------
 
 describe("ConversationService", () => {
+  it("uses the dedicated force-stop client operation for recovery", async () => {
+    const client = new FakeAppwireClient();
+    client.on("thread/read", async () => ({ thread: makeThread() }));
+    const service = createConversationService(client);
+    await service.open("local:session-1");
+
+    await service.forceStop();
+
+    expect(client.forceStopCalls).toEqual(["local:session-1"]);
+    expect(client.calls.map(({ method }) => method)).toEqual(["thread/read"]);
+  });
+
+  it("uses the dedicated resume client operation for recovery", async () => {
+    const client = new FakeAppwireClient();
+    client.on("thread/read", async () => ({ thread: makeThread() }));
+    const service = createConversationService(client);
+    await service.open("local:session-1");
+
+    await service.resume();
+
+    expect(client.resumeThreadCalls).toEqual(["local:session-1"]);
+    expect(client.calls.map(({ method }) => method)).toEqual(["thread/read"]);
+  });
+
   beforeEach(() => {
     idCounter = 0;
   });

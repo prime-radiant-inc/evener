@@ -656,6 +656,9 @@ export function projectThread(thread: Thread): MobileConversation {
     modelProvider: thread.modelProvider,
     visionModel: thread.evener.visionModel,
     status: thread.status.type,
+    resumeRequired: thread.evener.resumeRequired === true,
+    mutationStateAuthoritative:
+      thread.evener.mutationStateAuthoritative === true,
     items,
     capabilities: projectCapabilities(thread.evener.capabilities),
     queue: projectQueue(thread.evener.queue),

@@ -2523,11 +2523,9 @@ export function createConversationStore() {
 
           case "turn/completed": {
             const params = n.params as {
-              turnId?: string;
               turn: { id: string; usage?: MobileUsage; status: string };
             };
-            const completedActive =
-              conv.activeTurnId === (params.turnId || params.turn.id);
+            const completedActive = conv.activeTurnId === params.turn.id;
             // Completion is newer than an in-flight read even when this
             // client missed the corresponding start notification.
             turnOwnerRev++;

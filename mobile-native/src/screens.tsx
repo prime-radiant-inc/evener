@@ -843,6 +843,8 @@ export function ConversationScreen({
 		() => (client ? createConversationService(client) : null),
 		[client],
 	);
+	const currentDestination = useRef({ store, client });
+	currentDestination.current = { store, client };
 	const snapshot = store();
 	const timeline = useRef<FlatList>(null);
 	const readerMeasurements = useRef(new Map<string, ReaderMeasurement>());
@@ -1022,7 +1024,12 @@ export function ConversationScreen({
 				? new SessionControls(
 						service,
 						async () => {
-							await store.getState().rehydrate(service, activitySink);
+							if (store.getState().status === "open")
+								await store.getState().rehydrate(service, activitySink);
+							else
+								await store
+									.getState()
+									.resumeProjected(service, activitySink, route.params.ref);
 							const current = store.getState();
 							if (current.status !== "open" || current.error)
 								throw new Error("Session refresh failed");
@@ -1033,11 +1040,18 @@ export function ConversationScreen({
 							setSessionOpen(false);
 							if (navigation.isFocused()) navigation.goBack();
 						},
-						() => {
+						(scope) => {
 							const current = store.getState();
+							if (
+								currentDestination.current.store !== store ||
+								currentDestination.current.client !== client ||
+								!connectionReady.current ||
+								!navigation.isFocused()
+							)
+								return false;
+							if (scope === "destination")
+								return current.ref === route.params.ref;
 							return (
-								connectionReady.current &&
-								navigation.isFocused() &&
 								current.status === "open" &&
 								current.conversationGeneration === bindingGeneration &&
 								current.conversation?.instanceId === bindingInstance
@@ -1053,6 +1067,8 @@ export function ConversationScreen({
 		[
 			service,
 			store,
+			client,
+			route.params.ref,
 			activitySink,
 			navigation,
 			connected,
@@ -1438,10 +1454,13 @@ export function ConversationScreen({
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
 	const canCompose =
-		!conversation ||
-		(["send", "steer", "queue", "goal"] as const).some(
-			(action) => conversation.capabilities[action],
-		);
+		(!conversation ||
+			(!conversation.resumeRequired &&
+				conversation.status !== "restartRequired")) &&
+		(!conversation ||
+			(["send", "steer", "queue", "goal"] as const).some(
+				(action) => conversation.capabilities[action],
+			));
 	const slashToken =
 		composerSelection.start === composerSelection.end &&
 		draft.record.draft !== completionClosedAt

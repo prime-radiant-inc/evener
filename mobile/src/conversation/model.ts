@@ -205,6 +205,8 @@ export interface MobileConversation {
   modelProvider: string;
   visionModel?: string;
   status: string;
+  resumeRequired?: boolean;
+  mutationStateAuthoritative?: boolean;
   items: MobileTimelineItem[];
   capabilities: MobileCapabilities;
   queue: MobileQueue;

@@ -505,7 +505,6 @@ it.each(["advertised", "turn"])(
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turnId: "first",
 					turn: {
 						id: "first",
 						status: "completed",
@@ -523,7 +522,6 @@ it.each(["advertised", "turn"])(
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turnId: "second",
 					turn: {
 						id: "second",
 						status: "completed",
@@ -642,7 +640,6 @@ it("does not resurrect a turn that completes during a read before its start was 
 				params: {
 					ref: "local:test",
 					threadId: "thread",
-					turnId: "missed-start",
 					turn: {
 						id: "missed-start",
 						status: "completed",
