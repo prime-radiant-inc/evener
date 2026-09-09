@@ -10,13 +10,12 @@
 // that fires without a scroll event at all, which is what makes a short first
 // page fill itself in.
 //
-// The row itself renders one of three things, and never nothing: a quiet
-// "Loading older turns…" while a page is in flight, an error with a retry
-// button when one failed, or - idle, with more history to fetch - a quiet
-// "Older turns" label. The idle label is deliberately not a button: it is a
-// place-marker for automatic work, and the only pressable thing here is the
-// retry, which exists because Jesse ruled out a fallback "load more" button but
-// silent failure is not an option. Retry is also the accessible escape hatch: a
+// The row renders a quiet "Loading older turns…" while a page is in flight,
+// an error with a retry button when one failed, and nothing when idle: paging
+// is automatic, so a standing "Older turns" banner would only narrate work the
+// reader never asked about. The only pressable thing here is the retry, which
+// exists because Jesse ruled out a fallback "load more" button but silent
+// failure is not an option. Retry is also the accessible escape hatch: a
 // failed fetch must be recoverable without pixel-precise scrolling.
 import { useEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -84,7 +83,7 @@ export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
       {error !== null ? (
         <>
           {/* role=alert: a failure the reader did not ask for and cannot see
-              coming needs announcing, unlike the two quiet states. */}
+              coming needs announcing, unlike the quiet loading state. */}
           <span role="alert" className={CLASS.error}>
             {error}
           </span>
@@ -93,7 +92,7 @@ export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
           </button>
         </>
       ) : (
-        <span className={CLASS.label}>{loading ? "Loading older turns…" : "Older turns"}</span>
+        loading && <span className={CLASS.label}>Loading older turns…</span>
       )}
     </div>
   );
