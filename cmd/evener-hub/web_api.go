@@ -74,6 +74,9 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
+	// The hub self-update poll watches this endpoint for the version the new
+	// binary reports, so a cached answer would hide the restart.
+	w.Header().Set("Cache-Control", "no-store")
 	writeAPIJSON(w, http.StatusOK, hubapi.HealthResponse{
 		Version:          buildinfo.Version(),
 		MobileAPIVersion: hubapi.MobileAPIVersion,

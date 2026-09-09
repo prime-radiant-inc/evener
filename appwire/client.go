@@ -639,6 +639,18 @@ func (c *Client) Upgrade(ctx context.Context, params UpgradeParams) (UpgradeResp
 	return out, err
 }
 
+func (c *Client) UpdateCheck(ctx context.Context, params UpdateCheckParams) (UpdateCheckResponse, error) {
+	var out UpdateCheckResponse
+	err := c.request(ctx, MethodEvenerUpdateCheck, params, &out)
+	return out, err
+}
+
+func (c *Client) UpdateApply(ctx context.Context, params UpdateApplyParams) (UpdateApplyResponse, error) {
+	var out UpdateApplyResponse
+	err := c.request(ctx, MethodEvenerUpdateApply, params, &out)
+	return out, err
+}
+
 func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
 	var out AuthStatusResponse
 	err := c.request(ctx, MethodEvenerAuthStatus, params, &out)

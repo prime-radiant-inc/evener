@@ -4,6 +4,7 @@ import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
+import { HubUpdates } from "./hubUpdates";
 import { Code, SettingsField } from "./settingsField";
 
 const CLASS = {
@@ -75,6 +76,7 @@ export function HubSection() {
           help="How long the hub waits for a daemon to report ready after spawn before treating it as failed."
         />
       </dl>
+      <HubUpdates />
     </div>
   );
 }

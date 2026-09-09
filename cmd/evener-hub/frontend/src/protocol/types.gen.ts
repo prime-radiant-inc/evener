@@ -1515,6 +1515,7 @@ export interface SettingsAgentEntry {
 export interface SettingsHubOverview {
   version?: string;
   commit?: string;
+  buildChannel?: string;
   listenAddr?: string;
   runDir?: string;
   spawnTimeout?: string;
@@ -2099,6 +2100,32 @@ export interface TurnSteerResponse {
   receipt: MutationReceipt;
 }
 
+export interface UpdateApplyParams {
+  channel?: string;
+}
+
+export interface UpdateApplyResponse {
+  release: string;
+  channel: string;
+  installed: string[];
+  restarting: boolean;
+}
+
+export interface UpdateCheckParams {
+  channel?: string;
+}
+
+export interface UpdateCheckResponse {
+  channel: string;
+  buildChannel: string;
+  currentVersion: string;
+  currentCommit: string;
+  latestTag?: string;
+  latestCommit?: string;
+  updateAvailable: boolean;
+  applicable: boolean;
+}
+
 export interface UpgradeParams {
   requested?: string;
 }
@@ -2176,6 +2203,8 @@ export const METHOD_NAMES = [
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
+  "evener/update/check",
+  "evener/update/apply",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -2361,6 +2390,8 @@ export interface MethodTypes {
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
+  "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
+  "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };

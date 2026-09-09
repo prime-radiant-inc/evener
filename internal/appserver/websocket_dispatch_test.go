@@ -301,6 +301,10 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		appwire.MethodThreadRead:            true,
 		appwire.MethodThreadTurnsList:       true,
 		appwire.MethodEvenerSubagentPreview: true,
+		// evener/update/check does synchronous GitHub I/O (up to two
+		// 10s timeouts); inline dispatch would block unrelated RPCs
+		// on the connection. Read-only, frontend discards stale results.
+		appwire.MethodEvenerUpdateCheck: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {

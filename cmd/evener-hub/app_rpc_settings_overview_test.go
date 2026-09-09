@@ -232,3 +232,14 @@ func TestHubRPCSettingsOverview_MCPDiscoveredEmptyWhenConfigMissing(t *testing.T
 		t.Errorf("McpDiscovered.Servers = %+v, want empty", resp.McpDiscovered.Servers)
 	}
 }
+
+func TestSettingsHubOverviewReportsBuildChannel(t *testing.T) {
+	previous := buildinfo.Channel
+	buildinfo.Channel = "snapshot"
+	t.Cleanup(func() { buildinfo.Channel = previous })
+
+	got := settingsHubOverview(hubcore.WebConfig{})
+	if got.BuildChannel != "snapshot" {
+		t.Fatalf("BuildChannel = %q, want snapshot", got.BuildChannel)
+	}
+}
