@@ -231,3 +231,39 @@ func TestHubSessionLiveCycleDropsStaleRead(t *testing.T) {
 		t.Fatalf("stale live-nav read overwrote the newer session: viewed ref = %q, want local:01B", m4.detail.Ref)
 	}
 }
+
+// A live-nav read in flight must not override a session the user opened by
+// another path: the manual entry is the newer intent (roborev PR #1044
+// round-2 medium 3).
+func TestHubSessionLiveCycleManualEntryInvalidatesPendingNav(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd1 := m.switchToAdjacentLiveSession(1) // pending: 01C
+
+	// The user opens another session directly (dashboard enter, palette pick -
+	// any non-cycling entry read) while the cycling read is in flight.
+	manual := hubSessionMsg{detail: hubDetailFromThread(responseOnlyHubThread("local:01X")), ref: "local:01X"}
+	updated, _ := m1.Update(manual)
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01X" {
+		t.Fatalf("after manual entry, viewed ref = %q, want local:01X", m2.detail.Ref)
+	}
+
+	// The in-flight cycling read completes late; it must be dropped.
+	updated, _ = m2.Update(cmd1())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01X" {
+		t.Fatalf("live-nav read overrode the manual entry: viewed ref = %q, want local:01X", m3.detail.Ref)
+	}
+
+	// And the next cycling press steps from the viewed session, not the stale
+	// pending ref.
+	_, cmd := m3.switchToAdjacentLiveSession(1)
+	if cmd == nil {
+		t.Fatal("expected a fetch command after manual entry")
+	}
+	if msg := cmd().(hubSessionMsg); msg.ref != "local:01A" {
+		t.Fatalf("press after manual entry targeted %q, want first live local:01A (01X is not live)", msg.ref)
+	}
+}

@@ -114,6 +114,16 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("action-unavailable")
 		m.clearPendingAttachments(true)
+		// Reaching here with a different detail.Ref is a session switch the
+		// user drove by some path. If it was not itself a live-nav read, it is
+		// newer intent than any cycling read still in flight: invalidate the
+		// pending target so that read drops when it lands (roborev PR #1044
+		// round-2 medium 3). Status refreshes and same-ref resyncs took the
+		// early returns above and never invalidate.
+		if msg.liveNavSeq == 0 {
+			m.liveNavSeq++
+			m.liveNavPendingRef = ""
+		}
 		m.mode = hubModeSession
 		m.detail = msg.detail
 		m.session = newModel(nil)

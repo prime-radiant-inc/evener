@@ -169,6 +169,16 @@ test("arrow keys with Alt/Ctrl/Meta held are left for global chords (no preventD
   }
 });
 
+// The modifier guard covers the arrow chords the global dispatcher owns.
+// Enter is not one of them: no global chord binds a modifier+Enter, so the
+// tree keeps its activation (roborev PR #1044 round-2 low).
+test("Enter with a modifier held still activates the row", () => {
+  const { onActivate } = renderTree();
+  act(() => row("b").focus());
+  fireEvent.keyDown(row("b"), { key: "Enter", altKey: true });
+  expect(onActivate).toHaveBeenCalledExactlyOnceWith(NODES[1]);
+});
+
 test("ArrowLeft on a leaf child moves focus to its parent", () => {
   const { onToggle } = renderTree();
   act(() => row("b1").focus());

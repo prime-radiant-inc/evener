@@ -2824,3 +2824,134 @@ test("Alt+Shift+ArrowRight at the last loaded live session demand-loads the next
     expect(window.location.pathname).toBe("/s/local%3Alive-b");
   });
 });
+
+// Round-2 demand-load lifecycle: the pending-page cache must not brick after
+// a failed load, and an in-flight demand must go inert when a newer press or
+// an open palette supersedes it (roborev PR #1044 round-2 mediums 1-2).
+
+// A two-page live section whose page-two request is scriptable per test.
+function navClientWithDeferredLivePageTwo(script: {
+  onPageTwo: (params: NavigationReadParams) => NavigationReadResponse | Promise<NavigationReadResponse>;
+}): FakeClient {
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 1, truncated: false }, '"test"');
+        }
+        return script.onPageTwo(params);
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+  return client;
+}
+
+test("live-next demand-load retries after the page request fails", async () => {
+  let pageTwoAttempts = 0;
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) => {
+      pageTwoAttempts++;
+      if (pageTwoAttempts === 1) throw new Error("transient read failure");
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    },
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // The first demand fails; the view stays and no navigation happens.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(1));
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+
+  // A cached "already demanded" entry must not brick the retry.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoAttempts).toBe(2));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+test("an in-flight live demand-load goes inert when a newer live-nav press supersedes it", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  // An ordinary press is newer intent: it must supersede the demand.
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
+
+test("an in-flight live demand-load goes inert while the palette is open", async () => {
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
+  await waitFor(() => expect(deferred.params).not.toBeNull());
+
+  act(() => {
+    paletteStore.setState({ open: true, query: "" });
+  });
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
+});
