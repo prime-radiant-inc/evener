@@ -994,14 +994,13 @@ func (s *Session) goalContinuationWithDelta(objective string, conds []goal.Condi
 	last := s.goalDeltaLastConds
 	s.goalDeltaLastConds = append([]goal.ConditionCheck(nil), checks...)
 	s.mu.Unlock()
-	byLast := make(map[string]bool, len(last))
-	for _, c := range last {
-		byLast[c.Desc] = c.Satisfied
-	}
+	// Positional: last[i] answers conds[i] (same order as checks) — never
+	// joined by Desc, so duplicate descriptions cannot collapse two
+	// conditions into one truth and lose a flip.
 	var flips []goal.ConditionFlip
-	for _, c := range checks {
-		if prev, ok := byLast[c.Desc]; ok && prev != c.Satisfied {
-			flips = append(flips, goal.ConditionFlip{Desc: c.Desc, From: prev, To: c.Satisfied})
+	for i, c := range checks {
+		if i < len(last) && last[i].Satisfied != c.Satisfied {
+			flips = append(flips, goal.ConditionFlip{Desc: c.Desc, From: last[i].Satisfied, To: c.Satisfied})
 		}
 	}
 	return goal.RenderWithDelta(objective, flips, nil)
@@ -1303,9 +1302,19 @@ func (s *Session) claimGoalWaitExpiredWaits(now time.Time) ([]goal.PendingWake, 
 // generation counter. Lock order: goalUpdateMu, then s.mu (the SetGoal order).
 func (s *Session) armGoalWaitTimer() {
 	s.goalUpdateMu.Lock()
+	defer s.goalUpdateMu.Unlock()
+	s.armGoalWaitTimerLocked()
+}
+
+// armGoalWaitTimerLocked arms the single coalesced wait timer under the
+// goal serializer: snapshot, four-way-min computation, and timer
+// replacement happen atomically, so a newer arm can never be overwritten by
+// an older arm's stale later deadline (the reported stale-snapshot race).
+// Caller must hold goalUpdateMu; takes s.mu for the timer swap (the SetGoal
+// goalUpdateMu-then-s.mu order).
+func (s *Session) armGoalWaitTimerLocked() {
 	store := s.getOrCreateGoalStore()
 	full, ok := store.GoalSnapshot()
-	s.goalUpdateMu.Unlock()
 	now := s.sclock().Now()
 	var fire time.Time
 	var armed bool
@@ -1519,12 +1528,31 @@ func (s *Session) kickGoalWaitLosses(losses []string, objective string) {
 // registration succeeded; on failure the store's LastRejectReason names the
 // failed check. On success the coalesced timer re-arms to the new lease (the
 // arm runs after the unlock: armGoalWaitTimer takes goalUpdateMu itself).
+// An until_child lease on an already-terminal child catches up immediately
+// (spec §8 terminal-only matching): the registration claims the terminal
+// trigger into pendingWake instead of parking with no guaranteed future
+// notification.
 func (s *Session) registerGoalWait(req goal.WaitKind, now time.Time) (goal.Wait, bool) {
+	// Terminal catch-up pre-read (§3-top discipline): controller/subagent
+	// reads never run under goalUpdateMu. An until_child lease on an
+	// already-terminal child claims the terminal trigger below instead of
+	// parking with no guaranteed future notification (spec §8
+	// terminal-only matching).
+	var catchTrigger string
+	var catchUp bool
+	if req.Kind == goal.WaitUntilChild {
+		catchTrigger, catchUp = s.childTerminalTrigger(req.Target)
+	}
 	s.goalUpdateMu.Lock()
 	w, ok := s.getOrCreateGoalStore().RegisterWait(req, now)
 	if !ok {
 		s.goalUpdateMu.Unlock()
 		return goal.Wait{}, false
+	}
+	if catchUp {
+		if entry, ok := s.getOrCreateGoalStore().ClaimFire(w.Lease.WaitID, catchTrigger, now); ok {
+			_ = entry
+		}
 	}
 	snap, _ := s.getOrCreateGoalStore().Snapshot()
 	full, _ := s.getOrCreateGoalStore().GoalSnapshot()

@@ -70,6 +70,18 @@ func TestVerifyConditionsNamesFailure(t *testing.T) {
 	}
 }
 
+// TestVerifyConditionsDuplicateDescPositional pins the duplicate-Desc join:
+// two conditions sharing one Desc with different truth must not collapse —
+// verification is positional, so the unsatisfied one fails even though a
+// satisfied same-named check exists.
+func TestVerifyConditionsDuplicateDescPositional(t *testing.T) {
+	conds := []Condition{{Desc: "same"}, {Desc: "same"}}
+	checks := []ConditionCheck{{Desc: "same", Satisfied: true}, {Desc: "same", Satisfied: false}}
+	if ok, failing := VerifyConditions(conds, checks); ok || failing != "same" {
+		t.Fatalf("verdict = (%v,%q), want (false,same): positional, not Desc-joined", ok, failing)
+	}
+}
+
 // TestEvaluateExpectationsFileFlip pins claim-time file evaluation: changed
 // baselines satisfy, unchanged do not.
 func TestEvaluateExpectationsFileFlip(t *testing.T) {

@@ -414,16 +414,36 @@ func goalWaitSiblingStopGated(s *Session, sub *subagent) bool {
 }
 
 // claimChildWaitsForTerminal claims s's own until_child leases on a terminal
-// child. ClaimFire's atomicity is the exactly-once guarantee (double-claim
-// collapses to one wake); the coalesced timer re-arms to the new state.
+// child and delivers the wake through the claimed-wake kick path (spec §8):
+// claiming removes the last live lease, so the timer alone would disarm with
+// no kick scheduled — the kick (or the persisted backlog for the next gate
+// when unwired) is what delivers it. ClaimFire's atomicity is the
+// exactly-once guarantee (double-claim collapses to one wake).
 func (s *Session) claimChildWaitsForTerminal(childID, trigger string) {
 	now := s.sclock().Now()
 	s.goalUpdateMu.Lock()
-	claimed := s.getOrCreateGoalStore().ClaimChildWaits(childID, trigger, now)
-	s.goalUpdateMu.Unlock()
-	if claimed {
-		s.armGoalWaitTimer()
+	store := s.getOrCreateGoalStore()
+	full, ok := store.GoalSnapshot()
+	if !ok {
+		s.goalUpdateMu.Unlock()
+		return
 	}
+	objective := full.Objective
+	var claimed []goal.PendingWake
+	for _, w := range full.Waits {
+		if !w.Live() || w.Lease.Kind != goal.WaitUntilChild || w.Lease.Predicate.Target != childID {
+			continue
+		}
+		if entry, ok := store.ClaimFire(w.Lease.WaitID, trigger, now); ok {
+			claimed = append(claimed, entry)
+		}
+	}
+	s.goalUpdateMu.Unlock()
+	if len(claimed) > 0 {
+		s.kickClaimedGoalWake(claimed, objective)
+		return
+	}
+	s.armGoalWaitTimer()
 }
 
 // claimChildWaitsForTerminalOn claims one waiter session's until_child leases.

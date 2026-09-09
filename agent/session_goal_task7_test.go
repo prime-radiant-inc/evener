@@ -397,6 +397,72 @@ func TestGoalChildForwardTerminalClaimsAndDrives(t *testing.T) {
 	}
 }
 
+// TestGoalChildForwardParentKickDelivers pins the parent half of the §8
+// forward: claiming the parent's own until_child into pendingWake also kicks
+// the wake (claiming the last live lease disarms the timer with nothing
+// scheduled) — exactly once, carrying the terminal trigger.
+func TestGoalChildForwardParentKickDelivers(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	kicks := wireKickAndNotify(sess)
+
+	trackSyntheticChild(t, sess, "fwd_child_1", SubagentCompleted, false, false, clk.Now(), false)
+	store := sess.getOrCreateGoalStore()
+	store.Set("wait on the child", clk.Now())
+	if _, ok := store.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "fwd_child_1", Timeout: time.Hour}, clk.Now()); !ok {
+		t.Fatalf("precondition: until_child must register: %q", store.LastRejectReason())
+	}
+	var doneChild *subagent
+	for _, sub := range sess.subagents.directSubagents() {
+		if sub.id == "fwd_child_1" {
+			doneChild = sub
+		}
+	}
+	if doneChild == nil {
+		t.Fatal("precondition: terminal child should be tracked")
+	}
+	sess.forwardChildTerminalToWaits(doneChild)
+	if *kicks != 1 {
+		t.Fatalf("kicks = %d, want exactly 1 (the forwarded wake)", *kicks)
+	}
+	if full, _ := store.GoalSnapshot(); len(full.PendingWake) != 1 || !strings.Contains(full.PendingWake[0].Trigger, "fwd_child_1") {
+		t.Fatalf("pendingWake = %+v, want the terminal-child claim", full.PendingWake)
+	}
+}
+
+// TestGoalChildRegisterTerminalCatchesUp pins the registration catch-up
+// (spec §8 terminal-only matching): an until_child lease on an
+// already-terminal child claims the terminal trigger at registration
+// instead of parking with no guaranteed future notification.
+func TestGoalChildRegisterTerminalCatchesUp(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	trackSyntheticChild(t, sess, "done_before_register", SubagentCompleted, false, false, clk.Now(), false)
+	store := sess.getOrCreateGoalStore()
+	store.Set("wait on the done child", clk.Now())
+	w, ok := sess.registerGoalWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "done_before_register", Timeout: time.Hour}, clk.Now())
+	if !ok {
+		t.Fatalf("precondition: until_child on a known descendant must register: %q", store.LastRejectReason())
+	}
+	full, _ := store.GoalSnapshot()
+	if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != w.Lease.WaitID {
+		t.Fatalf("pendingWake = %+v, want the terminal catch-up claim for %q", full.PendingWake, w.Lease.WaitID)
+	}
+	if !strings.Contains(full.PendingWake[0].Trigger, "done_before_register") {
+		t.Fatalf("catch-up trigger = %q, must carry the terminal child identity", full.PendingWake[0].Trigger)
+	}
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, "done_before_register") {
+		t.Fatalf("gate = (%q, %v), want the catch-up wake drive", prompt, cont)
+	}
+}
+
 // TestGoalChildForwardSiblingWakeDelivers pins Important-3: a forward that
 // claims a live sibling waiter's until_child must also DELIVER the wake —
 // claiming into the store without driving strands it (delegate children own

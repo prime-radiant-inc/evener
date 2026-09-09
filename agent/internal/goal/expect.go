@@ -213,23 +213,21 @@ type ConditionCheck struct {
 // (spec §6): pure over the given claim-time checks. Empty conditions mean the
 // v1 self-declare path (satisfied=true, no failure). With conditions, every
 // check must be satisfied; the first unsatisfied check fails with its desc
-// named. Cost scales with the claim (no continuous ticks).
+// named. Positional: checks[i] answers conds[i] (EvaluateExpectations builds
+// them in order) — never joined by Desc, so duplicate descriptions cannot
+// collapse two conditions into one truth. Cost scales with the claim (no
+// continuous ticks).
 func VerifyConditions(conds []Condition, checks []ConditionCheck) (satisfied bool, failing string) {
 	if len(conds) == 0 {
 		return true, ""
 	}
-	byDesc := make(map[string]bool, len(checks))
-	for _, c := range checks {
-		byDesc[c.Desc] = c.Satisfied
-	}
-	for _, cond := range conds {
-		if sat, ok := byDesc[cond.Desc]; ok {
-			if !sat {
-				return false, cond.Desc
-			}
-			continue
+	for i, cond := range conds {
+		if i >= len(checks) {
+			return false, cond.Desc
 		}
-		return false, cond.Desc
+		if !checks[i].Satisfied {
+			return false, cond.Desc
+		}
 	}
 	return true, ""
 }

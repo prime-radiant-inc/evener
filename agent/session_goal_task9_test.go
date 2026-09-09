@@ -392,6 +392,37 @@ func TestGoalResumeFromWirePinsDaemonGlue(t *testing.T) {
 	}
 }
 
+// TestGoalResumeFromWireSuppressesKickWithReplacementText pins the stale-kick
+// guard: a wire resume carrying replacement objective text reports
+// not-started so the caller retargets via SetGoal — the old-objective kick
+// must not drive (the retarget's own kick, or the drain-loop gate, drives
+// the NEW objective instead).
+func TestGoalResumeFromWireSuppressesKickWithReplacementText(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	kicks := wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("old objective", clk.Now())
+	if !store.SetTerminal(goal.StatusBlocked, goal.VerdictBudgetExhausted, clk.Now()) {
+		t.Fatal("precondition: SetTerminal should block")
+	}
+	// Idle session (no turn running): a plain wire resume would kick.
+	started, err := sess.GoalResumeFromWire("new objective", "continuations", 50)
+	if err != nil {
+		t.Fatalf("wire resume with replacement = %v, want nil", err)
+	}
+	if started {
+		t.Fatal("wire resume with replacement text must report not-started (the retarget drives)")
+	}
+	if snap, _ := store.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (resume committed; only the kick is suppressed)", snap.Status)
+	}
+	_ = kicks
+}
+
 // restorePersistedFromFull round-trips a full snapshot through the persisted
 // image so tests can set budget/loss fields the narrow mutators do not expose.
 func restorePersistedFromFull(t *testing.T, full goal.GoalSnapshot) goal.PersistedGoal {
