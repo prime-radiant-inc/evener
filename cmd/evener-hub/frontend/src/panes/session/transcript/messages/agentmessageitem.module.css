@@ -16,6 +16,9 @@
    * tight. The larger steps live on the user message (exchange) and the
    * turn separator (group). */
   padding: var(--rhythm-line) 0;
+  /* Containing block for the mid-exchange .stamp's out-of-flow rail
+   * position (see below). */
+  position: relative;
 }
 
 /* The agent's answer is the document, not a bubble (typography-spacing-
@@ -97,6 +100,56 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
+}
+
+/* The mid-exchange fragment's relative time is a margin note, not a caption
+ * line (Jesse, 2026-09-08): rendered as its own line above the prose it used
+ * to add a row of vertical height to every fragment. The BASE treatment,
+ * applying at every width (so no fractional viewport can fall between two
+ * media queries onto an unstyled span): in flow on its own line AFTER the
+ * bubble (DOM order), right-justified, italic, snug under the content it
+ * times. */
+.stamp {
+  display: block;
+  text-align: right;
+  font-style: italic;
+}
+
+/* When the transcript list has room, the stamp leaves the flow and becomes a
+ * right-margin note: absolute against .message, whose right edge IS the
+ * transcript column's right edge on mid-exchange rows (runContent pads only
+ * the left) - one gap step outside the column, aligned with the first prose
+ * line, adding no vertical height. The top offset is message padding
+ * (--rhythm-line) + the continuation bubble's --rhythm-item top margin +
+ * bubble padding (--rhythm-line).
+ *
+ * The query is CONTAINER-based (the virtual list's .root is the nearest
+ * query container), never viewport-based: a window-wide dock split narrows
+ * the pane without narrowing the window, and a viewport media query would
+ * leave the flow there and let overflow-x: clip cut the stamp away
+ * (roborev, PR 1041). 55rem = the 44rem measure + 11rem so each centered
+ * side has ~88px for gap + stamp; where the container is narrower the base
+ * in-flow treatment simply stays. A surface with no query container (a bare
+ * harness) never matches and keeps the base too. */
+@container (min-width: 55rem) {
+  .stamp {
+    position: absolute;
+    top: calc(var(--rhythm-item) + 2 * var(--rhythm-line));
+    left: calc(100% + var(--space-3));
+    white-space: nowrap;
+  }
+}
+
+/* The wide transcript measure (64rem column) eats the margin the 55rem
+ * floor counts on; until the container is 75rem the stamp keeps the base
+ * in-flow treatment. top/left are inert on a static box, but the rail's
+ * nowrap is NOT - white-space applies to in-flow boxes too - so wrapping
+ * is reverted explicitly alongside position. */
+@container (min-width: 55rem) and (max-width: 75rem) {
+  body[data-transcript-measure="wide"] .stamp {
+    position: static;
+    white-space: normal;
+  }
 }
 
 /* The live stream wrapper. Its only job is the streaming caret - the design
