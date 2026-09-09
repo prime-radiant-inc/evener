@@ -1,0 +1,45 @@
+{
+  "schema": "evener.ios.demo-archive.v1",
+  "observedAt": "2026-09-09T01:59:37.575379+00:00",
+  "source": "5e642fc20308dd3f8948aafe2edabf205507104a",
+  "archivePath": "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive",
+  "appPath": "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Products/Applications/Evener.app",
+  "validation": {
+    "identity": {
+      "CFBundleIdentifier": "com.primeradiant.evener.native",
+      "CFBundleShortVersionString": "0.1.0",
+      "CFBundleVersion": "1",
+      "UIDeviceFamily": [
+        1
+      ],
+      "DTPlatformName": "iphoneos"
+    },
+    "architecture": "arm64",
+    "applicationIdentifier": "87WJ58S66M.com.primeradiant.evener.native",
+    "profileUUID": "9e93be5d-e06f-4e76-8236-d18c27d90473",
+    "profileName": "iOS Team Provisioning Profile: *",
+    "profileExpires": "2027-08-22T05:17:42",
+    "signing": "Apple Development",
+    "getTaskAllow": true,
+    "codeSignVerifyExit": 0,
+    "archiveExit": 0
+  },
+  "files": {
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/invocation.json": "36ea51aff0d5fe6bff116478093b49f246bfc18c207285063a084e4989a68fdf",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/archive-exit.json": "fa285e3f9c01763476bbc5bb507ea21ca4e118ff01ba8ce9d5c89c5815ecfe08",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/archive.log": "345e8c34e588bcd0e3e4aedd7258e4f12470323ebfa5c41b14bcba1b1458b60a",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/validation.json": "19c08d92e88e7311e0d4ece21fd80712d63e7e270a9989621697e01231cbd5d3",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/signature-verification.txt": "1d69af4ee5389ce18c9a7a9a36777693f0e87d99b4a6d6df6c4b1f3dec7dc03e",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Products/Applications/Evener.app/Evener": "f95051cb3680d424954513400bc493f3371a438ed58f5ad108056408e129e5a6",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Products/Applications/Evener.app/main.jsbundle": "63f6483666ac7340e951ab93a618e6d4e74e82dbdbdcebcc0499bc9eaacc6c6b",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Products/Applications/Evener.app/Info.plist": "ddca22e43ab45a9a9fb8d5abaf21355a8d0d10d94fb0be03221764c8aa79c3eb",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Products/Applications/Evener.app/embedded.mobileprovision": "018a52f633a7cf504bddc248cf3a49aaed1945392a5e667707fd222981256ecc",
+    "/private/tmp/evener-first-demo-archive-5s4t26yg/Evener.xcarchive/Info.plist": "9dcf574dd5f14957c123262afc4947f6873d2e4c204799daea82199d7d611291"
+  },
+  "limitations": [
+    "Development-signed device archive, not an App Store distribution IPA. No TestFlight upload, processing, tester assignment or installation is claimed.",
+    "No new Apple signing identity/profile was issued and no automatic provisioning updates were requested.",
+    "Build number 1 is local archive preparation only; App Store Connect must confirm an unused version/build immediately before actual upload.",
+    "The new device binary has passed archive/signature checks, not physical-device runtime acceptance. Simulator journey evidence identifies its separate installed artifact."
+  ]
+}

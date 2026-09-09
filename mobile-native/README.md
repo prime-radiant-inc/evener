@@ -70,7 +70,7 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
-The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md) records the newer vision-control iPhone artifact `bc519b1c1`, 692 native tests plus TypeScript, shared checks and host-executed real-hub controller qualification. Native vision interaction and the integrated Usable journey remain pending; the reader-specific evidence below retains its earlier artifact identity.
+The [8 September execution checkpoint](../docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md) records the current `bfe632f44` iPhone simulator artifact, one valid native creation, all three vision choices, uncertainty recovery, 698 native tests plus TypeScript, shared checks and host-executed real-hub controller qualification. The integrated Usable journey and physical-device checks remain pending; the reader-specific evidence below retains its earlier artifact identity.
 
 ## Current scope
 
@@ -154,8 +154,9 @@ generated development signing configuration and is not a store release.
 A real isolated test hub needs current provider configuration (`schema = 2`,
 `[providers.fake]`, `base = "openai-compatible"`). Put `launch.toml` in its
 XDG config directory alongside `providers.toml`, not its state directory.
-Use `test/e2e/fakellm/cmd` at the provider boundary and separate HOME/XDG
-directories; do not connect these tests to production sessions.
+Use `test/e2e/fakellm/cmd` at the provider boundary. Keep the inherited `HOME`
+and an isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME` for test configuration and
+state; do not connect these tests to production sessions.
 
 Connect native clients directly to an authenticated test hub. Do not introduce
 WebSocket forwarding or fault-injection proxies: they trigger security review
