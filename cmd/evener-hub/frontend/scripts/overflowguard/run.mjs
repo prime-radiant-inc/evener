@@ -504,6 +504,28 @@ async function verifyChatFocus(cdpEndpoint, url) {
   }
 }
 
+// The reload-shaped column regression: a settled transcript whose final turn
+// ends in intent-bearing tool calls projects that trailing run as a top-level
+// virtual-list row with no .turn wrapper, so it takes the full pane width
+// while every turn above it is clamped to --session-measure and centered. The
+// horizontal-overflow scan cannot see this (nothing escapes a scroller), so
+// this compares the two boxes directly. 1024px: wide enough that the 44rem
+// measure leaves visible margins on both sides.
+async function verifyIntentColumn(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 1024, height: 900, mobile: false });
+    await navigateTo(page, url);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return await evaluate(send, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 function assertFieldsets(detail, label) {
   const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
@@ -1024,6 +1046,23 @@ async function main() {
       console.log(`Chat focus transition ... FAIL - ${JSON.stringify(chatFocus)}`);
     } else {
       console.log("Chat focus transition ... PASS - closed action summary visibly owns focus");
+    }
+
+    const intentColumn = await verifyIntentColumn(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?intenttail=1&w=1024`,
+    );
+    if (
+      !intentColumn.groupFound ||
+      intentColumn.turnLeft === null ||
+      intentColumn.turnRight === null ||
+      Math.abs(intentColumn.groupLeft - intentColumn.turnLeft) > GEOMETRY_TOLERANCE ||
+      Math.abs(intentColumn.groupRight - intentColumn.turnRight) > GEOMETRY_TOLERANCE
+    ) {
+      failed++;
+      console.log(`intent group column ... FAIL - ${JSON.stringify(intentColumn)}`);
+    } else {
+      console.log("intent group column ... PASS - top-level intent group shares the turn content column");
     }
 
     const panelCollapse = await verifyPanelCollapse(
