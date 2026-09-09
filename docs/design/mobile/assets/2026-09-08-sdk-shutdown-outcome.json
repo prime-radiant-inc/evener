@@ -1,0 +1,102 @@
+{
+  "schema": "evener.sdk.shutdown.outcome.v1",
+  "status": "accepted-request-closed-notification-daemon-exit-unqualified",
+  "verifiedAt": "2026-09-08",
+  "scope": "isolated scripted-provider real hub; no live model or shared hub",
+  "source": {
+    "fixtureRoot": "/private/tmp/evener-sdk-compact-durable2.tNOfJS",
+    "driver": {
+      "path": "/tmp/driver-compact-durable2.mjs",
+      "sha256": "989c90738b8dca56e4ec9d15f19be54775cf864aa9ef313a910ee2cae2a71020"
+    },
+    "fixture": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/fixture.py",
+      "sha256": "47456102b0da6857d5b3c51867846d18f584ac5d0588d5a9f82ae4f3411ef15c"
+    },
+    "rawCapture": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/run/raw.json",
+      "sha256": "aabdc8611773f9cc955422f5041088ebd9cf0f25042bbdcf3a98c3566ae65855",
+      "mode": "0600"
+    },
+    "result": {
+      "path": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/run/result.json",
+      "sha256": "a3481d839cb2ded3f6588b53ff654690c36b49b9f58bb580b4cdb2f44dfb199f",
+      "mode": "0600"
+    },
+    "binaryHashes": {
+      "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+      "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+    }
+  },
+  "target": {
+    "ref": "local:034LbxvFbZ1gvjTjbtLjy5",
+    "instanceId": "034LbxvFbZ1gvjTjbtLjy5",
+    "daemonPid": 42533,
+    "fixtureHubPid": 41875,
+    "fixtureProviderPid": 41860
+  },
+  "observer": {
+    "registeredBefore": [
+      "hub.connect",
+      "thread/start",
+      "turn/start seeds",
+      "thread/compact/start",
+      "turn/start follow-up",
+      "thread/shutdown"
+    ],
+    "notificationFilterIncluded": [
+      "thread/closed",
+      "thread/status/changed",
+      "turn/started",
+      "turn/completed",
+      "item/started",
+      "item/completed"
+    ]
+  },
+  "request": {
+    "method": "thread/shutdown",
+    "params": {
+      "ref": "local:034LbxvFbZ1gvjTjbtLjy5",
+      "expectedInstanceId": "034LbxvFbZ1gvjTjbtLjy5",
+      "clientMutationId": "generated-and-recorded-in-raw-capture"
+    },
+    "response": {}
+  },
+  "ack": {
+    "method": "thread/closed",
+    "reason": "session_closed",
+    "ref": "local:034LbxvFbZ1gvjTjbtLjy5",
+    "threadId": "034LbxvFbZ1gvjTjbtLjy5",
+    "observedAfterRequest": true
+  },
+  "daemonExit": {
+    "pid": 42533,
+    "commandLog": "/private/tmp/evener-sdk-compact-durable2.tNOfJS/state/evener/run/logs/daemon-034LbxvFbZ1gvjTjbtLjy5.log",
+    "listeningLogObserved": true,
+    "hubLaunchRecordObserved": true,
+    "absentOnPostShutdownInspection": true,
+    "qualification": "unqualified",
+    "reason": "Hub launch log records PID and daemon log records listening, while post-shutdown ps found it absent; process-cleanup initial discovery occurred after daemon exit and did not independently prove it was alive immediately before shutdown."
+  },
+  "cleanup": {
+    "fixtureOwnedProcessesStopped": true,
+    "remainingOwnedProcesses": [],
+    "rootLiveHubUntouched": true,
+    "simulatorUntouched": true
+  },
+  "limitation": "Accepted shutdown request and exact matching closed notification are qualified in this isolated fixture. Daemon exit is reported as observed post-shutdown absence only, not qualified temporal exit proof.",
+  "buildMetadata": {
+    "evener": {
+      "goVersion": "go1.27.0",
+      "module": "primeradiant.com/evener/cmd/evener",
+      "revision": "6a0278e36331",
+      "dirty": true
+    },
+    "evener-dev": {
+      "goVersion": "go1.27.0",
+      "module": "primeradiant.com/evener/cmd/evener-dev/bin",
+      "revision": "6a0278e36331",
+      "dirty": true
+    }
+  }
+}

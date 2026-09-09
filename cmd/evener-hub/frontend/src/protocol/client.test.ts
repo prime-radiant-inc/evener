@@ -583,6 +583,37 @@ describe("AppwireClient", () => {
     await expect(reqPromise).resolves.toEqual({ data: [], nextCursor: "" });
   });
 
+  test("keeps overlapping same-id RPCs isolated across two hubs", async () => {
+    const socketA = new FakeSocket({ autoInitialize: true });
+    const socketB = new FakeSocket({ autoInitialize: true });
+    const clientA = new AppwireClient({ url: "ws://hub-a/rpc", socketFactory: () => socketA });
+    const clientB = new AppwireClient({ url: "ws://hub-b/rpc", socketFactory: () => socketB });
+
+    await Promise.all([connectReady(socketA, clientA), connectReady(socketB, clientB)]);
+    const params = { ref: "local:shared-session", includeTurns: false, subscribe: false };
+    const pendingA = clientA.request("thread/read", params);
+    const pendingB = clientB.request("thread/read", params);
+    const frameA = JSON.parse(socketA.sent.at(-1) ?? "{}");
+    const frameB = JSON.parse(socketB.sent.at(-1) ?? "{}");
+    expect(frameA.id).toBe(frameB.id);
+
+    socketB.receive({ id: frameB.id, result: { thread: { id: "hub-b" } } });
+    expect(await pendingB).toEqual({ thread: { id: "hub-b" } });
+    socketA.receive({ id: frameA.id, result: { thread: { id: "hub-a" } } });
+    expect(await pendingA).toEqual({ thread: { id: "hub-a" } });
+
+    const pendingClosed = clientA.request("thread/read", params);
+    const pendingStillLive = clientB.request("thread/read", params);
+    const closedFrame = JSON.parse(socketA.sent.at(-1) ?? "{}");
+    const liveFrame = JSON.parse(socketB.sent.at(-1) ?? "{}");
+    expect(closedFrame.id).toBe(liveFrame.id);
+    clientA.close();
+    await expect(pendingClosed).rejects.toThrow();
+    socketB.receive({ id: liveFrame.id, result: { thread: { id: "hub-b-after-close" } } });
+    await expect(pendingStillLive).resolves.toEqual({ thread: { id: "hub-b-after-close" } });
+    clientB.close();
+  });
+
   test("request rejects with WireError on error response", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     const client = new AppwireClient({

@@ -112,7 +112,7 @@ The native test runner exercises controllers and headless shared code. Do not ad
 - [ ] Build the intended Release source using normal signing, install on the owned simulator, and prepare signed development installation on a physical iPhone using the available authorized identity. Do not disable signing to make SecureStore appear to build successfully.
 - [ ] Start an authenticated disposable v4 hub using the real Evener daemon and a scripted provider. Reuse the setup from [multiple hubs](../../design/mobile/multiple-hubs.md) and `test/e2e/fakellm/cmd`; do not trust old `/tmp` paths or historical PIDs as live fixtures.
 - [ ] Add the hub, verify credential persistence, select a known project/session, relaunch and reconnect. On the phone use the actual reachable host address, not simulator loopback.
-- [ ] Check invalid bearer, unreachable hub and incompatible protocol version: show a useful error and an explicit recovery path; retain the profile/draft.
+- [x] Check invalid bearer, unreachable hub and incompatible protocol version: native recovery controls and profile/draft retention are recorded in the [scoped connection receipt](../../design/mobile/assets/2026-09-08-native-connection-errors.json). The incompatible response uses a direct fixed-response transport fixture.
 - [ ] Retain native/backend/SDK hashes, device/OS, fixture configuration fingerprint, command exit results and scoped observations in the acceptance record. Commit a fix only if needed.
 
 ```sh
