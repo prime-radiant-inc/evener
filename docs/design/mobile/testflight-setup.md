@@ -8,7 +8,11 @@ setup and acceptance gates; it does not claim a live TestFlight build.
 - The checked-in [TestFlight workflow](../../../.github/workflows/ios-testflight.yml) is manual-only. Local source inspection does not establish its availability on a remote dispatch branch.
 - Local Fastlane sources are [Fastfile](../../../mobile-native/fastlane/Fastfile), [Appfile](../../../mobile-native/fastlane/Appfile), and [distribution helper](../../../mobile-native/scripts/configure-ios-distribution.rb).
 - The signed device artifact formerly used for development evidence is currently absent (`mobile-native/ios/build-device/Build/Products/Release-iphoneos/Evener.app` was checked on 8 September). Cached development profile metadata remains under `~/Library/Developer/Xcode/UserData/Provisioning Profiles`; no distribution identity or profile is verified.
-- Safari is available as a native browser. Keychain Access search identified the Apple account identifier `jesse@fsck.com` in the Xcode account token metadata. Safari reached `appstoreconnect.apple.com/apps` authenticated as Jesse Vincent. The Developer account page reports Team ID `87WJ58S66M`, enrollment as Individual, and Account Holder status in App Store Connect Users and Access. Users and Access shows one user with Account Holder and Admin roles and All Apps access. Searching App Store Connect for `com.primeradiant.evener.native` returned no results; visible apps are Wordiest Classic, Share a Contact, and Public Transit. Apple displays an updated Developer Program License Agreement requiring Account Holder acceptance before apps can be updated or submitted. No agreement was accepted and no app, group, key, certificate, or profile was changed.
+- Safari authenticated as Jesse Vincent. Apple Developer team `87WJ58S66M` is an Individual enrollment; App Store Connect shows Account Holder/Admin access. Jesse accepted the updated agreement; the Developer portal recorded acceptance on 8 September 2026 and the old App Store Connect agreement banner is now absent. A membership renewal notice remains (25 September 2026); no renewal purchase was made.
+- The explicit App ID `com.primeradiant.evener.native` is registered as Evener with no optional capabilities. App Store Connect app **Evener**, Apple ID `6809994028`, uses that bundle ID and SKU, English (U.S.), Full Access and iOS. Its initial store version is `1.0` (Prepare for Submission); source marketing version remains `0.1.0`. Reconcile the intended version before archive/upload.
+- The empty internal TestFlight group **Evener Internal** exists, ID `7ea9cf9b-bb33-46ca-a975-208903052b56`, with automatic distribution enabled and zero testers/builds. No invitations or messages were sent.
+- App Store Connect API access is approved. No active Team key exists; a broader existing individual key was left untouched. The reviewed key proposal is **Evener TestFlight CI**, App Manager role. This is the minimum role for the current build/group management flow; Apple Team keys cover all apps on the team. The final form is prepared, but creation awaits Jesse's action-time confirmation required by the computer-use tool policy for new persistent access. No key material has been generated or downloaded. Intended protected local directory: `~/.local/state/evener/apple-distribution/87WJ58S66M` (directory 0700, credential files 0600).
+- No Apple Distribution certificate or iOS App Store provisioning profile is verified. Existing Mac Developer ID certificates cannot supply iOS distribution signing. The account's observed development certificates/profile remain separate from this gate.
 
 ## Required GitHub configuration
 
@@ -55,13 +59,17 @@ exact configured name; Fastlane rejects zero, multiple, or external matches.
 
 ## Remaining checklist
 
-- [ ] Jesse reviews and accepts the updated Apple Developer Program License Agreement. The coordinator opened its review page in Safari; the Agree button remains untouched.
-- [ ] Apple account owner confirms ASC app/team and internal group.
-- [ ] Organization owner confirms where shared Apple credentials are managed.
+- [x] Jesse accepted the updated Apple Developer Program License Agreement; the stale banner cleared.
+- [x] App, team and empty internal group verified.
+- [ ] Generate the reviewed Team API key after the pending action-time confirmation; verify read-only authentication.
+- [ ] Create or supply matching iOS Distribution signing assets and verify profile identity.
+- [ ] Verify where the shared organization credentials can be used; prior organization secret-metadata access was denied, so availability remains unknown.
 - [ ] Supply the seven secrets and two variables above without exposing values.
-- [ ] Choose an unused build number for the current marketing version.
+- [ ] Reconcile the app/store marketing version and choose an unused build number.
 - [ ] Run the manual workflow and retain its receipt/artifacts.
 - [ ] Complete physical iPhone TestFlight install, smoke journey, and update gate.
 
-No upload, dispatch, credential issuance, app/group mutation, push, or publish was
-performed during this setup pass.
+App ID, app record and empty group setup were performed. No upload, dispatch,
+credential issuance, invitation, push or publication has occurred.
+
+Role and scope references: [Apple API keys](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api), [Apple build group permissions](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-testers-to-builds/) and [Fastlane pilot roles](https://docs.fastlane.tools/actions/pilot/).

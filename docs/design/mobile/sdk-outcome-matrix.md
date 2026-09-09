@@ -40,15 +40,15 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 | `evener/jobs/output` | both | U | U | U | U | U | U |
 | `evener/thread/transcripts/list` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): transcriptTargets and outputs transcripts.json. | U | U | U | U | U |
 | `evener/subagentPreview` | hub | RECORDED — [sdk-lineage-receipt](assets/sdk-lineage-receipt.json): previewItems=5 and previewTruncated=true. | U | U | U | U | U |
-| `evener/paths/complete` | hub | U | U | U | U | U | U |
-| `evener/dirs/create` | hub | U | U | U | U | U | U |
-| `evener/projects/recent` | hub | U | U | U | U | U | U |
+| `evener/paths/complete` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): exact owned-prefix file and directory completion. | U | U | U | U | U |
+| `evener/dirs/create` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): nested directory exists; second create reports existing. | RECORDED — same receipt: conflicting regular file returns -32013; contents preserved. | U | U | U | U |
+| `evener/projects/recent` | hub | RECORDED — [path outcomes](assets/2026-09-08-sdk-paths-outcomes.json): empty owned-hub response at limit 15; populated ordering unqualified. | U | U | U | U | U |
 | `evener/path/validate` | hub | U | U | U | U | U | U |
 | `evener/git/head` | hub | U | U | U | U | U | U |
 | `evener/mobile/pairing` | hub | U | U | U | U | U | U |
 | `evener/navigation/read` | hub | RECORDED — [attention producer](assets/2026-09-08-sdk-attention-producer.json): authoritative manifest snapshots before/after held turn; final summary equals exact event summary. Other resources and races remain unreviewed. | U | U | U | U | U |
-| `evener/favorite/set` | hub | U | U | U | U | U | U |
-| `evener/archive/set` | hub | U | U | U | U | U | U |
+| `evener/favorite/set` | hub | RECORDED — [saved-item outcomes](assets/2026-09-08-sdk-saved-items-outcomes.json): exact owned project toggles true/false with authoritative catalog readback. | U | U | U | U | U |
+| `evener/archive/set` | hub | RECORDED — [saved-item outcomes](assets/2026-09-08-sdk-saved-items-outcomes.json): exact owned project moves to archived catalog and returns to active catalog; navigation targets and revisions retained. | U | U | U | U | U |
 | `evener/project/delete` | hub | U | U | U | U | U | U |
 | `evener/session/delete` | hub | U | U | U | U | U | U |
 | `evener/pin-section/rename` | hub | U | U | U | U | U | U |
@@ -104,7 +104,7 @@ Failure and lifecycle columns require method-specific review of actual handlers 
 
 ## Review progress and next order
 
-This index has 43 narrowly recorded success/effect cells. The other 47 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
+This index has 48 narrowly recorded success/effect cells. The other 42 supported methods and remaining failure/lifecycle cells still need indexing or qualification. The interrupt receipt was independently reviewed and coordinator-audited against its immutable binaries, installed SDK, driver and raw captures; its count was corrected to two provider requests, separate from four observation records. Existing broader evidence remains in [protocol coverage](protocol-coverage.md), [management evidence](sdk-management-evidence.md) and the dated receipts; it has not been invalidated by an unreviewed cell here.
 
 1. Index existing receipts and raw assertions before creating duplicate fixtures. Verify actual installed SDK execution, exact target/operation and authoritative effect.
 2. Review mutation identity, stale binding and lost-reply outcomes for send, queue, decisions and lifecycle operations needed by the active iPhone journey.
