@@ -1631,9 +1631,9 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
       onToggleSummary={() => {}}
     />,
   );
-  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
-  const chevron = bodyTrigger.querySelector("[data-open]");
-  expect(chevron?.getAttribute("data-open")).toBe("false");
+  // The chevron rides inline in the summary, not inside the overlay button.
+  const chevron = screen.getByTestId("tool-row-body-chevron");
+  expect(chevron.getAttribute("data-open")).toBe("false");
   rerender(
     <ToolRow
       summary="npm test -- src/foo"
@@ -1646,9 +1646,48 @@ test("two-level: the body chevron's chevron span rotates with expanded state", (
       onToggleSummary={() => {}}
     />,
   );
-  const bodyTriggerOpen = screen.getByTestId("tool-row-body-trigger");
-  const chevronOpen = bodyTriggerOpen.querySelector("[data-open]");
-  expect(chevronOpen?.getAttribute("data-open")).toBe("true");
+  const chevronOpen = screen.getByTestId("tool-row-body-chevron");
+  expect(chevronOpen.getAttribute("data-open")).toBe("true");
+});
+
+test("two-level: the body chevron rides inline at the end of the summary text, not in the overlay button", () => {
+  render(
+    <ToolRow
+      summary="npm test -- src/foo"
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  // The chevron span is a child of the summary (inline at the end of the
+  // text)...
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.contains(screen.getByTestId("tool-row-body-chevron"))).toBe(true);
+  // ...and the overlay button is empty - it carries the click target only.
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")).toBeNull();
+});
+
+test("two-level: a summary-less line keeps the body chevron inside the button", () => {
+  render(
+    <ToolRow
+      summary=""
+      intent="Running the foo tests"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  expect(bodyTrigger.querySelector("[data-open]")?.getAttribute("data-open")).toBe("false");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
 // --- the intent-trailing control and the clamp's clip ------------------------
