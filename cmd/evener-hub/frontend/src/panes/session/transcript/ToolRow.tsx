@@ -448,6 +448,29 @@ export function ToolRow({
     );
   }
 
+  // When the summary is not visible but the body is expanded, the body
+  // chevron rides the intent line (data-intent-trailing makes the intent
+  // button shrink to share it). When the summary is visible, the body
+  // chevron rides INLINE at the end of the summary text - a sibling of the
+  // words it opens, never sprung to the line's far edge - while the
+  // .bodyTrigger button stays behind it as an empty full-line overlay so
+  // the whole line still toggles the body.
+  const bodyTriggerOnIntentLine = twoLevel && !summaryVisible && expanded;
+  const bodyTriggerOnSummaryLine = twoLevel && summaryVisible;
+  // The inline slot exists only when there is summary text to carry the
+  // chevron; a summary-less line keeps the chevron inside the button.
+  const bodyChevronInline = bodyTriggerOnSummaryLine && hasSummary;
+  const bodyChevron = (
+    <span
+      className={CLASS.chevron}
+      aria-hidden="true"
+      data-open={expanded ? "true" : "false"}
+      data-testid="tool-row-body-chevron"
+    >
+      <Chevron />
+    </span>
+  );
+
   const summaryContent = (
     <>
       {hasSummary && (
@@ -474,6 +497,12 @@ export function ToolRow({
           {hasIntent && trailing && anchorSplit === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
+          {/* The two-level body chevron rides inline at the end of the summary
+              text, after the trailing control - the same end-of-text slot the
+              grammar gives every chevron. The .bodyTrigger overlay button
+              (below) carries the click target; this span sits inside the
+              pointer-events-none .summary, so it never double-hits. */}
+          {bodyChevronInline ? bodyChevron : null}
         </span>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An
@@ -498,9 +527,11 @@ export function ToolRow({
   // coexists with the intent button's summary disclosure in two-level mode.
   // On the summary line it is an OVERLAY (absolute, full width/height) so the
   // entire summary line is clickable to toggle the body — same pattern as the
-  // intent-less overlay trigger. The chevron rides at the end as a visual
-  // indicator. On the intent line (summary hidden, body expanded) it is a
-  // normal flex item beside the intent button.
+  // intent-less overlay trigger. Its chevron rides INLINE at the end of the
+  // summary text instead (the span rendered inside .summary above), so it hugs
+  // the words it opens; only a summary-less line keeps the chevron inside the
+  // button. On the intent line (summary hidden, body expanded) it is a normal
+  // flex item beside the intent button.
   const bodyTriggerButton = twoLevel ? (
     <button
       type="button"
@@ -511,17 +542,9 @@ export function ToolRow({
       aria-label={summaryLabel}
       onClick={() => onToggle?.()}
     >
-      <span className={CLASS.chevron} aria-hidden="true" data-open={expanded ? "true" : "false"}>
-        <Chevron />
-      </span>
+      {bodyChevronInline ? null : bodyChevron}
     </button>
   ) : null;
-  // When the summary is not visible but the body is expanded, the body
-  // chevron rides the intent line (data-intent-trailing makes the intent
-  // button shrink to share it). When the summary is visible, the body
-  // chevron rides the end of the summary line instead.
-  const bodyTriggerOnIntentLine = twoLevel && !summaryVisible && expanded;
-  const bodyTriggerOnSummaryLine = twoLevel && summaryVisible;
 
   // Intent button attributes differ between two-level and legacy modes.
   // In two-level mode the intent button controls the summary disclosure;

@@ -341,13 +341,22 @@
 }
 
 /* When a .bodyTrigger chevron shares the summary line (two-level disclosure at
-   tools/activity/full), the demoted summary must leave room for it instead of
-   demanding 100% — otherwise the chevron's intrinsic width overflows the
-   container. flex-shrink:1 and flex-basis:auto let the summary shrink to fit
-   alongside the flex:none body trigger; min-width:0 + the .clamped
-   overflow:hidden clip the nowrap text to the shrunken width. */
+   tools/activity/full), the chevron rides INLINE at the end of the summary
+   text (ToolRow's bodyChevronInline) and the button is an empty OVERLAY, so
+   the demoted summary can keep its full basis: nothing else needs a share of
+   the line. The overlay is absolute (out of flow) and takes no width. */
 .summaryLine[data-body-trigger="true"] {
   position: relative;
+}
+
+/* The body chevron rides INLINE at the end of the summary text (ToolRow's
+   bodyChevronInline). Inside the collapsed line's .clamped flex row it is a
+   flex-none item that never shrinks - the head's ellipsis absorbs the
+   pressure, the same seat .summaryTrailing takes. Scoped by [data-open]
+   (every .chevron carries it) so specificity does not descend below the
+   .chevron base rule. */
+.clamped [data-open] {
+  flex: none;
 }
 
 .summaryLine[data-body-trigger="true"] .bodyTrigger {
@@ -369,11 +378,6 @@
 .summaryLine[data-body-trigger="true"] .summary select,
 .summaryLine[data-body-trigger="true"] .summary textarea {
   pointer-events: auto;
-}
-
-.summaryLine[data-body-trigger="true"] .demoted {
-  flex: 0 1 auto;
-  min-width: 0;
 }
 
 /* The COLLAPSED second line's truncation (ToolRow.tsx's grammar): a
