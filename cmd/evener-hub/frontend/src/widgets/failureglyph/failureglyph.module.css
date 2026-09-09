@@ -1,9 +1,25 @@
 /* failureglyph is allowlisted (src/styles/token-contract.test.ts) for
  * --danger: marking a failure IS this widget's whole purpose, so the hue is
  * its content, not decoration. */
+/* align-self: flex-start + height: 1lh: in a baseline-aligned flex row
+ * (toolcallitem's .row), an inline-flex wrapper with no text has its
+ * baseline at its bottom edge, so baseline alignment seats the cross too
+ * low (or, when a taller flex line raises the line box, too high).
+ * flex-start + 1lh pins it to line 1, matching .rowIcon and .status. */
 .glyph {
   display: inline-flex;
   flex: none;
+  align-self: flex-start;
+  height: 1lh;
+  font-size: var(--font-size-ui);
   align-items: center;
   color: var(--danger);
+}
+
+/* On intent-bearing tool rows (toolcallitem's .row[data-intent="true"]),
+ * match the rationale's tightened line-height so the cross centres on the
+ * first line. See the matching overrides on .rowIcon and .status in
+ * toolcallitem.module.css. */
+.row[data-intent="true"] .glyph {
+  line-height: var(--line-height-title);
 }
