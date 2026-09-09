@@ -35,10 +35,14 @@ The first post-rebase checks exposed the removed Go completion field, obsolete s
 | Shared mobile check and focused conversation/activity/projection suites | Pass: TypeScript, Biome and 577 tests |
 | Resume regression | Failure reproduced with the refresh removed; both cases pass with the correction |
 | Secret scan | Pass after exempting three exact historical evidence digests; receipt files remain unchanged |
-| Broad lint and full-module tests | Still being finalized; no new canonical-gate pass claimed |
+| `make lint` | Pass, all phases including generated freshness and secret scan |
+| `ROOT_FULL=1 make test` | Pass: root, agent, llm, auth, envvars, invariant, identifier and web |
+| `make test-web-browser` | Pass: layout, overflow, shell, spawn and transcript scrolling guards |
 
 The SDK contains 38 recipes for 95 supported methods, including the new personal AGENTS.md notification observer. Package qualification now fails if any declared contract module is absent and reports the actual installed consumer test totals. These deterministic contracts do not replace the real-hub outcome matrix.
 
-Jesse requested a main checkpoint before shared-state extraction. The [checkpoint proposal](2026-09-09-iphone-main-checkpoint.md) records a staged landing scope. The complete development branch includes older prototypes and extensive historical evidence; it must not be mistaken for a small native-only diff. Main has advanced beyond the pinned rebase target, so the eventual landing candidate needs its own refresh and exact-head verification.
+These commands passed as separate runs; no single new `make merge-approval-gate` invocation is claimed. The smaller landing candidates are based on newer main and require their own checks.
+
+Jesse authorized small reviewable PRs for a main checkpoint before shared-state extraction. The [checkpoint proposal](2026-09-09-iphone-main-checkpoint.md) records a staged landing scope. The complete development branch includes older prototypes and extensive historical evidence; it must not be mistaken for a small native-only diff. Main has advanced beyond the pinned rebase target, so the eventual landing candidate needs its own refresh and exact-head verification.
 
 The installed simulator and TestFlight 0.1.0 (3) remain the earlier `f866b2a80` native artifact. Their successful dated checks remain valid for that artifact only. This rebase does not install or upload a replacement, qualify the new protocol on iPhone, or complete the SDK outcome matrix. The [project status](status.md), [remaining work](ios-v1-remaining.md) and [outcome index](sdk-outcome-matrix.md) retain those boundaries.

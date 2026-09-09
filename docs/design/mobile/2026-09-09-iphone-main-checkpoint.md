@@ -1,6 +1,6 @@
 # iPhone checkpoint before shared TypeScript extraction
 
-Proposed landing sequence, 9 September 2026. Jesse asked whether to land a mobile checkpoint on main before extracting the web state layer into the SDK. The recommendation is yes. The checkpoint is a working, reviewed integration baseline; it does not declare iPhone v1 release acceptance complete.
+Landing sequence authorized by Jesse, 9 September 2026. Jesse asked whether to land a mobile checkpoint on main before extracting the web state layer into the SDK. The recommendation is yes. The checkpoint is a working, reviewed integration baseline; it does not declare iPhone v1 release acceptance complete.
 
 ## Scope observed
 
@@ -30,4 +30,17 @@ The old `mobile-concepts` application, the unused Tauri UI/runtime, its generate
 
 ## Preservation and sequencing
 
-Do not start core state extraction while checkpoint correctness or dependencies remain uncertain. The native v5 regression now passes and is committed. Finish the broader gate work and review the selected landing units before preparing the merge candidate. Preserve the pre-rebase backup and both unrelated dirty Apple files. No merge is recorded or authorized by this proposal. iPad and dedicated accessibility work remain paused.
+Do not start core state extraction while checkpoint correctness or dependencies remain uncertain. The native v5 regression now passes and is committed. Finish the broader gate work and review the selected landing units before preparing the merge candidate. Preserve the pre-rebase backup and both unrelated dirty Apple files. Jesse subsequently authorized starting small reviewable PRs and landing them after checks and required review. No merge is recorded yet. iPad and dedicated accessibility work remain paused.
+
+
+## First prerequisite batch
+
+The first candidates are based on main `ab02d1cbbfd9f33b4e318105574caaa47c398e9a`, with source preserved at `b9312580a11a454e304d0f59ac045f4ca7e438dc`. Each has an isolated sibling landing worktree; the authoritative native branch and its Apple edits remain unchanged.
+
+| Candidate | Scope | Branch |
+| --- | --- | --- |
+| Empty navigation updates | Normalize empty projected entities so delta reconstruction agrees with snapshots | `codex/mobile-empty-navigation` |
+| Device authorization binding | Reject a device flow polled for another provider instance without consuming the original flow | `codex/mobile-device-auth-binding` |
+| Logout result | Report whether a stored credential actually existed while preserving environment credentials | `codex/mobile-logout-result` |
+
+These changes already existed in the mobile integration source. Extracting them into focused candidates does not add new product scope. Roster performance, lifecycle/transcript corrections, SDK packaging, shared native dependencies and the app itself remain subsequent batches.

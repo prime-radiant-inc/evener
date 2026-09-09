@@ -14,7 +14,7 @@ The [thread settings SDK qualification](assets/2026-09-09-sdk-thread-settings-ou
 
 Jesse proposed landing the mobile app before extracting higher-level web state into the SDK. The [checkpoint proposal](2026-09-09-iphone-main-checkpoint.md) recommends reviewed server/SDK prerequisites followed by the native iPhone app and its existing shared dependencies. The [shared-state architecture](../../superpowers/specs/2026-09-09-shared-appwire-state-design.md) remains a proposal; extraction has not started.
 
-The [v5 integration record](2026-09-09-appwire-v5-rebase.md) records fresh build, web and affected Go passes, 332 installed SDK contract tests, 718 native tests plus TypeScript, and 577 focused shared mobile tests. Broad gate completion and current-artifact iPhone qualification remain separate requirements. All simulator/TestFlight receipts below retain their earlier source identities.
+The [v5 integration record](2026-09-09-appwire-v5-rebase.md) records fresh build, web and affected Go passes, 332 installed SDK contract tests, 718 native tests plus TypeScript, and 577 focused shared mobile tests. The broader lint, full-module and browser gates have also passed. Selected landing candidates still need their own exact-head checks, and current-artifact iPhone qualification remains open. All simulator/TestFlight receipts below retain their earlier source identities.
 
 ## Scope and architecture
 
