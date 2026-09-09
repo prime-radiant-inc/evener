@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {performance} from 'node:perf_hooks';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import {fileURLToPath} from 'node:url';
+import {clientFromEnvironment} from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/examples/connection.mjs';
+const root='/private/tmp/evener-native-performance-corpus-v8';
+const runtime=JSON.parse(await readFile(root+'/root-runtime.json','utf8'));
+const validationRoot=(await readFile(root+'/root-validated-run.txt','utf8')).trim();
+const validation=JSON.parse(await readFile(validationRoot+'/result.json','utf8'));
+const sessions=JSON.parse(await readFile(validationRoot+'/sessions.json','utf8'));
+const heavy=sessions.find(s=>s.ref===validation.ref);assert(heavy);
+const manifest=JSON.parse(await readFile(root+'/manifest.json','utf8'));
+const projectKey=manifest.project_ids.find(p=>p.includes('workspace-00-'));assert(projectKey);
+const subscribed=process.argv.includes('--subscribe');
+const out=root+'/root-sdk-timing-'+(subscribed?'subscribed-':'')+Date.now();await mkdir(out,{mode:0o700});
+const driver=await readFile(fileURLToPath(import.meta.url));await writeFile(out+'/driver.mjs',driver);
+const identities={};for(const [name,path] of Object.entries({driver:fileURLToPath(import.meta.url),sdk:'/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js',hub:'/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener',manifest:root+'/manifest.json'}))identities[name]={path,sha256:createHash('sha256').update(await readFile(path)).digest('hex')};
+const machine={node:process.version,os:os.type(),release:os.release(),arch:os.arch(),cpu:os.cpus()[0]?.model};
+const make=()=>clientFromEnvironment({EVENER_RPC_URL:runtime.rpc,EVENER_CWD:root,EVENER_TOKEN_FILE:root+'/state/evener/auth-token'}).hub;
+const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const samples=[];
+async function timed(client,method,params){const start=performance.now();const result=await client.request(method,params);const durationMs=performance.now()-start;return {result,durationMs,responseJsonBytes:Buffer.byteLength(JSON.stringify(result)),responseSha256:hash(result)};}
+async function sample(client,scenario,index,connectMs){
+ const catalog=await timed(client,'evener/navigation/read',{representationVersion:2,resource:'catalog',catalog:'projects',offset:0,limit:20});
+ const projects=catalog.result.data.entities.filter(e=>e.kind==='project');assert.equal(projects.length,5);assert.equal(projects.reduce((n,e)=>n+e.value.session_count,0),500);
+ const project=await timed(client,'evener/navigation/read',{representationVersion:2,resource:'project_page',projectKey,tier:'current',offset:0,limit:20});
+ assert.equal(project.result.data.entities.filter(e=>e.kind==='session').length,20);assert.equal(project.result.data.metadata.remaining,80);
+ const transcript=await timed(client,'thread/read',{ref:validation.ref,includeTurns:true,subscribe:subscribed,...(subscribed?{replaceSubscription:true}:{}),itemsView:'fragment',itemLimit:40});
+ const items=transcript.result.thread.turns.flatMap(t=>t.items??[]);assert.equal(items.length,40);assert(transcript.result.olderCursor);assert.equal(transcript.result.thread.evener.ref,validation.ref);
+ const row={scenario,index,connectMs,catalogMs:catalog.durationMs,projectPageMs:project.durationMs,threadReadMs:transcript.durationMs,catalogBytes:catalog.responseJsonBytes,projectPageBytes:project.responseJsonBytes,threadReadBytes:transcript.responseJsonBytes,threadReadSha256:transcript.responseSha256};
+ samples.push(row);
+ if(index===0)await writeFile(out+'/'+scenario+'-payloads.json',JSON.stringify({catalog:catalog.result,project:project.result,transcript:transcript.result},null,2)+'\n',{mode:0o600});
+ await writeFile(out+'/samples.json',JSON.stringify(samples,null,2)+'\n',{mode:0o600});
+}
+const summarize=rows=>Object.fromEntries(['connectMs','catalogMs','projectPageMs','threadReadMs'].map(key=>{const values=rows.map(r=>r[key]).filter(v=>v!==null).sort((a,b)=>a-b);return [key,values.length?{n:values.length,min:values[0],p50:values[Math.ceil(values.length*.5)-1],p95:values[Math.ceil(values.length*.95)-1],max:values.at(-1)}:null];}));
+try {
+ for(let index=0;index<30;index++){const client=make();try{const t=performance.now();await client.connect();const connectMs=performance.now()-t;await sample(client,'new-connection-warm-hub',index,connectMs);}finally{client.close();}}
+ const client=make();try{await client.connect();for(let index=0;index<30;index++)await sample(client,'same-connection-warm-hub',index,null);}finally{client.close();}
+ assert.equal(samples.length,60);
+ const result={status:'passed',machine,identities,quantile:'nearest rank',scope:'Loopback installed SDK request timing on a prevalidated warm Hub; not cold-server, native tap-to-content, physical LAN or representative media qualification',endpoint:runtime.rpc,hubPID:runtime.pid,ref:validation.ref,corpus:validationRoot,serverWarmedByValidation:true,subscribe:subscribed,itemLimit:40,samples:60,series:Object.fromEntries(['new-connection-warm-hub','same-connection-warm-hub'].map(s=>[s,summarize(samples.filter(r=>r.scenario===s))])),payloadBytes:{catalog:[...new Set(samples.map(r=>r.catalogBytes))],projectPage:[...new Set(samples.map(r=>r.projectPageBytes))],transcript:[...new Set(samples.map(r=>r.threadReadBytes))]},out};
+ await writeFile(out+'/result.json',JSON.stringify(result,null,2)+'\n');await writeFile(root+'/root-timing-run.txt',out+'\n');console.log(JSON.stringify(result));
+}catch(error){await writeFile(out+'/failure.json',JSON.stringify({message:error.message,stack:error.stack},null,2)+'\n');console.error(JSON.stringify({status:'failed',out,error:error.message}));process.exitCode=1;}
