@@ -1,0 +1,568 @@
+{
+  "schema": "evener.sdk.preferences-outcomes.v1",
+  "observedAt": "2026-09-09T01:22:46.098819+00:00",
+  "fixtureRoot": "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh",
+  "backendSource": "6a0278e36",
+  "binarySha256": {
+    "evener": "5c98237425c2e168cdd6cfd6ee0fa1e704ba37095646daa8fc73efcbae3fa5a8",
+    "evener-dev": "6c738dfb7bc52cf3f26fcd02cba539429be58b6580fcd00c73c060ac175adf65"
+  },
+  "sdk": {
+    "package": "@evener/appwire-client",
+    "entrypoint": "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js",
+    "distSha256": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "packageJsonSha256": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47",
+    "transport": "Public AppwireClient connect/request over authenticated WebSocket to an owned real hub"
+  },
+  "recordedMethods": [
+    "evener/settings/transcriptDisplay/get",
+    "evener/settings/transcriptDisplay/patch",
+    "evener/settings/keybindings/get",
+    "evener/settings/keybindings/patch"
+  ],
+  "executedCases": [
+    {
+      "request": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "ok": true,
+        "value": {
+          "desktop": {
+            "revision": 0,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "tools"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": false,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          },
+          "mobile": {
+            "revision": 0,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "intent"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": false,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/keybindings/get",
+        "ok": true,
+        "value": {
+          "version": 1,
+          "revision": 0,
+          "rules": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/transcriptDisplay/patch",
+        "params": {
+          "layout": "mobile",
+          "expectedRevision": 0,
+          "config": {
+            "version": 1,
+            "content": {
+              "kind": "preset",
+              "level": "intent"
+            },
+            "advanced": {
+              "roundTimings": false,
+              "tokenCounts": false,
+              "estimatedCost": false,
+              "systemEvents": true,
+              "promptEvents": false,
+              "hookExits": "none"
+            }
+          }
+        }
+      },
+      "response": {
+        "method": "evener/settings/transcriptDisplay/patch",
+        "ok": true,
+        "value": {
+          "layout": "mobile",
+          "revision": 1,
+          "config": {
+            "version": 1,
+            "content": {
+              "kind": "preset",
+              "level": "intent"
+            },
+            "advanced": {
+              "roundTimings": false,
+              "tokenCounts": false,
+              "estimatedCost": false,
+              "systemEvents": true,
+              "promptEvents": false,
+              "hookExits": "none"
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "ok": true,
+        "value": {
+          "desktop": {
+            "revision": 0,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "tools"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": false,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          },
+          "mobile": {
+            "revision": 1,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "intent"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": true,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/patch",
+        "params": {
+          "expectedRevision": 0,
+          "config": {
+            "version": 1,
+            "rules": [
+              {
+                "action": "composer.submit",
+                "chord": "Mod+Enter"
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "method": "evener/settings/keybindings/patch",
+        "ok": true,
+        "value": {
+          "version": 1,
+          "revision": 1,
+          "rules": [
+            {
+              "action": "composer.submit",
+              "chord": "Mod+Enter"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/keybindings/get",
+        "ok": true,
+        "value": {
+          "version": 1,
+          "revision": 1,
+          "rules": [
+            {
+              "action": "composer.submit",
+              "chord": "Mod+Enter"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/patch",
+        "params": {
+          "expectedRevision": 0,
+          "config": {
+            "version": 1,
+            "rules": []
+          }
+        }
+      },
+      "response": {
+        "method": "evener/settings/keybindings/patch",
+        "ok": false,
+        "error": {
+          "name": "WireError",
+          "code": -32013,
+          "message": "keybindings revision conflict: expected 0, current 1",
+          "evenerErrorInfo": "conflict"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/transcriptDisplay/patch",
+        "params": {
+          "layout": "mobile",
+          "expectedRevision": 1,
+          "config": {
+            "version": 1,
+            "content": {
+              "kind": "preset",
+              "level": "intent"
+            },
+            "advanced": {
+              "roundTimings": false,
+              "tokenCounts": false,
+              "estimatedCost": false,
+              "systemEvents": false,
+              "promptEvents": false,
+              "hookExits": "none"
+            }
+          }
+        }
+      },
+      "response": {
+        "method": "evener/settings/transcriptDisplay/patch",
+        "ok": true,
+        "value": {
+          "layout": "mobile",
+          "revision": 2,
+          "config": {
+            "version": 1,
+            "content": {
+              "kind": "preset",
+              "level": "intent"
+            },
+            "advanced": {
+              "roundTimings": false,
+              "tokenCounts": false,
+              "estimatedCost": false,
+              "systemEvents": false,
+              "promptEvents": false,
+              "hookExits": "none"
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/patch",
+        "params": {
+          "expectedRevision": 1,
+          "config": {
+            "version": 1,
+            "rules": []
+          }
+        }
+      },
+      "response": {
+        "method": "evener/settings/keybindings/patch",
+        "ok": true,
+        "value": {
+          "version": 1,
+          "revision": 2,
+          "rules": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/transcriptDisplay/get",
+        "ok": true,
+        "value": {
+          "desktop": {
+            "revision": 0,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "tools"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": false,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          },
+          "mobile": {
+            "revision": 2,
+            "config": {
+              "version": 1,
+              "content": {
+                "kind": "preset",
+                "level": "intent"
+              },
+              "advanced": {
+                "roundTimings": false,
+                "tokenCounts": false,
+                "estimatedCost": false,
+                "systemEvents": false,
+                "promptEvents": false,
+                "hookExits": "none"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "evener/settings/keybindings/get",
+        "params": {}
+      },
+      "response": {
+        "method": "evener/settings/keybindings/get",
+        "ok": true,
+        "value": {
+          "version": 1,
+          "revision": 2,
+          "rules": []
+        }
+      }
+    }
+  ],
+  "notifications": [
+    {
+      "method": "evener/settings/transcriptDisplay/changed",
+      "params": {
+        "layout": "mobile",
+        "revision": 1,
+        "config": {
+          "version": 1,
+          "content": {
+            "kind": "preset",
+            "level": "intent"
+          },
+          "advanced": {
+            "roundTimings": false,
+            "tokenCounts": false,
+            "estimatedCost": false,
+            "systemEvents": true,
+            "promptEvents": false,
+            "hookExits": "none"
+          }
+        }
+      }
+    },
+    {
+      "method": "evener/settings/keybindings/changed",
+      "params": {
+        "version": 1,
+        "revision": 1,
+        "rules": [
+          {
+            "action": "composer.submit",
+            "chord": "Mod+Enter"
+          }
+        ]
+      }
+    },
+    {
+      "method": "evener/settings/transcriptDisplay/changed",
+      "params": {
+        "layout": "mobile",
+        "revision": 2,
+        "config": {
+          "version": 1,
+          "content": {
+            "kind": "preset",
+            "level": "intent"
+          },
+          "advanced": {
+            "roundTimings": false,
+            "tokenCounts": false,
+            "estimatedCost": false,
+            "systemEvents": false,
+            "promptEvents": false,
+            "hookExits": "none"
+          }
+        }
+      }
+    },
+    {
+      "method": "evener/settings/keybindings/changed",
+      "params": {
+        "version": 1,
+        "revision": 2,
+        "rules": []
+      }
+    }
+  ],
+  "assertions": {
+    "requestCount": 11,
+    "methodCount": 4,
+    "exactNotificationCount": 4,
+    "mobileTranscriptRevisions": [
+      0,
+      1,
+      2
+    ],
+    "keybindingRevisions": [
+      0,
+      1,
+      2
+    ],
+    "desktopUnchangedAtRevision": 0,
+    "originalConfigsRestoredExactly": true,
+    "staleKeybindingWriteRejectedWithoutMutation": true,
+    "staleError": {
+      "name": "WireError",
+      "code": -32013,
+      "evenerErrorInfo": "conflict"
+    }
+  },
+  "isolation": {
+    "homeInherited": true,
+    "xdgRootsOwned": true,
+    "explicitOwnedProviderAndEmptyCredentialFiles": true,
+    "credentialFileMode": "0600",
+    "pluginAutoUpgrade": false,
+    "localDefaultMarketplacePointersSeeded": true,
+    "marketplaceInstallLocationsEmpty": true,
+    "noMarketplaceCloneDirectories": true,
+    "noModelOrProviderOperationInvoked": true,
+    "packetMonitoring": false
+  },
+  "review": {
+    "independentReplayRoots": [
+      "/private/tmp/evener-sdk-settings-independent-0cN4Xx",
+      "/private/tmp/evener-sdk-settings-clean-market-7yIZWP"
+    ],
+    "replaysExited": 0,
+    "coordinatorVerifiedExactRequestsResponsesNotificationsAndCleanupForAllThreeRuns": true,
+    "originalReviewRetained": "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/independent-review.json",
+    "addendum": "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/independent-review-marketplace-addendum.json",
+    "disposition": "The reviewer withdrew the claim that creating known_marketplaces.json established a network sync. First-run seeding writes local unfetched pointers; startup auto-upgrade is disabled. All three roots contain only .lock and registry metadata in the plugin store. No packet-level claim is made.",
+    "sourceAtReview": "ad13f94d25dae10263b984dd77ad448639c84226",
+    "sourceSha256": {
+      "internal/plugins/seed.go": "42c8247ab2348a8f7dd2507d844bd4b736d5afeea2adecd1424be7e9e6d7b7d1",
+      "internal/plugins/marketplaces.go": "d0c181bc4c6d82b8c1cbe13499a75f1ca14de9ec7d0c410721f8bb7885deb33a",
+      "cmd/evener-hub/main.go": "d25dd7d2506e07b30022213140af69823b0cbd89c28a9550ba81302c53d0f32d",
+      "cmd/evener-hub/app_plugin_autoupgrade.go": "0609e0df18f558b59b4cea695af01bb977cf354ea94c4de1de1abfdc1efe1634"
+    }
+  },
+  "cleanup": {
+    "hubExit": 0,
+    "allThreeOwnedProcessSetsAbsent": true,
+    "allThreeAuthTokensAbsent": true
+  },
+  "excludedAttempts": [
+    {
+      "root": "/private/tmp/evener-sdk-settings-qual-EFV6No",
+      "reason": "Initial fixture overrode HOME and left startup plugin auto-upgrade enabled; a real marketplace clone was observed. Not accepted as the isolated settings result."
+    },
+    {
+      "root": "/private/tmp/evener-sdk-settings-isolated-3r43pzx2",
+      "reason": "Fixture credentials file had mode 0644; hub correctly refused startup. Cleanup handling was corrected to preserve that error, then a fresh fixture used 0600."
+    }
+  ],
+  "files": {
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/driver.mjs": "4050703cede53c618e4631dd2d41464a849743a9a8db298ffd78b772ffed105e",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/candidate.json": "7d4f3098488ca4463f21fb9fb92320bb5eb5ae109d7d20ca9aed7c9c43845bb2",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/initialize.json": "81df58d8366c9a9b339a5ace4ef8042eb5e5849e234c6922090fb31488ec41e2",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/initial-readbacks.json": "8f6304f11c7db3a58d6215ee88d067fc06444413d249cc5eb28ddb1871c66473",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/requests.json": "2be28fbaf8a5161263a5bebc08e4a50d60104fe4ac1a50662e9351a868c2fb4b",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/responses.json": "d0e5c0136006be336b52b604c2b1061750b009f93db893aa773809fbad66adcf",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/notifications.json": "6bc6199e163ffa6fbb306bac00138652233e0b26f85f3086dcc088a6be45ab96",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/cleanup.json": "74446cd49a1576d1625ef73d17a32a6f6501f0032b4159bada9e293b0e59de48",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/config/evener/hub.toml": "8cfc9108e54350f75728d7e52438ef8d445b2186ace27a84bb33a2fc8f600e28",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/config/evener/providers.toml": "3f5e49076bd140f8bfd93635af79bb045ca92e38d05f6c0ece06d99ae29a8154",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/config/evener/plugins/known_marketplaces.json": "05391c3354d43973494c6a3e109010da47216a7d69ffd5707b35e7fe200c4756",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/driver.mjs": "4050703cede53c618e4631dd2d41464a849743a9a8db298ffd78b772ffed105e",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/candidate.json": "2a661a5e584330446804d9376e0d1e3c3a8bc2feae20f5f08b07d9c7c2743d15",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/initialize.json": "2d6a8c1116b67c90aa8214f4b4fe8e0bd22926e13f258256d8b7bbf1ec86f1cc",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/initial-readbacks.json": "8f6304f11c7db3a58d6215ee88d067fc06444413d249cc5eb28ddb1871c66473",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/requests.json": "2be28fbaf8a5161263a5bebc08e4a50d60104fe4ac1a50662e9351a868c2fb4b",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/responses.json": "d0e5c0136006be336b52b604c2b1061750b009f93db893aa773809fbad66adcf",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/notifications.json": "6bc6199e163ffa6fbb306bac00138652233e0b26f85f3086dcc088a6be45ab96",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/cleanup.json": "74446cd49a1576d1625ef73d17a32a6f6501f0032b4159bada9e293b0e59de48",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/config/evener/hub.toml": "8cfc9108e54350f75728d7e52438ef8d445b2186ace27a84bb33a2fc8f600e28",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/config/evener/providers.toml": "3f5e49076bd140f8bfd93635af79bb045ca92e38d05f6c0ece06d99ae29a8154",
+    "/private/tmp/evener-sdk-settings-independent-0cN4Xx/config/evener/plugins/known_marketplaces.json": "05391c3354d43973494c6a3e109010da47216a7d69ffd5707b35e7fe200c4756",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/driver.mjs": "4050703cede53c618e4631dd2d41464a849743a9a8db298ffd78b772ffed105e",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/candidate.json": "b0e39701cda1fb1a0cc52a759667f485ea1e54af0941c590f213f3048b16cd64",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/initialize.json": "3331c2865867ba4deb7cf8a3201092ba9dda2c3913d367f51a7a4112f7c0bcb9",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/initial-readbacks.json": "8f6304f11c7db3a58d6215ee88d067fc06444413d249cc5eb28ddb1871c66473",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/requests.json": "2be28fbaf8a5161263a5bebc08e4a50d60104fe4ac1a50662e9351a868c2fb4b",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/responses.json": "d0e5c0136006be336b52b604c2b1061750b009f93db893aa773809fbad66adcf",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/notifications.json": "6bc6199e163ffa6fbb306bac00138652233e0b26f85f3086dcc088a6be45ab96",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/cleanup.json": "74446cd49a1576d1625ef73d17a32a6f6501f0032b4159bada9e293b0e59de48",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/config/evener/hub.toml": "8cfc9108e54350f75728d7e52438ef8d445b2186ace27a84bb33a2fc8f600e28",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/config/evener/providers.toml": "3f5e49076bd140f8bfd93635af79bb045ca92e38d05f6c0ece06d99ae29a8154",
+    "/private/tmp/evener-sdk-settings-clean-market-7yIZWP/config/evener/plugins/known_marketplaces.json": "50b74486954a74b9e990568a7e28a66d37cfa36d11f08b56e49d1786589c56f7",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/isolation.json": "44a3d8ac2b3b3563c90a18c9e5f731a04ee4c4643c8b0698b145da4889d01a18",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/independent-review.json": "fd833234e843ec016612300ddb4ee6c899d09afac12f4eaa93cef830a060a31e",
+    "/private/tmp/evener-sdk-settings-isolated-ready-8ebgl4yh/independent-review-marketplace-addendum.json": "f30a035453e3d414b20f010aed962b186cf5ba20fae5e98a5411f3f0f5adc577",
+    "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/dist/index.js": "c9ed9331f068aa6086e84bc2552053eeda39279546212eb06639e3f3504d7a36",
+    "/tmp/evener-notifications-consumer.yrcaOf/node_modules/@evener/appwire-client/package.json": "2f38b2b4b546f65226dbf6b9847ca928420614c19e1a727820ea9b7086fb6e47"
+  },
+  "limitations": [
+    "Four settings methods and one stale-keybinding conflict only; no exhaustive invalid-input, permissions, reconnect or lost-reply coverage.",
+    "Notification observations cover these four changes and restoration; they do not expand the already recorded 36-name notification union.",
+    "No native UI, physical-device, remote CI or TestFlight result.",
+    "The immutable backend binary source is 6a0278e36, separate from documentation HEAD."
+  ]
+}

@@ -14,6 +14,8 @@
 
 `bc519b1c1` implements Task 8 and passes the recorded deterministic and host/controller real-hub checks. Its iPhone simulator build is installed and preserves the original drafts. Native vision interaction and the integrated Tasks 1–4 journey remain open; physical installation awaits device unlock. Parallel controller reviews did not close the corresponding native workflow gates. See the [detailed execution checkpoint](../../design/mobile/2026-09-08-iphone-execution-checkpoint.md) for receipts, corrected worker findings and remaining inputs.
 
+The current `bfe632f44` app has now passed the specific checked daily-loop actions below. [Recovery](../../design/mobile/assets/2026-09-08-native-recovery-journey.json), [cold/link/copy](../../design/mobile/assets/2026-09-08-native-leave-return.json), [Reader/reconnect](../../design/mobile/assets/2026-09-08-native-reader-reconnect.json) and [two-hub isolation](../../design/mobile/assets/2026-09-08-native-two-hub-isolation.json) retain the exact scope. The two-hub pending boundary is a real held model request, not an intercepted RPC acknowledgment. Unchecked creation/convergence, uncertainty and physical-device gates still prevent closing the full Usable milestone.
+
 ## Global constraints
 
 - iPhone is active. iPad and dedicated accessibility work are paused. Android qualification is deferred. Preserve their sources and evidence; none is a gate for these milestones.
@@ -129,9 +131,9 @@ Discover the actual device destination and signing settings before the physical 
 **Contract:** existing session and basic new-session paths lead to the same reader/composer. A configured hub supplies project/harness/model choices. Sending dispatches once; Stop visibly reconciles to the hub result. Reading history does not follow the live tail until Latest is selected.
 
 - [ ] Open a known session through the real roster/search and create another with existing valid project/harness/model defaults. Confirm its identity and working directory from the hub.
-- [ ] Send a prompt that produces text, code, a link and tool activity; verify native rendering, code copying, link return and completion. Use ordinary iPhone text size and the software keyboard for this milestone.
-- [ ] Read older content while a new response streams; return to Latest and verify no missing/duplicated items or stolen reading position.
-- [ ] Start a held turn, stop it, then send another prompt. Confirm the intended turn stopped and the second prompt appears exactly once in provider input/transcript.
+- [x] Send a prompt that produces text, code, a link and tool activity; verify native rendering, code copying, link return and completion. Use ordinary iPhone text size and the software keyboard for this milestone.
+- [x] Read older content while a new response streams; return to Latest and verify no missing/duplicated items or stolen reading position.
+- [x] Start a held turn, stop it, then send another prompt. Confirm the intended turn stopped and the second prompt appears exactly once in provider input/transcript.
 - [ ] Fix any blocked input, unreachable Send/Stop, accidental navigation, unusable rendering or ordinary latency discovered here. Preserve the approved full-width composer layout.
 - [ ] Run the focused suites, install changed native source, repeat the failed journey and retain results.
 
@@ -148,10 +150,10 @@ npm --prefix mobile test -- src/services/conversation.test.ts src/state/conversa
 
 **Files:** `mobile-native/src/ApprovalSheet.tsx`, `approvalControls.ts`, `QuestionSheet.tsx`, `questionAnswers.ts`, `questionBatches.ts`, `screens.tsx`. Reuse [real questions](../../design/mobile/real-question-harness-evidence.md) and [sandbox execution](../../design/mobile/approval-evidence.md).
 
-- [ ] Have the scripted provider trigger an actual restricted tool operation against a fixture-owned temporary directory outside that disposable session's workspace. Native Allow must permit the owned file effect; Deny must prevent it. Confirm both through the daemon and filesystem result, then clean up only the fixture-owned files. Do not use Jesse's workspace or personal files as approval targets.
-- [ ] Ask a real question batch with a selected option and free-text answer. Keep a separate unsent composer draft, answer the questions, and confirm only the answers reached the waiting tool.
-- [ ] Verify decisions stay reachable with the keyboard open and the app returns to the conversation after completion.
-- [ ] Resolve an open decision through a second client. The phone must refresh its state and prevent a stale second submission.
+- [x] Have the scripted provider trigger an actual restricted tool operation against a fixture-owned temporary directory outside that disposable session's workspace. Native Allow must permit the owned file effect; Deny must prevent it. Confirm both through the daemon and filesystem result, then clean up only the fixture-owned files. Do not use Jesse's workspace or personal files as approval targets.
+- [x] Ask a real question batch with a selected option and free-text answer. Keep a separate unsent composer draft, answer the questions, and confirm only the answers reached the waiting tool.
+- [x] Verify decisions stay reachable with the keyboard open and the app returns to the conversation after completion.
+- [x] Resolve an open decision through a second client. The phone must refresh its state and prevent a stale second submission.
 - [ ] Reuse passing outcomes already recorded when dependencies are unchanged; rerun changed paths and the integrated journey. Fix reproduced decision/controller defects and commit their focused regressions.
 
 ```sh
@@ -166,10 +168,10 @@ npm --prefix mobile-native test -- src/approvals.test.ts src/questionAnswers.tes
 
 **Files:** `mobile-native/src/draftDocument.ts`, `draftRecovery.ts`, `draftRepository.ts`, `creationDraftRepository.ts`, `location.ts`, `nativeLocation.ts`, `readerPosition.ts`, `nativeReaderPosition.ts`, `hubSelection.ts`, `connectionRecovery.ts`, `ConnectionProvider.tsx`; shared connection/conversation stores.
 
-- [ ] Save an unsent draft and a non-tail reading anchor; background and cold-launch, then verify exact draft content, selected hub/session and item/offset restoration. Preserve the existing `7944778e0` regression.
-- [ ] Interrupt a live connection through real app background/process or owned hub stop/start. Verify a clear reconnect state and authoritative rehydration before mutations resume.
+- [x] Save an unsent draft and a non-tail reading anchor; background and cold-launch, then verify exact draft content, selected hub/session and item/offset restoration. Preserve the existing `7944778e0` regression.
+- [x] Interrupt a live connection through real app background/process or owned hub stop/start. Verify a clear reconnect state and authoritative rehydration before mutations resume.
 - [ ] Exercise deterministic lost-acknowledgment delivery: one dispatch, retained uncertainty and manual readback/recovery. For a native journey use direct app/hub lifecycle transitions; do not introduce a forwarding proxy to claim intercepted wire behavior.
-- [ ] Switch between two owned hubs with overlapping identifiers while A has a pending operation. Verify B's transcript/draft is unchanged by late A results. Remove only an owned profile and prove other-hub data survives.
+- [x] Switch between two owned hubs with overlapping identifiers while A has a pending operation. Verify B's transcript/draft is unchanged by late A results. Remove only an owned profile and prove other-hub data survives.
 - [ ] Run the complete Tasks 1–4 journey on the converged build. On the physical iPhone verify ordinary network/background/keychain behavior once access is available.
 - [ ] Record a Usable milestone with remaining limitations and hand over a working build for ordinary use. If physical access is pending, label the milestone simulator-qualified and keep the phone check open.
 

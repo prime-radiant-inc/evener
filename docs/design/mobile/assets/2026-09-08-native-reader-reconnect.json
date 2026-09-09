@@ -148,7 +148,8 @@
     "/private/tmp/evener-native-reader-s7qgm65n/reconnect-before-send-ax.json": "c6700a76bf2383c6dc0554558e2694cbbc3af693e005342ea2f1024212e50b07",
     "/private/tmp/evener-native-reader-s7qgm65n/reconnect-positive-summary.json": "9e933b594adc002735ff598c0d737f36033c7a51c4a985d6fef30a930b4c8b62",
     "/private/tmp/evener-native-reader-s7qgm65n/final-native-ax.json": "9da66ceeccbda0e03aea2c9ecae1b35df5aaf8a62323c92adbd18f1509a44f8a",
-    "/private/tmp/evener-native-reader-s7qgm65n/reconnect-evidence.json": "903fb1da88152572105547a5529f2aae0a7a12ff815d2ab11c62f1e3f2e25192"
+    "/private/tmp/evener-native-reader-s7qgm65n/reconnect-evidence.json": "903fb1da88152572105547a5529f2aae0a7a12ff815d2ab11c62f1e3f2e25192",
+    "/private/tmp/evener-native-reader-s7qgm65n/provider-request-45.json": "66a23ec011f51693fb5a7fb4a87f9ca01183718c3d96dcbf783f83510d193f3e"
   },
   "limitations": [
     "The first immediate post-swipe comparison sampled scrolling momentum and was excluded; the repeated stream compared two settled baseline samples to completion with a 0.001-point numerical tolerance.",
