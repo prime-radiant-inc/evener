@@ -290,6 +290,19 @@ func isLegacyIPv4Literal(host string) bool {
 	return true
 }
 
+// isDNSLabelChar reports whether c is valid inside a DNS label:
+// lowercase letter, digit, or hyphen.
+func isDNSLabelChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	default:
+		return c == '-'
+	}
+}
+
 // isValidDNSName reports whether host is a syntactically valid DNS name:
 // dot-separated labels of letters/digits/hyphens, no empty labels, no
 // leading/trailing hyphens, TLD not all-numeric (numeric TLDs are IP-like).
@@ -303,8 +316,7 @@ func isValidDNSName(host string) bool {
 			return false
 		}
 		for i := 0; i < len(label); i++ {
-			c := label[i]
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			if !isDNSLabelChar(label[i]) {
 				return false
 			}
 		}
