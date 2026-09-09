@@ -307,7 +307,14 @@ export function ProjectSessionsList({
 				) : null
 			}
 			renderItem={({ item }) => {
-				if (item.kind === "project")
+				if (item.kind === "project") {
+					const attentionCount = item.project.rollup_attn ?? 0;
+					const attentionLabel =
+						attentionCount > 0
+							? attentionCount === 1
+								? "1 needs attention"
+								: `${attentionCount} need attention`
+							: null;
 					return (
 						<View
 							style={{
@@ -321,7 +328,7 @@ export function ProjectSessionsList({
 						>
 							<Pressable
 								accessibilityRole="button"
-								accessibilityLabel={item.project.name || "Project"}
+								accessibilityLabel={`${item.project.name || "Project"}${attentionLabel ? `, ${attentionLabel}` : ""}`}
 								accessibilityHint={item.project.working_dir}
 								accessibilityState={{
 									expanded: item.expanded,
@@ -341,17 +348,29 @@ export function ProjectSessionsList({
 								})}
 							>
 								{chevron(item.expanded)}
-								<Text
-									style={{
-										flex: 1,
-										fontSize: 19,
-										fontWeight: "600",
-										color: colors.text,
-									}}
-									numberOfLines={2}
-								>
-									{item.project.name || "Untitled project"}
-								</Text>
+								<View style={{ flex: 1, gap: 2 }}>
+									<Text
+										style={{
+											fontSize: 19,
+											fontWeight: "600",
+											color: colors.text,
+										}}
+										numberOfLines={2}
+									>
+										{item.project.name || "Untitled project"}
+									</Text>
+									{attentionLabel ? (
+										<Text
+											style={{
+												fontSize: 13,
+												lineHeight: 19,
+												color: colors.accent,
+											}}
+										>
+											{attentionLabel}
+										</Text>
+									) : null}
+								</View>
 								<Copy muted>{item.project.session_count}</Copy>
 							</Pressable>
 							<Pressable
@@ -396,6 +415,7 @@ export function ProjectSessionsList({
 							</Pressable>
 						</View>
 					);
+				}
 				if (item.kind === "limited")
 					return (
 						<View style={{ paddingHorizontal: 40, paddingVertical: 12 }}>
