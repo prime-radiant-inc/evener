@@ -78,6 +78,10 @@ The approval journey exposed an unhelpful file-action label. Commit `bfe632f44`
 derives a bounded, neutral `Write <path>` summary from the current tool argument
 without exposing file contents or claiming that a denied write succeeded. The
 coordinator reviewed the Luna change and passed 698 native tests plus TypeScript
-and formatting. This source fix has not yet been rebuilt into the installed app.
+and formatting. The subsequent identified Release build is now installed and its `Write <path>` labels were observed natively for both successful and denied actions. The [recovery receipt](assets/2026-09-08-native-recovery-journey.json) records executable and JavaScript hashes and exact draft preservation.
+
+On that build, native Stop cancelled the actual held provider request and produced interrupted `turn_m7`. A later prompt completed once as `turn_m8`. The free-text question answer completed as `turn_m10` while the separate ordinary draft remained unsent and returned intact; Send answers stayed above the software keyboard. A second client then resolved a question while its native sheet was open: the sheet closed, `turn_m12` completed, the exact answer appeared once and the original draft returned. Cold reader restoration, live-hub reconnect, code/link return and two-hub isolation still need current-artifact checks.
+
+Commit `6ad404195` fixes a separate clean-CI TypeScript dependency-resolution failure. Only the checker configuration and check script changed; Expo runtime configuration is untouched. The clean isolated check, 698 native tests plus TypeScript, and independent Luna review passed.
 
 Tasks 1–4 therefore remain open as one integrated device journey. Task 8 has implementation, deterministic and host/controller real-hub evidence, with native selection/reconnect acceptance pending. Useful administration, actual nested work, performance, stress and physical update/distribution retain the gates in the plan. Neither iPhone functional completion nor release readiness is claimed.

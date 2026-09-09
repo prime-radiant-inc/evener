@@ -1,0 +1,88 @@
+{
+  "schema": "evener.native.recovery.journey.v1",
+  "observedAt": "2026-09-09T00:03:24.327510+00:00",
+  "codeSource": "bfe632f44",
+  "buildCheckout": "b9d254e9be1861c9ecd87161918c6cc28022fde7",
+  "device": {
+    "name": "iPhone 17 Pro",
+    "os": "iOS 26.5",
+    "simulatorId": "F9170898-2B92-4420-BD12-9B54B3FC4AE0"
+  },
+  "bundleId": "com.primeradiant.evener.native",
+  "artifact": {
+    "installExitCode": 0,
+    "appPath": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Bundle/Application/F3F405B7-7947-46F1-A973-AB329BFAD510/Evener.app",
+    "dataPath": "/Users/jesse/Library/Developer/CoreSimulator/Devices/F9170898-2B92-4420-BD12-9B54B3FC4AE0/data/Containers/Data/Application/072A593A-62B8-4E44-9C8A-DA84583C12AC",
+    "executableSha256": "bd4708817c4f19ba18d05ccdbf62adb7dcbacc382245b32a569e2794122d263f",
+    "jsSha256": "92d79a411ec33486c874d3eb494a690c21216b3badbb4bef85223a9a2dd7e49b",
+    "draftRowsExactlyPreserved": true
+  },
+  "fixture": {
+    "phaseRoot": "/private/tmp/evener-iphone-recovery-7y4vpb09",
+    "existingHubRoot": "/private/tmp/evener-iphone-joined-8MIBV9",
+    "ref": "local:034LVKwtHytL0Jh8qsVDFb",
+    "instanceId": "034LVKwtHytL0Jh8qsVDFb",
+    "providerRestart": "Original provider process was absent with no exit record. Only the provider was restored on its original port; the existing hub/session remained. New phase captures preserve the original 26 request records and append new requests in a separate file."
+  },
+  "nativeObservations": [
+    "Signed replacement app installed and launched; original hub and session restored and all seven original draft-table row sets preserved.",
+    "Write path summaries visible for successful and denied tools; no file contents exposed by summaries.",
+    "Native Stop on held turn_m7 produced interruption; authoritative readback and provider request28 show actual cancellation.",
+    "Native next prompt produced completed turn_m8, one provider user input and one transcript user input.",
+    "A separate ordinary draft survived real question presentation, native free-text answer and completed follow-up. Send answers was reachable above the software keyboard.",
+    "An open native question sheet closed after another client answered; the ordinary draft returned unchanged."
+  ],
+  "postStop": {
+    "turnId": "turn_m8",
+    "status": "completed",
+    "providerRequest": 30,
+    "matchingProviderRequests": 1,
+    "providerUserInputCount": 1,
+    "transcriptUserInputCount": 1
+  },
+  "questionDraftIsolation": {
+    "answerTurnId": "turn_m10",
+    "status": "completed",
+    "answerText": "[answers]\n1. [Choice] \u2192 free text: \"Use the owned recovery path\"",
+    "ordinaryDraftRetained": true,
+    "ordinaryDraftNeverSent": true,
+    "pendingCleared": true,
+    "providerRequestIndexes": [
+      31,
+      32,
+      33,
+      34
+    ]
+  },
+  "staleQuestion": {
+    "turnId": "turn_m12",
+    "status": "completed",
+    "exactTranscriptAnswerCount": 1,
+    "pendingCleared": true,
+    "ordinaryDraftNeverSent": true,
+    "ordinaryDraftRetained": true,
+    "nativeObservation": "Open Questions sheet disappeared after second-client answer; connected conversation and exact ordinary draft returned."
+  },
+  "files": {
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/before-install.json": "a9695f05859730381ae9f9e2a8d82402e6587507c91c15a210bfb7425a2adba5",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/installed.json": "881eda48c37c797855967c3c49999fb5a68e37e944d64cf55f6ad740464e73c2",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/provider.py": "4825b8778ec11baa8930e5fee21e49d7dcb97874e5f417b341b9f8926246a4b3",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/post-stop-evidence.json": "81805c8385e7d1967443cab4d2031dfb94a8f83d666c5c5c3c99dd9305281d38",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/question-draft-isolation.json": "7b819340d7c376efdbd266ec7bc24522f6fc5e7811d8e808b162fc0848d86069",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/stop-pending-summary.json": "76fdec3ef72beb79273784845c5433cb1bd88d82fa75e698635579f05f4adaba",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/stop-completed-summary.json": "4dee31ca9070b9fd82876d29a483d7d1625f3914b1f964e022bab2f829a07c77",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/stop-cancelled-provider.json": "c0c3653b6c72d1f755a9cb885a329b7a690429dc822d1825caeb917888cc806c",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-client.mjs": "6f77e250a9d5a54415b360207fc30b164b20cf976562639009c8a958548964b4",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-client-question.json": "033bbb667f78b296e948b71de36308982696dd88b58acc4680fafb1315540483",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/second-client-answer.json": "696ed58d7f3b34ac1cf3deff29f63c88642e6466e1be11507cc15633e7bccfc5",
+    "/private/tmp/evener-iphone-recovery-7y4vpb09/stale-question-evidence.json": "55d4eb2b563a69097307a6728ef9bcf65bb237c51ea6e48279b15ee6235e4593",
+    "/private/tmp/evener-iphone-joined-8MIBV9/native-recovery-stale-question-readback.json": "1256907780f210ab57fea8fef97b79d8366763027baa1ce6cf65816d75a46f1b"
+  },
+  "limitations": [
+    "Simulator only; no physical install or TestFlight build.",
+    "The pre-install backup captured the draft database but not the separate ExpoSQLiteStorage file; reader-KV equality across this install is not claimed.",
+    "Current-artifact cold reader restore, live-hub reconnect, code/link return, two-hub isolation and broader Usable acceptance remain open.",
+    "Native screenshots are retained inline in the task, not as local image files.",
+    "The later TypeScript check-only config does not change native runtime code; this artifact retains its actual earlier build source."
+  ]
+}
