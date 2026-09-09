@@ -419,10 +419,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
 		// name: the contents have to be in it first.
-		errs := []error{err, undoSwap()}
-		for _, fn := range slices.Backward(undo) {
-			errs = append(errs, fn())
-		}
+		errs := []error{err, undoSwap(), runUndo(undo)}
 		// Only the fetch puts anything in the staging directory, and only a
 		// re-source fetches. A rename that swept it anyway would take the
 		// clone of a marketplace an older evener registered as .staging — and
@@ -440,40 +437,10 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		if ref.Source.Kind != SourceDirectory {
-			oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
-			haveClone, err := pathPresent(oldDir)
-			if err != nil {
-				return fail(err)
-			}
-			// Whatever the entry records: a lazy fetch clears and refills this
-			// directory before it writes an install location, so a fetch that
-			// failed leaves one behind that only the move takes with the name.
-			if haveClone {
-				if err := marketplaceRename(oldDir, newDir); err != nil {
-					return fail(fmt.Errorf("renaming marketplace clone: %w", err))
-				}
-				undo = append(undo, func() error { return restoreRename("marketplace clone", newDir, oldDir) })
-			}
-			// The location moves only if there was one; an entry the store has
-			// not fetched stays unfetched, and the next fetch clears and
-			// refetches under the new name as it would have under the old.
-			if ref.InstallLocation != "" {
-				ref.InstallLocation = newDir
-			}
-		}
-		oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
-		haveCache, err := pathPresent(oldCache)
+		ref, reg, undo, err = m.moveMarketplace(mk, name, newName, ref, reg)
 		if err != nil {
 			return fail(err)
 		}
-		if haveCache {
-			if err := marketplaceRename(oldCache, newCache); err != nil {
-				return fail(fmt.Errorf("renaming plugin cache: %w", err))
-			}
-			undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
-		}
-		reg = rekeyRegistry(reg, mk, name, newName, oldCache, newCache)
 	}
 
 	// 3. Apply the new source into the install location. An old clone that a
@@ -505,32 +472,19 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		ref.LastUpdated = m.now().UTC()
 	}
 
-	// 4. The registry first: a marketplaces file naming a marketplace whose
-	// plugins are still keyed under the old name is the worse of the two
-	// half-states, and evener-doctor reports the other one — which now
-	// outlives a failed save only if the restore below fails too.
+	// 4. Save both files. A failed save is what the undo above is for: the
+	// file that survives it is the old one, and directories left under the
+	// new name would be orphaned by the next refresh, which reclones the
+	// recorded source at the recorded path.
 	if renaming {
-		if err := m.saveRegistry(reg); err != nil {
+		if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
 			return fail(err)
 		}
-		delete(mk, name)
-	}
-	mk[target] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		// The file that survives this failure is the old one, so everything the
-		// edit moved goes back to what it records. The directories: left under
-		// the new name they would be orphaned by the next refresh, which
-		// reclones the recorded source at the recorded path. The registry: its
-		// re-keyed entries name install paths under the cache directory the
-		// undo is about to rename away. That restore is itself a write that can
-		// fail, and only then is the store left inconsistent, so say so.
-		if renaming {
-			if restoreErr := m.saveRegistry(registryAsFound); restoreErr != nil {
-				return fail(fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, newName))
-			}
-			return fail(fmt.Errorf("marketplace %q not renamed: saving %s failed, so the store is back as it was: %w", name, marketplacesFileName, err))
+	} else {
+		mk[name] = ref
+		if err := m.saveMarketplaces(mk); err != nil {
+			return fail(err)
 		}
-		return fail(err)
 	}
 	for _, fn := range afterSave {
 		fn()
@@ -544,6 +498,88 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 func restoreRename(what, from, to string) error {
 	if err := marketplaceRename(from, to); err != nil {
 		return fmt.Errorf("restoring %s %s to %s: %w", what, from, to, err)
+	}
+	return nil
+}
+
+// runUndo runs a rename's undo steps in reverse and joins what they could not
+// put back.
+func runUndo(undo []func() error) error {
+	var errs []error
+	for _, fn := range slices.Backward(undo) {
+		errs = append(errs, fn())
+	}
+	return errors.Join(errs...)
+}
+
+// moveMarketplace renames a marketplace on disk and in the registry: the
+// clone directory, when the source is not a directory and one is there; the
+// plugin cache directory, when one is there; and every <plugin>@name registry
+// entry, whose install path follows the cache. Neither store file is written.
+// On success it returns the ref and registry as they are to be recorded, and
+// the steps that put the directories back should a later step fail; a failure
+// puts back what it had moved itself and reports what it could not.
+func (m *Manager) moveMarketplace(mk Marketplaces, name, newName string, ref MarketplaceRef, reg Registry) (MarketplaceRef, Registry, []func() error, error) {
+	var undo []func() error
+	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
+		return MarketplaceRef{}, Registry{}, nil, errors.Join(err, runUndo(undo))
+	}
+	if ref.Source.Kind != SourceDirectory {
+		oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
+		haveClone, err := pathPresent(oldDir)
+		if err != nil {
+			return fail(err)
+		}
+		// Whatever the entry records: a lazy fetch clears and refills this
+		// directory before it writes an install location, so a fetch that
+		// failed leaves one behind that only the move takes with the name.
+		if haveClone {
+			if err := marketplaceRename(oldDir, newDir); err != nil {
+				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
+			}
+			undo = append(undo, func() error { return restoreRename("marketplace clone", newDir, oldDir) })
+		}
+		// The location moves only if there was one; an entry the store has
+		// not fetched stays unfetched, and the next fetch clears and
+		// refetches under the new name as it would have under the old.
+		if ref.InstallLocation != "" {
+			ref.InstallLocation = newDir
+		}
+	}
+	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
+	haveCache, err := pathPresent(oldCache)
+	if err != nil {
+		return fail(err)
+	}
+	if haveCache {
+		if err := marketplaceRename(oldCache, newCache); err != nil {
+			return fail(fmt.Errorf("renaming plugin cache: %w", err))
+		}
+		undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
+	}
+	return ref, rekeyRegistry(reg, mk, name, newName, oldCache, newCache), undo, nil
+}
+
+// saveRename records a rename in both store files, the registry first: a
+// marketplaces file naming a marketplace whose plugins are still keyed under
+// the old name is the worse of the two half-states, and evener-doctor reports
+// the other one — which now outlives a failed save only if the restore below
+// fails too. When the marketplaces file's save fails, registryAsFound is
+// written back, because the re-keyed entries name install paths under a cache
+// directory the caller is about to rename back. That restore is itself a
+// write that can fail, and only then is the store left inconsistent, so the
+// error says so.
+func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref MarketplaceRef, reg, registryAsFound Registry) error {
+	if err := m.saveRegistry(reg); err != nil {
+		return err
+	}
+	delete(mk, name)
+	mk[newName] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		if restoreErr := m.saveRegistry(registryAsFound); restoreErr != nil {
+			return fmt.Errorf("marketplace %q: saving %s failed (%w); restoring %s failed (%w), so it still keys this marketplace's plugins under %q", name, marketplacesFileName, err, registryFileName, restoreErr, newName)
+		}
+		return fmt.Errorf("marketplace %q not renamed: saving %s failed, so the store is back as it was: %w", name, marketplacesFileName, err)
 	}
 	return nil
 }
