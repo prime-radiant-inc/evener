@@ -110,6 +110,10 @@ func (s *Store) Names() []string {
 func (s *Store) Path() string { return s.path }
 
 // Set writes an instance's API key into the in-memory store and persists.
+// A failed save puts the entry back the way it was: the hub answers auth
+// status from this map and reloads the registry from the file, so memory
+// that leads the file is a credential the pane reports and no launch can
+// resolve.
 func (s *Store) Set(name, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,17 +121,65 @@ func (s *Store) Set(name, value string) error {
 	if s.data.Providers == nil {
 		s.data.Providers = map[string]providerSection{}
 	}
+	prev, had := s.data.Providers[name]
 	s.data.Providers[name] = providerSection{APIKey: strings.TrimSpace(value)}
-	return s.save()
+	if err := s.save(); err != nil {
+		restoreEntry(s.data.Providers, name, prev, had)
+		return err
+	}
+	return nil
 }
 
-// Clear removes the entry. No error if absent.
+// Clear removes the entry, restoring it if the save fails (see Set). No error
+// if absent.
 func (s *Store) Clear(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name = strings.ToLower(name)
+	prev, had := s.data.Providers[name]
 	delete(s.data.Providers, name)
-	return s.save()
+	if err := s.save(); err != nil {
+		restoreEntry(s.data.Providers, name, prev, had)
+		return err
+	}
+	return nil
+}
+
+// Move files the entry under newName instead of oldName in one persist, which
+// is what a renamed instance carries its stored key with: a Set-then-Clear
+// pair whose second half failed would leave the key under both names, and the
+// reverse order would lose it outright. A name with no entry is nothing to
+// move, not a failure. A failed save leaves both names exactly as they were,
+// for the reason Set gives.
+func (s *Store) Move(oldName, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldName, newName = strings.ToLower(oldName), strings.ToLower(newName)
+	entry, ok := s.data.Providers[oldName]
+	// Names that differ only in case are one entry here, and moving it onto
+	// itself would delete the copy that was just made.
+	if !ok || oldName == newName {
+		return nil
+	}
+	prev, had := s.data.Providers[newName]
+	s.data.Providers[newName] = entry
+	delete(s.data.Providers, oldName)
+	if err := s.save(); err != nil {
+		s.data.Providers[oldName] = entry
+		restoreEntry(s.data.Providers, newName, prev, had)
+		return err
+	}
+	return nil
+}
+
+// restoreEntry puts one name back the way a mutation found it, after a save
+// that did not happen.
+func restoreEntry(providers map[string]providerSection, name string, prev providerSection, had bool) {
+	if had {
+		providers[name] = prev
+		return
+	}
+	delete(providers, name)
 }
 
 // save persists s.data. Callers must hold mu (Lock, not RLock): it both

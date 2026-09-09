@@ -11273,6 +11273,122 @@ func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// A rename whose credential move fails still reached providers.toml and the
+// registry, so every other client's instance list is stale by exactly as much
+// as it would be on success: the broadcast has to fire even though the call
+// comes back an error naming what was left behind. The failure is injected on
+// the credentials store's own temp path, so the whole move is the real one.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	breakCredentialWrites(t, credsStore.Path())
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
+		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	}
+	// The file is the new name either way, which is what the other clients
+	// are now out of date against.
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
+	}
+}
+
+// The sibling case: the credential move succeeded and the reload that follows
+// it failed, so the rename is on disk in full — providers.toml and
+// credentials.toml both carry the new name — and only the hub's view of it is
+// behind. Every other client is stale by exactly as much as after a clean
+// rename, so the broadcast has to fire here too.
+func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	if err := credsStore.Set("base", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// The stored key under the new name is what marks the move as done, so
+	// this refuses the reload that runs after it and no earlier one: every
+	// load before the move — including the one right after providers.toml is
+	// written — still finds the key under the old name.
+	load := testRegistryLoader(t.TempDir(), tomlPath, credsStore, nil)
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if v, _ := credsStore.Get("personal"); v != "" {
+			return nil, nil, errors.New("registry refused the reload after the credential move")
+		}
+		return load(extra...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
+		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
+	}
+	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+	if v, _ := credsStore.Get("personal"); v != "sk-stored" {
+		t.Fatalf("the credential move did not run: personal = %q", v)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
+	}
+}
+
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
 // sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
 // comment for why evener/auth/updated is the right (reused) notification.

@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/spf13/afero"
 )
 
 func TestStore_LoadMissingFile(t *testing.T) {
@@ -204,5 +206,150 @@ func TestStore_PermissionsEnforced(t *testing.T) {
 	}
 	if _, err := LoadStore(path); err == nil {
 		t.Errorf("LoadStore should reject 0644-mode file")
+	}
+}
+
+// The hub answers auth status from the in-memory map and reloads the registry
+// from the file, so a mutation whose save failed must leave memory exactly as
+// the file still reads: a key remembered but not written is one the
+// credentials pane reports and no launch can resolve.
+func TestStore_SetRestoresMemoryWhenTheSaveFails(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("work", "sk-old"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s.fs = afero.NewReadOnlyFs(mem)
+
+	if err := s.Set("work", "sk-new"); err == nil {
+		t.Fatal("Set over a read-only filesystem returned nil")
+	}
+	if v, ok := s.Get("work"); v != "sk-old" || !ok {
+		t.Errorf("Get after a failed overwrite = %q/%v, want sk-old/true", v, ok)
+	}
+	if err := s.Set("personal", "sk-p"); err == nil {
+		t.Fatal("Set of a new name over a read-only filesystem returned nil")
+	}
+	if v, ok := s.Get("personal"); ok {
+		t.Errorf("a failed Set of a name that had no entry left %q behind", v)
+	}
+}
+
+func TestStore_ClearRestoresMemoryWhenTheSaveFails(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s.fs = afero.NewReadOnlyFs(mem)
+
+	if err := s.Clear("work"); err == nil {
+		t.Fatal("Clear over a read-only filesystem returned nil")
+	}
+	if v, ok := s.Get("work"); v != "sk-work" || !ok {
+		t.Errorf("Get after a failed Clear = %q/%v, want sk-work/true", v, ok)
+	}
+}
+
+// Move is what a renamed instance carries its key with: one persist, so the
+// key is never briefly filed under both names or neither.
+func TestStore_MoveCarriesTheKeyToTheNewName(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := s.Set("other", "sk-other"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if err := s.Move("work", "personal"); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+
+	if v, ok := s.Get("personal"); v != "sk-work" || !ok {
+		t.Errorf("Get(personal) = %q/%v, want sk-work/true", v, ok)
+	}
+	if v, ok := s.Get("work"); ok {
+		t.Errorf("the old name still holds %q", v)
+	}
+	// The file is the layer a registry reload reads, so it has to carry the
+	// same move, and carry nothing else away with it.
+	reloaded := mustLoadFS(t, mem, path)
+	if v, ok := reloaded.Get("personal"); v != "sk-work" || !ok {
+		t.Errorf("reloaded Get(personal) = %q/%v, want sk-work/true", v, ok)
+	}
+	if v, ok := reloaded.Get("work"); ok {
+		t.Errorf("the persisted file still holds the old name: %q", v)
+	}
+	if v, ok := reloaded.Get("other"); v != "sk-other" || !ok {
+		t.Errorf("an untouched entry changed: %q/%v", v, ok)
+	}
+}
+
+func TestStore_MoveRestoresBothNamesWhenTheSaveFails(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s.fs = afero.NewReadOnlyFs(mem)
+
+	if err := s.Move("work", "personal"); err == nil {
+		t.Fatal("Move over a read-only filesystem returned nil")
+	}
+	if v, ok := s.Get("work"); v != "sk-work" || !ok {
+		t.Errorf("Get(work) after a failed Move = %q/%v, want sk-work/true", v, ok)
+	}
+	if v, ok := s.Get("personal"); ok {
+		t.Errorf("a failed Move left %q under the new name", v)
+	}
+	reloaded := mustLoadFS(t, mem, path)
+	if v, ok := reloaded.Get("work"); v != "sk-work" || !ok {
+		t.Errorf("the persisted file lost the key: work = %q/%v", v, ok)
+	}
+	if v, ok := reloaded.Get("personal"); ok {
+		t.Errorf("the persisted file holds the new name: %q", v)
+	}
+}
+
+// A rename of an instance that never had a stored key has nothing to move,
+// and must not report that as a failure.
+func TestStore_MoveOfAMissingNameIsANoOp(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("personal", "sk-personal"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s.fs = afero.NewReadOnlyFs(mem)
+
+	if err := s.Move("work", "personal"); err != nil {
+		t.Fatalf("Move of a missing name = %v, want nil", err)
+	}
+	if v, ok := s.Get("personal"); v != "sk-personal" || !ok {
+		t.Errorf("the destination entry changed: %q/%v", v, ok)
+	}
+}
+
+// The store lower-cases every name, so a rename that only changes case names
+// one entry twice: moving it would delete the key it had just copied.
+func TestStore_MoveToTheSameKeyKeepsTheEntry(t *testing.T) {
+	const path = "/creds/credentials.toml"
+	mem := afero.NewMemMapFs()
+	s := mustLoadFS(t, mem, path)
+	if err := s.Set("work", "sk-work"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if err := s.Move("Work", "work"); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if v, ok := s.Get("work"); v != "sk-work" || !ok {
+		t.Errorf("Get(work) = %q/%v, want sk-work/true", v, ok)
 	}
 }

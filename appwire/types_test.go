@@ -720,11 +720,14 @@ func TestInstanceCreateParamsJSONRoundTrip(t *testing.T) {
 // leaves the authored entry alone (spec §11.3).
 func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	in := InstanceEditParams{
-		Name:     "work",
-		BaseURL:  "https://gw.example.test/v2",
-		Protocol: "openai-responses",
-		Surface:  "openai",
-		Vars:     map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
+		Name:             "work",
+		NewName:          "work-eu",
+		BaseURL:          "https://gw.example.test/v2",
+		Protocol:         "openai-responses",
+		Surface:          "openai",
+		Vars:             map[string]string{"GOOGLE_VERTEX_LOCATION": "global"},
+		APIKeyEnv:        "WORK_KEY",
+		CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -733,10 +736,13 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	got := string(raw)
 	for _, want := range []string{
 		`"name":"work"`,
+		`"newName":"work-eu"`,
 		`"baseUrl":"https://gw.example.test/v2"`,
 		`"protocol":"openai-responses"`,
 		`"surface":"openai"`,
 		`"vars":{"GOOGLE_VERTEX_LOCATION":"global"}`,
+		`"apiKeyEnv":"WORK_KEY"`,
+		`"credentialHeader":"Authorization=Bearer $PORTKEY_KEY"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
@@ -752,6 +758,34 @@ func TestInstanceEditParamsJSONRoundTrip(t *testing.T) {
 	if string(bare) != `{"name":"work"}` {
 		t.Fatalf("a name-only edit marshals to %s, want {\"name\":\"work\"}", bare)
 	}
+
+	// Each clear rides its own key, so a clear request names no value at
+	// all. Their exact spelling is the whole wire contract: a mistyped tag
+	// still compiles and still round-trips through this Go type, and only a
+	// peer reading the JSON would ever notice.
+	clears := InstanceEditParams{
+		Name:                  "work",
+		ClearProtocol:         true,
+		ClearSurface:          true,
+		ClearAPIKeyEnv:        true,
+		ClearCredentialHeader: true,
+	}
+	cleared, err := json.Marshal(clears)
+	if err != nil {
+		t.Fatalf("marshal(clears): %v", err)
+	}
+	wantCleared := `{"name":"work","clearProtocol":true,"clearSurface":true,"clearApiKeyEnv":true,"clearCredentialHeader":true}`
+	if string(cleared) != wantCleared {
+		t.Fatalf("a clearing edit marshals to %s, want %s", cleared, wantCleared)
+	}
+	var outClears InstanceEditParams
+	if err := json.Unmarshal(cleared, &outClears); err != nil {
+		t.Fatalf("unmarshal(cleared): %v", err)
+	}
+	if !reflect.DeepEqual(outClears, clears) {
+		t.Fatalf("roundtrip=%+v, want %+v", outClears, clears)
+	}
+
 	var out InstanceEditParams
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)

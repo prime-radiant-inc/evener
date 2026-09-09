@@ -2695,6 +2695,16 @@ type InstanceEntry struct {
 	Auth       string            `json:"auth"`
 	BaseURL    string            `json:"baseUrl,omitempty"`
 	Vars       map[string]string `json:"vars,omitempty"`
+	// APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
+	// entry) and credential header (as NAME=VALUE) from providers.toml, so
+	// the sheet's form can prefill them. Never the registry's own defaults
+	// for an implicit instance, and never a secret: the loader accepts a
+	// hand-written literal that both authoring surfaces would refuse
+	// (registry.CheckCredentialHeaderValue guards those, not the file). That
+	// rule takes $VARIABLE references with at most one auth scheme word
+	// ahead of them, and the entry omits any header it refuses.
+	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
+	CredentialHeader string `json:"credentialHeader,omitempty"`
 	// Implicit is true for an instance that exists from the environment
 	// alone: it has no entry in providers.toml, so it cannot be removed.
 	Implicit bool `json:"implicit"`
@@ -2792,17 +2802,30 @@ type InstanceCreateParams struct {
 // BaseURL and ClearBaseURL are never both meaningful in the same request: send
 // one or the other.
 //
-// Protocol and Surface have no clear operation yet — Name identifies the
-// instance and an empty Vars map is a no-op edit either way, so those two
-// are the only fields still unreachable. Giving them the same ClearXxx
-// treatment as BaseURL is ledgered for whenever a form needs to clear one.
+// The rename and credential fields obey the same rule. NewName renames
+// the instance (empty means unchanged). APIKeyEnv/ClearAPIKeyEnv and
+// CredentialHeader/ClearCredentialHeader set or drop the authored
+// api_key_env and credential_headers; CredentialHeader is NAME=VALUE with a
+// $VAR value, exactly as InstanceCreateParams takes it. ClearProtocol and
+// ClearSurface drop an authored protocol or surface so the base provider's
+// value applies again, the same shape as ClearBaseURL. A Vars entry
+// whose value is empty DELETES that variable: a blank var never meant
+// anything, so the empty value is free to mean "remove". Each set/clear
+// pair follows BaseURL/ClearBaseURL: never both meaningful in one request.
 type InstanceEditParams struct {
-	Name         string            `json:"name"`
-	BaseURL      string            `json:"baseUrl,omitempty"`
-	ClearBaseURL bool              `json:"clearBaseUrl,omitempty"`
-	Protocol     string            `json:"protocol,omitempty"`
-	Surface      string            `json:"surface,omitempty"`
-	Vars         map[string]string `json:"vars,omitempty"`
+	Name                  string            `json:"name"`
+	NewName               string            `json:"newName,omitempty"`
+	BaseURL               string            `json:"baseUrl,omitempty"`
+	ClearBaseURL          bool              `json:"clearBaseUrl,omitempty"`
+	Protocol              string            `json:"protocol,omitempty"`
+	ClearProtocol         bool              `json:"clearProtocol,omitempty"`
+	Surface               string            `json:"surface,omitempty"`
+	ClearSurface          bool              `json:"clearSurface,omitempty"`
+	Vars                  map[string]string `json:"vars,omitempty"`
+	APIKeyEnv             string            `json:"apiKeyEnv,omitempty"`
+	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
+	CredentialHeader      string            `json:"credentialHeader,omitempty"`
+	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.

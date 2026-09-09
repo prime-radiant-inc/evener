@@ -58,6 +58,16 @@ type hubAuthController struct {
 	// duplicate caller before the shared probe completes.
 	credentialTestJoined func()
 
+	// credMu serializes an instance rename against every other credential
+	// write. A rename asks which credentials already sit under the new name
+	// and then moves the old instance's onto it; a stored key or OAuth
+	// record written between those two steps is one the check never saw and
+	// the move would overwrite. Writers take the read side — they are
+	// already safe against each other through the credentials store's own
+	// mutex and the OAuth state files — and the rename takes it exclusively
+	// for the whole check-then-move (hubInstancesController.Edit).
+	credMu sync.RWMutex
+
 	mu          sync.Mutex
 	flows       map[string]hubAuthFlow
 	deviceFlows map[string]deviceFlow
@@ -293,7 +303,17 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := c.saveAuth(c.stateDir, provider, record); err != nil {
+	// Asked again inside the lock: the check at the top of this call ran
+	// before the token exchange, which is a browser round trip long, and a
+	// rename holds credMu exclusively while it re-keys providers.toml and
+	// reloads. Only the answer under the lock describes the instance this
+	// record lands under.
+	if err := c.credentialWrite(func() error {
+		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		return c.saveAuth(c.stateDir, provider, record)
+	}); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
 	}
 
@@ -314,46 +334,68 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 
-	if !c.instanceIsCodex(name) {
-		if err := c.clearCredential(name); err != nil {
-			return appwire.AuthLogoutResponse{}, err
-		}
-		if err := c.reloadRegistry(); err != nil {
-			return appwire.AuthLogoutResponse{}, err
-		}
-		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
-		return appwire.AuthLogoutResponse{Removed: true, Status: status}, nil
-	}
-
-	// The Codex transport: clear the effective layer only. An OAuth record
-	// (present or corrupt) shadows the stored file key, so remove it first;
-	// otherwise clear the file key. The env layer cannot be cleared.
-	_, loadErr := c.loadAuth(c.stateDir, name)
-	hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
+	// The scheme names which layer a logout clears, so it is read inside the
+	// same locked write as the removal: a rename holds credMu exclusively
+	// while it re-keys providers.toml and reloads, so a scheme read outside
+	// the lock can aim the clear at a store this name no longer
+	// authenticates from.
+	codex := false
 	removed := false
-	if hasRecord {
-		r, delErr := c.deleteAuth(c.stateDir, name)
-		if delErr != nil {
-			return appwire.AuthLogoutResponse{}, delErr
-		}
-		removed = r
-	} else {
-		_, hasFile := c.creds.Get(name)
-		if hasFile {
+	if err := c.credentialWrite(func() error {
+		codex = c.instanceIsCodex(name)
+		if !codex {
 			if clrErr := c.clearCredential(name); clrErr != nil {
-				return appwire.AuthLogoutResponse{}, clrErr
+				return clrErr
+			}
+			removed = true
+			return nil
+		}
+		// The Codex transport: clear the effective layer only. An OAuth record
+		// (present or corrupt) shadows the stored file key, so remove it first;
+		// otherwise clear the file key. The env layer cannot be cleared. Which
+		// layer is active decides what is removed, so the read and the removal
+		// hold the credential lock together.
+		_, loadErr := c.loadAuth(c.stateDir, name)
+		hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
+		if hasRecord {
+			r, delErr := c.deleteAuth(c.stateDir, name)
+			if delErr != nil {
+				return delErr
+			}
+			removed = r
+			return nil
+		}
+		if _, hasFile := c.creds.Get(name); hasFile {
+			if clrErr := c.clearCredential(name); clrErr != nil {
+				return clrErr
 			}
 			removed = true
 		}
+		return nil
+	}); err != nil {
+		return appwire.AuthLogoutResponse{}, err
 	}
 	if err := c.reloadRegistry(); err != nil {
 		return appwire.AuthLogoutResponse{}, err
+	}
+	if !codex {
+		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
+		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 	}
 	status, statusErr := c.openAIInstanceStatus(name)
 	if statusErr != nil {
 		return appwire.AuthLogoutResponse{}, statusErr
 	}
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+}
+
+// credentialWrite runs one stored-key or OAuth-record write under the read
+// side of credMu, which is what a rename takes exclusively while it checks
+// the destination and moves onto it (see credMu).
+func (c *hubAuthController) credentialWrite(write func() error) error {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return write()
 }
 
 // reloadRegistry re-derives the instance set after a credential changed: a
@@ -404,19 +446,25 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
-	// A key stored under a Codex instance is one nothing reads: the transport
-	// authenticates with its OAuth record (spec §5.1), so storing it and
-	// reporting success would describe a credential the launch cannot use.
-	if c.instanceIsCodex(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
-	}
-	// A bare key under a gcp-adc instance is one the authenticator would
-	// reject as JSON at first request; point at the flow that stores what
-	// this scheme actually reads.
-	if c.instanceUsesGCPADC(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
-	}
-	if err := c.setCredential(name, params.Value); err != nil {
+	// Both refusals below ask what name authenticates with, and a rename can
+	// change the answer: it holds credMu exclusively while it re-keys
+	// providers.toml and reloads, so only a check inside that lock describes
+	// the instance this write actually lands on.
+	if err := c.credentialWrite(func() error {
+		// A key stored under a Codex instance is one nothing reads: the transport
+		// authenticates with its OAuth record (spec §5.1), so storing it and
+		// reporting success would describe a credential the launch cannot use.
+		if c.instanceIsCodex(name) {
+			return appwire.InvalidParams(fmt.Sprintf("%s authenticates with an OAuth record, not an API key: run `evener openai login --instance %s`", name, name))
+		}
+		// A bare key under a gcp-adc instance is one the authenticator would
+		// reject as JSON at first request; point at the flow that stores what
+		// this scheme actually reads.
+		if c.instanceUsesGCPADC(name) {
+			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
+		}
+		return c.setCredential(name, params.Value)
+	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	if err := c.reloadRegistry(); err != nil {
@@ -437,7 +485,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 // exactly as it was.
 func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
-	if err := c.clearCredential(name); err != nil {
+	if err := c.credentialWrite(func() error { return c.clearCredential(name) }); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	if err := c.reloadRegistry(); err != nil {
@@ -561,7 +609,14 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := c.saveAuth(c.stateDir, provider, record); err != nil {
+	// Re-checked under the lock for the same reason LoginComplete re-checks
+	// it: the poll's own exchange is the long step a rename can land in.
+	if err := c.credentialWrite(func() error {
+		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		return c.saveAuth(c.stateDir, provider, record)
+	}); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
 	c.mu.Lock()
@@ -654,19 +709,40 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	if value == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
-	if !c.instanceUsesGCPADC(name) {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start")
+	if err := c.requiresGCPADC(name); err != nil {
+		return appwire.AuthStatusResponse{}, err
 	}
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
 	}
-	if err := c.setCredential(name, value); err != nil {
+	if err := c.credentialWrite(func() error {
+		// Asked again inside the lock, because it is the answer at the moment
+		// of the write that matters: a rename holds credMu exclusively while
+		// it re-keys providers.toml and reloads, so the check above can
+		// describe an instance this name no longer reaches. The one above
+		// stays for the caller who pasted for the wrong instance, so the
+		// refusal still beats a complaint about the JSON.
+		if err := c.requiresGCPADC(name); err != nil {
+			return err
+		}
+		return c.setCredential(name, value)
+	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	if err := c.reloadRegistry(); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})
+}
+
+// requiresGCPADC returns an InvalidParams error when the named instance does
+// not authenticate through Google application-default credentials, the only
+// scheme that reads a stored credential JSON.
+func (c *hubAuthController) requiresGCPADC(name string) error {
+	if c.instanceUsesGCPADC(name) {
+		return nil
+	}
+	return appwire.InvalidParams(name + " does not authenticate with Google application-default credentials; key-based instances use evener/auth/apiKey/set and Codex instances use evener/auth/login/start")
 }
 
 // requiresCodex returns an InvalidParams error when the named instance does

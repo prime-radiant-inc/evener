@@ -46,8 +46,22 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 	userLayer := ""
 	r := c.reg.Get()
 	if r != nil {
+		// The authored layer is what the sheet's form edits, so the entry
+		// carries the authored credential fields alongside the registry's
+		// resolved view. A file that cannot be read right now simply
+		// prefills nothing; the refusal itself is already in Diagnostics.
+		var layer *registry.Layer
+		if l, exists, err := c.read(); err == nil && exists {
+			layer = l
+		}
 		for _, inst := range r.Instances() {
-			entries = append(entries, c.entryFor(inst))
+			var authored *registry.Provider
+			if layer != nil {
+				if p, ok := layer.Providers[inst.Name]; ok {
+					authored = &p
+				}
+			}
+			entries = append(entries, c.entryFor(inst, authored))
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -82,11 +96,13 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 	}
 }
 
-// entryFor is the wire view of one instance: the registry's own description
-// plus the credential status the auth controller derives for it.
-func (c *hubInstancesController) entryFor(inst registry.Instance) appwire.InstanceEntry {
+// entryFor is the wire view of one instance: the registry's own description,
+// plus the credential status the auth controller derives for it, and the
+// credential fields from its authored entry — nil for an implicit instance,
+// which has no entry in providers.toml and so prefills neither.
+func (c *hubInstancesController) entryFor(inst registry.Instance, authored *registry.Provider) appwire.InstanceEntry {
 	status := c.auth.instanceStatus(inst)
-	return appwire.InstanceEntry{
+	entry := appwire.InstanceEntry{
 		Name:               inst.Name,
 		Base:               inst.Base,
 		ProviderID:         inst.ProviderID,
@@ -108,6 +124,42 @@ func (c *hubInstancesController) entryFor(inst registry.Instance) appwire.Instan
 		CredentialRequired: inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:           inst.Warnings,
 	}
+	if authored != nil {
+		// api_key_env names an environment variable, and the loader takes
+		// whatever string the TOML grammar spells, so a key pasted into that
+		// field loads. It is omitted rather than sent, exactly as
+		// credentialHeaderField omits a header the authoring rule refuses.
+		if len(authored.APIKeyEnv) > 0 && registry.CheckAPIKeyEnvName(authored.APIKeyEnv[0]) == nil {
+			entry.APIKeyEnv = authored.APIKeyEnv[0]
+		}
+		entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
+	}
+	return entry
+}
+
+// credentialHeaderField renders the authored credential_headers map as the
+// single NAME=VALUE field the forms use; credentialHeaderFrom is its
+// inverse. Several headers are possible by hand-editing the file, never
+// through the pane; the first in sorted order is the one the form edits, and
+// editing that field replaces the whole map.
+//
+// A name or a value the authoring rule would refuse is omitted rather than
+// sent. registry.CheckCredentialHeaderName and CheckCredentialHeaderValue
+// guard evener's own authoring surfaces only — the loader's checkEnvRefs
+// passes any value without a '$' and reads any name the TOML grammar spells
+// — so a hand-written literal secret or a name carrying a CR/LF loads fine,
+// and neither must reach a client. Prefilling one would also build a form
+// Edit refuses to save.
+func credentialHeaderField(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	names := slices.Sorted(maps.Keys(headers))
+	value := headers[names[0]]
+	if registry.CheckCredentialHeaderName(names[0]) != nil || registry.CheckCredentialHeaderValue(value) != nil {
+		return ""
+	}
+	return names[0] + "=" + value
 }
 
 // sanitizeEndpointURL keeps only the non-secret endpoint identity exposed to
@@ -159,22 +211,63 @@ func (c *hubInstancesController) writeLoadable(l *registry.Layer) error {
 // so without this the entry lands in providers.toml and is silently ignored.
 var varNameRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
-// validVarNames refuses a vars map carrying a key the placeholder grammar
-// cannot name.
+// validVarName refuses a key the placeholder grammar cannot name.
+func validVarName(name string) error {
+	if varNameRe.MatchString(name) {
+		return nil
+	}
+	return fmt.Errorf("invalid variable name %q: a transport placeholder is {UPPERCASE_NAME}, so nothing would substitute it", name)
+}
+
+// validVarNames holds every key of a vars map to the grammar. Create writes
+// each of them, so each has to be one a substitution could reach.
 func validVarNames(vars map[string]string) error {
 	for name := range vars {
-		if !varNameRe.MatchString(name) {
-			return fmt.Errorf("invalid variable name %q: a transport placeholder is {UPPERCASE_NAME}, so nothing would substitute it", name)
+		if err := validVarName(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// trimmedVars is the vars map as it is stored: every value trimmed, the way
+// Edit trims each value it sets and the way base_url and api_key_env are
+// trimmed beside it, so the two authoring paths write the same value.
+func trimmedVars(vars map[string]string) map[string]string {
+	if vars == nil {
+		return nil
+	}
+	trimmed := make(map[string]string, len(vars))
+	for name, value := range vars {
+		trimmed[name] = strings.TrimSpace(value)
+	}
+	return trimmed
+}
+
+// validVarSets holds only the entries that SET a value. An edit spells a
+// delete as an empty value (appwire.InstanceEditParams) and a delete writes
+// nothing, so the key it names need not be one a substitution could reach —
+// and a hand-authored key the grammar refuses is exactly the one the sheet
+// has to be able to remove.
+func validVarSets(vars map[string]string) error {
+	for name, value := range vars {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if err := validVarName(name); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 // credentialHeaderFrom reads the form's single NAME=VALUE credential header.
+// The name must be an HTTP header token (registry.CheckCredentialHeaderName).
 // The value must reference a $VARIABLE and carry no literal secret beside it:
-// one rule, registry.CheckCredentialHeaderValue, shared with
-// `evener providers add`, so neither authoring surface writes a key the other
-// would refuse (spec §11.2). The refusal names the header, never its value.
+// registry.CheckCredentialHeaderValue, shared with `evener providers add`, so
+// neither authoring surface writes a key the other would refuse (spec §11.2)
+// and this surface never saves a value the entry it broadcasts would have to
+// omit. The refusal names the header, never its value.
 func credentialHeaderFrom(field string) (map[string]string, error) {
 	field = strings.TrimSpace(field)
 	if field == "" {
@@ -184,6 +277,9 @@ func credentialHeaderFrom(field string) (map[string]string, error) {
 	name, value = strings.TrimSpace(name), strings.TrimSpace(value)
 	if !ok || name == "" {
 		return nil, appwire.InvalidParams("credential header must be NAME=VALUE, as in Authorization=Bearer $PORTKEY_KEY")
+	}
+	if err := registry.CheckCredentialHeaderName(name); err != nil {
+		return nil, appwire.InvalidParams(err.Error())
 	}
 	if err := registry.CheckCredentialHeaderValue(value); err != nil {
 		return nil, appwire.InvalidParams(fmt.Sprintf("credential header %s: %v", name, err))
@@ -233,6 +329,12 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if err != nil {
 		return err
 	}
+	apiKeyEnv := strings.TrimSpace(params.APIKeyEnv)
+	if apiKeyEnv != "" {
+		if err := registry.CheckAPIKeyEnvName(apiKeyEnv); err != nil {
+			return appwire.InvalidParams(err.Error())
+		}
+	}
 	if err := validVarNames(params.Vars); err != nil {
 		return appwire.InvalidParams(err.Error())
 	}
@@ -252,11 +354,11 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		Surface:  strings.TrimSpace(params.Surface),
 		Transport: registry.Transport{
 			BaseURL: strings.TrimSpace(params.BaseURL),
-			Vars:    params.Vars,
+			Vars:    trimmedVars(params.Vars),
 		},
 	}
-	if v := strings.TrimSpace(params.APIKeyEnv); v != "" {
-		p.APIKeyEnv = []string{v}
+	if apiKeyEnv != "" {
+		p.APIKeyEnv = []string{apiKeyEnv}
 	}
 	p.CredentialHeaders = credentialHeaders
 	l.Providers[name] = p
@@ -272,6 +374,11 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 // merely displayed, which would stop the instance inheriting its provider's
 // key (spec §10, §11.3).
 //
+// A NewName re-keys the entry, follows the default pointer, and then moves
+// the stored key and OAuth record (moveCredentials); it is refused for an
+// implicit instance, an invalid name, a name any instance already has, and a
+// name still holding a credential of its own (credentialsUnder).
+//
 // Refusals follow Create's convention (#717/#748): the ones that blame the
 // fields the caller sent — an unknown name, an invalid vars key, an edit
 // that would leave the instance unable to load — come back as
@@ -282,8 +389,30 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
-	if err := validVarNames(params.Vars); err != nil {
+	if err := validVarSets(params.Vars); err != nil {
 		return appwire.InvalidParams(err.Error())
+	}
+	// Not parsed at all under the clear flag: the clear branch below wins, as
+	// it does for base URL, protocol, surface and api_key_env, so the value
+	// riding along with it is one this request discards. Parsing it anyway
+	// turns a removal into a refusal — and the value a user reaches for the
+	// clear over is often the invalid one the parse would refuse.
+	var credentialHeaders map[string]string
+	if !params.ClearCredentialHeader {
+		parsed, err := credentialHeaderFrom(params.CredentialHeader)
+		if err != nil {
+			return err
+		}
+		credentialHeaders = parsed
+	}
+	// api_key_env names an environment variable, never the key itself, and is
+	// checked here for the same reason and under the same clear-flag rule as
+	// the credential header above.
+	apiKeyEnv := strings.TrimSpace(params.APIKeyEnv)
+	if !params.ClearAPIKeyEnv && apiKeyEnv != "" {
+		if err := registry.CheckAPIKeyEnvName(apiKeyEnv); err != nil {
+			return appwire.InvalidParams(err.Error())
+		}
 	}
 
 	c.mu.Lock()
@@ -306,6 +435,40 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 		p = registry.Provider{ID: name}
 	}
+	newName := strings.TrimSpace(params.NewName)
+	renaming := newName != "" && newName != name
+	if renaming {
+		if !authored {
+			return appwire.InvalidParams(fmt.Sprintf("instance %q comes from the environment and cannot be renamed", name))
+		}
+		if !registry.ValidInstanceName(newName) {
+			return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
+		}
+		if _, taken := l.Providers[newName]; taken {
+			return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
+		}
+		if _, taken := c.reg.Get().Instance(newName); taken {
+			return appwire.Conflict(fmt.Sprintf("instance %q already exists", newName))
+		}
+		// The destination check below and the move at the end of this call
+		// are one step: a credential written between them is one the check
+		// never saw and the move would overwrite. Held for the rest of the
+		// call, so the providers.toml write and the reload that follows it
+		// sit inside the same held lock (hubAuthController.credMu).
+		c.auth.credMu.Lock()
+		defer c.auth.credMu.Unlock()
+		// Both checks above ask which instances exist, and a credential can
+		// outlive the instance it belonged to: providers.toml hand-edited
+		// while credentials.toml or the OAuth state kept its entry. Under a
+		// name the registry does not curate that leftover resolves no
+		// instance, so it is invisible to them, and moveCredentials would
+		// overwrite it. The refusal belongs here rather than there: by the
+		// time moveCredentials runs the file is re-keyed and the registry
+		// reloaded, so there is no longer anything to refuse.
+		if held := c.credentialsUnder(newName); len(held) > 0 {
+			return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
+		}
+	}
 	if params.ClearBaseURL {
 		// Drops the authored override and goes back to the registry
 		// default, restoring spec §10's credential inheritance from the
@@ -316,19 +479,78 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	} else if v := strings.TrimSpace(params.BaseURL); v != "" {
 		p.Transport.BaseURL = v
 	}
-	if v := strings.TrimSpace(params.Protocol); v != "" {
+	if params.ClearProtocol {
+		p.Protocol = ""
+	} else if v := strings.TrimSpace(params.Protocol); v != "" {
 		p.Protocol = v
 	}
-	if v := strings.TrimSpace(params.Surface); v != "" {
+	if params.ClearSurface {
+		p.Surface = ""
+	} else if v := strings.TrimSpace(params.Surface); v != "" {
 		p.Surface = v
 	}
-	if len(params.Vars) > 0 {
+	if params.ClearAPIKeyEnv {
+		p.APIKeyEnv = nil
+	} else if apiKeyEnv != "" {
+		p.APIKeyEnv = []string{apiKeyEnv}
+	}
+	if params.ClearCredentialHeader {
+		p.CredentialHeaders = nil
+	} else if credentialHeaders != nil {
+		p.CredentialHeaders = credentialHeaders
+	}
+	// An empty value deletes the variable (appwire.InstanceEditParams);
+	// anything else is set over whatever was authored before, trimmed as
+	// base_url and api_key_env are — the delete is decided on the trimmed
+	// value, so storing the untrimmed one would let a value that only just
+	// escaped the delete land as one padded with spaces.
+	for key, value := range params.Vars {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			delete(p.Transport.Vars, key)
+			continue
+		}
 		if p.Transport.Vars == nil {
 			p.Transport.Vars = map[string]string{}
 		}
-		maps.Copy(p.Transport.Vars, params.Vars)
+		p.Transport.Vars[key] = value
 	}
-	l.Providers[name] = p
+	if renaming {
+		// An entry with no base inherits protocol, surface and models from the
+		// curated provider its own name matches (spec §4.2). The new name
+		// matches nothing, so the inheritance would vanish with the old name
+		// and the reload below would refuse the rename. Writing down the base
+		// the entry was already resolving against keeps the effective
+		// configuration identical; it is not a re-base onto a different
+		// provider, which spec §7 puts out of scope.
+		if p.Base == "" {
+			if _, curated := c.reg.Get().Provider(name); curated {
+				p.Base = name
+			}
+		}
+		// The same rule pointed at the new name: an entry the rule above left
+		// without a base has none to pin its configuration, so under a curated
+		// id it would start inheriting that provider's protocol, transport,
+		// models and credential resolution instead of resolving its own
+		// fields. Neither taken-name check refuses it — a curated provider
+		// with no credential is not an instance — and nothing has moved yet,
+		// so the refusal costs nothing to make here.
+		if p.Base == "" {
+			if _, curated := c.reg.Get().Provider(newName); curated {
+				return appwire.InvalidParams(fmt.Sprintf("%q is a curated provider id; an instance named after it would inherit its configuration. Give the instance an explicit base or choose another name.", newName))
+			}
+		}
+		// The map key is the instance name providers.toml is written under;
+		// the default pointer follows so the file still loads.
+		delete(l.Providers, name)
+		p.ID = newName
+		if l.Default == name {
+			l.Default = newName
+		}
+		l.Providers[newName] = p
+	} else {
+		l.Providers[name] = p
+	}
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
@@ -349,6 +571,91 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return appwire.InvalidParams(fmt.Sprintf("this edit would leave %q unable to load: %v", name, err))
 	}
+	if renaming {
+		moveErr := c.moveCredentials(name, newName)
+		// The reload above ran while the stored key and OAuth record still
+		// sat under the old name, so a curated provider this instance had
+		// shadowed could resolve a credential and reappear as a phantom
+		// implicit instance — one that also makes renaming back a sticky
+		// Conflict. Remove clears credentials before its reload; a rename
+		// cannot, because a failed reload restores the file and the
+		// credentials would already have moved.
+		if err := c.reg.Reload(); err != nil && moveErr == nil {
+			// Everything this rename writes is already written, so it is as
+			// persisted as one that ended cleanly and is announced the same
+			// way.
+			return renamePersistedError{err}
+		}
+		return moveErr
+	}
+	return nil
+}
+
+// credentialsUnder names the credentials already filed under name, in the
+// vocabulary describeImplicit uses for the same two sources. It is what a
+// rename onto name would overwrite, so the caller can go clear the one it
+// names. A record that exists but does not read back counts as present:
+// not-found is the only signal that nothing is there, and overwriting a
+// credential the hub merely failed to read is the same loss.
+func (c *hubInstancesController) credentialsUnder(name string) []string {
+	var held []string
+	if _, ok := c.auth.creds.Get(name); ok {
+		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
+	}
+	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		held = append(held, fmt.Sprintf("an OAuth record for %q", name))
+	}
+	return held
+}
+
+// renamePersistedError is a rename that reached the file: providers.toml
+// carries the new name, and what is unfinished is either the credential move
+// or the reload that would refresh the hub's own view of what the move
+// changed. Every other client's instance list is stale by exactly as much as
+// it would be after a clean rename, so the RPC handler broadcasts on it and
+// still returns it, leaving the client that asked with the leftover to deal
+// with.
+type renamePersistedError struct{ err error }
+
+func (e renamePersistedError) Error() string { return e.err.Error() }
+
+func (e renamePersistedError) Unwrap() error { return e.err }
+
+// moveCredentials carries an instance's stored key and OAuth record to its
+// new name after a rename. It runs once providers.toml is written and
+// reloaded, with credMu held by the caller: the config is already renamed, so
+// a failure here is reported as what was left behind rather than undone — the
+// list stays consistent with the file, and a leftover stays reachable under
+// the old name through evener/auth/apiKey/clear or the state directory. That
+// report is a renamePersistedError, which is what tells the RPC handler the
+// rename is on disk however this call ends.
+// Nothing it calls takes credMu, which the caller still holds.
+func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
+	var problems []string
+	// One persist, so the key is never briefly filed under both names or
+	// neither: a copy-then-clear pair whose second half failed would leave
+	// the old name resolving a credential the config no longer names.
+	if err := c.auth.creds.Move(oldName, newName); err != nil {
+		problems = append(problems, fmt.Sprintf("stored key not copied: %v", err))
+	}
+	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
+	switch {
+	case errors.Is(err, authopenai.ErrAuthNotFound):
+	case err != nil:
+		problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
+	default:
+		// The record's provider field names the instance it belongs to (the
+		// OAuth completion paths set it), so it follows the rename.
+		record.Provider = newName
+		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
+			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
+		} else if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+			problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+		}
+	}
+	if len(problems) > 0 {
+		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; "))}
+	}
 	return nil
 }
 
@@ -366,8 +673,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// containing path separators from deleting an arbitrary file.
 	name := strings.TrimSpace(params.Name)
 	if !registry.ValidInstanceName(name) {
-		return fmt.Errorf("invalid instance name %q (lowercase, no slash)", params.Name)
+		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The lookup names what this call deletes - the authored entry, the
+	// stored key and the OAuth record under this name - so it is made under
+	// the lock that holds the deletion, as Edit's are: a rename landing
+	// between the two would hand the deletion to whatever holds the name
+	// afterwards.
 	inst, ok := c.reg.Get().Instance(name)
 	if !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
@@ -375,9 +690,6 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if inst.Implicit {
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	l, _, err := c.read()
 	if err != nil {
 		return err
@@ -392,12 +704,20 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return err
 	}
 
-	// Clear stored credentials (ignore errors for missing entries).
-	_ = c.auth.creds.Clear(name)
-	// Delete OAuth state file as best-effort: DeleteAuth already ignores
-	// not-found. Any other error is logged but does not fail Remove, since
-	// the instance is already gone from providers.toml.
-	if _, err := authopenai.DeleteAuth(c.auth.stateDir, name); err != nil {
+	// A credential write like any other, so it takes the read side of the
+	// lock a rename holds exclusively (hubAuthController.credMu). Edit is
+	// already excluded from here by c.mu; the lock is what keeps one rule
+	// for every path that removes a credential.
+	if err := c.auth.credentialWrite(func() error {
+		// Clear stored credentials (ignore errors for missing entries).
+		_ = c.auth.creds.Clear(name)
+		// DeleteAuth already ignores not-found.
+		_, err := authopenai.DeleteAuth(c.auth.stateDir, name)
+		return err
+	}); err != nil {
+		// Best-effort: the instance is already gone from providers.toml, so
+		// an OAuth state file that would not delete is logged rather than
+		// failing the removal.
 		fmt.Fprintf(os.Stderr, "[hub] remove %s: delete OAuth state: %v\n", name, err)
 	}
 	return c.reg.Reload()
@@ -426,12 +746,15 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 		return err
 	}
 	name := strings.TrimSpace(params.Name)
-	if _, ok := c.reg.Get().Instance(name); !ok {
-		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
-	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Checked under the lock that holds the write: a rename landing between
+	// the two would leave a default naming an instance that has moved, which
+	// the next load refuses while it sits on disk.
+	if _, ok := c.reg.Get().Instance(name); !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
 	l, _, err := c.read()
 	if err != nil {
 		return err

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -87,32 +89,65 @@ func ScanConfigValue(value string) (refs []string, literal string, err error) {
 
 // CheckCredentialHeaderValue holds the secrets boundary both authoring
 // surfaces apply to a credential header before it is written (spec §11.2):
-// every whitespace-separated token is either a run of $VARIABLE references or
-// a bare auth scheme word, and at least one is a reference. That refuses a
-// value with no reference at all and a key smuggled beside one
-// ("Bearer sk-live-abc$X"), which a bare "contains a $" check accepts.
+// every whitespace-separated token is a run of $VARIABLE references, at least
+// one of them, ahead of which at most ONE literal token may stand — the auth
+// scheme, by convention, so any scheme name works, custom ones included. That
+// refuses a value with no reference at all and a key smuggled beside one,
+// whether it is glued to the reference ("Bearer sk-live-abc$X"), standing
+// behind it, or made of letters alone so that it reads as a second scheme
+// word ("Bearer supersecret $KEY") — all of which a bare "contains a $" check
+// accepts.
 //
 // The rule is deliberately stricter than providers.toml's own grammar, which
 // takes any syntactically valid value: a key typed into a form or an argv is
 // a key that leaked, so the file may hold shapes neither surface will author.
 // No refusal echoes the value, which may hold the secret it refused.
 func CheckCredentialHeaderValue(value string) error {
-	referenced := false
+	referenced, scheme := false, false
 	for token := range strings.FieldsSeq(value) {
 		refs, literal, err := ScanConfigValue(token)
 		switch {
 		case err != nil:
 			return err
-		case len(refs) == 0 && isAuthSchemeWord(token):
-			// A scheme name carries no secret.
+		case len(refs) == 0 && isAuthSchemeWord(token) && !scheme && !referenced:
+			// A scheme name carries no secret; a second literal word, or one
+			// standing behind the reference, is not a scheme name.
+			scheme = true
 		case len(refs) > 0 && literal == "":
 			referenced = true
 		default:
-			return errors.New("only an auth scheme word may be literal; the value itself must be a $VARIABLE reference, never a literal secret")
+			return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
 		}
 	}
 	if !referenced {
 		return errors.New("the value must reference a $VARIABLE, never a literal secret")
+	}
+	return nil
+}
+
+// CheckCredentialHeaderName holds the same boundary for the NAME half of a
+// credential header both authoring surfaces parse: it must be an HTTP header
+// field name (RFC 7230's token). A name outside that grammar is one no server
+// would read, and a CR or LF inside it would forge a second header. The
+// refusal does not echo the name: a form field can hold anything the user
+// pasted into it.
+func CheckCredentialHeaderName(name string) error {
+	if !httpguts.ValidHeaderFieldName(name) {
+		return errors.New("credential header name must be an HTTP header token (letters, digits, and !#$%&'*+-.^_`|~)")
+	}
+	return nil
+}
+
+// CheckAPIKeyEnvName holds the same boundary for api_key_env, which names an
+// environment variable rather than holding a key: the name must be one a
+// "${NAME}" reference could spell (spec §10's grammar). The loader takes any
+// string the TOML grammar spells, so a key pasted where its variable's name
+// belonged loads fine — a category error, but one a real file can hold, and
+// neither authoring surface may write it nor any client receive it. The
+// refusal does not echo the name, which may be that key.
+func CheckAPIKeyEnvName(name string) error {
+	if !envNameRe.MatchString(name) {
+		return errors.New("api_key_env names an environment variable: a letter or underscore, then only letters, digits, or underscores")
 	}
 	return nil
 }
