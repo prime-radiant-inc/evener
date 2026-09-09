@@ -2954,10 +2954,28 @@ test("a /model prompt starts the session and applies thread/model/set on the new
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("thread/model/set", () => ({}));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
   });
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
   await settled();
+
+  // The pre-start known-value check reads the pane-level modelCatalog, which
+  // lands on a 250ms settle after mount (CATALOG_SETTLE_MS) — settled() only
+  // waits for the Advanced-options toggle, not the catalog, so submitting
+  // immediately races it (resolveSpawnModelItems(null) is [] and the known
+  // value fail-closes). Setting a working directory and waiting for the
+  // cwd-scoped resolve to commit its state-derived trigger text guarantees
+  // the catalog commit happened first: the catalog effect is declared before
+  // the resolve effect and both share the one keyed model/list promise, so
+  // the resolve's Promise.all commit is strictly after the catalog's.
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await waitFor(() => expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5 (default)"));
 
   await user.type(promptField(), "/model openai/gpt-5");
   await user.keyboard("{Escape}");
