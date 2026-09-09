@@ -1,4 +1,4 @@
-// InstanceDetailSheet.test.tsx builds its InstanceEntry values by hand. This
+// InstanceSheet.test.tsx builds its InstanceEntry values by hand. This
 // file is the other half: the sheet's affordances are keyed on literal
 // authModes and activeSource values (spec §11.3), and every instance here is
 // one the hub actually sent — cmd/evener-hub's
@@ -10,19 +10,19 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { hubInstance, hubInstanceEntries } from "../../../../protocol/testing/hubWireFixtures";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { InstanceDetailSheet } from "./InstanceDetailSheet";
+import { InstanceSheet } from "./InstanceSheet";
 
 function renderHubInstance(name: string) {
   credentialsStore.setState({ instances: [hubInstance(name)] });
   render(
-    <InstanceDetailSheet
+    <InstanceSheet
       name={name}
       onClose={vi.fn()}
       onTestCredentials={vi.fn()}
       onSetApiKey={vi.fn()}
       onSetCredentialJson={vi.fn()}
       onOAuthStart={vi.fn()}
-      onEdit={vi.fn()}
+      onRenamed={vi.fn()}
       onClear={vi.fn()}
       onClearStoredKey={vi.fn()}
       onRemove={vi.fn()}

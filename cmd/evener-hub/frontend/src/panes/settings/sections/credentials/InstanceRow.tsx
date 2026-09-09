@@ -2,10 +2,10 @@
 // detail-sheet redesign - a single full-width button carrying identity and
 // status only (heading dot, name, ★ default / from environment chips, one
 // meta line, chevron).
-// Every per-instance ACTION (test, set key, sign in, edit, clear, remove,
-// make default) and the layered credential display moved into
-// InstanceDetailSheet, so the list stays one-target-per-row on desktop and
-// touch alike. Pure presentational: the section owns selection.
+// Every per-instance ACTION (test, set key, sign in, clear, remove, make
+// default) and the layered credential display moved into InstanceSheet,
+// so the list stays one-target-per-row on desktop and touch alike. Pure
+// presentational: the section owns selection.
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

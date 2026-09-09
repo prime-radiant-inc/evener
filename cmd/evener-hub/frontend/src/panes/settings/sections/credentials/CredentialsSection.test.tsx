@@ -231,7 +231,7 @@ describe("credential verification", () => {
     expect(
       (within(inspector).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled,
     ).toBe(true);
-    expect((within(inspector).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(inspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 
     response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
@@ -357,16 +357,16 @@ describe("credential verification", () => {
     fake.on("evener/auth/test", () => response.promise);
     render(<CredentialsSection sectionId="credentials" />);
     const inspector = await openSheet(userEvent.setup(), "work");
-    await within(inspector).findByText("openai-chat · base https://old.example/v1");
+    await screen.findByText("Not configured · openai-chat · base https://old.example/v1");
     await userEvent.setup().click(within(inspector).getByRole("button", { name: "Test credentials" }));
     expect(within(inspector).getByRole("button", { name: "Testing credentials…" })).toBeTruthy();
 
     await act(async () => {
       await credentialsStore.getState().fetch();
     });
-    // The sheet reads the instance from the store, so the refreshed base URL
+    // The row reads the instance from the store, so the refreshed base URL
     // lands live; the stale pending state from the old configuration is gone.
-    await within(inspector).findByText("openai-chat · base https://new.example/v1");
+    await screen.findByText("Not configured · openai-chat · base https://new.example/v1");
     const refreshedButton = within(inspector).getByRole("button", { name: /Test(?:ing credentials…)?/ });
     expect((refreshedButton as HTMLButtonElement).disabled).toBe(false);
     response.resolve({ provider: "work", status: "success", message: "Credentials verified." });
@@ -378,7 +378,7 @@ describe("credential verification", () => {
 });
 
 describe("single-open-editor invariant", () => {
-  test("opening the Add form, then Edit from a row's sheet, replaces it (only one editor open at a time)", async () => {
+  test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     render(<CredentialsSection sectionId="credentials" />);
@@ -387,10 +387,10 @@ describe("single-open-editor invariant", () => {
     await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
     expect(screen.getByRole("dialog", { name: "Add provider instance" })).toBeTruthy();
     const inspector = await openSheet(user, "work");
-    await user.click(within(inspector).getByRole("button", { name: "Edit" }));
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
     expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Edit work" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
   });
 });
 
@@ -763,7 +763,7 @@ describe("diagnostics and writesRefused", () => {
     expect(screen.queryByText("Warnings")).toBeNull();
   });
 
-  test("writesRefused disables Add and each sheet's Edit/Remove/make default, but not Test credentials/Set key/Clear", async () => {
+  test("writesRefused disables Add and each sheet's Remove/make default, but not Test credentials/Set key/Clear", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
@@ -777,7 +777,6 @@ describe("diagnostics and writesRefused", () => {
     expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
 
     const workInspector = await openSheet(user, "work");
-    expect((within(workInspector).getByRole("button", { name: "Edit" }) as HTMLButtonElement).disabled).toBe(true);
     expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
     // WORK has a stored key, so its sheet offers Clear - unaffected by writesRefused.
     expect((within(workInspector).getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(false);
@@ -794,5 +793,30 @@ describe("diagnostics and writesRefused", () => {
     expect(
       (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+});
+
+describe("rename from the sheet", () => {
+  test("re-selects the instance under its new name so the sheet stays open", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/edit", (params) => ({
+      instances: [{ ...WORK, name: params.newName ?? WORK.name }, PERSONAL],
+      availableProviders: [],
+    }));
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+    expect(screen.getByRole("button", { name: /work2/ })).toBeTruthy();
   });
 });
