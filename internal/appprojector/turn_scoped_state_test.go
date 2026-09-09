@@ -81,3 +81,100 @@ func TestFailedTurnDoesNotLeakItsReasoningItem(t *testing.T) {
 		t.Fatalf("the turn after a failed one reused the failed turn's reasoning item %q", first[0])
 	}
 }
+
+func TestReasoningItemCompletesWhenAssistantRoundEnds(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	at := time.Unix(20, 0)
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, Timestamp: at, Data: events.UserInputData{Text: "one", StableTurnID: "turn_m1"}})
+	started := reasoningItemStarted(p.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, Timestamp: at, Data: events.ReasoningSummaryDeltaData{Delta: "thinking"}}))
+	if len(started) != 1 {
+		t.Fatalf("reasoning started=%v, want one item", started)
+	}
+	out := p.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, Timestamp: at, Data: events.AssistantTextEndData{Text: "answer", FinishReason: "stop"}})
+	var completed []appwire.ThreadItem
+	for _, n := range out {
+		if n.Method != appwire.NotifyItemCompleted {
+			continue
+		}
+		params, ok := n.Params.(appwire.ItemLifecycleParams)
+		if ok {
+			completed = append(completed, params.Item)
+		}
+	}
+	if len(completed) < 2 {
+		t.Fatalf("completed items=%+v, want reasoning and assistant", completed)
+	}
+	if completed[0].ID != started[0] || completed[0].Type != "reasoning" || completed[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("reasoning completion=%+v, want completed item %q", completed[0], started[0])
+	}
+}
+
+func TestReasoningItemCompletesBeforeNextAssistantRound(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	at := time.Unix(30, 0)
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, Timestamp: at, Data: events.UserInputData{Text: "one", StableTurnID: "turn_m1"}})
+	started := reasoningItemStarted(p.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, Timestamp: at, Data: events.ReasoningSummaryDeltaData{Delta: "thinking"}}))
+	out := p.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, Timestamp: at, Data: events.AssistantTextStartData{Model: "fixture-model"}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("next-round notifications=%+v, want one reasoning completion", out)
+	}
+	params, ok := out[0].Params.(appwire.ItemLifecycleParams)
+	if !ok || params.Item.ID != started[0] || params.Item.Type != "reasoning" || params.Item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("next-round completion=%+v, want completed reasoning %q", out[0].Params, started[0])
+	}
+}
+
+func TestReasoningItemCompletesWhenTurnFails(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	at := time.Unix(40, 0)
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, Timestamp: at, Data: events.UserInputData{Text: "one", StableTurnID: "turn_m1"}})
+	started := reasoningItemStarted(p.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, Timestamp: at, Data: events.ReasoningSummaryDeltaData{Delta: "thinking"}}))
+	out := p.Project(events.SessionEvent{Kind: events.EventError, Timestamp: at, Data: events.ErrorData{Error: "provider exploded"}})
+	var found bool
+	for _, n := range out {
+		if n.Method != appwire.NotifyItemCompleted {
+			continue
+		}
+		params, ok := n.Params.(appwire.ItemLifecycleParams)
+		if ok && params.Item.ID == started[0] {
+			found = true
+			if params.Item.Status != appwire.TurnStatusFailed {
+				t.Fatalf("reasoning status=%q, want failed", params.Item.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("failed turn notifications=%+v, want reasoning completion", out)
+	}
+}
+
+func TestReasoningItemUsesTerminalSessionStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{name: "awaiting", state: appwire.ThreadStatusAwaiting, want: appwire.TurnStatusCompleted},
+		{name: "interrupted", state: appwire.ThreadStatusClosed, want: appwire.TurnStatusInterrupted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewAppEventProjector("th_1", "local:th_1")
+			at := time.Unix(50, 0)
+			p.Project(events.SessionEvent{Kind: events.EventUserInput, Timestamp: at, Data: events.UserInputData{Text: "one", StableTurnID: "turn_m1"}})
+			started := reasoningItemStarted(p.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, Timestamp: at, Data: events.ReasoningSummaryDeltaData{Delta: "thinking"}}))
+			out := p.Project(events.SessionEvent{Kind: events.EventSessionEnd, Timestamp: at, Data: events.SessionEndData{State: tc.state, Interrupted: tc.state == appwire.ThreadStatusClosed}})
+			var completions []appwire.ItemLifecycleParams
+			for _, n := range out {
+				if n.Method != appwire.NotifyItemCompleted {
+					continue
+				}
+				if params, ok := n.Params.(appwire.ItemLifecycleParams); ok {
+					completions = append(completions, params)
+				}
+			}
+			if len(completions) != 1 || completions[0].Item.ID != started[0] || completions[0].Item.Status != tc.want {
+				t.Fatalf("session end completions=%+v, want reasoning %q status %q", completions, started[0], tc.want)
+			}
+		})
+	}
+}

@@ -403,6 +403,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		// The agent message is materialized lazily -- with the first delta, or
 		// at ASSISTANT_TEXT_END when the round's whole text arrives there. Every
 		// round that answers with tool calls alone emits this same lifecycle
@@ -497,6 +498,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		p.recordAssistantMessage(turnID, text)
 		p.assistantItem = ""
 		p.assistantText = ""
+		out = append(out, p.completeReasoningItem(appwire.TurnStatusCompleted)...)
 		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -890,6 +892,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		out := p.ensureTurn(event.Timestamp)
 		turnID := p.activeTurnID
 		previewResets := p.resetProvisionalCommunicates()
+		reasoningCompletion := p.completeReasoningItem(appwire.TurnStatusFailed)
 		p.activeTurnID = ""
 		// A failed turn ends as thoroughly as a completed one. Clearing a
 		// smaller set here let reasoningItem, toolArgsByKey and toolStartByKey
@@ -913,7 +916,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// all five completion sites.
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
-		return append(append(out, previewResets...),
+		return append(append(append(out, previewResets...), reasoningCompletion...),
 			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -1929,12 +1932,13 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 	}
 	turnID := p.activeTurnID
 	out := p.resetProvisionalCommunicates()
+	reasoningCompletion := p.completeReasoningItem(status)
 	p.activeTurnID = ""
 	p.resetTurnScopedState()
 	turn := appwire.Turn{ID: turnID, Status: status}
 	p.applyPendingTiming(turnID, &turn)
 	p.stampTurnUsage(&turn)
-	return append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
+	return append(append(out, reasoningCompletion...), p.notification(appwire.NotifyTurnCompleted, map[string]any{
 		"threadId": p.threadID,
 		"ref":      p.ref,
 		"turn":     turn,
@@ -1966,6 +1970,18 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 		Ref:      p.ref,
 		Turn:     startedTurn(turnID, at),
 	}))
+}
+
+// completeReasoningItem closes the reasoning item opened by a summary delta
+// when the provider advances to its answer round. The transcript already holds
+// the accumulated deltas; this lifecycle frame supplies the terminal status.
+func (p *AppEventProjector) completeReasoningItem(status string) []AppNotification {
+	if p.reasoningItem == "" {
+		return nil
+	}
+	item := appwire.ThreadItem{Type: "reasoning", ID: p.reasoningItem, TurnID: p.activeTurnID, Status: status}
+	p.reasoningItem = ""
+	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, Item: item})}
 }
 
 // resetTurnScopedState clears everything that belongs to one turn and must not
