@@ -57,13 +57,20 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
 
   // Debounced filter-driven auto-expand (§12d): clearing the query collapses
   // everything instantly (no debounce); a non-empty query, 150ms after the
-  // last keystroke, first lazily loads every not-yet-cached marketplace's
-  // catalog (filterLoading shows "Loading marketplaces…" tree-wide meanwhile
-  // - see the render below), then auto-expands every marketplace with a
-  // match and collapses the rest. The empty-query collapse is skipped on
-  // the initial mount so lifted expansion state (from a prior Browse visit)
-  // survives the segment round trip instead of being clobbered.
+  // last keystroke, first waits for every marketplace whose catalog is not
+  // settled yet, loading the uncached ones itself (filterLoading shows
+  // "Loading marketplaces…" tree-wide meanwhile - see the render below),
+  // then auto-expands every marketplace with a match and collapses the rest.
+  // The empty-query collapse is skipped on the initial mount so lifted
+  // expansion state (from a prior Browse visit) survives the segment round
+  // trip instead of being clobbered.
   const filterTouched = useRef(false);
+  // Which query owns filterLoading: each takes the next generation, and only
+  // the newest one may clear it. A query another keystroke outruns waits for
+  // the very catalogs the query that outran it waits for, and resumes first
+  // (it started awaiting first), so without this its finally would clear a
+  // flag the newer query still owns.
+  const filterGeneration = useRef(0);
   useEffect(() => {
     if (trimmedQuery === "") {
       if (filterTouched.current) setExpandedMarketplaces(new Set());
@@ -73,22 +80,33 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        const current = extensionsStore.getState().marketplaces ?? [];
-        const missing = current.filter((m) => !extensionsStore.getState().browseCatalogs.has(m.name));
-        if (missing.length > 0) {
-          setFilterLoading(true);
-          await Promise.all(missing.map((m) => extensionsStore.getState().browseMarketplace(m.name)));
-          if (cancelled) return;
-          setFilterLoading(false);
-        }
-        const next = new Set<string>();
-        for (const m of current) {
-          const cache = extensionsStore.getState().browseCatalogs.get(m.name);
-          if (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery))) {
-            next.add(m.name);
+        const generation = ++filterGeneration.current;
+        try {
+          const current = extensionsStore.getState().marketplaces ?? [];
+          // A catalog someone else already started - a click, a retire, an
+          // earlier query - is as unusable to this query as an absent one,
+          // and nothing reruns the filter once it lands, so both are waited
+          // for. browseMarketplace resolves either way.
+          const unsettled = current.filter((m) => {
+            const cache = extensionsStore.getState().browseCatalogs.get(m.name);
+            return cache === undefined || cache.status === "loading";
+          });
+          if (unsettled.length > 0) {
+            setFilterLoading(true);
+            await Promise.all(unsettled.map((m) => extensionsStore.getState().browseMarketplace(m.name)));
+            if (cancelled) return;
           }
+          const next = new Set<string>();
+          for (const m of current) {
+            const cache = extensionsStore.getState().browseCatalogs.get(m.name);
+            if (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery))) {
+              next.add(m.name);
+            }
+          }
+          if (!cancelled) setExpandedMarketplaces(next);
+        } finally {
+          if (filterGeneration.current === generation) setFilterLoading(false);
         }
-        if (!cancelled) setExpandedMarketplaces(next);
       })();
     }, FILTER_DEBOUNCE_MS);
     return () => {
@@ -223,6 +241,17 @@ function MarketplaceNode({
   onToggle: () => void;
   onInstall: (plugin: string, marketplace: string) => void;
 }) {
+  // An expanded node's catalog can be retired out from under it - a
+  // marketplace change from another client retires every cached one - and only
+  // a toggle would otherwise ask for a replacement, so the node asks for its
+  // own instead of spinning forever. browseMarketplace writes its "loading"
+  // entry synchronously, so the next render has a cache again and this cannot
+  // re-enter.
+  useEffect(() => {
+    if (!expanded || cache !== undefined) return;
+    void extensionsStore.getState().browseMarketplace(marketplace.name);
+  }, [expanded, cache, marketplace.name]);
+
   const rows =
     cache?.status === "loaded"
       ? query

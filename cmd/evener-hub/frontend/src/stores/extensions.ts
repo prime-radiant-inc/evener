@@ -26,6 +26,7 @@ import type {
   LaunchConfigLayer,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
+  MarketplaceEditParams,
   MarketplaceEntry,
   PathValidateResponse,
   PluginEntry,
@@ -33,13 +34,14 @@ import type {
 import { connectionStore } from "./connection";
 
 // One cached browse result per marketplace name - permanent until an
-// explicit refreshMarketplace/removeMarketplace invalidates it, exactly
+// explicit refreshMarketplace/removeMarketplace/editMarketplace retires it, exactly
 // like the legacy plugins-manager.html's own browseCatalogs cache
 // ("re-expanding never re-fetches"). "loading" is written synchronously
 // BEFORE the request is sent (see browseMarketplace below), the same
 // synchronous-marker trick the legacy's toggleMarketplaceExpanded uses to
-// keep a concurrent second call a no-op without needing a separate
-// in-flight-promise map.
+// keep a concurrent second call from sending a second request; the
+// browseInFlight map below only lets such a call wait for the request it
+// did not start.
 export type MarketplaceCatalogEntry =
   | { status: "loading" }
   | { status: "loaded"; description?: string; plugins: MarketplaceCatalogPlugin[] }
@@ -53,8 +55,16 @@ export interface ExtensionsStoreState {
   addMarketplace(params: MarketplaceAddParams): Promise<void>;
   removeMarketplace(name: string): Promise<void>;
   refreshMarketplace(name: string): Promise<void>;
+  /** Rename and/or re-source a marketplace (spec 2026-09-07 §3). The browse
+   * cache for the old AND new names is dropped: a re-source changes the
+   * catalog, and a renamed entry's catalog is keyed by its new name. */
+  editMarketplace(params: MarketplaceEditParams): Promise<void>;
 
   browseCatalogs: Map<string, MarketplaceCatalogEntry>;
+  /** Loads this marketplace's catalog into browseCatalogs, resolving once the
+   * catalog is settled - whether or not this call is the one that started the
+   * request. A call for a catalog already in flight sends nothing and waits
+   * for that request. */
   browseMarketplace(name: string): Promise<void>;
 
   plugins: PluginEntry[] | null;
@@ -103,53 +113,158 @@ function requireClient(): AppwireClientLike {
 
 const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
 
+// A browse response is keyed by marketplace name, so it can outlive the
+// catalog it describes: a request started before an edit, a re-source or a
+// removal resolves afterwards and would put the retired catalog straight back
+// into the entry that mutation just dropped - most sharply on a same-name
+// re-source, where the name survives and only the contents change. Each
+// marketplace therefore carries a generation, bumped when its cache entry is
+// retired, and a browse whose generation moved while it was in flight lands
+// nothing.
+const browseGenerations = new Map<string, number>();
+
+// The promise of each browse still on the wire, keyed the same way. A caller
+// that finds a catalog already loading - the browse filter, whose query can
+// arrive after a click or a retire started the request - has to wait for it,
+// and the "loading" marker alone says nothing about when it lands. A retire
+// can leave this holding the promise of a request whose entry is already
+// gone, which is why the finally below deletes only its own registration.
+const browseInFlight = new Map<string, Promise<void>>();
+
+function browseGeneration(name: string): number {
+  return browseGenerations.get(name) ?? 0;
+}
+
+/** Drops these names' cached catalogs and moves their generations, returning
+ * the next browseCatalogs map. Called only once a mutation has landed: a bump
+ * ahead of a request that then fails would fence out the in-flight browse and
+ * strand the "loading" entry it had already written, leaving a permanent
+ * spinner behind a failure that changed nothing. */
+function retireBrowseCatalogs(
+  catalogs: Map<string, MarketplaceCatalogEntry>,
+  names: (string | undefined)[],
+): Map<string, MarketplaceCatalogEntry> {
+  const next = new Map(catalogs);
+  for (const name of names) {
+    if (!name) continue;
+    next.delete(name);
+    browseGenerations.set(name, browseGeneration(name) + 1);
+  }
+  return next;
+}
+
+// Every marketplace mutation, and the notification refetch, replaces the whole
+// list from its own response. The hub answers one connection's requests in the
+// order they were sent - every marketplace method goes through the connection's
+// serial worker (appserver's concurrentDispatchMethod names the few thread
+// reads that do not) - and a dropped connection rejects everything it had in
+// flight, so a later response is always the newer list. The revision each
+// request takes as it starts, the same shape as the browse generations above,
+// is the fence should that ever stop holding: a response writes its list only
+// if no later revision has committed since, and a list that snapshotted before
+// an in-flight mutation committed is put right by the refetch that mutation's
+// broadcast triggers. A retirement in the same response still applies -
+// retiring is monotonic, and a catalog stale under the older list is stale
+// under the newer one too.
+let marketplaceRevisions = 0;
+let appliedMarketplaceRevision = 0;
+
+function nextMarketplaceRevision(): number {
+  marketplaceRevisions += 1;
+  return marketplaceRevisions;
+}
+
+/** Whether the response that took `revision` is still the store's newest word
+ * on the marketplaces, and records it as such when it is. A failed list counts:
+ * its error is marketplace state too, so a success that started earlier must
+ * not clear it. */
+function commitMarketplaceRevision(revision: number): boolean {
+  if (revision < appliedMarketplaceRevision) return false;
+  appliedMarketplaceRevision = revision;
+  return true;
+}
+
+/** The `marketplaces` half of a response's state patch: its own list, or
+ * nothing at all once a later revision has committed one. */
+function marketplacesFrom(revision: number, marketplaces: MarketplaceEntry[]): { marketplaces?: MarketplaceEntry[] } {
+  return commitMarketplaceRevision(revision) ? { marketplaces } : {};
+}
+
 export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => ({
   marketplaces: null,
   marketplacesLoading: false,
   marketplacesError: null,
 
   async fetchMarketplaces() {
+    const revision = nextMarketplaceRevision();
     set({ marketplacesLoading: true, marketplacesError: null });
     try {
       const client = requireClient();
       const resp = await client.request("evener/marketplace/list", {});
+      // The loading flag and the error belong to this response as much as its
+      // list does, so an outrun fetch writes none of the three: its success
+      // would clear an error a newer fetch posted or hide a load still
+      // running, and its failure would put "Failed to load" over a newer
+      // mutation's list.
+      if (!commitMarketplaceRevision(revision)) return;
       set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
     } catch (err) {
+      if (!commitMarketplaceRevision(revision)) return;
       set({ marketplacesLoading: false, marketplacesError: errorText(err) });
     }
   },
 
   async addMarketplace(params) {
+    const revision = nextMarketplaceRevision();
     const client = requireClient();
     const resp = await client.request("evener/marketplace/add", params);
-    set({ marketplaces: resp.marketplaces });
+    set(marketplacesFrom(revision, resp.marketplaces));
   },
 
   async removeMarketplace(name) {
+    const revision = nextMarketplaceRevision();
     const client = requireClient();
     const resp = await client.request("evener/marketplace/remove", { name });
-    set((s) => {
-      const nextCatalogs = new Map(s.browseCatalogs);
-      nextCatalogs.delete(name);
-      return { marketplaces: resp.marketplaces, browseCatalogs: nextCatalogs };
-    });
+    set((s) => ({
+      ...marketplacesFrom(revision, resp.marketplaces),
+      browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [name]),
+    }));
   },
 
   async refreshMarketplace(name) {
+    const revision = nextMarketplaceRevision();
     const client = requireClient();
     const resp = await client.request("evener/marketplace/refresh", { name });
-    set((s) => {
-      const nextCatalogs = new Map(s.browseCatalogs);
-      nextCatalogs.delete(name);
-      return { marketplaces: resp.marketplaces, browseCatalogs: nextCatalogs };
-    });
+    set((s) => ({
+      ...marketplacesFrom(revision, resp.marketplaces),
+      browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [name]),
+    }));
+  },
+
+  async editMarketplace(params) {
+    const revision = nextMarketplaceRevision();
+    const client = requireClient();
+    const resp = await client.request("evener/marketplace/edit", params);
+    set((s) => ({
+      ...marketplacesFrom(revision, resp.marketplaces),
+      browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [params.name, params.newName]),
+    }));
   },
 
   browseCatalogs: new Map(),
 
   async browseMarketplace(name) {
-    if (get().browseCatalogs.has(name)) return; // loaded, errored, or already in flight - see MarketplaceCatalogEntry's own doc comment
+    // Loaded, errored, or already in flight - see MarketplaceCatalogEntry's
+    // own doc comment. A settled entry has no in-flight promise, so that case
+    // resolves straight away.
+    if (get().browseCatalogs.has(name)) return browseInFlight.get(name);
     const client = requireClient();
+    const generation = browseGeneration(name);
+    let settled!: (value: void | PromiseLike<void>) => void;
+    const inFlight = new Promise<void>((resolve) => {
+      settled = resolve;
+    });
+    browseInFlight.set(name, inFlight);
     set((s) => {
       const next = new Map(s.browseCatalogs);
       next.set(name, { status: "loading" });
@@ -157,17 +272,29 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     });
     try {
       const resp = await client.request("evener/marketplace/browse", { name });
+      if (browseGeneration(name) !== generation) return;
       set((s) => {
         const next = new Map(s.browseCatalogs);
         next.set(name, { status: "loaded", description: resp.description, plugins: resp.plugins });
         return { browseCatalogs: next };
       });
     } catch (err) {
+      // Fenced the same way a success is: an error from a catalog that has
+      // since been retired says nothing about the one that replaced it.
+      if (browseGeneration(name) !== generation) return;
       set((s) => {
         const next = new Map(s.browseCatalogs);
         next.set(name, { status: "error", error: errorText(err) });
         return { browseCatalogs: next };
       });
+    } finally {
+      // A retire can drop this name's entry while this request is on the wire
+      // and a replacement request take its place; that one is what the map
+      // must keep and what this request's waiters actually want, since this
+      // one's answer is fenced out.
+      const current = browseInFlight.get(name);
+      if (current === inFlight) browseInFlight.delete(name);
+      settled(current === inFlight ? undefined : current);
     }
   },
 
@@ -330,8 +457,18 @@ function scheduleLaunchLayerRefetch(): void {
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/marketplace/updated") scheduleMarketplaceRefetch();
-  else if (n.method === "evener/plugin/updated") {
+  if (n.method === "evener/marketplace/updated") {
+    // The notification names nothing, so every cached catalog may now describe
+    // a marketplace another client has since added to, removed, refreshed,
+    // renamed or re-sourced. All of them are retired, and the generation bump
+    // fences the browses already in flight, which would otherwise land their
+    // pre-change catalogs after this. Expanded nodes re-request their own -
+    // see BrowseSection's MarketplaceNode.
+    extensionsStore.setState((s) => ({
+      browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]),
+    }));
+    scheduleMarketplaceRefetch();
+  } else if (n.method === "evener/plugin/updated") {
     extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
     schedulePluginRefetch();
   } else if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
@@ -362,6 +499,10 @@ if (initialClient) attachNotifications(initialClient);
 // reset*StoreForTests precedent).
 export function resetExtensionsStoreForTests(): void {
   wiredClient = null;
+  browseGenerations.clear();
+  browseInFlight.clear();
+  marketplaceRevisions = 0;
+  appliedMarketplaceRevision = 0;
   clearTimeout(marketplaceRefetchTimer);
   marketplaceRefetchTimer = undefined;
   clearTimeout(pluginRefetchTimer);
