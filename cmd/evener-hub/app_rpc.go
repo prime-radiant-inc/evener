@@ -963,6 +963,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Edit(params); err != nil {
+			// A rename that persisted before it failed leaves every other
+			// client's list as stale as a clean one does, so it is announced
+			// too; the error still goes back to the client that asked, which
+			// is the only one that can act on the leftover credential.
+			if _, persisted := errors.AsType[renamePersistedError](err); persisted {
+				notifyInstanceUpdated(server)
+			}
 			return appwire.InstanceListResponse{}, err
 		}
 		notifyInstanceUpdated(server)

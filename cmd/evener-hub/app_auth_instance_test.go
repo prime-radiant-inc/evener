@@ -32,11 +32,11 @@ func writeProvidersToml(t *testing.T, dir string, content string) string {
 	return path
 }
 
-// newTestRegistry builds a hermetic registry holder over providersToml: no
-// network, no catalog cache, and only the env the test hands it.
-func newTestRegistry(t *testing.T, stateDir, providersToml string, store *credentials.Store, env map[string]string) *hubcore.ProviderRegistry {
-	t.Helper()
-	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+// testRegistryLoader is the hermetic loader newTestRegistry holds: no
+// network, no catalog cache, and only the env the test hands it. It is on its
+// own for the test that wraps it to make one single reload fail.
+func testRegistryLoader(stateDir, providersToml string, store *credentials.Store, env map[string]string) hubcore.RegistryLoader {
+	return func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 		opts := []registry.Option{
 			registry.WithOffline(true),
 			registry.WithoutCache(),
@@ -54,7 +54,14 @@ func newTestRegistry(t *testing.T, stateDir, providersToml string, store *creden
 		}
 		r, err := registry.Load(append(opts, extra...)...)
 		return r, store, err
-	})
+	}
+}
+
+// newTestRegistry builds a hermetic registry holder over providersToml: no
+// network, no catalog cache, and only the env the test hands it.
+func newTestRegistry(t *testing.T, stateDir, providersToml string, store *credentials.Store, env map[string]string) *hubcore.ProviderRegistry {
+	t.Helper()
+	holder := hubcore.NewProviderRegistry(testRegistryLoader(stateDir, providersToml, store, env))
 	if err := holder.Reload(); err != nil {
 		t.Fatalf("registry: %v", err)
 	}

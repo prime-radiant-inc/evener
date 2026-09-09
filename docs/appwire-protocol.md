@@ -708,11 +708,18 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `newName` | `string` | yes |  |
 | `baseUrl` | `string` | yes |  |
 | `clearBaseUrl` | `bool` | yes |  |
 | `protocol` | `string` | yes |  |
+| `clearProtocol` | `bool` | yes |  |
 | `surface` | `string` | yes |  |
+| `clearSurface` | `bool` | yes |  |
 | `vars` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | yes |  |
+| `clearApiKeyEnv` | `bool` | yes |  |
+| `credentialHeader` | `string` | yes |  |
+| `clearCredentialHeader` | `bool` | yes |  |
 
 
 ### `InstanceEntry`
@@ -727,6 +734,8 @@ _(no fields)_
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
+| `apiKeyEnv` | `string` | yes |  |
+| `credentialHeader` | `string` | yes |  |
 | `implicit` | `bool` |  |  |
 | `hidden` | `bool` | yes |  |
 | `isDefault` | `bool` |  |  |
