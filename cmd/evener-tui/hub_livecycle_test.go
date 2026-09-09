@@ -80,6 +80,17 @@ func (r *liveCycleReads) replaces() []bool {
 	return append([]bool(nil), r.replace...)
 }
 
+// mustParseLiveCycleRef parses a literal ref for tests that need the
+// appwire.Ref form of a tree row.
+func mustParseLiveCycleRef(t *testing.T, ref string) appwire.Ref {
+	t.Helper()
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil {
+		t.Fatalf("parse ref %q: %v", ref, err)
+	}
+	return parsed
+}
+
 func newLiveCycleModel(t *testing.T, currentRef string, tree hubTreeResponse) (hubModel, *liveCycleReads, func()) {
 	t.Helper()
 	reads := &liveCycleReads{}
@@ -1626,5 +1637,153 @@ func TestHubSessionLiveCycleRecoveryRetryIsBounded(t *testing.T) {
 	}
 	if after := len(reads.get()); after > before {
 		t.Fatalf("recovery issued another read after surfacing failure: %d -> %d", before, after)
+	}
+}
+
+// A refresh-class read of the displayed session (/details, a clear's
+// re-read, the resync re-read) is untagged today: only live-navigation
+// reads carry liveNavSeq. One issued for session A, followed by live-nav to
+// B, can return after B's read applied — untagged, it enters the
+// different-session branch, replaces B with stale data for A, and clobbers
+// the newer navigation state (bumping liveNavSeq and clearing the pending
+// target a subsequent press would step from). The refresh read is OLDER
+// intent than the applied navigation and must drop (roborev PR #1044
+// round-18 medium).
+func TestHubSessionLiveCycleStaleRefreshReadDoesNotRevertAppliedNavigation(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	// The refresh read issues while B is displayed, before any navigation.
+	refreshCmd := fetchCurrentHubSession(&m, "")
+	if refreshCmd == nil {
+		t.Fatal("refresh command: expected a fetch command, got nil")
+	}
+
+	// The user live-navigates away while the refresh read is in flight.
+	m1, navCmd := m.switchToAdjacentLiveSession(1) // B -> C
+	if navCmd == nil {
+		t.Fatal("navigation command: expected a fetch command, got nil")
+	}
+
+	// The navigation response applies: the view is C, the pending state
+	// cleared at the settle point.
+	updated, _ := m1.Update(navCmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01C" {
+		t.Fatalf("after navigation applied, viewed ref = %q, want local:01C", m2.detail.Ref)
+	}
+	if m2.liveNavPendingRef != "" {
+		t.Fatalf("navigation settle left pending ref %q, want cleared", m2.liveNavPendingRef)
+	}
+
+	// The stale refresh response lands late, for the abandoned session B.
+	// It must not revert the display or clobber the navigation state.
+	updated, reestablish := m2.Update(refreshCmd())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01C" {
+		t.Fatalf("stale refresh read reverted the display: viewed ref = %q, want local:01C", m3.detail.Ref)
+	}
+	if m3.liveNavPendingRef != "" {
+		t.Fatalf("stale refresh read left pending ref %q, want cleared", m3.liveNavPendingRef)
+	}
+	if m3.liveNavSeq != m2.liveNavSeq {
+		t.Fatalf("stale refresh read clobbered liveNavSeq: got %d, want %d", m3.liveNavSeq, m2.liveNavSeq)
+	}
+	// The dropped read's ThreadRead still replaced the connection's
+	// server-side subscriptions, so the displayed session must be
+	// re-established — through the tagged helper, so a yet-newer press
+	// cannot be hijacked by the re-read's response (round-13 medium 1).
+	if reestablish == nil {
+		t.Fatal("stale refresh drop did not re-establish the displayed session's subscription")
+	}
+	if msg, ok := reestablish().(hubSessionMsg); !ok || msg.ref != "local:01C" || !msg.liveNavRecovery || msg.liveNavSeq != m2.liveNavSeq {
+		t.Fatalf("re-establish read = %+v, want a recovery read for local:01C tagged with seq %d", msg, m2.liveNavSeq)
+	}
+}
+
+// The resync re-read (evener/thread/resync's additive flavor) must also drop
+// when navigation moved the view while it was in flight: judged by the
+// displayed ref alone, since the additive read carries no sequence (roborev
+// PR #1044 round-18 medium).
+func TestHubSessionLiveCycleStaleResyncReadDropsWithoutRepair(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	// The resync re-read issues while B is displayed, before any navigation.
+	resyncCmd := m.tagLiveNavRefresh(resyncHubSession(m.frames, m.client, mustParseLiveCycleRef(t, "local:01B")), "local:01B", false)
+	if resyncCmd == nil {
+		t.Fatal("resync command: expected a fetch command, got nil")
+	}
+
+	// Navigation to C applies while the resync read is in flight.
+	m1, navCmd := m.switchToAdjacentLiveSession(1)
+	updated, _ := m1.Update(navCmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01C" {
+		t.Fatalf("after navigation applied, viewed ref = %q, want local:01C", m2.detail.Ref)
+	}
+
+	// The stale additive resync response lands late, for the abandoned
+	// session B: dropped without repair (it replaced nothing server-side).
+	updated, repair := m2.Update(resyncCmd())
+	m3 := updated.(hubModel)
+	if m3.detail.Ref != "local:01C" {
+		t.Fatalf("stale resync read reverted the display: viewed ref = %q, want local:01C", m3.detail.Ref)
+	}
+	if repair != nil {
+		t.Fatal("stale additive resync drop issued a repair command, want none")
+	}
+	if m3.liveNavSeq != m2.liveNavSeq {
+		t.Fatalf("stale resync read clobbered liveNavSeq: got %d, want %d", m3.liveNavSeq, m2.liveNavSeq)
+	}
+}
+
+// A /details read issued with NO prior navigation (seq 0) still replaces the
+// connection's subscriptions server-side, culling the children while
+// watchedChildRefs keeps marking them: the same-ref apply must re-arm them
+// like a cycling read does (roborev PR #1044 round-18 medium).
+func TestHubSessionLiveCycleRefreshReadRearmsChildrenBeforeAnyNavigation(t *testing.T) {
+	reads := &liveCycleReads{threadByRef: map[string]appwire.Thread{
+		"local:01B": threadWithRunningChild("local:01B"),
+	}}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:01B", SessionID: "sess_current"}
+	m.tree = liveCycleTree()
+
+	// A previous live-nav wrap left a watched child armed.
+	m.watchedChildRefs = map[string]bool{"local:01CHILD": true}
+
+	refreshCmd := fetchCurrentHubSession(&m, "")
+	if refreshCmd == nil {
+		t.Fatal("refresh command: expected a fetch command, got nil")
+	}
+
+	updated, rearm := m.Update(refreshCmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01B" {
+		t.Fatalf("refresh read changed the viewed ref: %q", m2.detail.Ref)
+	}
+	// The replaced children re-arm: a child subscription read fires.
+	runBatchChildren(t, rearm, time.Second)
+	found := false
+	got := reads.get()
+	for i, ref := range got {
+		if ref == "local:01CHILD" && !reads.replaces()[i] {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refresh read did not re-arm the child subscription: reads = %v replaces = %v", got, reads.replaces())
+	}
+	if m2.watchedChildRefs == nil || !m2.watchedChildRefs["local:01CHILD"] {
+		t.Fatalf("refresh read left watchedChildRefs = %v, want the child re-marked", m2.watchedChildRefs)
 	}
 }

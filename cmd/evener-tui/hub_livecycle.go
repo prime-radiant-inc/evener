@@ -101,6 +101,45 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 	}
 }
 
+// tagLiveNavRefresh guards a session read issued against the ref displayed
+// at issue time (roborev PR #1044 round-18 medium): the /details panel, a
+// clear's re-read, the resync re-read. A navigation that moves the view
+// before the response lands supersedes it, so the tag lets Update drop the
+// stale response instead of processing it as an ordinary session entry that
+// reverts the display and clobbers the newer navigation state.
+//
+// replace marks the replacing flavor (/details, the clear re-read), whose
+// ThreadRead replaces the connection's server-side subscriptions: it is
+// tagged with the live-nav sequence, and a superseded drop must hand the
+// displayed session's subscription back (the round-8 medium 2 / round-15
+// patterns in Update). The additive flavor (the resync re-read) culls
+// nothing, so it carries no sequence — staleness is judged by the
+// displayed ref alone, and its response keeps the ordinary same-ref paths
+// (no cycling machinery, no child re-arm).
+func (m hubModel) tagLiveNavRefresh(read tea.Cmd, ref string, replace bool) tea.Cmd {
+	if ref != m.detail.Ref {
+		// The read targets a ref other than the one displayed — a switch
+		// the caller drives deliberately (a fork's or spawn's entry read).
+		// Intentional-switch semantics apply (roborev PR #1044 round-2
+		// medium 3): leave it untagged.
+		return read
+	}
+	seq := 0
+	if replace {
+		seq = m.liveNavSeq
+	}
+	return func() tea.Msg {
+		msg := read()
+		if sessionMsg, ok := msg.(hubSessionMsg); ok {
+			sessionMsg.liveNavSeq = seq
+			sessionMsg.liveNavRefresh = true
+			sessionMsg.liveNavRefreshReplace = replace
+			return sessionMsg
+		}
+		return msg
+	}
+}
+
 // reestablishDisplayedSubscription re-issues the thread/read for the session
 // currently displayed after a dropped or failed cycling read whose request
 // already replaced the connection's subscriptions server-side. Replace: true

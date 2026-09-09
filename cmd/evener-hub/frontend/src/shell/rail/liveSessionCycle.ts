@@ -5,7 +5,10 @@
 // selection semantics live here, pure, so they are unit-testable without the
 // shell. This is needsYouCycle.ts's nextNeedsYouRef precedent made
 // bidirectional, including its "current not in the cycle list" rule: next
-// lands on the FIRST live session, previous on the LAST.
+// lands on the FIRST live session, previous on the LAST. Cycling the ONE
+// live session onto itself is motion without movement: null, the TUI's
+// adjacentLiveRef not-ok, so the shell no-ops instead of re-focusing the
+// session pane on a URL-equal press (roborev PR #1044 round-18 low).
 
 export type LiveSessionCycleDirection = "next" | "previous";
 
@@ -19,6 +22,7 @@ export function adjacentLiveSessionRef(
   if (index < 0) {
     return (direction === "next" ? refs[0] : refs[refs.length - 1]) ?? null;
   }
+  if (refs.length === 1) return null; // the single live session: a no-op, not a self-cycle
   const step = direction === "next" ? 1 : -1;
   return refs[(index + step + refs.length) % refs.length] ?? null;
 }

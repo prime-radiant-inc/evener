@@ -535,7 +535,11 @@ func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {
 		return nil
 	}
 	m.sessionDetailsRequested = true
-	return fetchHubSession(m.frames, m.client, ref)
+	// The read targets the displayed ref: a navigation that applies while
+	// it is in flight supersedes it, so its response must be droppable
+	// rather than processed as an ordinary session entry (roborev PR #1044
+	// round-18 medium).
+	return m.tagLiveNavRefresh(fetchHubSession(m.frames, m.client, ref), ref.String(), true)
 }
 
 func fetchCurrentHubStatus(m *hubModel, _ string) tea.Cmd {

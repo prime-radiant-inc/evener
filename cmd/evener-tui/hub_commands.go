@@ -41,8 +41,10 @@ type hubSessionMsg struct {
 	// semantics do not apply to it — its response refreshes the transcript
 	// and re-arms child subscriptions, then drops, never switching sessions
 	// (roborev PR #1044 round-12 medium 2).
-	liveNavRecovery bool
-	err             error
+	liveNavRecovery       bool
+	liveNavRefresh        bool
+	liveNavRefreshReplace bool
+	err                   error
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the

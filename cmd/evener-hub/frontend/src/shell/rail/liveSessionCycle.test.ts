@@ -30,7 +30,11 @@ test("returns null for an empty live list", () => {
   expect(adjacentLiveSessionRef([], null, "previous")).toBeNull();
 });
 
-test("a single live session cycles onto itself", () => {
-  expect(adjacentLiveSessionRef(["a"], "a", "next")).toBe("a");
-  expect(adjacentLiveSessionRef(["a"], "a", "previous")).toBe("a");
+test("a single live session is a no-op, not a self-cycle", () => {
+  // Cycling the one live session onto itself is motion without movement:
+  // null (the TUI adjacentLiveRef's not-ok), so the shell never issues the
+  // openLiveSession refocus a no-op press would otherwise steal focus with
+  // (roborev PR #1044 round-18 low).
+  expect(adjacentLiveSessionRef(["a"], "a", "next")).toBeNull();
+  expect(adjacentLiveSessionRef(["a"], "a", "previous")).toBeNull();
 });
