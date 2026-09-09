@@ -1,0 +1,175 @@
+import hashlib
+import json
+import os
+import pathlib
+import signal
+import socket
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = pathlib.Path(__file__).resolve().parent
+MARKER = "job-notification-acceptance-c82f"
+records = []
+lock = threading.Lock()
+stop = threading.Event()
+qualification_step = 0
+
+
+def private_write(path, value):
+    path.write_text(json.dumps(value, indent=2) + "\n")
+    os.chmod(path, 0o600)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def send_json(self, value, status=200):
+        data = json.dumps(value).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/v1/models":
+            self.send_json({"object": "list", "data": [{"id": "fixture-model", "object": "model"}]})
+        elif self.path == "/status":
+            with lock:
+                self.send_json({"requests": records})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        global qualification_step
+        if self.path == "/shutdown":
+            self.send_json({"stopping": True})
+            stop.set()
+            return
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        tools = body.get("tools", [])
+        messages = body.get("messages", [])
+        is_qualification = MARKER in json.dumps(messages)
+        offered = {t.get("function", {}).get("name"): t.get("function", {}) for t in tools}
+        with lock:
+            index = len(records) + 1
+            record = {
+                "index": index,
+                "qualification": is_qualification,
+                "toolNames": sorted(offered),
+                "toolSchemas": offered if is_qualification else None,
+                "messageCount": len(messages),
+                "bodyHash": hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest(),
+            }
+            records.append(record)
+            private_write(ROOT / f"provider-request-{index}.json", body)
+            private_write(ROOT / "provider-requests.json", records)
+        message = {"role": "assistant"}
+        finish = "stop"
+        if tools:
+            if not is_qualification:
+                function_name = "communicate"
+                arguments = {"message": "fixture setup complete", "end_turn": True, "output": {"message": "", "data": {}, "artifacts": []}}
+            else:
+                if "shell" not in offered:
+                    self.send_json({"error": {"message": "shell tool was not offered"}}, 500)
+                    return
+                shell_schema = offered["shell"].get("parameters", {})
+                properties = shell_schema.get("properties", {})
+                required = set(shell_schema.get("required", []))
+                if "mode" not in properties or "command" not in properties or not {"mode", "command"} >= required:
+                    self.send_json({"error": {"message": "offered shell schema cannot prove background job"}}, 500)
+                    return
+                mode_enum = properties["mode"].get("enum")
+                if isinstance(mode_enum, list) and "background" not in mode_enum:
+                    self.send_json({"error": {"message": "offered shell schema does not advertise background mode"}}, 500)
+                    return
+                unsupported = required - {"mode", "command"}
+                if unsupported:
+                    self.send_json({"error": {"message": "offered shell schema has unsupported required fields"}}, 500)
+                    return
+                qualification_step += 1
+                if qualification_step == 1:
+                    arguments = {"status": "complete"}
+                    function_name = "update_goal"
+                elif qualification_step >= 2:
+                    # Background completion can inject a tasks-done steering user message
+                    # after the first communicate result. Answer that ordinary follow-up
+                    # with the same canonical completion envelope.
+                    arguments = {"message": "job notification fixture complete", "end_turn": True, "output": {"message": "", "data": {}, "artifacts": []}}
+                    function_name = "communicate"
+            record["authoredTool"] = function_name
+            record["authoredArguments"] = arguments
+            private_write(ROOT / "provider-requests.json", records)
+            message["tool_calls"] = [{"index": 0, "id": f"call_fixture_{index}", "type": "function", "function": {"name": function_name, "arguments": json.dumps(arguments)}}]
+            finish = "tool_calls"
+        else:
+            message["content"] = json.dumps({"name": "Job notification fixture"}) if not tools else "fixture summary"
+        base = {"id": f"fixture-{index}", "model": "fixture-model"}
+        usage = {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+        if body.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for chunk in ({**base, "choices": [{"index": 0, "delta": message, "finish_reason": None}]}, {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}], "usage": usage}):
+                self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+        else:
+            self.send_json({**base, "choices": [{"index": 0, "message": message, "finish_reason": finish}], "usage": usage})
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+provider_port = server.server_port
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    hub_port = probe.getsockname()[1]
+providers = ROOT / "config/evener/providers.toml"
+providers.write_text(f'''schema = 2
+default = "fixture"
+[providers.fixture]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:{provider_port}/v1"
+auth = "none"
+protocol = "openai-chat"
+cheap_model = "fixture-model"
+''')
+config = ROOT / "config/evener/hub.toml"
+config.write_text(f'addr = "127.0.0.1:{hub_port}"\nplugin_auto_upgrade = false\n')
+env = {
+    "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "USER": "jesse", "LANG": "en_US.UTF-8",
+    "TMPDIR": str(ROOT / "run"), "XDG_CONFIG_HOME": str(ROOT / "config"), "XDG_STATE_HOME": str(ROOT / "state"),
+    "XDG_CACHE_HOME": str(ROOT / "cache"), "XDG_DATA_HOME": str(ROOT / "data"), "XDG_RUNTIME_DIR": str(ROOT / "run"),
+    "EVENER_OFFLINE": "1", "EVENER_PROVIDERS_CONFIG": str(providers), "EVENER_CREDENTIALS_CONFIG": str(ROOT / "config/evener/credentials.toml"),
+}
+binary = os.environ.get("EVENER_BINARY")
+if not binary:
+    raise RuntimeError("Set EVENER_BINARY to the immutable evener binary before launching this fixture")
+with (ROOT / "hub.log").open("xb") as log:
+    os.chmod(ROOT / "hub.log", 0o600)
+    process = subprocess.Popen([binary, "hub", "--config", str(config), "--evener", binary], cwd=ROOT / "workspace", env=env, stdout=log, stderr=log, start_new_session=True)
+private_write(ROOT / "runtime.json", {"root": str(ROOT), "providerPID": os.getpid(), "hubPID": process.pid, "hubPort": hub_port, "providerPort": provider_port, "environment": env})
+print(json.dumps({"root": str(ROOT), "hubPID": process.pid, "hubPort": hub_port, "providerPort": provider_port}), flush=True)
+signal.signal(signal.SIGTERM, lambda *_: stop.set())
+signal.signal(signal.SIGINT, lambda *_: stop.set())
+try:
+    stop.wait()
+finally:
+    process.terminate()
+    try:
+        process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    server.shutdown()
+    server.server_close()
+    token = ROOT / "state/evener/auth-token"
+    if token.exists():
+        token.unlink()
+    private_write(ROOT / "shutdown.json", {"hubExit": process.returncode, "credentialRemoved": not token.exists()})

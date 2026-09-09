@@ -1,0 +1,36 @@
+import json, os, pathlib, signal, socket, subprocess, sys, tempfile
+
+root = pathlib.Path(tempfile.mkdtemp(prefix='evener-sdk-shutdown-promote-'))
+for d in ('config/evener','state/evener','workspace','run','cache','data'):
+    (root/d).mkdir(parents=True, exist_ok=True)
+def free_port():
+    s=socket.socket(); s.bind(('127.0.0.1',0)); p=s.getsockname()[1]; s.close(); return p
+pp, hp = free_port(), free_port()
+(root/'config/evener/providers.toml').write_text(f'''schema = 2
+default = "fake"
+[providers.fake]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:{pp}"
+auth = "none"
+protocol = "openai-chat"
+cheap_model = "fake-model"
+''')
+(root/'config/evener/hub.toml').write_text(f'addr = "127.0.0.1:{hp}"\nplugin_auto_upgrade = false\n')
+(root/'workspace/README.md').write_text('owned fixture workspace\n')
+provider_bin = pathlib.Path(__file__).with_name('sdk-shutdown-promote-provider.py.txt')
+env = {'PATH':'/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin','USER':'jesse','LANG':'en_US.UTF-8','HOME':str(root/'home'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_STATE_HOME':str(root/'state'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_DATA_HOME':str(root/'data'),'XDG_RUNTIME_DIR':str(root/'run'),'EVENER_OFFLINE':'1','EVENER_PROVIDERS_CONFIG':str(root/'config/evener/providers.toml'),'OLLAMA_HOST':'127.0.0.1:9','OLLAMA_BASE_URL':f'http://127.0.0.1:{pp}'}
+(root/'home').mkdir()
+provider_log = (root/'provider.log').open('w'); provider = subprocess.Popen(['python3',str(provider_bin),str(root),str(pp)],cwd=root/'workspace',env=env,stdout=provider_log,stderr=subprocess.STDOUT,start_new_session=True)
+hub_log = (root/'hub.log').open('w'); hub = subprocess.Popen(['/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener','hub','--config',str(root/'config/evener/hub.toml'),'--evener','/private/tmp/evener-sdk-completion-ahdo59zq/bin/evener'],cwd=root/'workspace',env=env,stdout=hub_log,stderr=subprocess.STDOUT,start_new_session=True)
+(root/'runtime.json').write_text(json.dumps({'root':str(root),'hubPort':hp,'providerPort':pp,'hubPID':hub.pid,'providerPID':provider.pid},indent=2)+'\n')
+print(json.dumps({'root':str(root),'hubPort':hp,'providerPort':pp,'hubPID':hub.pid,'providerPID':provider.pid}),flush=True)
+def cleanup(*_):
+    for p in (hub,provider):
+        if p.poll() is None: p.terminate()
+    for p in (hub,provider):
+        try: p.wait(timeout=10)
+        except subprocess.TimeoutExpired: p.kill(); p.wait()
+    (root/'cleanup.json').write_text(json.dumps({'hubExit':hub.returncode,'providerExit':provider.returncode})+'\n')
+    sys.exit(0)
+signal.signal(signal.SIGTERM, cleanup); signal.signal(signal.SIGINT, cleanup)
+signal.pause()

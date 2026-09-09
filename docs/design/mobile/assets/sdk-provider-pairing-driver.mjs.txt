@@ -1,0 +1,121 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
+import { clientFromEnvironment } from '../consumer/node_modules/@evener/appwire-client/examples/connection.mjs';
+
+const root = new URL('./', import.meta.url);
+const runtime = JSON.parse(await readFile(new URL('runtime.json', root), 'utf8'));
+const environment = {
+  EVENER_RPC_URL: `ws://127.0.0.1:${runtime.hubPort}/rpc`,
+  EVENER_CWD: `${runtime.root}/workspace`,
+  EVENER_TOKEN_FILE: `${runtime.root}/state/evener/auth-token`,
+};
+const providerURL = `http://127.0.0.1:${runtime.providerPort}`;
+const create = () => clientFromEnvironment(environment).hub;
+let hub = create();
+const observer = create();
+const records = [];
+const checks = [];
+const notifications = [];
+observer.onNotification(n => {
+  if (n.method === 'evener/auth/updated') notifications.push(n);
+});
+const save = () => writeFile(new URL('raw.json', root), JSON.stringify({records, checks, notifications}, null, 2) + '\n', {mode: 0o600});
+const check = (name, condition) => { assert.ok(condition, name); checks.push(name); };
+const request = async (method, params = {}, client = hub) => {
+  try {
+    const result = await client.request(method, params);
+    records.push({method, params, result});
+    await save();
+    return result;
+  } catch (error) {
+    records.push({method, params, error: {name: error.name, code: error.code, message: error.message, data: error.data}});
+    await save();
+    throw error;
+  }
+};
+const listed = () => request('evener/instance/list', {}, observer);
+const row = (list, name) => list.instances.find(i => i.name === name);
+const expectRejectedUnchanged = async (method, params, code) => {
+  const before = await listed();
+  await assert.rejects(request(method, params), error => error.code === code);
+  assert.deepEqual(await listed(), before);
+  checks.push(`${method}: rejection ${code} leaves exact instance list unchanged`);
+};
+
+try {
+  await Promise.all([hub.connect(), observer.connect()]);
+  const original = await listed();
+  // Route the implicit optional-auth provider to this fixture before model enumeration.
+  await request('evener/instance/edit', {name: 'ollama', baseUrl: `${providerURL}/ollama/v1`});
+  await request('evener/instance/create', {name: 'sdk-provider', base: 'ollama'});
+  let edited = await request('evener/instance/edit', {name: 'sdk-provider', baseUrl: `${providerURL}/edited/v1`});
+  assert.deepEqual(edited, await listed());
+  check('custom endpoint is authoritative', row(edited, 'sdk-provider').baseUrl === `${providerURL}/edited/v1`);
+  const verified = await request('evener/auth/test', {provider: 'sdk-provider'});
+  check('optional-auth instance executes real model endpoint probe', verified.status === 'success');
+  let observed = await (await fetch(`${providerURL}/observations`)).json();
+  check('edited endpoint actually received the probe', observed.some(r => r.path === '/edited/v1/models'));
+
+  edited = await request('evener/instance/edit', {name: 'sdk-provider', clearBaseUrl: true});
+  check('clearing endpoint restores inherited provider endpoint', row(edited, 'sdk-provider').baseUrl === 'http://localhost:11434/v1');
+  assert.deepEqual(edited, await listed());
+  await request('evener/instance/edit', {name: 'sdk-provider', baseUrl: `${providerURL}/edited/v1`});
+  const defaulted = await request('evener/instance/setDefault', {name: 'sdk-provider'});
+  check('exact selected provider is sole default', defaulted.instances.filter(i => i.isDefault).map(i => i.name).join() === 'sdk-provider');
+  assert.deepEqual(defaulted, await listed());
+  const models = await request('model/list', {cwd: environment.EVENER_CWD, harness: 'evener'});
+  check('model list includes exact configured provider/model', models.data.some(m => m.provider === 'sdk-provider' && m.model === 'fixture-model'));
+  await assert.rejects(request('model/list', {harness: 'missing-sdk-harness'}), error => error.code === -32014);
+  checks.push('unknown model harness is unavailable');
+  await expectRejectedUnchanged('evener/instance/edit', {name: 'missing-sdk-provider', baseUrl: `${providerURL}/missing/v1`}, -32602);
+  await expectRejectedUnchanged('evener/instance/edit', {name: 'sdk-provider', protocol: 'not-a-protocol'}, -32602);
+  await expectRejectedUnchanged('evener/instance/create', {name: 'sdk-provider', base: 'ollama'}, -32013);
+  await expectRejectedUnchanged('evener/instance/setDefault', {name: 'missing-sdk-provider'}, -32603);
+  check('unknown credential-test instance is configuration failure', (await request('evener/auth/test', {provider: 'missing-sdk-provider'})).status === 'configuration_failure');
+
+  await request('evener/instance/create', {name: 'sdk-missing-key', base: 'anthropic', baseUrl: `${providerURL}/missing/v1`});
+  const countBeforeMissing = (await (await fetch(`${providerURL}/observations`)).json()).length;
+  check('missing required key is reported', (await request('evener/auth/test', {provider: 'sdk-missing-key'})).status === 'missing');
+  check('missing key does not probe endpoint', (await (await fetch(`${providerURL}/observations`)).json()).length === countBeforeMissing);
+  await request('evener/instance/edit', {name: 'sdk-provider', baseUrl: `${providerURL}/rejected/v1`});
+  check('provider 401 classified as auth rejection', (await request('evener/auth/test', {provider: 'sdk-provider'})).status === 'auth_rejected');
+
+  const token = (await readFile(environment.EVENER_TOKEN_FILE, 'utf8')).trim();
+  const pairing = await hub.request('evener/mobile/pairing', {origin: 'https://sdk-fixture.example'});
+  const parsed = new URL(pairing.authUrl);
+  check('pairing embeds exact owned token under the requested safe origin', parsed.origin === 'https://sdk-fixture.example' && decodeURIComponent(parsed.pathname.slice('/auth/'.length)) === token && !parsed.search && !parsed.hash);
+  records.push({method: 'evener/mobile/pairing', params: {origin: 'https://sdk-fixture.example'}, result: {origin: parsed.origin, credentialMatches: true, credentialOmittedFromCapture: true}});
+  await assert.rejects(request('evener/mobile/pairing', {origin: 'http://127.0.0.1:9180'}), error => error.code === -32013 && !error.message.includes(token));
+  checks.push('loopback pairing origin rejected without credential disclosure');
+
+  await request('evener/instance/edit', {name: 'sdk-provider', baseUrl: `${providerURL}/hold/v1`});
+  const pending = request('evener/auth/test', {provider: 'sdk-provider'});
+  const pendingOutcome = pending.then(value => ({value}), error => ({error}));
+  const deadline = Date.now() + 5000;
+  while (!(await (await fetch(`${providerURL}/observations`)).json()).some(r => r.path === '/hold/v1/models')) {
+    assert.ok(Date.now() < deadline, 'owned probe request must reach hold boundary');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  records.push({boundary: 'provider request observed before SDK close'});
+  hub.close();
+  const closed = await pendingOutcome;
+  check('closing SDK rejects the in-flight probe', Boolean(closed.error));
+  await fetch(`${providerURL}/release`, {method: 'POST'});
+  hub = create();
+  await hub.connect();
+  await request('ping');
+  check('reconnected client reads retained provider configuration', row(await request('evener/instance/list'), 'sdk-provider').baseUrl === `${providerURL}/hold/v1`);
+  await request('evener/instance/setDefault', {name: 'fixture'});
+  await request('evener/instance/remove', {name: 'sdk-missing-key'});
+  await request('evener/instance/remove', {name: 'sdk-provider'});
+  await request('evener/instance/remove', {name: 'ollama'});
+  assert.deepEqual(await listed(), original);
+  checks.push('all provider entries and default restored exactly');
+  await save();
+  await writeFile(new URL('result.json', root), JSON.stringify({status: 'passed', checks, requestCount: records.filter(r => r.method).length}, null, 2) + '\n', {mode: 0o600});
+  console.log(JSON.stringify({status: 'passed', checks: checks.length, requestCount: records.filter(r => r.method).length}));
+} finally {
+  hub.close();
+  observer.close();
+  await save();
+}

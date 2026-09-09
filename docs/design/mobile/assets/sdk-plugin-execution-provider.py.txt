@@ -1,0 +1,133 @@
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+RUN_ROOT = Path(os.environ["FIXTURE_RUN_ROOT"])
+MARKER = RUN_ROOT / "workspace" / "sdk-plugin-effect.txt"
+OBSERVATIONS = RUN_ROOT / "provider-observations.jsonl"
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def send_json(self, value):
+        body = json.dumps(value).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.endswith("/v1/models"):
+            self.send_json({"object": "list", "data": [{"id": "fixture-model", "object": "model"}]})
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if not self.path.endswith("/v1/chat/completions"):
+            self.send_error(404)
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        messages = body.get("messages", [])
+        response_format = body.get("response_format", {}).get("type")
+        stream = body.get("stream") is True
+        text = json.dumps(messages)
+        sentinel = next(
+            (value for value in ("sdk-plugin-effect-v3", "sdk-plugin-effect-v2", "sdk-plugin-effect-v1") if value in text),
+            None,
+        )
+        has_tool_result = any(message.get("role") == "tool" for message in messages)
+
+        if response_format == "json_schema":
+            emitted_tool = None
+            response = {
+                "id": "fixture-title",
+                "model": "fixture-model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"name":"Plugin effect fixture"}'}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        elif stream and sentinel and not has_tool_result:
+            emitted_tool = "shell"
+            response = {
+                "id": "fixture-effect",
+                "model": "fixture-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "effect-call",
+                            "type": "function",
+                            "function": {
+                                "name": "shell",
+                                "arguments": json.dumps({
+                                    "command": f"printf '%s' '{sentinel}' > '{MARKER}'",
+                                    "mode": "foreground",
+                                }),
+                            },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        else:
+            emitted_tool = "communicate"
+            response = {
+                "id": "fixture-done",
+                "model": "fixture-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "done-call",
+                            "type": "function",
+                            "function": {
+                                "name": "communicate",
+                                "arguments": json.dumps({
+                                    "message": "fixture effect completed" if has_tool_result else "fixture command unavailable",
+                                    "end_turn": True,
+                                    "output": {"message": "", "data": {}, "artifacts": []},
+                                }),
+                            },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        with OBSERVATIONS.open("a") as handle:
+            handle.write(json.dumps({
+                "path": self.path,
+                "stream": stream,
+                "responseFormat": response_format,
+                "roles": [message.get("role") for message in messages],
+                "sentinel": sentinel,
+                "emittedTool": emitted_tool,
+            }) + "\n")
+
+        if not stream:
+            self.send_json(response)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        first = {**response, "choices": [{"index": 0, "delta": response["choices"][0]["message"], "finish_reason": None}]}
+        final = {**response, "choices": [{"index": 0, "delta": {}, "finish_reason": response["choices"][0]["finish_reason"]}]}
+        for chunk in (first, final):
+            self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+            self.wfile.flush()
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+
+server = ThreadingHTTPServer(("127.0.0.1", int(os.environ["FIXTURE_PROVIDER_PORT"])), Handler)
+print(server.server_port, flush=True)
+server.serve_forever()

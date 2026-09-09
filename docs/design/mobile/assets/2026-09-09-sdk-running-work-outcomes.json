@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-09",
+  "scope": "Task 18 running work qualification",
+  "status": "partial",
+  "source": {
+    "commit": "d683abe21e949173f431201cda9ec169a1e9d349",
+    "evenerSha256": "49f555ce3d81031f9a4d6136c7e1f8baeb1e29ffda2c1fbdb5af8c3bb475d8d4",
+    "evenerDevSha256": "37ecc8f8d58b7ab8fed325dab9f155af1a5b20e8bfe3b11741e4242cc50da57a"
+  },
+  "sdk": {
+    "packageRoot": "/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client",
+    "tarballSha256": "2a22e65e84da4fa2466a5406800f7b141ee710d4f4e4f73588fbf4873e73e731"
+  },
+  "outcomes": {
+    "goal/set": {
+      "acknowledged": true,
+      "authoritativeReadback": "complete",
+      "completion": "passed",
+      "evidenceSha256": "a06e8fe48819dd7520c8d42e300e7de86fb6a94519211da4b48a3867cdcdc142",
+      "fixture": "/private/tmp/evener-sdk-goal-completion.AkMAwo",
+      "validClearGoal": "empty objective clears goal and returns started:false"
+    },
+    "evener/tasks/list": {
+      "success": "empty array on owned session",
+      "taskMutation": {
+        "status": "passed",
+        "added": 1,
+        "completed": 1,
+        "evidenceHashes": {
+          "added": "bbd8ba6ecd718a5dd531c340e063b0308122dbbdb4ea10f2297f2609a243b3cb",
+          "completed": "37f10058da946a7cc4257eb35df8d30ad2ef4cd95db7dba9cbe198606cf9ddc7"
+        }
+      }
+    },
+    "evener/jobs/list": {
+      "status": "passed",
+      "completed": 1,
+      "exitCode": 0,
+      "evidenceSha256": "5dbb478d45fd017c807920b12074814e5c1344492147cf9830be2279ae62cd5c"
+    },
+    "evener/jobs/output": {
+      "status": "passed",
+      "output": "job-notification-acceptance-c82f",
+      "totalBytes": 32,
+      "evidenceSha256": "260749b389b5d279cc8aa71ce69e151582de81d50c6f1adf058b99200c19bae5",
+      "invalidJob": {
+        "status": "passed",
+        "code": -32602,
+        "message": "job not found: missing-job"
+      }
+    }
+  },
+  "methodSpecific": {
+    "invalid": {
+      "tasks/list": "unknown ref returns -32014",
+      "jobs/list": "unknown ref returns -32014",
+      "jobs/output": "unknown job returns -32602"
+    },
+    "pagination": {
+      "threadReadItemLimit": 1,
+      "turnsListItemLimit": 1,
+      "readEvidenceSha256": "48e12dee144624a4ef9770585e6518f18998f70e5e7a03bd05326e5370634912",
+      "methodEvidenceSha256": "f6aeb72d97b51d5095dbb136eba7e381a84c39547372d7f3c5302f6baf5e9685",
+      "opaqueCursorUsed": true,
+      "olderTurnIdentity": "turn_m2"
+    },
+    "persistedFallback": {
+      "tasks": "Verified completed task retained exactly after observed SDK shutdown, matching closure, and daemon PID absence; coordinator supplemental driver exit0.",
+      "jobs": "Recorded successful reads from ended job session; original attempt did not capture daemon exit timing. Do not infer full shutdown lifecycle from this read.",
+      "output": "Recorded successful reads from ended job session; original attempt did not capture daemon exit timing. Do not infer full shutdown lifecycle from this read.",
+      "taskEvidenceSha256": "cb8bfcbc24ed5bb00771a55045412989e9be46bdc697773260f39d252780ba60",
+      "jobsEvidenceSha256": "f4dc63af11b499b4c2e4afb2dd3884c8b51380b8270825b076c3baf0312886cc"
+    }
+  },
+  "drivers": {
+    "taskFixtureSha256": "26220527666627c35d4d942238d6010a4ba2b041a098527294edf47b7bca7c4b",
+    "taskSetupSha256": "8b31368f9c79a2ecee7ffccdee75966f41d0ebf43350bda7979c24a53086edfa",
+    "taskQualifySha256": "159b49d75ca5ae0783648ebb5b287390e073ac187510ea4d2b40006d4ae9bbd7",
+    "jobFixtureSha256": "625daca8babe9b2c02efd3271494a50fc0957ac95b24c1f322bc133cdef63aae",
+    "goalFixtureSha256": "952b02a52476fba8d42932958d8e728e7f0724689a81a19ba33bb8d5fb8a9ee7"
+  },
+  "limitations": [
+    "Permission, target ownership, stale/conflict, disconnect and uncertainty outcomes remain open where applicable; this receipt records only the listed cases.",
+    "Empty objective is a valid goal-clear operation, not invalid input.",
+    "Pagination establishes one older item within turn_m2 using an opaque cursor, not a complete older turn or full history traversal.",
+    "Job/output post-session reads have captured data but no original temporal daemon-exit proof; task fallback now has coordinator live-before/closed/absent-after evidence.",
+    "Original task hub and goal daemon remained live after the worker report; coordinator stopped those exact owned processes and recorded actual absence, without inferring exit codes.",
+    "An older task receipt hash could not be mapped to a retained file and was excluded; the actual task readbacks, executed helpers and supplemental task fallback are retained."
+  ],
+  "artifacts": {
+    "/outcomes/goal/set/evidenceSha256": {
+      "path": "/private/tmp/evener-sdk-goal-completion.AkMAwo/goal-complete.json",
+      "sha256": "a06e8fe48819dd7520c8d42e300e7de86fb6a94519211da4b48a3867cdcdc142"
+    },
+    "/outcomes/evener/tasks/list/taskMutation/evidenceHashes/added": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/run/added-task-readback.json",
+      "sha256": "bbd8ba6ecd718a5dd531c340e063b0308122dbbdb4ea10f2297f2609a243b3cb"
+    },
+    "/outcomes/evener/tasks/list/taskMutation/evidenceHashes/completed": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/run/completed-task-readback.json",
+      "sha256": "37f10058da946a7cc4257eb35df8d30ad2ef4cd95db7dba9cbe198606cf9ddc7"
+    },
+    "/outcomes/evener/jobs/list/evidenceSha256": {
+      "path": "/private/tmp/evener-sdk-running-work.Qn7ZHA/run/sdk-running-work/jobs-audit.json",
+      "sha256": "5dbb478d45fd017c807920b12074814e5c1344492147cf9830be2279ae62cd5c"
+    },
+    "/outcomes/evener/jobs/output/evidenceSha256": {
+      "path": "/private/tmp/evener-sdk-running-work.Qn7ZHA/run/sdk-running-work/output-audit.json",
+      "sha256": "260749b389b5d279cc8aa71ce69e151582de81d50c6f1adf058b99200c19bae5"
+    },
+    "/methodSpecific/pagination/readEvidenceSha256": {
+      "path": "/private/tmp/evener-sdk-goal-completion.AkMAwo/pagination.json",
+      "sha256": "48e12dee144624a4ef9770585e6518f18998f70e5e7a03bd05326e5370634912"
+    },
+    "/methodSpecific/pagination/methodEvidenceSha256": {
+      "path": "/private/tmp/evener-sdk-goal-completion.AkMAwo/run/sdk-running-work/method-outcomes.json",
+      "sha256": "f6aeb72d97b51d5095dbb136eba7e381a84c39547372d7f3c5302f6baf5e9685"
+    },
+    "/methodSpecific/persistedFallback/jobsEvidenceSha256": {
+      "path": "/private/tmp/evener-sdk-running-work.Qn7ZHA/run/fallback-read.json",
+      "sha256": "f4dc63af11b499b4c2e4afb2dd3884c8b51380b8270825b076c3baf0312886cc"
+    },
+    "/drivers/taskFixtureSha256": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/fixture.py",
+      "sha256": "26220527666627c35d4d942238d6010a4ba2b041a098527294edf47b7bca7c4b"
+    },
+    "/drivers/taskSetupSha256": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/setup.mjs",
+      "sha256": "8b31368f9c79a2ecee7ffccdee75966f41d0ebf43350bda7979c24a53086edfa"
+    },
+    "/drivers/taskQualifySha256": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/qualify.mjs",
+      "sha256": "159b49d75ca5ae0783648ebb5b287390e073ac187510ea4d2b40006d4ae9bbd7"
+    },
+    "/drivers/jobFixtureSha256": {
+      "path": "/private/tmp/evener-sdk-running-work.Qn7ZHA/fixture.py",
+      "sha256": "625daca8babe9b2c02efd3271494a50fc0957ac95b24c1f322bc133cdef63aae"
+    },
+    "/drivers/goalFixtureSha256": {
+      "path": "/private/tmp/evener-sdk-goal-completion.AkMAwo/fixture.py",
+      "sha256": "952b02a52476fba8d42932958d8e728e7f0724689a81a19ba33bb8d5fb8a9ee7"
+    },
+    "task-fallback-driver": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/verify-task-fallback.mjs",
+      "sha256": "1e09fe474d5422dfbe6c2c18ef753c5499e02b30675aede3b4f2509cf3817647"
+    },
+    "task-fallback-verified": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/run/task-fallback-verified.json",
+      "sha256": "cb8bfcbc24ed5bb00771a55045412989e9be46bdc697773260f39d252780ba60"
+    },
+    "evener-sdk-running-task.wTJkOB-cleanup": {
+      "path": "/private/tmp/evener-sdk-running-task.wTJkOB/coordinator-cleanup.json",
+      "sha256": "15cd6045a9cd54f3f91d0559c92f8e08ba0e8183c7007e683ee26f702e8ec731"
+    },
+    "evener-sdk-running-work.Qn7ZHA-cleanup": {
+      "path": "/private/tmp/evener-sdk-running-work.Qn7ZHA/coordinator-cleanup.json",
+      "sha256": "9de7f1b5388e9e0982c44f8ca78dfdfd4058741f9ed616f4852256b07460a632"
+    },
+    "evener-sdk-goal-completion.AkMAwo-cleanup": {
+      "path": "/private/tmp/evener-sdk-goal-completion.AkMAwo/coordinator-cleanup.json",
+      "sha256": "65d53b80c6a897731a528c9276a6e2ed00969518aa5e375b660a91a77ff9f504"
+    }
+  },
+  "cleanup": {
+    "coordinatorObservedAllOwnedProcessesAbsent": true,
+    "originalWorkerCleanupClaimRejected": true,
+    "taskDaemonStoppedThroughSDK": true,
+    "taskHubStoppedWithSIGTERM": true,
+    "remainingGoalDaemonStoppedWithSIGTERM": true,
+    "unavailableExitCodesNotInferred": true
+  }
+}

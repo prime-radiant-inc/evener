@@ -1,0 +1,20 @@
+from pathlib import Path
+import hashlib
+import json
+import sys
+
+root = Path(sys.argv[1])
+raw = root / "raw.json"
+assert hashlib.sha256(raw.read_bytes()).hexdigest() == "8e91368112a4f0de717d89b4f91a04e157594ca0a2459b0823009527052c593f"
+capture = json.loads(raw.read_text())
+errors = [record["error"] for record in capture["records"] if record.get("method") == "evener/mobile/pairing" and "error" in record]
+assert len(errors) == 1
+error = errors[0]
+assert set(error) == {"name", "code", "message", "data"}
+assert error["name"] == "WireError"
+assert error["code"] == -32013
+assert error["data"] == {"evenerErrorInfo": "conflict"}
+assert "loopback pairing origin rejected without credential disclosure" in capture["checks"]
+result = {"status": "passed", "rawSha256": hashlib.sha256(raw.read_bytes()).hexdigest(), "originalDriverVerifiedMessageExcludesActualToken": True, "additionalDataContainsOnlyConflictClassifier": True, "capturedErrorFieldsChecked": sorted(error)}
+(root / "pairing-error-validation.json").write_text(json.dumps(result, indent=2) + "\n")
+print(json.dumps(result))
