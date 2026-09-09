@@ -2478,6 +2478,102 @@ test("Open transcript retains focused child on desktop until explicit navigation
   expect(paneFor("local:child")).toBeUndefined();
 });
 
+test.each(["local:owner", "local:child"])(
+  "Open transcript retains focused grandchild on route %s with owner and immediate parent context",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    window.history.pushState({}, "", `/s/${routeRef}`);
+    installLocationForRoute(routeRef);
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={navClient()} />
+        {routeRef === "local:owner" && (
+          <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        )}
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" />
+      </>,
+    );
+    await screen.findAllByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    const owner = workspaceStore.getState().mainPane();
+    expect(owner).toMatchObject({ type: "session", params: { ref: "local:owner" } });
+    if (routeRef === "local:owner") {
+      await user.click(screen.getByRole("button", { name: "Open child" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id);
+    }
+    const parent = paneFor("local:child");
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    const grandchild = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild");
+    expect(grandchild).toBeDefined();
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+    expect(grandchild).toMatchObject({
+      slot: "secondary",
+      params: { ref: "local:grandchild", parentRef: "local:child" },
+    });
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(paneFor("local:child")).toEqual(parent);
+    if (routeRef === "local:owner") expect(parent?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    expect(
+      workspaceStore
+        .getState()
+        .panes.filter(
+          (pane) => pane.type === "transcript" && (pane.params as { ref?: string }).ref === "local:grandchild",
+        ),
+    ).toEqual([grandchild]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    await user.click(screen.getByRole("button", { name: "Open transcript" }));
+    expect(workspaceStore.getState().focusedPaneId).toBe(grandchild?.id);
+
+    // An explicit new nested route wins even when it shares the same owner.
+    act(() => {
+      window.history.pushState({}, "", "/s/local:next-child");
+      installLocationForRoute("local:next-child");
+      const resource = navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:next-child" }));
+      installLocation({
+        ...(resource?.data as NavigationSessionLocation),
+        top_level: false,
+        top_level_ref: "local:owner",
+      });
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:next-child")?.id));
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(grandchild?.id);
+  },
+);
+
+test.each([
+  ["local:owner", "local:other-owner"],
+  ["local:child", "local:other-owner"],
+  ["local:child", "local:owner"],
+])("settled route %s rejects an unrelated focused transcript context under %s", async (routeRef, parentRef) => {
+  window.history.pushState({}, "", `/s/${routeRef}`);
+  installLocationForRoute(routeRef);
+  render(<AppShell client={navClient()} />);
+  await screen.findAllByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+  let unrelated!: string;
+  act(() => {
+    unrelated = workspaceStore
+      .getState()
+      .openPane("transcript", { ref: "local:unrelated", parentRef }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(unrelated);
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(unrelated);
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
+});
+
 function installSwitchableViewport(): (mobile: boolean) => void {
   let mobile = false;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
