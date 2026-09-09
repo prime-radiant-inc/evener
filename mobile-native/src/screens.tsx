@@ -20,6 +20,7 @@ import {
 	FlatList,
 	Keyboard,
 	KeyboardAvoidingView,
+	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -144,10 +145,10 @@ export type Routes = {
 	Conversation: { hubId: string; ref: string; title: string };
 };
 
-function ConnectionStatus() {
+function ConnectionStatus({ inset = 16 }: { inset?: number } = {}) {
 	const { state, error, retry, activeProfile } = useConnection();
 	return (
-		<View style={{ paddingHorizontal: 16 }}>
+		<View style={{ paddingHorizontal: inset }}>
 			<View style={styles.row}>
 				<View style={styles.fill}>
 					<Copy muted>
@@ -810,7 +811,12 @@ export function ConversationScreen({
 	route,
 	navigation,
 }: NativeStackScreenProps<Routes, "Conversation">) {
-	const { activeProfile, client, state: connectionState } = useConnection();
+	const {
+		activeProfile,
+		client,
+		retry,
+		state: connectionState,
+	} = useConnection();
 	const focused = useIsFocused();
 	const colors = useColors();
 	const { fontScale, height: windowHeight } = useWindowDimensions();
@@ -869,6 +875,7 @@ export function ConversationScreen({
 	}, [navigation]);
 	const [refreshing, setRefreshing] = useState(false);
 	const [queueOpen, setQueueOpen] = useState(false);
+	const [recoveryOpen, setRecoveryOpen] = useState(false);
 	const [sessionOpen, setSessionOpen] = useState(false);
 	const [taskContext, setTaskContext] = useState<{
 		hubId: string;
@@ -911,6 +918,7 @@ export function ConversationScreen({
 				setApprovalsOpen(false);
 				setQuestionsOpen(false);
 				setComposerSetting(null);
+				setRecoveryOpen(false);
 			},
 			[],
 		),
@@ -1727,18 +1735,67 @@ export function ConversationScreen({
 			) : null,
 		);
 
+	const settingsOwnRow =
+		fontScale > 1.4 ||
+		!!conversation?.activeTurnId ||
+		draft.submitting ||
+		commandPending ||
+		!connected ||
+		!!snapshot.error ||
+		!!actionError ||
+		unconfirmedSend !== null ||
+		!!draft.error;
 	const composerSettings =
 		conversation && canCompose ? (
 			<ComposerSettings
 				conversation={conversation}
 				disabled={!ready || !controls || draft.submitting}
 				pending={settingsPending}
+				fullWidth={settingsOwnRow}
 				open={(setting) => {
 					Keyboard.dismiss();
 					setComposerSetting(setting);
 				}}
 			/>
 		) : null;
+	function unconfirmedDelivery(inset = 16) {
+		return unconfirmedSend !== null ? (
+			<View
+				style={[
+					styles.card,
+					{ marginHorizontal: inset, borderColor: colors.border },
+				]}
+			>
+				<Copy>Delivery unconfirmed</Copy>
+				<Copy muted>
+					Check the transcript before sending again. This message may have
+					reached the hub.
+				</Copy>
+				<ScrollView style={{ maxHeight: 100 }}>
+					<Copy>{unconfirmedSend}</Copy>
+					<ImageAttachments
+						document={document}
+						selection={imageSelection}
+						uncertain
+					/>
+				</ScrollView>
+				<View style={styles.row}>
+					<Action
+						disabled={draft.record.draft !== ""}
+						onPress={() => document.restore()}
+					>
+						Restore to draft
+					</Action>
+					<Action onPress={() => document.dismiss()}>Dismiss</Action>
+				</View>
+				{draft.record.draft !== "" ? (
+					<Copy muted>
+						Your current draft is kept. Clear it to restore this message.
+					</Copy>
+				) : null}
+			</View>
+		) : null;
+	}
 	const readerCellRenderer = useMemo(() => {
 		return class ReaderCell extends Component<CellRendererProps<TimelineRow>> {
 			componentWillUnmount() {
@@ -2068,45 +2125,7 @@ export function ConversationScreen({
 									<ConnectionStatus />
 									<ErrorMessage message={snapshot.error || actionError} />
 									<ErrorMessage message={draft.error} />
-									{unconfirmedSend !== null ? (
-										<View
-											style={[
-												styles.card,
-												{ marginHorizontal: 16, borderColor: colors.border },
-											]}
-										>
-											<Copy>Delivery unconfirmed</Copy>
-											<Copy muted>
-												Check the transcript before sending again. This message
-												may have reached the hub.
-											</Copy>
-											<ScrollView style={{ maxHeight: 100 }}>
-												<Copy>{unconfirmedSend}</Copy>
-												<ImageAttachments
-													document={document}
-													selection={imageSelection}
-													uncertain
-												/>
-											</ScrollView>
-											<View style={styles.row}>
-												<Action
-													disabled={draft.record.draft !== ""}
-													onPress={() => document.restore()}
-												>
-													Restore to draft
-												</Action>
-												<Action onPress={() => document.dismiss()}>
-													Dismiss
-												</Action>
-											</View>
-											{draft.record.draft !== "" ? (
-												<Copy muted>
-													Your current draft is kept. Clear it to restore this
-													message.
-												</Copy>
-											) : null}
-										</View>
-									) : null}
+									{unconfirmedDelivery()}
 									{connected &&
 									conversation &&
 									!conversation.capabilities.send &&
@@ -2288,28 +2307,34 @@ export function ConversationScreen({
 									}}
 								>{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
 							) : null}
-							{conversation?.queue.depth ? (
-								<Action
-									tone="quiet"
-									expanded={queueOpen}
-									onPress={() => {
-										Keyboard.dismiss();
-										setQueueOpen(true);
-									}}
+							{conversation?.queue.depth || conversation?.goal ? (
+								<View
+									style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}
 								>
-									{`${conversation.queue.depth} queued`}
-								</Action>
-							) : null}
-							{conversation?.goal ? (
-								<Action
-									tone="quiet"
-									onPress={() => {
-										Keyboard.dismiss();
-										setSessionOpen(true);
-									}}
-								>
-									{`Goal · ${conversation.goal.status}`}
-								</Action>
+									{conversation.queue.depth ? (
+										<Action
+											tone="quiet"
+											expanded={queueOpen}
+											onPress={() => {
+												Keyboard.dismiss();
+												setQueueOpen(true);
+											}}
+										>
+											{`${conversation.queue.depth} queued`}
+										</Action>
+									) : null}
+									{conversation.goal ? (
+										<Action
+											tone="quiet"
+											onPress={() => {
+												Keyboard.dismiss();
+												setSessionOpen(true);
+											}}
+										>
+											{`Goal · ${conversation.goal.status}`}
+										</Action>
+									) : null}
+								</View>
 							) : null}
 							{canCompose && questions.length === 0 ? (
 								<ImageAttachments
@@ -2356,7 +2381,7 @@ export function ConversationScreen({
 									/>
 								) : null}
 							</View>
-							{fontScale > 1.4 ? composerSettings : null}
+							{settingsOwnRow ? composerSettings : null}
 							<View
 								style={[
 									styles.row,
@@ -2381,7 +2406,7 @@ export function ConversationScreen({
 										{imageState.busy ? "Processing…" : "+"}
 									</Action>
 								) : null}
-								{fontScale <= 1.4 ? composerSettings : null}
+								{settingsOwnRow ? null : composerSettings}
 								{canCompose && questions.length === 0 && command !== null ? (
 									<Action
 										tone="primary"
@@ -2446,20 +2471,17 @@ export function ConversationScreen({
 										tone="quiet"
 										onPress={() => {
 											Keyboard.dismiss();
-											// This explicit action reveals the header; it is not a
-											// new semantic reader position.
-											readerHeader.current = true;
-											captureSuppressed.current = true;
-											timeline.current?.scrollToOffset({
-												offset: 0,
-												animated: true,
-											});
+											if (unconfirmedSend !== null || connected) {
+												setRecoveryOpen(true);
+											} else {
+												retry();
+											}
 										}}
 									>
 										{unconfirmedSend !== null
 											? "Check delivery"
 											: !connected
-												? "Connection"
+												? "Reconnect"
 												: "Review error"}
 									</Action>
 								) : null}
@@ -2477,6 +2499,40 @@ export function ConversationScreen({
 								{submissionActions(["queue"])}
 							</View>
 						</ScrollView>
+						<Modal
+							visible={recoveryOpen}
+							animationType="slide"
+							presentationStyle={
+								Platform.OS === "ios" ? "pageSheet" : "fullScreen"
+							}
+							onRequestClose={() => setRecoveryOpen(false)}
+						>
+							<SafeAreaView
+								style={[styles.fill, { backgroundColor: colors.background }]}
+							>
+								<View
+									style={[
+										styles.row,
+										{
+											paddingHorizontal: 20,
+											paddingVertical: 8,
+											borderBottomWidth: 1,
+											borderColor: colors.border,
+										},
+									]}
+								>
+									<Copy>Review status</Copy>
+									<Action onPress={() => setRecoveryOpen(false)}>Done</Action>
+								</View>
+								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
+									<ConnectionStatus inset={0} />
+									<ErrorMessage
+										message={snapshot.error || actionError || draft.error}
+									/>
+									{unconfirmedDelivery(0)}
+								</ScrollView>
+							</SafeAreaView>
+						</Modal>
 					</View>
 				</View>
 			</KeyboardAvoidingView>
