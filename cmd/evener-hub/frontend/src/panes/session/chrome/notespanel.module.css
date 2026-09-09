@@ -29,8 +29,15 @@
 
 /* The human note's writing surface claims the card's full width; autoGrow
  * (not a fixed rows count) lets a long note breathe without a scrollbar
- * appearing at an arbitrary line. */
+ * appearing at an arbitrary line. The widget sets no width of its own (a
+ * bare textarea defaults to ~20 columns), so the host claims it here -
+ * the same `.form textarea` precedent spawn.module.css sets. */
 .editor {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.editor textarea {
   width: 100%;
   box-sizing: border-box;
 }
