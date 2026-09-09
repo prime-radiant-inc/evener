@@ -186,10 +186,9 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // CURRENT focus, by design - see workspace.ts's own header comment) and
   // deliberately component-local, not module-level: it resets across a
   // StackHost unmount/remount (e.g. a breakpoint crossing back to desktop
-  // and later back to mobile), an accepted, narrow limitation matching
-  // DockHost's own disclosed "remount re-runs boot" limitation (see that
-  // task's report) - real phones don't cross the 900px breakpoint mid-
-  // session, so this only matters for a resized dev browser window.
+  // and later back to mobile). Transcript panes retain their immediate
+  // parent reference separately; handleBack uses that only when this local
+  // history yields no valid target, without persisting generic history.
   const backStackRef = useRef<string[]>([]);
   // The id last seen focused, INCLUDING at mount (initialized from the
   // current value, not null) - AppShell's routing glue may have already
@@ -305,7 +304,21 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   }, [nothingFocused, routeDeferred]);
 
   function handleBack(): void {
-    const target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
+    let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
+    if (!target && focusedPane?.type === "transcript") {
+      const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };
+      if (typeof params.parentRef === "string" && params.parentRef !== "" && params.parentRef !== params.ref) {
+        // A host swap discards local history, not the retained parent pane.
+        // Focus that exact pane: reopening a session could promote a nested
+        // parent into main and discard the real owner and remaining context.
+        target = panes.find(
+          (pane) =>
+            pane.id !== focusedPaneId &&
+            (pane.type === "session" || pane.type === "transcript") &&
+            (pane.params as { ref?: unknown }).ref === params.parentRef,
+        )?.id;
+      }
+    }
     wentBackRef.current = true;
     if (target) {
       workspaceStore.getState().focusPane(target);

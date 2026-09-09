@@ -2398,6 +2398,182 @@ function installMobileViewport(): void {
   );
 }
 
+// These cases differ only at the browser viewport boundary: Back must use
+// retained immediate-parent context even when Open ran before StackHost mounted.
+// A fresh host falling through to Welcome instead of that parent is the bug.
+test.each([
+  { origin: "desktop", initialWidth: 1280, nested: false, parentRef: "local:owner" },
+  { origin: "phone", initialWidth: 390, nested: false, parentRef: "local:owner" },
+  { origin: "desktop", initialWidth: 1440, nested: true, parentRef: "local:child" },
+  { origin: "phone", initialWidth: 390, nested: true, parentRef: "local:child" },
+])(
+  "responsive Back: $origin origin, nested=$nested returns to $parentRef",
+  async ({ initialWidth, nested, parentRef }) => {
+    // jsdom has no matchMedia. Keep a live EventTarget at that external browser
+    // boundary so the real useIsMobile subscription swaps DockHost for StackHost.
+    let width = initialWidth;
+    const queries = new Map<string, EventTarget & { readonly matches: boolean; media: string }>();
+    vi.stubGlobal("innerWidth", width);
+    vi.stubGlobal("matchMedia", (media: string) => {
+      let query = queries.get(media);
+      if (!query) {
+        query = new (class extends EventTarget {
+          media = media;
+          get matches() {
+            return media === "(max-width: 899px)" && width < 900;
+          }
+        })();
+        queries.set(media, query);
+      }
+      return query;
+    });
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (ref !== "local:owner" && ref !== "local:child" && ref !== "local:grandchild") {
+        throw new Error(`Unexpected transcript ref: ${ref}`);
+      }
+      return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+    });
+    window.history.pushState({}, "", "/s/local%3Aowner");
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+      </>,
+    );
+    await screen.findByRole("textbox", { name: "Message" });
+    const owner = paneFor("local:owner");
+    expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id));
+    expect(getDockviewApi() !== null).toBe(initialWidth >= 900);
+
+    await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({ type: "transcript", params: { ref: "local:child", parentRef: "local:owner" } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(child?.id);
+    if (nested) await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+    const target = paneFor(nested ? "local:grandchild" : "local:child");
+    const parent = paneFor(parentRef);
+    expect(parent).toBeDefined();
+    expect(target).toMatchObject({ type: "transcript", params: { parentRef } });
+    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+
+    act(() => {
+      width = 390;
+      vi.stubGlobal("innerWidth", width);
+      for (const query of queries.values()) {
+        query.dispatchEvent(Object.assign(new Event("change"), { matches: query.matches, media: query.media }));
+      }
+    });
+    const back = await screen.findByRole("button", { name: "Back" });
+    await waitFor(() =>
+      expect(screen.getByTestId("topbar-title").textContent).toBe(nested ? "local:grandchild" : "local:child"),
+    );
+    expect(getDockviewApi()).toBeNull();
+    expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+    expect(paneFor(parentRef)).toEqual(parent);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+
+    await user.click(back);
+    expect(workspaceStore.getState().focusedPaneId).toBe(parent?.id);
+    expect(screen.getByTestId("topbar-title").textContent).toBe(parentRef);
+    expect(paneFor(parentRef)).toEqual(parent);
+    expect(workspaceStore.getState().mainPane()).toEqual(owner);
+    expect(window.location.pathname).toBe("/s/local%3Aowner");
+    expect(screen.queryByText("No session open")).toBeNull();
+  },
+);
+
+test.each(["local:owner", "local:child"])(
+  "responsive retained-parent walk: mixed chain from routed session %s keeps exact parents and owner",
+  async (routeRef) => {
+    vi.stubGlobal("innerWidth", 1280);
+    const setMobile = installSwitchableViewport();
+    window.history.pushState({}, "", `/s/${encodeURIComponent(routeRef)}`);
+    installLocationForRoute(routeRef);
+    const client = navClient();
+    client.on("thread/read", ({ ref }) => {
+      if (
+        typeof ref !== "string" ||
+        !["local:owner", "local:child", "local:grandchild", "local:great-grandchild"].includes(ref)
+      ) {
+        throw new Error(`Unexpected transcript ref: ${ref}`);
+      }
+      return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppShell client={client} />
+        <OpenTranscriptButton transcriptRef="local:child" parentRef="local:owner" label="Open child" />
+        <OpenTranscriptButton transcriptRef="local:grandchild" parentRef="local:child" label="Open grandchild" />
+        <OpenTranscriptButton
+          transcriptRef="local:great-grandchild"
+          parentRef="local:grandchild"
+          label="Open great-grandchild"
+        />
+      </>,
+    );
+    await screen.findByRole("heading", { name: routeRef });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor(routeRef)?.id));
+    const owner = paneFor("local:owner");
+    expect(owner).toMatchObject({ type: "session", slot: "main", params: { ref: "local:owner" } });
+    expect(getDockviewApi()).not.toBeNull();
+    if (routeRef === "local:owner") await user.click(screen.getByRole("button", { name: "Open child" }));
+    const child = paneFor("local:child");
+    expect(child).toMatchObject({
+      type: routeRef === "local:child" ? "session" : "transcript",
+      slot: "secondary",
+      params: { ref: "local:child" },
+    });
+    await user.click(screen.getByRole("button", { name: "Open grandchild" }));
+    const grandchild = paneFor("local:grandchild");
+    expect(grandchild).toMatchObject({
+      type: "transcript",
+      slot: "secondary",
+      params: { ref: "local:grandchild", parentRef: "local:child" },
+    });
+    await user.click(screen.getByRole("button", { name: "Open great-grandchild" }));
+    const descendant = paneFor("local:great-grandchild");
+    expect(descendant).toMatchObject({
+      type: "transcript",
+      slot: "secondary",
+      params: { ref: "local:great-grandchild", parentRef: "local:grandchild" },
+    });
+    expect(workspaceStore.getState().focusedPaneId).toBe(descendant?.id);
+    const retained = workspaceStore.getState().panes;
+    act(() => {
+      vi.stubGlobal("innerWidth", 390);
+      setMobile(true);
+    });
+    await waitFor(() => expect(screen.getByTestId("topbar-title").textContent).toBe("local:great-grandchild"));
+    expect(getDockviewApi()).toBeNull();
+    expect(workspaceStore.getState().focusedPaneId).toBe(descendant?.id);
+    // Literal return order is independent of the production parent resolver.
+    const returnTargets = [
+      { target: grandchild, title: "local:grandchild" },
+      { target: child, title: "local:child" },
+    ];
+    if (routeRef === "local:owner") returnTargets.push({ target: owner, title: "local:owner" });
+    for (const { target, title } of returnTargets) {
+      expect(target).toBeDefined();
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(workspaceStore.getState().focusedPaneId).toBe(target?.id);
+      expect(screen.getByTestId("topbar-title").textContent).toBe(title);
+      expect(workspaceStore.getState().panes).toEqual(retained);
+      expect(workspaceStore.getState().mainPane()).toEqual(owner);
+      expect(window.location.pathname).toBe(`/s/${encodeURIComponent(routeRef)}`);
+    }
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("No session open")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  },
+);
+
 test("Open transcript retains focused child after settled parent route reconciliation", async () => {
   vi.stubGlobal("innerWidth", 390);
   installMobileViewport();
