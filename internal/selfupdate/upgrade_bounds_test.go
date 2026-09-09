@@ -123,3 +123,23 @@ func TestExtractRefusesDecompressionBomb(t *testing.T) {
 		t.Fatalf("err = %v, want a decompression-bomb refusal", err)
 	}
 }
+
+// TestExtractCountsIgnoredEntries proves skipped (unwanted) tar entries
+// charge the extraction budget too: a 600MB-compressible ignored member
+// fails instead of decompressing unbounded between ctx checks. Fails
+// today: `continue` lets Next() drain it outside the cap and ctxReader.
+func TestExtractCountsIgnoredEntries(t *testing.T) {
+	big := make([]byte, 600<<20)
+	entries := map[string][]byte{
+		"evener_linux_amd64/evener":       []byte("tiny"),
+		"evener_linux_amd64/ignored-blob": big,
+	}
+	archivePath := filepath.Join(t.TempDir(), "bomb.tar.gz")
+	if err := os.WriteFile(archivePath, tarGz(t, entries, nil), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractReleaseArchive(t.Context(), archivePath, "evener_linux_amd64", t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), "expands past") {
+		t.Fatalf("err = %v, want a decompression-bomb refusal covering ignored entries", err)
+	}
+}

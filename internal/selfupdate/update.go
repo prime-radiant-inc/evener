@@ -484,6 +484,18 @@ func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot stri
 		}
 		bin, ok := want[header.Name]
 		if !ok {
+			// Drain skipped entries through the same budget: Next()
+			// discards the previous entry's body on the following
+			// call, so an unbounded `continue` would decompress a
+			// giant ignored member outside the cap and ctx checks.
+			n, err := io.Copy(io.Discard, ctxReader(ctx, io.LimitReader(tr, maxExtractedBytes-extractedTotal+1)))
+			if err != nil {
+				return err
+			}
+			extractedTotal += n
+			if extractedTotal > maxExtractedBytes {
+				return fmt.Errorf("release archive expands past %d bytes, refusing a decompression bomb", maxExtractedBytes)
+			}
 			continue
 		}
 		if header.Typeflag != tar.TypeReg {
