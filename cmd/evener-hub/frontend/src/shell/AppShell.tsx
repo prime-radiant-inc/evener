@@ -7,6 +7,7 @@ import { ACTIONS } from "../keybindings/actions";
 import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
+import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
@@ -195,7 +196,8 @@ function routePlacementIsApplied(
     focusedPane?.type === "transcript" ? (focusedPane.params as { ref?: unknown; parentRef?: unknown }) : null;
   const focusedTranscriptMatchesRoute =
     focusedTranscriptParams !== null &&
-    ((ancestorRef === ref && focusedTranscriptParams.parentRef === ref) ||
+    ((typeof focusedTranscriptParams.parentRef === "string" &&
+      transcriptContextIncludes(focusedTranscriptParams.parentRef, ref)) ||
       (ancestorRef !== ref &&
         focusedTranscriptParams.ref === ref &&
         focusedTranscriptParams.parentRef === ancestorRef));
