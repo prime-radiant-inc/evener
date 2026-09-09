@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render as renderUI, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -20,7 +20,7 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "../../stores/navigation/types";
-import { threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";
@@ -1065,11 +1065,11 @@ describe("resource-backed Rail", () => {
     const consumed = vi.fn();
     const first = resource(
       { kind: "location", ref: "missing" },
-      { generation_id: "g1", revision: 1, ref: "missing", top_level_ref: "missing", top_level: true },
+      { generation_id: "g1", revision: 1, ref: "missing", top_level_ref: "missing" },
     );
     const second = resource(
       { kind: "location", ref: "missing-2" },
-      { generation_id: "g1", revision: 1, ref: "missing-2", top_level_ref: "missing-2", top_level: true },
+      { generation_id: "g1", revision: 1, ref: "missing-2", top_level_ref: "missing-2" },
     );
     installState([first, second]);
     const view = render(<Rail revealTarget="missing" onRevealConsumed={consumed} />);
@@ -1355,6 +1355,39 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(client.calls).toContainEqual({ method: "evener/session/delete", params: { ref: "local:a" } });
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
+  });
+  test("force stop is reachable after initial thread hydration fails and preserves success on refresh failure", async () => {
+    resetThreadsStoreForTests();
+    const client = new FakeClient("ready");
+    connectionStore.getState().connect(client);
+    const failedRead = deferred<void>();
+    client.on("thread/read", () => {
+      failedRead.resolve();
+      throw new Error("daemon unavailable");
+    });
+    client.on("evener/thread/forceStop", () => ({}));
+    const hydration = threadsStore.getState().ensureThread("local:a");
+    await failedRead.promise;
+    expect(threadsStore.getState().threads.has("local:a")).toBe(false);
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
+      projectResource("p", [summary({ title: "Unresponsive", state: "unknown", live: false })]),
+    ]);
+    render(<Rail />, client);
+    fireEvent.click(screen.getByText("Project"));
+    fireEvent.click(screen.getByRole("button", { name: /actions for unresponsive/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+    expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(client.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref: "local:a" } },
+    ]);
+    expect(getToasts().some((toast) => toast.text.includes("Session stopped"))).toBe(true);
+    expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+    threadsStore.getState().releaseThread("local:a");
+    await hydration;
+    resetThreadsStoreForTests();
   });
   test("keeps AppWire shutdown pending through unrelated invalidation and until relevant target authority", async () => {
     const event = deferred<NavigationInvalidatedPayload>();

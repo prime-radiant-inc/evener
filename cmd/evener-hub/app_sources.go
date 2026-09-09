@@ -2,9 +2,11 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -48,6 +50,7 @@ func withDeletionTargetOwnership[R any](
 	ref, threadID, clientMutationID string,
 	action func() (R, error),
 ) (R, error) {
+	epoch := sessionRequestRecoveryEpoch(ctx, cfg, ref, threadID)
 	unlock := lockDeletionTarget(cfg, ref, threadID)
 	defer unlock()
 	if err := deletionFenceError(cfg, ref, threadID, clientMutationID); err != nil {
@@ -55,6 +58,10 @@ func withDeletionTargetOwnership[R any](
 		return zero, err
 	}
 	if clientMutationID != "" {
+		if err := sessionActionRecoveryError(ctx, cfg, ref, threadID, epoch); err != nil {
+			var zero R
+			return zero, blockedAdmissionMutationError(err, clientMutationID)
+		}
 		if err := daemonRestartRequiredError(ctx, cfg, ref, threadID, clientMutationID); err != nil {
 			var zero R
 			return zero, err
@@ -73,7 +80,12 @@ func withDeletionTargetOwnership[R any](
 // withSessionActionOwnership guards actions that have no durable mutation ID.
 // Reads share deletion locking but must remain available for incompatible owners.
 func withSessionActionOwnership[R any](ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, action func() (R, error)) (R, error) {
+	epoch := sessionRequestRecoveryEpoch(ctx, cfg, ref, threadID)
 	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (R, error) {
+		if err := sessionActionRecoveryError(ctx, cfg, ref, threadID, epoch); err != nil {
+			var zero R
+			return zero, err
+		}
 		if err := daemonRestartRequiredError(ctx, cfg, ref, threadID, ""); err != nil {
 			var zero R
 			return zero, err
@@ -159,4 +171,188 @@ func deletionThreadID(ref, threadID string) string {
 func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 	_, ok, _ := pastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: ref})
 	return ok
+}
+
+func sessionRecoveryState(cfg hubcore.WebConfig, ref, threadID string) hubcore.SessionRecoveryState {
+	if ref != "" {
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil || parsed.SourceID != "local" {
+			return hubcore.SessionRecoveryState{}
+		}
+	}
+	if cfg.ResumeLocks == nil {
+		return hubcore.SessionRecoveryState{}
+	}
+	id := deletionThreadID(ref, threadID)
+	if id == "" {
+		return hubcore.SessionRecoveryState{}
+	}
+	return cfg.ResumeLocks.RecoveryState(id)
+}
+
+// sessionRecoveryAdmissionError is terminal for an action already rejected by
+// recovery, even if another request explicitly resumes before retry routing.
+// Unwrap preserves the existing wire-level action-unavailable response.
+type sessionRecoveryAdmissionError struct{ appwire.WireError }
+
+func (err sessionRecoveryAdmissionError) Unwrap() error { return err.WireError }
+
+func isSessionRecoveryAdmissionError(err error) bool {
+	_, ok := errors.AsType[sessionRecoveryAdmissionError](err)
+	return ok
+}
+
+func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, epoch uint64) error {
+	if err := sessionConnectionRecoveryError(ctx, cfg, ref, threadID); err != nil {
+		return err
+	}
+	state := sessionRecoveryState(cfg, ref, threadID)
+	if state.Stopping > 0 || state.ResumeRequired {
+		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires an explicit thread/resume before submitting another action")}
+	}
+	if state.Epoch != epoch {
+		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery canceled this pending action; submit it again")}
+	}
+	return nil
+}
+
+type sessionRecoveryAdmissionKey struct{}
+
+type sessionRecoveryAdmission struct {
+	sessionID string
+	epoch     uint64
+}
+
+// admitSessionRecovery captures only the requested local identity; it performs
+// no ownership discovery and leaves malformed or foreign targets to handlers.
+func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message appwire.Message) context.Context {
+	if message.Request == nil || cfg.ResumeLocks == nil {
+		return ctx
+	}
+	var rawRef, id string
+	switch message.Request.Method {
+	case appwire.MethodThreadResume:
+		var params appwire.ThreadResumeParams
+		if json.Unmarshal(message.Request.Params, &params) != nil {
+			return ctx
+		}
+		rawRef, id = params.Ref, strings.TrimSpace(params.Session)
+	case appwire.MethodTurnStart, appwire.MethodTurnSteer, appwire.MethodTurnInterrupt:
+		var params appwire.TurnInterruptParams
+		if json.Unmarshal(message.Request.Params, &params) != nil {
+			return ctx
+		}
+		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
+	case appwire.MethodEvenerSandboxEscalationResolve:
+		var params appwire.SandboxEscalationResolveParams
+		if json.Unmarshal(message.Request.Params, &params) != nil {
+			return ctx
+		}
+		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
+	case appwire.MethodThreadFork, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet,
+		appwire.MethodThreadReasoningEffortSet, appwire.MethodThreadCompactStart,
+		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,
+		appwire.MethodTurnQueue, appwire.MethodTurnDrainAsSteer,
+		appwire.MethodTurnPromoteQueuedAsSteer, appwire.MethodTurnCancelQueued:
+		var params struct {
+			Ref string `json:"ref"`
+		}
+		if json.Unmarshal(message.Request.Params, &params) != nil {
+			return ctx
+		}
+		rawRef = params.Ref
+	default:
+		return ctx
+	}
+	if rawRef != "" {
+		ref, err := appwire.ParseRef(rawRef)
+		if err != nil || ref.SourceID != "local" {
+			return ctx
+		}
+		// Resume's explicit sessionId takes precedence; other handlers resolve ref
+		// before their optional threadId. Ignored extra fields cannot change this.
+		if message.Request.Method != appwire.MethodThreadResume || id == "" {
+			id = ref.ThreadID
+		}
+	}
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionRecoveryAdmissionKey{}, sessionRecoveryAdmission{sessionID: id, epoch: cfg.ResumeLocks.RecoveryState(id).Epoch})
+}
+
+func sessionRequestRecoveryEpoch(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) uint64 {
+	if admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission); ok && admission.sessionID == deletionThreadID(ref, threadID) {
+		return admission.epoch
+	}
+	return sessionRecoveryState(cfg, ref, threadID).Epoch
+}
+
+type sessionConnectionRecoveryKey struct{}
+
+func admitSessionConnection(ctx context.Context, cfg hubcore.WebConfig) context.Context {
+	if cfg.ResumeLocks == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionConnectionRecoveryKey{}, cfg.ResumeLocks.RecoverySequence())
+}
+
+func sessionConnectionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) error {
+	sequence, ok := ctx.Value(sessionConnectionRecoveryKey{}).(uint64)
+	if cfg.ResumeLocks == nil {
+		return nil
+	}
+	stale := func() error {
+		return sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires Resume on a fresh connection before submitting another action")}
+	}
+	if ok && sessionRecoveryState(cfg, ref, threadID).LastRecoverySequence > sequence {
+		return stale()
+	}
+	if (!ok || cfg.ResumeLocks.RecoverySequence() <= sequence) && !cfg.ResumeLocks.HasUnconfirmedRecovery() {
+		return nil
+	}
+	if ref != "" {
+		parsed, err := appwire.ParseRef(ref)
+		if err != nil {
+			return err
+		}
+		if parsed.SourceID != "local" {
+			return nil
+		}
+		threadID = parsed.ThreadID
+	}
+	// A failed exit wait can leave the owner creating delegates after its last
+	// scan. Verify their ancestry at use time against the retained recovery
+	// sequence; a journal descriptor, not fork provenance, establishes ownership.
+	seen := make(map[string]bool)
+	for threadID != "" && !seen[threadID] {
+		seen[threadID] = true
+		child, found, err := ownershipEntry(ctx, cfg, threadID)
+		if err != nil {
+			return err
+		}
+		if !found || (!child.Meta.IsSubagent && (child.Meta.JobTreeRootSessionID == "" || child.Meta.JobTreeRootSessionID == threadID)) {
+			return nil
+		}
+		parent := child.Meta.ParentSessionID
+		if parent == "" {
+			return nil
+		}
+		owned, err := agent.SessionOwnsDelegate(ctx, child.StateDir, parent, threadID)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return nil
+		}
+		state := cfg.ResumeLocks.RecoveryState(parent)
+		if state.Stopping > 0 || (state.ResumeRequired && !state.ExitConfirmed) {
+			return sessionRecoveryAdmissionError{appwire.Unavailable("delegate owner exit is unconfirmed; recover the owner before submitting another action")}
+		}
+		if ok && state.LastRecoverySequence > sequence {
+			return stale()
+		}
+		threadID = parent
+	}
+	return nil
 }

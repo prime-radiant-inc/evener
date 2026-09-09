@@ -252,13 +252,13 @@ func TestCleanupRetainsOwnedTmpAfterChildGrace(t *testing.T) {
 	sentinel := filepath.Join(dir, "tmp-was-present")
 	ready := filepath.Join(dir, "trap-installed")
 
-	// The child touches READY only AFTER the TERM trap is installed, so the test can
-	// wait for readiness before signaling — otherwise Cleanup could SIGTERM the child
-	// before its trap exists (the default action would terminate it, masking the
-	// ordering under test).
-	script := `trap 'if [ -d "$WATCH" ]; then : > "$SENTINEL"; fi; exit 0' TERM
+	// Publish readiness after starting the sleeper and installing the trap. Bash
+	// can defer TERM during asynchronous child startup, so no fork may remain
+	// between READY and wait: readiness must cover the entire signal setup.
+	script := `sleep 300 &
+trap 'if [ -d "$WATCH" ]; then : > "$SENTINEL"; fi; exit 0' TERM
 : > "$READY"
-sleep 300 & wait`
+wait`
 	h, err := env.StreamCommand(context.Background(), script, dir,
 		map[string]string{"WATCH": tmp.Dir, "SENTINEL": sentinel, "READY": ready}, io.Discard)
 	if err != nil {

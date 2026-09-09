@@ -125,6 +125,10 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.endWebSocket()
 
+	parent := r.Context()
+	if s.cfg.ConnectionAdmissionContext != nil {
+		parent = s.cfg.ConnectionAdmissionContext(parent)
+	}
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -142,7 +146,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	if s.wrapWebSocketTransport != nil {
 		transport = s.wrapWebSocketTransport(transport)
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(parent)
 	conn := s.NewConnection(connectionID)
 	conn.setCancel(cancel)
 	s.registerConnection(conn)

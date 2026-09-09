@@ -46,6 +46,7 @@ const (
 	MethodThreadVisionModelSet        = "thread/vision-model/set"
 	MethodThreadCompactStart          = "thread/compact/start"
 	MethodThreadShutdown              = "thread/shutdown"
+	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
 	MethodTurnStart                   = "turn/start"
 	MethodTurnSteer                   = "turn/steer"
 	MethodTurnInterrupt               = "turn/interrupt"
@@ -597,11 +598,14 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
-	Ref        string `json:"ref"`
-	InstanceID string `json:"instanceId,omitempty"`
-	ParentRef  string `json:"parentRef,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Profile    string `json:"profile,omitempty"`
+	// ResumeRequired means recovery stopped this session and automatic actions
+	// must wait for an explicit thread/resume. Saved transcripts remain readable.
+	ResumeRequired bool   `json:"resumeRequired,omitempty"`
+	Ref            string `json:"ref"`
+	InstanceID     string `json:"instanceId,omitempty"`
+	ParentRef      string `json:"parentRef,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	Profile        string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
@@ -1663,6 +1667,10 @@ type TurnCancelQueuedResponse struct {
 }
 
 type ThreadCompactStartParams struct {
+	Ref string `json:"ref"`
+}
+
+type ThreadForceStopParams struct {
 	Ref string `json:"ref"`
 }
 

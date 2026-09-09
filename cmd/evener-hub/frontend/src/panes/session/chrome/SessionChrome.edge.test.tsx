@@ -428,3 +428,59 @@ test("delete with skipped sessions shows a warning toast", async () => {
 
   expect(await screen.findByText('Couldn\'t delete "Skip Session": still in use')).toBeTruthy();
 });
+
+test.each(["success", "failure"])("force stop requires confirmation and waits for exit: %s", async (outcome) => {
+  const user = userEvent.setup();
+  const ref = "local:force-stop";
+  const fake = connectFakeClient();
+  setLocation(ref);
+  let stopped = false;
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: stopped ? "notLoaded" : "restartRequired" },
+      evener: { ref, capabilities: { ...CAPABILITIES, shutdown: false }, queue: { revision: 0 } },
+    }),
+  );
+  let finish: (() => void) | undefined;
+  fake.on(
+    "evener/thread/forceStop",
+    () =>
+      new Promise((resolve, reject) => {
+        finish = () => {
+          if (outcome === "failure") reject(new Error("exit not confirmed"));
+          else {
+            stopped = true;
+            resolve({});
+          }
+        };
+      }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  renderWithToast(<SessionChrome ref={ref} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
+  await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
+  expect(
+    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("restartRequired");
+  finish?.();
+  if (outcome === "success") {
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+  } else {
+    expect(await screen.findByText("Couldn't force stop session: exit not confirmed")).toBeTruthy();
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  }
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});

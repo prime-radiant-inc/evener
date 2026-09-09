@@ -126,6 +126,7 @@ var Methods = []MethodSpec{
 	{MethodThreadReasoningEffortSet, ThreadReasoningEffortSetParams{}, EmptyResponse{}, ScopeBoth, "Sets reasoning effort, normalizing and validating the value."},
 	{MethodThreadVisionModelSet, ThreadVisionModelSetParams{}, EmptyResponse{}, ScopeBoth, "Sets the vision side-channel routing (\"\", \"off\", or a model ref)."},
 	{MethodThreadCompactStart, ThreadCompactStartParams{}, EmptyResponse{}, ScopeBoth, "Starts a context-compaction pass on the session."},
+	{MethodEvenerThreadForceStop, ThreadForceStopParams{}, EmptyResponse{}, ScopeHub, "Explicitly terminates a verified local daemon and confirms exit; saved session data is retained."},
 	{MethodThreadShutdown, ThreadShutdownParams{}, EmptyResponse{}, ScopeBoth, "Shuts the session down (the daemon runs it asynchronously)."},
 	{MethodTurnStart, TurnStartParams{}, TurnStartResponse{}, ScopeBoth, "Starts a new user turn and reserves a turn ID."},
 	{MethodTurnSteer, TurnSteerParams{}, TurnSteerResponse{}, ScopeBoth, "Injects a steering message into the active turn."},

@@ -75,7 +75,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 
 var (
 	resolveTurnStartSource = sourceForThread
-	resumeTurnStartThread  = hubThreadResume
+	resumeTurnStartThread  = hubThreadAutoResume
 	authLoginComplete      = func(c *hubAuthController, ctx context.Context, p appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		return c.LoginComplete(ctx, p)
 	}
@@ -156,8 +156,8 @@ func listItemTurns(
 }
 
 func blockedUnknownMutationError(clientMutationID string, err error) error {
-	if isDaemonRestartRequiredError(err) {
-		return restartRequiredMutationError(err, clientMutationID)
+	if isDaemonRestartRequiredError(err) || isSessionRecoveryAdmissionError(err) {
+		return blockedAdmissionMutationError(err, clientMutationID)
 	}
 	return appwire.WireError{
 		Code:    appwire.CodeInternalError,
@@ -237,6 +237,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		Navigation:           capability,
 		NavigationCapability: capabilityProvider,
 		Logf:                 hubLogf,
+		ConnectionAdmissionContext: func(ctx context.Context) context.Context {
+			return admitSessionConnection(ctx, cfg)
+		},
+		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
+			return admitSessionRecovery(ctx, cfg, message)
+		},
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -470,6 +476,7 @@ func registerThreadHandlers(
 			}
 		}
 		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
+		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
 		if err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -703,7 +710,7 @@ func registerThreadHandlers(
 			if wire, ok := errors.AsType[appwire.WireError](err); ok && wire.Code == appwire.CodeInvalidParams {
 				return appwire.TurnStartResponse{}, err
 			}
-			if isTargetDeletedError(err) || isDaemonRestartRequiredError(err) {
+			if isTargetDeletedError(err) || isDaemonRestartRequiredError(err) || isSessionRecoveryAdmissionError(err) {
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
@@ -752,7 +759,7 @@ func registerThreadHandlers(
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, "", func() (appwire.EmptyResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.EmptyResponse, error) {
 			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
 				return appwire.EmptyResponse{}, err
 			}
@@ -841,6 +848,9 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadForceStop, func(ctx context.Context, params appwire.ThreadForceStopParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, forceStopThread(ctx, cfg, params, sources)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadShutdown, func(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, shutdownThreadTolerateExited(ctx, cfg, sources, params)
 	})
@@ -851,7 +861,7 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", "", func() (appwire.EmptyResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (appwire.EmptyResponse, error) {
 			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
 				return appwire.EmptyResponse{}, err
 			}

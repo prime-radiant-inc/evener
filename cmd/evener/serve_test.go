@@ -512,6 +512,54 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	}
 }
 
+func TestRunServeRecordsAbsoluteStateDirectory(t *testing.T) {
+	for _, fromEnv := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fromEnv), func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			stateDir := "relative-state"
+			want, err := filepath.Abs(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runDir := t.TempDir()
+			args := []string{"--model", "openai/test", "--addr", "127.0.0.1:0", "--dir", t.TempDir(), "--run-dir", runDir}
+			if fromEnv {
+				t.Setenv("EVENER_STATE_DIR", stateDir)
+			} else {
+				args = append(args, "--state-dir", stateDir)
+			}
+			deps := defaultServeDeps()
+			deps.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+				client := llm.NewClient()
+				client.Register(serveLoggingAdapter{})
+				return client, func() error { return nil }, nil
+			}
+			done := make(chan error, 1)
+			go func() { done <- runServeWithDeps(args, deps) }()
+			entry := waitForServeTestRendezvous(t, runDir)
+			if err := shutdownServeTestDaemon(t.Context(), entry.Address, entry.SessionID); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("serve failed to shut down")
+			}
+			if entry.StateDir != want {
+				t.Fatalf("rendezvous stateDir=%q, want %q", entry.StateDir, want)
+			}
+			for _, suffix := range []string{".transcript.jsonl", ".api.jsonl"} {
+				if _, err := os.Stat(filepath.Join(entry.StateDir, "sessions", entry.SessionID+suffix)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	adapter := &shutdownBlockingAdapter{
 		entered:   make(chan struct{}, 1),

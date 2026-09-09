@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -279,6 +281,75 @@ func SessionOwnsDelegate(ctx context.Context, stateDir, parentSessionID, childSe
 		return false, fmt.Errorf("delegate ownership journal has an incomplete trailing batch: %s", path)
 	}
 	return false, nil
+}
+
+// SessionOwnedDelegateIDs reads the session's subtree in the root-owned
+// delegate journal without loading transcripts. Fork provenance is not ownership.
+func SessionOwnedDelegateIDs(ctx context.Context, stateDir, sessionID string) ([]string, error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	rootID := sessionID
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err == nil {
+		rootID = activityRootIDFromMeta(sessionID, meta)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := schema.ValidateSessionID(rootID); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Committed descriptors remain ownership evidence after interrupted writes.
+	// A killed daemon may leave an incomplete trailing batch; it is not replayed.
+	children := make(map[string][]string)
+	var pending []string
+	for delegateID, aggregate := range result.Value.state {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if aggregate == nil || aggregate.Descriptor.OwnerSessionID != rootID {
+			continue
+		}
+		children[aggregate.Descriptor.ParentDelegateID] = append(children[aggregate.Descriptor.ParentDelegateID], delegateID)
+		if sessionID == rootID || aggregate.Descriptor.ChildSessionID == sessionID {
+			pending = append(pending, delegateID)
+		}
+	}
+	ids := make(map[string]bool)
+	visited := make(map[string]bool)
+	for len(pending) != 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		delegateID := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if visited[delegateID] {
+			continue
+		}
+		visited[delegateID] = true
+		id := result.Value.state[delegateID].Descriptor.ChildSessionID
+		if err := schema.ValidateSessionID(id); err != nil {
+			return nil, err
+		}
+		if id != sessionID {
+			ids[id] = true
+		}
+		pending = append(pending, children[delegateID]...)
+	}
+	out := make([]string, 0, len(ids))
+	for id := range ids {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // LoadSessionDelegateStatus projects a cold session's stable delegate rows

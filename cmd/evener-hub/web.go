@@ -46,6 +46,7 @@ type WebServer struct {
 	manifestFS fs.FS
 
 	frontendHash              string
+	recoveryStoreErr          error
 	deletionStoreErr          error
 	transcriptDisplayStoreErr error
 	keybindingsStoreErr       error
@@ -75,8 +76,14 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
 	// triggered on either transport serializes a racing resume on the other.
+	var recoveryStoreErr error
 	if cfg.ResumeLocks == nil {
-		cfg.ResumeLocks = hubcore.NewResumeLocks()
+		if cfg.HubStateRoot == "" {
+			// Embedders without a state root explicitly use process-local state.
+			cfg.ResumeLocks = hubcore.NewResumeLocks()
+		} else {
+			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
+		}
 	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
@@ -89,6 +96,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
 		deletionStoreErr:          deletionStoreErr,
+		recoveryStoreErr:          recoveryStoreErr,
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 		keybindingsStoreErr:       keybindingsStoreErr,
 	}
@@ -100,7 +108,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
-	if deletionStoreErr == nil {
+	if deletionStoreErr == nil && recoveryStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
 	return web
@@ -135,6 +143,11 @@ func validAssetPath(next http.Handler) http.Handler {
 }
 
 func (s *WebServer) Handler() http.Handler {
+	if s.recoveryStoreErr != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "recovery state unavailable", http.StatusServiceUnavailable)
+		})
+	}
 	mux := http.NewServeMux()
 
 	// Assets — the embedded PWA icons + manifest, auth-exempt per hubedge.

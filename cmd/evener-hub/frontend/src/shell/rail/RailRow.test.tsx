@@ -188,6 +188,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
     onOpenSessionPane: vi.fn(),
     onRenameSession: vi.fn().mockResolvedValue(undefined),
     onShutdownSession: vi.fn().mockResolvedValue(undefined),
+    onForceStopSession: vi.fn().mockResolvedValue(undefined),
     onPinSession: vi.fn().mockResolvedValue(undefined),
     onUnpinRequest: vi.fn().mockResolvedValue(undefined),
     onToggleArchiveSession: vi.fn().mockResolvedValue(undefined),
@@ -1336,6 +1337,7 @@ describe("session row", () => {
       "Pin this session…",
       "Archive",
       "Shut down",
+      "Force stop…",
       "Delete…",
     ]);
   });
