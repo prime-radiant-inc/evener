@@ -83,4 +83,7 @@ and dark appearance, keyboard search, message actions, and the empty state.
 The [receipt](assets/2026-09-08-native-project-browser.json) and its linked
 screenshots retain the artifact identity and independent review. Physical-device
 and real-network loading measurements remain open.
-The installed TestFlight build has not yet been replaced by this work.
+TestFlight `0.1.0 (2)` now contains this source and is available in Evener Internal.
+The [distribution receipt](assets/2026-09-08-testflight-browser-update.json)
+records Apple availability; physical installation and update acceptance remain
+open.
