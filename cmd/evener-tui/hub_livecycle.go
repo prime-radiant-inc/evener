@@ -62,11 +62,12 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 		return m, nil
 	}
 	// The composer is a text surface, and a session switch replaces m.session
-	// (input included): firing the chord mid-draft would discard an unsent
-	// prompt. Hold while a draft is present — the web side's
-	// allowInEditable:false policy mapped to the TUI (roborev PR #1044
-	// round-4 medium 3).
-	if m.session.input.Value() != "" {
+	// (input included) and clears pendingAttachments: firing the chord
+	// mid-draft would discard unsent content. Hold while a draft - text or
+	// attachment-only - is present: the web side's allowInEditable:false
+	// policy mapped to the TUI (roborev PR #1044 round-4 medium 3, round-5
+	// low).
+	if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
 		m.addSessionSystem("Draft kept. Send or clear it before switching live sessions.")
 		return m, nil
 	}

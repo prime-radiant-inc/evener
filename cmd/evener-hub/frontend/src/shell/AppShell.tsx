@@ -636,7 +636,18 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         }
         const refs = selectLiveRows(state).map((row) => row.ref);
         const current = focusedSessionRef();
-        if (refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0) {
+        if (refs.length === 0) {
+          if ((state.manifest?.data?.sections.live.count ?? 0) > 0) {
+            demandLivePage("previous", new Set(refs));
+          }
+          return;
+        }
+        // A previous wrap targets the tail; with more pages on the server the
+        // tail is not loaded, so demand through to it rather than landing on
+        // the last loaded row (round-5 medium 1). Mid-list steps need nothing
+        // loaded beyond the loaded rows themselves.
+        const index = current === null ? -1 : refs.indexOf(current);
+        if (index <= 0 && selectSectionRemaining("live", state) > 0) {
           demandLivePage("previous", new Set(refs));
           return;
         }

@@ -71,6 +71,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.mode != hubModeSession || msg.liveNavSeq != m.liveNavSeq {
 				return m, nil
 			}
+			// Composing began while the read was in flight: the draft is newer
+			// intent than the navigation. The press-time guard cannot cover
+			// this - the content did not exist yet (round-5 medium 2).
+			if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
+				m.liveNavPendingRef = ""
+				return m, nil
+			}
 			m.liveNavPendingRef = ""
 		}
 		var preCut []tea.Cmd

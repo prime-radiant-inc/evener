@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -331,5 +332,41 @@ func TestHubSessionLiveCycleWorksInBrowseMode(t *testing.T) {
 	}
 	if got := reads.get(); len(got) != 1 || got[0] != "local:01C" {
 		t.Fatalf("thread/read refs = %v, want [local:01C]", got)
+	}
+}
+
+// An attachment-only draft is as unsent as a text draft; the guard must hold
+// for it too (roborev PR #1044 round-5 low).
+func TestHubSessionLiveCycleSuppressedWithAttachmentOnly(t *testing.T) {
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+	m.pendingAttachments = []*clipboard.PastedImage{{}}
+
+	_, cmd := m.updateSessionKey(tea.KeyMsg{Type: tea.KeyShiftRight, Alt: true})
+	if cmd != nil {
+		t.Fatal("expected no fetch command with an attachment staged")
+	}
+	if got := reads.get(); len(got) != 0 {
+		t.Fatalf("issued thread/read %v with an attachment staged", got)
+	}
+}
+
+// Composing DURING the in-flight read: the guard checked at press time no
+// longer covers the content, so application must re-check — the draft is
+// newer intent than the navigation (roborev PR #1044 round-5 medium 2).
+func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.session.input.SetValue("typed while the read was in flight")
+
+	updated, _ := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if m2.detail.Ref != "local:01B" {
+		t.Fatalf("live-nav read applied over a mid-flight draft: viewed ref = %q, want local:01B", m2.detail.Ref)
+	}
+	if got := m2.session.input.Value(); got != "typed while the read was in flight" {
+		t.Fatalf("draft = %q, want preserved", got)
 	}
 }

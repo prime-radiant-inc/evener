@@ -2890,27 +2890,49 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
     params: null,
     resolve: null,
   };
-  const client = navClientWithDeferredLivePageTwo({
-    onPageTwo: (params) =>
-      new Promise<NavigationReadResponse>((resolve) => {
-        deferred.params = params;
-        deferred.resolve = resolve;
-      }),
-  });
+  const client = new FakeClient("ready");
+  client.on(
+    "evener/navigation/read",
+    (params: NavigationReadParams): NavigationReadResponse | Promise<NavigationReadResponse> => {
+      if (params.resource === "section" && params.section === "live") {
+        if ((params.offset ?? 0) === 0) {
+          // Two loaded rows and one more page behind them, so the second press
+          // below (previous from the last loaded row) is a DIRECT mid-list
+          // step, not a demand - a previous from the FIRST loaded row would
+          // itself demand the same in-flight page (round-5 tail rule).
+          return wireV2(params, { sessions: [LIVE_CYCLE_A, LIVE_CYCLE_B], remaining: 1, truncated: false }, '"test"');
+        }
+        return new Promise<NavigationReadResponse>((resolve) => {
+          deferred.params = params;
+          deferred.resolve = resolve;
+        });
+      }
+      return navigationRead(params);
+    },
+  );
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
   const user = userEvent.setup();
   render(<AppShell client={client} />);
-  await screen.findByText("Live A");
+  await screen.findByText("Live B");
 
-  await user.click(screen.getByText("Live A"));
+  await user.click(screen.getByText("Live B"));
   await waitFor(() => {
-    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-b" });
   });
 
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}"); // demand in flight
   await waitFor(() => expect(deferred.params).not.toBeNull());
 
-  // An ordinary press is newer intent: it must supersede the demand.
+  // An ordinary press (direct mid-list step to A) is newer intent: it must
+  // supersede the demand.
   await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
+  expect(window.location.pathname).toBe("/s/local%3Alive-a");
   const params = deferred.params;
   const resolve = deferred.resolve;
   if (!params || !resolve) throw new Error("page-two request was not issued");
@@ -3064,6 +3086,50 @@ test("rapid live-next presses at the boundary still navigate when the demand lan
   await act(async () => {
     resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// Round 5: with the live section PARTIALLY loaded, a previous press that
+// would wrap (from the first loaded row, or from a non-live session) must
+// demand-load to the true tail rather than landing on the last loaded row
+// (roborev PR #1044 round-5 medium 1).
+test("live-previous wrapping with more pages on the server demand-loads to the tail", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "manifest") {
+      return wireV2(
+        params,
+        { ...EMPTY_NAV_RESPONSE, sections: { ...EMPTY_NAV_RESPONSE.sections, live: { count: 3 } } },
+        '"test"',
+      );
+    }
+    if (params.resource === "section" && params.section === "live") {
+      if ((params.offset ?? 0) === 0) {
+        return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 2, truncated: false }, '"test"');
+      }
+      return wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  // Focus the FIRST loaded live session; previous from here wraps.
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
 
