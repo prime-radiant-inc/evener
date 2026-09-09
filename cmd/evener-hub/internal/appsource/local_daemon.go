@@ -520,6 +520,30 @@ func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetP
 	return out, err
 }
 
+func (s *LocalDaemonSource) NotesHumanSet(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.NotesHumanSetResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodNotesHumanSet, params, &out)
+	})
+	return out, err
+}
+
+func (s *LocalDaemonSource) UrlsRemove(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
+	}
+	var out appwire.UrlsRemoveResponse
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodUrlsRemove, params, &out)
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) ClearThread(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {

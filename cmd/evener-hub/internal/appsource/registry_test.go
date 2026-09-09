@@ -76,6 +76,12 @@ func (f fakeSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReas
 func (f fakeSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return appwire.GoalSetResponse{}, nil
 }
+func (f fakeSource) NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	return appwire.NotesHumanSetResponse{}, nil
+}
+func (f fakeSource) UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return appwire.UrlsRemoveResponse{}, nil
+}
 func (f fakeSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, nil
 }

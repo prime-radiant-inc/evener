@@ -1177,6 +1177,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnPromoteQueuedAsSteer, s.handleAppTurnPromoteQueuedAsSteer)
 	appserver.HandleTyped(router, appwire.MethodTurnCancelQueued, s.handleAppTurnCancelQueued)
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
+	appserver.HandleTyped(router, appwire.MethodNotesHumanSet, s.handleAppNotesHumanSet)
+	appserver.HandleTyped(router, appwire.MethodUrlsRemove, s.handleAppUrlsRemove)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
@@ -1740,6 +1742,69 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	// That typed carrier is committed into the cached snapshot with its
 	// notification; pulling here would race it with a second, stale authority.
 	return appwire.GoalSetResponse{Started: started}, nil
+}
+
+// handleAppNotesHumanSet handles notes/human/set. The callback stores the
+// human's session whiteboard and returns the stored (post-clamp) value every
+// downstream consumer converges on. Like handleAppGoalSet it never emits
+// pushes directly: the callback emits EventNotesUpdated after its successful
+// store mutation, and the projector owns that event's push emission.
+func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.NotesHumanSetResponse{}, err
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.NotesHumanSetResponse{}, appwire.InvalidParams("clientMutationId is required")
+	}
+	if strings.TrimSpace(params.ExpectedInstanceID) == "" {
+		return appwire.NotesHumanSetResponse{}, appwire.InvalidParams("expectedInstanceId is required")
+	}
+	s.mu.RLock()
+	fn := s.notesHumanSetFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.NotesHumanSetResponse{}, appwire.Unavailable("notes not available")
+	}
+	stored, err := fn(params.ClientMutationID, params.Note)
+	if err != nil {
+		return appwire.NotesHumanSetResponse{}, err
+	}
+	return appwire.NotesHumanSetResponse{Note: stored}, nil
+}
+
+// handleAppUrlsRemove handles urls/remove. The callback removes one URL list
+// entry by id; an unknown id is an InvalidParams error, not a silent no-op,
+// so a client acting on a stale list learns its entry is gone. Like
+// handleAppGoalSet it never emits pushes directly: the callback emits
+// EventUrlsUpdated after a successful removal, and the projector owns that
+// event's push emission.
+func (s *Server) handleAppUrlsRemove(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.UrlsRemoveResponse{}, err
+	}
+	if strings.TrimSpace(params.ClientMutationID) == "" {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("clientMutationId is required")
+	}
+	if strings.TrimSpace(params.ExpectedInstanceID) == "" {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("expectedInstanceId is required")
+	}
+	if strings.TrimSpace(params.ID) == "" {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("id is required")
+	}
+	s.mu.RLock()
+	fn := s.urlsRemoveFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.UrlsRemoveResponse{}, appwire.Unavailable("urls not available")
+	}
+	removed, err := fn(params.ID)
+	if err != nil {
+		return appwire.UrlsRemoveResponse{}, err
+	}
+	if !removed {
+		return appwire.UrlsRemoveResponse{}, appwire.InvalidParams("no URL entry with id " + strings.TrimSpace(params.ID))
+	}
+	return appwire.UrlsRemoveResponse{}, nil
 }
 
 func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
@@ -2464,6 +2529,10 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// open. It is intentionally NOT gated on !active: a goal may be set
 		// mid-turn (it arms for the next continuation), unlike Send.
 		Goal: s.goalFunc != nil && !closed,
+		// SharedNotes is available whenever both notes verbs are wired and
+		// the session is open. Like Goal it is NOT gated on !active: a human
+		// save may land mid-turn (it steers the running turn), unlike Send.
+		SharedNotes: s.notesHumanSetFunc != nil && s.urlsRemoveFunc != nil && !closed,
 	}
 }
 

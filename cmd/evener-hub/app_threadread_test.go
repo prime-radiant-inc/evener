@@ -1167,6 +1167,7 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		ChangeVisionModel: true,
 		Shutdown:          true,
 		Goal:              true,
+		SharedNotes:       true,
 		Rename:            true,
 		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
 		// active turn on a cold exited session.

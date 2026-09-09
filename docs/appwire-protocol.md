@@ -111,6 +111,8 @@ no router (reserved).
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `TurnPromoteQueuedAsSteerResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
+| `notes/human/set` | both | `NotesHumanSetParams` | `NotesHumanSetResponse` | Sets the human's session whiteboard note; the stored note is returned and a human-note steer interrupts the session. |
+| `urls/remove` | both | `UrlsRemoveParams` | `UrlsRemoveResponse` | Removes one session URL list entry by id. |
 | `evener/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `evener/jobs/list` | both | `JobsListParams` | `JobsListResponse` | Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data. |
 | `evener/jobs/output` | both | `JobsOutputParams` | `JobsOutputResponse` | Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback. |
@@ -222,6 +224,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
+| `evener/notes/updated` | `NotesUpdatedParams` | The session's shared-notes whiteboards changed. |
+| `evener/urls/updated` | `UrlsUpdatedParams` | The session's shared-notes URL list changed. |
 | `evener/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
 | `evener/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
@@ -1202,6 +1206,33 @@ _(no fields)_
 | `data` | `jsontext.Value` | yes |  |
 
 
+### `NotesHumanSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
+| `note` | `string` | yes |  |
+
+
+### `NotesHumanSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `note` | `string` |  |  |
+
+
+### `NotesUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `humanNote` | `string` | yes |  |
+| `agentNote` | `string` | yes |  |
+
+
 ### `PathValidateParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2091,6 +2122,30 @@ _(no fields)_
 | `shareBinDir` | `string` |  |  |
 | `installed` | `[]string` |  |  |
 | `restartMessage` | `string` |  |  |
+
+
+### `UrlsRemoveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `clientMutationId` | `string` |  |  |
+| `expectedInstanceId` | `string` |  |  |
+| `id` | `string` |  |  |
+
+
+### `UrlsRemoveResponse`
+
+_(no fields)_
+
+
+### `UrlsUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `urls` | `[]appwire.SessionURL` | yes |  |
 
 
 ### `WarningParams`

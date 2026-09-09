@@ -66,6 +66,8 @@ type serveServer interface {
 	SetQueueFunc(func(string) error)
 	SetQueueWithImagesFunc(func(string, []server.ImageAttachment) error)
 	SetGoalFunc(func(string) (bool, error))
+	SetNotesHumanSetFunc(func(outerID, note string) (string, error))
+	SetUrlsRemoveFunc(func(id string) (bool, error))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
@@ -938,6 +940,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return false, nil
 		}
 		return getSession().SetGoal(ctx, objective)
+	})
+	srv.SetNotesHumanSetFunc(func(outerID, note string) (string, error) {
+		return getSession().SetHumanNote(outerID, note)
+	})
+	srv.SetUrlsRemoveFunc(func(id string) (bool, error) {
+		return getSession().RemoveSessionURL(id)
 	})
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {

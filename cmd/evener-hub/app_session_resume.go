@@ -97,3 +97,35 @@ func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		return source.GoalSet(ctx, params)
 	})
 }
+
+// setNotesHumanWithResume relays notes/human/set to the owning source,
+// resuming an exited session first like goal/set. The hub pre-flight gates on
+// the shared-notes capability so an old daemon with a new hub fails closed
+// instead of dropping writes.
+func setNotesHumanWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.NotesHumanSetResponse, error) {
+		source, err := sourceForThread(sources, params.Ref, "")
+		if err != nil {
+			return appwire.NotesHumanSetResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shared-notes"); err != nil {
+			return appwire.NotesHumanSetResponse{}, err
+		}
+		return source.NotesHumanSet(ctx, params)
+	})
+}
+
+// removeURLWithResume relays urls/remove to the owning source, resuming an
+// exited session first like goal/set, gated on the shared-notes capability.
+func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.UrlsRemoveResponse, error) {
+		source, err := sourceForThread(sources, params.Ref, "")
+		if err != nil {
+			return appwire.UrlsRemoveResponse{}, err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shared-notes"); err != nil {
+			return appwire.UrlsRemoveResponse{}, err
+		}
+		return source.UrlsRemove(ctx, params)
+	})
+}

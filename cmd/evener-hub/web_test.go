@@ -473,6 +473,14 @@ func (s *scriptedAppSource) GoalSet(context.Context, appwire.GoalSetParams) (app
 	return appwire.GoalSetResponse{}, appwire.Unavailable("scripted source does not set goals")
 }
 
+func (s *scriptedAppSource) NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
+	return appwire.NotesHumanSetResponse{}, appwire.Unavailable("scripted source does not set notes")
+}
+
+func (s *scriptedAppSource) UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return appwire.UrlsRemoveResponse{}, appwire.Unavailable("scripted source does not remove urls")
+}
+
 func (s *scriptedAppSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("scripted source does not clear threads")
 }

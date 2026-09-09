@@ -1265,6 +1265,11 @@ const (
 	// toggle — no visibility preference hides it (transcriptVisibility.ts's
 	// "no toggle governs it" default applies).
 	ThreadItemEventKindEnvironment ThreadItemEventKind = "environment"
+	// ThreadItemEventKindNotesContext marks the systemMessage item a reloaded
+	// transcript renders for a schema.TurnNotesContext turn: the harness's
+	// shared-notes snapshot block. Same visibility contract as environment —
+	// harness chrome, never hidden by a toggle.
+	ThreadItemEventKindNotesContext ThreadItemEventKind = "notes-context"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -1286,6 +1291,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindModelSwitch),
 	string(ThreadItemEventKindError),
 	string(ThreadItemEventKindEnvironment),
+	string(ThreadItemEventKindNotesContext),
 }
 
 type ThreadItem struct {

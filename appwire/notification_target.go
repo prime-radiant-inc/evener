@@ -92,6 +92,16 @@ func (p GoalUpdatedParams) WithNotificationTarget(threadID, ref string) Notifica
 	return p
 }
 
+func (p NotesUpdatedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
+func (p UrlsUpdatedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
 func (p SandboxEscalationRequested) WithNotificationTarget(threadID, ref string) NotificationTargeted {
 	p.ThreadID, p.Ref = threadID, ref
 	return p

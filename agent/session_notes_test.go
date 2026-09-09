@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 )
 
 // newTestNotesSession builds a minimal Session with the given working
@@ -192,5 +194,166 @@ func TestAddSessionURLDedupKeepsIdentity(t *testing.T) {
 	}
 	if b.ID != a.ID || b.AddedBy != a.AddedBy || b.AddedAt != a.AddedAt {
 		t.Fatalf("re-add changed identity: %+v vs %+v", a, b)
+	}
+}
+
+// TestSetHumanNoteStoresAndSteers verifies the daemon human-set path: the
+// note stores, one EventNotesUpdated emits, and one human-note steer lands in
+// the durable steering queue under the derived inner id.
+func TestSetHumanNoteStoresAndSteers(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	stored, err := s.SetHumanNote("outer-1", "hello world")
+	if err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if stored != "hello world" {
+		t.Fatalf("stored = %q, want %q", stored, "hello world")
+	}
+	data, ok := nextNotesEvent(t, s, events.EventNotesUpdated).(events.NotesUpdatedData)
+	if !ok {
+		t.Fatalf("NOTES_UPDATED payload = %T", nextNotesEvent(t, s, events.EventNotesUpdated))
+	}
+	if data.HumanNote != "hello world" {
+		t.Fatalf("NOTES_UPDATED human note = %q, want %q", data.HumanNote, "hello world")
+	}
+	s.mu.Lock()
+	queue := append([]steeringMessage(nil), s.steeringQueue...)
+	s.mu.Unlock()
+	if len(queue) != 1 {
+		t.Fatalf("steering queue length = %d, want 1", len(queue))
+	}
+	if queue[0].ClientMutationID != "outer-1/note-steer" {
+		t.Fatalf("inner steer id = %q, want %q", queue[0].ClientMutationID, "outer-1/note-steer")
+	}
+	if queue[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("inner steer kind = %q, want %q", queue[0].Kind, events.SteeringKindHumanNote)
+	}
+	if queue[0].Text != "human updated their whiteboard: hello world" {
+		t.Fatalf("inner steer text = %q", queue[0].Text)
+	}
+}
+
+// TestSetHumanNoteRetryOfOneOuterIDSteersOnce verifies the no-double-interrupt
+// contract: a hub retry of the outer RPC with the same text is a no-op
+// (clamp-then-compare), and a direct inner-steer retry replays without
+// duplicating the queued steer.
+func TestSetHumanNoteRetryOfOneOuterIDSteersOnce(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if _, err := s.SetHumanNote("outer-9", "same text"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	if _, err := s.SetHumanNote("outer-9", "same text"); err != nil {
+		t.Fatalf("outer retry: %v", err)
+	}
+	resp, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "outer-9/note-steer",
+		Input:            []appwire.InputItem{{Type: "text", Text: "human updated their whiteboard: same text"}},
+	})
+	if err != nil {
+		t.Fatalf("inner retry: %v", err)
+	}
+	if resp.Receipt.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("inner retry disposition = %q, want %q", resp.Receipt.Disposition, appwire.MutationDispositionReplayed)
+	}
+	s.mu.Lock()
+	n := len(s.steeringQueue)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("steering queue length = %d, want exactly 1", n)
+	}
+}
+
+// TestSetHumanNoteNoOpOnEqualText verifies equal-text saves (including an
+// empty save on an already-empty note) return the current value with no event
+// and no steer.
+func TestSetHumanNoteNoOpOnEqualText(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if stored, err := s.SetHumanNote("outer-empty", ""); err != nil || stored != "" {
+		t.Fatalf("empty save on empty note = %q, %v; want empty, nil", stored, err)
+	}
+	s.mu.Lock()
+	n := len(s.steeringQueue)
+	s.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("steering queue length = %d, want 0 after no-op", n)
+	}
+}
+
+// TestSetHumanNoteClearUsesClearedMarker verifies the non-empty→empty
+// transition notifies with the cleared marker instead of empty inline text.
+func TestSetHumanNoteClearUsesClearedMarker(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if _, err := s.SetHumanNote("outer-1", "something"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if stored, err := s.SetHumanNote("outer-2", ""); err != nil || stored != "" {
+		t.Fatalf("clear = %q, %v; want empty, nil", stored, err)
+	}
+	s.mu.Lock()
+	queue := append([]steeringMessage(nil), s.steeringQueue...)
+	s.mu.Unlock()
+	if len(queue) != 2 {
+		t.Fatalf("steering queue length = %d, want 2", len(queue))
+	}
+	if queue[1].Text != "human updated their whiteboard: (whiteboard cleared)" {
+		t.Fatalf("clear steer text = %q, want cleared marker", queue[1].Text)
+	}
+}
+
+// TestRemoveSessionURLDaemonPath verifies the daemon URL-remove path removes
+// by id and emits EventUrlsUpdated with the same shape the agent tools emit.
+func TestRemoveSessionURLDaemonPath(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	a, err := s.addSessionURL("https://x.test/y", "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	removed, err := s.RemoveSessionURL(a.ID)
+	if err != nil || !removed {
+		t.Fatalf("remove = %v, %v; want true, nil", removed, err)
+	}
+	if removed, _ := s.RemoveSessionURL("nonexistent"); removed {
+		t.Fatalf("remove of unknown id returned true")
+	}
+	if _, ok := nextNotesEvent(t, s, events.EventUrlsUpdated).(events.UrlsUpdatedData); !ok {
+		t.Fatal("URLS_UPDATED payload has wrong type")
+	}
+	if got := s.sessionURLsForTest(); len(got) != 0 {
+		t.Fatalf("url list after remove = %+v, want empty", got)
+	}
+}
+
+// TestNotesContextBlockContainsNotesAndURLs verifies the agent context
+// injection renders the current notes plus URL list, and renders nothing when
+// the store is empty.
+func TestNotesContextBlockContainsNotesAndURLs(t *testing.T) {
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if got := s.notesContextBlock(); got != "" {
+		t.Fatalf("empty block = %q, want empty", got)
+	}
+	s.setHumanNote("human hello")
+	if _, changed := s.setAgentNote("agent hello"); !changed {
+		t.Fatal("agent set not reported as change")
+	}
+	if _, err := s.addSessionURL("https://x.test/y", "why"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	block := s.notesContextBlock()
+	for _, want := range []string{"human hello", "agent hello", "https://x.test/y", "why"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("context block = %q, want it to contain %q", block, want)
+		}
+	}
+	s.maybeAppendNotesContext()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) != 1 || s.history[0].Kind != schema.TurnNotesContext {
+		t.Fatalf("history kinds = %+v, want one NOTES_CONTEXT turn", s.history)
 	}
 }

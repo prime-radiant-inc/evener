@@ -436,6 +436,7 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		ChangeModel:  true,
 		Shutdown:     true,
 		Goal:         true,
+		SharedNotes:  true,
 		Rename:       true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
