@@ -159,6 +159,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
+	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
+	{MethodEvenerUpdateApply, UpdateApplyParams{}, UpdateApplyResponse{}, ScopeHub, "Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds."},
 	{MethodEvenerAuthStatus, AuthStatusParams{}, AuthStatusResponse{}, ScopeHub, "Reports auth/credential status for a provider."},
 	{MethodEvenerAuthTest, AuthTestParams{}, AuthTestResponse{}, ScopeHub, "Tests the effective credentials for one configured provider instance without starting a session."},
 	{MethodEvenerAuthLoginStart, AuthLoginStartParams{}, AuthLoginStartResponse{}, ScopeHub, "Begins an OAuth login flow; returns a flow ID and URL."},

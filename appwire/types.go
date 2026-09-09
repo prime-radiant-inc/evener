@@ -79,6 +79,8 @@ const (
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
+	MethodEvenerUpdateCheck           = "evener/update/check"
+	MethodEvenerUpdateApply           = "evener/update/apply"
 	MethodEvenerAuthStatus            = "evener/auth/status"
 	MethodEvenerAuthTest              = "evener/auth/test"
 	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
@@ -2048,6 +2050,41 @@ type UpgradeResponse struct {
 	RestartMessage string   `json:"restartMessage"`
 }
 
+// UpdateCheckParams selects the channel to compare the running build against.
+// Empty means the running binary's own upgrade channel.
+type UpdateCheckParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateCheckResponse reports the running build and what the channel points
+// at. Applicable is false for dev builds, which are never self-updated; the
+// Latest* fields are empty then and no network request was made.
+type UpdateCheckResponse struct {
+	Channel         string `json:"channel"`
+	BuildChannel    string `json:"buildChannel"`
+	CurrentVersion  string `json:"currentVersion"`
+	CurrentCommit   string `json:"currentCommit"`
+	LatestTag       string `json:"latestTag,omitempty"`
+	LatestCommit    string `json:"latestCommit,omitempty"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	Applicable      bool   `json:"applicable"`
+}
+
+// UpdateApplyParams selects the channel to install. Empty means the running
+// binary's own upgrade channel.
+type UpdateApplyParams struct {
+	Channel string `json:"channel,omitempty"`
+}
+
+// UpdateApplyResponse is returned just before the hub execs the installed
+// binary in place; Restarting is always true on success.
+type UpdateApplyResponse struct {
+	Release    string   `json:"release"`
+	Channel    string   `json:"channel"`
+	Installed  []string `json:"installed"`
+	Restarting bool     `json:"restarting"`
+}
+
 type AuthStatusParams struct {
 	Provider string `json:"provider"`
 }
@@ -3178,6 +3215,8 @@ type SettingsHubOverview struct {
 	// Commit is the git commit the binary was built from; empty in dev builds.
 	// Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
 	Commit string `json:"commit,omitempty"`
+	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
+	BuildChannel string `json:"buildChannel,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`

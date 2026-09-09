@@ -524,6 +524,10 @@ type hubStack struct {
 	// rendezvous directory rather than having spawned it.
 	home   string
 	binDir string
+	// pid is the hub process's PID, for tests that need to prove the process
+	// survived some operation (e.g. a self-update exec) rather than being
+	// restarted under a new PID.
+	pid int
 }
 
 func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
@@ -605,13 +609,24 @@ api_key  = "fakellm-not-a-secret"
 func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack {
 	t.Helper()
 
-	home := t.TempDir()
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("abs repo root: %v", err)
 	}
 
 	binDir := liveStackBinaries(t, repoRoot)
+	return startHubStackOnProviderWithEvener(t, providersTOML, model, filepath.Join(binDir, "evener"))
+}
+
+// startHubStackOnProviderWithEvener is startHubStackOnProvider with the
+// evener binary left to the caller, so a test can run the hub from a
+// purpose-built binary (e.g. a snapshot-channel build of this branch)
+// instead of the repo build liveStackBinaries produces.
+func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string) hubStack {
+	t.Helper()
+
+	home := t.TempDir()
+	binDir := filepath.Dir(evenerBin)
 
 	// XDG_CONFIG_HOME/XDG_STATE_HOME point into the stack's own isolated
 	// HOME, the same convention e2e_test.go's hand-started daemon uses, so
@@ -653,7 +668,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(filepath.Join(binDir, "evener"), "hub", "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
+	hub := exec.Command(evenerBin, "hub", "--addr", hubAddr, "--evener", evenerBin)
 	hub.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,
@@ -713,6 +728,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		model:        model,
 		home:         home,
 		binDir:       binDir,
+		pid:          hub.Process.Pid,
 	}
 }
 

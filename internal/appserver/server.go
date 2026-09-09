@@ -555,6 +555,13 @@ type Connection struct {
 	responseMu        sync.Mutex
 	hydrationMu       sync.Mutex
 	hydrations        map[string]*hydrationResponseFinalizer
+	// afterWrite holds the AfterResponseWritten callbacks, keyed the same way
+	// hydrations is (requestIDKey). afterWriteDrained records that
+	// runPendingAfterWrite has already run, so a callback arriving after the
+	// send loop stopped is refused instead of being retained forever. Both
+	// are guarded by responseMu.
+	afterWrite        map[string]func()
+	afterWriteDrained bool
 }
 
 func (c *Connection) ID() string {
@@ -703,6 +710,39 @@ func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
 	return pending
 }
 
+// responseWritten runs the after-write callback registered for msg's request,
+// if any, now that the frame has reached the transport.
+func (c *Connection) responseWritten(msg appwire.Message) {
+	responseID, _ := responseHydrationOutcome(msg)
+	if responseID == "" {
+		return
+	}
+	c.responseMu.Lock()
+	fn := c.afterWrite[responseID]
+	delete(c.afterWrite, responseID)
+	c.responseMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// runPendingAfterWrite runs every after-write callback whose response was
+// never written, because the send loop stopped first. Callers that only ever
+// act once (a self-update restart) must still act when the browser vanished.
+func (c *Connection) runPendingAfterWrite() {
+	c.responseMu.Lock()
+	pending := make([]func(), 0, len(c.afterWrite))
+	for key, fn := range c.afterWrite {
+		pending = append(pending, fn)
+		delete(c.afterWrite, key)
+	}
+	c.afterWriteDrained = true
+	c.responseMu.Unlock()
+	for _, fn := range pending {
+		fn()
+	}
+}
+
 func responseHydrationOutcome(msg appwire.Message) (string, bool) {
 	switch {
 	case msg.Response != nil:
@@ -827,6 +867,38 @@ func (f *hydrationResponseFinalizer) abortAfterWithdrawal() {
 	if f.handoff.Abort != nil {
 		f.handoff.Abort()
 	}
+}
+
+// AfterResponseWritten runs fn once the response to the request being
+// handled in ctx has been written to the transport, or once the connection
+// tears down without writing it. It reports false, and does not retain fn,
+// when ctx carries no appserver connection or when the connection has
+// already torn down -- a handler that ran long enough for the send loop to
+// stop first must act for itself rather than wait for a callback nothing
+// will ever run.
+//
+// A second registration for the same request replaces the first: callbacks
+// are not chained. One handler owns one response, which is all any caller
+// needs today.
+func AfterResponseWritten(ctx context.Context, fn func()) bool {
+	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || conn == nil {
+		return false
+	}
+	responseID, ok := ctx.Value(requestIDContextKey{}).(string)
+	if !ok || responseID == "" {
+		return false
+	}
+	conn.responseMu.Lock()
+	defer conn.responseMu.Unlock()
+	if conn.afterWriteDrained {
+		return false
+	}
+	if conn.afterWrite == nil {
+		conn.afterWrite = map[string]func(){}
+	}
+	conn.afterWrite[responseID] = fn
+	return true
 }
 
 func Subscribe(ctx context.Context, threadID string) bool {
@@ -1245,7 +1317,19 @@ func (c *Connection) setInitialized() {
 // out of order against every other request on the connection.
 func concurrentDispatchMethod(method string) bool {
 	switch method {
-	case appwire.MethodThreadRead, appwire.MethodThreadTurnsList, appwire.MethodEvenerSubagentPreview:
+	case appwire.MethodThreadRead, appwire.MethodThreadTurnsList, appwire.MethodEvenerSubagentPreview,
+		// evener/update/check is a read-only network comparison with no
+		// shared-state writes; running it inline blocks unrelated RPCs
+		// on the connection for up to two 10s GitHub timeouts. The
+		// frontend already discards stale check responses by sequence.
+		appwire.MethodEvenerUpdateCheck,
+		// evener/update/apply is a multi-minute download, verify, and
+		// install under the overall upgrade deadline; running it inline
+		// holds the connection's serial worker that whole time. Safe
+		// out of order: hubUpdateMu plus the cross-process install lock
+		// fail a concurrent apply fast, and the restart waits on its own
+		// response flush rather than connection order.
+		appwire.MethodEvenerUpdateApply:
 		return true
 	}
 	return false
