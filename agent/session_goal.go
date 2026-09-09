@@ -1116,13 +1116,14 @@ func (s *Session) childTerminalTrigger(childID string) (string, bool) {
 // claimedPredicateFire reports whether any claim in the batch carries
 // waits-predicate evidence for the ledger fold (spec §4: waits' predicate
 // flips are the only subgoal evidence — any non-expiry fire across all
-// kinds, not just until_child). Expiry claims (the "wait expired:" trigger
-// prefix) accrue as ordinary non-advancing turns, so the re-park counter
-// cannot be laundered through timer refires. Structural: expiry marks ride
-// the trigger prefix every claim site writes uniformly. Pure.
+// kinds, not just until_child). Expiry claims accrue as ordinary
+// non-advancing turns, so the re-park counter cannot be laundered through
+// timer refires. Structural: the Expiry mark rides the PendingWake entry
+// from classification (a deadline-only wake — lease expiry or the synthetic
+// deadline wake — never advances, whatever its trigger text). Pure.
 func claimedPredicateFire(claimed []goal.PendingWake) bool {
 	for _, c := range claimed {
-		if !strings.HasPrefix(c.Trigger, "wait expired: ") {
+		if !c.Expiry && c.WaitID != goal.DeadlineWakeID {
 			return true
 		}
 	}

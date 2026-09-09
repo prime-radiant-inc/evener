@@ -803,6 +803,16 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	norm := req
 	norm.Timeout = timeout
 	deadline := now.Add(timeout)
+	// File waits snapshot their baseline into the predicate BEFORE the
+	// idempotency key: the baseline is predicate identity (a changed file
+	// is a different wait), so an identical re-register dedupes instead of
+	// minting a duplicate lease. The replace-then-rescan below only
+	// handles the same-target-different-deadline shape.
+	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified && s.substrate != nil {
+		if baseline, ok := s.substrate.StatFile(norm.Target); ok {
+			norm.Baseline = baseline
+		}
+	}
 	key := idempotencyKey(norm, deadline)
 	for _, w := range g.Waits {
 		if w.Live() && w.Lease.IdempotencyKey == key {
@@ -944,21 +954,9 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		s.lastRejectReason = fmt.Sprintf("unknown wait kind %q", norm.Kind)
 		return Wait{}, false
 	}
-	// The file-baseline snapshot above changes the canonical predicate; the
-	// precomputed idempotency key and deadline-keyed lookups must follow it,
-	// or a same-file re-register would replace instead of dedupe. Recompute
-	// the key and re-run the dedupe scan under the same lock.
-	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified {
-		key = idempotencyKey(norm, deadline)
-		for _, w := range kept {
-			if w.Live() && w.Lease.IdempotencyKey == key {
-				s.lastRejectReason = ""
-				g.Status = StatusWaiting
-				s.settleParkAnchorLocked(now)
-				return w, true
-			}
-		}
-	}
+	// The baseline is already snapshotted into norm above (pre-key), so the
+	// key the lease mints below matches an identical re-register's key and
+	// dedupes at the top scan — no recompute needed here.
 	s.nextWaitID++
 	w := Wait{Lease: Lease{
 		WaitID:         fmt.Sprintf("wait_%d", s.nextWaitID),
@@ -1145,7 +1143,7 @@ func (s *Store) ClaimChildWaits(childID, trigger string, now time.Time) bool {
 		if !w.Live() || w.Lease.Kind != WaitUntilChild || w.Lease.Predicate.Target != childID {
 			continue
 		}
-		if _, ok := s.claimFireLocked(w.Lease.WaitID, trigger, now); ok {
+		if _, ok := s.claimFireLocked(w.Lease.WaitID, trigger, false, now); ok {
 			claimed = true
 		}
 	}
@@ -1164,7 +1162,7 @@ func (s *Store) ClaimClassified(batch []WaitClassification, now time.Time) (clai
 	for _, c := range batch {
 		switch c.Disposition {
 		case WaitFire:
-			if entry, ok := s.ClaimFire(c.WaitID, c.Trigger, now); ok {
+			if entry, ok := s.claimFireClassified(c, now); ok {
 				claimed = append(claimed, entry)
 				if !c.Expiry {
 					s.mu.Lock()
@@ -1504,12 +1502,21 @@ func (s *Store) AnnotateCancelledWake(waitID string, now time.Time) bool {
 func (s *Store) ClaimFire(waitID, trigger string, now time.Time) (PendingWake, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.claimFireLocked(waitID, trigger, now)
+	return s.claimFireLocked(waitID, trigger, false, now)
+}
+
+// claimFireClassified consumes one fire classification, carrying the
+// classification's Expiry mark onto the pendingWake entry so consumers key
+// on structure, never on trigger text.
+func (s *Store) claimFireClassified(c WaitClassification, now time.Time) (PendingWake, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claimFireLocked(c.WaitID, c.Trigger, c.Expiry, now)
 }
 
 // claimFireLocked is the ClaimFire consume step with the store lock held by
 // the caller (ClaimChildWaits batches several consumes under one hold).
-func (s *Store) claimFireLocked(waitID, trigger string, now time.Time) (PendingWake, bool) {
+func (s *Store) claimFireLocked(waitID, trigger string, expiry bool, now time.Time) (PendingWake, bool) {
 	g := s.goal
 	if g == nil {
 		return PendingWake{}, false
@@ -1523,7 +1530,7 @@ func (s *Store) claimFireLocked(waitID, trigger string, now time.Time) (PendingW
 		kept = append(kept, g.Waits[:i]...)
 		kept = append(kept, g.Waits[i+1:]...)
 		g.Waits = kept
-		entry := PendingWake{WaitID: waitID, Trigger: trigger, FiredAt: now, Kind: kind}
+		entry := PendingWake{WaitID: waitID, Trigger: trigger, FiredAt: now, Kind: kind, Expiry: expiry}
 		g.PendingWake = append(g.PendingWake, entry)
 		if !hasLiveWait(kept) && g.Status == StatusWaiting {
 			g.Status = StatusActive

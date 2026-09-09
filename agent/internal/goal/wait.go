@@ -111,13 +111,17 @@ func (w Wait) Live() bool { return w.Lease.FiredEpoch == 0 }
 // and kick (spec §3). Kind records the fired lease's kind at claim time so
 // consumers key on structure, never on trigger-prefix sniffing (Task-7
 // Minor-5: the "child … terminal" prefix heuristic is replaced by this
-// field; triggers stay human-readable excerpts).
+// field; triggers stay human-readable excerpts). Expiry marks a
+// lease-deadline fire (rule 1) as opposed to a predicate flip: the ledger
+// fold (spec §4) treats expiry as a non-advancing turn, so timer refires
+// cannot launder the re-park counter.
 type PendingWake struct {
 	WaitID     string
 	Trigger    string
 	FiredAt    time.Time
 	Superseded bool
 	Kind       Kind
+	Expiry     bool
 }
 
 // Substrate is the session-owned predicate substrate that registration
@@ -189,7 +193,10 @@ func checkSizeCaps(req WaitKind) bool {
 // canonicalPredicate renders the stable predicate identity for the
 // idempotency key: same target re-registered with a different
 // deadline/predicate must replace, while an identical re-register dedupes
-// (spec §2). The chip label is presentation-only and excluded.
+// (spec §2). The chip label is presentation-only and excluded. Matcher is
+// excluded too: no remaining kind evaluates it (reserved for a future
+// content-matching watch type), so it must not split otherwise-identical
+// waits into duplicate slots and duplicate wakes.
 func canonicalPredicate(req WaitKind) string {
 	var b strings.Builder
 	b.WriteString(string(req.Kind))
@@ -199,8 +206,6 @@ func canonicalPredicate(req WaitKind) string {
 	b.WriteString(string(req.EventSubtype))
 	b.WriteByte(0)
 	b.WriteString(req.Baseline)
-	b.WriteByte(0)
-	b.WriteString(req.Matcher)
 	b.WriteByte(0)
 	b.WriteString(req.AskGeneration)
 	return b.String()

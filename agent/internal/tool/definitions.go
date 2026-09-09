@@ -1063,7 +1063,7 @@ func DefGoalWait() llm.ToolDefinition {
 					"description": "Wait kind: until_time | until_job | until_delegate | until_approval | until_event | until_child.",
 					"enum":        []string{"until_time", "until_job", "until_delegate", "until_approval", "until_event", "until_child"},
 				},
-				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, URL, or approval content key. Empty for until_time."},
+				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, or approval content key. Empty for until_time."},
 				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor: file_modified only (http_match removed, see issue #1061; external_label removed, see issue #1063).", "enum": []string{"file_modified", "http_match", "external_label"}},
 				"matcher":        map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
 				"ask_generation": map[string]any{"type": "string", "description": "Stable turn/ask-call ID of the ask_user call an until_approval wait binds to."},
@@ -1130,7 +1130,7 @@ func DefGoalExpect() llm.ToolDefinition {
 			"properties": map[string]any{
 				"desc":           map[string]any{"type": "string", "description": "Condition name; the verifier names it on rejection."},
 				"kind":           map[string]any{"type": "string", "description": "Condition kind (v1: until_job | until_delegate | until_event; until_approval and until_child reject). Empty means a file check on target.", "enum": []string{"until_job", "until_delegate", "until_approval", "until_event", "until_child"}},
-				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, URL, or approval content key."},
+				"target":         map[string]any{"type": "string", "description": "Target identity for the kind: job id, delegate id, child session id, file path, or approval content key."},
 				"event_subtype":  map[string]any{"type": "string", "description": "until_event flavor (v1: file_modified only; http_match and external_label reject).", "enum": []string{"file_modified", "http_match", "external_label"}},
 				"matcher":        map[string]any{"type": "string", "description": "http_match/event matcher body (max 1024 bytes)."},
 				"ask_generation": map[string]any{"type": "string", "description": "Stable turn/ask-call ID of the ask_user call an until_approval condition binds to."},

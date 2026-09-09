@@ -293,6 +293,7 @@ type GoalPendingWakeSnapshot struct {
 	FiredAt    time.Time `json:"fired_at,omitzero"`
 	Superseded bool      `json:"superseded,omitempty"`
 	Kind       string    `json:"kind,omitempty"`
+	Expiry     bool      `json:"expiry,omitempty"`
 }
 
 // LiveWaits returns the live (unfired, FiredEpoch == 0) leases in waits, in

@@ -62,6 +62,7 @@ func goalPersistFromStore(p goal.PersistedGoal) *schema.GoalSnapshot {
 			FiredAt:    p.FiredAt,
 			Superseded: p.Superseded,
 			Kind:       string(p.Kind),
+			Expiry:     p.Expiry,
 		})
 	}
 	if len(p.LedgerSummary.Entries) > 0 || p.LedgerSummary.Repetition != 0 || p.LedgerSummary.Tier != 0 || p.LedgerSummary.Stage != "" {
@@ -147,6 +148,7 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 			FiredAt:    p.FiredAt,
 			Superseded: p.Superseded,
 			Kind:       goal.Kind(p.Kind),
+			Expiry:     p.Expiry,
 		})
 	}
 	if g.LedgerSummary != nil {

@@ -1892,6 +1892,38 @@ func TestFixWaveAdvancementSoftensLaterLoss(t *testing.T) {
 	requireSingleLossNotice(t, sess)
 }
 
+// TestFixWaveExpiryFireDoesNotAdvance pins the structural expiry mark: a
+// lease-deadline fire ("wait expired: …") and the synthetic deadline wake
+// ("deadline exceeded…") accrue as ordinary non-advancing turns —
+// claimedPredicateFire keys on the Expiry mark and the deadline wait id,
+// never on trigger text, so timer refires cannot launder the re-park
+// counter through the advancement window.
+func TestFixWaveExpiryFireDoesNotAdvance(t *testing.T) {
+	t.Parallel()
+	if claimedPredicateFire([]goal.PendingWake{
+		{WaitID: "wait_1", Trigger: "wait expired: timer", Kind: goal.WaitUntilTime, Expiry: true},
+	}) {
+		t.Fatal("lease-expiry fire must not count as predicate advancement")
+	}
+	if claimedPredicateFire([]goal.PendingWake{
+		{WaitID: goal.DeadlineWakeID, Trigger: "deadline exceeded (waiting on timer)", Kind: goal.WaitUntilTime},
+	}) {
+		t.Fatal("synthetic deadline wake must not count as predicate advancement")
+	}
+	if !claimedPredicateFire([]goal.PendingWake{
+		{WaitID: "wait_2", Trigger: "job job_a exited 0", Kind: goal.WaitUntilJob},
+	}) {
+		t.Fatal("predicate fire must count as predicate advancement")
+	}
+	// Prefix-proof: a predicate trigger wearing expiry-like text still
+	// advances (structure, not text, decides).
+	if !claimedPredicateFire([]goal.PendingWake{
+		{WaitID: "wait_3", Trigger: "wait expired: custom probe", Kind: goal.WaitUntilJob},
+	}) {
+		t.Fatal("non-expiry entry must advance even when its text mimics an expiry prefix")
+	}
+}
+
 // TestFixWaveTimerLossesKickNotice pins the timer-path losses strand (spec
 // §2: never a silent strand): a parked lease whose substrate vanishes is
 // dropped at the coalesced timer's fire with the cause persisted — and the

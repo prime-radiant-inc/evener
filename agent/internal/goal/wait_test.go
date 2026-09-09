@@ -277,6 +277,28 @@ func TestRegisterWaitDedupeAndReplace(t *testing.T) {
 	}
 }
 
+// TestRegisterWaitMatcherExcludedFromIdempotency pins the dead-matcher
+// exclusion: no remaining kind evaluates Matcher, so file waits differing
+// only by matcher dedupe to one lease instead of consuming two slots and
+// firing duplicate wakes.
+func TestRegisterWaitMatcherExcludedFromIdempotency(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	s.SetSubstrate(&fakeSubstrate{files: map[string]string{"/sandbox/plan.md": "sha:abc"}})
+	first, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Minute, Matcher: "alpha"}, waveBClock())
+	if !ok {
+		t.Fatalf("first registration must park: %q", s.LastRejectReason())
+	}
+	dup, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Minute, Matcher: "beta"}, waveBClock())
+	if !ok || dup.Lease.WaitID != first.Lease.WaitID {
+		t.Fatalf("matcher-only difference must dedupe to %q, got %+v ok=%v", first.Lease.WaitID, dup, ok)
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if len(gsnap.Waits) != 1 {
+		t.Fatalf("matcher split must not mint a second lease: %+v", gsnap.Waits)
+	}
+}
+
 func TestCancelWaitAndClaimFire(t *testing.T) {
 	s := goal.NewStore()
 	s.Set("x", waveBClock())
