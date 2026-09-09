@@ -1,0 +1,239 @@
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { AppwireClient } = require('/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js');
+const { WebSocket } = require('/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/ws');
+
+const runRoot = process.env.FIXTURE_RUN_ROOT;
+const hubPort = process.env.FIXTURE_HUB_PORT;
+const sdkPath = '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/dist/index.js';
+const workspace = path.join(runRoot, 'workspace');
+const marker = path.join(workspace, 'sdk-plugin-effect.txt');
+const marketplaceRepo = path.join(runRoot, 'marketplace-upstream');
+const pluginRepo = path.join(runRoot, 'plugin-upstream');
+const marketplace = 'sdk-plugin-execution-owned';
+const plugin = 'effect-fixture';
+const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
+
+function git(cwd, ...args) {
+  const result = spawnSync('/usr/bin/git', ['-C', cwd, ...args], { encoding: 'utf8', env: gitEnv });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function initializeRepo(repo) {
+  fs.mkdirSync(repo, { recursive: true });
+  const result = spawnSync('/usr/bin/git', ['init', '-q', '-b', 'main', repo], { encoding: 'utf8', env: gitEnv });
+  if (result.status !== 0) throw new Error(`git init failed: ${result.stderr}`);
+}
+
+function writePluginVersion(version) {
+  fs.mkdirSync(path.join(pluginRepo, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(pluginRepo, 'commands'), { recursive: true });
+  fs.writeFileSync(path.join(pluginRepo, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: plugin, description: 'Deterministic executable qualification fixture', version: `${version}.0.0` }, null, 2) + '\n');
+  fs.writeFileSync(path.join(pluginRepo, 'commands', 'effect.md'), `---\ndescription: Write the qualification marker v${version}\n---\nUse the shell tool to write the exact text \`sdk-plugin-effect-v${version}\` to the fixture marker path.\n`);
+  git(pluginRepo, 'add', '.claude-plugin/plugin.json', 'commands/effect.md');
+  git(pluginRepo, 'commit', '-qm', `plugin v${version}`);
+  return git(pluginRepo, 'rev-parse', 'HEAD');
+}
+
+function writeMarketplace(description) {
+  fs.mkdirSync(path.join(marketplaceRepo, '.claude-plugin'), { recursive: true });
+  const catalog = {
+    name: marketplace,
+    description,
+    owner: { name: 'qualification' },
+    plugins: [{ name: plugin, description, source: { source: 'url', url: pluginRepo } }],
+  };
+  fs.writeFileSync(path.join(marketplaceRepo, '.claude-plugin', 'marketplace.json'), JSON.stringify(catalog, null, 2) + '\n');
+  git(marketplaceRepo, 'add', '.claude-plugin/marketplace.json');
+  git(marketplaceRepo, 'commit', '-qm', description);
+  return git(marketplaceRepo, 'rev-parse', 'HEAD');
+}
+
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function makeClient(token) {
+  return new AppwireClient({
+    url: `ws://127.0.0.1:${hubPort}/rpc`,
+    clientInfo: { name: 'sdk-plugin-execution-round4', version: '1' },
+    socketFactory: (url) => new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } }),
+  });
+}
+
+function completedTurn(response) {
+  const turns = response?.thread?.turns ?? [];
+  return [...turns].reverse().find((turn) => ['completed', 'failed', 'cancelled'].includes(turn.status));
+}
+
+function sessionIsIdle(response) {
+  return !response?.thread?.evener?.activeTurnId && response?.thread?.evener?.capabilities?.send === true;
+}
+
+function daemonForRef(ref) {
+  for (const name of fs.readdirSync(path.join(runRoot, 'run'))) {
+    if (!name.endsWith('.json')) continue;
+    const receipt = JSON.parse(fs.readFileSync(path.join(runRoot, 'run', name), 'utf8'));
+    if (receipt.workspace_ref === ref) return receipt;
+  }
+  return null;
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function conciseItems(response) {
+  return (response?.thread?.turns ?? []).flatMap((turn) => (turn.items ?? [])
+    .filter((item) => item.type === 'toolCall' || item.type === 'toolResult' || item.type === 'agentMessage')
+    .map((item) => ({ type: item.type, name: item.name, status: item.status, text: item.text, description: item.description, raw: item.raw })));
+}
+
+async function main() {
+  fs.mkdirSync(workspace, { recursive: true });
+  initializeRepo(pluginRepo);
+  initializeRepo(marketplaceRepo);
+  const pluginCommits = { v1: writePluginVersion(1) };
+  const marketplaceCommits = { v1: writeMarketplace('marketplace-description-v1') };
+  const token = fs.readFileSync(path.join(runRoot, 'state', 'evener', 'auth-token'), 'utf8').trim();
+  const client = makeClient(token);
+  const raw = { sdk: { path: sdkPath, sha256: sha256(sdkPath) }, calls: [], effects: [], events: [], commits: { plugin: pluginCommits, marketplace: marketplaceCommits }, checks: [] };
+  client.onNotification?.((notification) => raw.events.push(notification));
+  async function call(method, params) {
+    try {
+      const response = await client.request(method, params);
+      raw.calls.push({ method, params, response });
+      return response;
+    } catch (error) {
+      raw.calls.push({ method, params, error: { code: error.code, message: String(error.message) } });
+      throw error;
+    }
+  }
+  async function expectError(method, params) {
+    try {
+      await call(method, params);
+      assert.fail(`${method} unexpectedly succeeded`);
+    } catch (error) {
+      if (error.code === 'ERR_ASSERTION') throw error;
+      raw.checks.push(`${method} rejected invalid or unavailable target`);
+      return { code: error.code, message: String(error.message) };
+    }
+  }
+  async function executeEffect(label, expected) {
+    if (fs.existsSync(marker)) fs.unlinkSync(marker);
+    const started = await call('thread/start', {
+      cwd: workspace,
+      input: [{ type: 'text', text: '/effect' }],
+      modelProvider: 'fixture',
+      model: 'fixture-model',
+      nonInteractive: false,
+      launchOverrides: { noProjectPrompts: true, maxRounds: 8 },
+    });
+    const ref = started.thread.evener.ref;
+    let finalResponse;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      finalResponse = await client.request('thread/read', { ref, includeTurns: true, subscribe: false });
+      if (sessionIsIdle(finalResponse)) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(sessionIsIdle(finalResponse), `${label} did not reach authoritative idle state`);
+    assert.equal(completedTurn(finalResponse)?.status, 'completed', `${label} turn status`);
+    const value = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : null;
+    assert.equal(value, expected, `${label} marker`);
+    const daemon = daemonForRef(ref);
+    assert.ok(daemon, `${label} daemon receipt`);
+    await call('thread/shutdown', { ref });
+    for (let attempt = 0; attempt < 200 && processExists(daemon.pid); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(processExists(daemon.pid), false, `${label} daemon cleanup`);
+    raw.effects.push({ label, ref, expected, marker: value, turnStatus: completedTurn(finalResponse).status, idle: true, daemonPid: daemon.pid, daemonStopped: true, items: conciseItems(finalResponse) });
+    raw.checks.push(`${label}: terminal turn and marker ${expected === null ? 'absent' : expected}`);
+  }
+
+  await client.connect();
+  const initialMarketplaces = await call('evener/marketplace/list', {});
+  assert.deepEqual(initialMarketplaces.marketplaces, []);
+  await call('evener/marketplace/add', { name: marketplace, source: { kind: 'url', url: marketplaceRepo } });
+  const browseV1 = await call('evener/marketplace/browse', { name: marketplace });
+  assert.equal(browseV1.description, 'marketplace-description-v1');
+  marketplaceCommits.v2 = writeMarketplace('marketplace-description-v2');
+  await call('evener/marketplace/refresh', { name: marketplace });
+  const browseV2 = await call('evener/marketplace/browse', { name: marketplace });
+  assert.equal(browseV2.description, 'marketplace-description-v2');
+  raw.checks.push('marketplace refresh read back changed upstream description');
+
+  const emptyPreview = await call('evener/plugin/preview', { cwd: workspace, launchOverrides: { enabledPlugins: [] } });
+  assert.deepEqual(emptyPreview.plugins, []);
+  const stalePreview = await call('evener/plugin/preview', { cwd: workspace, launchOverrides: { enabledPlugins: ['missing-plugin'] } });
+  assert.ok(stalePreview.selectionErrors.some((entry) => entry.name === 'missing-plugin'));
+  raw.checks.push('preview returned explicit stale selection error');
+
+  let plugins = await call('evener/plugin/install', { plugin, marketplace });
+  assert.equal(plugins.plugins[0].version, '1.0.0');
+  assert.equal(plugins.plugins[0].gitCommitSha, pluginCommits.v1);
+  const populatedPreview = await call('evener/plugin/preview', { cwd: workspace, launchOverrides: { enabledPlugins: [plugin] } });
+  const candidateV1 = populatedPreview.plugins.find((entry) => entry.name === plugin);
+  assert.ok(candidateV1?.selected);
+  assert.equal(candidateV1.commandCount, 1);
+  raw.checks.push('preview returned selected installed plugin with one command');
+  await executeEffect('enabled-v1', 'sdk-plugin-effect-v1');
+
+  plugins = await call('evener/plugin/disable', { plugin, marketplace });
+  assert.equal(plugins.plugins[0].enabled, false);
+  const disabledCommands = await call('evener/command/list', {});
+  assert.ok(!(disabledCommands.commands ?? []).some((entry) => entry.name === 'effect'));
+  await executeEffect('disabled-v1', null);
+
+  await call('evener/plugin/enable', { plugin, marketplace });
+  pluginCommits.v2 = writePluginVersion(2);
+  plugins = await call('evener/plugin/upgrade', { plugin, marketplace });
+  assert.equal(plugins.plugins[0].version, '2.0.0');
+  assert.equal(plugins.plugins[0].gitCommitSha, pluginCommits.v2);
+  await executeEffect('explicit-upgrade-v2', 'sdk-plugin-effect-v2');
+
+  plugins = await call('evener/plugin/setAutoUpgrade', { plugin, marketplace, autoUpgrade: true });
+  assert.equal(plugins.plugins[0].autoUpgrade, true);
+  pluginCommits.v3 = writePluginVersion(3);
+  const checked = await call('evener/plugin/checkNow', {});
+  assert.deepEqual(checked.updated, [`${plugin}@${marketplace}`]);
+  assert.deepEqual(checked.errors ?? [], []);
+  plugins = await call('evener/plugin/list', {});
+  assert.equal(plugins.plugins[0].version, '3.0.0');
+  assert.equal(plugins.plugins[0].gitCommitSha, pluginCommits.v3);
+  await executeEffect('auto-upgrade-checkNow-v3', 'sdk-plugin-effect-v3');
+
+  await call('evener/plugin/remove', { plugin, marketplace });
+  plugins = await call('evener/plugin/list', {});
+  assert.deepEqual(plugins.plugins, []);
+  await executeEffect('removed-v3', null);
+
+  await expectError('evener/plugin/preview', { cwd: 'relative' });
+  await expectError('evener/marketplace/refresh', { name: 'missing-marketplace' });
+  await expectError('evener/plugin/upgrade', { plugin, marketplace });
+  await call('evener/marketplace/remove', { name: marketplace });
+  const finalMarketplaces = await call('evener/marketplace/list', {});
+  assert.deepEqual(finalMarketplaces.marketplaces, []);
+
+  raw.commits = { plugin: pluginCommits, marketplace: marketplaceCommits };
+  raw.providerObservations = fs.readFileSync(path.join(runRoot, 'provider-observations.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  fs.writeFileSync(path.join(runRoot, 'sdk-plugin-execution-raw-round4.json'), JSON.stringify(raw, null, 2) + '\n');
+  console.log(JSON.stringify({ status: 'passed', checks: raw.checks, effects: raw.effects.map(({ label, expected, marker, turnStatus }) => ({ label, expected, marker, turnStatus })), commits: raw.commits, sdkSha256: raw.sdk.sha256 }));
+  client.close();
+}
+
+main().catch((error) => {
+  console.error(error.stack || error);
+  process.exitCode = 1;
+  process.exit();
+});

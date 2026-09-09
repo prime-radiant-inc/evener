@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { clientFromEnvironment } from '/private/tmp/evener-sdk-completion-ahdo59zq/consumer/node_modules/@evener/appwire-client/examples/connection.mjs';
+const root = '/private/tmp/evener-sdk-running-task.wTJkOB';
+const runtime = JSON.parse(await readFile(`${root}/runtime.json`, 'utf8'));
+const ref = 'local:034Lf8sx4GAbWd6a2d38IX';
+const threadId = ref.slice(6);
+const pid = 23626;
+const expected = JSON.parse(await readFile(`${root}/run/completed-task-readback.json`, 'utf8'));
+const client = clientFromEnvironment({ EVENER_RPC_URL: `ws://127.0.0.1:${runtime.hubPort}/rpc`, EVENER_CWD: `${root}/workspace`, EVENER_TOKEN_FILE: `${root}/state/evener/auth-token` }).hub;
+const proof = { ref, threadId, pid, events: [] };
+const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; throw e; } };
+let closed;
+const closure = new Promise(resolve => { closed = resolve; });
+client.onNotification(event => { if (event.method === 'thread/closed' && event.params.ref === ref && event.params.threadId === threadId) { proof.events.push(event); closed(event); } });
+try {
+  await client.connect();
+  await client.request('thread/read', { ref });
+  proof.before = await client.request('evener/tasks/list', { ref });
+  assert.deepEqual(proof.before, expected);
+  assert.equal(proof.before.data.length, 1);
+  assert.equal(proof.before.data[0].status, 'done');
+  const command = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], {encoding: 'utf8'}).trim();
+  assert.ok(command.includes(`${root}/bin/evener serve`));
+  assert.ok(command.includes(`${root}/workspace`));
+  assert.ok(alive());
+  proof.daemonAliveImmediatelyBeforeRequest = true;
+  proof.requestedAt = new Date().toISOString();
+  proof.shutdown = await client.request('thread/shutdown', {ref});
+  let timer;
+  try { proof.closed = await Promise.race([closure, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('matching closure missing')), 10000); })]); }
+  finally { clearTimeout(timer); }
+  const deadline = Date.now() + 10000;
+  while (alive()) { assert.ok(Date.now() < deadline, 'daemon must exit'); await new Promise(resolve => setTimeout(resolve, 25)); }
+  proof.daemonExitObservedAt = new Date().toISOString();
+  proof.after = await client.request('evener/tasks/list', {ref});
+  assert.deepEqual(proof.after, proof.before);
+  proof.hubPing = await client.request('ping');
+  proof.status = 'passed';
+  await writeFile(`${root}/run/task-fallback-verified.json`, JSON.stringify(proof,null,2)+'\n',{mode:0o600});
+  console.log(JSON.stringify({status:proof.status, completedTasks:proof.after.data.length, matchingClosed:proof.events.length, daemonExited:!alive(), hubResponsive:true}));
+} finally { client.close(); }

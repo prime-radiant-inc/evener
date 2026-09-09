@@ -1,0 +1,35 @@
+{
+  "schema": "evener.sdk.shutdown-promote.rejected-claim.v1",
+  "verifiedAt": "2026-09-09",
+  "status": "rejected-superseded",
+  "sourceCommit": "d683abe21e949173f431201cda9ec169a1e9d349",
+  "fixtureRoot": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-shutdown-promote-k7d3_l02",
+  "supersededBy": "2026-09-09-sdk-shutdown-promote-final-outcomes.json",
+  "reason": "The worker claimed exact-once completion and stale-entry rejection, but the retained final read counted neither selected nor survivor message and the alleged stale-entry error was an empty-queue index error. This attempted run is not acceptance evidence.",
+  "observed": {
+    "selectedCount": 0,
+    "survivorCount": 0,
+    "selectionErrors": [
+      "appwire turn/promoteQueuedAsSteer: promote: queue index 9 out of range (depth 1)",
+      "appwire turn/promoteQueuedAsSteer: promote: queue index 0 out of range (depth 0)"
+    ]
+  },
+  "artifacts": {
+    "original-rejected-worker-report": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-shutdown-promote-k7d3_l02/rejected-worker-outcomes.json",
+      "sha256": "3098d583e9f98f2907dc7eb1382205c0bfba42fe6453dbe0c4b9922db1e630b7"
+    },
+    "promote-final-read": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-shutdown-promote-k7d3_l02/run/qualification/promote-final-read.json",
+      "sha256": "f6a76639a085e2417cb12853fc5e3beadd7dee2055b9ce33a230d95344b9030e"
+    },
+    "promote-contracts": {
+      "path": "/var/folders/46/dz2z92w907j150sqxn8b8y1c0000gn/T/evener-sdk-shutdown-promote-k7d3_l02/run/qualification/promote-contracts.json",
+      "sha256": "568884912ad8a4a7c0f340e35572061413a6ed818834935ea47683167de98c4c"
+    }
+  },
+  "limits": [
+    "Original rejected claims remain preserved privately with their exact hash.",
+    "Use the separately reviewed final receipt for accepted bounded promotion and shutdown results."
+  ]
+}

@@ -1,0 +1,108 @@
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+root = Path(__file__).resolve().parent
+observations = []
+lock = threading.Lock()
+release = threading.Event()
+stop = threading.Event()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def reply(self, body, status=200):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_GET(self):
+        if self.path == '/observations':
+            with lock:
+                self.reply(observations)
+            return
+        with lock:
+            observations.append({'index': len(observations) + 1, 'path': self.path})
+            (root / 'observations.json').write_text(json.dumps(observations, indent=2) + '\n')
+        if self.path == '/hold/v1/models':
+            release.wait()
+        if self.path.startswith('/rejected/'):
+            self.reply({'error': {'message': 'fixture rejection', 'type': 'authentication_error'}}, 401)
+        elif self.path.endswith('/models'):
+            self.reply({'object': 'list', 'data': [{'id': 'fixture-model', 'object': 'model'}]})
+        else:
+            self.reply({'error': 'unknown fixture endpoint'}, 404)
+
+    def do_POST(self):
+        if self.path == '/release':
+            release.set()
+            self.reply({'released': True})
+        elif self.path == '/stop':
+            self.reply({'stopping': True})
+            stop.set()
+        else:
+            self.reply({'error': 'no model turns in this fixture'}, 404)
+
+
+server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+with socket.socket() as probe:
+    probe.bind(('127.0.0.1', 0))
+    hub_port = probe.getsockname()[1]
+providers = root / 'config/evener/providers.toml'
+providers.write_text(f'''schema = 2
+default = "fixture"
+[providers.fixture]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:{server.server_port}/initial/v1"
+auth = "none"
+protocol = "openai-chat"
+cheap_model = "fixture-model"
+''')
+config = root / 'config/evener/hub.toml'
+config.write_text(f'addr = "127.0.0.1:{hub_port}"\nplugin_auto_upgrade = false\n')
+environment = {
+    'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    'HOME': str(root / 'home'), 'USER': 'jesse', 'LANG': 'en_US.UTF-8',
+    'TMPDIR': str(root / 'run'), 'XDG_CONFIG_HOME': str(root / 'config'),
+    'XDG_STATE_HOME': str(root / 'state'), 'XDG_CACHE_HOME': str(root / 'cache'),
+    'XDG_DATA_HOME': str(root / 'data'), 'XDG_RUNTIME_DIR': str(root / 'run'),
+    'EVENER_OFFLINE': '1', 'EVENER_PROVIDERS_CONFIG': str(providers),
+    'EVENER_CREDENTIALS_CONFIG': str(root / 'config/evener/credentials.toml'),
+}
+binary = str(root.parent / 'bin/evener')
+with (root / 'hub.log').open('xb') as log:
+    os.chmod(root / 'hub.log', 0o600)
+    hub = subprocess.Popen([binary, 'hub', '--config', str(config), '--evener', binary],
+                           cwd=root / 'workspace', env=environment, stdout=log, stderr=log)
+runtime = {'root': str(root), 'hubPID': hub.pid, 'providerPID': os.getpid(),
+           'hubPort': hub_port, 'providerPort': server.server_port}
+(root / 'runtime.json').write_text(json.dumps(runtime, indent=2) + '\n')
+print(json.dumps(runtime), flush=True)
+signal.signal(signal.SIGTERM, lambda *_: stop.set())
+signal.signal(signal.SIGINT, lambda *_: stop.set())
+try:
+    stop.wait()
+finally:
+    release.set()
+    hub.terminate()
+    hub.wait(timeout=20)
+    server.shutdown()
+    server.server_close()
+    token = root / 'state/evener/auth-token'
+    token.unlink(missing_ok=True)
+    (root / 'cleanup.json').write_text(json.dumps({'hubExit': hub.returncode, 'tokenRemoved': not token.exists()}) + '\n')
+    print('Owned provider fixture stopped.', flush=True)
