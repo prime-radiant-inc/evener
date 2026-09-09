@@ -601,7 +601,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const refs = selectLiveRows(state).map((row) => row.ref);
         const current = focusedSessionRef();
         const atLastLoaded = current !== null && refs.length > 0 && refs[refs.length - 1] === current;
-        if ((refs.length === 0 || atLastLoaded) && selectSectionRemaining("live", state) > 0) {
+        // Empty loaded set: selectSectionRemaining reads only loaded pages,
+        // so it is 0 while the initial read is in flight or failed. The
+        // manifest's live count is the authority there (the needs-you
+        // handler's bootstrap) - the demand dedupes against an in-flight
+        // initial read and retries a failed one.
+        const unloaded = refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0;
+        if (unloaded || (atLastLoaded && selectSectionRemaining("live", state) > 0)) {
           demandNextLivePage(state, refs, current);
           return;
         }
@@ -616,7 +622,12 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         }
         liveNavIntent++;
         const refs = selectLiveRows(state).map((row) => row.ref);
-        const previous = adjacentLiveSessionRef(refs, focusedSessionRef(), "previous");
+        const current = focusedSessionRef();
+        if (refs.length === 0 && (state.manifest?.data?.sections.live.count ?? 0) > 0) {
+          demandNextLivePage(state, refs, current);
+          return;
+        }
+        const previous = adjacentLiveSessionRef(refs, current, "previous");
         if (previous !== null) openNeedsYouSession(previous);
       }),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),

@@ -267,3 +267,23 @@ func TestHubSessionLiveCycleManualEntryInvalidatesPendingNav(t *testing.T) {
 		t.Fatalf("press after manual entry targeted %q, want first live local:01A (01X is not live)", msg.ref)
 	}
 }
+
+// Leaving session mode (ctrl+o to the dashboard) while a cycling read is in
+// flight: the read's late response must not yank the view back into the
+// fetched session (roborev PR #1044 round-3 medium 2).
+func TestHubSessionLiveCycleDropsReadAfterModeExit(t *testing.T) {
+	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	defer cleanup()
+
+	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
+	m1.returnToDashboard()
+	if m1.mode != hubModeDashboard {
+		t.Fatalf("mode = %v, want dashboard after returnToDashboard", m1.mode)
+	}
+
+	updated, _ := m1.Update(cmd())
+	m2 := updated.(hubModel)
+	if m2.mode != hubModeDashboard {
+		t.Fatalf("in-flight live-nav read re-entered session mode after ctrl+o (viewing %q)", m2.detail.Ref)
+	}
+}

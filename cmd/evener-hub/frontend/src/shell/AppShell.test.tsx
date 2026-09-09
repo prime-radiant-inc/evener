@@ -2920,6 +2920,42 @@ test("an in-flight live demand-load goes inert when a newer live-nav press super
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
 });
 
+// With NO live rows loaded (the initial section read failed or is still in
+// flight), selectSectionRemaining is 0, so the boundary rule alone would
+// leave the chord inert until an external refresh. The manifest's live count
+// is the authority there: a press re-requests page zero and continues into
+// it (roborev PR #1044 round 3; the needs-you handler's manifest-count
+// bootstrap).
+test("live-next with an unloaded live section re-requests page zero when the manifest reports live sessions", async () => {
+  let liveReads = 0;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    if (params.resource === "section" && params.section === "live") {
+      liveReads++;
+      if (liveReads === 1) throw new Error("transient initial failure");
+      return wireV2(params, { sessions: [LIVE_CYCLE_A], remaining: 0, truncated: false }, '"test"');
+    }
+    return navigationRead(params);
+  });
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v4",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0, readVersions: [2] },
+  }));
+
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  // The initial hydration read failed: no live rows, nothing focused.
+  await screen.findByText("No session open");
+  expect(screen.queryByText("Live A")).toBeNull();
+
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(liveReads).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+});
+
 test("an in-flight live demand-load goes inert while the palette is open", async () => {
   const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
     params: null,

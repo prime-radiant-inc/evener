@@ -65,7 +65,10 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// beforeCut fold and transcript replace are the stale halves that must
 		// not apply.
 		if msg.liveNavSeq > 0 {
-			if msg.liveNavSeq != m.liveNavSeq {
+			// Also dropped when session mode was exited (ctrl+o) while the read
+			// was in flight: applying it would yank the dashboard back into
+			// the fetched session (roborev PR #1044 round-3 medium 2).
+			if m.mode != hubModeSession || msg.liveNavSeq != m.liveNavSeq {
 				return m, nil
 			}
 			m.liveNavPendingRef = ""
