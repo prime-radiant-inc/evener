@@ -19,6 +19,10 @@ func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
 	stubUpdateAvailable(t)
 	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	shareBin := filepath.Join(root, "share", "evener", "bin")
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
@@ -52,14 +56,14 @@ func TestHubUpdateApplyPrefersInvocationPath(t *testing.T) {
 	if _, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{Channel: "snapshot"}); err != nil {
 		t.Fatalf("hubUpdateApply: %v", err)
 	}
-	if gotOpts.Prefix != root {
-		t.Fatalf("Prefix = %q, want %q", gotOpts.Prefix, root)
+	if gotOpts.Prefix != resolvedRoot {
+		t.Fatalf("Prefix = %q, want %q", gotOpts.Prefix, resolvedRoot)
 	}
 	if gotOpts.BinDir != customBin {
 		t.Fatalf("BinDir = %q, want the invocation dir %q", gotOpts.BinDir, customBin)
 	}
-	if gotOpts.ShareBinDir != shareBin {
-		t.Fatalf("ShareBinDir = %q, want %q", gotOpts.ShareBinDir, shareBin)
+	if gotOpts.ShareBinDir != filepath.Join(resolvedRoot, "share", "evener", "bin") {
+		t.Fatalf("ShareBinDir = %q, want %q", gotOpts.ShareBinDir, filepath.Join(resolvedRoot, "share", "evener", "bin"))
 	}
 }
 
@@ -137,8 +141,13 @@ func TestHubRestartPreservesEntrypoint(t *testing.T) {
 	if err := os.MkdirAll(shareBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	installed := filepath.Join(shareBin, "evener")
-	if err := os.WriteFile(installed, []byte("binary"), 0o755); err != nil {
+	aliasParent := t.TempDir()
+	realRoot := filepath.Join(aliasParent, "root-alias")
+	if err := os.Symlink(root, realRoot); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(realRoot, "share", "evener", "bin", "evener")
+	if err := os.WriteFile(filepath.Join(shareBin, "evener"), []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	customBin := filepath.Join(t.TempDir(), "custom-bin")
@@ -146,7 +155,7 @@ func TestHubRestartPreservesEntrypoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(customBin, "evener")
-	if err := os.Symlink(installed, link); err != nil {
+	if err := os.Symlink(filepath.Join(shareBin, "evener"), link); err != nil {
 		t.Fatal(err)
 	}
 
