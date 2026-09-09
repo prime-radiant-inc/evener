@@ -56,7 +56,7 @@ test("removing an unknown row preserves the existing row", () => {
 });
 
 test("classifyJobStatus maps protocol synonyms to presentation states", () => {
-  expect(classifyJobStatus(undefined)).toBe("running");
+  expect(classifyJobStatus(undefined)).toBe("unknown");
   expect(classifyJobStatus("failed")).toBe("failed");
   expect(classifyJobStatus("errored")).toBe("failed");
   expect(classifyJobStatus("error")).toBe("failed");
@@ -68,7 +68,7 @@ test("classifyJobStatus maps protocol synonyms to presentation states", () => {
   expect(classifyJobStatus("succeeded")).toBe("done");
   expect(classifyJobStatus("unknown")).toBe("unknown");
   expect(classifyJobStatus("running")).toBe("running");
-  expect(classifyJobStatus("")).toBe("running");
+  expect(classifyJobStatus("")).toBe("unknown");
 });
 
 test("resolveRowKey gives durable identities precedence over call identities", () => {
