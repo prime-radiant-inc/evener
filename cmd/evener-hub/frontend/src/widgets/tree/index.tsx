@@ -186,9 +186,15 @@ export function Tree<T extends TreeNode = TreeNode>({
     // navigation working where nothing else would handle them (round-8
     // low 2). Home/End release too: Alt+Home/End are global chords while
     // plain Home/End stay tree-owned (round-9 medium 2).
+    // The release is exact-modifier: Alt must be the ONLY modifier, since no
+    // global chord stacks another modifier onto Alt - an Alt+Ctrl or Alt+Meta
+    // arrow matches neither a global binding nor (with the release) a tree
+    // handler, and would be a dead key (roborev PR #1044 round-11 low).
     if (
       releaseModifierKeys &&
       event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
       (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End")
     )
       return;

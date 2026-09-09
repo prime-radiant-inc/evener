@@ -559,25 +559,47 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // exception is an UNLOADED section, where previous demand-loads through
     // the remaining pages to the tail (round-4 medium 1).
     //
-    // Lifecycle rules (PR #1044 rounds 2 and 4): the demanded-page cache
+    // Lifecycle rules (PR #1044 rounds 2 and 4): the demanded-page registry
+    // maps page+direction to the press that owns the in-flight load; it
     // clears on a client generation change and on load failure (the
     // revalidator resolves with an error state rather than rejecting);
     // starting a NEW demand or navigating directly bumps the intent counter,
-    // but a press that dedupes against an in-flight demand does NOT - it is
-    // the same intent, and bumping would make the demand's own completion
-    // go inert (round-4 medium 2). The dedupe key is page AND direction: an
-    // opposite-direction press against the same in-flight page is a NEW
-    // intent - it must bump and supersede, not ride the stale continuation
-    // (round-6 medium). A completing demand goes inert when the press that
-    // started it no longer owns the intent, the focused session or pane
-    // moved on, or a palette/modal is open.
+    // but a press that dedupes against a still-fresh in-flight demand does
+    // NOT - it is the same intent, and bumping would make the demand's own
+    // completion go inert (round-4 medium 2). A press against an owner whose
+    // guards have gone STALE (the user left and returned, the client
+    // reconnected) does not dedupe: it ADOPTS the pending load by rebinding
+    // fresh guards, so its completion navigates when the load lands instead
+    // of riding the dead one into inertia (round-11 medium 1). The dedupe
+    // key is page AND direction: an opposite-direction press against the
+    // same in-flight page is a NEW intent - it must bump and supersede, not
+    // ride the stale continuation (round-6 medium). A completing demand
+    // goes inert when the press that started it no longer owns the intent,
+    // the focused session or pane moved on, or a palette/modal is open.
     // A completing demand also goes inert when the client generation changed
     // mid-flight (reconnect): the rows it resolved with belong to the previous
     // generation, and the handlers' press-time reset only covers new presses.
     let liveNavMounted = true;
     let liveNavIntent = 0;
     let liveNavGeneration = navigationStore.getState().clientGenerationID;
-    const demandedLivePages = new Set<string>();
+    interface LiveDemandOwner {
+      intent: number;
+      generation: string;
+      pane: string | null;
+      ref: string | null;
+      routeEpoch: number;
+      beforeRefs: ReadonlySet<string>;
+    }
+    const demandedLivePages = new Map<string, LiveDemandOwner>();
+    // A press-time freshness check for the recorded owner: the guards the
+    // owner captured still match the current world. Palette/modal are not
+    // part of it - the dispatcher does not deliver the chord while either is
+    // open; they stay completion-only checks.
+    const liveDemandOwnerFresh = (owner: LiveDemandOwner): boolean =>
+      navigationStore.getState().clientGenerationID === owner.generation &&
+      liveNavRouteEpochRef.current === owner.routeEpoch &&
+      workspaceStore.getState().focusedPaneId === owner.pane &&
+      focusedSessionRef() === owner.ref;
     // Opens (or re-focuses) a live session by URL, then guarantees the
     // session pane holds focus even when the URL already named the target -
     // navigate() no-ops on an unchanged pathname, so a secondary panel or
@@ -600,28 +622,35 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       const offset = selectNextSectionOffset("live", state);
       const pageID = keyID({ kind: "section", section: "live", offset, limit: 50 });
       const demandKey = `${pageID}:${direction}`;
-      if (demandedLivePages.has(demandKey)) return; // waiting on this page already; not newer intent
-      demandedLivePages.add(demandKey);
+      const existing = demandedLivePages.get(demandKey);
+      if (existing && liveDemandOwnerFresh(existing)) return; // same intent, still fresh: waiting on this page
       liveNavIntent++;
-      const intentAtPress = liveNavIntent;
-      const generationAtPress = state.clientGenerationID;
-      const paneAtPress = workspaceStore.getState().focusedPaneId;
-      const refAtPress = focusedSessionRef();
-      const routeEpochAtPress = liveNavRouteEpochRef.current;
+      const owner: LiveDemandOwner = {
+        intent: liveNavIntent,
+        generation: state.clientGenerationID,
+        pane: workspaceStore.getState().focusedPaneId,
+        ref: focusedSessionRef(),
+        routeEpoch: liveNavRouteEpochRef.current,
+        beforeRefs,
+      };
+      demandedLivePages.set(demandKey, owner);
       void state
         .loadSection("live", offset)
         .then((page) => {
+          // A newer press adopted this load by rebinding the record: only
+          // the current owner's completion acts; the displaced one no-ops.
+          if (demandedLivePages.get(demandKey) !== owner) return;
           if (page.error !== null || page.data === null) {
             demandedLivePages.delete(demandKey); // failed load: allow the next press to retry
             return;
           }
           if (
             !liveNavMounted ||
-            intentAtPress !== liveNavIntent ||
-            navigationStore.getState().clientGenerationID !== generationAtPress ||
-            liveNavRouteEpochRef.current !== routeEpochAtPress ||
-            workspaceStore.getState().focusedPaneId !== paneAtPress ||
-            focusedSessionRef() !== refAtPress ||
+            owner.intent !== liveNavIntent ||
+            navigationStore.getState().clientGenerationID !== owner.generation ||
+            liveNavRouteEpochRef.current !== owner.routeEpoch ||
+            workspaceStore.getState().focusedPaneId !== owner.pane ||
+            focusedSessionRef() !== owner.ref ||
             paletteStore.getState().open ||
             document.querySelector('[aria-modal="true"]') !== null
           ) {
@@ -635,20 +664,20 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           const rows = selectLiveRows(navigationStore.getState());
           demandedLivePages.delete(demandKey); // completed: the set tracks in-flight only (round-8 low 1)
           if (direction === "next") {
-            const newlyLoaded = rows.find((row) => !beforeRefs.has(row.ref));
+            const newlyLoaded = rows.find((row) => !owner.beforeRefs.has(row.ref));
             if (newlyLoaded) openLiveSession(newlyLoaded.ref);
             return;
           }
           // previous: the tail sits behind any remaining pages.
           if (selectSectionRemaining("live", navigationStore.getState()) > 0) {
-            demandLivePage("previous", beforeRefs);
+            demandLivePage("previous", owner.beforeRefs);
             return;
           }
           const last = rows[rows.length - 1];
           if (last) openLiveSession(last.ref);
         })
         .catch(() => {
-          demandedLivePages.delete(demandKey);
+          if (demandedLivePages.get(demandKey) === owner) demandedLivePages.delete(demandKey);
         });
     };
     const unregister = [

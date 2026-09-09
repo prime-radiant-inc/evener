@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -36,11 +37,16 @@ func liveCycleTree() hubTreeResponse {
 type liveCycleReads struct {
 	mu   sync.Mutex
 	refs []string
+	// replace marks each recorded read's ReplaceSubscription flag, parallel to
+	// refs: a cycling/resub read replaces the connection's subscriptions; a
+	// child-activity subscription is additive.
+	replace []bool
 }
 
 func (r *liveCycleReads) record(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
 	r.mu.Lock()
 	r.refs = append(r.refs, params.Ref)
+	r.replace = append(r.replace, params.ReplaceSubscription)
 	r.mu.Unlock()
 	return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}
 }
@@ -49,6 +55,12 @@ func (r *liveCycleReads) get() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.refs...)
+}
+
+func (r *liveCycleReads) replaces() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]bool(nil), r.replace...)
 }
 
 func newLiveCycleModel(t *testing.T, currentRef string, tree hubTreeResponse) (hubModel, *liveCycleReads, func()) {
@@ -355,19 +367,54 @@ func TestHubSessionLiveCycleSuppressedWithAttachmentOnly(t *testing.T) {
 // longer covers the content, so application must re-check — the draft is
 // newer intent than the navigation (roborev PR #1044 round-5 medium 2).
 func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
-	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
 	defer cleanup()
 
 	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
 	m1.session.input.SetValue("typed while the read was in flight")
+	// A watched, still-running subagent child: the dropped read's server-side
+	// subscription replacement culled it too, so the resub must restore it.
+	m1.session.messages = append(m1.session.messages, transcript.ChatMessage{
+		Kind: transcript.MsgTool,
+		Tool: &transcript.ToolCallInfo{Subagent: &transcript.SubagentRunInfo{TranscriptRef: "local:01CHILD", Status: "running"}},
+	})
 
-	updated, _ := m1.Update(cmd())
+	updated, resub := m1.Update(cmd())
 	m2 := updated.(hubModel)
 	if m2.detail.Ref != "local:01B" {
 		t.Fatalf("live-nav read applied over a mid-flight draft: viewed ref = %q, want local:01B", m2.detail.Ref)
 	}
 	if got := m2.session.input.Value(); got != "typed while the read was in flight" {
 		t.Fatalf("draft = %q, want preserved", got)
+	}
+	// Round 11, medium 2: the dropped read's ThreadRead still replaced the
+	// connection's subscriptions server-side (main AND children), so the drop
+	// must re-establish the displayed session's subscription and re-subscribe
+	// the still-running child (roborev PR #1044 round-11 medium 2).
+	if resub == nil {
+		t.Fatal("draft drop returned no command: the displayed session's subscription was not re-established")
+	}
+	msg := resub()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("resub command result = %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) < 2 {
+		t.Fatalf("resub batch = %d cmds, want the session read plus the child re-subscription", len(batch))
+	}
+	// A BatchMsg holds the child commands; run each so its thread/read is
+	// actually issued against the recorded fixture.
+	for _, child := range batch {
+		_ = child()
+	}
+	got, replaces := reads.get(), reads.replaces()
+	// read 1: the cycling read (01C, replace). resub read 2: displayed 01B,
+	// replace. child read 3: 01CHILD, additive.
+	if len(got) < 3 || got[1] != "local:01B" || !replaces[1] {
+		t.Fatalf("resub read missing: reads = %v replaces = %v, want a replacing read for local:01B", got, replaces)
+	}
+	if got[len(got)-1] != "local:01CHILD" || replaces[len(replaces)-1] {
+		t.Fatalf("child re-subscription missing: reads = %v replaces = %v, want an additive read for local:01CHILD", got, replaces)
 	}
 }
 
@@ -376,7 +423,7 @@ func TestHubSessionLiveCycleDropsReadWhenDraftAppearedMidFlight(t *testing.T) {
 // under the overlay, leaving it open against stale session context (roborev
 // PR #1044 round-6 low).
 func TestHubSessionLiveCycleDropsReadWhenOverlayOpenedMidFlight(t *testing.T) {
-	m, _, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
+	m, reads, cleanup := newLiveCycleModel(t, "local:01B", liveCycleTree())
 	defer cleanup()
 
 	m1, cmd := m.switchToAdjacentLiveSession(1) // pending: 01C
@@ -386,13 +433,34 @@ func TestHubSessionLiveCycleDropsReadWhenOverlayOpenedMidFlight(t *testing.T) {
 		t.Fatalf("test setup invalid: topmostOverlayName = %q, want command-palette", got)
 	}
 
-	updated, _ := m1.Update(cmd())
+	updated, resub := m1.Update(cmd())
 	m2 := updated.(hubModel)
 	if m2.detail.Ref != "local:01B" {
 		t.Fatalf("live-nav read applied under an open overlay: viewed ref = %q, want local:01B", m2.detail.Ref)
 	}
 	if m2.commandPalette == nil {
 		t.Fatal("expected the palette to remain open")
+	}
+	// Round 11, medium 2: same as the draft drop - the subscription for the
+	// displayed session must be re-established after the read dropped.
+	if resub == nil {
+		t.Fatal("overlay drop returned no command: the displayed session's subscription was not re-established")
+	}
+	msg := resub()
+	// No watched children in this fixture, so the batch may collapse to the
+	// single session read.
+	switch m := msg.(type) {
+	case hubSessionMsg:
+	case tea.BatchMsg:
+		for _, child := range m {
+			_ = child()
+		}
+	default:
+		t.Fatalf("resub command result = %T, want hubSessionMsg or tea.BatchMsg", msg)
+	}
+	got, replaces := reads.get(), reads.replaces()
+	if len(got) < 2 || got[1] != "local:01B" || !replaces[1] {
+		t.Fatalf("resub read missing: reads = %v replaces = %v, want a replacing read for local:01B", got, replaces)
 	}
 }
 

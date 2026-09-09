@@ -3539,3 +3539,76 @@ test("an in-flight live demand-load goes inert after leaving the session and ret
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
 });
+
+// Round 11, medium 1: the leave-and-return round trip also stranding a
+// SECOND press pressed while the demand is still in flight. The dedupe must
+// not treat the in-flight demand as live: its recorded owner's guards are
+// stale, so the newer press ADOPTS the pending load by rebinding fresh
+// guards, and the load's completion navigates under the returned user.
+// Under the old set-based dedupe the second press silently deduped against
+// the dead demand, whose completion then went inert - the keypress produced
+// no navigation at all (roborev PR #1044 round-11 medium 1).
+test("a second press adopts an in-flight demand whose guards went stale", async () => {
+  let pageTwoLoads = 0;
+  const deferred: { params: NavigationReadParams | null; resolve: ((r: NavigationReadResponse) => void) | null } = {
+    params: null,
+    resolve: null,
+  };
+  const client = navClientWithDeferredLivePageTwo({
+    onPageTwo: (params) =>
+      new Promise<NavigationReadResponse>((resolve) => {
+        pageTwoLoads++;
+        deferred.params = params;
+        deferred.resolve = resolve;
+      }),
+  });
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByText("Live A");
+
+  await user.click(screen.getByText("Live A"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+  const paneAtPress = workspaceStore.getState().focusedPaneId;
+  // The route-placement effect re-focuses the session pane on the return
+  // leg only when the location resource is present, so the test installs it
+  // exactly as the app's own location lookup would have.
+  installLocationForRoute("local:live-a");
+
+  // Press one: demand in flight from A (the last loaded live row).
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  await waitFor(() => expect(pageTwoLoads).toBe(1));
+
+  // Leave and return: the pane id, focused ref, and pathname all read
+  // identical to press time - only the route epoch knows the user left, so
+  // the recorded owner's guards are stale.
+  await act(async () => {
+    navigate("/");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
+  await act(async () => {
+    navigate("/s/local%3Alive-a");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-a"));
+  await waitFor(() => {
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneAtPress);
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+  });
+
+  // Press two at the same boundary: it adopts the in-flight load. The
+  // revalidator dedupes the concurrent read of the same page, so the
+  // adoption issues no second request.
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(pageTwoLoads).toBe(1);
+
+  // The load lands: the displaced owner no-ops on its map-identity check
+  // and the adopter's completion navigates to the newly loaded row.
+  const params = deferred.params;
+  const resolve = deferred.resolve;
+  if (!params || !resolve) throw new Error("page-two request was not issued");
+  await act(async () => {
+    resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});

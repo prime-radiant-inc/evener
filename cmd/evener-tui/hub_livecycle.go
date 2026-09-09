@@ -92,3 +92,23 @@ func (m hubModel) switchToAdjacentLiveSession(step int) (hubModel, tea.Cmd) {
 		return msg
 	}
 }
+
+// reestablishDisplayedSubscription re-issues the thread/read for the session
+// currently displayed after a dropped or failed cycling read whose request
+// already replaced the connection's subscriptions server-side. Replace: true
+// culls the child-transcript subscriptions too (subscriptions.go's
+// removeConnectionLocked), so the watched-children set is cleared first and
+// the still-running children re-subscribed additively - the same restore the
+// session-entry path performs (roborev PR #1044 round-11 medium 2). The
+// read's own response lands as an ordinary same-ref session entry, which
+// refreshes the transcript without switching sessions or touching the
+// composer's draft.
+func (m hubModel) reestablishDisplayedSubscription() (hubModel, tea.Cmd) {
+	ref, ok := m.currentRef()
+	if !ok || m.frames == nil {
+		return m, nil
+	}
+	resub := fetchHubSession(m.frames, m.client, ref)
+	m.watchedChildRefs = nil // subscribeNewChildren re-fills it below
+	return m, tea.Batch(resub, m.subscribeNewChildren())
+}

@@ -110,7 +110,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// this - the content did not exist yet (round-5 medium 2).
 			if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
 				m.liveNavPendingRef = ""
-				return m, nil
+				// The dropped read's ThreadRead replaced the connection's
+				// subscriptions server-side (main AND children), so the
+				// displayed session must be re-subscribed or it stops receiving
+				// live updates (roborev PR #1044 round-11 medium 2). Safe here:
+				// the pending ref was just cleared, so no newer cycling read
+				// is in flight to be reverted by it (round-10 medium).
+				return m.reestablishDisplayedSubscription()
 			}
 			// An overlay opened while the read was in flight is the same
 			// class of newer intent: applying the read would swap the session
@@ -121,7 +127,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// swallows the chord itself while any overlay is open.
 			if topmostOverlayName(m) != "" {
 				m.liveNavPendingRef = ""
-				return m, nil
+				// Same as the draft drop above: re-subscribe the displayed
+				// session (roborev PR #1044 round-11 medium 2).
+				return m.reestablishDisplayedSubscription()
 			}
 			m.liveNavPendingRef = ""
 		}
@@ -132,6 +140,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			if msg.expectedState != "" && (m.mode != hubModeSession || msg.ref == "" || m.detail.Ref != msg.ref || msg.expectedRefreshToken != m.statusRefreshToken) {
 				return m, nil
+			}
+			// An errored cycling read reached here with its pending ref
+			// already cleared above, but its ThreadRead may still have
+			// replaced the connection's subscriptions server-side: re-establish
+			// the displayed session's (roborev PR #1044 round-11 medium 2).
+			if msg.liveNavSeq > 0 {
+				return m.reestablishDisplayedSubscription()
 			}
 			m.sessionDetailsRequested = false
 			m.err = msg.err

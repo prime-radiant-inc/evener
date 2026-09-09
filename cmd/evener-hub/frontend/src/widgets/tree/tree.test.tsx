@@ -214,6 +214,23 @@ test("arrow keys with Ctrl or Meta held still navigate the tree", () => {
   expect(document.activeElement).toBe(row("b1"));
 });
 
+// Round 11, low: the release is exact-modifier - no global chord stacks
+// another modifier onto Alt, so an Alt+Ctrl or Alt+Meta arrow matches neither
+// a global binding nor (if released) a tree handler. Those combinations stay
+// tree-owned (roborev PR #1044 round-11 low).
+test("arrows with Alt stacked on Ctrl or Meta still navigate the tree", () => {
+  const { onToggle } = renderTree({ releaseModifierKeys: true });
+  act(() => row("b").focus());
+  // b is an expanded branch: ArrowLeft with Alt+Ctrl collapses it via onToggle.
+  const left = fireEvent.keyDown(row("b"), { key: "ArrowLeft", altKey: true, ctrlKey: true });
+  expect(left).toBe(false); // preventDefaulted: the tree owns the key
+  expect(onToggle).toHaveBeenCalledExactlyOnceWith(NODES[1]);
+  // And ArrowDown with Alt+Meta moves focus to the next row.
+  const down = fireEvent.keyDown(row("b"), { key: "ArrowDown", altKey: true, metaKey: true });
+  expect(down).toBe(false);
+  expect(document.activeElement).toBe(row("b1"));
+});
+
 // The modifier guard covers the arrow chords the global dispatcher owns.
 // Enter is not one of them: no global chord binds a modifier+Enter, so the
 // tree keeps its activation (roborev PR #1044 round-2 low).
