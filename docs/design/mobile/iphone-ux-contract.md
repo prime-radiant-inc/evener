@@ -108,11 +108,10 @@ available where needed for a decision, without dominating every resource row.
 The scoped serialized tokens and exact browser rules live in
 [mobile-native/DESIGN.md](../../../mobile-native/DESIGN.md).
 
-## Current runtime appearance
+## Reviewed runtime appearances
 
 These are actual simulator captures of native source `f75411ead`, with fixture
-content. They show the implemented browser and reader; they are not mockups of
-the still-unreviewed combined running states.
+content. They show the implemented browser and reader; the running-state specimens are recorded separately below.
 
 | Project browser | Conversation and composer |
 | --- | --- |
@@ -160,4 +159,4 @@ that specimen; it does not close the gate. Apply agreed findings in one bounded
 batch, then confirm the affected journeys. Performance measurements remain
 Task 14 with their own dataset and device identity.
 
-The [9 September running-work panel](2026-09-09-iphone-running-panel.md) adds a second independent two-person review of actual running, queue, question, approval and connection-recovery states on `b9990e5c1`, with executed outcomes and preservation evidence. It defines the next bounded fix batch; full Task 15 acceptance remains open.
+The [9 September running-work panel](2026-09-09-iphone-running-panel.md) adds a second independent two-person review of actual running, queue, question, approval and connection-recovery states on `b9990e5c1`, with executed outcomes and preservation evidence. Its fixes are now implemented and have [bounded native confirmation](assets/2026-09-09-native-running-correction.json): readable busy settings/actions, local reconnect without moving the reader, and one stale notice per expanded project. The [independent confirmation review](assets/2026-09-09-native-running-confirmation-review.md) records what passed. Full Task 15 acceptance remains open.
