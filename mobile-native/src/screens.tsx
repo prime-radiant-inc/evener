@@ -793,7 +793,8 @@ export function SessionsScreen({
 										ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
 										style={[metadataStyle, { color: colors.secondary }]}
 									>
-										{item.project}
+										{item.project.split("/").filter(Boolean).at(-1) ||
+											item.project}
 									</Text>
 								) : null}
 							</Pressable>
@@ -1945,11 +1946,12 @@ export function ConversationScreen({
 										expandByDefault={presentation.expandByDefault}
 										showDuration={presentation.showDuration}
 										fork={
-											connected &&
-											focused &&
 											snapshot.conversation?.capabilities?.forkFromTurn
 												? forkMessage
 												: undefined
+										}
+										forkDisabled={
+											!connected || !focused || snapshot.status !== "open"
 										}
 									/>
 								</View>
@@ -1963,7 +1965,7 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								if (captureSuppressed.current) {
+								if (!focused || captureSuppressed.current) {
 									return;
 								}
 								const y = event.nativeEvent.contentOffset.y;
@@ -2064,19 +2066,6 @@ export function ConversationScreen({
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
 									<ConnectionStatus />
-									{snapshot.status === "opening" && snapshot.conversation ? (
-										<View
-											style={{
-												flexDirection: "row",
-												alignItems: "center",
-												gap: 8,
-												paddingHorizontal: 16,
-											}}
-										>
-											<ActivityIndicator />
-											<Copy muted>Updating session…</Copy>
-										</View>
-									) : null}
 									<ErrorMessage message={snapshot.error || actionError} />
 									<ErrorMessage message={draft.error} />
 									{unconfirmedSend !== null ? (
@@ -2151,7 +2140,27 @@ export function ConversationScreen({
 								</Copy>
 							}
 						/>
-						{conversation?.items.length ? (
+						{focused && snapshot.status === "opening" && conversation ? (
+							<View
+								pointerEvents="none"
+								style={{
+									position: "absolute",
+									top: 8,
+									alignSelf: "center",
+									flexDirection: "row",
+									alignItems: "center",
+									gap: 8,
+									paddingHorizontal: 12,
+									paddingVertical: 8,
+									borderRadius: 12,
+									backgroundColor: colors.surface,
+								}}
+							>
+								<ActivityIndicator />
+								<Copy muted>Updating session…</Copy>
+							</View>
+						) : null}
+						{timelineRows.length > 0 ? (
 							<View
 								style={{
 									position: "absolute",

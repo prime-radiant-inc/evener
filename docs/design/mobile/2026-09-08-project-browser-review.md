@@ -57,5 +57,23 @@ remain paused. Simulator review does not establish physical-iPhone performance.
 
 The controller has passed a read-only check against the owned real hub: four
 projects, a 20-to-25-row append with a retained prefix, and no duplicate requests.
-Native visual and interaction acceptance is still pending at this checkpoint.
+The first Release simulator pass verified the 20-to-25 automatic append, exact
+project-list position on conversation return, and preservation of expansion and
+all loaded rows through search and Clear. Light and dark screenshots use the
+actual iPhone 17 Pro simulator. The seeded pagination sessions mostly contain
+only system records; they qualify browsing, not populated conversation loading.
+The existing Ordinary response session supplies the populated reader check.
+
+That reader check found a 183-point shift after returning from Fork preview.
+Navigation removed each message action control and changed text wrapping while
+the retained transcript stayed mounted. A transient refresh header also changed
+scroll content geometry. Message actions now remain in place but disabled while
+unfocused or refreshing; refresh feedback sits outside the scroll content.
+Hidden-screen scroll events cannot overwrite the saved reading anchor. The
+correction preserves semantic restoration for genuine transcript reflow.
+
+The same batch hides Latest when no visible transcript rows exist and uses a
+short project label in search, keeping the full directory in its accessible
+context. All 703 native tests and TypeScript pass. Confirming native geometry
+checks and the independent finish review remain pending at this checkpoint.
 The installed TestFlight build has not yet been replaced by this work.
