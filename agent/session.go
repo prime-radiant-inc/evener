@@ -654,11 +654,15 @@ type Session struct {
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool)
-	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
-	pinnedNoteGen       uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
-	pendingInstructions string // compaction_instructions awaiting the round-tail force
-	forceRequested      bool   // a compact tool call is pending this round
-	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
+	pinnedNote    string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pinnedNoteGen uint64 // bumped on every pinnedNote set/clear/claim; lets a fold's publication claim consume exactly the note it captured, never a newer one pinned mid-fold. Guarded by mu.
+	// shared-notes state (human/agent whiteboards plus URL list)
+	humanNote           string              // human's one-paragraph session whiteboard; persisted via Meta().HumanNote. Guarded by mu.
+	agentNote           string              // agent's one-paragraph session whiteboard; persisted via Meta().AgentNote. Guarded by mu.
+	sessionURLs         []schema.SessionURL // agent-curated session URL list; persisted via Meta().SessionURLs. Guarded by mu.
+	pendingInstructions string              // compaction_instructions awaiting the round-tail force
+	forceRequested      bool                // a compact tool call is pending this round
+	nudgedSinceCompact  bool                // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
 	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see

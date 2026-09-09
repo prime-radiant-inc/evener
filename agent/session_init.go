@@ -1002,6 +1002,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 	s.pinnedNote = meta.PinnedNote
+	s.humanNote = meta.HumanNote
+	s.agentNote = meta.AgentNote
+	s.sessionURLs = append([]schema.SessionURL(nil), meta.SessionURLs...)
 	// Preserve the persisted launch origin across resume (so a "test"-origin
 	// session stays classified as a test run after restart), rather than
 	// re-reading EVENER_SESSION_ORIGIN — the fresh-create path's env read
