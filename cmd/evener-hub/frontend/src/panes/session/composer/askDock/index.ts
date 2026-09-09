@@ -3,7 +3,7 @@
 // useAskDockPending hide/inert seam and what this component deliberately
 // does NOT own). Everything else in this
 // directory (askDockStore, deriveAskQuestions, reconcileBatches,
-// askCompose) is this feature's own implementation detail, not part of
+// protocol/askAnswers) is this feature's own implementation detail, not part of
 // its public contract - a sibling stream that needs one of those directly
 // should ask for it to be exported here first.
 export type { AskDockProps } from "./AskDock";

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { type AskAnswerItem, composeAskAnswers, quoteGoString } from "./askCompose";
+import { type AskAnswerItem, composeAskAnswers, quoteGoString } from "./askAnswers";
 
 // Byte-exact / golden-string coverage for the [answers] reply format
 // (contracts-composer-queue-pending.md's test-ask-compose.js rows), ported
