@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -142,6 +143,17 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	// them would publish in reverse order (G1).
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
+	// A no-op save still completes delivery another attempt of the same value
+	// left pending (a refused steer, a journal fault): storage already holds
+	// the value, so this attempt adopts the pending delivery and drives the
+	// steer before journaling success. The adoption runs inside the owner's
+	// reservation and clears the adopted record's pending marker when its
+	// steer accepts, so the abandoned attempt never completes delivery twice.
+	if adopted, ok := s.adoptPendingNotesDelivery(outerID, note, lease); ok {
+		human, agentNote := s.notesSnapshot()
+		s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
+		return s.deliverAdoptedNotesSteer(lease, outerID, adopted)
+	}
 	prev, _ := s.notesSnapshot()
 	stored, changed := s.setHumanNote(note)
 	// The note and this attempt's pending intent commit in ONE atomic
@@ -193,6 +205,145 @@ func (s *Session) resumeNotesHumanSetDelivery(lease *clientMutationLease, outerI
 	human, agentNote := s.notesSnapshot()
 	s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
 	return s.deliverNotesHumanSetSteer(lease, outerID, stored)
+}
+
+// adoptedNotesDelivery names a different outer attempt's still-pending
+// delivery this attempt adopted: the recorded value drives the new attempt's
+// derived steer, and the adopted record's pending marker clears only when
+// that steer accepts.
+type adoptedNotesDelivery struct {
+	outerID string
+	stored  string
+}
+
+// adoptPendingNotesDelivery claims another outer attempt's still-pending
+// delivery for the value this attempt is saving. Callers hold notesUpdateMu:
+// the claim joins the same serialized unit as the mutation and its emission,
+// so two concurrent same-value saves cannot both adopt the same record.
+//
+// It returns ok=false when nothing is adoptable: this attempt is itself a
+// takeover retry (handled above), its own normalized value differs from every
+// pending record's recorded value, its outer ID already carries delivery, or
+// no other pending record exists.
+func (s *Session) adoptPendingNotesDelivery(outerID, note string, lease *clientMutationLease) (adopted adoptedNotesDelivery, ok bool) {
+	if lease != nil && lease.attemptGeneration > 1 {
+		return adoptedNotesDelivery{}, false
+	}
+	if s.clientMutations == nil {
+		return adoptedNotesDelivery{}, false
+	}
+	// The caller's normalized value: only a pending delivery for this same
+	// value is adoptable, so an intervening different-value save is never
+	// clobbered by a same-text retry arriving later.
+	// The adoption compares the CALLER's fresh normalized input, not the live
+	// store: the store may already hold a NEWER intervening save, while the
+	// retry carries the older value whose delivery is still pending. Matching
+	// the caller's value to the pending record's recorded value keeps the
+	// older value's delivery alive without rewriting the newer store.
+	want := normalizeNote(note)
+	snapshot := s.clientMutations.snapshot()
+	// This attempt's own record already carries delivery (a journal-fault
+	// retry, a fence-lifted retry): it resumes its own delivery below, not
+	// another attempt's.
+	if record, exists := snapshot.Journal[strings.TrimSpace(outerID)]; exists && record.NotesDeliveryPending {
+		return adoptedNotesDelivery{}, false
+	}
+	var candidates []string
+	for id, record := range snapshot.Journal {
+		if record.Method != clientMutationMethodNotesHumanSet {
+			continue
+		}
+		if record.OperationState != clientMutationOperationInFlight {
+			continue
+		}
+		if !record.NotesDeliveryPending {
+			continue
+		}
+		if strings.TrimSpace(id) == strings.TrimSpace(outerID) {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	if len(candidates) > 0 {
+		// Deterministic oldest-first: AttemptGeneration only advances on a
+		// new reservation, so the lowest generation is the earliest
+		// pending save.
+		sort.Slice(candidates, func(i, j int) bool {
+			gi := snapshot.Journal[candidates[i]].AttemptGeneration
+			gj := snapshot.Journal[candidates[j]].AttemptGeneration
+			if gi != gj {
+				return gi < gj
+			}
+			return candidates[i] < candidates[j]
+		})
+		for _, id := range candidates {
+			record := snapshot.Journal[id]
+			if record.NotesStoredValue == want {
+				return adoptedNotesDelivery{outerID: id, stored: record.NotesStoredValue}, true
+			}
+		}
+	}
+	// A journal fault between the atomic metadata write and the
+	// delivery-pending mark leaves no journal marker: the intent the metadata
+	// save committed is the only proof the write landed. Claim it when it
+	// names this same value. An intent with Changed=false is delivery-complete
+	// (a pure no-op) and never adoptable.
+	s.mu.Lock()
+	intents := clonePendingNotesHuman(s.pendingNotesHuman)
+	s.mu.Unlock()
+	var intentIDs []string
+	for id := range intents {
+		intentIDs = append(intentIDs, id)
+	}
+	sort.Strings(intentIDs)
+	for _, id := range intentIDs {
+		pending := intents[id]
+		if strings.TrimSpace(id) == strings.TrimSpace(outerID) {
+			continue
+		}
+		if !pending.Changed || pending.Note != want {
+			continue
+		}
+		if record, exists := snapshot.Journal[id]; !exists ||
+			record.Method != clientMutationMethodNotesHumanSet ||
+			record.OperationState != clientMutationOperationInFlight {
+			continue
+		}
+		return adoptedNotesDelivery{outerID: id, stored: pending.Note}, true
+	}
+	return adoptedNotesDelivery{}, false
+}
+
+// deliverAdoptedNotesSteer drives the adopted value's steer under this
+// attempt's derived inner id, then journals this attempt's applied result and
+// clears the adopted record's pending marker. A refusal releases this
+// attempt's reservation without recording, keeping both deliveries pending.
+func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID string, adopted adoptedNotesDelivery) (string, error) {
+	text := "human updated their whiteboard: " + adopted.stored
+	if adopted.stored == "" {
+		text = "human updated their whiteboard: (whiteboard cleared)"
+	}
+	innerID := strings.TrimSpace(outerID) + "/note-steer"
+	steerID, err := s.acceptNotesSteer(s.lookupSteerID(outerID, innerID, lease), text)
+	if err != nil {
+		lease.Release()
+		return adopted.stored, fmt.Errorf("notes/human/set: inject human-note steer: %w", err)
+	}
+	if err := s.markNotesSteerAccepted(outerID, steerID); err != nil {
+		lease.Release()
+		return adopted.stored, NormalizeClientMutationError(outerID, err)
+	}
+	s.setSteeringKindOnRecord(steerID, events.SteeringKindHumanNote)
+	s.annotateSteeringKind(steerID, events.SteeringKindHumanNote)
+	s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
+	// A journal-fault adoption claimed a metadata-committed intent with no
+	// journal marker: spend it now that this attempt's steer accepted, so a
+	// later retry cannot deliver the same value twice. A journal-marker
+	// adoption has no intent under its own ID and this is a no-op.
+	if adopted.outerID != strings.TrimSpace(outerID) {
+		s.clearPendingNotesHuman(adopted.outerID)
+	}
+	return s.applyNotesHumanSetResult(lease, outerID, adopted.stored)
 }
 
 // deliverNotesHumanSetSteer drives the derived inner steer for an already
@@ -319,6 +470,33 @@ func (s *Session) markNotesDeliveryPending(outerID, stored string) error {
 		}
 		record.NotesDeliveryPending = true
 		record.NotesStoredValue = stored
+		snapshot.Journal[outerID] = record
+		return nil
+	})
+}
+
+// clearNotesDeliveryPending clears another attempt's adopted delivery marker
+// after this attempt's derived steer accepted for the same value, so the
+// abandoned attempt never completes delivery twice. The value must still
+// match: an intervening same-ID reservation advance (a same-ID retry that
+// took the record over first) leaves the marker for its owner. The write runs
+// inside the store serializer via mutate; the adopting attempt's own owner
+// lease stays open for its final applied update.
+func (s *Session) clearNotesDeliveryPending(outerID, stored string) {
+	if s.clientMutations == nil {
+		return
+	}
+	_ = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		record, ok := snapshot.Journal[outerID]
+		if !ok || record.Method != clientMutationMethodNotesHumanSet ||
+			record.OperationState != clientMutationOperationInFlight {
+			return nil
+		}
+		if !record.NotesDeliveryPending || record.NotesStoredValue != stored {
+			return nil
+		}
+		record.NotesDeliveryPending = false
+		record.NotesStoredValue = ""
 		snapshot.Journal[outerID] = record
 		return nil
 	})

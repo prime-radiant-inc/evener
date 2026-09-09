@@ -1170,7 +1170,7 @@ func (m *hubModel) runHubNotes(args string) tea.Cmd {
 	}
 	arg := strings.TrimSpace(args)
 	if arg == "" {
-		m.addSessionSystem("Usage: /notes <text> or /notes clear")
+		m.addSessionSystem(hubNotesUsage(m.detail))
 		return nil
 	}
 	ref, ok := m.currentRef()
@@ -1183,6 +1183,29 @@ func (m *hubModel) runHubNotes(args string) tea.Cmd {
 		note = ""
 	}
 	return sendHubNotes(m.client, ref, note, mutationInstanceID(ref, m.detail.InstanceID, m.detail.SessionID))
+}
+
+// hubNotesIdleWakeWarning names the turn/steer cost of saving on an idle
+// session (design spec §Wire RPCs): the injected steering-carrier turn wakes
+// the session. hubNotesUsage appends it to the /notes usage output while the
+// session is live and idle, mirroring the web Details editor's own warning.
+const hubNotesIdleWakeWarning = "Saving will wake the agent."
+
+// hubNotesIdleWake reports whether the /notes idle warning applies: the
+// session is live AND its wire status is idle, mirroring the web Details
+// editor's live-plus-idle predicate.
+func hubNotesIdleWake(detail hubSessionDetail) bool {
+	return detail.Live && detail.State == appwire.ThreadStatusIdle
+}
+
+// hubNotesUsage renders the /notes usage line, plus the idle-wake warning
+// when the session is live and idle.
+func hubNotesUsage(detail hubSessionDetail) string {
+	usage := "Usage: /notes <text> or /notes clear"
+	if hubNotesIdleWake(detail) {
+		usage += "\n" + hubNotesIdleWakeWarning
+	}
+	return usage
 }
 
 // sendHubURLRemove issues urls/remove to remove one session URL list entry by

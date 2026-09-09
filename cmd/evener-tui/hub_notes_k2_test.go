@@ -22,6 +22,10 @@ func TestRunHubNotesEmptyArgsShowsUsage(t *testing.T) {
 	defer cleanup()
 	m := newSessionHubModel(client)
 	m.detail.Live = true
+	// Busy session: the usage line carries no idle-wake warning (covered
+	// separately in hub_notes_l2_test.go's idle/busy pair), so the exact
+	// usage text pins here.
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.HumanNote = "existing note"
 
 	if cmd := m.runHubNotes(""); cmd != nil {

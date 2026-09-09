@@ -63,15 +63,21 @@ type threadEnvelope struct {
 	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
 	taskCarrierGeneration uint64
 	goalCarrierGeneration uint64
-	Usage                 *appwire.EvenerUsage
-	WorkMillis            int64
-	ActiveTurnStartedAt   int64
-	FailedToolCalls       *int
-	AskPending            bool
-	PendingEscalations    []appwire.SandboxEscalationRequested
-	ReasoningEffort       string
-	ReasoningEffortLevels []string
-	SupportsReasoning     bool
+	// notesCarrierGeneration is goalCarrierGeneration's sibling for the
+	// shared-notes carriers: NotesUpdatedParams and UrlsUpdatedParams bump it
+	// the way GoalUpdatedParams bumps goalCarrierGeneration, and a sampled
+	// facetGoal assign that started before the bump drops its stale notes
+	// fields instead of overwriting the carrier.
+	notesCarrierGeneration uint64
+	Usage                  *appwire.EvenerUsage
+	WorkMillis             int64
+	ActiveTurnStartedAt    int64
+	FailedToolCalls        *int
+	AskPending             bool
+	PendingEscalations     []appwire.SandboxEscalationRequested
+	ReasoningEffort        string
+	ReasoningEffortLevels  []string
+	SupportsReasoning      bool
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
@@ -314,6 +320,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	sourceID := s.appSourceID
 	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
 	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
+	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	ref := s.appRef
 	s.mu.RUnlock()
 	if src == nil {
@@ -420,17 +427,30 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
 			assignFacets &^= facetGoal
 		}
-		s.appEnvelope.assign(assignFacets, next)
+		// The notes carriers ride the goal facet's sample (SessionMeta holds
+		// Goal, HumanNote, AgentNote, and SessionURLs together), so the guard
+		// cannot clear the whole facet the way the task/goal guards do —
+		// that would drop the sampled Goal alongside the stale notes. The
+		// stale-notes case is handled inside assign: it keeps the carrier's
+		// notes fields and takes only the sampled Goal.
+		notesStale := s.appEnvelope.notesCarrierGeneration != notesCarrierGeneration
+		s.appEnvelope.assign(assignFacets, next, notesStale)
 	}
 	s.mu.Unlock()
 }
 
-// assign copies exactly the named facets out of next. Writing through one
-// method keeps the facet-to-field mapping in a single place: a field added to
-// the struct without a line here is a field that is sampled and then dropped,
-// which is far easier to see in six lines of assignment than spread across the
-// sampler.
-func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
+// assign copies exactly the named facets out of next. notesStale names the
+// overlapping-carrier case: a notes/urls carrier committed after this sample
+// was taken, so the sampled notes fields (HumanNote, AgentNote, SessionURLs)
+// are older than the installed carrier and must not overwrite it. The sampled
+// Goal still applies — Goal and notes have independent carriers — so the
+// facet splits: Goal from the sample, notes from the carrier.
+//
+// Writing through one method keeps the facet-to-field mapping in a single
+// place: a field added to the struct without a line here is a field that is
+// sampled and then dropped, which is far easier to see in six lines of
+// assignment than spread across the sampler.
+func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notesStale bool) {
 	if facets&facetContext != 0 {
 		e.ContextPressure = next.ContextPressure
 		e.ContextMetrics = next.ContextMetrics
@@ -448,9 +468,11 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
 	}
 	if facets&facetGoal != 0 {
 		e.Goal = next.Goal
-		e.HumanNote = next.HumanNote
-		e.AgentNote = next.AgentNote
-		e.SessionURLs = next.SessionURLs
+		if !notesStale {
+			e.HumanNote = next.HumanNote
+			e.AgentNote = next.AgentNote
+			e.SessionURLs = next.SessionURLs
+		}
 	}
 	if facets&facetWork != 0 {
 		e.WorkMillis = next.WorkMillis

@@ -275,3 +275,27 @@ test("a failed save surfaces an error toast and keeps the draft in the popover",
     ).value,
   ).toBe("draft note");
 });
+
+// --- idle-wake warning -----------------------------------------------------------
+
+test("idle live session editor warns that saving will wake the agent", async () => {
+  const user = userEvent.setup();
+  connectFakeClient();
+  const model = testModel({ status: { type: "idle" }, humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await openPanel(model);
+  await user.click(screen.getByTestId("shared-notes-edit"));
+  expect(screen.getByTestId("shared-notes-editor")).toBeTruthy();
+  expect(screen.getByTestId("shared-notes-idle-wake").textContent).toMatch(/Saving will wake the agent/);
+});
+
+test("busy live session editor shows no idle-wake warning", async () => {
+  const user = userEvent.setup();
+  connectFakeClient();
+  const model = testModel({ status: { type: "active" }, humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await openPanel(model);
+  await user.click(screen.getByTestId("shared-notes-edit"));
+  expect(screen.getByTestId("shared-notes-editor")).toBeTruthy();
+  expect(screen.queryByTestId("shared-notes-idle-wake")).toBeNull();
+});

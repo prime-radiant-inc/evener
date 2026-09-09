@@ -509,11 +509,13 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				s.appEnvelope.goalCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			case appwire.NotesUpdatedParams:
-				// Direct typed carrier like GoalUpdatedParams above, but with
-				// no generation fence: notes have no carrier generation
-				// (threadEnvelope's goalCarrierGeneration is goal-only).
+				// Direct typed carrier like GoalUpdatedParams above: the
+				// generation bump fences a sampled facetGoal assign taken
+				// before this carrier against overwriting it (threadEnvelope's
+				// notesCarrierGeneration, mirroring goalCarrierGeneration).
 				s.appEnvelope.HumanNote = params.HumanNote
 				s.appEnvelope.AgentNote = params.AgentNote
+				s.appEnvelope.notesCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			case appwire.UrlsUpdatedParams:
 				// Fresh copy, nil-on-empty: the envelope owns its slices
@@ -524,6 +526,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 					urls = append([]appwire.SessionURL(nil), params.URLs...)
 				}
 				s.appEnvelope.SessionURLs = urls
+				s.appEnvelope.notesCarrierGeneration++
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			default:
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})

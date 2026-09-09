@@ -152,6 +152,11 @@ function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: 
 
   const live = !SHARED_NOTES_ENDED_STATUSES.has(model.status.type);
   const hasContent = model.humanNote !== "" || model.agentNote !== "" || model.sessionUrls.length > 0;
+  // Idle sessions follow turn/steer semantics: saving injects a
+  // steering-carrier turn that wakes the session and costs a model turn
+  // (design spec §Wire RPCs). Name it in the editor while idle so the cost
+  // is visible before the save, mirroring the composer's status-driven copy.
+  const idleWake = live && model.status.type === "idle";
 
   // A different session starts a fresh transient-UI lifetime.
   // biome-ignore lint/correctness/useExhaustiveDependencies: sessionRef is the deliberate popover reset boundary
@@ -240,6 +245,11 @@ function SharedNotesSection({ sessionRef, model }: { sessionRef: string; model: 
                   aria-label="Human note"
                   rows={4}
                 />
+                {idleWake && (
+                  <p className={CLASS.dim} data-testid="shared-notes-idle-wake">
+                    Saving will wake the agent.
+                  </p>
+                )}
                 <Button
                   variant="quiet"
                   size="sm"
