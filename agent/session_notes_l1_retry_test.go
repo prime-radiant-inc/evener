@@ -111,9 +111,13 @@ func TestSetHumanNoteFreshIDResaveAfterJournalFaultDelivers(t *testing.T) {
 }
 
 // TestSetHumanNoteFreshIDDifferentValueKeepsNewer verifies the adoption
-// boundary: a fresh-ID save carrying a DIFFERENT value than a still-pending
-// older delivery lands as its own change and never rewrites the newer store
-// on a later retry of the older text.
+// boundary: a fresh-ID save carrying text that MATCHES an older still-pending
+// delivery but DIFFERS from the live store is a fresh write intending to
+// change the note back (last-writer-wins). It must land in the store, return
+// the new value, and steer for it — never adopt (skip the store write and
+// journal) the older value while leaving the store unchanged. Otherwise the
+// RPC would return the older value while the store holds the newer one, and
+// the hub would commit the response note over the divergent store.
 func TestSetHumanNoteFreshIDDifferentValueKeepsNewer(t *testing.T) {
 	t.Parallel()
 	s := newNotesToolSession(t)
@@ -141,19 +145,32 @@ func TestSetHumanNoteFreshIDDifferentValueKeepsNewer(t *testing.T) {
 		t.Fatalf("save B: %v", err)
 	}
 	nextNotesEvent(t, s, events.EventNotesUpdated)
-	// Older text retried under a fresh ID delivers A's pending steer, but the
-	// store keeps the newer note B.
-	replayed, err := s.SetHumanNote("outer-l1n-c", "note A")
+	// A fresh-ID save of the older text is a new write intending to change
+	// the note back to A: it must land in the store, return A, and steer for
+	// A, clearing the stale pending marker for the first A attempt.
+	rewritten, err := s.SetHumanNote("outer-l1n-c", "note A")
 	if err != nil {
-		t.Fatalf("retry A text: %v", err)
+		t.Fatalf("re-save A text: %v", err)
 	}
-	if replayed != "note A" {
-		t.Fatalf("retry replayed = %q, want recorded %q", replayed, "note A")
+	if rewritten != "note A" {
+		t.Fatalf("re-save returned = %q, want %q", rewritten, "note A")
 	}
 	s.mu.Lock()
 	current := s.humanNote
-	s.mu.Unlock()
-	if current != "note B" {
-		t.Fatalf("stored note after retry = %q, want B to stand", current)
+	n := len(s.steeringQueue)
+	var lastText string
+	if n > 0 {
+		lastText = s.steeringQueue[n-1].Text
 	}
+	s.mu.Unlock()
+	if current != "note A" {
+		t.Fatalf("stored note after re-save = %q, want A to land (last-writer-wins)", current)
+	}
+	if n != 2 {
+		t.Fatalf("steering queue length = %d, want 2 (re-save steers for the new value)", n)
+	}
+	if lastText != "human updated their whiteboard: note A" {
+		t.Fatalf("last steer text = %q, want the re-saved value's steer", lastText)
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
 }

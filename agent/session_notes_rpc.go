@@ -143,16 +143,32 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	// them would publish in reverse order (G1).
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
-	// A no-op save still completes delivery another attempt of the same value
-	// left pending (a refused steer, a journal fault): storage already holds
-	// the value, so this attempt adopts the pending delivery and drives the
-	// steer before journaling success. The adoption runs inside the owner's
-	// reservation and clears the adopted record's pending marker when its
-	// steer accepts, so the abandoned attempt never completes delivery twice.
+	// A save whose post-clamp text already equals the live store still
+	// completes delivery another attempt of the same value left pending (a
+	// refused steer, a journal fault): storage already holds the value, so
+	// this attempt adopts the pending delivery and drives the steer before
+	// journaling success. The adoption runs inside the owner's reservation
+	// and clears the adopted record's pending marker when its steer accepts,
+	// so the abandoned attempt never completes delivery twice.
+	//
+	// A save whose post-clamp text DIFFERS from the live store is a fresh
+	// write intending to change the note (last-writer-wins), even when its
+	// text matches an older still-pending delivery: it must apply to the
+	// store, persist, emit, and steer for the new value, clearing the stale
+	// pending marker without returning or journaling the adopted older value.
+	// Otherwise the RPC would return the older value while the store holds
+	// the newer one (or vice versa), and the hub would commit the response
+	// note over the divergent store.
 	if adopted, ok := s.adoptPendingNotesDelivery(outerID, note, lease); ok {
-		human, agentNote := s.notesSnapshot()
-		s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
-		return s.deliverAdoptedNotesSteer(lease, outerID, adopted)
+		live, _ := s.notesSnapshot()
+		if live != normalizeNote(note) {
+			s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
+			s.clearPendingNotesHuman(adopted.outerID)
+		} else {
+			human, agentNote := s.notesSnapshot()
+			s.emit(events.EventNotesUpdated, notesUpdatedData(human, agentNote))
+			return s.deliverAdoptedNotesSteer(lease, outerID, adopted)
+		}
 	}
 	prev, _ := s.notesSnapshot()
 	stored, changed := s.setHumanNote(note)
