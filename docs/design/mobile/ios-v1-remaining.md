@@ -1,6 +1,6 @@
 # iOS v1 remaining work
 
-Updated 8 September 2026. See the [current project status](status.md) for implemented behavior, artifact identities and verified checks.
+Updated 9 September 2026. See the [current project status](status.md) for implemented behavior, artifact identities and verified checks.
 
 This checklist follows Jesse's selected iOS-only v1 scope. **Current order: a usable daily iPhone loop, then full functionality, then quality and delivery. iPad and accessibility work are paused as of 8 September 2026.** Preserve their implementation and evidence; do not assign those tasks or require them to close this functional milestone. Android evidence and implementation remain deferred and do not block this list. The source-backed workflow ledger is authoritative for requirement boundaries and evidence status: [native mobile acceptance](acceptance.md). The original scope and dependency order are in the [takeover handoff](../../superpowers/handoffs/2026-09-06-native-mobile-takeover.md).
 
@@ -9,6 +9,8 @@ The [detailed Usable → Useful → Good implementation plan](../../superpowers/
 The [parallel execution checkpoint](2026-09-08-iphone-execution-checkpoint.md) records the installed `bfe632f44` build, native creation/vision and uncertainty receipts, 698 native tests, real controller/SDK readback and preserved drafts. The integrated native journey and physical-device checks remain open.
 
 The latest [creation/vision](assets/2026-09-08-native-creation-vision.json), [uncertain delivery](assets/2026-09-08-native-uncertain-delivery.json), [recovery](assets/2026-09-08-native-recovery-journey.json), [leave/return](assets/2026-09-08-native-leave-return.json) and [Reader/reconnect](assets/2026-09-08-native-reader-reconnect.json) receipts identify source `bfe632f44`. They qualify one valid native creation, all three vision choices with changed events/second-client change/cold restoration, Stop/continue, free-text question isolation, another client resolving an open question, code copy/link return, background/reopen, two cold launches, a stable older viewport through a real response stream, native Latest and actual hub restart/recovery followed by one native send. The uncertainty receipt covers server completion before local confirmation, relaunch notice, manual check/dismissal, no replay and preserved drafts; it is not packet loss, restore-to-draft or full lifecycle qualification. Tasks 1–4 remain open for the integrated journey and physical-device acceptance.
+
+The [9 September media journey](2026-09-09-iphone-media-review.md) verifies a two-image draft across picker cancellation, removal/reselection, restart, navigation, native send and full-size viewing; the corrected artifact also completes a question in that conversation. Original stored state is unchanged. Authenticated HTTP image recovery, verbose attachment prose, the full joined journey and representative loading performance remain open.
 
 ## iPhone functionality milestone
 

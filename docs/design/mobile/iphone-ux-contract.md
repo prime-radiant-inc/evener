@@ -55,6 +55,12 @@ blocking failures must remain discoverable. A restrained user-message surface
 distinguishes the person's input. Message actions use the existing native sheet;
 Fork preview is read-only and the created fork opens with an editable draft.
 
+Image thumbnails keep filename captions to two lines. The full viewer retains
+the complete filename and clear previous/next controls. The [media review](2026-09-09-iphone-media-review.md)
+confirms this on the installed artifact. Repeated canonical attachment prose
+inside the message bubble remains an open presentation concern; a correction
+must preserve user text and image-reference meaning.
+
 The composer gives the draft the full width. Its footer holds attachment access,
 the model and reasoning choices, and the primary action. Secondary controls must
 not squeeze the draft. Stop and queue remain available when applicable. Latest
