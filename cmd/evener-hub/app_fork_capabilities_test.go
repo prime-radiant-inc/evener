@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -116,6 +117,85 @@ func TestHubForkAdmissionLoadsOwnershipWhenPastIndexIsUnavailable(t *testing.T) 
 				}
 			} else if err == nil {
 				t.Fatal("fork failed unexpectedly")
+			}
+		})
+	}
+}
+
+type liveSubagentProber struct {
+	sessionID            string
+	runningSubagentIDs   []string
+	runningSubagentState map[string]string
+}
+
+func (p liveSubagentProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	return hubcore.ProbeResult{
+		SessionID:             p.sessionID,
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    p.runningSubagentIDs,
+		RunningSubagentStates: p.runningSubagentState,
+		OK:                    true,
+	}
+}
+
+func TestHubForkAdmissionRejectsLiveSubagentAliasFromRoster(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		past *hubcore.PastIndex
+	}{
+		{name: "past nil"},
+		{name: "past miss", past: hubcore.NewPastIndex("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			parentID := buildRPCParentSession(t, stateDir)
+			childID, err := agent.ForkSession(stateDir, parentID, 1, "live child", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			childMeta.IsSubagent = true
+			if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+				t.Fatal(err)
+			}
+
+			runDir := t.TempDir()
+			writeRendezvous(t, runDir, rendezvous.Entry{
+				PID: os.Getpid(), SourceID: "local", ThreadID: parentID, SessionID: parentID,
+				StateDir: stateDir,
+			})
+			roster := hubcore.NewRoster(runDir, liveSubagentProber{
+				sessionID: parentID, runningSubagentIDs: []string{childID},
+				runningSubagentState: map[string]string{childID: appwire.ThreadStatusActive},
+			})
+			roster.Refresh()
+			if !roster.IsSubagentActive(childID) {
+				t.Fatal("scripted live roster did not admit the child")
+			}
+			cfg := hubcore.WebConfig{StateDir: stateDir, Past: tc.past, Roster: roster}
+
+			for _, sessionID := range []string{"", "wrong-session-id"} {
+				thread := appwire.Thread{SessionID: sessionID, Evener: appwire.EvenerThread{
+					Ref: "local:" + childID, Kind: "subagent",
+					Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true},
+				}}
+				if got := applyHubForkCapability(cfg, thread); got.Evener.Capabilities.ForkFromTurn {
+					t.Fatalf("session_id=%q: live subagent alias retained fork capability", sessionID)
+				}
+			}
+
+			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
+				Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+			})
+			if err == nil {
+				t.Fatal("live subagent alias fork succeeded")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			if !ok || wire.Code != appwire.CodeUnavailable {
+				t.Fatalf("live subagent alias fork error=%v, want structured unavailable", err)
 			}
 		})
 	}
