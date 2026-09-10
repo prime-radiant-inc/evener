@@ -1040,8 +1040,16 @@ func (s *Session) returnClaimedSteering(clientMutationID string) error {
 func (s *Session) appendSteeringTurn(text, kind string) {
 	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
 	t.SteeringKind = kind
+	t.OwningTurnID = s.activeTurnOwner()
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+}
+
+func (s *Session) activeTurnOwner() string {
+	if s.clientMutations == nil {
+		return ""
+	}
+	return s.clientMutations.snapshot().ActiveTurnID
 }
 
 // appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
@@ -1052,7 +1060,7 @@ func (s *Session) appendSteeringTurn(text, kind string) {
 // for a turn that never made it to disk. The durable write happens before the
 // in-memory history append, preserving the crash-window ordering.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
-	return s.appendSteeringTurnDurablyForOwner(text, kind, "")
+	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
 }
 
 // appendSteeringTurnDurablyForOwner durably records a daemon steering turn
