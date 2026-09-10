@@ -744,7 +744,7 @@ export function createConversationService(
       if (notificationUnsub !== null) {
         notificationUnsub();
       }
-      notificationUnsub = client.onNotification((notification) => {
+      const unsubscribe = client.onNotification((notification) => {
         if (notification.method === "thread/status/changed") {
           const params = notification.params;
           const committed =
@@ -768,9 +768,10 @@ export function createConversationService(
         }
         handler(notification);
       });
+      notificationUnsub = unsubscribe;
       return () => {
-        if (notificationUnsub !== null) {
-          notificationUnsub();
+        if (notificationUnsub === unsubscribe) {
+          unsubscribe();
           notificationUnsub = null;
         }
       };

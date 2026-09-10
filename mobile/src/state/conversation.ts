@@ -2063,10 +2063,13 @@ export function createConversationStore() {
           // A stale v4 item cursor invalidates the visible transcript
           // incarnation. Rehydrate before surfacing the failure so the next
           // user retry starts from the refreshed bounded state and cursor.
-          if (isStaleCursorError(err) && boundSink !== null) {
+          if (isStaleCursorError(err) && isBindingCurrent(opBinding)) {
+            // Rehydrate only the operation's still-current binding. A stale
+            // page from service A must not use service B's sink after a
+            // rebind, even if both conversations share a ref.
             await get().rehydrate(
-              service as LiveConversationService,
-              boundSink,
+              opBinding.service,
+              opBinding.sink,
             );
           }
           // C1: Recheck the exact operation binding after the await. If the

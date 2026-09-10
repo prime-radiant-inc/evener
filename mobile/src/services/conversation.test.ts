@@ -657,6 +657,30 @@ describe("ConversationService", () => {
       client.emitNotification(notif);
       expect(received).toHaveLength(1);
     });
+
+    it("does not let an older unsubscribe stop a newer subscription", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const first: AnyNotification[] = [];
+      const second: AnyNotification[] = [];
+      const unsubFirst = service.subscribeNotifications((n) => first.push(n));
+      service.subscribeNotifications((n) => second.push(n));
+
+      // Replacing a subscription must leave the replacement active even when
+      // the caller later disposes the older subscription handle.
+      unsubFirst();
+      client.emitNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+        },
+      } as AnyNotification);
+
+      expect(first).toHaveLength(0);
+      expect(second).toHaveLength(1);
+    });
   });
 
   describe("mutations — all V1 actions", () => {
