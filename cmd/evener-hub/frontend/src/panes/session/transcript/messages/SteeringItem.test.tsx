@@ -74,7 +74,7 @@ test('source "user" steering does NOT open an exchange - it interrupts one', () 
   expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBeNull();
 });
 
-test('a user-sourced human-note steer renders the labeled divider, not a user bubble', () => {
+test("a user-sourced human-note steer renders the labeled divider, not a user bubble", () => {
   render(
     <SteeringItem
       item={item({ text: "human updated their whiteboard: hello", source: "user", steeringKind: "human-note" })}
