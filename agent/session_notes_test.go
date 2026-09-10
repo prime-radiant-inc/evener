@@ -362,7 +362,7 @@ func TestSetHumanNoteStoresAndSteers(t *testing.T) {
 	if queue[0].Kind != events.SteeringKindHumanNote {
 		t.Fatalf("inner steer kind = %q, want %q", queue[0].Kind, events.SteeringKindHumanNote)
 	}
-	if !strings.Contains(queue[0].Text, "hello world") {
+	if queue[0].Text != "human updated their whiteboard: hello world" {
 		t.Fatalf("inner steer text = %q", queue[0].Text)
 	}
 }
