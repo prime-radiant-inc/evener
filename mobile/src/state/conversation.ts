@@ -2063,7 +2063,11 @@ export function createConversationStore() {
           // A stale v4 item cursor invalidates the visible transcript
           // incarnation. Rehydrate before surfacing the failure so the next
           // user retry starts from the refreshed bounded state and cursor.
-          if (isStaleCursorError(err) && isBindingCurrent(opBinding)) {
+          if (
+            isStaleCursorError(err) &&
+            opBinding.sink !== null &&
+            isBindingCurrent(opBinding)
+          ) {
             // Rehydrate only the operation's still-current binding. A stale
             // page from service A must not use service B's sink after a
             // rebind, even if both conversations share a ref.
