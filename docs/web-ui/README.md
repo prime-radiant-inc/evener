@@ -4,13 +4,16 @@ Design documentation for the web hub (`cmd/evener-hub`). Started 2026-06-16.
 
 ## Current
 
-- **[design-system.md](design-system.md)** — the design law as shipped: tokens,
+- **[design-system.md](design-system.md)** — the authoritative design law, starting with
+  the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
+  conversation for understanding, evidence for verification and controls for intervention.
+  It records behavioral consequences, tradeoffs and review questions, then tokens,
   the editorial system (warm paper/ink, serif reading, flat structure), inline tool/delegate
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
-- **[decisions.md](decisions.md)** — what we chose out of the 2026-06 visual
-  brainstorm, and whether the code still does it. Read this before changing a
+- **[decisions.md](decisions.md)** — historical choices from the 2026-06 visual
+  brainstorm onward, with point-in-time source verdicts. Read this before changing a
   transcript or navigator behaviour: it distinguishes a reasoned departure from
   a regression, and several apparent regressions are neither.
 - **[ux-plan-2026-07.md](ux-plan-2026-07.md)** — the five-participant study of
@@ -56,9 +59,9 @@ rather than a diff.
 for checking the implemented editorial system in context. The guide's
 [coverage summary](design-system.md#editorial-source-coverage) distinguishes direct
 transcript/shell/form/composer/ledger work from inherited shared surfaces.
-Source coverage is not browser acceptance: full-AppShell fixture review, actual-UI
-panel/fix/retest, final integrated gates, detached preview and unmerged PR remain pending.
-Nested Open transcript navigation has an unresolved review finding.
+Source coverage is not browser acceptance. The guide's separate
+[acceptance snapshot](design-system.md#acceptance-and-limits) records the draft PR,
+automation, panel endorsements, pending native retest and preview refresh, and validation limits.
 
 The galleries are dev-only: `App.tsx` gates it behind `import.meta.env.DEV`, so a
 production build does not contain it and there is no link to it from the app.
@@ -86,6 +89,6 @@ unedited; the filenames are unchanged, so the paths still resolve by search.
 ## Goal
 
 External-product polish for a power-user, dark-first agentic coding tool.
-Conversation-first, first-class subagents, honest liveness. The eight principles
-that govern all of it are reproduced in [decisions.md](decisions.md) — they
-outlived the mockups that tested them.
+Conversation-first, first-class subagents, honest liveness. The current rationale and
+tradeoffs live in the [design system](design-system.md#design-model-an-editorial-instrument);
+[decisions.md](decisions.md) preserves the original principles and their later departures.

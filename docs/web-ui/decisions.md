@@ -1,7 +1,9 @@
 # Web UI: the design decisions, and whether they are still true
 
-Status: **current**. This is the blessed design's provenance — what we chose,
-out of what alternatives, and whether the code does it today.
+Status: **historical decision record**. This records what we chose, from which
+alternatives, and what source review found at the time. The current
+[design system](design-system.md#design-model-an-editorial-instrument) governs new work;
+dated verdicts below are not a competing current mandate.
 
 ## Editorial instrument (2026-09-09)
 
@@ -16,7 +18,8 @@ editorial headings alongside Inter operations and JetBrains Mono evidence; share
 `--font-prose` and body-scaled 18px `--font-size-prose`; structural card shadow none;
 3px chip / 4px control and overlay radii; flat Card/InspectorCard/PaneScaffold;
 sentence-case fine-rule tables; visibly bounded fields. Dark default, all preferences,
-44/64rem measures, phone geometry and focus behavior remain unchanged. Source Serif 4
+44/64rem measures and shared phone sizing contracts remain. Nested navigation and focus
+repairs are behavior changes, not merely styling. Source Serif 4
 5.3.0 is self-hosted with real italic under OFL-1.1, not loaded from a CDN.
 
 Contrast is a constraint, not an aesthetic vote: the warm light ground required darker
@@ -30,9 +33,11 @@ implemented inline tool/delegate grammar, including owner-derived lifecycle, sep
 launch receipts, truthful unknown state and retained child-authored words on resumption.
 [Source coverage](design-system.md#editorial-source-coverage) includes direct shell,
 form, composer and ledger work and distinguishes surfaces inheriting shared styling.
-The full-AppShell fixture review, actual-UI panel/fix/retest loop, final integrated gates,
-detached preview and unmerged PR remain pending; nested Open transcript navigation has
-an unresolved review finding. Source implementation does not establish browser acceptance.
+The editorial rationale is [durable design law](design-system.md#design-model-an-editorial-instrument),
+not just a new font and spacing prescription: evidence stays near claims, distinct facts retain
+their provenance, and inspection preserves context. The guide's separate
+[acceptance snapshot](design-system.md#acceptance-and-limits) records automation, panel review
+and remaining limits; source implementation alone does not establish browser acceptance.
 Dated decisions below describe their period and remain useful for interaction intent,
 not as competing current palette/type law.
 
@@ -66,10 +71,10 @@ what survived, so the gap between the two is a work list instead of a feeling.
 
 ## How to read a verdict
 
-- **LIVE** — the rule holds in the React app today, with a citation.
+- **LIVE** — the rule held at the recorded review, with a citation.
 - **CHANGED** — something related shipped, but the rule differs. The note says
   how, and whether the difference was reasoned.
-- **ABSENT** — no trace in the current code.
+- **ABSENT** — no trace in the code reviewed then.
 
 A CHANGED or ABSENT verdict is not automatically a defect. Several are
 documented, reasoned departures where the implementer hit something the
@@ -87,16 +92,17 @@ closed questions, not work. The ones with no such reasoning are the work list.
   `history/examples/direction-{a,b,c}-*.html`.
 - **The brief every direction had to render**:
   `history/examples/_mockup-brief.md`. Its eight non-negotiable principles are
-  reproduced below, because they are the actual design law and outlived the
-  mockups that tested them.
+  reproduced below as the historical starting point. Later decisions and the
+  canonical guide identify departures.
 - **Which alternative shipped**: the commit subjects cited in the tables
   below. `git log --oneline --all -- docs/web-ui` finds the rest.
 
 ## The eight principles
 
-Reproduced from `_mockup-brief.md`. Every direction and every mockup had to
-honour these; they are upstream of any individual A/B/C/D choice, and none of
-them has been retired.
+Reproduced from `_mockup-brief.md`. Every original direction and mockup had to
+honour these. They are historical, not eight unchanged current mandates: later
+decisions supersede parts of them, including steering emphasis and typography.
+The current system uses serif for reading, sans for operations and mono for machine evidence.
 
 1. **Conversation-first.** User and assistant prose are the loudest, most
    readable thing. Tool calls are visually subordinate.
