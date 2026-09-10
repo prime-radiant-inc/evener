@@ -235,6 +235,35 @@ test("turn-based activity remains live while its child session is active", () =>
   expect(state).toMatchObject({ active: true });
 });
 
+test("child activity takes status precedence over prior own failures and child failures surface", () => {
+  const activeChild = session([shell("child", false)], {
+    active: 1,
+    failed: 0,
+    completed: 0,
+    complete: false,
+  }) as ActivitySessionNode;
+  expect(
+    activityDelegateState(
+      delegate("dlg_active_child", {
+        type: "agent",
+        turns: [turn("turn_failed", true, "completed", "failure")],
+        child: activeChild,
+      }).delegate,
+    ),
+  ).toMatchObject({ active: true, failed: true, status: "working" });
+
+  const failedChild = session([], { active: 0, failed: 1, completed: 0, complete: true }) as ActivitySessionNode;
+  expect(
+    activityDelegateState(
+      delegate("dlg_failed_child", {
+        type: "agent",
+        turns: [turn("turn_done", true, "completed")],
+        child: failedChild,
+      }).delegate,
+    ),
+  ).toMatchObject({ active: false, failed: true, status: "failed" });
+});
+
 test("set membership expands the fold and reveals terminal rows after the fold row", () => {
   const rows = buildActivityRows(
     tree([shell("a", false), shell("b", true)]),

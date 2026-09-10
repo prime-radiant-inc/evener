@@ -66,12 +66,25 @@ export interface ActivityDelegateState {
 // turn containers. Keep this in one place so row visibility, fold failure
 // counts, and the status shown by the row all use the protocol's same truth.
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
+  const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
+  const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
   if (delegate.type === "delegate") {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+    const ownActive = delegate.terminal !== true;
+    const ownFailed = isFailedStatus(status);
+    const failed = ownFailed || childFailed;
     return {
-      active: delegate.terminal !== true || (delegate.child ? sessionIsActive(delegate.child) : false),
-      failed: isFailedStatus(status),
-      status,
+      active: ownActive || childActive,
+      failed,
+      status: ownActive
+        ? status
+        : childActive
+          ? (delegate.child?.aggregate ?? "working")
+          : ownFailed
+            ? status
+            : failed
+              ? "failed"
+              : status,
     };
   }
   const turns = delegate.turns ?? [];
@@ -80,19 +93,20 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     if (!turn.terminal) activeTurn = turn;
   }
   const latest = turns.at(-1);
-  const failed = turns.some((turn) => turn.outcome === "failure" || isFailedStatus(turn.status));
+  const failed = childFailed || turns.some((turn) => turn.outcome === "failure" || isFailedStatus(turn.status));
+  const active = activeTurn !== undefined || childActive;
   return {
-    active: activeTurn !== undefined || (delegate.child ? sessionIsActive(delegate.child) : false),
+    active,
     failed,
     status: activeTurn
       ? activeTurn.status
-      : failed
-        ? "failed"
-        : latest
-          ? latest.outcome === "failure"
-            ? "failed"
-            : latest.status
-          : (delegate.child?.aggregate ?? "unknown"),
+      : childActive
+        ? (delegate.child?.aggregate ?? "working")
+        : failed
+          ? "failed"
+          : latest
+            ? latest.status
+            : (delegate.child?.aggregate ?? "unknown"),
   };
 }
 
