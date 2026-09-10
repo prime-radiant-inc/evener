@@ -253,6 +253,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	}
 
 	switch event.Kind {
+	case events.EventEnvironment:
+		data := eventData[events.EnvironmentData](event.Data)
+		return p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {

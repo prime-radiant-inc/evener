@@ -1610,6 +1610,11 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	}
 
 	s.appendTurn(schema.TurnEnvironment, llm.User(block))
+	// The environment entry is a standalone logical turn in the cold transcript.
+	// Open the matching live turn before publishing its item so the next user
+	// input cannot inherit the environment item's turn identity.
+	s.emit(events.EventTurnStarted, events.TurnStartedData{})
+	s.emit(events.EventEnvironment, events.EnvironmentData{Text: block})
 	// Persist tracker state so resume stays silent when nothing changed.
 	s.setEnvContextState(st)
 }
