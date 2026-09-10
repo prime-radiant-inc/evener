@@ -61,7 +61,7 @@ function mergeDelegate(
   const state = revisionFencedDelegate(current, patch);
   return {
     ...state,
-    branch: withinTarget ? { ...patch.branch } : { ...current.branch, ...patch.branch },
+    branch: withinTarget ? { ...patch.branch } : { ...current.branch },
     child:
       current.child && patch.child && current.child.sessionId === patch.child.sessionId
         ? mergeSession(current.child, patch.child, targetID, withinTarget)
@@ -165,7 +165,7 @@ function mergeSession(
     ...current,
     ref: patch.ref,
     label: patch.label,
-    branch: withinTarget ? { ...patch.branch } : { ...current.branch, ...patch.branch },
+    branch: withinTarget ? { ...patch.branch } : { ...current.branch },
     entries: mergedEntries,
   });
 }
