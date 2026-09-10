@@ -345,23 +345,26 @@ type foldCommit struct {
 	publishedRevision            int
 }
 
-func environmentTurnIDs(history []schema.Turn) map[string]struct{} {
-	ids := make(map[string]struct{})
+func environmentTurnIDs(history []schema.Turn) map[string]int {
+	ids := make(map[string]int)
 	for _, turn := range history {
-		if turn.Kind == schema.TurnEnvironment && turn.StableTurnID != "" {
-			ids[turn.StableTurnID] = struct{}{}
+		if turn.Kind == schema.TurnEnvironment {
+			ids[turn.StableTurnID]++
 		}
 	}
 	return ids
 }
 
-func environmentTurnsRemoved(previous map[string]struct{}, published []schema.Turn) bool {
+func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) bool {
 	if len(previous) == 0 {
 		return false
 	}
 	present := environmentTurnIDs(published)
-	for id := range previous {
-		if _, ok := present[id]; !ok {
+	if len(present) < len(previous) {
+		return true
+	}
+	for id, count := range previous {
+		if present[id] < count {
 			return true
 		}
 	}

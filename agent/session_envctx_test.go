@@ -711,3 +711,35 @@ func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing
 		t.Fatalf("preserved environment tracker emitted duplicate: before=%d after=%d", before, got)
 	}
 }
+
+func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	oldID := ""
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			oldID = turn.StableTurnID
+		}
+	}
+	changed := schema.NewTurn(schema.TurnEnvironment, llm.User("changed environment"))
+	changed.StableTurnID = "turn_environment_changed"
+	s.appendTurn(changed.Kind, changed.Message)
+	s.history[len(s.history)-1].StableTurnID = changed.StableTurnID
+	seedNumberedSessionHistory(t, s, 8)
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if oldID == "" {
+		t.Fatal("missing original environment identity")
+	}
+	before := countEnvironmentTurns(s)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if countEnvironmentTurns(s) != before+1 {
+		t.Fatalf("removed full context did not trigger full re-emission: before=%d after=%d", before, countEnvironmentTurns(s))
+	}
+}
