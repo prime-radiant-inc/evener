@@ -10,7 +10,7 @@ iPad and dedicated accessibility work are paused by Jesse. Android and voice are
 
 1. Resolve any new current-head findings in activity #1091, native #1096, environment #1098 and timing #1100. These heads currently have green CI and pending reviews; their implemented corrections are described in the [status page](status.md).
 2. Land activity before native so the native PR contains only its own remaining work. Land the backend recovery prerequisites with both metadata exclusions retained when their changes meet in `conversationSignals`.
-3. Require current-head CI and a genuinely clean current-head RoboRev verdict before each merge. Jesse has authorized skipping another human approval at that point.
+3. Require current-head CI and an actual clean current-head RoboRev verdict before each merge. Jesse has authorized skipping another human approval at that point.
 4. Compare the resulting source with qualified integration `8081b4e63`. If production behavior changes during review or conflict resolution, run the relevant regression and repeat the affected combined/product checks.
 5. Preserve the original two unfinished Apple project edits and their existing stash. They are separate from the Expo native landing and must not be discarded as cleanup.
 
