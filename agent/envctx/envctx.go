@@ -49,6 +49,57 @@ func NewTracker(st State) *Tracker { return &Tracker{st: st} }
 // State returns the persistable tracker state.
 func (t *Tracker) State() State { return t.st }
 
+// ReplayBlock folds one durable environment block into the tracker state.
+// Blocks are diffs, so callers replay them in transcript order starting from
+// the metadata checkpoint. This closes the write-before-metadata crash window
+// without treating the rendered model text as a new observation.
+func (t *Tracker) ReplayBlock(block string) bool {
+	if t == nil || !strings.Contains(block, "<environment_context>") {
+		return false
+	}
+	start := strings.Index(block, "<environment_context>") + len("<environment_context>")
+	end := strings.Index(block[start:], "</environment_context>")
+	if end < 0 {
+		return false
+	}
+	for _, line := range strings.Split(block[start:start+end], "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "cwd: "):
+			if value, err := strconv.Unquote(strings.TrimPrefix(line, "cwd: ")); err == nil {
+				t.st.Last.Cwd = value
+			}
+		case strings.HasPrefix(line, "date: "):
+			t.st.Last.LocalDateHour = strings.TrimPrefix(line, "date: ")
+		case strings.HasPrefix(line, "sandbox: "):
+			t.st.Last.Sandbox = strings.TrimPrefix(line, "sandbox: ")
+		case strings.HasPrefix(line, "git branch: "):
+			value := strings.TrimPrefix(line, "git branch: ")
+			if value == "(not in a git repository)" {
+				value = ""
+			}
+			t.st.Last.GitBranch = value
+		case strings.HasPrefix(line, "load pressure: "):
+			t.st.Last.Pressure.Load = pressureValue(line, "load")
+		case strings.HasPrefix(line, "memory pressure: "):
+			t.st.Last.Pressure.Memory = pressureValue(line, "memory")
+		case strings.HasPrefix(line, "disk pressure: "):
+			t.st.Last.Pressure.Disk = pressureValue(line, "disk")
+		}
+	}
+	t.st.HasSent = true
+	return true
+}
+
+func pressureValue(line, name string) string {
+	prefix := name + " pressure: "
+	value := strings.TrimPrefix(line, prefix)
+	if value == "back to normal" {
+		return ""
+	}
+	return line
+}
+
 // RenderDiff renders the changed fields of cur against the last emission,
 // or every non-empty field on the first emission. It returns "" when there
 // is nothing to say. A non-empty return updates the tracker state, so the
