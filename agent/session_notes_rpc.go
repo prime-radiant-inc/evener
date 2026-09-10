@@ -1184,6 +1184,7 @@ func (s *Session) maybeAppendNotesContext() {
 	}
 	s.mu.Lock()
 	if block == s.notesLastProjected {
+		s.mu.Unlock()
 		return
 	}
 	s.notesLastProjected = block
@@ -1196,7 +1197,6 @@ func (s *Session) maybeAppendNotesContext() {
 	body := llm.User(block)
 	s.mu.Unlock()
 	s.appendTurn(turn, body)
-	s.mu.Lock()
 }
 
 // resetNotesProjectionAfterCompaction clears the last-projected notes record

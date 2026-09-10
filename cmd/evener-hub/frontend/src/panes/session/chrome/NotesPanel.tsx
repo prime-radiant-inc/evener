@@ -220,56 +220,50 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
       setError(null);
     }
     saveLoop.current = (async () => {
-      // lastSavedRef names the session the loop last persisted: the Saved
-      // guard paints only when that session is still the one on screen, so
-      // a B-save drained inside an A-started loop still paints for B.
-      // failedRef names a session whose save failed this pass: the loop keeps
-      // draining every other queued session (a B parked behind a failing A
-      // must still persist and report) and only requeues the failure itself.
-      let lastSavedRef: string | null = null;
-      let failedRef: string | null = null;
-      let failedNote: string | null = null;
-      let failedMessage: string | null = null;
+      // Outcomes are tracked PER SESSION: successes accumulate in a set (a
+      // later B-failure must not erase an earlier A-success), and each
+      // failure is recorded beside its own ref (a newer A-save succeeding in
+      // the same drain must not leave the older A-failure queued to overwrite
+      // it on retry). A failure requeues only when its queue entry has not
+      // been superseded: requestSave always parks the latest draft, so a
+      // requeue is valid only while the queue still holds no newer text.
+      const savedRefs = new Set<string>();
+      const failedMessages = new Map<string, string>();
       for (;;) {
         const next = dirtyRef.current.entries().next();
         if (next.done) break;
         const [nextRef, nextNote] = next.value;
         dirtyRef.current.delete(nextRef);
         if (nextNote === storedNote(nextRef)) continue;
-        lastSavedRef = null;
         try {
           await threadsStore.getState().setHumanNote(nextRef, nextNote);
         } catch (err) {
           const message = sessionActionError("Couldn't save note", err);
           // The textarea still shows unsaved content, so the failure stays
-          // queued for the next requestSave (e.g. the next blur) to retry in
-          // order — but the loop keeps draining behind it instead of breaking,
-          // so a queued sibling is never stranded unsaved and unreported.
-          failedRef = nextRef;
-          failedNote = nextNote;
-          failedMessage = message;
+          // queued for the next requestSave (e.g. the next blur) to retry —
+          // but only when no newer draft for the session arrived meanwhile:
+          // requestSave parks the latest text in the queue, so a present
+          // entry supersedes this failure and the retry must use it.
+          failedMessages.set(nextRef, message);
+          if (!dirtyRef.current.has(nextRef)) dirtyRef.current.set(nextRef, nextNote);
           if (uiRef.current === nextRef) setError(message);
           toasts.push("error", message);
           continue;
         }
-        lastSavedRef = nextRef;
+        // Success clears only this session's failure: a sibling's failure is
+        // that sibling's latest outcome and stays reported.
+        failedMessages.delete(nextRef);
+        savedRefs.add(nextRef);
       }
-      if (failedRef !== null && failedNote !== null) dirtyRef.current.set(failedRef, failedNote);
       saveLoop.current = null;
       // saving is global to the panel (one loop at a time), so it always
-      // clears on settle; Saved is per-session, so it only paints when the
-      // last-persisted session is still the one on screen. A failed entry
-      // suppresses Saved for its own session even when the queue is otherwise
-      // empty: the failure (not the drained siblings) is the session's latest
-      // outcome.
+      // clears on settle; Saved and error paint only for the session still on
+      // screen, from that session's own latest outcome.
       setSaving(false);
-      if (failedMessage !== null && uiRef.current === failedRef) setError(failedMessage);
-      if (
-        lastSavedRef !== null &&
-        uiRef.current === lastSavedRef &&
-        uiRef.current !== failedRef &&
-        draftRef.current === storedNote(lastSavedRef)
-      ) {
+      const ui = uiRef.current;
+      const uiFailure = failedMessages.get(ui);
+      if (uiFailure !== undefined) setError(uiFailure);
+      if (savedRefs.has(ui) && uiFailure === undefined && draftRef.current === storedNote(ui)) {
         setSaved(true);
       }
     })();

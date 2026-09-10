@@ -404,6 +404,102 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   expect(threadsStore.getState().threads.get(modelB.ref)?.humanNote).toBe("draft B2");
 });
 
+test("a failure superseded by a newer save in the same drain never retries stale text", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  fake.on("notes/human/set", (params) => {
+    calls += 1;
+    seen.push(params);
+    // The first (stale) attempt gates; everything after succeeds. If the
+    // stale failure were requeued unconditionally, the retry would restore
+    // "stale draft" over the newer stored text.
+    if (calls === 1) return gate.then(() => Promise.reject(new Error("stale save boom")));
+    return { note: (params as { note: string }).note };
+  });
+
+  const model = testModel({ humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  // First blur starts the gated save of the stale draft...
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "stale draft");
+  await user.tab();
+  await waitFor(() => expect(seen).toHaveLength(1));
+  // ...while it is in flight, a newer draft parks behind it; releasing the
+  // gate fails the stale attempt, and the loop must drain the newer draft
+  // instead of stopping at the failure.
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "newer draft");
+  await user.tab();
+  release();
+  await waitFor(() => expect(seen).toHaveLength(2));
+  expect(seen[1]).toMatchObject({ ref: model.ref, note: "newer draft" });
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("newer draft");
+  // The stale failure must not resurrect: no third attempt restores it.
+  await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
+  expect(seen).toHaveLength(2);
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("newer draft");
+});
+
+test("an earlier success still reports Saved when a sibling fails later in the drain", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    // Gate A's save so B's blur parks behind it in the same drain; A then
+    // succeeds while B fails. The per-iteration reset bug painted no Saved
+    // state even for A, the session that succeeded.
+    if (first && (params as { ref: string }).ref === "local:aaaa") {
+      first = false;
+      return gate.then(() => ({ note: (params as { note: string }).note }));
+    }
+    if ((params as { ref: string }).ref === "local:bbbb") throw new Error("B save boom");
+    return { note: (params as { note: string }).note };
+  });
+
+  const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
+  const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "note B" });
+  threadsStore.setState({
+    threads: new Map([
+      [modelA.ref, modelA],
+      [modelB.ref, modelB],
+    ]),
+  });
+  const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft A2");
+  await user.tab();
+  await waitFor(() => expect(seen).toHaveLength(1));
+  rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "draft B2");
+  await user.tab();
+  release();
+  // B's failure surfaces while the panel shows B...
+  await screen.findAllByText(/B save boom/i);
+  expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
+  // ...then switching back to A (whose draft matches its stored note after
+  // the drained success) reports Saved for the session that succeeded.
+  rerender(<NotesPanelBody sessionRef={modelA.ref} model={{ ...modelA, humanNote: "draft A2" }} />);
+  await waitFor(() => expect(screen.queryByTestId("shared-notes-saved")).toBeTruthy());
+});
+
 test("a failed blur-save surfaces an error and keeps the draft", async () => {
   const user = userEvent.setup();
   connectFakeClient();
