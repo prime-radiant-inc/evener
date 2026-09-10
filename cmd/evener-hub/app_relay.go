@@ -234,13 +234,14 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 		return notification
 	}
 	var params struct {
-		Status       appwire.ThreadStatus       `json:"status"`
-		Capabilities map[string]json.RawMessage `json:"capabilities"`
+		Status         appwire.ThreadStatus       `json:"status"`
+		Capabilities   map[string]json.RawMessage `json:"capabilities"`
+		ResumeRequired bool                       `json:"resumeRequired"`
 	}
 	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
 		return notification
 	}
-	if !allowFork || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired") {
+	if !allowFork || params.ResumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired") {
 		return notification
 	}
 	params.Capabilities["forkFromTurn"] = json.RawMessage("true")
