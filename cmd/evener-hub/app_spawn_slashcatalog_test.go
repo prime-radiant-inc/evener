@@ -289,19 +289,22 @@ func TestHubSpawnSlashCatalog_MissingCWDSeesAncestorProjectInventory(t *testing.
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	parent := t.TempDir()
+	hubTestMakeGitRepo(t, parent, "README.md", "repo")
 	writeSlashCatalogProjectCommand(t, parent, "deploy", "Deploy the thing")
 	writeSlashCatalogSkill(t, filepath.Join(parent, "skills"), "deployskill", "deployskill", "Deploys stuff")
 	missing := filepath.Join(parent, "not-yet-created")
 
 	// The spawn flow creates a missing directory via preflightDir ("Create &
-	// start"), and thread/start then loads the ancestor chain's project
-	// items — so the catalog resolves the nearest existing ancestor instead
-	// of failing or answering user-level-only.
+	// start"), and thread/start then loads the ancestor chain's project items
+	// (chain discovery from the git root) — so the catalog resolves the
+	// missing target through a probe under the nearest existing ancestor and
+	// shows the same chain. A bare temp dir is not a git repo, so this needs
+	// a real one: without it the chain is the leaf alone.
 	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
 		CWD: missing,
 	})
 	if err != nil {
-		t.Fatalf("hubSpawnSlashCatalog: %v, want ancestor-project inventory for a not-yet-created cwd", err)
+		t.Fatalf("hubSpawnSlashCatalog: %v, want ancestor-chain inventory for a not-yet-created cwd", err)
 	}
 	deploy := slashCatalogCommandByName(t, resp, "deploy")
 	if deploy.Source != "project" {
@@ -309,6 +312,30 @@ func TestHubSpawnSlashCatalog_MissingCWDSeesAncestorProjectInventory(t *testing.
 	}
 	if _, ok := slashCatalogSkillNames(resp)["deployskill"]; !ok {
 		t.Errorf("project skill %q missing from missing-cwd catalog: %v", "deployskill", slashCatalogSkillNames(resp))
+	}
+}
+
+func TestHubSpawnSlashCatalog_MissingCWDOutsideRepoIsUserLevelOnly(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	parent := t.TempDir()
+	// No git repo: chain discovery is the leaf alone, and the missing leaf
+	// is empty — so (like thread/start at the created-then-empty target) the
+	// honest inventory is user-level-only. Ancestor project files must not
+	// leak in.
+	writeSlashCatalogProjectCommand(t, parent, "deploy", "Deploy the thing")
+	missing := filepath.Join(parent, "not-yet-created")
+
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD: missing,
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v", err)
+	}
+	for _, cmd := range resp.Commands {
+		if cmd.Name == "deploy" {
+			t.Errorf("non-repo ancestor command %q leaked into missing-cwd catalog", cmd.Name)
+		}
 	}
 }
 
@@ -323,5 +350,39 @@ func TestHubSpawnSlashCatalog_FileCWDIsInvalidParams(t *testing.T) {
 		CWD: file,
 	}); err == nil {
 		t.Fatal("hubSpawnSlashCatalog with a file cwd = nil error, want InvalidParams")
+	}
+}
+
+func TestHubSpawnSlashCatalog_MissingCWDDoesNotLeakAncestorLocalConfig(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	parent := t.TempDir()
+	hubTestMakeGitRepo(t, parent, "README.md", "repo")
+	// Ancestor chain items DO surface...
+	writeSlashCatalogProjectCommand(t, parent, "deploy", "Deploy the thing")
+	// ...but the ancestor's own cwd-anchored launch.local.toml must NOT:
+	// thread/start at the (empty) target reads target/.evener/launch.local.toml
+	// (absent), never the ancestor's.
+	leakSkills := t.TempDir()
+	writeSlashCatalogSkill(t, leakSkills, "leaked", "leaked", "Must not appear")
+	evenerDir := filepath.Join(parent, ".evener")
+	if err := os.MkdirAll(evenerDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evenerDir, "launch.local.toml"),
+		[]byte(`skills_dirs = ["`+leakSkills+`"]`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(parent, "not-yet-created")
+
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD: missing,
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v", err)
+	}
+	slashCatalogCommandByName(t, resp, "deploy")
+	if _, ok := slashCatalogSkillNames(resp)["leaked"]; ok {
+		t.Errorf("ancestor launch.local.toml skill %q leaked into missing-cwd catalog", "leaked")
 	}
 }
