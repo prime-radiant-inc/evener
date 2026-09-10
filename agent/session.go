@@ -1945,12 +1945,29 @@ func (s *Session) maybeAutoSave() {
 // autoSaveMeta persists the session metadata, reporting the write outcome so
 // mutation paths can refuse to journal success for a write that never landed.
 // maybeAutoSave keeps the warn-only contract for the non-mutation callers.
+//
+// autoSaveMetaLocked is the same write for callers that already hold
+// metaSaveMu (a mutation+rollback critical section): the lock must stay held
+// from the save attempt through the rollback, so a concurrent maybeAutoSave
+// cannot snapshot a transient mutation between a failed save and its restore
+// and persist it to disk.
 func (s *Session) autoSaveMeta() error {
 	if s.stateDir == "" {
 		return nil
 	}
 	s.metaSaveMu.Lock()
 	defer s.metaSaveMu.Unlock()
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) autoSaveMetaLocked() error {
+	if s.stateDir == "" {
+		return nil
+	}
+	return s.saveSessionMetaLocked()
+}
+
+func (s *Session) saveSessionMetaLocked() error {
 	meta := s.Meta()
 	if fs := s.cfg.testOnly.metaFS; fs != nil {
 		return schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)

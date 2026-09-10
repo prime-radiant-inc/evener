@@ -270,9 +270,11 @@ func canonicalHTTPURL(raw string) (string, error) {
 // returns its file:/// absolute form, rejecting out-of-scope paths via the
 // execenv.RootBoundary precedent (the same symlink-aware escape check the
 // shell tool applies to a model-chosen cwd). file-URL callers pass the
-// ESCAPED path form (see canonicalSessionURL): it is unescaped here, AFTER
-// the scope check, so an encoded "%2F" cannot smuggle a hierarchy change
-// past it and the stored form serializes back through net/url below.
+// ESCAPED path form (see canonicalSessionURL): it is unescaped here, BEFORE
+// the scope check, and must stay that way — decoding first is what keeps an
+// encoded "%2F" traversal inside the scoped hierarchy instead of smuggling
+// it past the check to unescape later. The stored form serializes back
+// through net/url below.
 func canonicalFilePath(path, cwd, raw string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("urls/add: empty file path in %q", raw)

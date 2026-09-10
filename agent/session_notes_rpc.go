@@ -225,15 +225,25 @@ func (s *Session) completeNotesHumanSet(lease *clientMutationLease, outerID, not
 	// metadata write. A crash or journal-write failure after it still
 	// recovers delivery from the intent — no second write is needed for
 	// safety, and the retry never rewrites the store.
-	if err := s.persistNotesMetaWithIntent(outerID, stored, changed); err != nil {
+	//
+	// The rollback below holds metaSaveMu across the failed save AND the
+	// in-memory restore: autoSaveMeta releases the lock on failure, and a
+	// concurrent maybeAutoSave interleaving between the two would snapshot
+	// the transient mutation and persist it to disk — after which the RPC
+	// reports failure and restores memory, leaving disk inconsistent and
+	// the failed mutation to reappear after restart.
+	s.metaSaveMu.Lock()
+	if err := s.persistNotesMetaWithIntentLocked(outerID, stored, changed); err != nil {
 		// The write never landed, so the store rolls back to the value the
 		// persistence still holds: a retry must see the write as unfinished
 		// (changed) and complete its emission + steer, instead of converging
 		// on a silent success for a note nobody was told about (G2).
 		s.setHumanNote(prev)
+		s.metaSaveMu.Unlock()
 		lease.Release()
 		return stored, err
 	}
+	s.metaSaveMu.Unlock()
 	if !changed {
 		return s.applyNotesHumanSetResult(lease, outerID, stored)
 	}
@@ -716,7 +726,13 @@ func (s *Session) consumePendingNotesHumanDurable(outerID string) error {
 		s.pendingNotesHuman = nil
 	}
 	s.mu.Unlock()
-	if err := s.autoSaveMeta(); err != nil {
+	// Hold the metadata-save lock across the save and the restore below: a
+	// concurrent maybeAutoSave interleaving between the two would snapshot
+	// the intent-free transient state and persist the spend the failure just
+	// refused — stranding the delivery the caller still owes.
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
+	if err := s.autoSaveMetaLocked(); err != nil {
 		s.mu.Lock()
 		if s.pendingNotesHuman == nil {
 			s.pendingNotesHuman = make(map[string]schema.PendingNotesHuman)
@@ -746,6 +762,12 @@ func (s *Session) pendingNotesHumanIntent(outerID string) (stored string, change
 // carries both. A no-op save (post-clamp text already stored) records its
 // intent as delivery-complete: the retry journals success with no event
 // and no steer, matching applyNotesHumanSetResult below.
+//
+// persistNotesMetaWithIntentLocked is the same write for callers that
+// already hold metaSaveMu (the mutation+rollback critical section): the
+// metadata-save lock stays held from the save attempt through the rollback,
+// so a concurrent maybeAutoSave cannot snapshot the transient mutation
+// between the failed save and its restore and persist it to disk.
 func (s *Session) persistNotesMetaWithIntent(outerID, stored string, changed bool) error {
 	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
 		if err := fault(); err != nil {
@@ -759,6 +781,30 @@ func (s *Session) persistNotesMetaWithIntent(outerID, stored string, changed boo
 	s.pendingNotesHuman[outerID] = schema.PendingNotesHuman{Note: stored, Changed: changed}
 	s.mu.Unlock()
 	if err := s.autoSaveMeta(); err != nil {
+		s.mu.Lock()
+		delete(s.pendingNotesHuman, outerID)
+		if len(s.pendingNotesHuman) == 0 {
+			s.pendingNotesHuman = nil
+		}
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (s *Session) persistNotesMetaWithIntentLocked(outerID, stored string, changed bool) error {
+	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
+		if err := fault(); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	if s.pendingNotesHuman == nil {
+		s.pendingNotesHuman = make(map[string]schema.PendingNotesHuman)
+	}
+	s.pendingNotesHuman[outerID] = schema.PendingNotesHuman{Note: stored, Changed: changed}
+	s.mu.Unlock()
+	if err := s.autoSaveMetaLocked(); err != nil {
 		s.mu.Lock()
 		delete(s.pendingNotesHuman, outerID)
 		if len(s.pendingNotesHuman) == 0 {
@@ -836,10 +882,16 @@ func (s *Session) mutateHumanNoteSerialized(note string) (stored string, changed
 	defer s.notesUpdateMu.Unlock()
 	prev, _ := s.notesSnapshot()
 	stored, changed = s.setHumanNote(note)
-	if err = s.persistNotesMeta(); err != nil {
+	// Hold the metadata-save lock across the save attempt and the rollback
+	// below: a concurrent maybeAutoSave interleaving between the two would
+	// persist the transient mutation to disk before the restore.
+	s.metaSaveMu.Lock()
+	if err = s.persistNotesMetaLocked(); err != nil {
 		s.setHumanNote(prev)
+		s.metaSaveMu.Unlock()
 		return stored, changed, "", "", err
 	}
+	s.metaSaveMu.Unlock()
 	if !changed {
 		return s.notesSnapshotPair(stored, false)
 	}
@@ -857,6 +909,12 @@ func (s *Session) notesSnapshotPair(stored string, changed bool) (string, bool, 
 // persistNotesMeta persists the notes store, propagating a failure so the
 // caller refuses to journal success for a write that never landed. A
 // test-injected fault surfaces as the mutation error.
+//
+// persistNotesMetaLocked is the same write for callers that already hold
+// metaSaveMu (a mutation+rollback critical section): the lock must stay held
+// from the save attempt through the rollback, so a concurrent maybeAutoSave
+// cannot snapshot a transient mutation between a failed save and its restore
+// and persist it to disk.
 func (s *Session) persistNotesMeta() error {
 	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
 		if err := fault(); err != nil {
@@ -864,6 +922,15 @@ func (s *Session) persistNotesMeta() error {
 		}
 	}
 	return s.autoSaveMeta()
+}
+
+func (s *Session) persistNotesMetaLocked() error {
+	if fault := s.cfg.testOnly.notesAutoSaveFault; fault != nil {
+		if err := fault(); err != nil {
+			return err
+		}
+	}
+	return s.autoSaveMetaLocked()
 }
 
 // annotateSteeringKind stamps kind onto the queued steering entry for
@@ -991,12 +1058,17 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	// absence is not journaled as success for a write that never landed
 	// and a retry still owns the removal. The store rolls back to the
 	// pre-removal list, so the removed entry is present again for the retry
-	// to own instead of standing removed-but-unannounced (G2).
-	if err := s.persistNotesMeta(); err != nil {
+	// to own instead of standing removed-but-unannounced (G2). The
+	// save+rollback holds metaSaveMu so a concurrent autosave cannot persist
+	// the transient removal between the failed save and the restore.
+	s.metaSaveMu.Lock()
+	if err := s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
+		s.metaSaveMu.Unlock()
 		lookup.Lease.Release()
 		return false, err
 	}
+	s.metaSaveMu.Unlock()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 }
@@ -1057,12 +1129,15 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 	defer s.notesUpdateMu.Unlock()
 	prevHuman, prevAgent := s.notesSnapshot()
 	stored, changed = s.setAgentNote(note)
-	if err = s.persistNotesMeta(); err != nil {
+	s.metaSaveMu.Lock()
+	if err = s.persistNotesMetaLocked(); err != nil {
 		s.mu.Lock()
 		s.humanNote, s.agentNote = prevHuman, prevAgent
 		s.mu.Unlock()
+		s.metaSaveMu.Unlock()
 		return stored, changed, "", "", err
 	}
+	s.metaSaveMu.Unlock()
 	if !changed {
 		return s.notesSnapshotPair(stored, false)
 	}
@@ -1102,10 +1177,13 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 	if err != nil {
 		return schema.SessionURL{}, nil, err
 	}
-	if err = s.persistNotesMeta(); err != nil {
+	s.metaSaveMu.Lock()
+	if err = s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
+		s.metaSaveMu.Unlock()
 		return schema.SessionURL{}, nil, err
 	}
+	s.metaSaveMu.Unlock()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return entry, urls, nil
@@ -1125,10 +1203,13 @@ func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, url
 	if !removed {
 		return false, nil, nil
 	}
-	if err = s.persistNotesMeta(); err != nil {
+	s.metaSaveMu.Lock()
+	if err = s.persistNotesMetaLocked(); err != nil {
 		s.restoreSessionURLsLocked(prev)
+		s.metaSaveMu.Unlock()
 		return false, nil, err
 	}
+	s.metaSaveMu.Unlock()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return true, urls, nil
