@@ -1417,11 +1417,11 @@ func TestFixWaveC1AllKindsFire(t *testing.T) {
 			wantTrigger: "completed",
 		},
 		{
-			name:        "until_approval answered",
+			name:        "until_approval resolved or cleared",
 			req:         goal.WaitKind{Kind: goal.WaitUntilApproval, Target: "ship it?", AskGeneration: "gen1", Timeout: time.Hour},
 			sub:         &fixStubSubstrate{approvals: map[string]bool{"ship it?\x00gen1": true}},
 			mutate:      func(sub *fixStubSubstrate) { delete(sub.approvals, "ship it?\x00gen1") },
-			wantTrigger: "approval answered",
+			wantTrigger: "approval ask resolved or cleared",
 		},
 		{
 			name:        "file_modified delta",

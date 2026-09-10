@@ -533,8 +533,11 @@ func cooldownKey(kind Kind, subtype EventSubtype, target string) string {
 //   - until_job/until_delegate: retained-terminal → fire with the terminal
 //     excerpt; live-but-unfinished → park; unknown/unowned → loss.
 //   - until_approval: live ask still matching → park (the answer arrives as
-//     the reply turn, which the gate claims); consumed/missing ask → fire
-//     with the answered excerpt (the approval resolved while parked).
+//   - until_approval: live ask still matching → park (the answer arrives as
+//     the reply turn, which the gate claims); missing ask → fire with the
+//     neutral resolved-or-cleared excerpt for re-validation (a cleared ask is
+//     indistinguishable from an answered one at the substrate — the reply
+//     turn's content, not the trigger text, carries the verdict).
 //   - until_child: terminal status → fire; known non-terminal → park;
 //     unknown → loss.
 //   - file_modified: baseline delta → fire; unchanged → park; unstatable →
@@ -624,11 +627,12 @@ func waitPredicateTruth(sub Substrate, w Wait, childTerminal func(childID string
 		if sub.LookupApproval(w.Lease.Predicate.Target, w.Lease.Predicate.AskGeneration) {
 			return false, "", false, ""
 		}
-		// The live ask the lease bound is gone: the approval resolved while
-		// parked (consumed answers never match by design, spec §2). Fire
-		// with the answered excerpt — the reply turn is the wake's
-		// re-validation read.
-		return true, "approval answered: " + w.Lease.Label, false, ""
+		// The live ask the lease bound is gone: resolved or cleared while
+		// parked (consumed answers never match by design, spec §2 — and a
+		// cleared-but-unanswered ask reads identically at the substrate).
+		// Fire with the neutral excerpt — the reply turn is the wake's
+		// re-validation read, and its content carries the verdict.
+		return true, "approval ask resolved or cleared: " + w.Lease.Label + " — re-validate the reply before proceeding", false, ""
 	case WaitUntilChild:
 		if childTerminal != nil {
 			if trigger, ok := childTerminal(w.Lease.Predicate.Target); ok {
@@ -1032,7 +1036,7 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	}
 	// Attach-scan at registration (spec §2: already-true predicates do not
 	// park): evaluate the fresh lease against the substrate now. Already-true
-	// (file already modified, approval already answered) fires immediately
+	// (file already modified, approval ask already gone) fires immediately
 	// with the §5 cooldown armed — the evaluation turn drives at once
 	// instead of parking until expiry. Job/delegate retained-terminal
 	// already routed to catchUp above; live ones park. The scan replays the
@@ -1697,8 +1701,12 @@ func (s *Store) claimFireLocked(waitID, trigger string, expiry bool, now time.Ti
 // SetTerminal transitions an active or waiting goal to a terminal status (used
 // by update_goal and terminateGoalOnError). Waits are cleared on every
 // terminal transition (spec §1) so no terminal goal projects a stale
-// waiting_on[]; the consumed-fire backlog survives for the Task-2 gate to
-// drain. Returns false (no-op) if there is no goal or it is already terminal.
+// waiting_on[]; the consumed-fire backlog drains with it — the gate
+// short-circuits terminals before draining, so a carried backlog would ride
+// the next retarget as Superseded (one no-op continuation with stale context
+// on the new objective). A terminal goal carries no backlog into a
+// replacement objective. Returns false (no-op) if there is no goal or it is
+// already terminal.
 func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1708,6 +1716,7 @@ func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	s.goal.Status = status
 	s.goal.StopReason = reason
 	s.goal.Waits = nil
+	s.goal.PendingWake = nil
 	s.goal.UpdatedAt = now
 	s.settleParkAnchorLocked(now)
 	return true
