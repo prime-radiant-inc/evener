@@ -241,10 +241,14 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
 		return notification
 	}
-	if !allowFork || params.ResumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired") {
-		return notification
+	fenced := params.ResumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired")
+	if allowFork && !fenced {
+		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
+	} else {
+		// Clear a stale daemon value as well as refusing to add the action. The
+		// notification is the client's authoritative status transition.
+		params.Capabilities["forkFromTurn"] = json.RawMessage("false")
 	}
-	params.Capabilities["forkFromTurn"] = json.RawMessage("true")
 	encoded, err := json.Marshal(params.Capabilities)
 	if err != nil {
 		return notification
@@ -613,9 +617,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
 					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
-					if ownsFork {
-						notification = stampForkCapability(notification, ownsFork)
-					}
+					notification = stampForkCapability(notification, ownsFork)
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
 					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)

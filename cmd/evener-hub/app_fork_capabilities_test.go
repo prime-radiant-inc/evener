@@ -218,7 +218,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 			{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
 		} {
 			original := appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, appwire.ThreadStatusChangedParams{
-				Status: status, Capabilities: &appwire.ThreadCapabilities{},
+				Status: status, Capabilities: &appwire.ThreadCapabilities{ForkFromTurn: true},
 			})}
 			got := stampForkCapability(original, true)
 			var params appwire.ThreadStatusChangedParams

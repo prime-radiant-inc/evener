@@ -435,6 +435,10 @@ func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwir
 		}
 		return thread
 	}
+	if cfg.Roster != nil && cfg.Roster.OwnershipError() != nil {
+		thread.Evener.Capabilities.ForkFromTurn = false
+		return thread
+	}
 	storageAvailable := strings.TrimSpace(cfg.StateDir) != ""
 	if !storageAvailable && cfg.Past != nil {
 		if entry, ok := cfg.Past.Find(ref.ThreadID); ok {
