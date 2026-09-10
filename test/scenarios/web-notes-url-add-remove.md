@@ -3,7 +3,7 @@
 **What this covers**: the session URL list end to end on the web surface.
 The agent's `urls_add` tool (`agent/internal/tool/definitions.go:DefUrlsAdd`,
 agent tool name `urls_add` — tool names cannot contain slashes, so the wire
-RPC `urls/add` and the tool differ in spelling) appends entries the Details
+RPC `urls/add` and the tool differ in spelling) appends entries the Notes
 panel renders as links; the human's `urls/remove`
 (`appwire/types.go:826-837`, daemon `agent/session_notes_rpc.go:RemoveSessionURL`)
 removes one by id; the `evener/urls/updated` push keeps every client
@@ -24,9 +24,9 @@ four things in one run:
 - **Agent-side add reaches the browser.** `urls_add` stores
   `{id, url, label, addedBy, addedAt}` (identity pinned by
   `TestAddSessionURLDedupKeepsIdentity` — a re-add keeps the first id) and
-  emits `evener/urls/updated`; the Details panel's links row renders one
+  emits `evener/urls/updated`; the Notes panel's links row renders one
   `<li data-testid="shared-notes-url-<id>">` per entry
-  (`DetailsPanel.tsx:254-283`).
+  (`NotesPanel.tsx:203-251`).
 - **Human-side remove is id-addressed and push-authoritative.**
   `urls/remove` takes `{ref, clientMutationId, expectedInstanceId, id}` and
   its response carries no state at all (`UrlsRemoveResponse` is empty by wire
@@ -55,32 +55,28 @@ tool and removal goes through the real UI (the row's Remove button) plus
 - A freshly built hub on an isolated `$HOME` and a kernel-assigned port — see
   the Setup checklist in `docs/developing-evener/agentic-testing.md`. Token at
   `$HOME/.evener/auth-token` (that isolated one).
-- **No provider credential needed.** This card drives the session against
-  `test/e2e/fakellm` (a scripted OpenAI-compatible provider local to the
-  repo): `scripts/e2e/e2e-webui-turn-controls.sh` builds fakellm + evener +
-  the SPA into a throwaway run dir, starts both on kernel-assigned ports,
-  and points the hub's `providers.toml` at fakellm. The fake answers every
-  round with a tool call of its own choosing — but the agent's `urls_add`
-  tool is invoked by *prompting the session to call it*, and a scripted
-  provider still routes tool calls through the real session loop, so prompt
-  the session to call `urls_add` (step 1) rather than trying to inject the
-  tool call at the provider boundary.
+- **This model-choice variant requires an explicitly chosen live provider
+  and its credential.** First verify an ordinary tool round on that provider;
+  setup failure is not URL behavior. The standalone `test/e2e/fakellm/cmd`
+  used by `scripts/e2e/e2e-webui-turn-controls.sh` emits fixed `read_file`
+  calls (`main.go:392`), not `urls_add` selected by prompting. Follow the
+  isolated-hub setup guide above with your live provider/model. A deterministic
+  variant must instead script `urls_add` at the external LLM boundary and
+  drive the real session loop; do not claim the standalone fake does this.
 - A real SPA bundle (`make build-web` — a checkout that has never run it serves a
-  one-line `frontend/dist/PLACEHOLDER` and no app). The script above builds it
-  unless passed `--skip-web`.
+  one-line `frontend/dist/PLACEHOLDER` and no app).
 - A hermetic `$WORK` as the session's `working_dir` (the script's
-  `$workspace` serves; `mktemp -d` otherwise).
+  `$workspace` serves if using a scripted stack; `mktemp -d` otherwise).
 
 ## Steps
 
 Spawn through the AppWire-backed UI: visit `$HUB/auth/$TOKEN`, navigate to
-`/new`, use working directory `$WORK`, model `fake/fake-test-model`, and a
+`/new`, use working directory `$WORK`, your chosen live provider/model, and a
 prompt that makes the agent record two links, e.g. `Call urls_add twice:
 once with url "https://example.com/notes-spec" and label "spec", once with
-url "https://example.com/notes-mock" and label "mock". Then stop.` The turn
-ends when the fake's `--rounds` budget runs out at the latest, so even if the
-model dawdles the session settles. Read the session ref off the resulting
-`/s/local:<SID>` path, and wait for `idle` (poll `thread/read`'s
+url "https://example.com/notes-mock" and label "mock". Then stop.` Await actual
+successful `urls_add` tool results, not just a model claim. Read the session
+ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/read`'s
 `result.thread.status.type` — a running turn is `active`, never
 `processing`, which is not a wire value at all).
 
@@ -108,8 +104,8 @@ model dawdles the session settles. Read the session ref off the resulting
    await_element [data-testid="composer-input-card"]
    ```
    (Use the literal token, not the path. Note the ref form — a bare `/s/<SID>`
-   renders "Page not found" by design.) Open the Details panel and read the
-   Shared notes section:
+   renders "Page not found" by design.) Open **Notes** from the session
+   chrome button/menu or `/notes` desktop pane and read the Shared notes section:
    ```javascript
    (() => {
      const section = document.querySelector('[data-testid="shared-notes-section"]');
@@ -132,12 +128,12 @@ model dawdles the session settles. Read the session ref off the resulting
    with the `<id>` half byte-identical to the wire id from step 1 (this
    pairing is the discoverability proof — see step 5); each `http(s)` URL
    renders as an anchor (`href` exactly the URL, `target _blank`,
-   `rel="noopener noreferrer"`, `DetailsPanel.tsx:259-262`); each row carries
-   a Remove button whose `data-testid` is `shared-notes-url-remove-<id>`
-   with the *same* `<id>` (`:268-275`). File/path URLs would render as inert
-   text with no anchor (the OpenButton affordance is explicitly descoped for
-   this section, `DetailsPanel.tsx:129-136`) — this card uses `https:` URLs
-   precisely so the anchor half is exercised.
+   `rel="noopener noreferrer"`, `NotesPanel.tsx:214`); the destination URL
+   remains visible beside a label. Each row carries a Remove button whose
+   `data-testid` is `shared-notes-url-remove-<id>` with the *same* `<id>`
+   (`:233-243`). In-scope file URLs use the in-app open-beside affordance
+   with visible URL text; unsupported/out-of-scope paths have no affordance
+   (`:219-230`). This card uses `https:` URLs to exercise the anchor half.
 
 3. **[browser] Remove one link through the real UI.** Click the `U_MOCK`
    row's Remove button (`[data-testid="shared-notes-url-remove-<U_MOCK>"]`)
@@ -217,9 +213,9 @@ model dawdles the session settles. Read the session ref off the resulting
   anchors with exact hrefs, per-row `shared-notes-url-remove-<id>` buttons.
   Falsify: rows keyed by anything but the wire id (the step-5 pairing
   breaks); `http(s)` links rendered as inert text (the `isWebURL` branch
-  regressed, `DetailsPanel.tsx:134-136`); Remove buttons missing while live
+  regressed, `NotesPanel.tsx:208-230`); Remove buttons missing while live
   (the ordered display rule regressed — rule 2 strips them only when *not*
-  live, `:268`).
+  live, `NotesPanel.tsx:233`).
 - **Step 3 (UI remove, qualitative)**: one row gone on push, no toast.
   Falsify: row gone with no push on the socket (an optimistic edit against
   the design); row persisting after the push (the reducer/store fold dropped

@@ -194,14 +194,16 @@ the Past index's Recent list.
 ## Shared notes
 
 - `web-notes-human-interrupts.md` — a human note set mid-turn interrupts
-  the model loop (derived `<outer>/note-steer` inner id, `shared-notes`
-  capability pre-flight gate), the transcript divider renders the
-  wire-kind label `System steered: Human note`, the Details Shared notes
-  section shows it, and a fresh `thread/read` carries it (the Task 7 I1
+  the model loop (one atomic mutation ID and typed pending notification,
+  `shared-notes` capability pre-flight gate), the transcript divider renders
+  the wire-kind label `System steered: Human note`, and Notes shares drafts
+  with 10,000 ms dirty-blur saving, refocus cancellation and panel lifetime
+  preservation, and a fresh `thread/read` carries it (the Task 7 I1
   live-envelope pin); history check bounds per-round `NOTES_CONTEXT`
   growth (Task 5 M3).
 - `web-notes-url-add-remove.md` — agent `urls_add` links render as
-  per-id `shared-notes-url-<id>` rows, human `urls/remove` deletes by id
+  per-id `shared-notes-url-<id>` rows in Notes (explicit live-provider
+  model-choice setup), human `urls/remove` deletes by id
   with the `evener/urls/updated` push as authority (empty response by
   design), removal converges without reload, the row/button testid
   pairing answers the bare-id discoverability question (Task 8 minor 5),

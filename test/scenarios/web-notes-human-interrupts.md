@@ -5,8 +5,8 @@ surface. `notes/human/set` (`appwire/types.go:810-824`,
 `agent/session_notes_rpc.go:SetHumanNote`) stores the note, emits
 `evener/notes/updated`, and injects a steer that interrupts the running turn;
 the projector labels the steering divider `Human note`
-(`SteeringItem.tsx:69`, kind `human-note` on the wire); the Details panel's
-Shared notes section renders it (`DetailsPanel.tsx:147-292`); and a fresh
+(`SteeringItem.tsx:69`, kind `human-note` on the wire); the Notes panel's
+Shared notes section renders it (`NotesPanel.tsx:165-261`); and a fresh
 live read carries the note (the Task 7 I1 gap — fixed by the envelope
 projection in `server/thread_envelope.go` + `server/appwire_runtime.go`,
 pinned at unit level by
@@ -26,15 +26,15 @@ work. It exercises four things in one run:
   the `shared-notes` capability and resumes an exited session first, like
   `goal/set`. Same retry-safe-mutation shape as the goal precedent:
   `clientMutationId` + `expectedInstanceId` (`appwire/types.go:813-818`).
-- **The human-note steer interrupts the model loop** — the daemon injects the
-  note via `AcceptClientMutationSteer` under the derived inner id
-  `<outer>/note-steer` (`session_notes_rpc.go:53-65`), so a hub retry of the
-  outer RPC dedupes in the mutation store instead of double-interrupting.
-- **The divider label comes from the wire, not the prose** — the queued entry
-  is annotated `events.SteeringKindHumanNote` after acceptance, and the
+- **The human-note steer interrupts the model loop** — `executeAtomic`
+  durably accepts the canonical note, one typed pending steering entry and
+  the receipt together (`agent/session_notes_rpc.go:SetHumanNote`). One
+  `clientMutationId` survives dispatch, retry, receipt reconciliation and
+  ordinary pending-steering delivery; a retry cannot enqueue a second entry.
+- **The divider label comes from the wire, not the prose** — the steering
+  kind `events.SteeringKindHumanNote` is persisted at acceptance, and the
   transcript divider renders `System steered: Human note`
-  (`SteeringItem.tsx:69,202-203`) instead of a reader guessing the kind from
-  the `human updated their whiteboard: …` text.
+  (`SteeringItem.tsx:69,202-203`) without guessing from the note's prose.
 - **Rejoin carries the note** — the live envelope seeds `HumanNote` from
   `SessionMeta()` and the root commit path patches it from
   `NotesUpdatedParams` (`server/thread_envelope.go`, `server/appwire_runtime.go`),
@@ -47,7 +47,7 @@ selector map there is the single place these hooks are maintained. The
 `window.EvenerRenderer.sessionId` route this card used to drive died with the
 vanilla frontend (`660376f78`), and its replacement is **not reachable from
 `eval`**: `threadsStore` is a module import with nothing on `window`. So the
-browser half must go through the real UI (the Details editor), and the exact
+browser half must go through the real UI (the Notes editor), and the exact
 assertions go to `/rpc` instead.
 
 ## Pre-state
@@ -136,14 +136,31 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    await_element [data-testid="composer-input-card"]
    ```
    (Use the literal token, not the path. Note the ref form — a bare `/s/<SID>`
-   renders "Page not found" by design.) Open the Details panel and find
-   `[data-testid="shared-notes-section"]` with
-   `[data-testid="shared-notes-human"]` reading the step-2 text (the push
-   `evener/notes/updated` has landed by now, so the section shows the stored
-   value, not a draft). Then click `[data-testid="shared-notes-edit"]`, type
-   into the `Human note` textarea, and press `[data-testid="shared-notes-save"]`
-   (`DetailsPanel.tsx:214-245`). There is no `window` handle to call
-   `setHumanNote` through; drive the editor.
+   renders "Page not found" by design.) Open **Notes** using its session
+   chrome button/menu or `/notes` desktop pane. Find
+   `[data-testid="shared-notes-section"]` and read the step-2 text from
+   `[data-testid="shared-notes-editor"] textarea[aria-label="Human note"]`
+   via `.value`; `shared-notes-human` is ended-session prose, not this live
+   editor. There are no Edit/Save controls (`NotesPanel.tsx:165-187`).
+
+   Edit to a distinct note, then blur. A dirty blur starts a **10,000 ms**
+   timer only if no same-session editor remains focused. Observe the RPC
+   timeline: no request before expiry; then await the save acknowledgment
+   and `[data-testid="shared-notes-saved"]`. `shared-notes-saving` may appear
+   while pending; failures use inline `shared-notes-error`. Saved proves
+   durable acceptance, not consumption by the model (step 3 proves that).
+
+   Refocus either same-session editor before expiry: the timer is cancelled.
+   Blur again to start a fresh full 10,000 ms interval. Focus alone or an
+   unchanged blur sends nothing. Two mounted editors share one draft/timer.
+   A focused panel closed without blur retains its draft but invents no save;
+   a timer from a real earlier blur survives unmount. Record actual blur
+   events to distinguish these cases. Failed drafts survive close/reopen;
+   newer edits survive older acknowledgments. Ambiguous submitted saves
+   retain their original ID/payload in the existing persisted outbox for
+   retry; unsent drafts are shared UI state, not browser-reload persistence.
+   Compare the clean editor to the server's canonical acknowledgment, not a
+   client-normalized copy. There is no `window` setter; drive the editor.
    ```javascript
    (() => {
      const section = document.querySelector('[data-testid="shared-notes-section"]');
@@ -151,8 +168,8 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
        port: location.port,                        // page-identity check, always
        path: decodeURIComponent(location.pathname), // /s/local:<SID>; the literal colon breaks naive === compare
        section: !!section,
-       human: section?.querySelector('[data-testid="shared-notes-human"]')?.textContent ?? null,
-       editable: !!section?.querySelector('[data-testid="shared-notes-edit"]'),
+       human: section?.querySelector('[data-testid="shared-notes-editor"] textarea')?.value ?? null,
+       editable: !!section?.querySelector('[data-testid="shared-notes-editor"] textarea'),
      };
    })()
    ```
@@ -184,13 +201,10 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    whose body starts `human updated their whiteboard: prefer tabs over
    spaces`. The label must come from the wire kind, not the prose: a divider
    whose body carries the note text but whose summary is the bare `System
-   steered` means the kind annotation was lost (the known
-   `annotateSteeringKind` drain race — the entry drained between acceptance
-   and annotation, `agent/session_notes_rpc.go:95-104` — fired on this turn;
-   the store stays authoritative and the note is still stored, so this is a
-   label gap, not a data loss; re-run to confirm it is the race and not a
-   regression). Falsify: no divider at all while step 3 shows the text
-   reaching the model (the projection dropped the steering turn).
+   steered` means the typed kind was lost and is a regression. The kind is
+   persisted with the accepted entry, not annotated afterward; do not accept
+   a missing label as a timing race. Falsify: no divider at all while step 3
+   shows the text reaching the model (the projection dropped the steering turn).
 
 6. **[browser-free] Rejoin with a fresh read — the Task 7 I1 pin.** Issue a
    new `thread/read` with `includeTurns:true` on a second socket (or the same
@@ -243,12 +257,11 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
 - **Step 3 (interrupt, exact)**: the next fakellm round after the set carries
   the note text. Falsify: `Applied` receipt, silent model — the steer was
   accepted and dropped.
-- **Step 4 (panel, qualitative)**: the Shared notes section shows the note;
-  the Edit → Save round-trip updates it with no toast. Falsify: the section
-  missing while step 1 reports `sharedNotes:true` (the ordered display rule
-  regressed — rule 1 hides only when the capability is *unset*,
-  `DetailsPanel.tsx:192`); or a `Couldn't save note` toast while step 2
-  succeeds (the store path works but the panel's call does not).
+- **Step 4 (panel, qualitative)**: Notes shows the live textarea; dirty blur
+  saves after 10,000 ms and same-session refocus cancels it. Shared drafts
+  survive panel close/reopen under the lifetime rules above. Falsify: missing
+  body while `sharedNotes:true`, an inline save error while step 2 succeeds,
+  duplicate requests, or an older acknowledgment overwriting a newer edit.
 - **Step 5 (label, exact-in-browser)**: a `steering-item` divider labelled
   `System steered: Human note` whose body is the whiteboard text.
 - **Step 6 (rejoin, exact)**: fresh `thread/read` carries the edited note on
@@ -278,7 +291,7 @@ above is what keeps this run's sessions out of them.
   that tries `window.EvenerAppwire.request("notes/human/set", …)` throws, and one that
   optional-chains it **fails open** — reporting "no note set" for what looks
   exactly like a real regression. Set the note through `/rpc` (step 2) for the
-  exact assertion and through the Details editor (step 4) for the UI one.
+  exact assertion and through the Notes editor (step 4) for the UI one.
 - **A human-note steer is `[data-testid="steering-item"]`, not
   `user-message-item`.** The divider is for *daemon*-originated steering
   (labelled `System steered: Human note`); a steer the human typed themselves
@@ -303,11 +316,11 @@ above is what keeps this run's sessions out of them.
   text; asserting a second steer for the same string measures the dedupe, not
   the path.
 - **Retry converges; it does not duplicate.** Re-sending step 2 with the same
-  `clientMutationId` and text is a clamp-then-compare no-op; the inner steer
-  replays `Replayed` without duplicating the queue
-  (`TestSetHumanNoteRetryOfOneOuterIDSteersOnce`). A retry with *different*
-  text under the same inner id is `InvalidRequest` by the mutation contract —
-  do not try that here and read the refusal as a notes bug.
+  `clientMutationId` and payload returns the recorded result, without another
+  accepted notification or reverting a later note. Equal canonical text
+  under a new ID is an applied no-op. A different payload under the same ID
+  is rejected by the mutation contract; never mint a new ID to retry an
+  ambiguous save.
 - **Steering does not terminate the turn.** Like `turn/steer`, the note
   injects into the running loop — the turn keeps going and the model adapts
   on its next round. If the session reaches `ended`/`closed` right after step
@@ -316,14 +329,12 @@ above is what keeps this run's sessions out of them.
   so a global divider count measures the viewport. Scope every query to the
   note's dividers (filter summaries on `Human note`), and use the doctor —
   not DOM counts — for the step-7 history bound.
-- **The drain race eats the label, never the note** (Task 5 row 10 carried
-  watch item). If the entry drains between acceptance and annotation the
-  divider renders the bare `System steered` fallback; the persisted note is
-  the source of truth and the agent still re-reads it. Store authoritative,
-  label best-effort — a missing label on one divider is the race, a missing
-  label on every divider is the regression.
+- **The typed kind is part of atomic acceptance.** A bare `System steered`
+  fallback for a consumed human-note entry is a regression, not tolerated
+  label loss. The note and notification are accepted together; ordinary
+  pending-steering delivery handles wake/recovery/consumption.
 - **The pure store/steer logic is already unit-tested** —
   `TestSetHumanNoteStoresAndSteers` (`agent/session_notes_test.go:203`) pins
-  the inner id, the kind, and the text. If those pass and this card fails,
+  the mutation id, the kind, and the text. If those pass and this card fails,
   the break is in the wiring (relay, gate, projection, or envelope), not the
   store.

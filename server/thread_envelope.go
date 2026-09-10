@@ -391,7 +391,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			if meta.Goal != nil {
 				next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
 			}
-			next.HumanNote = strings.TrimSpace(meta.HumanNote)
+			// Canonical normalization can clamp immediately after a space.
+			// Project its exact text rather than normalizing it a second time.
+			next.HumanNote = meta.HumanNote
 			next.AgentNote = strings.TrimSpace(meta.AgentNote)
 			if len(meta.SessionURLs) > 0 {
 				urls := make([]appwire.SessionURL, 0, len(meta.SessionURLs))
