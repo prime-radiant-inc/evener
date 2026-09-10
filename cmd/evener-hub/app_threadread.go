@@ -422,10 +422,11 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 }
 
 func hubCanForkThread(cfg hubcore.WebConfig, thread appwire.Thread) bool {
-	if !hubOwnsThreadFork(appwire.Thread{Evener: appwire.EvenerThread{Ref: thread.Evener.Ref}}) {
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || ref.SourceID != "local" {
 		return false
 	}
-	if thread.Evener.Kind == "subagent" && cfg.Roster != nil && cfg.Roster.IsSubagentActive(thread.SessionID) {
+	if thread.Evener.Kind == "subagent" && cfg.Roster != nil && cfg.Roster.IsSubagentActive(ref.ThreadID) {
 		return false
 	}
 	return true
