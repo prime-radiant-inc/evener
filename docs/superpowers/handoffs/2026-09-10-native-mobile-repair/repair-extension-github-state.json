@@ -1,0 +1,2728 @@
+{
+  "capturedAt": "2026-09-10T20:44:32.717885+00:00",
+  "openPRHeadRefMismatches": [],
+  "prs": [
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-portable-activity",
+      "headRefOid": "51fc01d0c9c5e0ffeddb9d10129edd80b4fe4707",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1091,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468358",
+          "name": "web",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468163",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:44Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040467918",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468047",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:40:37Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468292",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:40:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468383",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468493",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468483",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:41:59Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468256",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468246",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:43:39Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527545829/job/103040468343",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:39:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:42:08Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1091",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`77fcabc`)\n\n## Review Findings\n- **Severity**: Medium\n- **Location**: `cmd/evener-hub/frontend/src/protocol/activityData.ts:568`\n- **Problem**: `delegateHasActiveWork` still uses `!delegate.terminal` while row visibility uses turn-aware `activityDelegateState`. A turn container with `terminal:true` but an active turn is live for rows yet inactive for `defaultExpandedIDs`, so live turn work does not auto-expand; an empty container with `terminal:false` is inactive for rows yet active for expansion.\n- **Fix**: Reuse one turn-aware active check in both places by extracting it into `protocol/activityData` and calling it from `activityRows.ts` and `defaultExpandedIDs`.\n## Summary\nCentralizes turn-aware activity state but leaves default expansion on the old terminal-only check.\n\n---\n*Reviewers: 2 total (1 done, 1 failed) | Synthesis: codex | Total: 1h2m59s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-native-checkpoint",
+      "headRefOid": "165d9d3d8dda083c4cf839ffba29a61da0f12262",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1096,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:22Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039723932",
+          "name": "web",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:37:52Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724183",
+          "name": "native",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:37:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724122",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039723673",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:44:01Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039723952",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:38:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039723965",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:37:34Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039723951",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:43:17Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724011",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724249",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:37:13Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:49Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724143",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:37:12Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724223",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:41:13Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103039724248",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:37:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:44:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458363/job/103041939748",
+          "name": "static",
+          "startedAt": "2026-09-10T20:44:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:42:06Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1096",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`14c36a3`)\n\n**Verdict: Mostly clean \u2014 one reviewer flagged two minor lifecycle hazards in stale-service recovery and notification cleanup.**\n\n## Medium\n\n- **`mobile/src/state/conversation.ts:2066-2070`** \u2014 The stale-cursor recovery path checks the mutable global `boundSink` but rehydrates with the failed operation\u2019s captured `service`. If service A\u2019s request fails after the store switches to service B, this can read A\u2019s projection using B\u2019s sink and rebind the store to the stale service. Verify the captured operation binding is still current before recovery, and rehydrate with that captured binding\u2019s service and sink; otherwise discard the stale error.\n\n## Low\n\n- **`mobile/src/services/conversation.ts:743-775`** \u2014 Each notification subscription\u2019s cleanup closure invokes the current mutable `notificationUnsub`, so cleanup for an older subscription can unsubscribe a newer subscription and stop active notification delivery. Capture each subscription\u2019s cleanup function and only invoke or clear it when it is still the currently registered cleanup.\n\n---\n\nOne reviewer found no issues. The findings above are isolated to the stale-service recovery and notification-unsubscribe lifecycle paths.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 7s | Total: 45m30s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-transcript-identity",
+      "headRefOid": "66010bc01572e883b45c394f57fb60db3856146c",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1098,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:44:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040018879",
+          "name": "web",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:38:26Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019001",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:40:49Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019444",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040018617",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019401",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:38:34Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019319",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019090",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019160",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:40:37Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019571",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040019166",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:38:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527546171/job/103040018909",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:38:08Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:42:03Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1098",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`2cc8d50`)\n\n**Verdict:** One issue found \u2014 the queued-input rollback path can strand failed sessions.\n\n## Medium\n\n- **Queued-input rollback leaves session stranded**\n  - **Location:** `agent/session_lifecycle.go:1950-1962`, `agent/session_queue.go:751-768`\n  - **Problem:** When environment-context persistence fails for a claimed queued mutation, `pushQueueHead` restores the entry but deletes its pending execution without clearing `ActiveTurnID` or waking the queued-input runner. The outer completion path then sees no pending claim, leaving the queue stranded and subsequent `turn/start` requests rejected as \"turn is already active.\"\n  - **Fix:** Restore queued claims through `returnClaimedQueuedMutation` (or equivalent logic) so the active ID is cleared, the durable queue is reflected, and `wakeForPendingQueuedInput` is called; add coverage for the successful rollback path.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 8s | Total: 32m29s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-round-timing-replay",
+      "headRefOid": "0250b5e31701973d8da38dda475b07a442a51d61",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1100,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:27:01Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1100",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`9362ae1`)\n\n**Verdict:** Mostly clean; one medium-severity compaction/timing identity issue to address.\n\n---\n\n### Medium\n\n- **Compaction-interleaved round timings lose logical-turn identity** \u2014 `agent/session_lifecycle.go:31-41`, `agent/session_lifecycle.go:1856-1861`\n  When a round performs context compaction before its timing event, the live AppWire projector attaches `EventRoundTimings` to the still-active turn. During cold replay, the persisted checkpoint/summary entries close that logical turn, and the persisted timing record has no owner \u2014 so replay places the timing item in a new turn with different turn identity and transcript position. Reloading after compaction can move or duplicate timing items in the UI.\n  **Fix:** Persist the timing record's logical-turn owner and make replay grouping honor it, or make the live projector apply the same turn boundary around compaction that cold replay uses.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 10s | Total: 29m51s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-fork-capability",
+      "headRefOid": "8148c1f32e0842b16b05d9af6c8c153d5da4318f",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1105,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362527",
+          "name": "web",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:35Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362467",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362560",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362371",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:42:15Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:43:22Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362578",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:42:15Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:42Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362745",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362556",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362757",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:42:15Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362726",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:42:14Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362739",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:42:15Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527950168/job/103041362590",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:42:15Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1105",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`7a9288e`)\n\n## Summary: Hub-side fork capability projection is added but capability reporting diverges from recovery, ownership, and lifecycle state across several paths.\n\n### Critical\n_None._\n\n### High\n_None._\n\n### Medium\n\n- **`cmd/evener-hub/app_relay.go:606-609`** \u2014 Fork capability stamped from subscribe-time snapshot, not live status\n  The relay derives `ownsFork` from the cached `target.thread` and forces `forkFromTurn: true` onto every status notification. A session that later transitions to `restartRequired` still receives `forkFromTurn=true` via `stampForkCapability`, while the read path (`applyHubForkCapability`) forces it false \u2014 creating divergent capability reporting between relay and read paths.\n  *Fix:* Fence the relay stamp on the incoming notification's status, or skip `stampForkCapability` when the frame reports `restartRequired`/`ResumeRequired`.\n\n- **`cmd/evener-hub/app_threadlifecycle.go:771-780`** \u2014 Subagent fork guard bypassed on index miss\n  The local fork guard checks only `cfg.Past.Find(ref.ThreadID)`. When `Past` is nil or `Find` misses (stale/missing index for a live or unindexed `local:` subagent), the `hubOwnsThreadFork` check is skipped and the request falls through to `hubForkSession`/`hubAsideSession` via `cfg.StateDir`. Live in-process descendants exposed as read-only aliases can thus be forked if their files already exist.\n  *Fix:* Enforce subagent ownership independent of index freshness \u2014 load session meta directly or check roster/subagent state even when `Find` misses or `Past` is nil.\n\n- **`cmd/evener-hub/app_threadread.go:433-440`** \u2014 Ownership-discovery failures ignored in fork projection\n  `applyHubForkCapability` treats any non-empty `cfg.StateDir` as sufficient and only checks `ResumeRequired` and `RestartRequired`. It ignores daemon ownership-discovery failures, even though the past-thread projection removes mutation capabilities under those failures and `hubThreadFork` rejects while ownership is uncertain. Read/list responses can advertise a fork action that immediately fails.\n  *Fix:* Include ownership-discovery and other mutation-fence state in the projection, preserving a disabled fork capability whenever the hub cannot establish safe ownership.\n\n### Low\n\n- **`cmd/evener-hub/app_threadread.go:425`** \u2014 Parse error preserves stale fork capability\n  `applyHubForkCapability` returns unchanged on `ParseRef` error, preserving any incoming `ForkFromTurn=true`, while `hubOwnsThreadFork` returns false for the same empty/malformed ref.\n  *Fix:* Clear `ForkFromTurn` on parse failure instead of early-returning with capabilities intact.\n\n- **`cmd/evener-hub/app_rpc.go:662-686`** \u2014 Lifecycle responses skip fork projection\n  The new projection is applied to `thread/read` and `thread/list`, but `thread/start` and `thread/resume` return the daemon's unmodified thread snapshot. Since the daemon reports `ForkFromTurn: false`, newly started or resumed local sessions advertise no fork capability until a later read or relayed status update.\n  *Fix:* Apply `applyHubForkCapability` to local lifecycle responses and the initial `thread/started` projection so all snapshots agree.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 19s | Total: 15m7s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-shutdown-boundary",
+      "headRefOid": "6fbe60b7972318fa553d155469a4dc40cc2446d5",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1109,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040253726",
+          "name": "web",
+          "startedAt": "2026-09-10T20:38:50Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254292",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:38:50Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254169",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:38:51Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254181",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:56Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254270",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:38:50Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254301",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254217",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254161",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:41:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254222",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254063",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:43:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527615801/job/103040254133",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:38:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:42:00Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1109",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`d77ccb0`)\n\n## Summary Verdict\n\nTwo medium-severity issues around shutdown/drain coordination and a minor map leak to address; no critical or high-severity problems found.\n\n---\n\n### Medium\n\n- **Stale rendezvous state after shutdown** \u2014 `cmd/evener/serve.go:1105-1115`\n  A `/thread/clear` handler can outlive `httpSrv.Close()` and block in `waitForSessionBridgeDrain`. Meanwhile `runServeWithDeps` returns and its deferred `rvRegistration.Remove()` removes the rendezvous file. Once the drain completes, this code still calls `UpdateSessionID`; `rvreg.Registration.Remove` leaves `registered` set, so `UpdateSessionID` can recreate a rendezvous entry for a replacement session that has already been closed or for a daemon that is exiting, leaving stale discovery state after shutdown.\n  **Fix**: Make rendezvous removal terminal and reject subsequent updates, or coordinate teardown with active clear handlers so no identity update can occur after removal.\n\n- **Lock scope mismatch between comment and usage** \u2014 `cmd/evener/serve.go:661` vs `cmd/evener/serve.go:690` and `cmd/evener/serve.go:1105`\n  Comment says `identityTransitionMu` is the outer lock for brief `currentMu` access and that neither is held while acquiring projection gate or waiting on drain. In practice, `closeLiveSession` holds it across `live.CloseForShutdown()`, and clear holds it across `waitForSessionBridgeDrain()`, `updateSessionID`, `ReplaceAppIdentity`, and `RefreshThreadEnvelope`.\n  **Fix**: Narrow scope to flag read plus session read/swap, release before slow close, drain wait, rendezvous, and projection; or correct the comment and bound the extended section.\n\n### Low\n\n- **`bridgeDrainBySession` map leak** \u2014 `cmd/evener/serve.go:728`\n  `bridgeDrainBySession` grows one entry per bridged session with no delete on drain, abort, or teardown, leaking map entries on long-lived daemons with many clears.\n  **Fix**: Delete the entry after successful drain wait, on clear abort, or when snapshotting teardown drains.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 12s | Total: 8m44s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-preserve-empty-navigation",
+      "headRefOid": "e7160ec0b9b64ac5cbc301a2af64a5a8178dde21",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1111,
+      "state": "CLOSED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:36:55Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974803",
+          "name": "web",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:32:01Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974933",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:34:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017975010",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:38:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974486",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:32:56Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974834",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:32:15Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974705",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:39:23Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974899",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:38Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974968",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:34:26Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974815",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:24Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974807",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:36:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103017974954",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:31:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:38:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103020304664",
+          "name": "static",
+          "startedAt": "2026-09-10T19:38:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103021243436",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:42:49Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:51Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34520930613/job/103021635918",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:42:52Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:34:19Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1111",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`e7160ec`)\n\n**Verdict: 1 finding \u2014 a medium-severity test incompatibility from the empty-slice normalization.**\n\n### Medium\n\n- `cmd/evener-hub/navigation_normalize.go:153` / `cmd/evener-hub/navigation_delta_test.go:142` \u2014 `finish` now converts empty `Entities` slices from `nil` to a non-nil empty slice, but `TestNavigationDeltaReconstructsResourcesWithoutEntities` still asserts `current.Entities == nil`, causing it to fail for both empty-resource cases. Update the test to check `len(current.Entities) == 0` instead of requiring a nil slice, and adjust the stale \"entity-less\" setup wording if needed.\n\n### Note\n\nOne reviewer found the code clean; the medium finding above comes from the reviewer that caught the test mismatch.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 29s | Total: 3m15s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-preserve-roster-loading",
+      "headRefOid": "956a0ea6dd5aea40df9d5e86aed3c664f3640937",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1112,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:39:59Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1112",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`956a0ea`)\n\n## Review Summary\n\nTimeout not enforced at the hub boundary and historical list rows lose previously exposed session state; tests don't cover the timeout path.\n\n---\n\n### High\n\n- **`cmd/evener-hub/app_threadlist.go:44-58`** \u2014 Collection loop waits only on `results` vs `ctx.Done()` with no `sourceTimeout` deadline, so a source that ignores `sourceCtx` blocks the roster forever despite the bounded-wait comment. The production `LocalDaemonSource.ListThreads` already ignores `context.Context`, confirming this is a real risk, not theoretical.\n  - **Fix**: Bound the collect loop with a timer for `sourceTimeout` and skip late sources instead of waiting indefinitely. The buffered result channel already allows late source goroutines to exit without blocking.\n\n### Medium\n\n- **`cmd/evener-hub/app_threadlist.go:96-102, 247-296`** \u2014 Historical/past sessions returned from `thread/list` now use the metadata-only projection, dropping fields previously supplied by `pastEntryThread`: `Tasks`, `Goal`, `Capabilities`, `ResumeRequired`, `RestartRequired`, `Usage`, `Cost`, `WorkMillis`, `VisionModel`, and delegate diagnostics. Clients relying on roster snapshots lose task/goal indicators, recovery state, action availability, and usage information.\n  - **Fix**: Preserve the fields required by the `Thread` list contract when constructing past entries (including `Capabilities` via `pastThreadCapabilities()` and restart/resume status), or introduce and document a separate lightweight list representation instead of silently changing the contents of historical `Thread` objects.\n\n- **`cmd/evener-hub/app_threadlist_bounded_test.go:1-81`** \u2014 Tests cover parallel start and parent cancellation with `time.Hour` timeout but never exercise timeout expiry \u2014 slow-source skip vs explicitly-requested error \u2014 so the bounding behavior has no observable-behavior coverage.\n  - **Fix**: Add a test with a short `sourceTimeout` and a blocked source asserting bounded return with partial results, plus the explicitly-requested error case.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 12s | Total: 9m34s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-source-preservation-20260910",
+      "headRefOid": "15ccc74a8aa37c15c4ec8b40ffda9a93b0e3f8f0",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1113,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:01:23Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1113",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`15ccc74`)\n\n## Code Review Summary\n\nOverall: 1 High and 3 Medium findings across the mobile transport and hub roster paths.\n\n---\n\n### \ud83d\udd34 High\n\n- **Cold roster rows omit capability and metadata aggregates** \u2014 `cmd/evener-hub/app_threadlist.go:287`\n  `pastEntryThreadForList` skips `Evener.Capabilities`, `Tasks`, `Goal`, `Usage`, `Cost`, and `WorkMillis` that `pastEntryThread` previously supplied. Cold threads now report zero capabilities, so clients gating on `forkFromTurn`, `rename`, `compact`, `send`, and related flags disable actions for every stopped session.\n  *Fix*: Populate cheap metadata aggregates without loading transcript event logs \u2014 at minimum `Capabilities: pastThreadCapabilities()` plus `Tasks`, `Goal`, `Usage`, `Cost`, and `WorkMillis` from `entry.Meta`/`StateDir`.\n\n---\n\n### \ud83d\udfe1 Medium\n\n- **Literal IPv6 hosts produce malformed origins and `Host` headers** \u2014 `mobile/src-tauri/src/pairing.rs:161-166`, `mobile/src-tauri/src/network_policy.rs:136-142`, `mobile/src-tauri/src/appwire_transport.rs:624-629`\n  `Url::host_str()` returns IPv6 literals without square brackets, but these helpers interpolate it directly into origins and `Host` headers. A valid pairing URL such as `http://[fd00::1]:9180/auth?...` becomes `http://fd00::1:9180`; `confirm_pairing` then passes that malformed origin to the probe, causing parsing and pairing to fail. AppWire `Host` headers are also malformed for literal IPv6 endpoints.\n  *Fix*: Use the URL authority/origin serializer for persisted origins and bracket IPv6 hosts when constructing `Host` values. Add coverage for literal IPv6 pairing and WebSocket requests.\n\n- **AppWire only tries the first resolved DNS address** \u2014 `mobile/src-tauri/src/appwire_transport.rs:66-73`\n  `NetworkPolicy::resolve` validates and returns every resolved address, but AppWire selects only `addrs().first()`. If DNS returns an unreachable address first and a usable address later, pairing and reconnects fail without trying the remaining approved addresses. The HTTP transport already preserves all resolved addresses, so the two transports behave inconsistently.\n  *Fix*: Attempt each policy-approved socket address until TCP connection succeeds, retaining the existing overall timeout and policy validation.\n\n- **Silent partial failure when list sources time out** \u2014 `cmd/evener-hub/app_threadlist.go:22`\n  `hubThreadList` fans out to sources with a 3s `threadListSourceTimeout` and silently skips timed-out non-explicitly-requested sources (`continue` on error). A slow/busy source produces a partial roster with no error or partial-failure signal.\n  *Fix*: Surface partial failure via logging plus a response-level warning/field, or only bound unresponsive sources after reporting which sources were omitted.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 13s | Total: 33m58s*\n"
+      ]
+    },
+    {
+      "baseRefName": "codex/mobile-sdk-discovery-examples",
+      "headRefName": "codex/mobile-repair-sdk-recipes",
+      "headRefOid": "c89d37ae2eefe6690358336855e2972001635e5b",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1114,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:06:37Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1114",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`c89d37a`)\n\n## Summary Verdict\n\nThree example modules import non-existent SDK symbols and fail at load time; contract suites aren't wired into any test gate; a private-output cleanup assertion contradicts the implementation.\n\n---\n\n## Critical\nNone.\n\n## High\n\n- **Non-existent SDK imports break module loading**\n  `cmd/evener-hub/frontend/src/protocol/examples/activity-logic.mjs:2`, `work-notifications-logic.mjs:2`, `job-output-logic.mjs:2`\n  These examples import `ActivityList` and `parseJobLogTail` from `@evener/appwire-client`, but neither symbol exists in the protocol package source or is exported from `index.ts` (which re-exports only `AppwireClient`, errors, transport, `composeAskAnswers`, and `types.gen`). Both named imports fail at link time, so the recipes and their contract suites cannot load. Because `package.json` includes the entire `examples` directory, the entrypoints fail during module loading before making any RPC request.\n  **Fix**: Add and export `ActivityList` / `parseJobLogTail` from the protocol package with qualification coverage (`scripts/qualify-package.mjs`), or rewrite these recipes against the existing `AppwireClient` surface. Package qualification should also load every shipped entrypoint.\n\n## Medium\n\n- **Contract suites not wired into any test gate**\n  `cmd/evener-hub/frontend/src/protocol/examples/*.contract.mjs`\n  Dozens of new `*.contract.mjs` suites match neither the frontend `vitest` test-file pattern (`*.test.*`/`*.spec.*`) nor the `node --test scripts/*.test.mjs` step in `cmd/evener-hub/frontend/package.json`, so the default test gate never executes them\u2014meaning the broken imports above go undetected.\n  **Fix**: Wire the contract suites into a runnable gate (rename to the vitest pattern, add an explicit `node --test` step, or document them as intentionally unrunnable drafts).\n\n## Low\n\n- **Private-output cleanup assertion contradicts implementation**\n  `cmd/evener-hub/frontend/src/protocol/examples/maintenance-checks.contract.mjs:150`\n  The contract expects the output path to be removed after the callback fails, but `withPrivateOutput` in `private-output.mjs:13-15` only closes the reserved file and intentionally leaves the zero-byte reservation in place. This assertion fails and contradicts the documented race-safe behavior.\n  **Fix**: Update the contract to assert that the empty `0600` reservation remains, or implement race-safe cleanup if deletion is the intended behavior.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 12s | Total: 32m7s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-sdk-evidence",
+      "headRefOid": "eaf8da681f0f4484271cc4882c7ea4359e59c9e1",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1115,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:10Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240790",
+          "name": "web",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:38:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240872",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:00Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020241341",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:57Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240346",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:39:39Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240677",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:39:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240998",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240721",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:37Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240795",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240789",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:17Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240681",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103020240885",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:38:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103022620222",
+          "name": "static",
+          "startedAt": "2026-09-10T19:45:59Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103023802159",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:49:40Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:43Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521550811/job/103023837034",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:49:44Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:51:45Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1115",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`eaf8da6`)\n\n## Summary\n\nTwo Medium and two Low issues around reproducibility, credential isolation, and cleanup verification in the SDK upgrade evidence bundle.\n\n---\n\n**Medium**\n\n- **`docs/design/mobile/assets/sdk-upgrade-current-driver.mjs.txt:44,52-54`** \u2014 Hub is configured and probed with `loopback:${port}`, but the Hub binds via `net.Listen` and reports the resolved address (normally `127.0.0.1:${port}`). The readiness loop never matches the startup message, and `loopback` is not a guaranteed resolvable hostname. Fix: use `127.0.0.1:${port}` consistently, or parse the actual bound address from startup output and use it for readiness and WebSocket connections.\n- **`docs/design/mobile/assets/sdk-upgrade-current-driver.mjs.txt:48`** \u2014 Spreading `process.env` into the installed Hub process leaves ambient provider credentials and qualification variables available to the binary, despite the receipt claiming no credentials were used. A fixture or installed binary could read `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`. Fix: construct an allowlisted environment with only required non-secret variables and isolated `HOME`/XDG paths; do not inherit the parent environment wholesale.\n\n**Low**\n\n- **`docs/design/mobile/assets/2026-09-09-sdk-upgrade-current-outcomes.json:101-108`** \u2014 The retained cleanup probe is recorded as `http://loopback/`, omitting the dynamically allocated Hub port. It tests port 80 (or fails hostname resolution), not the listener used by the readback, so exit code 7 does not establish that the Hub listener was stopped. Fix: preserve the exact probe endpoint including the port, or record a sanitized but verifiable listener identity and probe that.\n- **`docs/design/mobile/assets/sdk-upgrade-current-driver.mjs.txt:36-64`** \u2014 `installedHubReadback` creates a temporary root containing the Hub auth token and state but never removes it; failures before the shutdown block can leave the child Hub running. Repeated or failed runs can accumulate private state and live processes. Fix: wrap process startup and verification in cleanup logic that always terminates and waits for the child and removes the temporary root, including assertion and timeout paths.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 10s | Total: 6m30s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-1-1f1bd6135",
+      "headRefOid": "1f1bd61353acc7ff71551b0e6199df1d31eebf00",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1117,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:56:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232449",
+          "name": "web",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:44:17Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020672789",
+          "name": "web",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020672965",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:54:12Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232363",
+          "name": "static-build",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:57:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232267",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020672963",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673088",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:51:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232393",
+          "name": "lint-repository",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:51:20Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232384",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673030",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673041",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:39:57Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:57:54Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232525",
+          "name": "race-root",
+          "startedAt": "2026-09-09T02:50:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:00:21Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232480",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:31Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673185",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:53:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232361",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-09T02:50:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:39Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020672966",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:58:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232405",
+          "name": "tests",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:34Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020672983",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:55:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102319232431",
+          "name": "fuzz",
+          "startedAt": "2026-09-09T02:50:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:25Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673494",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:44:27Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103020673172",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:39:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T02:57:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102320456547",
+          "name": "static",
+          "startedAt": "2026-09-09T02:57:32Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:00:25Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102320989338",
+          "name": "race-modules",
+          "startedAt": "2026-09-09T03:00:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:56Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103022909745",
+          "name": "static",
+          "startedAt": "2026-09-10T19:46:53Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:02:24Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34304827540/job/102321005139",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-09T03:00:28Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103023815040",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:49:42Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:52:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521744559/job/103023847343",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:49:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:48:47Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1117",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`1f1bd61`)\n\n**Summary:** The new iOS TestFlight workflow cannot run as committed (missing project infrastructure) and exposes distribution secrets to branch-controlled code.\n\n## High\n\n- **`.github/workflows/ios-testflight.yml:41,47-51,84-169`** \u2014 `mobile-native/` does not exist in this checkout, so cache paths, working directories, install, Expo prebuild, Fastlane signing, archiving, and upload steps cannot succeed. Add the native project and its manifests/scripts in the same change, or keep the workflow disabled until those files land.\n- **`.github/workflows/ios-testflight.yml:55-57`** \u2014 `npm ci --prefix cmd/evener-hub/frontend/src/protocol` targets a directory with only `.ts` sources and no `package.json`/lockfile, and `make test-native test-api-package` are not defined targets in `Makefile`/`make/*.mk`. The workflow fails even if `mobile-native/` is later added. Install from an existing package root and invoke existing gates, or add the missing package and targets together.\n- **`.github/workflows/ios-testflight.yml:4,29-30,68-169`** \u2014 `workflow_dispatch` checks out the selected branch, then runs repo-controlled Ruby/Fastlane scripts with signing certificates, provisioning profiles, and App Store Connect credentials exposed. A repository writer can dispatch a modified branch that exfiltrates those secrets. Restrict dispatch to a protected ref/environment, pin a trusted immutable checkout for privileged steps, and require approval before exposing signing secrets.\n\n## Medium\n\n- **`.github/workflows/ios-testflight.yml:63-64`** \u2014 Build-number regex imposes a narrower `1-4/1-2/1-2` format than actual App Store Connect requirements, rejecting valid longer numeric build identifiers. Validate against the documented Apple build-number grammar.\n- **`.github/workflows/ios-testflight.yml:126`** \u2014 Replacing the user keychain search list with only the temporary keychain hides the login/System keychains and required Apple intermediate certificates, causing signing or archive failures. Prepend the temporary keychain to the saved search list and restore the original list during cleanup.\n- **`.github/workflows/ios-testflight.yml:217`** \u2014 Cleanup accumulates `cleanup_status` and exits non-zero, so a best-effort restore failure marks a successful TestFlight upload as failed. Log cleanup failures as warnings without failing the run after upload succeeds.\n\n## Low\n\n- **`.github/workflows/ios-testflight.yml:180`** \u2014 Artifact upload includes the full `.xcarchive` plus IPA, logs, and receipts, duplicating large outputs. Upload only the IPA, receipt, hashes, logs, and `ExportOptions.plist`, or split the archive to a separate artifact.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 13s | Total: 4m20s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-2-df8d0b5eb",
+      "headRefOid": "df8d0b5eb67b6c17330b4ac0a555e2024fc5c922",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1118,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:55:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629708",
+          "name": "web",
+          "startedAt": "2026-09-10T07:50:38Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:53:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629098",
+          "name": "static-build",
+          "startedAt": "2026-09-10T07:50:43Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:57:21Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629309",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T07:50:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:51:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629375",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T07:50:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:51:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629302",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T07:50:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:58:13Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629339",
+          "name": "race-root",
+          "startedAt": "2026-09-10T07:50:38Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T08:00:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629568",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T07:50:38Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:53:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629642",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T07:50:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:58:24Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629638",
+          "name": "tests",
+          "startedAt": "2026-09-10T07:50:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:55:02Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102789629421",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T07:50:38Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T07:57:26Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102791467384",
+          "name": "static",
+          "startedAt": "2026-09-10T07:57:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T08:00:24Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102792269043",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T08:00:19Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T08:01:41Z",
+          "conclusion": "CANCELLED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34452005599/job/102792307554",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T08:00:26Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:49:15Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1118",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`df8d0b5`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 7m3s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-3-a6d6eb0bf",
+      "headRefOid": "a6d6eb0bf35f9c993df40c36e024bb141e22d44b",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1119,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:01Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700901",
+          "name": "web",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020701081",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:40:02Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:27Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020701042",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700888",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700872",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:31Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700669",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700775",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:40Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020701087",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:37Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700971",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:32Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700789",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:44:12Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103020700930",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:40:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:00Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103022924457",
+          "name": "static",
+          "startedAt": "2026-09-10T19:46:56Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:46Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103023818211",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:49:43Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:51:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521752940/job/103023850389",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:49:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:13:31Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1119",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`a6d6eb0`)\n\n## Code Review Summary: 3 Medium and 1 Low issue found \u2014 shared activity helpers and native checkpoint app introduce several state-handling regressions.\n\n### Critical\nNone.\n\n### High\nNone.\n\n### Medium\n\n- **`mobile/src/state/conversation.ts:2670-2691`** \u2014 Handling `item/agentMessage/reset` clears the message markdown but retains the item, leaving an observable blank assistant row instead of discarding the in-progress item as the protocol and web reducer require. Fix: remove the reset item from the conversation collection rather than retaining it with empty content.\n- **`mobile/src/state/conversation.ts:2524-2543`** \u2014 The per-turn usage from a turn notification is spread directly into `conv.usage`, overwriting the conversation's cumulative usage with only the latest turn's values. Fix: rehydrate the cumulative conversation usage or merge the turn delta into existing totals instead of assigning per-turn usage directly.\n- **`mobile/src/conversation/project.ts:297-303`** \u2014 Initial assistant streaming state checks for `turn.status === \"running\"`, but the wire protocol represents active turns as `\"inProgress\"`, so rehydrated active turns appear non-streaming until another lifecycle update arrives. Fix: use the protocol's `\"inProgress\"` status constant or a shared status helper.\n\n### Low\n\n- **`mobile-native/src/rosterSearch.ts:121-127`** \u2014 The state query is updated before checking whether the normalized query changed, making the comparison always false. Previous search results remain visible while a new search is loading and after a failed request. Fix: compare against the previous query before updating state, and clear stale results whenever a new search begins.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 9s | Total: 33m36s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-4-1122af154",
+      "headRefOid": "1122af154420d67482f9976f31397f631d980a06",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1120,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712306",
+          "name": "web",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712504",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:40:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:34Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712234",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712012",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:40:08Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:56Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712704",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:40:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:32Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712226",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:46:32Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712342",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:40:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:18Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712246",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:42:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712442",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:40:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:20Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712312",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:40:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103020712667",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:40:04Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:26Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103023063807",
+          "name": "static",
+          "startedAt": "2026-09-10T19:47:22Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:23Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103024025453",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:50:20Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:23Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521756553/job/103024051369",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:50:23Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:51:24Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1120",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`1122af1`)\n\n## Code Review Summary\n\n1 Medium and 1 Low issue found across the reviewed changes.\n\n---\n\n### Medium\n\n- **Broken/404 documentation links**: Published docs contain repository-relative links to files absent from `HEAD` \u2014 accepted SDK receipts, TestFlight workflow/source files, and referenced loading screenshots. These render as 404s, leaving acceptance claims and visual evidence unverifiable.\n  - `docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md:33`\n  - `docs/design/mobile/sdk-outcome-matrix.md:15`\n  - `docs/design/mobile/testflight-setup.md:36-37`\n  - `docs/design/mobile/2026-09-09-iphone-loading-measurements.md:28`\n  - **Fix**: Add the referenced artifacts to the archive, or replace links with stable branch/commit URLs and remove stale references; run a repository-local link check before publishing.\n\n### Low\n\n- **Unsanitized local execution metadata in receipts**: Committed JSON receipts expose machine and process details \u2014 `/Users/jesse` paths, simulator/data-container UUIDs, loopback endpoints, and live PIDs \u2014 conflicting with the plan's stated requirement to keep machine/process details private.\n  - `docs/design/mobile/assets/2026-09-09-iphone-loading-evidence.json:18-49`\n  - `docs/design/mobile/assets/2026-09-09-native-media-journey.json:16-21`\n  - **Fix**: Sanitize receipts to retain only repo-relative artifact labels, opaque identifiers where required, hashes, and outcome data; remove absolute paths, endpoints, PIDs, and container metadata.\n\n---\n\n*Note: One reviewer found no issues; the findings above are from a single reviewer.*\n\n---\n*Reviewers: 2 done | Synthesis: codex, 9s | Total: 9m44s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-5-9f90f31b9",
+      "headRefOid": "9f90f31b9faa2d3a7db85e9eabb4dc5b5cf1a580",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1121,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:44:54Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728290",
+          "name": "web",
+          "startedAt": "2026-09-10T19:40:31Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728471",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:40:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728362",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:40:18Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728241",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:40:29Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:31Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728360",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:40:28Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:40:33Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728366",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:40:06Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:48:00Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728493",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:40:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:08Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728492",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:40:27Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728423",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:41:05Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:48:10Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728425",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:40:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:44:20Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103020728440",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:40:20Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:15Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103023006751",
+          "name": "static",
+          "startedAt": "2026-09-10T19:47:12Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103023967813",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:50:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:15Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521761784/job/103024006147",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:50:15Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:50:19Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1121",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`9f90f31`)\n\n**Verdict: 2 medium findings \u2014 incomplete artifact references and unsanitized metadata in committed receipts.**\n\n## Medium\n\n- **Incomplete artifact references** \u2014 `docs/design/mobile/2026-09-08-iphone-execution-checkpoint.md:33`, `:54`\n  - Checkpoint links to receipts like `assets/2026-09-08-sdk-launch-producer.json` and `assets/2026-09-08-ios-pod-lock-portability.json` that are not included in the repo. Other added documents similarly reference missing screenshots, reviews, drivers, and receipts, making archived claims unauditable.\n  - **Fix**: Include every referenced artifact, or remove/replace links to unavailable private artifacts and validate all local documentation links before merging.\n\n- **Unsanitized machine/process metadata in public receipts** \u2014 `docs/design/mobile/assets/2026-09-08-native-unaccepted-delivery.json:7-21`, `docs/design/mobile/assets/2026-09-08-native-uncertain-delivery.json:12-23`\n  - Committed \"public\" receipts expose raw `/Users/jesse` paths, simulator/container UUIDs, temporary fixture roots, PIDs, process commands, and a bearer-token hash. This contradicts the archive's own evidence rule in `docs/superpowers/plans/2026-09-08-iphone-usable-useful-good.md:498`, which requires machine/process details and credentials to remain private.\n  - **Fix**: Redact user paths, simulator/container identifiers, PIDs, process commands, fixture locations, and token-derived values; retain only sanitized outcome fields and stable artifact hashes.\n\n## Summary\n\nThe commit adds a large historical mobile evidence archive. One reviewer found no issues; the other flagged incomplete artifact references and unsanitized local/credential-related metadata in several receipts. Both medium findings should be addressed before merging.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 8s | Total: 8m43s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-archive-6-df019be63",
+      "headRefOid": "df019be6373b8c28afe9dfc32c22e1fc1ed210e4",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1122,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:48Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751110",
+          "name": "web",
+          "startedAt": "2026-09-10T19:41:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020750991",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:40:47Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:19Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751034",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:40:57Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:58Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020750946",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:41:07Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:40Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020750868",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:40:36Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:41:31Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751046",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:41:03Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:47:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020750714",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:40:16Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:46Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751013",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:41:11Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:43:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020750889",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:40:30Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:49:53Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751142",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:41:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:45:48Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103020751030",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:41:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:48:03Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103023265636",
+          "name": "static",
+          "startedAt": "2026-09-10T19:48:00Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103024177965",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T19:50:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:50:51Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34521768193/job/103024203923",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T19:50:51Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:50:27Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1122",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`df019be`)\n\n## Summary Verdict\n\nDocumentation-only checkpoint change with one Medium-severity information hygiene issue (unsanitized environment metadata in a committed receipt) and some broken evidence links.\n\n---\n\n### Medium\n\n- **`docs/design/mobile/assets/2026-09-08-native-unaccepted-delivery.json:7`** \u2014 Committed evidence receipt contains machine-specific paths, simulator/container identifiers, PIDs, ports, a token-derived hash, and App Store Connect identifiers/authenticated URLs, contradicting the repo's privacy requirements. Sanitize receipts before committing: keep stable artifact hashes and logical fixture labels; remove local paths, process/network details, token hashes, authenticated URLs, and account/profile identifiers.\n\n### Low\n\n- **`docs/design/mobile/acceptance.md:75`** \u2014 Ledger links to historical files (e.g. `multiple-hubs.md`) that are not present in this checkout; similar broken links recur across new evidence documents. Include the referenced historical files/assets, or replace those links with retained receipts and explicitly mark omitted evidence.\n\n---\n\nOne reviewer reported the change as clean; the other flagged the items above. No Critical or High severity findings.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 8s | Total: 8m54s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-activity-regression",
+      "headRefOid": "6f103518f4d8d55b10323498fcfbf177570cb01f",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1123,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:56:46Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1123",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`6f10351`)\n\n## Code Review Summary\n\n**Verdict:** Two medium-severity issues around oversized metadata handling and nested summary merging need attention.\n\n### Medium\n\n- **`agent/jobs_activity.go:1037-1041`** \u2014 `trimActivityTreeToFit` returns an oversized tree unchanged when the payload contains no removable activity entries (e.g., an empty session with an oversized label or diagnostics). This violates `activityMaxEncodedBytes` and can still produce responses exceeding the protocol limit. Bound or truncate non-entry metadata as part of the fitting loop, and ensure the minimal activity envelope is within the encoded-size limit before returning.\n- **`cmd/evener-hub/frontend/src/stores/activityPanel.ts:224-230`** \u2014 `mergeSession` replaces every merged session's `aggregate` and `counts` with values from the continuation patch. Since continuation patches represent only a suffix of the requested branch, nested ancestor and target summaries become partial-page summaries even though their entries are cumulative. This can change displayed delegate status and corrupt active/failed/completed state after loading more. Preserve summaries for unaffected ancestors and recompute or correctly combine summaries from the retained entries and continuation delta for the target branch.\n\n### Notes\n\nThe change adds bounded activity pagination and frontend continuation grafting with omission handling and revision-fenced grafting. Reviewer 2 found no issues; the findings above are from Reviewer 1 and were not duplicated.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 6s | Total: 17m13s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-handoff-20260910",
+      "headRefOid": "8770c9cc3b240119c6114a9aee77d6e2939a2aad",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1125,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948233",
+          "name": "web",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:44:20Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948161",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948082",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948332",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041947830",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948148",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948232",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948245",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:44:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948200",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948117",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:44:05Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34528123911/job/103041948097",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:44:06Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1125",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`29f0f43`)\n\n**Code Review Summary**\n\nOne issue found across both reviewers (docs-only changes, no code/security concerns from Review 2).\n\n---\n\n**Medium**\n\n- **Malformed JSON manifest** \u2014 `docs/superpowers/handoffs/2026-09-10-native-mobile-repair/evener-repair-uncovered-local-refs.json:132-134`: The manifest closes its root JSON object at line 132, then appends another incomplete record beginning with `fs/heads/...`. The file is not parseable, so recovery tooling cannot load the local-ref inventory; the appended records are unusable. **Fix**: Regenerate the manifest as one valid JSON object, keep all intended records inside the `refs` array, remove duplicate fields, and validate the artifact before committing.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 8s | Total: 4m5s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-repair-discovery-prototype",
+      "headRefOid": "184d659b17e5138df455e64e7d8ac77c312ee563",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1126,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T19:59:02Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1126",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`184d659`)\n\n## Code Review Summary\n\nRecovery-only discovery prototypes introduce a non-functional entrypoint and retain known output-lifecycle and wire-contract validation issues.\n\n---\n\n### High\n\n- **`cmd/evener-hub/frontend/src/protocol/examples/discovery.mjs:1`** \u2014 The entrypoint imports `./connection.mjs` (and `clientFromEnvironment`) which do not exist anywhere in the repo, so Node fails during module loading before the error handler runs. Restore the missing module, vendor it with the prototypes, or remove/document the entrypoint as incomplete.\n\n### Medium\n\n- **`cmd/evener-hub/frontend/src/protocol/examples/private-output.mjs:19`** \u2014 If `output?.close()` throws, the `finally` block exits early and the incomplete reserved file is never unlinked, leaving private partial output behind. Wrap `close` in a nested try/finally so the dev/ino identity check and unlink still run.\n- **`cmd/evener-hub/frontend/src/protocol/examples/private-output.mjs:23`** \u2014 The `lstat`/`unlink` sequence is vulnerable to a TOCTOU race: a concurrent process can replace the path after the inode check but before `unlink`, causing the replacement file to be deleted. Do not unlink failed reservations, or use a race-free ownership mechanism.\n- **`cmd/evener-hub/frontend/src/protocol/examples/`** \u2014 Recovery-only prototypes placed under lint-enforced `src/` contradict `README-recovery.md` intent that they are not a qualification result; `biome ci src` will qualify them. Move prototypes outside `src/` or add an explicit Biome/vitest exclusion for `src/protocol/examples/`.\n\n### Low\n\n- **`cmd/evener-hub/frontend/src/protocol/examples/discovery.mjs:12`** \u2014 `hub?.close()` is not awaited in `finally`, so transport shutdown can be truncated on success or failure paths. Await `close`.\n- **`cmd/evener-hub/frontend/src/protocol/examples/discovery-logic.mjs:24`** \u2014 `paths.prefix` and `validatePath.path` are treated as optional, allowing requests with missing required wire fields. A missing path prefix can cause the hub to enumerate the default home directory instead of rejecting the request. Require `typeof params.prefix === \"string\"` and `typeof params.path === \"string\"` while allowing explicit empty strings.\n- **`cmd/evener-hub/frontend/src/protocol/examples/discovery-logic.mjs:75`** \u2014 The settings decoder does not validate the known `hub.buildChannel` field, so a malformed response such as `{ \"hub\": { \"buildChannel\": 4 } }` is accepted as successful readback. Include `buildChannel` in the validated string fields and cover the malformed response case.\n\n---\n*Reviewers: 2 done | Synthesis: codex, 18s | Total: 8m6s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-empty-navigation-qualified",
+      "headRefOid": "cd36992ad915bdff296dbd1172ea7a1f62a5c942",
+      "isDraft": false,
+      "mergeCommit": {
+        "oid": "29d6c124a098aaba3727217f4c572395055621f8"
+      },
+      "number": 1127,
+      "state": "MERGED",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:03:25Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026787971",
+          "name": "web",
+          "startedAt": "2026-09-10T19:58:32Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:58:50Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026787775",
+          "name": "api-package",
+          "startedAt": "2026-09-10T19:58:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:02:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788011",
+          "name": "static-build",
+          "startedAt": "2026-09-10T19:58:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:05:42Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788167",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T19:58:35Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:59:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788287",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T19:58:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T19:59:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788051",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T19:58:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:05:44Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788104",
+          "name": "race-root",
+          "startedAt": "2026-09-10T19:58:32Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:08:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788054",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T19:58:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:01:21Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788273",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T19:58:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:06:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788384",
+          "name": "tests",
+          "startedAt": "2026-09-10T19:58:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:02:49Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103026788211",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T19:58:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:05:47Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103029237188",
+          "name": "static",
+          "startedAt": "2026-09-10T20:05:44Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:08:10Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103030060200",
+          "name": "race-modules",
+          "startedAt": "2026-09-10T20:08:07Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:10:16Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34523546393/job/103030089210",
+          "name": "Build snapshot artifacts",
+          "startedAt": "2026-09-10T20:08:12Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:04:25Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1127",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`cd36992`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 4m1s*\n"
+      ]
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/mobile-roster-loading-qualified",
+      "headRefOid": "647d44311697442af98c6ec8625546490b541063",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1128,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:43:51Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994970",
+          "name": "web",
+          "startedAt": "2026-09-10T20:38:02Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:38:15Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994892",
+          "name": "api-package",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:41:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994849",
+          "name": "static-build",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994999",
+          "name": "lint-golangci",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:39:08Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994762",
+          "name": "lint-repository",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:38:29Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994923",
+          "name": "fuzz-checks",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039995070",
+          "name": "race-root",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994519",
+          "name": "race-modules / agent",
+          "startedAt": "2026-09-10T20:38:02Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:40:05Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994965",
+          "name": "race-modules / nonagent",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039995121",
+          "name": "tests",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "IN_PROGRESS",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-10T20:42:00Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/prime-radiant-inc/evener/actions/runs/34527458459/job/103039994955",
+          "name": "fuzz",
+          "startedAt": "2026-09-10T20:38:01Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:41:58Z",
+          "state": "PENDING",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1128",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`71d6b90`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 4m11s*\n"
+      ]
+    },
+    {
+      "baseRefName": "codex/mobile-round-timing-replay",
+      "headRefName": "codex/mobile-repair-late-owner-replay",
+      "headRefOid": "69851a038ab31bed4fcee380bb600e2add2193f2",
+      "isDraft": true,
+      "mergeCommit": null,
+      "number": 1129,
+      "state": "CLOSED",
+      "statusCheckRollup": [
+        {
+          "__typename": "StatusContext",
+          "context": "roborev",
+          "startedAt": "2026-09-10T20:18:05Z",
+          "state": "SUCCESS",
+          "targetUrl": ""
+        }
+      ],
+      "url": "https://github.com/prime-radiant-inc/evener/pull/1129",
+      "actualRoborev": [
+        "<!-- roborev-pr-comment -->\n## roborev: Combined Review (`69851a0`)\n\nNo issues found.\n\n---\n*Reviewers: 2 done | Synthesis: codex | Total: 1m21s*\n"
+      ]
+    }
+  ],
+  "remoteMobileRefs": {
+    "codex/mobile-browser-guard-ready-error": "b1c3c1c4598a09d9d2c3510bead4bf4f5c4dc208",
+    "codex/mobile-checkpoint-native-0097": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+    "codex/mobile-checkpoint-qualified-0d75": "0d75cf8b5fabb9992f2938caf42f2e8129d9c8d1",
+    "codex/mobile-checkpoint-qualified-513": "5137914ccb66b04aa1b980757888f63141cf2f27",
+    "codex/mobile-checkpoint-qualified-8081": "8081b4e635f54807b6ad186738e2870e8186275f",
+    "codex/mobile-checkpoint-status-final": "dda6298691d2df0ea068f77eb935acb4ceb5dc19",
+    "codex/mobile-compaction-environment-validation": "34ce2c31a8d0b96bd8a70e33aa1418781de7e7b6",
+    "codex/mobile-daemon-version": "f539bde96a25ffb878806ff557d4de5f5cdfbaf1",
+    "codex/mobile-design-sketches": "7bf30e12dfe1c9d02fbf076df08f800197231df7",
+    "codex/mobile-device-auth-binding": "df7c8ba67466b0fa5ef3f89d4b25eb5b761093ff",
+    "codex/mobile-empty-navigation-qualified": "cd36992ad915bdff296dbd1172ea7a1f62a5c942",
+    "codex/mobile-empty-session-list": "1c18e6866c700f861d0285c8d08dce1aa0225f1a",
+    "codex/mobile-empty-subagent-preview": "0f722489970d681976196026629be4869738cc34",
+    "codex/mobile-fork-capability": "8148c1f32e0842b16b05d9af6c8c153d5da4318f",
+    "codex/mobile-goal-transcript": "b23d2fa3a3afe5c453cba9260435375f69a84cac",
+    "codex/mobile-hub-fork-capability": "40e67a0014456b7c98bd9f3b21a7d050ff1d89ca",
+    "codex/mobile-initialize-boundary": "79ccc0471ac750aeaaf9ff50409ed825c6e28ac2",
+    "codex/mobile-interrupted-replay": "49b3619d05413bf80dc8756e406b4d1b806a5c33",
+    "codex/mobile-logout-result": "5eaebfe6e9522a2d8cd9715ddc85c26df7aedd9c",
+    "codex/mobile-native-checkpoint": "165d9d3d8dda083c4cf839ffba29a61da0f12262",
+    "codex/mobile-native-final-qualification": "0097e3841fe9296ebe32da4cb6780cd7d2a8923f",
+    "codex/mobile-native-helpers": "b754dd6bf379b0237251477096cef1eb1b0c09c2",
+    "codex/mobile-pairing-appwire": "b8ce21f9a0599826cb4463dc0a91b2652800c2b0",
+    "codex/mobile-portable-activity": "51fc01d0c9c5e0ffeddb9d10129edd80b4fe4707",
+    "codex/mobile-project-delete-results": "370045f708b16211d2edad9818d0f23eba5c7faa",
+    "codex/mobile-question-answers": "49a442845ddcb4c7bde8f02b4051ed5d5d32ee10",
+    "codex/mobile-reasoning-lifecycle": "c4b49c767ee7b019c13618ae27e404fb5e4c1433",
+    "codex/mobile-repair-activity-regression": "6f103518f4d8d55b10323498fcfbf177570cb01f",
+    "codex/mobile-repair-archive-1-1f1bd6135": "1f1bd61353acc7ff71551b0e6199df1d31eebf00",
+    "codex/mobile-repair-archive-2-df8d0b5eb": "df8d0b5eb67b6c17330b4ac0a555e2024fc5c922",
+    "codex/mobile-repair-archive-3-a6d6eb0bf": "a6d6eb0bf35f9c993df40c36e024bb141e22d44b",
+    "codex/mobile-repair-archive-4-1122af154": "1122af154420d67482f9976f31397f631d980a06",
+    "codex/mobile-repair-archive-5-9f90f31b9": "9f90f31b9faa2d3a7db85e9eabb4dc5b5cf1a580",
+    "codex/mobile-repair-archive-6-df019be63": "df019be6373b8c28afe9dfc32c22e1fc1ed210e4",
+    "codex/mobile-repair-discovery-prototype": "184d659b17e5138df455e64e7d8ac77c312ee563",
+    "codex/mobile-repair-handoff-20260910": "8770c9cc3b240119c6114a9aee77d6e2939a2aad",
+    "codex/mobile-repair-late-owner-replay": "69851a038ab31bed4fcee380bb600e2add2193f2",
+    "codex/mobile-repair-preserve-empty-navigation": "e7160ec0b9b64ac5cbc301a2af64a5a8178dde21",
+    "codex/mobile-repair-preserve-roster-loading": "956a0ea6dd5aea40df9d5e86aed3c664f3640937",
+    "codex/mobile-repair-sdk-evidence": "eaf8da681f0f4484271cc4882c7ea4359e59c9e1",
+    "codex/mobile-repair-sdk-recipes": "c89d37ae2eefe6690358336855e2972001635e5b",
+    "codex/mobile-repair-source-preservation-20260910": "15ccc74a8aa37c15c4ec8b40ffda9a93b0e3f8f0",
+    "codex/mobile-repair-stash-20260905-rebase": "7447e21ef94fb1b1a327bf8f1c83a27ef3116549",
+    "codex/mobile-repair-stash-20260905-signing": "7a3d1459ed8dfb780d491960834c7cb23b02ec26",
+    "codex/mobile-repair-stash-20260906": "3695a99ea2c5344facb504201032804a837be53a",
+    "codex/mobile-repair-stash-current": "67a86da5e44f9e8a02c6facec9c31c3485cd1279",
+    "codex/mobile-roster-loading-qualified": "647d44311697442af98c6ec8625546490b541063",
+    "codex/mobile-roster-metadata": "b733c5edae418d0af557172a8b15cfcbf7955259",
+    "codex/mobile-round-timing-replay": "0250b5e31701973d8da38dda475b07a442a51d61",
+    "codex/mobile-sdk-discovery-examples": "32ecd0b5760edf337308840e5efa0401ddb9cb7e",
+    "codex/mobile-sdk-package": "564af8826adb836f8b1e6deb99696aaf3cd815f3",
+    "codex/mobile-shutdown-boundary": "6fbe60b7972318fa553d155469a4dc40cc2446d5",
+    "codex/mobile-steering-identity": "3180202a1a6cfcd4f160b61b1d7e5ec7b41b67f0",
+    "codex/mobile-steering-images": "e6128ae080601836388791727f9503b62c99d275",
+    "codex/mobile-transcript-identity": "66010bc01572e883b45c394f57fb60db3856146c",
+    "codex/mobile-update-entrypoint": "3705a90980087c703aa7c79245d5babe0c2ce877"
+  }
+}
