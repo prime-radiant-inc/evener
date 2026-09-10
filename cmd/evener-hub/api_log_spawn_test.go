@@ -20,15 +20,18 @@ func TestApplyHubAPILogDefault(t *testing.T) {
 		hubOn   bool
 		wantNil bool
 		wantOn  bool
+		wantHub bool // the floor recorded provenance "hub"
 	}{
 		{name: "hub off leaves unset alone", layer: launchconfig.Layer{}, hubOn: false, wantNil: true},
-		{name: "hub on fills unset", layer: launchconfig.Layer{}, hubOn: true, wantOn: true},
+		{name: "hub on fills unset", layer: launchconfig.Layer{}, hubOn: true, wantOn: true, wantHub: true},
 		{name: "layer true wins over hub on", layer: launchconfig.Layer{APILog: new(true)}, hubOn: true, wantOn: true},
 		{name: "layer false wins over hub on", layer: launchconfig.Layer{APILog: new(false)}, hubOn: true, wantOn: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved := launchconfig.Resolved{Effective: tc.layer}
+			// Provenance starts nil: the floor must allocate it rather than skip
+			// recording where a value came from.
 			applyHubAPILogDefault(&resolved, tc.hubOn)
 			got := resolved.Effective.APILog
 			if tc.wantNil {
@@ -42,6 +45,11 @@ func TestApplyHubAPILogDefault(t *testing.T) {
 			}
 			if *got != tc.wantOn {
 				t.Fatalf("APILog = %v, want %v", *got, tc.wantOn)
+			}
+			if tc.wantHub {
+				if got := resolved.Provenance["api_log"]; got != launchconfig.LayerHub {
+					t.Fatalf("api_log provenance = %q, want hub", got)
+				}
 			}
 		})
 	}

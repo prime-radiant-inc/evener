@@ -235,7 +235,7 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	if err := hubLaunchSaveMeta(paths.Meta, meta); err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}
-	resolved, err = hubLaunchResolve(c.stateRoot, cwd, launchconfig.Layer{})
+	resolved, err = c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, err
 	}

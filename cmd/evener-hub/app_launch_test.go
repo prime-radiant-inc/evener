@@ -209,7 +209,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	hash, _ := launchconfig.CanonicalHashTOML(contents)
 
-	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, false)
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, true)
 	got, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
 	if err != nil {
 		t.Fatalf("TrustRepo: %v", err)
@@ -219,6 +219,9 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	if got.Effective.Model != "from-repo" {
 		t.Errorf("trusted in-repo did not contribute: %v", got.Effective)
+	}
+	if got.Effective.APILog == nil || !*got.Effective.APILog {
+		t.Errorf("post-trust preview omitted the hub api_log floor: %v", got.Effective.APILog)
 	}
 }
 

@@ -293,9 +293,10 @@ func applyHubAPILogDefault(resolved *launchconfig.Resolved, apiLog bool) {
 	}
 	value := true
 	resolved.Effective.APILog = &value
-	if resolved.Provenance != nil {
-		resolved.Provenance["api_log"] = launchconfig.LayerHub
+	if resolved.Provenance == nil {
+		resolved.Provenance = map[string]launchconfig.LayerName{}
 	}
+	resolved.Provenance["api_log"] = launchconfig.LayerHub
 }
 
 // buildSpawnArgs assembles the arg slice for `evener serve` from a hubcore.SpawnRequest.

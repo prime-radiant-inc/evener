@@ -457,6 +457,12 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.Verbose = v
+	case "api_log":
+		v, err := parseOptionalBool(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.APILog = v
 	case "system_prompt_mode":
 		layer.SystemPromptMode = strings.TrimSpace(value)
 	case "system_prompt_file":
