@@ -24,6 +24,16 @@ This receipt describes a Release iPhone simulator journey against an isolated, d
 
 Both write targets were inside the isolated fixture directory. Every original persisted draft row was preserved: 13 ordinary drafts, 11 question drafts, one creation draft and three Question Sheet positions. All nine original conversation reader-position entries were unchanged. The app-data backup did not include a historical keychain snapshot, so this comparison does not prove byte-for-byte preservation of every saved credential.
 
+## Paging, queue and steering follow-up
+
+A subsequent signed Release build used native source `e20f3d5f3874074e088fa4c4851a475aa6b146ca`, executable SHA-256 `6d98348cdb07d00bbdd48bbf562a47df7bb63bd51f3ee935c39ee0e040f861ed` and JavaScript bundle SHA-256 `df0302adc2281bd939a912a3f4dfca51c61fde06cfdbe153b523805f92880891`. It was installed over the first artifact and retained the selected hub and unsent draft. The backend remained the exact artifact recorded above.
+
+- Created twenty additional empty sessions in the same owned project without invoking the provider. The real hub returned twenty sessions on the first page and the remaining session on the second. Scrolling to the list's loading sentinel, without tapping it, changed the native list from twenty rows to twenty-one. The oldest session appeared once and the sentinel disappeared.
+- While a native-started turn was held at the provider boundary, queued a follow-up through the composer and inspected it in the queue sheet. After releasing the provider, the held turn and queued turn completed. Independent readback contained the queued message once; the queue control disappeared and the composer returned to Send.
+- Started another held turn, submitted a message through Steer, and released the provider. Readback showed the held turn completed and the steering message once as a completed steering item in its own completed turn. The native transcript displayed the steering message and the composer returned to Send. An unsent text draft was restored afterward.
+
+This verifies automatic paging within one local project's current tier and the described queue/steering outcomes. It is not a large-catalog or latency benchmark.
+
 ## Limits and integration checks
 
 The native candidate subsequently incorporated activity paging review fixes and package/CI qualification fixes. Its local native gate passes 718 native tests, 673 shared-session tests and strict native TypeScript checks. The package gate runs the packed example through real sockets from an outside-checkout installation, including ESM/CommonJS declarations and exports.
