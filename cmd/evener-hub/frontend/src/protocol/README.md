@@ -58,10 +58,11 @@ Standard output contains only the action, outcome, and result count when
 available. To retain the full structured response, set
 `EVENER_DISCOVERY_OUTPUT_FILE` to an absolute, nonexistent file path. The example
 creates it exclusively with mode `0600`; it refuses to overwrite an existing
-file. On a failed read, it removes its own incomplete output if the reserved
-file still occupies that path. If no output path is set, the full response is
-not written to disk. Known response fields are validated and unknown fields
-are retained in the readback.
+file. On a failed read, it closes and leaves the reserved incomplete file in
+place so a concurrent replacement can never be deleted through a pathname
+race. If no output path is set, the full response is not written to disk.
+Known response fields are validated and unknown fields are retained in the
+readback.
 
 The shared connection example uses the platform WebSocket. If your hub requires
 an Authorization header, adapt `clientFromEnvironment` to the authenticated

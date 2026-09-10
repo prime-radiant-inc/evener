@@ -116,8 +116,9 @@ function decode(action, value) {
 
 /** Run exactly one explicitly selected, read-only hub method. */
 export async function runDiscovery(hub, { action, params = {} } = {}) {
-  const [method] = METHODS[action] ?? [];
+  assert.ok(typeof action === "string" && Object.hasOwn(METHODS, action), "Invalid discovery action.");
   const captured = inputFor(action, params);
+  const [method] = METHODS[action];
   await hub.connect();
   const response = await hub.request(method, captured);
   return { outcome: "read", action, readback: decode(action, response) };

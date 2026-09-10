@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -134,7 +134,7 @@ export async function runInstalledDiscoveryContracts({
     const output = join(consumerDir, `discovery-${name}.json`);
     await fails({ EVENER_DISCOVERY_ACTION: action, EVENER_DISCOVERY_OUTPUT_FILE: output });
     assert.deepEqual(observedMethods, ["initialize", method]);
-    await assert.rejects(access(output), { code: "ENOENT" });
+    assert.equal((await stat(output)).size, 0);
   }
 
   const existing = join(consumerDir, "discovery-existing.json");
