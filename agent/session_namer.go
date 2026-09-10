@@ -436,7 +436,7 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.mu.Unlock()
 	s.attentionMu.Lock()
 	writeErr := s.writeTranscriptLocked(t)
-	if isSessionNameCompactionTurn(t) && writeErr == nil {
+	if isSessionNameCompactionTurn(t) {
 		s.mu.Lock()
 		changed := s.resetEnvContextTrackerLocked()
 		s.mu.Unlock()

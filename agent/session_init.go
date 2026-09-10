@@ -926,14 +926,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries. Starting from zero also honors a compaction boundary: a retained
 	// post-compaction environment block is a full snapshot, while an absent one
 	// means the next turn must emit a fresh full block even if meta is stale.
-	if len(transcriptEntries) > 0 {
-		s.envTracker = envctx.NewTracker(envctx.State{})
-		s.envContextState = nil
-		for _, turn := range resumeHistory {
-			if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
-				state := s.envTracker.State()
-				s.envContextState = &state
-			}
+	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envContextState = nil
+	for _, turn := range resumeHistory {
+		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
+			state := s.envTracker.State()
+			s.envContextState = &state
 		}
 	}
 	if err := s.bootstrapDelegateResources(); err != nil {
