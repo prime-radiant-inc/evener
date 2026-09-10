@@ -5,14 +5,97 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
+
+// TestCloseSupersededSessionForShutdownPreservesTerminalBoundary exercises
+// the close ownership decision with a real session and its lossless event
+// stream. An interrupted turn has already consumed the ordinary close path;
+// the shutdown-owned close must still publish SESSION_END(closed).
+func TestCloseSupersededSessionForShutdownPreservesTerminalBoundary(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	adapter := &shutdownBlockingAdapter{
+		entered:   make(chan struct{}, 1),
+		cancelled: make(chan struct{}, 1),
+		release:   release,
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), agent.SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		sess.Close()
+	})
+
+	var mu sync.Mutex
+	var received []events.SessionEvent
+	drained := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+	}, func() { close(drained) })
+	turnCtx, cancelTurn := context.WithCancel(t.Context())
+	t.Cleanup(cancelTurn)
+	done := make(chan error, 1)
+	go func() {
+		_, processErr := sess.ProcessInput(turnCtx, "hello", nil)
+		done <- processErr
+	}()
+	<-adapter.entered
+	cancelTurn()
+	<-adapter.cancelled
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-t.Context().Done():
+		t.Fatal("ProcessInput did not return after per-turn cancel")
+	}
+
+	closeSupersededSession(sess, true)
+	select {
+	case <-drained:
+	case <-t.Context().Done():
+		t.Fatal("session events did not drain after shutdown close")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	interrupted, closed := 0, 0
+	for _, ev := range received {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		end, ok := ev.Data.(events.SessionEndData)
+		if !ok {
+			continue
+		}
+		if end.Reason == "interrupted" {
+			interrupted++
+		}
+		if end.State == string(agent.SessionClosed) {
+			closed++
+		}
+	}
+	if interrupted != 1 || closed != 1 {
+		t.Fatalf("session ends=(interrupted:%d,closed:%d), want exactly one of each: %+v", interrupted, closed, received)
+	}
+}
 
 // TestServeShutdownAndClearPublishOneClosedBoundaryForOldIdentity exercises
 // the real shutdown/clear ordering through a scripted session, the lossless

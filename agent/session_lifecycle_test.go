@@ -509,7 +509,11 @@ func TestSession_CloseForShutdownAfterInterruptedTurnEmitsClosedBoundary(t *test
 		t.Fatalf("NewSession: %v", err)
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
-	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	turnCtx, cancelTurn := context.WithCancel(t.Context())
+	t.Cleanup(func() {
+		cancelTurn()
+		sess.Close()
+	})
 	done := make(chan error, 1)
 	go func() {
 		_, err := sess.ProcessInput(turnCtx, "hello", nil)
@@ -519,7 +523,7 @@ func TestSession_CloseForShutdownAfterInterruptedTurnEmitsClosedBoundary(t *test
 	cancelTurn()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("ProcessInput did not return after per-turn cancel")
 	}
 	sess.CloseForShutdown()

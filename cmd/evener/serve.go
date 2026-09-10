@@ -1090,14 +1090,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// after it -- the new session's own events are still queued in its
 		// channel, and its bridge has not started.
 		srv.RefreshThreadEnvelope()
-		if shutdownClosedTheLiveSession() {
-			// Shutdown claimed the old session before this replacement was
-			// published. Preserve its forced terminal boundary if clear wins the
-			// race to close the old session.
-			oldSess.CloseForShutdown() // disposes oldEnv
-		} else {
-			oldSess.Close() // disposes oldEnv
-		}
+		closeSupersededSession(oldSess, shutdownClosedTheLiveSession()) // disposes oldEnv
 		// Every session this daemon makes current gets closed by someone, and
 		// shutdown covers only the one that was live when its pass ran. A
 		// replacement installed after that pass has no other closer, so thread/clear
@@ -1297,6 +1290,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	<-shutdownDone
 	return nil
+}
+
+// closeSupersededSession preserves shutdown's ownership of a session when a
+// concurrent clear has already replaced it. A normal close may have consumed
+// the session's close-once path after an interrupted turn; a shutdown close
+// must still publish the terminal boundary in that case.
+func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
+	if shutdownClaimed {
+		sess.CloseForShutdown()
+		return
+	}
+	sess.Close()
 }
 
 // processNextServeInput gives durable turn/start work priority over the
