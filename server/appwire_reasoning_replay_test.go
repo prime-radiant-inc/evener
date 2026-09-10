@@ -757,15 +757,13 @@ func TestServerAppWireQueuedClosedSessionEndOmitsStaleThreadFrames(t *testing.T)
 	cursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_closed_boundary", Data: events.SessionEndData{State: "closed"}}, nil)
 	notifications := srv.AppNotificationsAfter(cursor, "th_closed_boundary")
-	var sawTurnCompleted, sawItemCompleted, sawThreadStatus, sawThreadClosed bool
+	var sawTurnCompleted, sawItemCompleted, sawThreadClosed bool
 	for _, notification := range notifications {
 		switch notification.Notification.Method {
 		case appwire.NotifyTurnCompleted:
 			sawTurnCompleted = true
 		case appwire.NotifyItemCompleted:
 			sawItemCompleted = true
-		case appwire.NotifyThreadStatusChanged:
-			sawThreadStatus = true
 		case appwire.NotifyThreadClosed:
 			sawThreadClosed = true
 		}
@@ -773,7 +771,11 @@ func TestServerAppWireQueuedClosedSessionEndOmitsStaleThreadFrames(t *testing.T)
 	if !sawTurnCompleted || !sawItemCompleted {
 		t.Fatalf("closed queued notifications=%+v, want turn/item completion", notifications)
 	}
-	if sawThreadStatus || sawThreadClosed {
-		t.Fatalf("closed queued notifications=%+v, want no stale thread frames", notifications)
+	if !sawThreadClosed {
+		t.Fatalf("closed queued notifications=%+v, want thread closed", notifications)
+	}
+	read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:th_closed_boundary"}).Thread
+	if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
+		t.Fatalf("closed queued read=(%q,%q), want closed/empty", read.Status.Type, read.Evener.ActiveTurnID)
 	}
 }
