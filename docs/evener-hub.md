@@ -130,7 +130,9 @@ provider request and response body to the session's
 `<state-dir>/sessions/<SID>.api.jsonl` for post-mortem inspection. It defaults to
 `false` because those records grow with every model call. It is a floor, not a
 force: launch config layers that set `api_log` explicitly (either direction)
-win over the hub-wide value.
+win over the hub-wide value. The `evener/launch/resolve` preview reports the
+same floor (provenance `hub`), so what the Launch settings show matches what a
+spawned session actually runs with.
 
 ## Launch configuration
 
