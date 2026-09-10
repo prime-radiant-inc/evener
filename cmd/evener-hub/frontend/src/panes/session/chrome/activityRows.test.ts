@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import type { ActivityJob, ActivitySessionNode, ActivityTree } from "../../../protocol/activityData";
+import type {
+  ActivityJob,
+  ActivitySessionNode,
+  ActivityShellEntry,
+  ActivityTree,
+} from "../../../protocol/activityData";
 import { activityDelegateState, buildActivityRows, foldRowID } from "./activityRows";
 
 function shell(jobId: string, terminal: boolean, status = terminal ? "completed" : "running") {
@@ -170,6 +175,13 @@ test("fold row counts failures separately", () => {
   expect(fold?.kind === "fold" && fold.failedCount).toBe(1);
 });
 
+test("row failure state follows outcome when status is non-failure", () => {
+  const failed = shell("outcome-failed", true, "completed") as ActivityShellEntry;
+  failed.job.outcome = "failure";
+  const rows = buildActivityRows(tree([failed]), new Set());
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ failedCount: 1 });
+});
+
 test("fold row counts a terminal delegate outcome when lifecycle status is idle", () => {
   const rows = buildActivityRows(tree([delegate("dlg_failed", { failed: true })]), new Set());
   const fold = rows.find((row) => row.kind === "fold");
@@ -248,6 +260,22 @@ test("stable delegate keeps its resource status while an active child makes the 
   entry.delegate.status = "completed";
   expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, status: "completed" });
   expect(buildActivityRows(tree([entry]), new Set())[0]).toMatchObject({ kind: "delegate", live: true });
+});
+
+test("empty turn-container rows use their own active and failure state", () => {
+  const active = delegate("dlg_empty_active", { type: "agent" });
+  active.delegate.terminal = false;
+  active.delegate.status = "running";
+  active.delegate.outcome = undefined;
+  const failed = delegate("dlg_empty_failed", { type: "agent" });
+  failed.delegate.terminal = true;
+  failed.delegate.status = "completed";
+  failed.delegate.outcome = "failure";
+  const rows = buildActivityRows(tree([active, failed]), new Set());
+  expect(rows.map((row) => row.id)).toEqual(["delegate:dlg_empty_active", "session:sess_root:inactive-fold"]);
+  expect(rows.find((row) => row.kind === "fold")).toMatchObject({ inactiveCount: 1, failedCount: 1 });
+  expect(activityDelegateState(active.delegate)).toMatchObject({ active: true, failed: false, status: "running" });
+  expect(activityDelegateState(failed.delegate)).toMatchObject({ active: false, failed: true, status: "failed" });
 });
 
 test("child activity takes status precedence over prior own failures and child failures surface", () => {

@@ -15,7 +15,6 @@ import {
   isActivityFailure,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { isFailedStatus } from "./activityFormat";
 
 export interface ActivityRowBase {
   id: string;
@@ -73,7 +72,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
     return {
       active: delegate.terminal !== true || childActive,
-      failed: isFailedStatus(status) || childFailed,
+      failed: isActivityFailure(delegate.outcome, status) || childFailed,
       status,
     };
   }
@@ -83,6 +82,18 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     if (!turn.terminal) activeTurn = turn;
   }
   const latest = turns.at(-1);
+  if (turns.length === 0) {
+    const failed = isActivityFailure(delegate.outcome, delegate.status) || childFailed;
+    return {
+      active: delegate.terminal !== true || childActive,
+      failed,
+      status: childActive
+        ? (delegate.child?.aggregate ?? "working")
+        : failed
+          ? "failed"
+          : (delegate.status ?? "unknown"),
+    };
+  }
   const failed = childFailed || turns.some((turn) => isActivityFailure(turn.outcome, turn.status));
   const active = activeTurn !== undefined || childActive;
   return {
@@ -114,7 +125,7 @@ function entryIsActive(entry: ActivityEntry): boolean {
 }
 
 function entryIsFailed(entry: ActivityEntry): boolean {
-  if (entry.kind === "shell") return isFailedStatus(entry.job.status);
+  if (entry.kind === "shell") return isActivityFailure(entry.job.outcome, entry.job.status);
   const delegate: ActivityDelegate = entry.delegate;
   const state = activityDelegateState(delegate);
   return state.failed;
