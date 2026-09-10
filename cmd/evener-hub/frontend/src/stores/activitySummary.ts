@@ -48,6 +48,7 @@ export interface ActivitySummaryStoreState {
     force?: boolean,
   ): number | null;
   publishRootFetch(ref: string, requestID: number, counts: ActivityCounts): void;
+  publishContinuationCounts(ref: string, requestID: number, counts: ActivityCounts): void;
   failRootFetch(ref: string, requestID: number): void;
   resetForTests(): void;
 }
@@ -216,6 +217,16 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
       entries.set(ref, { ...entry, counts, loading: false });
+      return { entries };
+    });
+  },
+
+  publishContinuationCounts(ref, requestID, counts) {
+    set((state) => {
+      const entry = state.entries.get(ref);
+      if (!entry || entry.requestID !== requestID) return state;
+      const entries = new Map(state.entries);
+      entries.set(ref, { ...entry, counts });
       return { entries };
     });
   },

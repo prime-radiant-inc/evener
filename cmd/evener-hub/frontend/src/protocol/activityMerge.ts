@@ -45,6 +45,7 @@ function maxActivity(current: string | undefined, incoming: string | undefined):
 }
 
 function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
+  if (current.type !== "delegate" || patch.type !== "delegate") return cloneDelegate(patch);
   const currentRevision = current.projectionRevision ?? 0;
   const patchRevision = patch.projectionRevision ?? 0;
   const state = patchRevision > currentRevision ? cloneDelegate(patch) : cloneDelegate(current);
@@ -115,8 +116,6 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
     }
     const delegate = entry.delegate;
     if (delegate.type === "delegate")
-      add(delegate.terminal === true, isActivityFailure(delegate.outcome, delegate.status));
-    else if ((delegate.turns ?? []).length === 0)
       add(delegate.terminal === true, isActivityFailure(delegate.outcome, delegate.status));
     else for (const turn of delegate.turns ?? []) add(turn.terminal, isActivityFailure(turn.outcome, turn.status));
     if (!completeBranch(delegate.branch)) counts.complete = false;
