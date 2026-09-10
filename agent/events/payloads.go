@@ -801,7 +801,8 @@ type GoalUpdatedData struct {
 
 // EnvironmentData is the payload for an EventEnvironment event.
 type EnvironmentData struct {
-	Text string `json:"text"`
+	TurnID string `json:"turn_id"`
+	Text   string `json:"text"`
 }
 
 // TurnEndedData is the payload for an EventTurnEnded event.

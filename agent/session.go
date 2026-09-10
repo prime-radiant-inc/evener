@@ -1610,11 +1610,14 @@ func (s *Session) maybeAppendEnvironmentContext() {
 	}
 
 	s.appendTurn(schema.TurnEnvironment, llm.User(block))
-	// The environment entry is a standalone logical turn in the cold transcript.
-	// Open the matching live turn before publishing its item so the next user
-	// input cannot inherit the environment item's turn identity.
-	s.emit(events.EventTurnStarted, events.TurnStartedData{})
-	s.emit(events.EventEnvironment, events.EnvironmentData{Text: block})
+	// The persisted environment entry is a standalone logical turn. Use its
+	// one-based history position so the live projector and cold reader share
+	// the same fallback identity for entries without a stable turn id.
+	s.mu.Lock()
+	turnID := fmt.Sprintf("turn_%d", len(s.history))
+	s.mu.Unlock()
+	s.emit(events.EventTurnStarted, events.TurnStartedData{TurnID: turnID})
+	s.emit(events.EventEnvironment, events.EnvironmentData{TurnID: turnID, Text: block})
 	// Persist tracker state so resume stays silent when nothing changed.
 	s.setEnvContextState(st)
 }

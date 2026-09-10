@@ -3271,7 +3271,7 @@ func TestProjectToolCallEndDropsAnUnaddressableOutputImage(t *testing.T) {
 func TestAppEventProjectorKeepsEnvironmentInOwnTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: "th_1", Data: events.TurnStartedData{}})
-	environment := projector.Project(events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{Text: "<environment_context>\ncwd: /tmp\n</environment_context>"}})
+	environment := projector.Project(events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{TurnID: "turn_1", Text: "<environment_context>\ncwd: /tmp\n</environment_context>"}})
 	user := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	var environmentItem, userItem appwire.ThreadItem
 	for _, n := range environment {
