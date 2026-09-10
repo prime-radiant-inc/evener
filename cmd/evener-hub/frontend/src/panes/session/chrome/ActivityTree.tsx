@@ -14,17 +14,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { Button, Chevron } from "../../../widgets";
-import { requireClass } from "../../../widgets/internal/requireClass";
-import { OpenTranscriptButton } from "../transcript/openTranscript";
-import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   type ActivityDelegate,
   type ActivitySessionNode,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
-} from "./activityData";
+} from "../../../protocol/activityData";
+import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
+import { Button, Chevron } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import { OpenTranscriptButton } from "../transcript/openTranscript";
+import { ActivityRowDetail } from "./ActivityRowDetail";
 import {
   formatQuietAge,
   formatUsagePair,
