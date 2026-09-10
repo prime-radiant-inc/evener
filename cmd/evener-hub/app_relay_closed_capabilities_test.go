@@ -118,6 +118,30 @@ func TestRelayedCloseFrameOffersForkForAStoppedPersistedDescendant(t *testing.T)
 	}
 }
 
+/*func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
+	thread := appwire.Thread{ID: "recovering", SessionID: "recovering", Source: "local", Evener: appwire.EvenerThread{Ref: "local:recovering"}}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{}), onCommit: func() {
+		deliveries <- appsource.RelayDelivery{Notification: appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, map[string]any{"status": appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})}, Acknowledge: func() {}}
+	}}
+	locks := hubcore.NewResumeLocks()
+	client := relayedNotificationClient(t, thread, deliveries, handoff)
+	finish := locks.BeginForceStop([]string{"recovering"})
+	if err := locks.PersistForceStop([]string{"recovering"}, "recovering"); err != nil {
+		t.Fatal(err)
+	}
+	finish(false)
+	notification := <-client.Notifications()
+	var params appwire.ThreadStatusChangedParams
+	if err := json.Unmarshal(notification.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
+		t.Fatalf("recovery lock re-enabled fork: %+v", params.Capabilities)
+	}
+}
+*/
+
 // The invariant, stated: what the close frame pushes is what the very next read
 // returns. A reload is what used to heal a session that ended mid-turn, and it
 // healed it by asking the hub — so the pushed set has to BE the hub's answer,
@@ -342,11 +366,12 @@ func relayedNotificationClient(
 	}
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	appServer := newHubAppServer(hubcore.WebConfig{
+	cfg := hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
 		StateDir:     t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
-	}, sources)
+	}
+	appServer := newHubAppServer(cfg, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
 	t.Cleanup(hub.Close)
 	client := dialHubRPC(t, hub)
