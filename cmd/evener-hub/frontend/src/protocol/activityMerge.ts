@@ -4,6 +4,7 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
+  isActivityFailure,
 } from "./activityData";
 
 function cloneEntry(entry: ActivityEntry): ActivityEntry {
@@ -109,13 +110,15 @@ function summarizeSession(session: ActivitySessionNode): ActivitySessionNode {
   };
   for (const entry of session.entries) {
     if (entry.kind === "shell") {
-      add(entry.job.terminal, entry.job.outcome === "failure");
+      add(entry.job.terminal, isActivityFailure(entry.job.outcome, entry.job.status));
       continue;
     }
     const delegate = entry.delegate;
     if (delegate.type === "delegate")
-      add(delegate.terminal === true, delegate.outcome === "failed" || delegate.outcome === "exhausted");
-    else for (const turn of delegate.turns ?? []) add(turn.terminal, turn.outcome === "failure");
+      add(delegate.terminal === true, isActivityFailure(delegate.outcome, delegate.status));
+    else if ((delegate.turns ?? []).length === 0)
+      add(delegate.terminal === true, isActivityFailure(delegate.outcome, delegate.status));
+    else for (const turn of delegate.turns ?? []) add(turn.terminal, isActivityFailure(turn.outcome, turn.status));
     if (!completeBranch(delegate.branch)) counts.complete = false;
     if (delegate.child) {
       counts.active += delegate.child.counts.active;
