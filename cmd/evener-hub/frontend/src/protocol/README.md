@@ -12,5 +12,7 @@ the tarball does not contain source files or dependencies.
 Applications own credentials, caches, transcript storage, subscriptions, and
 mutation reconciliation. Connection loss during a mutation leaves its outcome
 uncertain; callers must follow the protocol mutation identity rules before
-retrying. The small example surface is read-only and requires an explicitly
-configured hub endpoint.
+retrying. The examples use Node 22's platform WebSocket and therefore require
+Node 22 or newer. For a hub requiring an Authorization header, provide an
+authenticated `socketFactory` from the host application's WebSocket
+implementation.

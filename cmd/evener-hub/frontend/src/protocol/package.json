@@ -16,5 +16,6 @@
     "prepack": "npm run build",
     "qualification": "node scripts/qualify-package.mjs"
   },
-  "devDependencies": { "typescript": "~6.0.3" }
+  "engines": { "node": ">=22" },
+  "devDependencies": { "typescript": "~6.0.3", "ws": "^8.18.0" }
 }

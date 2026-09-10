@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const packageDir = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const consumerDir = mkdtempSync(join(tmpdir(), "evener-appwire-package-"));
 const run = (command, args, cwd) => execFileSync(command, args, {
   cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
