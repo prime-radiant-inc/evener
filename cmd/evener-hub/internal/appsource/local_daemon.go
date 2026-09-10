@@ -526,7 +526,7 @@ func (s *LocalDaemonSource) NotesHumanSet(ctx context.Context, params appwire.No
 		return appwire.NotesHumanSetResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.NotesHumanSetResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodNotesHumanSet, params, &out)
 	})
 	return out, err
@@ -538,7 +538,7 @@ func (s *LocalDaemonSource) UrlsRemove(ctx context.Context, params appwire.UrlsR
 		return appwire.UrlsRemoveResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.UrlsRemoveResponse
-	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
+	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodUrlsRemove, params, &out)
 	})
 	return out, err
