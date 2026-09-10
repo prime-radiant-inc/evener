@@ -16,7 +16,7 @@ import {
   toCatalogOptions,
   withGroupHeads,
 } from "./catalogView";
-import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./index";
+import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
 
 export type PickerRow =
   | { kind: "group"; key: string; label: string }
