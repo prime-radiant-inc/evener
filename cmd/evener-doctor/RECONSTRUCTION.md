@@ -41,6 +41,8 @@ their calls and transcript timestamps. Each call must have exactly one result
 event within its native tool round. Timestamps are compared as instants;
 multiple tool-result messages at the same instant are ambiguous and refused.
 Missing arguments become an empty object. Source schema mismatches fail explicitly.
+Generated records also pass native bounded framing: an encoded header or entry
+over the runtime's record-size limit is refused before staging any files.
 
 The transcript header preserves the surviving metadata's profile and model,
 falling back to the first archived assistant response only for missing fields.

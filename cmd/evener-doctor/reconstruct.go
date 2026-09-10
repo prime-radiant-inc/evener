@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -138,15 +139,8 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 			return report, err
 		}
 	}
-	// Use the runtime's strict schema boundary before publishing a staged file.
-	lines := bytes.Split(bytes.TrimSuffix(transcriptBytes.Bytes(), []byte("\n")), []byte("\n"))
-	if _, err := transcript.DecodeHeader(lines[0]); err != nil {
+	if err := validateReconstructionTranscript(transcriptBytes.Bytes(), transcript.DefaultMaxLineBytes); err != nil {
 		return report, err
-	}
-	for _, line := range lines[1:] {
-		if _, err := transcript.DecodeEntry(line); err != nil {
-			return report, err
-		}
 	}
 	sourceBytes, err := json.MarshalIndent(source, "", "  ")
 	if err != nil {
@@ -187,6 +181,31 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 	}
 	complete = true
 	return report, nil
+}
+
+func validateReconstructionTranscript(data []byte, maxLineBytes int) error {
+	// Match native restore's bounded framing as well as its record schema.
+	reader := bufio.NewReader(bytes.NewReader(data))
+	for i := 0; ; i++ {
+		line, complete, consumed, err := transcript.ReadLine(reader, maxLineBytes)
+		if err != nil {
+			return err
+		}
+		if !complete {
+			if i == 0 || consumed > 0 {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		}
+		if i == 0 {
+			_, err = transcript.DecodeHeader(line)
+		} else {
+			_, err = transcript.DecodeEntry(line)
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func writeReconstructionFile(name string, data []byte) error {

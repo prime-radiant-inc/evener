@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,6 +210,41 @@ func reconstructionSourceFixture(t *testing.T) reconstructionSource {
 		t.Fatal(err)
 	}
 	return source
+}
+
+func TestReconstructionValidationEnforcesNativeRecordSize(t *testing.T) {
+	for _, kind := range []string{"header", "entry"} {
+		t.Run(kind, func(t *testing.T) {
+			header := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion}
+			entry := transcript.Entry{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Role: llm.RoleUser}}}
+			// Escaped content proves the bound applies to encoded record bytes.
+			text := strings.Repeat("<", 128)
+			if kind == "header" {
+				header.SystemPrompt = text
+			} else {
+				entry.Turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentText, Text: text}}
+			}
+			var data bytes.Buffer
+			encoder := json.NewEncoder(&data)
+			if err := encoder.Encode(header); err != nil {
+				t.Fatal(err)
+			}
+			headerBytes := data.Len() - 1
+			if err := encoder.Encode(entry); err != nil {
+				t.Fatal(err)
+			}
+			limit := max(headerBytes, data.Len()-headerBytes-2)
+			if err := validateReconstructionTranscript(data.Bytes(), limit); err != nil {
+				t.Fatalf("rejected record at the payload limit: %v", err)
+			}
+			if err := validateReconstructionTranscript(data.Bytes(), limit-1); !errors.Is(err, transcript.ErrLineTooLong) {
+				t.Fatalf("oversized %s error = %v, want ErrLineTooLong", kind, err)
+			}
+			if err := validateReconstructionTranscript(data.Bytes()[:data.Len()-1], limit); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatalf("incomplete final record error = %v, want unexpected EOF", err)
+			}
+		})
+	}
 }
 
 func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
