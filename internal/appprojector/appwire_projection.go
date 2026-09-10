@@ -261,6 +261,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// Environment context is a standalone saved turn, not a runnable
 		// work carrier. Close its group before the following user input.
 		reserved := p.reservedTurnID
+		p.reservedTurnID = ""
 		_, out := p.openTurn(data.TurnID, event.Timestamp)
 		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)...)
 		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
