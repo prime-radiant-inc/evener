@@ -89,14 +89,7 @@ func (s *Session) Close() {
 // A cancelled in-flight turn may already have published an interrupted idle
 // boundary; that boundary must not suppress the session's closed notification.
 func (s *Session) CloseForShutdown() {
-	s.CloseForShutdownContext(context.Background())
-}
-
-// CloseForShutdownContext closes the session using the caller's shutdown
-// deadline, allowing a daemon's bridge wait and session teardown to share one
-// bounded budget.
-func (s *Session) CloseForShutdownContext(ctx context.Context) {
-	s.close(ctx, closeOptions{cleanupEnv: true, forceTerminal: true})
+	s.close(context.Background(), closeOptions{cleanupEnv: true, forceTerminal: true})
 }
 
 type closeOptions struct {

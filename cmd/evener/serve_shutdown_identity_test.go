@@ -323,9 +323,14 @@ func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
 	}
 	waitEntered := make(chan struct{})
 	var waitOnce sync.Once
+	var expiryCalls int
 	expired := make(chan time.Time)
 	close(expired)
-	deps.drainWaitExpiry = func() <-chan time.Time { waitOnce.Do(func() { close(waitEntered) }); return expired }
+	deps.drainWaitExpiry = func() <-chan time.Time {
+		expiryCalls++
+		waitOnce.Do(func() { close(waitEntered) })
+		return expired
+	}
 	clearResult := make(chan error, 1)
 	clearStepStart := 0
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
@@ -351,6 +356,9 @@ func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
 	}
 	if err := <-clearResult; err == nil {
 		t.Fatal("clear succeeded despite expired old-session bridge drain")
+	}
+	if expiryCalls != 1 {
+		t.Fatalf("shutdown drain expiry was minted %d times, want exactly once across clear and teardown", expiryCalls)
 	}
 	select {
 	case <-waitEntered:

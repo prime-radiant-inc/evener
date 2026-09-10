@@ -740,9 +740,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			done := make(chan struct{})
 			shutdownExpiry = done
 			go func() {
+				defer close(done)
 				select {
 				case <-source:
-					close(done)
 				case <-shutdownExpiryStop:
 				}
 			}()
