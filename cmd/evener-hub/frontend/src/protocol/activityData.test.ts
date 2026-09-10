@@ -956,7 +956,7 @@ describe("lastOutputAt and usage wire fields", () => {
   it("keeps usage absent when the wire omits it", () => {
     const tree = parseActivityTree(delegateUsageTree()) as ActivityTree;
     const entry = tree.root.entries[0];
-    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
     expect(entry.delegate.usage).toBeUndefined();
   });
 
@@ -967,7 +967,7 @@ describe("lastOutputAt and usage wire fields", () => {
   ])("handles %s sparse usage according to omitempty wire semantics", (_name, rawUsage, expectedUsage) => {
     const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
     const entry = tree.root.entries[0];
-    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
     expect(entry.delegate.usage).toEqual(expectedUsage);
   });
 
@@ -993,7 +993,7 @@ describe("lastOutputAt and usage wire fields", () => {
   ])("preserves %s sparse optional usage", (_name, rawUsage, expectedUsage) => {
     const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
     const entry = tree.root.entries[0];
-    if (!entry || entry.kind !== "delegate") throw new Error("expected delegate entry");
+    if (entry?.kind !== "delegate") throw new Error("expected delegate entry");
     expect(entry.delegate.usage).toEqual(expectedUsage);
   });
 

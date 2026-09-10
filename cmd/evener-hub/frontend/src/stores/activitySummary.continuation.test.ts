@@ -155,3 +155,29 @@ test("a failed continuation queues a same-bump replacement while the old root is
     counts: { active: 3 },
   });
 });
+
+test("a continuation failure keeps an already published root fresh", () => {
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  activityPanelStore
+    .getState()
+    .publishFetch(ref, page, { kind: "continuation-failed", nodeID, message: "unavailable" });
+  const backgroundFetch = vi.fn(async () => tree(["first"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 10, backgroundFetch)).toBeNull();
+  expect(backgroundFetch).not.toHaveBeenCalled();
+  expect(activityPanelStore.getState().entries.get(ref)?.continuationFailures[nodeID]).toBe("unavailable");
+});
+
+test("a later continuation failure keeps successful pages fresh while the old root settles", async () => {
+  const settleRoot = heldRoot();
+  const page = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  activityPanelStore.getState().publishFetch(ref, page, { kind: "ready", tree: tree(["second"]) });
+  const nextPage = activityPanelStore.getState().beginFetch(ref, { nodeID });
+  activityPanelStore
+    .getState()
+    .publishFetch(ref, nextPage, { kind: "continuation-failed", nodeID, message: "unavailable" });
+  await settleRoot();
+  const backgroundFetch = vi.fn(async () => tree(["first"]));
+  expect(activitySummaryStore.getState().refreshRoot(ref, 20, backgroundFetch)).toBeNull();
+  expect(backgroundFetch).not.toHaveBeenCalled();
+  expect(retainedActivityTree(activityPanelStore.getState().entries.get(ref))?.root.entries).toHaveLength(2);
+});

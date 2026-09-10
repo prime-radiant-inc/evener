@@ -180,11 +180,16 @@ test("merged summaries count failures and keep coverage separate from running st
 });
 
 test.each([
-  ["shell", "failure"],
-  ["stable delegate", "failed"],
-  ["stable delegate", "exhausted"],
-  ["turn container", "failure"],
-])("maps the backend %s outcome for a %s", (kind, outcome) => {
+  ["shell", "failure", 1],
+  ["shell", "failed", 0],
+  ["shell", "exhausted", 0],
+  ["stable delegate", "failure", 0],
+  ["stable delegate", "failed", 1],
+  ["stable delegate", "exhausted", 1],
+  ["turn container", "failure", 1],
+  ["turn container", "failed", 0],
+  ["turn container", "exhausted", 0],
+])("matches backend counts for %s outcome %s", (kind, outcome, failed) => {
   const entry = kind === "shell" ? shell("failed") : delegate();
   if (kind === "shell") {
     if (entry.kind !== "shell") throw new Error("unexpected shell fixture");
@@ -199,9 +204,10 @@ test.each([
     delete entry.delegate.type;
     entry.delegate.turns = [{ ...shell("failed").job, outcome, terminal: true }];
   }
+  if (entry.kind === "delegate") entry.delegate.branch = {};
   const result = graftContinuationTree(tree([]), "session:root", tree([entry]));
-  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
-  expect(result.root.aggregate).toBe("failed");
+  expect(result.root.counts).toMatchObject({ active: 0, failed, completed: 1 - failed });
+  expect(result.root.aggregate).toBe(failed ? "failed" : "ended");
 });
 
 test.each(["error", "failed", "exhausted"])(

@@ -33,6 +33,8 @@ export interface ActivitySummaryEntry {
   lastFetchedBump?: number | null;
   // Keep the request's ordering value when a continuation invalidates freshness.
   requestedBump?: number | null;
+  // A published root or continuation satisfies this request generation.
+  hasPublishedResult?: boolean;
   requestID: number;
   pendingBump?: PendingRootFetch;
 }
@@ -133,6 +135,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         loading: true,
         lastFetchedBump: bump,
         requestedBump: bump,
+        hasPublishedResult: false,
         requestID,
         pendingBump: undefined,
       });
@@ -232,7 +235,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       const entry = state.entries.get(ref);
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, counts, loading: false });
+      entries.set(ref, { ...entry, counts, loading: false, hasPublishedResult: true });
       return { entries };
     });
   },
@@ -242,7 +245,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       const entry = state.entries.get(ref);
       if (!entry || entry.requestID !== requestID) return state;
       const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, counts, lastFetchedBump: entry.requestedBump });
+      entries.set(ref, { ...entry, counts, lastFetchedBump: entry.requestedBump, hasPublishedResult: true });
       return { entries };
     });
   },
@@ -250,7 +253,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   publishContinuationFailure(ref, requestID) {
     set((state) => {
       const entry = state.entries.get(ref);
-      if (!entry || entry.requestID !== requestID) return state;
+      if (!entry || entry.requestID !== requestID || entry.hasPublishedResult) return state;
       const entries = new Map(state.entries);
       entries.set(ref, { ...entry, lastFetchedBump: undefined });
       return { entries };
