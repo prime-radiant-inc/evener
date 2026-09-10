@@ -24,7 +24,6 @@ import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   GoalSetResponse,
-  InputItem,
   ModelListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
@@ -33,7 +32,7 @@ import type {
 } from "../protocol/types.gen";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { translateAttachmentMarkers } from "./attachmentMarkers";
+import { buildComposerInput, buildInput, type InputAttachment } from "./composerInput";
 import { connectionStore } from "./connection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
@@ -48,7 +47,7 @@ import {
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
-import { buildInput, type InputAttachment } from "./composerInput";
+
 export type { InputAttachment } from "./composerInput";
 
 // InputAttachment is this store's real-attachment shape: base64 bytes, not a
@@ -1162,7 +1161,7 @@ function composerMutationIntent(
   // untranslated text rides along as composerText so a record that fails and
   // lands in recovery can be restored into a composer with its marker anchors
   // intact - the tiles remove those anchors, and prose is not one.
-  const input = buildInput(translateAttachmentMarkers(text, attachments), attachments);
+  const input = buildComposerInput(text, attachments);
   const expectedInstanceId = threadInstanceID(model);
   const base = {
     targetRef: ref,

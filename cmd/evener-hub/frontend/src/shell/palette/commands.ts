@@ -25,10 +25,10 @@ import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
+import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 import { commandScore } from "./commandScore";
 import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
-import { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 
 // A command is either global (no session needed) or session-scoped (a session
 // pane must be focused). There is deliberately no third "works on an ended

@@ -5,8 +5,7 @@
 // launchOverrides, the schema engine, sticky defaults).
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
-import { translateAttachmentMarkers } from "../../stores/attachmentMarkers";
-import { buildInput } from "../../stores/composerInput";
+import { buildComposerInput } from "../../stores/composerInput";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 
@@ -31,14 +30,8 @@ export interface SpawnResult {
   ref: string;
 }
 
-// buildInput mirrors threadsStore's own turn-input assembly (the buildInput
-// in stores/threads.ts; unexported there, so mirrored locally per PIN-C): an
-// optional leading RAW text item (kept only when non-empty after trim, but
-// sent UNTRIMMED - floor §1.12), then one image item per attachment
-// (image-only submits are valid). Its caller applies the one transformation
-// the wire text gets, the "[image N]" marker translation - shared with the
-// store's own submit path rather than mirrored, since a mirror of THAT would
-// silently drift.
+// buildComposerInput assembles the optional RAW text item and image items,
+// translating composer attachment markers at the wire boundary.
 // The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
 // form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
 // id (floor §1.14 / spawn.js:404-417 describes that legacy routing). The SPA
@@ -50,8 +43,7 @@ export interface SpawnResult {
 // SessionActionsMenu.tsx resp.thread.evener.ref for fork children). Stripping
 // here would open a dead-on-arrival session pane.
 export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
-  const prompt = translateAttachmentMarkers(req.prompt, req.attachments);
-  const params: ThreadStartParams = { cwd: req.cwd, input: buildInput(prompt, req.attachments) };
+  const params: ThreadStartParams = { cwd: req.cwd, input: buildComposerInput(req.prompt, req.attachments) };
   if (req.harness) params.harness = req.harness;
   if (req.modelProvider) params.modelProvider = req.modelProvider;
   if (req.model) params.model = req.model;

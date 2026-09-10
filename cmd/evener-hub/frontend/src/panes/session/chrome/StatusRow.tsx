@@ -16,7 +16,7 @@
 
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
-import { effortLabel, effortOptionLevels } from "../../../shell/reasoningEffort";
+import { effortLabel, effortOptionLevels, sessionEffortLevels } from "../../../shell/reasoningEffort";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -49,13 +49,6 @@ const CLASS = {
   effortSelect: requireClass(styles.effortSelect, "statusrow.module.css", "effortSelect"),
   srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
-
-// Fallback effort ladder for a reasoning model whose own ladder the hub does
-// not enumerate. Ported verbatim from the legacy live picker (cmd/evener-hub/
-// assets/model-switch.js:30, itself from spawn.js:1605) so this surface and
-// the spawn form agree; the daemon clamps a request to what the model actually
-// accepts, so an over-broad list is safe.
-const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 
 // ReasoningEffortControl renders the reasoning-effort switcher as a quiet
 // trigger matching the model switcher beside it: the current value IS the
@@ -90,12 +83,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
     }
   }
 
-  const levels =
-    model.reasoningEffortLevels.length > 0
-      ? model.reasoningEffortLevels
-      : model.supportsReasoning
-        ? DEFAULT_EFFORT_LEVELS
-        : [];
+  const levels = sessionEffortLevels(model.reasoningEffortLevels, model.supportsReasoning);
   if (levels.length === 0) return null;
 
   const current = model.reasoningEffort ?? "";
