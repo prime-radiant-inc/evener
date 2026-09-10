@@ -92,3 +92,17 @@ func TestFixWave15_NearestWaitNumericTieBreak(t *testing.T) {
 		t.Fatalf("NearestWait order-dependent: %q vs %q (want input-order independent)", second.WaitID, first.WaitID)
 	}
 }
+
+// TestFixWave16_ParseWaitSeqOverflow pins the round-16 LOW: a wait_N suffix
+// too large to represent must return -1 (falls back to string compare in
+// waitOrderLess), never a wrapped-around value. Before the fix the digit
+// accumulation wrapped on huge suffixes.
+func TestFixWave16_ParseWaitSeqOverflow(t *testing.T) {
+	t.Parallel()
+	if got := parseWaitSeq("wait_99999999999999999999999"); got != -1 {
+		t.Fatalf("parseWaitSeq(huge suffix) = %d, want -1 (non-representable)", got)
+	}
+	if got := parseWaitSeq("wait_12"); got != 12 {
+		t.Fatalf("parseWaitSeq(wait_12) = %d, want 12", got)
+	}
+}

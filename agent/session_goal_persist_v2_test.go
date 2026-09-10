@@ -165,6 +165,76 @@ func TestGoalPersistV2_ConditionsAndWakeKindRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFixWave16_NextWaitIDRoundTrip pins the round-16 MEDIUM: the wait-id
+// counter (PersistedGoal.NextWaitID) round-trips through the schema
+// GoalSnapshot, so a restore with no live waits/pending to infer from still
+// mints fresh ids. Before the fix goalPersistFromStore/goalRestoreToStore
+// dropped the counter, maxNextWaitID fell back to 0, and the next
+// registration reused wait_1 — colliding with stale wake/cancel references.
+func TestFixWave16_NextWaitIDRoundTrip(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	now := clk.Now()
+	store := sess.getOrCreateGoalStore()
+	store.Set("persist the counter", now)
+	first, ok := store.RegisterWait(goal.WaitKind{
+		Kind:    goal.WaitUntilTime,
+		Timeout: time.Hour,
+		Label:   "one",
+	}, now)
+	if !ok {
+		t.Fatal("precondition: first registration should succeed")
+	}
+	second, ok := store.RegisterWait(goal.WaitKind{
+		Kind:    goal.WaitUntilTime,
+		Target:  "other",
+		Timeout: time.Hour,
+		Label:   "two",
+	}, now)
+	if !ok {
+		t.Fatal("precondition: second registration should succeed")
+	}
+	// Claim both leases so the persisted image carries no live waits to
+	// infer the counter from — only the counter itself.
+	claimAt := now.Add(time.Minute)
+	if _, ok := store.ClaimFire(first.Lease.WaitID, "fire one", claimAt); !ok {
+		t.Fatal("precondition: first claim should consume the lease")
+	}
+	if _, ok := store.ClaimFire(second.Lease.WaitID, "fire two", claimAt); !ok {
+		t.Fatal("precondition: second claim should consume the lease")
+	}
+	// Drain the consumed-fire backlog too: the counter must survive with
+	// neither waits nor pendingWake to infer from.
+	store.DrainPendingWake(claimAt)
+
+	meta := sess.Meta()
+	if meta.Goal == nil {
+		t.Fatal("Meta().Goal must not be nil")
+	}
+	if meta.Goal.NextWaitID != 2 {
+		t.Fatalf("persisted next_wait_id = %d, want 2 (two ids minted)", meta.Goal.NextWaitID)
+	}
+
+	fresh := goal.NewStore()
+	fresh.RestoreSnapshot(goalRestoreToStore(meta.Goal, claimAt))
+	third, ok := fresh.RegisterWait(goal.WaitKind{
+		Kind:    goal.WaitUntilTime,
+		Target:  "fresh",
+		Timeout: time.Hour,
+		Label:   "three",
+	}, claimAt)
+	if !ok {
+		t.Fatal("post-restore registration should succeed")
+	}
+	if third.Lease.WaitID != "wait_3" {
+		t.Fatalf("post-restore wait id = %q, want wait_3 (counter continues past 2, no reuse)", third.Lease.WaitID)
+	}
+}
+
 // goalPersistCondSubstrate is the persist-test file substrate.
 type goalPersistCondSubstrate struct {
 	files map[string]string

@@ -179,6 +179,70 @@ func TestGoalWaitNearestDeadlineTieBreaksOnWaitID(t *testing.T) {
 	}
 }
 
+// TestFixWave16_NearestWaitNumericTieBreak pins the round-16 LOW: the
+// equal-deadline tie-break is numeric registration order (RegisteredAt, then
+// the numeric wait_N suffix), not the raw lexicographic wait_id compare —
+// wait_2 (registered 2nd) beats wait_10 (registered 10th). Both session
+// projections (goalStateDataFromFull, earliestLiveWait) must agree with
+// schema.NearestWait on the same input.
+func TestFixWave16_NearestWaitNumericTieBreak(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("numeric tie", clk.Now())
+	now := clk.Now()
+	// Two same-deadline waits, wait_2 + wait_10: lexicographic order
+	// ("wait_10" < "wait_2") disagrees with numeric registration order.
+	// Equal RegisteredAt forces the numeric-suffix leg (not the timestamp
+	// leg) to decide, exactly the leg the old string compare got wrong.
+	deadline := now.Add(time.Hour)
+	full := goal.GoalSnapshot{
+		Objective: "numeric tie",
+		Status:    goal.StatusWaiting,
+		Waits: []goal.Wait{
+			{Lease: goal.Lease{WaitID: "wait_10", Kind: goal.WaitUntilTime, Label: "tenth", Deadline: deadline, RegisteredAt: now}},
+			{Lease: goal.Lease{WaitID: "wait_2", Kind: goal.WaitUntilTime, Label: "second", Deadline: deadline, RegisteredAt: now}},
+		},
+	}
+	data := goalStateDataFromFull(full)
+	if data.NearestLabel == "" {
+		t.Fatal("precondition: a nearest wait must resolve")
+	}
+	_, anchorID, _ := earliestLiveWait(full)
+	if anchorID != "wait_2" {
+		t.Fatalf("earliestLiveWait = %q, want wait_2 (numeric registration order, not lexicographic)", anchorID)
+	}
+	if data.NearestLabel != "second" {
+		t.Fatalf("goalStateDataFromFull nearest = %q, want second (wait_2 wins the tie)", data.NearestLabel)
+	}
+	// The wire projection must agree with the watchdog anchor and with
+	// schema.NearestWait on the same waits.
+	var schemaWaits []schema.GoalWaitSnapshot
+	for _, w := range full.Waits {
+		schemaWaits = append(schemaWaits, schema.GoalWaitSnapshot{
+			WaitID:       w.Lease.WaitID,
+			Label:        w.Lease.Label,
+			Deadline:     w.Lease.Deadline,
+			RegisteredAt: w.Lease.RegisteredAt,
+		})
+	}
+	schemaNearest, ok := schema.NearestWait(schemaWaits)
+	if !ok {
+		t.Fatal("precondition: schema.NearestWait must resolve")
+	}
+	if schemaNearest.WaitID != anchorID {
+		t.Fatalf("schema.NearestWait = %q vs earliestLiveWait = %q (projections must agree)", schemaNearest.WaitID, anchorID)
+	}
+	if data.NearestLabel != schemaNearest.Label || data.NearestDeadlineUnixMilli != schemaNearest.Deadline.UnixMilli() {
+		t.Fatalf("goalStateDataFromFull nearest = (%q, %d), want schema.NearestWait (%q, %d)",
+			data.NearestLabel, data.NearestDeadlineUnixMilli, schemaNearest.Label, schemaNearest.Deadline.UnixMilli())
+	}
+}
+
 // TestGoalWaitingEventEmittedOnPark pins §7: parking on a wait emits
 // EventGoalWaiting (the announcement channel for the park), carrying the wait
 // count and nearest label.

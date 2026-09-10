@@ -106,6 +106,49 @@ func (w Wait) ID() string { return w.Lease.WaitID }
 // Live reports whether the lease is unfired and unexpired-claimed.
 func (w Wait) Live() bool { return w.Lease.FiredEpoch == 0 }
 
+// WaitOrderLess orders two equal-deadline waits by registration order:
+// RegisteredAt first (both set), then the numeric wait_N suffix, then the
+// raw id string for nonconforming ids (the synthetic "deadline" entry and
+// any future scheme). It mirrors schema's waitOrderLess over
+// GoalWaitSnapshot so the session projections (chip summary, watchdog
+// anchor) agree with the persisted-image ordering: the same
+// (deadline, RegisteredAt, numeric suffix, id) chain. Deterministic on
+// every input: equal on all three compares false both ways, so input order
+// wins (stable scan).
+func WaitOrderLess(a, b Wait) bool {
+	ar, br := a.Lease.RegisteredAt, b.Lease.RegisteredAt
+	if !ar.IsZero() && !br.IsZero() && !ar.Equal(br) {
+		return ar.Before(br)
+	}
+	if as, bs := parseWaitSeq(a.Lease.WaitID), parseWaitSeq(b.Lease.WaitID); as >= 0 && bs >= 0 && as != bs {
+		return as < bs
+	}
+	return a.Lease.WaitID < b.Lease.WaitID
+}
+
+// parseWaitSeq parses the registry sequence of a "wait_N" id (-1 for
+// nonconforming ids, which fall back to string compare in WaitOrderLess).
+// Suffixes too large to represent return -1 as well, so a huge suffix never
+// wraps to a small sequence that would misorder the tie-break.
+func parseWaitSeq(id string) int {
+	rest, ok := strings.CutPrefix(id, "wait_")
+	if !ok || rest == "" {
+		return -1
+	}
+	n := 0
+	for i := 0; i < len(rest); i++ {
+		if rest[i] < '0' || rest[i] > '9' {
+			return -1
+		}
+		d := int(rest[i] - '0')
+		if n > (int(^uint(0)>>1)-d)/10 {
+			return -1
+		}
+		n = n*10 + d
+	}
+	return n
+}
+
 // PendingWake is one consumed-but-undelivered fire (spec §1): the claim step
 // moves leases out of waits[] into this persisted list, which the wake turn
 // consumes. Superseded marks a wake whose goal was retargeted between claim

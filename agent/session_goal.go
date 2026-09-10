@@ -2173,9 +2173,9 @@ func goalStateDataFromFull(full goal.GoalSnapshot) events.GoalStateData {
 		MaxContinuations:  full.Budgets.MaxContinuations,
 		Stage:             string(full.LedgerSummary.Stage),
 	}
-	var nearestID string
 	var nearestDeadline time.Time
 	var haveNearest bool
+	var best goal.Wait
 	for _, w := range full.Waits {
 		if !w.Live() {
 			continue
@@ -2185,11 +2185,12 @@ func goalStateDataFromFull(full goal.GoalSnapshot) events.GoalStateData {
 			Label:             w.Lease.Label,
 			DeadlineUnixMilli: w.Lease.Deadline.UnixMilli(),
 		})
-		// Nearest = earliest deadline, tie → smallest wait_id (spec §6).
+		// Nearest = earliest deadline, tie → registration order
+		// (goal.WaitOrderLess, mirroring schema.NearestWait; spec §6).
 		if !haveNearest || w.Lease.Deadline.Before(nearestDeadline) ||
-			(w.Lease.Deadline.Equal(nearestDeadline) && w.Lease.WaitID < nearestID) {
+			(w.Lease.Deadline.Equal(nearestDeadline) && goal.WaitOrderLess(w, best)) {
 			haveNearest = true
-			nearestID = w.Lease.WaitID
+			best = w
 			nearestDeadline = w.Lease.Deadline
 			out.NearestDeadlineUnixMilli = w.Lease.Deadline.UnixMilli()
 			out.NearestLabel = w.Lease.Label

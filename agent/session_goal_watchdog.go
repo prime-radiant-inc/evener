@@ -338,16 +338,19 @@ func isAutoParkOnly(full goal.GoalSnapshot) bool {
 }
 
 // earliestLiveWait resolves the §6 chip anchor over live waits: earliest
-// deadline wins, ties break on the smallest wait_id.
+// deadline wins, ties break on registration order (goal.WaitOrderLess,
+// mirroring schema.NearestWait).
 func earliestLiveWait(full goal.GoalSnapshot) (deadline time.Time, waitID, label string) {
 	var have bool
+	var best goal.Wait
 	for _, w := range full.Waits {
 		if !w.Live() {
 			continue
 		}
 		if !have || w.Lease.Deadline.Before(deadline) ||
-			(w.Lease.Deadline.Equal(deadline) && w.Lease.WaitID < waitID) {
+			(w.Lease.Deadline.Equal(deadline) && goal.WaitOrderLess(w, best)) {
 			have = true
+			best = w
 			deadline = w.Lease.Deadline
 			waitID = w.Lease.WaitID
 			label = w.Lease.Label

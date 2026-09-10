@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -321,6 +320,10 @@ func (s *Session) goalStateDigest() string {
 // name/size/mtime lines. A missing root (or a read error) contributes the
 // absence marker — the digest still compares deterministically; a reappearing
 // root then reads as a delta, which is the honest signal.
+// Lines hash the relative entry name, never the absolute path: the digest
+// compares one worktree across turns (and across restores), so a root rename
+// must not read as advancement — and persisted digests must not leak
+// machine-local paths.
 func worktreeListingDigest(root string) string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -342,7 +345,7 @@ func worktreeListingDigest(root string) string {
 			size = fi.Size()
 			mtime = fi.ModTime().UTC().Format("2006-01-02T15:04:05")
 		}
-		fmt.Fprintf(&b, "file %s %d %s\n", filepath.Join(root, name), size, mtime)
+		fmt.Fprintf(&b, "file %s %d %s\n", name, size, mtime)
 	}
 	return b.String()
 }

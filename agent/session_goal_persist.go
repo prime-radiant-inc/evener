@@ -25,6 +25,7 @@ func goalPersistFromStore(p goal.PersistedGoal) *schema.GoalSnapshot {
 		StopReason:             p.StopReason,
 		CreatedAt:              p.CreatedAt,
 		UpdatedAt:              p.UpdatedAt,
+		NextWaitID:             p.NextWaitID,
 		AutoReparks:            p.AutoReparks,
 		Conditions:             goalConditionsToSchema(p.Conditions),
 		TerminalPending:        p.TerminalPending,
@@ -93,7 +94,10 @@ func goalPersistFromStore(p goal.PersistedGoal) *schema.GoalSnapshot {
 // autoReparks ← 0, pendingWake ← empty, deadlineFinalDelivered ← false,
 // terminalPending ← false, stage seeded per the remaining-till-block table
 // with K−remaining synthetic "migrated"-fingerprint entries (disclosed
-// at-most-K−1 residual).
+// at-most-K−1 residual). The wait-id counter restores verbatim: v1 snapshots
+// predate it (NextWaitID 0), so RestoreSnapshot's maxNextWaitID seeds from
+// the carried waits/pending — or 0 for a wait-free v1 image, the same as a
+// fresh store.
 func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.PersistedGoal {
 	if g.Budgets == nil {
 		return goal.MigrateV1ToPersisted(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt, restoreTime)
@@ -107,6 +111,7 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 		StopReason:       g.StopReason,
 		CreatedAt:        g.CreatedAt,
 		UpdatedAt:        g.UpdatedAt,
+		NextWaitID:       g.NextWaitID,
 		Budgets: goal.Budgets{
 			MaxContinuations:  g.Budgets.MaxContinuations,
 			UsedContinuations: g.Budgets.UsedContinuations,

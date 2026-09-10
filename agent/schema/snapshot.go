@@ -350,6 +350,9 @@ func waitOrderLess(a, b GoalWaitSnapshot) bool {
 
 // parseWaitSeq parses the registry sequence of a "wait_N" id (-1 for
 // nonconforming ids, which fall back to string compare in waitOrderLess).
+// Suffixes too large to represent return -1 as well: the accumulation guards
+// against overflow (n > (maxInt-d)/10 before accumulating) so a huge suffix
+// never wraps to a small sequence that would misorder the tie-break.
 func parseWaitSeq(id string) int {
 	rest, ok := strings.CutPrefix(id, "wait_")
 	if !ok || rest == "" {
@@ -360,7 +363,11 @@ func parseWaitSeq(id string) int {
 		if rest[i] < '0' || rest[i] > '9' {
 			return -1
 		}
-		n = n*10 + int(rest[i]-'0')
+		d := int(rest[i] - '0')
+		if n > (int(^uint(0)>>1)-d)/10 {
+			return -1
+		}
+		n = n*10 + d
 	}
 	return n
 }
@@ -414,6 +421,13 @@ type GoalSnapshot struct {
 	StopReason       string    `json:"stop_reason,omitempty"`
 	CreatedAt        time.Time `json:"created_at,omitzero"`
 	UpdatedAt        time.Time `json:"updated_at,omitzero"`
+	// NextWaitID is the wait-id counter ( PersistedGoal.NextWaitID): the next
+	// registration mints wait_{NextWaitID+1}. Carried so a restore with no
+	// live waits or pendingWake to infer from still mints fresh ids instead
+	// of reusing wait_1. Zero on v1 snapshots (nil Budgets predate the
+	// counter): the restore then seeds from the waits/pending it carries, or
+	// 0 for a wait-free v1 image — the same as a fresh store, acceptable.
+	NextWaitID uint64 `json:"next_wait_id,omitempty"`
 	// Waits carries the live-lease registry with full predicate payloads
 	// (spec section 2 lease fields). Empty on every terminal.
 	Waits []GoalWaitSnapshot `json:"waits,omitempty"`
