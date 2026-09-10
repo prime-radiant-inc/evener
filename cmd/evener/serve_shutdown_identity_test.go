@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
-	rvreg "primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/server"
 )
@@ -200,14 +199,14 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 		})
 	}
 
-	clearReachedRendezvous := make(chan struct{})
-	updateSessionID := deps.updateSessionID
-	deps.updateSessionID = func(reg *rvreg.Registration, id string) error {
-		err := updateSessionID(reg, id)
+	clearReachedPreparation := make(chan struct{})
+	newClearSession := deps.newClearSession
+	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		sess, err := newClearSession(client, profile, env, cfg)
 		if err == nil {
-			close(clearReachedRendezvous)
+			close(clearReachedPreparation)
 		}
-		return err
+		return sess, err
 	}
 	clearDone := make(chan error, 1)
 	clearStepStart := 0
@@ -229,7 +228,7 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 			})
 		}()
 		select {
-		case <-clearReachedRendezvous:
+		case <-clearReachedPreparation:
 		case <-t.Context().Done():
 			return t.Context().Err()
 		}

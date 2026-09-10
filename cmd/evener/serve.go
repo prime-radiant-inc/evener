@@ -656,8 +656,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	var currentMu sync.RWMutex
 	// identityTransitionMu serializes shutdown's ownership claim with a clear's
-	// final identity swap. It is held only across the terminal transition, never
-	// while acquiring the session lock and closing a session from another path.
+	// final identity swap. It is the outer lock for the brief currentMu access;
+	// neither is held while acquiring the projection gate or waiting on a drain.
 	var identityTransitionMu sync.Mutex
 	currentSess := sess
 	// currentEnv tracks the CURRENT session's execution environment (each session
@@ -930,6 +930,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		drainsMu.Unlock()
 		if drained == nil {
 			return true
+		}
+		select {
+		case <-drained:
+			return true
+		default:
 		}
 		select {
 		case <-drained:
