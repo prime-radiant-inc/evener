@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 12
+	turnIndexVersion        = 13
 	turnIndexJournalVersion = 3
 	turnIndexAnchorBytes    = 256
 
@@ -168,6 +168,7 @@ type indexedTurn struct {
 	// GoalContinuation distinguishes a top-level goal opener from ordinary
 	// steering without retaining model or display text in the derived index.
 	GoalContinuation bool     `json:"goal_continuation,omitempty"`
+	OwningTurnID     string   `json:"owning_turn_id,omitempty"`
 	TurnID           string   `json:"turn_id,omitempty"`
 	GroupItems       uint32   `json:"group_items,omitempty"`
 	GroupCalls       []string `json:"group_calls,omitempty"`
@@ -258,7 +259,7 @@ func (d turnIndexDisk) logicalTurnCount() int {
 	groupItems := uint64(0)
 	for i := range n {
 		record := d.recordAt(i)
-		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind, record.GoalContinuation) {
+		if i > 0 && recordStartsGroup(record.TurnKind, d.recordAt(i-1).TurnKind, record.GoalContinuation, record.OwningTurnID, "") {
 			// The previous group just closed: count it when it projected
 			// items.
 			if groupItems > 0 {
@@ -889,20 +890,27 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
 			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
+			record.OwningTurnID = entry.Turn.OwningTurnID
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
 			// projected under its group's turn id (the opener's), exactly
 			// the way the range reader names it, so the index scan and the
 			// projection cannot disagree (kata: one name per entry).
 			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+			if record.OwningTurnID != "" {
+				record.TurnID = record.OwningTurnID
+			}
 			prevKind := schema.TurnKind("")
 			if len(appended) > 0 {
 				prevKind = appended[len(appended)-1].TurnKind
 			} else if n := index.recordCount(); n > 0 {
 				prevKind = index.recordAt(n - 1).TurnKind
 			}
-			if recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation) {
+			if recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, record.OwningTurnID, openTurnID) {
 				openTurnID = record.TurnID
+				if record.OwningTurnID != "" {
+					openTurnID = record.OwningTurnID
+				}
 				openCalls = map[string]bool{}
 			} else if openCalls == nil || openTurnID == "" {
 				// Continues a group whose opener lives in the previously
@@ -1162,7 +1170,7 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// groups: find where this group's span ends, then decide whether to
 		// project it.
 		spanEnd := i + 1
-		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind, index.recordAt(spanEnd).GoalContinuation) {
+		for spanEnd < n && !recordStartsGroup(index.recordAt(spanEnd).TurnKind, index.recordAt(spanEnd-1).TurnKind, index.recordAt(spanEnd).GoalContinuation, index.recordAt(spanEnd).OwningTurnID, index.recordAt(i).TurnID) {
 			spanEnd++
 		}
 		groupItems := uint64(0)
@@ -1773,7 +1781,7 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 			calls[id] = true
 		}
 		turnID = record.TurnID
-		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind, record.GoalContinuation) {
+		if i == 0 || recordStartsGroup(record.TurnKind, index.recordAt(i-1).TurnKind, record.GoalContinuation, record.OwningTurnID, turnID) {
 			break
 		}
 	}

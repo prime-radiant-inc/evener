@@ -21,8 +21,8 @@ import (
 // The grouping rule reproduces the live allocation from the file alone:
 //
 //   - USER_INPUT and typed goal-continuation STEERING open a logical turn.
-//     Ordinary STEERING joins the open turn because live steering attaches
-//     to the active turn; with no open group it starts a group of its own.
+//     Ordinary STEERING follows its explicit OwningTurnID when present;
+//     otherwise it joins the open turn because live steering attaches there.
 //   - CONTINUATIONS extend the open logical turn: ASSISTANT, TOOL,
 //     TOOL_RESULTS, and TURN_FAILURE (a failure closes nothing — the daemon
 //     may retry after a failure, and grouping it into the opener's turn keeps
@@ -65,9 +65,12 @@ func groupOpenAfter(kind schema.TurnKind) bool {
 // there is none). Openers always start a group; continuations join the open
 // group (start one only when the previous record closed it); standalone kinds
 // always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool) bool {
+func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
 	if opensLogicalTurn(kind, goalContinuation) {
 		return true
+	}
+	if kind == schema.TurnSteering && owningTurnID != "" {
+		return owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
 		return !groupOpenAfter(prevKind)
@@ -104,9 +107,16 @@ type logicalTurnAccumulator struct {
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	kind := entry.Kind
+	owner := entry.OwningTurnID
 	switch {
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
+		a.open = true
+	case kind == schema.TurnSteering && owner != "":
+		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
+			break
+		}
+		a.turns = append(a.turns, groupedTurn{turnID: owner})
 		a.open = true
 	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
 		// Join the open group.

@@ -74,6 +74,39 @@ func TestItemReadersGroupContinuationEntries(t *testing.T) {
 	}
 }
 
+func TestItemReadersHonorSteeringOwner(t *testing.T) {
+	for name, owner := range map[string]string{"active": "turn_m10", "carrier": "turn_m11"} {
+		entries := []transcript.Entry{
+			{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("first"), StableTurnID: "turn_m10"}},
+			{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")}},
+			{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User("steer"), StableTurnID: "mutation_m11", OwningTurnID: owner}},
+			{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("followup")}},
+		}
+		path := writeEntries(t, entries...)
+		full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+		page := requirePageFromFile(t, NewTurnCache(), path, testMaxLineBytes, "", 50, boundedTestProjector)
+		wantIDs := []string{"turn_m10"}
+		if name == "carrier" {
+			wantIDs = []string{"turn_m10", owner}
+		}
+		for reader, turns := range map[string][]appwire.Turn{"full": full, "indexed": page.Turns} {
+			if got := turnIDs(turns); !reflect.DeepEqual(got, wantIDs) {
+				t.Errorf("%s %s IDs = %v, want %v", name, reader, got, wantIDs)
+			}
+		}
+	}
+}
+
+// TestFileProjectionReproducesLiveLogicalTurnKeys is the differential oracle
+// for F3: the file projection of a persisted logical turn must yield the same
+// turn id, entry ordinal, and item ordinals the live snapshot would have
+// allocated for the same items.
+//
+// Live allocation (appTurnSnapshot semantics, reproduced from the projector's
+// notification stream): each logical turn consumes one entry ordinal; items
+// are numbered 0..n-1 in arrival order. With no prelude, turn 1 opens at entry
+// ordinal 0 (user item 0, assistant item 1); turn 2 opens at entry ordinal 1
+// (user item 0, merged tool item 1, final assistant item 2).
 func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		name := "interrupted"
