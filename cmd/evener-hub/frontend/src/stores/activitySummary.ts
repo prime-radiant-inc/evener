@@ -181,8 +181,30 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       });
       if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
     };
+    const ownsPanel = () => activityPanelStore.getState().entries.get(ref)?.requestID === panelRequestID;
+    const settleSupersededRoot = () => {
+      set((state) => {
+        const entry = state.entries.get(ref);
+        if (!entry || entry.requestID !== requestID) return state;
+        const entries = new Map(state.entries);
+        entries.set(ref, {
+          ...entry,
+          loading: false,
+          // The root response was superseded by a continuation and never
+          // became the panel's authoritative snapshot. Let a later refresh
+          // retry even if that continuation fails after this response settles.
+          lastFetchedBump: undefined,
+        });
+        return { entries };
+      });
+      issuePendingBump();
+    };
     void fetch(ref)
       .then((data) => {
+        if (!ownsPanel()) {
+          settleSupersededRoot();
+          return;
+        }
         const parsed = parseActivityTree(data);
         if (parsed === null) {
           get().failRootFetch(ref, requestID);
@@ -195,7 +217,7 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         issuePendingBump();
       })
       .catch((err) => {
-        const currentRequest = get().entries.get(ref)?.requestID === requestID;
+        const currentRequest = get().entries.get(ref)?.requestID === requestID && ownsPanel();
         get().failRootFetch(ref, requestID);
         let result: ActivityFetchResult;
         if (isActionUnavailable(err)) result = { kind: "unsupported" };

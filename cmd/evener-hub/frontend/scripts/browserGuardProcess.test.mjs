@@ -129,7 +129,14 @@ test("starts concurrent guards on Vite-owned ports and reaps their listeners", a
   };
   const results = await Promise.allSettled([start(), start()]);
   for (const result of results) {
-    if (result.status === "rejected") throw result.reason;
+    if (result.status === "rejected") {
+      context.diagnostic(
+        browserGuardProcess.describeBrowserStartupFailure({
+          error: result.reason,
+        }),
+      );
+      throw result.reason;
+    }
   }
   assert.equal(guards.length, 2);
   assert.notEqual(guards[0].vitePort, guards[1].vitePort);
