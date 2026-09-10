@@ -8,6 +8,12 @@ on:
         required: true
         type: string
 
+      recovery_run_id:
+        description: "Verify an uploaded build from this workflow run; leave blank to archive and upload"
+        required: false
+        default: ""
+        type: string
+
 permissions:
   contents: read
 
@@ -23,6 +29,7 @@ env:
 
 jobs:
   archive-and-upload:
+    if: inputs.recovery_run_id == ''
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -221,3 +228,72 @@ jobs:
           rm -f "$RUNNER_TEMP/evener-distribution.p12" "$RUNNER_TEMP/evener.mobileprovision" "$RUNNER_TEMP/evener-profile.plist" || cleanup_status=1
           rm -f "$RUNNER_TEMP/evener-keychains.txt" "$RUNNER_TEMP/evener-default-keychain.txt" || cleanup_status=1
           exit "$cleanup_status"
+
+  verify-upload:
+    if: inputs.recovery_run_id != ''
+    runs-on: macos-26
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out verification lane
+        uses: actions/checkout@v7
+      - name: Set up Ruby and cached gems
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler: "2.7.2"
+          working-directory: mobile-native
+          bundler-cache: true
+      - name: Validate recovery run
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Recovery run ID must be numeric" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" > "$RUNNER_TEMP/recovery-run.json"
+      - name: Download the original signed archive
+        uses: actions/download-artifact@v8
+        with:
+          name: evener-ios-testflight-${{ inputs.recovery_run_id }}
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+          path: mobile-native/build
+      - name: Verify original artifact provenance
+        working-directory: mobile-native
+        run: |
+          set -euo pipefail
+          ruby -rjson -e '
+            run = JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))
+            abort "Recovery requires this workflow dispatched from main" unless run["path"] == ".github/workflows/ios-testflight.yml" && run["event"] == "workflow_dispatch" && run["head_branch"] == "main"
+            abort "Artifact source does not match the original run" unless File.read("build/source-revision.txt").strip == run.fetch("head_sha")
+          '
+          shasum -a 256 -c build/artifact-sha256.txt
+          bundle exec ruby -rfastlane_core -e '
+            info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file("build/Evener.ipa")
+            version = info.fetch("CFBundleShortVersionString")
+            abort "Invalid artifact marketing version" unless version.match?(/\A[0-9]+(?:\.[0-9]+){0,2}\z/)
+            File.open(ENV.fetch("GITHUB_ENV"), "a") { |file| file.puts("IOS_MARKETING_VERSION=#{version}") }
+          '
+      - name: Verify internal TestFlight availability without uploading
+        working-directory: mobile-native
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
+          IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+          IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/recovered-testflight-receipt.json
+          IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
+        run: bundle exec fastlane ios verify_testflight
+      - name: Save recovered TestFlight receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: evener-ios-testflight-verification-${{ github.run_id }}
+          path: |
+            mobile-native/build/recovered-testflight-receipt.json
+            mobile-native/build/source-revision.txt
+            mobile-native/build/artifact-sha256.txt
+          if-no-files-found: warn
