@@ -327,7 +327,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminal bool
 		emitTerminal := forceTerminal
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
-		// close(budgetCtx, false) reuse it rather than minting their own.
+		// close(budgetCtx, false, false) reuse it rather than minting their own.
 		budgetCtx, cancelBudget := ensureCloseBudget(ctx)
 		defer cancelBudget()
 		// Dispose-turn vs own-close protocol (spec §P1, Implementation-order
