@@ -1915,9 +1915,10 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
 	queuedIdentity := queuedClientMutationFromContext(ctx)
+	var acceptedTurnsFloor uint64
 	if queuedIdentity.ClientMutationID == "" {
 		s.mu.Lock()
-		acceptedTurnsFloor := uint64(s.turns)
+		acceptedTurnsFloor = uint64(s.turns)
 		s.mu.Unlock()
 		err := s.claimDirectClientMutationTurn(acceptedTurnsFloor)
 		if err != nil {
@@ -1962,6 +1963,20 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			s.mu.Lock()
 			s.turns--
 			s.mu.Unlock()
+			if queuedIdentity.ClientMutationID == "" {
+				if returnErr := s.returnClaimedDirectClientMutationTurn(acceptedTurnsFloor); returnErr != nil {
+					return errors.Join(err, fmt.Errorf("return claimed direct user turn: %w", returnErr))
+				}
+			} else {
+				pending := s.clientMutations.snapshot().PendingExecutions[queuedIdentity.ClientMutationID]
+				if pending.Method == clientMutationMethodStart {
+					if returnErr := s.returnClaimedClientMutationStart(queuedIdentity.ClientMutationID); returnErr != nil {
+						return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+					}
+				} else {
+					s.pushQueueHead(queuedInput{ID: queuedIdentity.QueueEntryID, ClientMutationID: queuedIdentity.ClientMutationID, StableTurnID: queuedIdentity.StableTurnID, Text: input, Images: append([]ImageAttachment(nil), images...), Provenance: provenance.Clone(inputProvenance)})
+				}
+			}
 			return fmt.Errorf("append environment context: %w", err)
 		}
 	}
