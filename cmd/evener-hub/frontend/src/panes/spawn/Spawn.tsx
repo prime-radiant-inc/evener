@@ -60,7 +60,7 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
-import { matchBuiltinInvocation } from "../session/composer/builtinCommand";
+import { findBuiltinArgument, matchBuiltinInvocation } from "../session/composer/builtinInvocation";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
 import {
   filterSlashMenuItems,
@@ -769,12 +769,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // catalog is scoped by harness+cwd, so it settles with the path instead of
   // chasing every keystroke; model pickers call the same keyed loader on
   // demand.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the effect body only snapshots them into requestScope, but must re-run (and re-stamp) whenever the scope they define changes, same idiom as the cursor-restore layout effect in the composer
   useEffect(() => {
     let active = true;
     // The scope this request fetches for, stamped on commit below. A scope
     // change re-runs the effect and retires the previous run via active, so
     // only the latest scope's response commits its stamp.
-    // biome-ignore lint/correctness/useExhaustiveDependencies: harness/cwd are trigger-only deps - the effect body only snapshots them into requestScope, but must re-run (and re-stamp) whenever the scope they define changes, same idiom as the cursor-restore layout effect in the composer
     const requestScope = `${harness}\0${cwd}`;
     const settle = setTimeout(() => {
       loadCatalog().then(
@@ -1063,10 +1063,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       ? (() => {
           const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
           if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
-          const needle = match.argsText.trim().toLowerCase();
-          return resolveSpawnModelItems(scopedModelCatalog).some(
-            (item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle,
-          )
+          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), match.argsText) !== undefined
             ? match.argsText.trim()
             : null;
         })()
@@ -1119,18 +1116,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
             : resolveSpawnEffortItems(effortLevels, reasoningEffort);
-        const needle = value.toLowerCase();
         // Bare /reasoning-effort fails CLOSED pre-start: the "" head of
         // resolveSpawnEffortItems (the "(default)" entry) must not count as
         // known here, so an empty effort value toasts
         // "/reasoning-effort needs a value" and aborts without thread/start
         // (palette parity - in-session bare /reasoning-effort errors with no
         // side effects). Bare /model stays fail-open via the branch above.
-        const known =
+        const matched =
           builtinMatch.command.id === "reasoning-effort" && value === ""
-            ? false
-            : items.some((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
-        if (!known) {
+            ? undefined
+            : findBuiltinArgument(items, builtinMatch.argsText);
+        if (!matched) {
           const message = value
             ? `/${builtinMatch.command.id}: unknown value "${value}"`
             : `/${builtinMatch.command.id} needs a value`;
@@ -1140,7 +1136,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           setBusyStartedAt(null);
           return;
         }
-        const matched = items.find((item) => item.id.toLowerCase() === needle || item.label.toLowerCase() === needle);
         if (builtinMatch.command.id === "model" && matched) {
           const { provider, model: modelId } = splitModelId(matched.id);
           slashScalars = { modelProvider: provider, model: modelId };

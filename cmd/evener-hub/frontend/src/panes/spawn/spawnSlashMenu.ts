@@ -9,6 +9,7 @@ import {
 import { effortLabel, effortOptionLevels } from "../../shell/reasoningEffort";
 import type { ToastKind } from "../../widgets";
 import type { ModelCatalog } from "../../widgets/modelCatalog";
+import { findBuiltinArgument } from "../session/composer/builtinInvocation";
 
 // The pre-session allowlist: the only session builtins the spawn box offers.
 // Turn-gated commands (steer, queue, interrupt, drain-as-steer) have no turn
@@ -121,8 +122,7 @@ export async function runSpawnBuiltinAfterStart(
     // empty-value policy differs per command (model fail-opens to default,
     // reasoning-effort fail-closes), so callers pass it in.
     async function runEnumItem(items: CommandArgsEnumItem[], emptyMessage: string | null): Promise<BuiltinRunOutcome> {
-      const needle = trimmed.toLowerCase();
-      const item = items.find((it) => it.id.toLowerCase() === needle || it.label.toLowerCase() === needle);
+      const item = findBuiltinArgument(items, argsText);
       if (!item) {
         const message = trimmed ? `/${id}: unknown value "${trimmed}"` : (emptyMessage ?? `/${id} needs a value`);
         if (id === "model") {
