@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -305,7 +307,8 @@ func TestReconstructPreservesAttentionEvidenceWithoutInventingDeliveryState(t *t
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`UPDATE messages SET source_subtype='ATTENTION_RESOLUTION',content=? WHERE id=3`, "opaque sentinel\n"+`{"attention_id":"attention-sentinel","disposition":"consumed"}`); err != nil {
+	const evidence = "private-attention-sentinel\n" + `{"attention_id":"attention-sentinel","disposition":"consumed"}`
+	if _, err := db.Exec(`UPDATE messages SET source_subtype='ATTENTION_RESOLUTION',content=? WHERE id=3`, evidence); err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
@@ -316,9 +319,27 @@ func TestReconstructPreservesAttentionEvidenceWithoutInventingDeliveryState(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, err := transcript.DecodeEntry(bytes.Split(data, []byte("\n"))[2])
+	snapshot, err := os.ReadFile(filepath.Join(output, "source-snapshot.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var source reconstructionSource
+	if err := json.Unmarshal(snapshot, &source); err != nil {
+		t.Fatal(err)
+	}
+	if source.Messages[2].Kind != "ATTENTION_RESOLUTION" || source.Messages[2].Content != evidence {
+		t.Fatal("lost original attention evidence from source snapshot")
+	}
+	reportBytes, err := os.ReadFile(filepath.Join(output, "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report reconstructionReport
+	if err := json.Unmarshal(reportBytes, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.HistoricalAttentionRecords != 1 {
+		t.Fatal("report did not count the omitted attention record")
 	}
 	var metadata schema.SessionMeta
 	metaBytes, err := os.ReadFile(meta)
@@ -329,14 +350,56 @@ func TestReconstructPreservesAttentionEvidenceWithoutInventingDeliveryState(t *t
 		t.Fatal(err)
 	}
 	metadata.EnvInfo.WorkingDir = output
-	restored, err := agent.RestoreSessionFromMeta(llm.NewClient(), provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), metadata, output)
+	requests := make(chan llm.Request, 16)
+	client := llm.NewClient()
+	client.Register(reconstructionRequestCapture{requests: requests})
+	restored, err := agent.RestoreSessionFromMeta(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), metadata, output)
 	if err != nil {
 		t.Fatalf("reconstructed transcript cannot resume: %v", err)
 	}
 	defer restored.Close()
-	if entry.Turn.Kind != schema.TurnSteering || entry.Turn.AttentionResolution != nil || entry.Turn.Message.Text() == "" {
-		t.Fatalf("incomplete attention bookkeeping entered runtime replay: %+v", entry.Turn)
+	if _, err := restored.ProcessInput(context.Background(), "resumed-input-sentinel", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected capture adapter to stop after receiving the request: %v", err)
 	}
+	foundInput := false
+	for len(requests) > 0 {
+		request := <-requests
+		for _, message := range request.Messages {
+			if strings.Contains(message.Text(), "private-attention-sentinel") {
+				t.Fatal("reconstruction sent internal attention evidence to the provider")
+			}
+			foundInput = foundInput || strings.Contains(message.Text(), "resumed-input-sentinel")
+		}
+	}
+	if !foundInput {
+		t.Fatal("did not capture the resumed model request")
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n"))[1:] {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Turn.Kind == schema.TurnAttentionResolution || entry.Turn.AttentionResolution != nil {
+			t.Fatalf("incomplete attention bookkeeping entered runtime replay: %+v", entry.Turn)
+		}
+	}
+}
+
+type reconstructionRequestCapture struct{ requests chan<- llm.Request }
+
+func (a reconstructionRequestCapture) Name() string { return "openai" }
+
+func (a reconstructionRequestCapture) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	select {
+	case a.requests <- request:
+	default:
+	}
+	return llm.Response{}, context.Canceled
+}
+
+func (a reconstructionRequestCapture) Stream(ctx context.Context, request llm.Request) (llm.Stream, error) {
+	_, err := a.Complete(ctx, request)
+	return nil, err
 }
 
 func TestReconstructAttentionInsideToolRoundDoesNotInventAnotherResult(t *testing.T) {

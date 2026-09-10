@@ -120,7 +120,7 @@ func reconstructSession(ctx context.Context, sid, dbPath, metaPath, mutationsPat
 		"Media bytes, provider replay identifiers/signatures, message phases, and some private runtime fields are unavailable. Archived reasoning is retained as readable text.",
 		"Tool outputs omitted by the archive are replaced with explicit unavailable-content notices. Those notices do not prove the tool succeeded or failed.",
 		"Process, job, delegate, attention, queue, and task state are not reconstructed. Verify current files and process state before continuing work.",
-		"Attention-resolution records are preserved as historical steering notices. Their missing originating delivery IDs make them unsuitable for runtime attention replay.",
+		"Attention-resolution records are preserved only in source-snapshot.json and counted as historical_attention_records. Their missing originating delivery IDs make them unsuitable for runtime replay, and they must not enter model history.",
 	}}
 	header, entries, err := reconstructEntries(source, meta, mutationIDs, &report)
 	if err != nil {
@@ -470,14 +470,11 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 				turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: r.ID, Name: c.Name, Content: text, IsError: isError}})
 			}
 		case schema.TurnAttentionResolution:
-			// The archive omits originating steering AttentionIDs. Replaying only
-			// the resolution half would claim a delivery that cannot be verified.
-			// Steering can occur inside a tool round without making resume insert
-			// a synthetic interrupted-call result before the archived real result.
-			turn.Kind = schema.TurnSteering
-			turn.Message.Role = llm.RoleUser
-			content = "[Archived runtime record; original attention delivery state unavailable]\n" + m.Content
+			// The source snapshot retains this evidence. Native resolutions need
+			// originating delivery IDs that the archive omits; converting them to
+			// another turn kind would expose private bookkeeping to the model.
 			report.HistoricalAttentionRecords++
+			continue
 		case schema.TurnSystem, schema.TurnModelSwitch, schema.TurnFailure, schema.TurnHookCompleted:
 			turn.Message.Role = llm.RoleSystem
 			detail, prefix := content, ""
