@@ -617,6 +617,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead subscribe: %v", err)
+	}
+	closed := make(chan appwire.Notification, 1)
+	go func() {
+		for notification := range client.Notifications() {
+			if notification.Method == appwire.NotifyThreadClosed {
+				closed <- notification
+				return
+			}
+		}
+	}()
 	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
 		ClientMutationID:   "shutdown-in-flight",
 		ExpectedInstanceID: entry.SessionID,
@@ -657,6 +669,18 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServe did not exit after in-flight input was released")
+	}
+	select {
+	case notification := <-closed:
+		var params appwire.ThreadClosedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatalf("decode thread/closed params: %v", err)
+		}
+		if params.Ref != ref || params.ThreadID != entry.SessionID {
+			t.Fatalf("thread/closed params = %+v, want ref=%q threadId=%q", params, ref, entry.SessionID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribed client did not receive thread/closed before serve shutdown")
 	}
 }
 

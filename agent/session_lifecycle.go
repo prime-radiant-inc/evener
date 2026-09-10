@@ -82,7 +82,14 @@ type retryTracker struct {
 // for the root session, removes any embedded skills directory, waits for
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
-	s.close(context.Background(), true)
+	s.close(context.Background(), true, false)
+}
+
+// CloseForShutdown closes the session with a terminal lifecycle boundary.
+// A cancelled in-flight turn may already have published an interrupted idle
+// boundary; that boundary must not suppress the session's closed notification.
+func (s *Session) CloseForShutdown() {
+	s.close(context.Background(), true, true)
 }
 
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
@@ -315,8 +322,9 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, cleanupEnv bool) {
+func (s *Session) close(ctx context.Context, cleanupEnv bool, forceTerminalArgs ...bool) {
 	s.closeOnce.Do(func() {
+		emitTerminal := len(forceTerminalArgs) != 0 && forceTerminalArgs[0]
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
 		// close(budgetCtx, false) reuse it rather than minting their own.
@@ -338,7 +346,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
-		emitEnd := !s.sessionEndEmitted
+		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
