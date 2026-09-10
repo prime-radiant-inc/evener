@@ -865,7 +865,17 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 			s.emitGoalUpdated(snap)
 			wakeFull, _ := store.GoalSnapshot()
 			s.goalUpdateMu.Unlock()
-			if wakeFull.Budgets.MaxContinuations > 0 && wakeFull.Budgets.UsedContinuations >= wakeFull.Budgets.MaxContinuations {
+			// The committed fold accrues exactly one continuation, so only
+			// an accrual FROM below the cap TO the cap belongs to this
+			// drive: a pre-spent cap predates the fold and stays latched
+			// for next-gate enforcement with its own verdict (the
+			// terminal-flagged wake must still drive: spec §1 rule 1
+			// drives first, the block happens on the next gate). Count
+			// semantics unchanged: the fold already accrued exactly once.
+			// goalUpdateMu is already released above; blockGoalFromGate
+			// takes no session locks itself (it takes goalUpdateMu
+			// internally via setGoalTerminal).
+			if wakeFull.Budgets.MaxContinuations > 0 && wakeFull.Budgets.UsedContinuations >= wakeFull.Budgets.MaxContinuations && full.Budgets.UsedContinuations < full.Budgets.MaxContinuations {
 				// The committed wake fold just spent the last continuation:
 				// rule 2 would block on the FOLLOWING gate, but rendering
 				// the wake prompt first hands the model a free turn past
@@ -875,13 +885,13 @@ func (s *Session) armGoalContinuationInner(progressed, wasContinuation bool, out
 				// with VerdictBudgetExhausted, which clears waits per the
 				// every-terminal rule while the delivered-set mark below
 				// never lands, so the stranded backlog drains on the
-				// block's terminal read). Scope is the continuation cap
-				// only: the fold accrues exactly one continuation and moves
-				// neither the parked anchor nor the clock, so parked and
-				// deadline read identically pre/post fold — a parked or
-				// deadline breach here predates the fold and stays latched
-				// for next-gate enforcement with its own verdict (the
-				// deadline final turn must still drive:
+				// block's terminal read). A pre-spent cap predates the fold
+				// and stays latched for next-gate enforcement (the
+				// terminal-flagged wake still drives first). Scope is the
+				// continuation cap only: the fold moves neither the parked
+				// anchor nor the clock, so parked and deadline read
+				// identically pre/post fold and keep their own latched
+				// verdict paths (the deadline final turn must still drive:
 				// TestFixWaveI2DeadlineFinalTurnThenBlock). Count semantics
 				// unchanged: the fold already accrued exactly once.
 				// goalUpdateMu is already released above; blockGoalFromGate
