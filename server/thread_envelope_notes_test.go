@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -16,7 +17,10 @@ func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	source := &stubThreadEnvelopeSource{}
-	source.meta.HumanNote = "  human hello  "
+	// Real normalization can end at a space when its 1000-rune clamp cuts
+	// between words; SessionMeta already carries that canonical value.
+	wantHuman := strings.Repeat("x", 999) + " "
+	source.meta.HumanNote = wantHuman
 	source.meta.AgentNote = "agent hello"
 	source.meta.SessionURLs = []schema.SessionURL{
 		{ID: "u1", URL: "https://x.test/y", Label: "x", AddedBy: "agent", AddedAt: 7},
@@ -24,8 +28,8 @@ func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 	publishEnvelope(srv, source)
 
 	thread := readThreadOverWire(t, srv, "local:th_1")
-	if thread.Evener.HumanNote != "human hello" {
-		t.Fatalf("thread.Evener.HumanNote = %q, want trimmed human hello", thread.Evener.HumanNote)
+	if thread.Evener.HumanNote != wantHuman {
+		t.Fatalf("thread.Evener.HumanNote = %q, want canonical %q", thread.Evener.HumanNote, wantHuman)
 	}
 	if thread.Evener.AgentNote != "agent hello" {
 		t.Fatalf("thread.Evener.AgentNote = %q, want agent hello", thread.Evener.AgentNote)
