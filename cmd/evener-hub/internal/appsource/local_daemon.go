@@ -243,14 +243,26 @@ func (s *LocalDaemonSource) acquireRelaySession(params appwire.ThreadReadParams)
 	return s.AcquireRelaySession(ref)
 }
 
-func (s *LocalDaemonSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+func (s *LocalDaemonSource) ListThreads(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
 	out := appwire.ThreadListResponse{}
 	for _, entry := range s.listedEntries() {
+		if err := ctx.Err(); err != nil {
+			return appwire.ThreadListResponse{}, err
+		}
 		out.Data = append(out.Data, s.threadFromEntry(entry))
+	}
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
 	}
 	sort.SliceStable(out.Data, func(i, j int) bool {
 		return localThreadLess(out.Data[i], out.Data[j])
 	})
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
 	return out, nil
 }
 
