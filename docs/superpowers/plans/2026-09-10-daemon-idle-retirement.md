@@ -364,7 +364,7 @@ control: thread/shutdown
 
 Use the catalog constants in code, not these prose strings. Test iterates `appwire.CatalogMethodNames(appwire.ScopeDaemon)`, requiring exactly one classification for every method and no extra classification. New diagnostics/retire methods are added to this table in Task 7. Connection initialize/ping are not runtime borrowers. The `control` shutdown path retains existing semantics and is serialized by serve's exit owner, not counted as an activity reset. Bounded reads during preparing may complete; after commit new runtime reads fail. Existing subscriptions close when their event sources close.
 
-Root predicate now reads `Session` processing/settlement/input fields under `Session.mu`, then journal snapshot under its own lock without `Session.mu`. Reserved, accepted, claimed and pending executions/budget reservations all block; terminal history alone does not. Do not use `WireState()` as the predicate.
+Root predicate reads `Session` processing/settlement/input fields under `Session.mu`, then collects mutation eligibility evidence under the mutation store's own lock without `Session.mu`. Use a narrow private projection following `clientMutationStore.queueHeld()`'s lock-protected reader pattern: inspect every required status/reservation and copy only blocker evidence. Avoid `snapshot()` here, which clones historical payloads, results and input bytes on every evaluation. Reserved, accepted, claimed and pending executions/budget reservations all block; terminal history alone does not. Preserve full primary-file validation in Prepare and every snapshot-based preservation/replay assertion. Do not use `WireState()` as the predicate.
 
 - [ ] **Step 4: Run green.** `(cd agent && go test -race . -run 'TestRetirement|TestClientMutation|TestQueuePersist' -count=1)` and `go test -race ./server ./internal/appserver -run 'Retirement|Catalog|Mutation' -count=1` — PASS, unchanged replay IDs and no lock-order races. Test direct engine and actual routed calls, not only middleware.
 - Run `go test ./cmd/evener -run 'Serve|Reasoning' -count=1` and `(cd agent && go test . -run 'Steer|Reasoning|RetirementEffect|RetirementStartReplay' -count=1)` to check caller/test-double signature changes. Preserve existing closed-session/empty/superseded behavior assertions; amend only expected error handling justified by this lifecycle contract.
@@ -477,11 +477,13 @@ Build the remaining safety table by exercising real entry APIs with scripted pro
 - [ ] **Step 3: Implement the collector and pre-enqueue leases.**
 
 ```text
+Collect the shared delegate controller once per evidence pass:
+  retain exact leaf-first resident pointers, cold-member evidence and version
 For exact root and every resident child:
   snapshot Session state under its mutex: turn/settlement, input queues,
   running input, goal continuation, questions/escalations, envWork/dispose,
   outstanding naming/maintenance/reconstruction and attention work
-  unlock; snapshot mutation, job/watch, task/attention and delegate owners separately
+  unlock; collect session-local mutation, job/watch and task/attention owners separately
 For job manager:
   nonterminal session-owned jobs block; terminal records do not
   active watches block regardless of root wire state
@@ -493,6 +495,8 @@ An autonomous scheduler must register a lease or durable blocker BEFORE enqueue;
 its completion releases only after settlement writes. Fence timer callback launch
 before it can perform work, and explicitly track pending work requiring settlement.
 ```
+
+Root and children share one delegate controller (`agent/subagents.go:820`); do not repeat its whole-tree scan for each resident session. This is one collection per pass, not a cache across claims. Prepare still collects fresh evidence and revalidates the exact version and pointers before commit, including every cold member.
 
 Avoid acquiring admission from inside `Session.mu` or `jobManager.mu`: split effect methods into admission → existing lock/mutation → unlock → release. `beginEnvWork` obtains admission before its current lock and stores the release in its work record until `endEnvWork`; detached rollback retains that record. If no runtime/durable contract can preserve a state, report `unsupported` and leave resident. Coalesce `Changed` on every blocker transition; reads never call it as an activity reset.
 
@@ -527,6 +531,8 @@ git commit -m "feat(agent): prove whole-runtime retirement eligibility"
 - Consumes: exact preparing claim, Tasks 2–4 predicate and Task 2's error-returning `saveMeta`.
 - Produces: `Prepare(ctx, claim) (*RetirementPreparation, error)`; `func (s *Session) validateRetirementRestore(ctx context.Context) error`; `func (s *Store) CheckRetirementReady() error` on delegate and job stores. Their existing append paths already synchronize writes; the new method checks pending/sticky write errors and reloads the original store under its existing serialization boundary, without closing it or appending an event. It returns a persistence error on unreadable evidence instead of adding redundant hot-path fsyncs.
 - `RetirementPreparation` contains controller and root/generation, exact leaf-first sessions, verified transcript/descriptor identities, occupied lane identity/lock ownership and one-use commit state. It is not a speculative restored runtime. No clone should acquire lanes, launch a namer or write a journal while validating.
+
+For the delegate store, retain `CheckRetirementReady` but reuse `Store.Load()` for strict primary-log validation: it already checks usability, rereads the original path, decodes strictly and validates the fold (`agent/internal/delegatestore/store.go:49-66`). Keep any additional pending/sticky readiness checks. Do not acquire its mutex and recursively call `Load`; if those checks require one shared critical section, factor the existing locked load body for both methods. The job store's cached-read behavior remains a separate concern.
 
 - [ ] **Step 1: Write a real primary-file failure test.** This filesystem failure is fixture-owned and restores the original file before cleanup.
 
@@ -685,7 +691,7 @@ func TestScratchRetentionStartupSweepKeepsAgedRequiredArtifact(t *testing.T) {
 
 Add `TestScratchRetentionBindingMoveConcurrentMint` in the already-planned execenv scratch-retention test file: use the existing `scratchMovedOut` barrier to mint B in the source while A moves, then load the original manifest and require distinct E0/B and E1/A current slots with unchanged root/owner identities. Force stale revision retry and persistence failure; require no overwritten fresh slot, no lease release before its committed reference/mapping, and a specific preparation error if the mapping remains unsettled. Keep the independent `TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming` in `agent/execenv/sandbox_scratch_lease_unix_test.go:162–186` **unchanged**. It and `local.go:817–855,935–973` establish the supported dual-allocation/clone topology; Task 6 adds the real-session cold-restore proof, rather than treating these environment-only tests as sufficient.
 
-- [ ] **Step 4: Run green.** `(cd agent && go test -race . ./internal/delegatestore ./internal/jobstore -run 'Retirement' -count=1)` — PASS. In each new store test file add `TestRetirementReadyReadsOriginal`: open a fixture store through its existing `Open` constructor, assert readiness, replace original journal bytes with malformed JSON, require readiness error, restore bytes and close. Add sticky write/rollback-error cases using its existing filesystem fault seam. These tests must read primary bytes, not the cached `Load` fold; check delegates via strict event load and jobs via `LoadEvents` after invalidating read cursor. Verify failure occurs before the first teardown seam and existing normal autosave tests still pass.
+- [ ] **Step 4: Run green.** `(cd agent && go test -race . ./internal/delegatestore ./internal/jobstore -run 'Retirement' -count=1)` — PASS. In each new store test file add `TestRetirementReadyReadsOriginal`: open a fixture store through its existing `Open` constructor, assert readiness, replace original journal bytes with malformed JSON, require readiness error, restore bytes and close. Add sticky write/rollback-error cases using its existing filesystem fault seam. These tests must read primary bytes: check delegates through the existing strict `Store.Load`, and jobs through `LoadEvents` after invalidating its read cursor rather than trusting a cached fold. Verify failure occurs before the first teardown seam and existing normal autosave tests still pass.
 - Run red before the scratch APIs, then green: `(cd agent && go test -race ./sandbox ./execenv . -run 'TestScratchRetention|TestRetirement.*Scratch|TestSessionScratchAge|TestSessionScratchSweep|TestAdoptSessionScratchKeepsWhatTheTargetOwnsAndRetainsTheIncoming' -count=1)`. Expected initial failure is missing durable-pin API, lost binding or removed aged required bytes; green requires actual startup sweep plus fresh same-ID restore, and unchanged dual-allocation/unreferenced cleanup.
 - [ ] **Step 5: Commit.**
 

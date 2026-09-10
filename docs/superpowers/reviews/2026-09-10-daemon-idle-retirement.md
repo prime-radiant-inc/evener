@@ -177,10 +177,50 @@ new contract at plan lines 593-647; writer and parent `git diff --check` passed.
 - Spec SHA-256 remains `47605f186888d144e3bc285730dbd2733135083eddfdb3648e931ddee6a76191`.
 - North and South resumed independently against the same frozen revision with
   unchanged competition rules. Both must check prior resolutions and the full plan.
-- Round 3 is in progress; convergence and its score are pending.
+- Both reported zero new significant findings and all earlier findings resolved.
+  The hashes matched. North reran the independent dual-allocation test, exit 0;
+  its diff check passed and production paths remained baseline-identical. South
+  confirmed the same frozen inputs and plan-level resolutions.
+- **Plan review converged after three rounds.** The planned implementation and its
+  new tests remain unverified. No reviewer was disqualified.
+
+### Plan-review score
+
+| Round | North accepted / points | South accepted / points |
+| --- | --- | --- |
+| 1 | 2 / 5 | 2 / 5 |
+| 2 | 0 / 0 | 1 / 5 |
+| 3 | 0 / 5 | 0 / 5 |
+| Total | 2 / 10 | 3 / 15 |
+
+The zero-finding convergence round follows the recorded tied-leader rule; those
+points are not findings or test evidence. South found the most distinct accepted
+issues across the loop. The parent's two findings are excluded from these totals.
+
+## Plan simplification
+
+- Starting commit: `884b6f2c0`; full plan/design diff from `2664cc881` supplied to
+  four parallel read-only reviewers: reuse, simplification, efficiency and altitude.
+- No production code exists for this feature yet. Approved behavior, named APIs,
+  test assertions and proof obligations must survive this documentation-only pass.
+- Pre-pass structural check passed: 13 tasks, 13 interface blocks, 65 ordered steps,
+  55 named tests and 70 declaration lines. The same inventory passed after edits.
+  This checks document preservation, not feature correctness.
+- Reuse: one accepted finding. `CheckRetirementReady` reuses the delegate store's
+  strict primary-log `Load` rather than duplicating decoding/fold validation.
+- Efficiency: two accepted findings. Routine mutation eligibility uses a narrow
+  lock-protected evidence projection instead of cloning historical payloads; each
+  evidence pass scans the shared delegate controller once, outside the local-session
+  loop. Full preparation validation and fresh version/pointer checks remain.
+- Simplification and altitude: no actionable findings. All four reviewers ran
+  `git diff --check`, exit 0. Parent inspected the cited production helpers before
+  applying these plan-only edits. No findings skipped or changes reverted.
+- Post-pass `make test` exited 0: root, agent, llm, auth, envvars, invariant,
+  identifier and web passed. No production code or test assertions changed.
+- Jesse's prior written-design approval and explicit instruction to implement
+  remain operative; no redundant approval question is needed.
 
 ## Remaining workflow
 
-Plan review convergence → four-angle plan simplification → subagent-driven TDD
-implementation with specification and quality review → fresh competing code-review
-loop → four-angle code simplification → final gates → PR.
+Subagent-driven TDD implementation with specification and quality review → fresh
+competing code-review loop → four-angle code simplification → final gates → PR.
