@@ -137,15 +137,19 @@ func TestHubThreadListBoundsConcurrentSourcesAndKeepsOptionalErrors(t *testing.T
 
 func TestHubThreadListZeroSourceTimeoutPreservesOptionalAndExplicitErrors(t *testing.T) {
 	sources := appsource.NewRegistry()
-	sources.Add(&failingThreadListSource{scriptedAppSource: &scriptedAppSource{id: "optional-expired"}, err: context.DeadlineExceeded})
+	sources.Add(&cancelableThreadListSource{
+		scriptedAppSource: &scriptedAppSource{id: "optional-expired"},
+		started:           make(chan struct{}, 2),
+		done:              make(chan struct{}, 2),
+	})
 	response, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, 0)
 	if err != nil || len(response.Data) != 0 {
 		t.Fatalf("optional expired source response=%+v err=%v, want empty success", response, err)
 	}
 	params := appwire.ThreadListParams{SourceIDs: []string{"optional-expired"}}
 	_, err = hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, params, 0)
-	if err == nil {
-		t.Fatal("explicit expired source unexpectedly succeeded")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("explicit expired source error=%v, want deadline exceeded", err)
 	}
 }
 
