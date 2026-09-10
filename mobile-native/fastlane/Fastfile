@@ -40,6 +40,7 @@ platform :ios do
       "CFBundleVersion" => ENV.fetch("IOS_BUILD_NUMBER"),
       "UIDeviceFamily" => [1],
       "DTPlatformName" => "iphoneos",
+      "ITSAppUsesNonExemptEncryption" => false,
     }
     UI.user_error!("IPA identity does not match the requested iPhone build") unless info && expected.all? { |key, value| info[key] == value }
   end

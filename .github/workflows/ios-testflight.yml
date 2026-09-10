@@ -35,6 +35,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+      - name: Require main branch for TestFlight archive
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "TestFlight archive must be dispatched from main; recovery accepts artifacts from main only." >&2
+          exit 1
       - name: Select and verify Xcode
         run: |
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
@@ -270,9 +275,10 @@ jobs:
             abort "Artifact source does not match the original run" unless File.read("build/source-revision.txt").strip == run.fetch("head_sha")
           '
           shasum -a 256 -c build/artifact-sha256.txt
-          bundle exec ruby -rfastlane_core -e '
+          bundle exec ruby -rfastlane_core/ipa_file_analyser -e '
             info = FastlaneCore::IpaFileAnalyser.fetch_info_plist_file("build/Evener.ipa")
             version = info.fetch("CFBundleShortVersionString")
+            abort "IPA export encryption compliance is not false" unless info.fetch("ITSAppUsesNonExemptEncryption") == false
             abort "Invalid artifact marketing version" unless version.match?(/\A[0-9]+(?:\.[0-9]+){0,2}\z/)
             File.open(ENV.fetch("GITHUB_ENV"), "a") { |file| file.puts("IOS_MARKETING_VERSION=#{version}") }
           '
