@@ -72,7 +72,15 @@ function decode(action, value) {
       assert.ok(isRecord(object), "Invalid settings section.");
       for (const key of keys) assert.ok(optionalString(object[key]), "Invalid settings field.");
     };
-    optionalStrings(value.hub, ["version", "commit", "listenAddr", "runDir", "spawnTimeout", "bearerTokenAge"]);
+    optionalStrings(value.hub, [
+      "version",
+      "commit",
+      "buildChannel",
+      "listenAddr",
+      "runDir",
+      "spawnTimeout",
+      "bearerTokenAge",
+    ]);
     optionalStrings(value.storage, ["stateDir"]);
     if (value.hub?.pastIndex !== undefined) {
       assert.ok(isRecord(value.hub.pastIndex), "Invalid settings past index.");
@@ -123,4 +131,3 @@ export function summarizeDiscovery(result) {
   else if (result.action === "settings") count = value ? Object.keys(value).length : 0;
   return { outcome: result.outcome, action: result.action, ...(count === undefined ? {} : { count }) };
 }
-

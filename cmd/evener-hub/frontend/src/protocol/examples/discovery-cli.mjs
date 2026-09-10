@@ -17,4 +17,3 @@ export async function runDiscoveryCLI(environment, hub) {
   console.log(JSON.stringify(summarizeDiscovery(result)));
   return result;
 }
-

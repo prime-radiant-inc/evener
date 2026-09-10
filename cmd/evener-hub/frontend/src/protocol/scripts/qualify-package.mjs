@@ -128,26 +128,13 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       { params: { cwd: fixtureCwd }, result: { effective: {}, layers: {}, provenance: {}, diagnostics: [] } },
     ],
   ]);
-  const discoveryResponses = new Map([
-    ["evener/paths/complete", { params: {}, result: { data: ["/fixture/project"] } }],
-  ]);
-  let discoveryMode = { action: "paths", response: { data: [fixtureCwd] } };
+  let discoveryMode;
   const observedMethods = [];
-  const discoveryMethod = (action) =>
-    ({
-      paths: "evener/paths/complete",
-      projects: "evener/projects/recent",
-      validatePath: "evener/path/validate",
-      gitHead: "evener/git/head",
-      search: "evener/search",
-      harnesses: "evener/harnesses/list",
-      settings: "evener/settings/overview",
-    })[action];
   const controller = new AbortController();
   let serverError;
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   server.on("connection", (socket) => {
-    socket.on("message", (data) => {
+    socket.on("message", async (data) => {
       try {
         const request = JSON.parse(data.toString());
         if (request.method === "initialized" && request.id === undefined) return;
@@ -175,14 +162,21 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
               auth: false,
             },
           };
-        } else if (request.method.startsWith("evener/") && discoveryMethod(discoveryMode.action) === request.method) {
+        } else if (discoveryMode) {
+          assert.equal(request.method, discoveryMode.method);
+          assert.deepEqual(request.params, discoveryMode.params);
+          await discoveryMode.beforeResponse?.();
+          if (discoveryMode.error) {
+            socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: discoveryMode.error }));
+            return;
+          }
           if (discoveryMode.close) {
             socket.close();
             return;
           }
-          result = discoveryMode.malformed ? { invalid: true } : discoveryMode.response;
+          result = discoveryMode.response;
         } else {
-          const response = responses.get(request.method) ?? discoveryResponses.get(request.method);
+          const response = responses.get(request.method);
           assert(response, `unexpected method ${request.method}`);
           assert.deepEqual(request.params, response.params);
           result = response.result;
@@ -231,6 +225,7 @@ if (typeof client.AppwireClient !== "function" || typeof client.rpcURLFromLocati
       rpcURL: `ws://127.0.0.1:${address.port}/rpc`,
       fixtureCwd,
       observedMethods,
+      signal: controller.signal,
       setMode: (mode) => {
         discoveryMode = mode;
       },
