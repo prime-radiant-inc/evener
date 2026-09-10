@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,12 +18,11 @@ func TestRoundTimingsFoldPublicationSurvivesReloadWithoutProviderHistory(t *test
 	t.Parallel()
 	entered := make(chan struct{})
 	proceed := make(chan struct{})
-	var calls int
+	var calls atomic.Int32
 	cheap := &agenttest.ScriptedAdapter{
 		Provider: "round-timings-fold-cheap",
 		Responder: func(llm.Request) llm.Response {
-			calls++
-			if calls == 1 {
+			if calls.Add(1) == 1 {
 				close(entered)
 				<-proceed
 			}

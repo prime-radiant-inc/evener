@@ -2,6 +2,7 @@ package atif
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -36,8 +37,19 @@ func TestConvertToATIF_RoundTimingsPreservesStructuredMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, ok := decoded.Steps[0].Extra["round_timings"].(map[string]any)
-	if !ok || raw["round"] != float64(payload.Round) || raw["total_round_ns"] != float64(payload.TotalRound) || raw["llm_call_ns"] != float64(payload.LLMCall) || raw["loop_overhead_ns"] != float64(payload.LoopOverhead) {
+	if !ok {
 		t.Fatalf("serialized round_timings = %#v, want structured duration fields", decoded.Steps[0].Extra["round_timings"])
+	}
+	rawJSON, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got schema.RoundTimings
+	if err := json.Unmarshal(rawJSON, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, *payload) {
+		t.Fatalf("serialized round_timings = %#v, want all fields %#v", got, *payload)
 	}
 }
 
@@ -47,7 +59,10 @@ func TestConvertToATIF_RoundTimingsDoesNotBreakToolObservationPair(t *testing.T)
 	timing.RoundTimings = &schema.RoundTimings{Round: 1}
 	result := schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call-1", "observation-sentinel", false))
 	traj := Convert(transcript.Header{SessionID: "session"}, []transcript.Entry{{Turn: assistant}, {Turn: timing}, {Turn: result}})
-	if len(traj.Steps) != 1 || traj.Steps[0].Observation == nil || len(traj.Steps[0].Observation.Results) != 1 || traj.Steps[0].Observation.Results[0].Content != "observation-sentinel" {
+	if len(traj.Steps) != 2 || traj.Steps[0].Observation == nil || len(traj.Steps[0].Observation.Results) != 1 || traj.Steps[0].Observation.Results[0].Content != "observation-sentinel" {
 		t.Fatalf("steps = %#v, want assistant observation paired across timing marker", traj.Steps)
+	}
+	if traj.Steps[1].Extra["round_timings"] == nil {
+		t.Fatalf("timing step metadata = %#v, want preserved interleaved timing", traj.Steps[1].Extra)
 	}
 }
