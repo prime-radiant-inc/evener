@@ -549,8 +549,9 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	} else if required {
 		thread.Status.Type = appwire.ThreadStatusRestartRequired
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{}
+	} else {
+		thread = applyHubForkCapability(thread)
 	}
-	thread = applyHubForkCapability(thread)
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	return thread, nil
 }
