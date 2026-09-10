@@ -37,6 +37,11 @@ describe("activitySummaryStore", () => {
     const root = new Promise<unknown>((resolve) => {
       resolveRoot = resolve;
     });
+    let resolveQueued!: (value: unknown) => void;
+    let queuedStarted!: () => void;
+    const queued = new Promise<void>((resolve) => {
+      queuedStarted = resolve;
+    });
     const initialRoot: ActivityTree = {
       revision: 1,
       root: {
@@ -55,16 +60,28 @@ describe("activitySummaryStore", () => {
     const initialPanelRequest = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", initialPanelRequest, { kind: "ready", tree: initialRoot });
     activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => root, undefined, true);
-    await Promise.resolve();
+    activitySummaryStore.getState().refreshRoot("ref_a", 2, () => {
+      queuedStarted();
+      return new Promise<unknown>((resolve) => {
+        resolveQueued = resolve;
+      });
+    });
 
     activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    const continuationSummaryRequest = activitySummaryStore.getState().entries.get("ref_a")?.requestID;
-    activitySummaryStore.getState().publishContinuationCounts("ref_a", continuationSummaryRequest as number, {
-      active: 9,
-      failed: 0,
-      completed: 0,
-      complete: true,
+    const continuationCounts = { active: 9, failed: 0, completed: 0, complete: true };
+    const settled = new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (entry && !entry.loading && entry.counts === continuationCounts) {
+          unsubscribe();
+          resolve();
+        }
+      });
     });
+    const continuationSummaryRequest = activitySummaryStore.getState().entries.get("ref_a")?.requestID;
+    activitySummaryStore
+      .getState()
+      .publishContinuationCounts("ref_a", continuationSummaryRequest as number, continuationCounts);
 
     resolveRoot({
       revision: 1,
@@ -79,11 +96,27 @@ describe("activitySummaryStore", () => {
         branch: {},
       },
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await settled;
 
-    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts?.active).toBe(9);
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(continuationCounts);
+    await queued;
+    resolveQueued({
+      revision: 3,
+      root: { ...initialRoot.root, counts: { active: 7, failed: 0, completed: 0, complete: true } },
+    });
+    await new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (entry && !entry.loading && entry.counts?.active === 7) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      loading: false,
+      counts: { active: 7 },
+    });
   });
 
   test("uses the established-attempt gate and complete-count badge data", () => {

@@ -40,7 +40,6 @@ export interface ActivitySummaryStoreState {
   mountBody(ref: string): void;
   unmountBody(ref: string): void;
   beginRootFetch(ref: string, bump: number | null, force?: boolean): number | null;
-  beginContinuationFetch(ref: string): number;
   refreshRoot(
     ref: string,
     bump: number | null,
@@ -138,23 +137,6 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     return requestID;
   },
 
-  beginContinuationFetch(ref) {
-    let requestID = 0;
-    set((state) => {
-      const entry = state.entries.get(ref);
-      if (!entry) return state;
-      if (!entry.loading) {
-        requestID = entry.requestID;
-        return state;
-      }
-      requestID = ++nextRequestID;
-      const entries = new Map(state.entries);
-      entries.set(ref, { ...entry, requestID });
-      return { entries };
-    });
-    return requestID;
-  },
-
   refreshRoot(ref, bump, fetch, onFailure, force = false) {
     const requestID = get().beginRootFetch(ref, bump, force);
     if (requestID === null) {
@@ -199,8 +181,16 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
       });
       if (pending) get().refreshRoot(ref, pending.bump, pending.fetch, pending.onFailure, pending.force);
     };
+    const settleSupersededRoot = () => {
+      get().failRootFetch(ref, requestID);
+      issuePendingBump();
+    };
     void fetch(ref)
       .then((data) => {
+        if (!activityPanelStore.getState().isCurrentFetch(ref, panelRequestID)) {
+          settleSupersededRoot();
+          return;
+        }
         const parsed = parseActivityTree(data);
         if (parsed === null) {
           get().failRootFetch(ref, requestID);
@@ -213,7 +203,9 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
         issuePendingBump();
       })
       .catch((err) => {
-        const currentRequest = get().entries.get(ref)?.requestID === requestID;
+        const currentRequest =
+          get().entries.get(ref)?.requestID === requestID &&
+          activityPanelStore.getState().isCurrentFetch(ref, panelRequestID);
         get().failRootFetch(ref, requestID);
         let result: ActivityFetchResult;
         if (isActionUnavailable(err)) result = { kind: "unsupported" };

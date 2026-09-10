@@ -435,7 +435,6 @@ describe("ActivityTree", () => {
               outcome: "failure",
               terminal: true,
               startedAt: "2026-08-05T14:00:00Z",
-              endedAt: "2026-08-05T14:02:00Z",
             }),
           },
         ],
@@ -445,6 +444,7 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
 
     const failedRow = screen.getByRole("treeitem", { name: "failed outcome" });
+    expect(failedRow.textContent).toContain("completed");
     const failedGlyph = within(failedRow).getByText("$");
     expect(failedGlyph.getAttribute("aria-label")).toBe("Failed");
     expect(failedGlyph.className).toContain("kindDanger");
