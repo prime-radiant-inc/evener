@@ -1300,7 +1300,7 @@ func contextTurns(history []schema.Turn) []schema.Turn {
 
 func recentContextCutoff(history []schema.Turn, preserveRecent int) (int, bool) {
 	if preserveRecent <= 0 {
-		return len(history), len(history) != 0
+		return len(history), len(contextTurns(history)) != 0
 	}
 	seen := 0
 	for i, turn := range slices.Backward(history) {
