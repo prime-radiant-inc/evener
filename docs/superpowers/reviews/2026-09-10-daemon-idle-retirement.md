@@ -220,6 +220,20 @@ issues across the loop. The parent's two findings are excluded from these totals
 - Jesse's prior written-design approval and explicit instruction to implement
   remain operative; no redundant approval question is needed.
 
+## SDD implementation preflight
+
+The controller inspected 13 within-task checks and 53 shared file/interface
+handoffs. Sequential ownership, the single-claim callback, saveMeta handoff,
+binding-aware scratch preservation, staged catalog scopes, same-ID/conflict
+semantics and browser proof remain consistent. Task completion still requires
+actual TDD and independent specification/quality review.
+
+Ruling: Task 2 may modify `agent/retirement.go` to connect its root predicate to
+Task 1's claim path. The task already requires that connection but omitted this
+file from its ownership/staging list. The plan now names it. If wrong, the cost
+is unnecessary localized controller churn; focused admission tests and task review
+must reject any unrelated changes. This ruling changes ownership, not behavior.
+
 ## Remaining workflow
 
 Subagent-driven TDD implementation with specification and quality review → fresh

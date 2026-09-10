@@ -256,6 +256,7 @@ The root swap caller in Task 8 holds an admitted operation; `AttachRoot` recheck
 - Create: `agent/session_retirement_admission_test.go`
 - Create: `server/appwire_retirement_admission.go`
 - Create: `server/appwire_retirement_admission_test.go`
+- Modify: `agent/retirement.go` (connect the root predicate to Task 1's claim path)
 - Modify: `agent/session_client_mutation.go`, `agent/session_client_mutation_queue.go`, `agent/session_queue.go`, `agent/session_lifecycle.go`, `agent/session.go`, `agent/session_compaction.go`, `agent/session_goal.go`
 - Modify: `internal/appserver/router.go`, `server/appwire_runtime.go`, `server/server.go`
 - Modify: `cmd/evener/serve.go`, `cmd/evener/run.go`, `agent/subagents.go`, `agent/delegate_runtime.go`, `agent/session_tool_round.go`, `agent/session_jobtree_drain.go`, `agent/session_self_compact.go`, `agent/session_init.go` (callers of changed effect signatures; later tasks own subsequent edits)
@@ -371,7 +372,7 @@ Root predicate reads `Session` processing/settlement/input fields under `Session
 - [ ] **Step 5: Commit named paths.**
 
 ```sh
-git add agent/session_retirement_admission.go agent/session_retirement_admission_test.go agent/session_client_mutation.go agent/session_client_mutation_queue.go agent/session_queue.go agent/session_lifecycle.go agent/session.go agent/session_compaction.go agent/session_goal.go server/appwire_retirement_admission.go server/appwire_retirement_admission_test.go server/appwire_runtime.go server/server.go internal/appserver/router.go cmd/evener/serve.go cmd/evener/run.go agent/subagents.go agent/delegate_runtime.go agent/session_tool_round.go agent/session_jobtree_drain.go agent/session_self_compact.go agent/session_init.go
+git add agent/retirement.go agent/session_retirement_admission.go agent/session_retirement_admission_test.go agent/session_client_mutation.go agent/session_client_mutation_queue.go agent/session_queue.go agent/session_lifecycle.go agent/session.go agent/session_compaction.go agent/session_goal.go server/appwire_retirement_admission.go server/appwire_retirement_admission_test.go server/appwire_runtime.go server/server.go internal/appserver/router.go cmd/evener/serve.go cmd/evener/run.go agent/subagents.go agent/delegate_runtime.go agent/session_tool_round.go agent/session_jobtree_drain.go agent/session_self_compact.go agent/session_init.go
 git add cmd/evener/serve_residual_fuzz_test.go server/reasoning_effort_test.go server/appwire_turns_paging_test.go server/appwire_reasoning_replay_test.go server/appwire_runtime_test.go server/server_surface_fuzz_test.go server/appwire_capabilities_push_test.go server/appwire_server_test.go
 git commit -m "feat(agent): fence durable input and daemon resource borrowing"
 ```
