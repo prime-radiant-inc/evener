@@ -192,6 +192,44 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 	}
 }
 
+func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		newID  string
+		newRef string
+	}{
+		{name: "different ref", newID: "replacement", newRef: "local:replacement"},
+		{name: "same ref new projection", newID: "old", newRef: "local:old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "old")
+			srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "old", Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
+			srv.SetProcessingTurn("pending-old")
+			cursor := srv.appNotifier.CurrentSequence()
+			BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "old", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
+
+			prepared, err := PrepareAppIdentityForRef("local", tc.newID, tc.newRef, "")
+			if err != nil {
+				t.Fatalf("PrepareAppIdentityForRef: %v", err)
+			}
+			srv.ReplaceAppIdentity(prepared, nil)
+			srv.SetState("awaiting")
+			srv.SetProcessing(false)
+
+			read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: tc.newRef})
+			if read.Thread.Status.Type != appwire.ThreadStatusAwaiting || read.Thread.Evener.ActiveTurnID != "" {
+				t.Fatalf("replacement read=(status %q, active %q), want awaiting/empty", read.Thread.Status.Type, read.Thread.Evener.ActiveTurnID)
+			}
+			for _, notification := range srv.AppNotificationsAfter(cursor, tc.newRef) {
+				if notification.Notification.Method == appwire.NotifyThreadStatusChanged || notification.Notification.Method == appwire.NotifyThreadClosed {
+					t.Fatalf("retired terminal notification crossed replacement boundary: %+v", notification)
+				}
+			}
+		})
+	}
+}
+
 func TestServerAppWireSnapshotPreservesReasoningAcrossReservedTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_reasoning_boundary")
