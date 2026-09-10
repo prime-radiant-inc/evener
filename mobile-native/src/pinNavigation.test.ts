@@ -28,7 +28,7 @@ function boundary({
 						revision: 4,
 						etag: "gone",
 					};
-				return wireV2(
+				const response = wireV2(
 					p,
 					{
 						ref: p.ref,
@@ -50,6 +50,9 @@ function boundary({
 					4,
 					locationGeneration,
 				);
+				(response.data as { metadata: Record<string, unknown> }).metadata.pin_section_id =
+					"focus";
+				return response;
 			}
 			const offset = p.offset ?? 0;
 			return wireV2(

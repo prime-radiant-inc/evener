@@ -84,7 +84,20 @@ function fixture() {
 						: { projects: [], remaining: 0 };
 				if (changeGeneration) generation = "new";
 			}
-			return wireV2(params as never, body, '"fresh"', revision, generation);
+			const response = wireV2(
+				params as never,
+				body,
+				'"fresh"',
+				revision,
+				generation,
+			);
+			if (params.resource === "location") {
+				const metadata = (response.data as { metadata: Record<string, unknown> })
+					.metadata;
+				metadata.tier = archived ? "archived" : "recent";
+				metadata.project_key = "p";
+			}
+			return response;
 		},
 	} as unknown as ConversationClientLike;
 	return {
