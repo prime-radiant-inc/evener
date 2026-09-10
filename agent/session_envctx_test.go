@@ -690,3 +690,24 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 		t.Fatalf("fresh environment tracker not persisted: %+v", meta.EnvContext)
 	}
 }
+
+func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "env-preserved-tail", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}}}))
+	seedNumberedSessionHistory(t, s, 6)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	s.contextMgr.PreserveRecentTurns = 2
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := countEnvironmentTurns(s)
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != before {
+		t.Fatalf("preserved environment tracker emitted duplicate: before=%d after=%d", before, got)
+	}
+}
