@@ -204,3 +204,7 @@ Fixtures:
 - Final release requires physical/device/accessibility/performance/signing/install/update evidence plus both simulators, not screenshots alone.
 
 Stop treating historical evidence as current proof. Continue the full objective until it is actually achieved, and communicate meaningful progress without repeated approval requests.
+
+## 10 September unattended landing continuation
+
+Jesse requested pushing the checkpoint through while he sleeps and explicitly authorized skipping the separate approving review when current-head CI and the actual current-head RoboRev review are clean. PR #1076 merged at `1a5a1e4a0`; #1073 and #1083 have fresh main-based heads and checks/review pending. This conditional authorization supersedes earlier approval-only blockers, but does not waive failing checks or findings. The current status and checkpoint documents above record the portable-helper, SDK-package and native assembly candidates. Preserve the protected Apple file hashes and source branch. No newer TestFlight build than 3 was present in the authenticated 10 September query.

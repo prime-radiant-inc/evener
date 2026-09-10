@@ -2,6 +2,14 @@
 
 Landing sequence authorized by Jesse, 9 September 2026. Jesse asked whether to land a mobile checkpoint on main before extracting the web state layer into the SDK. The recommendation is yes. The checkpoint is a working, reviewed integration baseline; it does not declare iPhone v1 release acceptance complete.
 
+## Current landing update: 10 September
+
+Jesse authorized continuing while he sleeps and skipping the separate approving review when current-head CI and the actual current-head RoboRev review are clean. Failed checks and unresolved findings still block merging. PR #1076 met that condition and merged at `1a5a1e4a0f876107f108489363797559a71dfff3`, bringing the second batch to ten of twelve merged. PR #1083 is refreshed at `b6e74f115`; PR #1073 is refreshed at `32d3c517f`. Their fresh checks/reviews govern readiness.
+
+The latest #1073 test covers a prior `SessionEnd` consumed after `SetProcessing(false)` but before the next stable carrier. The real input runner clears processing after its Process call returns, including failed claims that emit no carrier. Idle is accurate at that point; the test verifies both old/new item ownership and final completion after the buffered stream drains. Full server/projector race suites and vet pass. This adds evidence for the review concern without changing production behavior; fresh independent review remains pending.
+
+Portable activity helpers (`0ef3d7add`) pass the canonical web gate and 129 focused tests. Initial SDK package review caught an undeclared example dependency; its correction is adding execution of the shipped example in a clean installed consumer. Native assembly is being corrected to preserve all newer-main protocol/web definitions and consume only the required portable helper extractions. Source-shaped assembly checks do not qualify the corrected candidate. Package/native CI wiring, reviewed checkpoint landing and a fresh iPhone/TestFlight artifact remain next. The historical batch detail below retains its recorded heads; this update is the current status.
+
 ## Scope observed
 
 The authoritative worktree is `live-concepts-plan2-integrate`. The completed rebase target is main `48dcab480272cf4d48b5b62fd2c0da6e1f5fc720`; the scope audit used integration head `7055a66d961c9bd38c996e20ef8defcb8fc66085`. Native recovery subsequently landed locally as `55bba80de`, followed by the evidence-digest scan correction `16ae60ac5`. The audited exact-base branch comparison contains 1,776 changed files, 321,459 additions and 1,727 deletions. It includes two older mobile implementations and extensive historical evidence in addition to the native app.
