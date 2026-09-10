@@ -147,7 +147,7 @@ export class ActivityList {
           this.publish({
             tree: current
               ? branch
-                ? graftContinuationTree(current, tree, branch.id)
+                ? graftContinuationTree(current, branch.id, tree)
                 : { ...tree, root: fenceRootSession(current.root, tree.root) }
               : tree,
           });
@@ -165,6 +165,7 @@ export class ActivityList {
       }
       // Invalidation always gets a full refresh before any queued page. A
       // page click targets a branch; its token comes from the refreshed tree.
+      if (this.dirty && branch && !this.queuedBranches.includes(branch.id)) this.queuedBranches.push(branch.id);
       branch = undefined;
       if (!this.dirty) {
         while (this.queuedBranches.length && !branch) {
