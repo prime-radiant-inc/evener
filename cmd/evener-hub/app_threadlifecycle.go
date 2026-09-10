@@ -211,6 +211,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:        appwire.EvenerThread{Ref: ref, InstanceID: localSpawnInstanceID(entry, appwire.Thread{})},
 		}
+		thread = applyHubForkCapability(cfg, thread)
 		annotateThreadProjects([]appwire.Thread{thread})
 		return appwire.ThreadStartResponse{Thread: thread}, nil
 	}
@@ -244,6 +245,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
+	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
 	turn := appwire.Turn{}
 	if len(params.Input) > 0 {
@@ -428,7 +430,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
 			}
-			return hubResumedThreadResponse(ctx, sources, owner.SessionID, owner.ThreadID)
+			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
 		}
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
 	}
@@ -462,7 +464,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
-				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
+				return hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 			}
 		}
 	}
@@ -483,13 +485,14 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
 			annotateThreadProjects([]appwire.Thread{read.Thread})
+			read.Thread = applyHubForkCapability(cfg, read.Thread)
 			return appwire.ThreadResumeResponse{Thread: read.Thread}, nil
 		}
 		if refreshErr != nil && !cfg.Roster.HasConfirmedEntry(entry) {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(refreshErr.Error())
 		}
 	}
-	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
+	return hubResumedThreadResponse(ctx, cfg, sources, entry.SessionID, entry.ThreadID)
 }
 
 // resumeOwnership keeps the verified stopped transcript authoritative even when
@@ -698,7 +701,7 @@ func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID st
 // both a fresh spawn and the double-check reuse of an already-resumed daemon
 // resolve the thread the same way. threadID falls back to sessionID when the
 // rendezvous entry omitted it.
-func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
+func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
 	if threadID == "" {
 		threadID = sessionID
 	}
@@ -712,6 +715,7 @@ func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, 
 		return appwire.ThreadResumeResponse{}, err
 	}
 	annotateThreadProjects([]appwire.Thread{threadResp.Thread})
+	threadResp.Thread = applyHubForkCapability(cfg, threadResp.Thread)
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
@@ -769,15 +773,19 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		})
 	}
 	if cfg.Past != nil {
-		if entry, ok := cfg.Past.Find(ref.ThreadID); ok {
-			thread, err := pastEntryThreadForList(ctx, cfg, entry)
-			if err != nil {
-				return appwire.ThreadForkResponse{}, err
-			}
-			if !hubOwnsThreadFork(thread) {
-				return appwire.ThreadForkResponse{}, appwire.Unavailable("subagent threads cannot be forked")
-			}
+		entry, ok := cfg.Past.Find(ref.ThreadID)
+		if !ok {
+			return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
 		}
+		thread, err := pastEntryThreadForList(ctx, cfg, entry)
+		if err != nil {
+			return appwire.ThreadForkResponse{}, err
+		}
+		if !hubOwnsThreadFork(thread) {
+			return appwire.ThreadForkResponse{}, appwire.Unavailable("subagent threads cannot be forked")
+		}
+	} else {
+		return appwire.ThreadForkResponse{}, appwire.Unavailable("local thread ownership is not available")
 	}
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, ref.ThreadID)
 	unlockDeletionTarget := lockDeletionTarget(cfg, params.Ref, ref.ThreadID)

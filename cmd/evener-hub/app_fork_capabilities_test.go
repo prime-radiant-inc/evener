@@ -197,7 +197,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 		"ref": "local:root", "status": map[string]any{"type": "active"}, "future_field": 17,
 		"capabilities": map[string]bool{"send": false, "steer": true, "forkFromTurn": false, "futureAction": true},
 	})}
-	got := stampForkCapability(original)
+	got := stampForkCapability(original, true)
 	var result struct {
 		FutureField  int             `json:"future_field"`
 		Capabilities map[string]bool `json:"capabilities"`
@@ -209,9 +209,25 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 		t.Fatalf("capability overlay changed unrelated data: %+v", result)
 	}
 	for _, raw := range []string{`{}`, `{"capabilities":null}`, `{"capabilities":false}`} {
-		n := stampForkCapability(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: json.RawMessage(raw)})
+		n := stampForkCapability(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: json.RawMessage(raw)}, true)
 		if string(n.Params) != raw {
 			t.Fatalf("missing capability set was fabricated: %s", n.Params)
+		}
+		for _, status := range []appwire.ThreadStatus{
+			{Type: appwire.ThreadStatusRestartRequired},
+			{Type: appwire.ThreadStatusIdle, ActiveFlags: []string{"resumeRequired"}},
+		} {
+			original := appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, appwire.ThreadStatusChangedParams{
+				Status: status, Capabilities: &appwire.ThreadCapabilities{},
+			})}
+			got := stampForkCapability(original, true)
+			var params appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
+				t.Fatalf("status %q with recovery fence advertised fork: %+v", status.Type, params.Capabilities)
+			}
 		}
 	}
 }

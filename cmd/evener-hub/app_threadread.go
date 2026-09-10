@@ -428,6 +428,11 @@ func hubOwnsThreadFork(thread appwire.Thread) bool {
 func applyHubForkCapability(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	ref, err := appwire.ParseRef(thread.Evener.Ref)
 	if err != nil || ref.SourceID != "local" {
+		if err != nil {
+			// An invalid ref cannot establish hub ownership. Never preserve a
+			// source-provided action for an identity the hub cannot parse.
+			thread.Evener.Capabilities.ForkFromTurn = false
+		}
 		return thread
 	}
 	storageAvailable := strings.TrimSpace(cfg.StateDir) != ""

@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -228,25 +229,31 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 
 // stampForkCapability adds the hub-owned action to an existing capability
 // update. Other permissions and fields remain the daemon's current values.
-func stampForkCapability(notification appwire.Notification) appwire.Notification {
+func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
 	}
-	var params map[string]json.RawMessage
-	if json.Unmarshal(notification.Params, &params) != nil {
+	var params struct {
+		Status       appwire.ThreadStatus       `json:"status"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+	}
+	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
 		return notification
 	}
-	var capabilities map[string]json.RawMessage
-	if json.Unmarshal(params["capabilities"], &capabilities) != nil || capabilities == nil {
+	if !allowFork || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired") {
 		return notification
 	}
-	capabilities["forkFromTurn"] = json.RawMessage("true")
-	encoded, err := json.Marshal(capabilities)
+	params.Capabilities["forkFromTurn"] = json.RawMessage("true")
+	encoded, err := json.Marshal(params.Capabilities)
 	if err != nil {
 		return notification
 	}
-	params["capabilities"] = encoded
-	stamped, err := json.Marshal(params)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(notification.Params, &raw); err != nil {
+		return notification
+	}
+	raw["capabilities"] = encoded
+	stamped, err := json.Marshal(raw)
 	if err != nil {
 		return notification
 	}
@@ -606,7 +613,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
 					if ownsFork {
-						notification = stampForkCapability(notification)
+						notification = stampForkCapability(notification, ownsFork)
 					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
