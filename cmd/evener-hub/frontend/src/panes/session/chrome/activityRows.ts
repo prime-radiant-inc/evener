@@ -70,21 +70,10 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
   if (delegate.type === "delegate") {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
-    const ownActive = delegate.terminal !== true;
-    const ownFailed = isFailedStatus(status);
-    const failed = ownFailed || childFailed;
     return {
-      active: ownActive || childActive,
-      failed,
-      status: ownActive
-        ? status
-        : childActive
-          ? (delegate.child?.aggregate ?? "working")
-          : ownFailed
-            ? status
-            : failed
-              ? "failed"
-              : status,
+      active: delegate.terminal !== true || childActive,
+      failed: isFailedStatus(status) || childFailed,
+      status,
     };
   }
   const turns = delegate.turns ?? [];
