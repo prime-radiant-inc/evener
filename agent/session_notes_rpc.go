@@ -563,6 +563,7 @@ func (s *Session) adoptedIntentLink(outerID string) (string, bool) {
 }
 
 // acceptNotesSteer drives the derived inner steer under steerID.
+func (s *Session) acceptNotesSteer(steerID, text string) (string, error) {
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: steerID,
 		Input:            clientMutationInput(text, nil),
