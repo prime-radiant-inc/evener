@@ -189,20 +189,29 @@ drained:
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {
 		t.Fatalf("retry environment history turns = %d, want one emitted turn after failure", got)
 	}
-	var environmentEvents int
+	var environmentEvents []events.SessionEvent
 	for {
 		select {
 		case event := <-s.Events():
 			if event.Kind == events.EventEnvironment {
-				environmentEvents++
+				environmentEvents = append(environmentEvents, event)
 			}
 		default:
 			goto drainedAfterRetry
 		}
 	}
 drainedAfterRetry:
-	if environmentEvents != 1 {
-		t.Fatalf("retry published %d environment events, want 1", environmentEvents)
+	if len(environmentEvents) != 1 {
+		t.Fatalf("retry published %d environment events, want 1", len(environmentEvents))
+	}
+	var retried schema.Turn
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnEnvironment {
+			retried = turn
+		}
+	}
+	if environmentEvents[0].Data.(events.EnvironmentData).TurnID != retried.StableTurnID {
+		t.Fatalf("retry event stable ID = %q, durable turn ID = %q", environmentEvents[0].Data.(events.EnvironmentData).TurnID, retried.StableTurnID)
 	}
 	s.maybeAppendEnvironmentContext()
 	if got := countEnvironmentTurns(s); got != initialEnvironmentTurns+1 {

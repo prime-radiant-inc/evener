@@ -1941,7 +1941,12 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	preseededInput := delegateInputWasPreseeded(ctx, s.id, input) && len(images) == 0 && queuedIdentity.ClientMutationID == ""
 	if !preseededInput {
-		s.maybeAppendEnvironmentContext()
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			s.mu.Lock()
+			s.turns--
+			s.mu.Unlock()
+			return fmt.Errorf("append environment context: %w", err)
+		}
 	}
 
 	// userInputTurn is computed AFTER any SessionStart-hook and environment-context

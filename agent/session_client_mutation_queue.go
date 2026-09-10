@@ -1237,7 +1237,9 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.clientMutationFailureFault("before_user"); err != nil {
 			return err
 		}
-		s.maybeAppendEnvironmentContext()
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			return fmt.Errorf("append environment context: %w", err)
+		}
 		turn := schema.NewTurn(schema.TurnUserInput, buildUserInputMessage(queued.Text, queued.Images))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID
