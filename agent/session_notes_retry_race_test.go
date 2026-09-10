@@ -12,9 +12,7 @@ func TestHumanNoteConcurrentSameValueNotifiesOnce(t *testing.T) {
 	s := newDurableHumanNoteSession(t)
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			response, err := s.SetHumanNote(fmt.Sprintf("save-%d", i), " shared\nvalue ")
 			if err != nil {
 				t.Error(err)
@@ -23,7 +21,7 @@ func TestHumanNoteConcurrentSameValueNotifiesOnce(t *testing.T) {
 			if response.Note != "shared value" {
 				t.Errorf("response = %+v", response)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	snapshot := s.clientMutations.snapshot()

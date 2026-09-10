@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -99,7 +100,7 @@ func TestPastThreadReadCanonicalHumanNote(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(after) != string(data) {
+			if !bytes.Equal(after, data) {
 				t.Fatal("past read rewrote journal")
 			}
 		})
