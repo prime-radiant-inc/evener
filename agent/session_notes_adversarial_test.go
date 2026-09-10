@@ -84,11 +84,11 @@ type notesRenameFailureFS struct {
 	err  error
 }
 
-func (fs *notesRenameFailureFS) Rename(old, new string) error {
+func (fs *notesRenameFailureFS) Rename(old, newPath string) error {
 	if fs.fail {
 		return fs.err
 	}
-	return fs.Fs.Rename(old, new)
+	return fs.Fs.Rename(old, newPath)
 }
 
 func TestNotesMetadataFailureCannotEscapeAutosave(t *testing.T) {

@@ -166,8 +166,12 @@ export class MutationOutbox {
     await this.#pendingDiscovery;
   }
 
-  async enqueueIntent(intent: MutationIntent): Promise<MutationOutboxRecord> {
+  async enqueueIntent(
+    intent: MutationIntent,
+    onCommitted?: (record: MutationOutboxRecord) => void,
+  ): Promise<MutationOutboxRecord> {
     const record = await this.#storage.enqueueIntent(intent);
+    onCommitted?.(record);
     try {
       this.#broadcastChannel?.postMessage({
         version: 1,

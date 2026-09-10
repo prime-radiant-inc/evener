@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -280,7 +281,7 @@ func TestHumanNoteRestoreCanonicalFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(after) != string(data) {
+			if !bytes.Equal(after, data) {
 				t.Fatal("read helper rewrote journal")
 			}
 			restored, err := RestoreSessionFromMeta(s.client, s.profile, s.env, meta, stateDir)
@@ -331,7 +332,7 @@ func TestHumanNoteReadAuthorityRejectsUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(data) {
+	if !bytes.Equal(after, data) {
 		t.Fatal("failed read rewrote journal")
 	}
 }
@@ -417,7 +418,7 @@ func TestHumanNoteCleanCutoverRejectsOldJournalFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(after) != string(data) {
+			if !bytes.Equal(after, data) {
 				t.Fatal("rejected journal was reset or migrated")
 			}
 		})

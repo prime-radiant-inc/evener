@@ -2,14 +2,23 @@
 // and the live remove wiring. Mirrors DetailsPanel.test.tsx's harness
 // (testModel with capability overrides); the body renders directly here
 // (no Sheet trigger to click through - the desktop pane mounts the body).
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { useStore } from "zustand";
+import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import {
+  readMutationPersistence,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { NotesPanel, NotesPanelBody } from "./NotesPanel";
@@ -71,6 +80,18 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+function noteResponse(params: { clientMutationId: string; note?: string }, note = params.note ?? "") {
+  return {
+    note,
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      threadId: "thread",
+      disposition: "applied",
+      projectionState: "notProjected",
+    },
+  };
+}
+
 function openPanel(model: ThreadModel) {
   render(<NotesPanelBody sessionRef={model.ref} model={model} />);
 }
@@ -78,6 +99,172 @@ function openPanel(model: ThreadModel) {
 function editor(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
 }
+
+function LivePanel({ sessionRef }: { sessionRef: string }) {
+  const model = useStore(threadsStore, (state) => state.threads.get(sessionRef));
+  return model ? <NotesPanelBody sessionRef={sessionRef} model={model} /> : null;
+}
+
+function clockClient() {
+  const indexedDB = new IDBFactory();
+  vi.stubGlobal("indexedDB", indexedDB);
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  return { fake: connectFakeClient(), user: userEvent.setup({ advanceTimers: vi.advanceTimersByTime }) };
+}
+
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+test("an actual blur retains the last pane's subscription through the deadline", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  let resolve!: () => void;
+  const submitted = new Promise<void>((done) => {
+    resolve = done;
+  });
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    resolve();
+    return noteResponse(params);
+  });
+  const panel = render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "closed sentinel");
+  await user.tab();
+  panel.unmount();
+  threadsStore.getState().releaseThread(model.ref);
+  expect(threadsStore.getState().threads.has(model.ref)).toBe(true);
+  await advance(9_999);
+  expect(seen).toHaveLength(0);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+});
+
+test("two real panels share text and any same-session focus cancels the one timer", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return noteResponse(params);
+  });
+  render(
+    <>
+      <LivePanel sessionRef={model.ref} />
+      <LivePanel sessionRef={model.ref} />
+    </>,
+  );
+  const editors = screen.getAllByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement[];
+  await user.type(editors[0]!, "shared sentinel");
+  expect(editors[1]!.value).toBe("shared sentinel");
+  await user.tab(); // transfers focus directly to the second editor
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+  await user.tab(); // actual last-owner blur
+  await advance(9_999);
+  await user.click(editors[0]!);
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+});
+
+test("closing without blur keeps the shared draft without inventing a save", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return noteResponse(params);
+  });
+  const panel = render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "unsubmitted sentinel");
+  panel.unmount();
+  await advance(10_000);
+  render(<LivePanel sessionRef={model.ref} />);
+  expect(editor().value).toBe("unsubmitted sentinel");
+  expect(seen).toHaveLength(0);
+});
+
+test("clean focused editors accept authoritative store updates without a write", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel({ humanNote: "old sentinel" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return noteResponse(params);
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.click(editor());
+  act(() => threadsStore.setState({ threads: new Map([[model.ref, { ...model, humanNote: "remote sentinel" }]]) }));
+  expect(editor().value).toBe("remote sentinel");
+  await user.tab();
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+});
+
+test.each(["ended", "capability", "instance"])(
+  "deadline rechecks %s without changing the original fence",
+  async (loss) => {
+    const { fake, user } = clockClient();
+    const model = testModel({ instanceId: "original-instance" });
+    threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+    await threadsStore.getState().ensureThread(model.ref);
+    const seen: unknown[] = [];
+    fake.on("notes/human/set", (params) => {
+      seen.push(params);
+      return noteResponse(params);
+    });
+    render(<LivePanel sessionRef={model.ref} />);
+    await user.type(editor(), "retained sentinel");
+    await user.tab();
+    const changed =
+      loss === "ended"
+        ? { ...model, status: { type: "ended" as const } }
+        : loss === "capability"
+          ? { ...model, capabilities: { ...model.capabilities, sharedNotes: false } }
+          : { ...model, instanceId: "replacement-instance" };
+    act(() => threadsStore.setState({ threads: new Map([[model.ref, changed]]) }));
+    await advance(10_000);
+    expect(seen).toHaveLength(0);
+    act(() => threadsStore.setState({ threads: new Map([[model.ref, model]]) }));
+    expect(editor().value).toBe("retained sentinel");
+    expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
+  },
+);
+
+test("a definite refusal stays visible and keeps its draft across close and reopen", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  fake.on("notes/human/set", (params) => {
+    throw new WireError("refusal sentinel", -32013, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+    });
+  });
+  const panel = render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "failed sentinel");
+  await user.tab();
+  await advance(10_000);
+  expect(await screen.findByTestId("shared-notes-error")).toBeTruthy();
+  panel.unmount();
+  render(<LivePanel sessionRef={model.ref} />);
+  expect(editor().value).toBe("failed sentinel");
+  expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -87,6 +274,45 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetThreadsStoreForTests();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+test("dirty blur sends nothing at 9999ms and one raw note at 10000ms", async () => {
+  const indexedDB = new IDBFactory();
+  vi.stubGlobal("indexedDB", indexedDB);
+  // Testing Library's async wrapper detects fake clocks through Jest's API.
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const fake = connectFakeClient();
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return noteResponse(params);
+  });
+  openPanel(model);
+  await user.type(editor(), "draft sentinel");
+  await user.tab();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(9_999);
+  });
+  expect(seen).toHaveLength(0);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({ ref: model.ref, note: "draft sentinel" });
 });
 
 // --- rule 1: capability unset hides the panel body entirely -------------------
@@ -202,21 +428,22 @@ test("live-empty session shows an empty editor with placeholder", () => {
 // --- blur saves through the threads store -------------------------------------
 
 test("blurring the editor saves through the threads store", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   let called: unknown;
   fake.on("notes/human/set", (params) => {
     called = params;
-    return { note: "saved note" };
+    return noteResponse(params, "saved note");
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "saved note");
   await user.tab();
+  await advance(10_000);
 
   await waitFor(() => expect(called).toMatchObject({ ref: model.ref, note: "saved note" }));
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("saved note");
@@ -224,19 +451,20 @@ test("blurring the editor saves through the threads store", async () => {
 });
 
 test("blurring with an unchanged draft saves nothing", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   let calls = 0;
-  fake.on("notes/human/set", () => {
+  fake.on("notes/human/set", (params) => {
     calls += 1;
-    return { note: "old note" };
+    return noteResponse(params, "old note");
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   await user.click(editor());
   await user.tab();
+  await advance(10_000);
 
   await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
   expect(calls).toBe(0);
@@ -247,6 +475,7 @@ test("a push while the editor is focused never clobbers typing", async () => {
   connectFakeClient();
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
   await user.click(editor());
   await user.type(editor(), " + typing");
@@ -259,6 +488,7 @@ test("a push while unfocused reseeds the draft", async () => {
   connectFakeClient();
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
   expect(editor().value).toBe("old note");
 
@@ -267,8 +497,7 @@ test("a push while unfocused reseeds the draft", async () => {
 });
 
 test("remove dispatches urls/remove", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   let called: unknown;
   fake.on("urls/remove", (params) => {
     called = params;
@@ -277,6 +506,7 @@ test("remove dispatches urls/remove", async () => {
 
   const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
 
@@ -286,8 +516,7 @@ test("remove dispatches urls/remove", async () => {
 // --- save coalescing -------------------------------------------------------------
 
 test("reverting to the stored text during an in-flight save still persists the revert", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -298,19 +527,21 @@ test("reverting to the stored text during an in-flight save still persists the r
     seen.push(params);
     if (first) {
       first = false;
-      return gate.then(() => ({ note: (params as { note: string }).note }));
+      return gate.then(() => noteResponse(params));
     }
-    return { note: (params as { note: string }).note };
+    return noteResponse(params);
   });
 
   const model = testModel({ humanNote: "stored A" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   // A save of B is in flight...
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft B");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(1));
   // ...and the user reverts to the currently-stored A before B lands. The
   // revert equals the store mid-flight, but dropping it would leave B
@@ -320,46 +551,73 @@ test("reverting to the stored text during an in-flight save still persists the r
   await user.type(editor(), "stored A");
   await user.tab();
   release();
+  await waitFor(() => expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("draft B"));
+  expect(editor().value).toBe("stored A");
+  expect(screen.queryByTestId("shared-notes-saved")).toBeNull();
+  await advance(9_999);
+  expect(seen).toHaveLength(1);
+  await advance(1);
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "stored A" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("stored A");
 });
 
-test("a multiline draft reports Saved once the collapsed store converges", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  let calls = 0;
-  fake.on("notes/human/set", (params) => {
-    calls += 1;
-    // The daemon collapses whitespace: mirror the collapse in the fake's
-    // local commit so the store converges the way the real one does.
-    const note = (params as { note: string }).note;
-    const collapsed = note.replace(/\s+/g, " ").trim();
-    const threads = threadsStore.getState().threads;
-    const model = threads.get("local:033uaztQj6XPP6eF7pS0OW");
-    if (model) threadsStore.setState({ threads: new Map(threads).set(model.ref, { ...model, humanNote: collapsed }) });
-    return { note: collapsed };
-  });
-
-  const model = testModel({ humanNote: "" });
+test("older B success followed by C rejection keeps C visible and recoverable", async () => {
+  const { user, fake } = clockClient();
+  const model = testModel({ humanNote: "A" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    if (params.note === "B") return gate.then(() => noteResponse(params));
+    throw new WireError("C refusal sentinel", -32013, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+    });
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.clear(editor());
+  await user.type(editor(), "B");
+  await user.tab();
+  await advance(10_000);
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1));
+  await user.clear(editor());
+  await user.type(editor(), "C");
+  await user.tab();
+  release();
+  await waitFor(() => expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("B"));
+  expect(editor().value).toBe("C");
+  await advance(10_000);
+  await screen.findByTestId("shared-notes-error");
+  expect(editor().value).toBe("C");
+  expect(screen.queryByTestId("shared-notes-saved")).toBeNull();
+});
+
+test("server whitespace and Unicode are retained and an unchanged blur does not resubmit", async () => {
+  const { user, fake } = clockClient();
+  const raw = "  line one\n\tline two\u00a0e\u0301🙂  ";
+  fake.on("notes/human/set", (params) => noteResponse(params, raw));
+  const model = testModel();
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
-  await user.click(editor());
-  await user.type(editor(), "line one\nline two");
+  await user.type(editor(), "request sentinel");
   await user.tab();
-  // Saved paints against the collapsed store value...
+  await advance(10_000);
   await screen.findByTestId("shared-notes-saved");
-  expect(calls).toBe(1);
-  // ...and a further blur with no edits issues no redundant RPC.
+  expect(editor().value).toBe(raw);
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe(raw);
   await user.click(editor());
   await user.tab();
-  await waitFor(() => expect(screen.queryByTestId("shared-notes-saving")).toBeNull());
-  expect(calls).toBe(1);
+  await advance(10_000);
+  expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1);
 });
 
 test("a second blur while a save is in flight replays the latest draft instead of dropping it", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -370,19 +628,21 @@ test("a second blur while a save is in flight replays the latest draft instead o
     seen.push(params);
     if (first) {
       first = false;
-      return gate.then(() => ({ note: (params as { note: string }).note }));
+      return gate.then(() => noteResponse(params));
     }
-    return { note: (params as { note: string }).note };
+    return noteResponse(params);
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   // First blur starts the gated save...
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "first draft");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(1));
   // ...while it is in flight, a second edit + blur parks (not drops) the
   // newer draft; releasing the gate lets the loop replay it.
@@ -390,15 +650,16 @@ test("a second blur while a save is in flight replays the latest draft instead o
   await user.clear(editor());
   await user.type(editor(), "second draft");
   await user.tab();
+  await advance(10_000);
   release();
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
+  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
 });
 
 test("a B-save parking behind an in-flight A-save persists instead of overwriting A", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -409,34 +670,39 @@ test("a B-save parking behind an in-flight A-save persists instead of overwritin
     seen.push(params);
     if (first) {
       first = false;
-      return gate.then(() => ({ note: (params as { note: string }).note }));
+      return gate.then(() => noteResponse(params));
     }
-    return { note: (params as { note: string }).note };
+    return noteResponse(params);
   });
 
   const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
   const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "note B" });
   threadsStore.setState({ threads: new Map([[modelA.ref, modelA]]) });
+  void threadsStore.getState().ensureThread(modelA.ref);
+  void threadsStore.getState().ensureThread(modelA.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
   // A's blur starts the gated save...
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft A2");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(1));
-  // ...then the panel switches to B, whose blur parks behind A's loop. B
-  // must not overwrite A's parked draft, and the loop must drain both.
+  // ...then the panel switches to B. Its independent session draft and
+  // deadline must not overwrite A's submitted note.
   threadsStore.setState({
     threads: new Map([
       [modelA.ref, modelA],
       [modelB.ref, modelB],
     ]),
   });
+  void threadsStore.getState().ensureThread(modelB.ref);
   rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft B2");
   await user.tab();
+  await advance(10_000);
   release();
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[0]).toMatchObject({ ref: modelA.ref, note: "draft A2" });
@@ -446,19 +712,23 @@ test("a B-save parking behind an in-flight A-save persists instead of overwritin
 });
 
 test("a failed save retries on the next blur with the latest draft", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let calls = 0;
   fake.on("notes/human/set", (params) => {
     calls += 1;
     seen.push(params);
-    if (calls === 1) throw new Error("first save boom");
-    return { note: (params as { note: string }).note };
+    if (calls === 1)
+      throw new WireError("first save boom", -32013, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+      });
+    return noteResponse(params);
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   render(
     <>
       <NotesPanelBody sessionRef={model.ref} model={model} />
@@ -469,6 +739,7 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await user.clear(editor());
   await user.type(editor(), "first draft");
   await user.tab();
+  await advance(10_000);
   await screen.findAllByText(/first save boom/i);
   // A newer draft typed after the failure retries on the next explicit save
   // (the failure itself never requeues into the same drain): the next blur
@@ -477,22 +748,27 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await user.clear(editor());
   await user.type(editor(), "second draft");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
+  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
 });
 
 test("a persistently failing save does not hot-loop the same drain", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   let calls = 0;
-  fake.on("notes/human/set", () => {
+  fake.on("notes/human/set", (params) => {
     calls += 1;
-    throw new Error("always boom");
+    throw new WireError("always boom", -32013, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+    });
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   render(
     <>
       <NotesPanelBody sessionRef={model.ref} model={model} />
@@ -503,6 +779,7 @@ test("a persistently failing save does not hot-loop the same drain", async () =>
   await user.clear(editor());
   await user.type(editor(), "doomed draft");
   await user.tab();
+  await advance(10_000);
   await screen.findAllByText(/always boom/i);
   // The failed drain settles after exactly one attempt: no requeue means no
   // request/toast/saving storm, and the loop is free for the next explicit
@@ -515,13 +792,16 @@ test("a persistently failing save does not hot-loop the same drain", async () =>
 // --- failure keeps the draft ---------------------------------------------------
 
 test("a B-save queued behind a failing A-save still persists and reports", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   fake.on("notes/human/set", (params) => {
     seen.push(params);
-    if ((params as { ref: string }).ref === "local:aaaa") throw new Error("A save boom");
-    return { note: (params as { note: string }).note };
+    if ((params as { ref: string }).ref === "local:aaaa")
+      throw new WireError("A save boom", -32013, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+      });
+    return noteResponse(params);
   });
 
   const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
@@ -532,6 +812,8 @@ test("a B-save queued behind a failing A-save still persists and reports", async
       [modelB.ref, modelB],
     ]),
   });
+  void threadsStore.getState().ensureThread(modelA.ref);
+  void threadsStore.getState().ensureThread(modelB.ref);
   const { rerender } = render(
     <>
       <NotesPanelBody sessionRef={modelA.ref} model={modelA} />
@@ -544,6 +826,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   await user.clear(editor());
   await user.type(editor(), "draft A2");
   await user.tab();
+  await advance(10_000);
   await screen.findAllByText(/A save boom/i);
   // ...then the panel switches to B, whose blur starts a fresh loop. B
   // persists and reports Saved; A's draft stays in A's textarea for an
@@ -558,6 +841,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   await user.clear(editor());
   await user.type(editor(), "draft B2");
   await user.tab();
+  await advance(10_000);
   await screen.findByTestId("shared-notes-saved");
   // A attempted once (no hot-loop retry); B attempted once and landed.
   expect(seen.map((p) => (p as { ref: string }).ref)).toEqual(["local:aaaa", "local:bbbb"]);
@@ -565,8 +849,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
 });
 
 test("a failure superseded by a newer save in the same drain never retries stale text", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -579,18 +862,28 @@ test("a failure superseded by a newer save in the same drain never retries stale
     // The first (stale) attempt gates; everything after succeeds. If the
     // stale failure were requeued unconditionally, the retry would restore
     // "stale draft" over the newer stored text.
-    if (calls === 1) return gate.then(() => Promise.reject(new Error("stale save boom")));
-    return { note: (params as { note: string }).note };
+    if (calls === 1)
+      return gate.then(() =>
+        Promise.reject(
+          new WireError("stale save boom", -32013, {
+            clientMutationId: params.clientMutationId,
+            mutationOutcome: "notAccepted",
+          }),
+        ),
+      );
+    return noteResponse(params);
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   openPanel(model);
   // First blur starts the gated save of the stale draft...
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "stale draft");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(1));
   // ...while it is in flight, a newer draft parks behind it; releasing the
   // gate fails the stale attempt, and the loop must drain the newer draft
@@ -599,6 +892,7 @@ test("a failure superseded by a newer save in the same drain never retries stale
   await user.clear(editor());
   await user.type(editor(), "newer draft");
   await user.tab();
+  await advance(10_000);
   release();
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "newer draft" });
@@ -610,8 +904,7 @@ test("a failure superseded by a newer save in the same drain never retries stale
 });
 
 test("an earlier success still reports Saved when a sibling fails later in the drain", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -620,14 +913,18 @@ test("an earlier success still reports Saved when a sibling fails later in the d
   let first = true;
   fake.on("notes/human/set", (params) => {
     seen.push(params);
-    // Gate A's save so B's blur parks behind it in the same drain; A then
-    // succeeds while B fails. A's Saved must survive B's later failure.
+    // Gate A's save while B has its own deadline and request. A succeeds
+    // while B fails; A's Saved must survive B's failure.
     if (first && (params as { ref: string }).ref === "local:aaaa") {
       first = false;
-      return gate.then(() => ({ note: (params as { note: string }).note }));
+      return gate.then(() => noteResponse(params));
     }
-    if ((params as { ref: string }).ref === "local:bbbb") throw new Error("B save boom");
-    return { note: (params as { note: string }).note };
+    if ((params as { ref: string }).ref === "local:bbbb")
+      throw new WireError("B save boom", -32013, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+      });
+    return noteResponse(params);
   });
 
   const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
@@ -638,41 +935,48 @@ test("an earlier success still reports Saved when a sibling fails later in the d
       [modelB.ref, modelB],
     ]),
   });
+  void threadsStore.getState().ensureThread(modelA.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft A2");
   await user.tab();
+  await advance(10_000);
   await waitFor(() => expect(seen).toHaveLength(1));
+  void threadsStore.getState().ensureThread(modelB.ref);
   rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "draft B2");
   await user.tab();
+  await advance(10_000);
   release();
   // B's failure surfaces while the panel shows B, and A still landed...
+  await waitFor(() => expect(seen).toHaveLength(2));
   await screen.findAllByText(/B save boom/i);
   expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
   // ...then switching back to A paints Saved: the outcome recorded for A is
   // success, and B's failure belongs to B's session, not A's status line.
-  // (The remount clears A's error state; B's draft stays in B's textarea for
-  // an explicit retry.)
+  // B's failed shared draft remains available for a later retry.
   rerender(<NotesPanelBody sessionRef={modelA.ref} model={{ ...modelA, humanNote: "draft A2" }} />);
   await user.click(editor());
   await user.tab();
+  await advance(10_000);
   await screen.findByTestId("shared-notes-saved");
 });
 
 test("a failed blur-save surfaces an error and keeps the draft", async () => {
-  const user = userEvent.setup();
-  connectFakeClient();
-  const fake = connectionStore.getState().client as FakeClient;
-  fake.on("notes/human/set", () => {
-    throw new Error("save note boom");
+  const { user, fake } = clockClient();
+  fake.on("notes/human/set", (params) => {
+    throw new WireError("save note boom", -32013, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+    });
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   render(
     <>
       <NotesPanelBody sessionRef={model.ref} model={model} />
@@ -683,21 +987,21 @@ test("a failed blur-save surfaces an error and keeps the draft", async () => {
   await user.clear(editor());
   await user.type(editor(), "draft note");
   await user.tab();
+  await advance(10_000);
 
   await screen.findAllByText(/save note boom/i);
   expect(editor().value).toBe("draft note");
   expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
 });
 
-// --- flush paths ---------------------------------------------------------------
+// --- closing is not an actual blur ---------------------------------------------
 
-test("switching sessions flushes the outgoing dirty draft against the old thread", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+test("switching sessions without blur retains the outgoing draft without saving", async () => {
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   fake.on("notes/human/set", (params) => {
     seen.push(params);
-    return { note: (params as { note: string }).note };
+    return noteResponse(params);
   });
 
   const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
@@ -706,40 +1010,44 @@ test("switching sessions flushes the outgoing dirty draft against the old thread
   // skipped the save on the coincidence.
   const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "dirty A draft" });
   threadsStore.setState({ threads: new Map([[modelA.ref, modelA]]) });
+  void threadsStore.getState().ensureThread(modelA.ref);
+  void threadsStore.getState().ensureThread(modelA.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "dirty A draft");
-  // Switch without blurring: the sessionRef-change cleanup is the flush
-  // under test (blur never fires on a prop-driven panel swap).
+  // A prop-driven session swap does not dispatch a blur or invent a save.
   threadsStore.setState({ threads: new Map([[modelB.ref, modelB]]) });
+  void threadsStore.getState().ensureThread(modelB.ref);
   rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
 
-  await waitFor(() => expect(seen).toHaveLength(1));
-  expect(seen[0]).toMatchObject({ ref: modelA.ref, note: "dirty A draft" });
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+  rerender(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
+  expect(editor().value).toBe("dirty A draft");
 });
 
-test("a live-to-ended transition flushes the dirty draft before the editor unmounts", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
+test("a live-to-ended transition without blur does not invent a save", async () => {
+  const { user, fake } = clockClient();
   const seen: unknown[] = [];
   fake.on("notes/human/set", (params) => {
     seen.push(params);
-    return { note: (params as { note: string }).note };
+    return noteResponse(params);
   });
 
   const model = testModel({ humanNote: "old note" });
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
   await user.click(editor());
   await user.clear(editor());
   await user.type(editor(), "final words");
   // The session ends with the textarea focused: the editor unmounts for the
-  // read-only view without blur firing, and the flush must still save.
+  // read-only view without blur firing, so no save is scheduled.
   rerender(<NotesPanelBody sessionRef={model.ref} model={{ ...model, status: { type: "ended" } }} />);
 
-  await waitFor(() => expect(seen).toHaveLength(1));
-  expect(seen[0]).toMatchObject({ ref: model.ref, note: "final words" });
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
