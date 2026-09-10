@@ -423,6 +423,18 @@ func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing
 				}()
 				close(start)
 				finished.Wait()
+				if state == "closed" {
+					read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:" + threadID}).Thread
+					if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
+						t.Fatalf("attempt %d: closed race read=(%q, %q), want closed/empty", attempt, read.Status.Type, read.Evener.ActiveTurnID)
+					}
+					for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
+						if record.Notification.Method == appwire.NotifyTurnStarted {
+							t.Fatalf("attempt %d: closed race projected new carrier: %+v", attempt, record)
+						}
+					}
+					continue
+				}
 				sawCarrier := false
 				for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
 					notification := record.Notification
@@ -451,6 +463,33 @@ func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing
 				}
 				if !sawCarrier {
 					t.Fatal("new carrier was not projected")
+				}
+			}
+		})
+	}
+}
+
+func TestServerAppWireClosedTerminalRejectsLateCarriers(t *testing.T) {
+	for _, kind := range []events.EventKind{events.EventTurnStarted, events.EventUserInput, events.EventGoalContinuation} {
+		t.Run(string(kind), func(t *testing.T) {
+			for _, turnID := range []string{"accepted-turn", "stale-turn"} {
+				srv := NewServer(ServerConfig{})
+				srv.SetAppIdentity("local", "closed-late-carrier")
+				srv.SetProcessingTurn("accepted-turn")
+				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "closed-late-carrier", Data: events.SessionEndData{State: "closed"}}, nil)
+				var data events.EventData
+				switch kind {
+				case events.EventTurnStarted:
+					data = events.TurnStartedData{TurnID: turnID}
+				case events.EventUserInput:
+					data = events.UserInputData{Text: "late", StableTurnID: turnID}
+				case events.EventGoalContinuation:
+					data = events.GoalContinuationData{Text: "late", StableTurnID: turnID}
+				}
+				BridgeEvent(srv, events.SessionEvent{Kind: kind, SessionID: "closed-late-carrier", Data: data}, nil)
+				read := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:closed-late-carrier"}).Thread
+				if read.Status.Type != appwire.ThreadStatusClosed || read.Evener.ActiveTurnID != "" {
+					t.Fatalf("%s turn=%q read=(%q,%q), want closed/empty", kind, turnID, read.Status.Type, read.Evener.ActiveTurnID)
 				}
 			}
 		})
