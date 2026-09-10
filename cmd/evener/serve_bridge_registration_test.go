@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 )
 
 // TestServeRegistersNoDrainItsBridgeNeverStarted pins the invariant behind
@@ -100,6 +101,11 @@ func TestServeStartsNoBridgeOnceTeardownHasSnapshotItsDrains(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 	args = append(args, "--verbose")
 	deps.verboseOut = newDiscardWriter()
+	// This test isolates bridge registration after the shutdown snapshot. The
+	// rvreg terminal lifecycle is covered by its real filesystem tests; letting
+	// that guard reject this deliberately late clear would prevent the test from
+	// reaching bridgeSession and hide the invariant under test.
+	deps.updateSessionID = func(*rvreg.Registration, string) error { return nil }
 
 	var mu sync.Mutex
 	var teardownBegun bool
