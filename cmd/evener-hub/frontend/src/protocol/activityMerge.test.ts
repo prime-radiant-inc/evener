@@ -151,6 +151,27 @@ test("merged summaries count failures and keep coverage separate from running st
   expect(settled.root.aggregate).toBe("failed");
 });
 
+test("merged summaries classify failed statuses without requiring an outcome", () => {
+  const failed = shell("failed");
+  failed.job.status = "error";
+  failed.job.outcome = undefined;
+  const result = graftContinuationTree(tree([]), "session:root", tree([failed]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 1, completed: 0 });
+  expect(result.root.aggregate).toBe("failed");
+});
+
+test("merged summaries count empty turn-container delegates as one entry", () => {
+  const emptyTurns = delegate();
+  if (emptyTurns.delegate.type !== "delegate") throw new Error("unexpected delegate type");
+  delete emptyTurns.delegate.type;
+  emptyTurns.delegate.status = "completed";
+  emptyTurns.delegate.outcome = "completed";
+  emptyTurns.delegate.branch = {};
+  const result = graftContinuationTree(tree([]), "session:root", tree([emptyTurns]));
+  expect(result.root.counts).toMatchObject({ active: 0, failed: 0, completed: 1 });
+  expect(result.root.aggregate).toBe("ended");
+});
+
 test("partial descendant coverage stays incomplete until its last page loads", () => {
   const current = tree([shell("a")], "root-next");
   const partial = graftContinuationTree(

@@ -292,6 +292,59 @@ describe("ActivityTree", () => {
     expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Failed");
   });
 
+  test("active child gives a terminal stable delegate a working glyph", () => {
+    const tree = {
+      revision: 10,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root",
+        aggregate: "working",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_stable_child",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "local:sess_child",
+              transcriptRef: "local:sess_child",
+              type: "delegate",
+              lifecycle: "idle",
+              phase: "idle",
+              status: "completed",
+              outcome: "completed",
+              terminal: true,
+              resumable: true,
+              projectionRevision: 7,
+              task: "Stable child work",
+              branch: {},
+              child: {
+                kind: "session",
+                sessionId: "sess_child",
+                ref: "local:sess_child",
+                label: "Child",
+                aggregate: "working",
+                counts: { active: 1, failed: 0, completed: 0, complete: true },
+                entries: [],
+                branch: {},
+              },
+            },
+          },
+        ],
+        branch: {},
+      },
+    } as unknown as ActivityTreeData;
+
+    render(<ActivityTree tree={tree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "Stable child work" });
+    expect(within(row).getByText("⌘").getAttribute("aria-label")).toBe("Working");
+    expect(row.textContent).toContain("completed");
+  });
+
   test("renders one dense row per live entry with kind glyph and meta", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);

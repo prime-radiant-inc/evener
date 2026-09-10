@@ -235,6 +235,21 @@ test("turn-based activity remains live while its child session is active", () =>
   expect(state).toMatchObject({ active: true });
 });
 
+test("stable delegate keeps its resource status while an active child makes the row live", () => {
+  const child = session([shell("child", false)], {
+    active: 1,
+    failed: 0,
+    completed: 0,
+    complete: true,
+  }) as ActivitySessionNode;
+  const entry = delegate("dlg_stable_child", { child });
+  entry.delegate.terminal = true;
+  entry.delegate.outcome = "completed";
+  entry.delegate.status = "completed";
+  expect(activityDelegateState(entry.delegate)).toMatchObject({ active: true, status: "completed" });
+  expect(buildActivityRows(tree([entry]), new Set())[0]).toMatchObject({ kind: "delegate", live: true });
+});
+
 test("child activity takes status precedence over prior own failures and child failures surface", () => {
   const activeChild = session([shell("child", false)], {
     active: 1,

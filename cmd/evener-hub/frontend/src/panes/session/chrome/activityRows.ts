@@ -12,6 +12,7 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
+  isActivityFailure,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import { isFailedStatus } from "./activityFormat";
@@ -82,7 +83,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     if (!turn.terminal) activeTurn = turn;
   }
   const latest = turns.at(-1);
-  const failed = childFailed || turns.some((turn) => turn.outcome === "failure" || isFailedStatus(turn.status));
+  const failed = childFailed || turns.some((turn) => isActivityFailure(turn.outcome, turn.status));
   const active = activeTurn !== undefined || childActive;
   return {
     active,
@@ -116,7 +117,7 @@ function entryIsFailed(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return isFailedStatus(entry.job.status);
   const delegate: ActivityDelegate = entry.delegate;
   const state = activityDelegateState(delegate);
-  return state.failed || (delegate.child?.counts.failed ?? 0) > 0;
+  return state.failed;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {
