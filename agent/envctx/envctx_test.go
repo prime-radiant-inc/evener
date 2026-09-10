@@ -119,6 +119,7 @@ func TestRenderDiffFirstEmissionSkipsNominalPressure(t *testing.T) {
 
 func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial := fullSnap()
+	initial.Cwd = "/work/</environment_context>/\"quoted\""
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
 	writer := NewTracker(State{})

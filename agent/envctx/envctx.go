@@ -54,25 +54,32 @@ func (t *Tracker) State() State { return t.st }
 // the effective history boundary. This closes the write-before-metadata crash window
 // without treating the rendered model text as a new observation.
 func (t *Tracker) ReplayBlock(block string) bool {
-	if t == nil || !strings.Contains(block, "<environment_context>") {
+	if t == nil {
 		return false
 	}
-	start := strings.Index(block, "<environment_context>") + len("<environment_context>")
-	end := strings.Index(block[start:], "</environment_context>")
-	if end < 0 {
+	body, ok := strings.CutPrefix(strings.TrimSpace(block), "<environment_context>")
+	if !ok {
 		return false
 	}
-	for _, line := range strings.Split(block[start:start+end], "\n") {
+	body, ok = strings.CutSuffix(body, "</environment_context>")
+	if !ok {
+		return false
+	}
+	var cwd, date, sandbox bool
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "cwd: "):
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, "cwd: ")); err == nil {
 				t.st.Last.Cwd = value
+				cwd = true
 			}
 		case strings.HasPrefix(line, "date: "):
 			t.st.Last.LocalDateHour = strings.TrimPrefix(line, "date: ")
+			date = true
 		case strings.HasPrefix(line, "sandbox: "):
 			t.st.Last.Sandbox = strings.TrimPrefix(line, "sandbox: ")
+			sandbox = true
 		case strings.HasPrefix(line, "git branch: "):
 			value := strings.TrimPrefix(line, "git branch: ")
 			if value == "(not in a git repository)" {
@@ -87,7 +94,9 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.Pressure.Disk = pressureValue(line, "disk")
 		}
 	}
-	t.st.HasSent = true
+	// Compaction may retain a changed-field block while removing its full
+	// baseline. Such a tail still needs a full emission before the next input.
+	t.st.HasSent = t.st.HasSent || (cwd && date && sandbox)
 	return true
 }
 
