@@ -2597,7 +2597,9 @@ export function createConversationStore() {
                   items: attachments,
                   ...(params.item.transcriptKey
                     ? { sourceTranscriptKey: params.item.transcriptKey }
-                    : {}),
+                    : projectedWithReasoning.kind === "activity"
+                      ? { sourceTranscriptKey: params.item.id }
+                      : {}),
                 });
                 markLiveOwned(attachmentId);
               }

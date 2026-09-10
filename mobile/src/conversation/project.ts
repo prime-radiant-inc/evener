@@ -635,9 +635,7 @@ export function projectThread(thread: Thread): MobileConversation {
         activityAttachments.push({
           id: `${entry.item.id}:attachments`,
           items: entry.attachments,
-          ...(entry.item.transcriptKey
-            ? { sourceTranscriptKey: entry.item.transcriptKey }
-            : {}),
+          sourceTranscriptKey: entry.item.transcriptKey ?? entry.item.id,
         });
       }
     } else {
