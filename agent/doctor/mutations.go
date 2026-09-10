@@ -153,6 +153,7 @@ func Mutations(stateBase, selector string) (MutationReport, error) {
 // added to the runtime snapshot must break this decode loudly instead of being
 // silently dropped from a diagnosis.
 type clientMutationStoreFile struct {
+	HumanNote              *string                               `json:"human_note"`
 	Version                int                                   `json:"version"`
 	SessionID              string                                `json:"session_id"`
 	ActiveTurnID           string                                `json:"active_turn_id"`
@@ -171,26 +172,21 @@ type clientMutationStoreFile struct {
 }
 
 type clientMutationStoreRecord struct {
-	ClientMutationID     string                        `json:"client_mutation_id"`
-	Method               string                        `json:"method"`
-	Payload              json.RawMessage               `json:"payload"`
-	Preconditions        json.RawMessage               `json:"preconditions"`
-	StableTurnID         string                        `json:"stable_turn_id"`
-	StableQueueEntryIDs  []string                      `json:"stable_queue_entry_ids"`
-	PayloadHash          string                        `json:"payload_hash"`
-	OperationState       string                        `json:"operation_state"`
-	ExecutionState       string                        `json:"execution_state"`
-	ProjectionState      string                        `json:"projection_state"`
-	Result               json.RawMessage               `json:"result"`
-	Rejection            *clientMutationStoreRejection `json:"rejection"`
-	Failure              json.RawMessage               `json:"failure"`
-	AttemptGeneration    uint64                        `json:"attempt_generation"`
-	SteeringKind         string                        `json:"steering_kind"`
-	NotesDeliveryPending bool                          `json:"notes_delivery_pending"`
-	NotesStoredValue     string                        `json:"notes_stored_value"`
-	NotesStoredValueSet  bool                          `json:"notes_stored_value_set"`
-	NotesInnerSteerID    string                        `json:"notes_inner_steer_id"`
-	NotesAdoptedIntent   string                        `json:"notes_adopted_intent"`
+	ClientMutationID    string                        `json:"client_mutation_id"`
+	Method              string                        `json:"method"`
+	Payload             json.RawMessage               `json:"payload"`
+	Preconditions       json.RawMessage               `json:"preconditions"`
+	StableTurnID        string                        `json:"stable_turn_id"`
+	StableQueueEntryIDs []string                      `json:"stable_queue_entry_ids"`
+	PayloadHash         string                        `json:"payload_hash"`
+	OperationState      string                        `json:"operation_state"`
+	ExecutionState      string                        `json:"execution_state"`
+	ProjectionState     string                        `json:"projection_state"`
+	Result              json.RawMessage               `json:"result"`
+	Rejection           *clientMutationStoreRejection `json:"rejection"`
+	Failure             json.RawMessage               `json:"failure"`
+	AttemptGeneration   uint64                        `json:"attempt_generation"`
+	SteeringKind        string                        `json:"steering_kind"`
 }
 
 type clientMutationStoreRejection struct {

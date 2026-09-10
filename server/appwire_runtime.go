@@ -1807,7 +1807,7 @@ func (s *Server) handleAppNotesHumanSet(_ context.Context, params appwire.NotesH
 	if err != nil {
 		return appwire.NotesHumanSetResponse{}, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 	}
-	return appwire.NotesHumanSetResponse{Note: stored}, nil
+	return stored, nil
 }
 
 // handleAppUrlsRemove handles urls/remove. The callback removes one URL list

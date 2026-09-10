@@ -101,47 +101,9 @@ type clientMutationRecord struct {
 	Rejection           *clientMutationRejection        `json:"rejection,omitempty"`
 	Failure             *clientMutationFailure          `json:"failure,omitempty"`
 	AttemptGeneration   uint64                          `json:"attempt_generation"`
-	// SteeringKind carries the steering label (events.SteeringKind*) for a
-	// durable steering mutation, stamped after acceptance by the injection
-	// site (the human-note steer). It is journal metadata, not part of the
-	// dedupe payload: newClientMutationRequest hashes only the wire payload,
-	// so stamping the kind never changes the payload hash and a hub retry of
-	// the inner steer still replays. Reconstruction reads it back onto the
-	// reflected steeringMessage.Kind so the divider survives a restart.
-	// Empty for plain user steering.
+	// SteeringKind is accepted atomically with a typed pending notification.
+	// Reconstruction restores it onto the delivered steering entry.
 	SteeringKind string `json:"steering_kind,omitempty"`
-	// NotesDeliveryPending marks a notes/human/set (or urls/remove) outer
-	// mutation whose storage effect is committed but whose delivery
-	// (the derived steer, or the post-remove emission contract) has not
-	// completed. A retry takes the record over and completes the pending
-	// delivery instead of repeating the applied storage write, so an
-	// intervening save cannot be clobbered. Cleared when the mutation
-	// reaches its applied result.
-	NotesDeliveryPending bool `json:"notes_delivery_pending,omitempty"`
-	// NotesStoredValue carries the post-clamp stored note a delivery-pending
-	// notes/human/set committed, so recovery completes the pending delivery
-	// for that value without re-reading (and possibly rewriting) the live
-	// store. Empty for urls/remove, which has no stored value.
-	NotesStoredValue string `json:"notes_stored_value,omitempty"`
-	// NotesStoredValueSet marks NotesStoredValue as a real committed value,
-	// including an empty one: a clear (empty note) is a tombstone-worthy
-	// write, and without the flag it is indistinguishable from no tombstone
-	// (notesSupersededWriteTombstone must not reject empty values).
-	NotesStoredValueSet bool `json:"notes_stored_value_set,omitempty"`
-	// NotesInnerSteerID names the inner steer id the outer notes/human/set
-	// attempt accepted, recorded before the outer success journals. A later
-	// attempt of the same outer id reuses it instead of allocating a fresh
-	// one, so crash recovery between the inner acceptance and the outer
-	// success cannot accept a second steer. Empty until the first inner
-	// acceptance. Never part of the dedupe payload.
-	NotesInnerSteerID string `json:"notes_inner_steer_id,omitempty"`
-	// NotesAdoptedIntent names another outer id's metadata-committed intent
-	// this attempt's accepted steer delivers. A retry of this outer id sees
-	// the link and finishes the adopted intent's spend instead of
-	// re-accepting the steer, so the accepted-steer/intent-spend transition
-	// is idempotent across a spend failure. Empty unless this attempt
-	// adopted a journal-fault intent. Never part of the dedupe payload.
-	NotesAdoptedIntent string `json:"notes_adopted_intent,omitempty"`
 }
 
 type clientMutationFailure struct {
@@ -177,8 +139,10 @@ type clientMutationInterruptFence struct {
 type clientMutationPendingExecutions map[string]appwire.PendingMutation
 
 type clientMutationSnapshot struct {
-	Version   int    `json:"version"`
-	SessionID string `json:"session_id"`
+	// HumanNote is absent until canonical authority has been established; empty is a saved clear.
+	HumanNote *string `json:"human_note,omitempty"`
+	Version   int     `json:"version"`
+	SessionID string  `json:"session_id"`
 	// ActiveTurnID is the sole durable authority used by retry-safe mutation
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
@@ -1350,6 +1314,10 @@ func validateClientMutationRequest(request clientMutationRequest) error {
 
 func cloneClientMutationSnapshot(src clientMutationSnapshot) clientMutationSnapshot {
 	dst := src
+	if src.HumanNote != nil {
+		note := *src.HumanNote
+		dst.HumanNote = &note
+	}
 	dst.Journal = make(map[string]clientMutationRecord, len(src.Journal))
 	for id, record := range src.Journal {
 		dst.Journal[id] = cloneClientMutationRecord(record)

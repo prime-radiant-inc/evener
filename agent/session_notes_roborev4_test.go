@@ -50,9 +50,7 @@ drain:
 			break drain
 		}
 	}
-	s.mu.Lock()
-	current := s.humanNote
-	s.mu.Unlock()
+	current, _ := s.notesSnapshot()
 	if len(payloads) == 0 {
 		t.Fatalf("no NOTES_UPDATED events emitted for %d saves", writers)
 	}
@@ -62,58 +60,30 @@ drain:
 	}
 }
 
-// TestFailedNoteSaveRetryDelivers verifies G2 (note set): a failed metadata
-// save rolls the store back, and the retry with the fault cleared emits the
-// update and injects the steer.
 func TestFailedNoteSaveRetryDelivers(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	injected := errors.New("injected meta save failure")
-	s.cfg.testOnly.notesAutoSaveFault = func() error { return injected }
-	if _, err := s.SetHumanNote("outer-g2a", "rescued note"); !errors.Is(err, injected) {
-		t.Fatalf("save err = %v, want injected failure", err)
+	s := newDurableHumanNoteSession(t)
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return errors.New("failed rename") }
+	if _, err := s.SetHumanNote("save", "sentinel"); err == nil {
+		t.Fatal("missing fault")
 	}
-	s.mu.Lock()
-	current := s.humanNote
-	n := len(s.steeringQueue)
-	s.mu.Unlock()
-	if current != "" {
-		t.Fatalf("stored note after failed save = %q, want rolled back to empty", current)
+	if note, _ := s.notesSnapshot(); note != "" {
+		t.Fatalf("failed save stored %q", note)
 	}
-	if n != 0 {
-		t.Fatalf("steering queue length = %d, want 0 after failed save", n)
+	if len(s.clientMutations.snapshot().SteeringOrder) != 0 {
+		t.Fatal("failed save queued notification")
 	}
-	// Drain the stream so the retry's emission is observable below.
-drain:
-	for {
-		select {
-		case <-s.Events():
-		default:
-			break drain
-		}
-	}
-	s.cfg.testOnly.notesAutoSaveFault = nil
-	stored, err := s.SetHumanNote("outer-g2a", "rescued note")
+	reloadHumanNoteStore(t, s)
+	response, err := s.SetHumanNote("save", "sentinel")
 	if err != nil {
-		t.Fatalf("retry: %v", err)
+		t.Fatal(err)
 	}
-	if stored != "rescued note" {
-		t.Fatalf("retry stored = %q, want %q", stored, "rescued note")
+	if response.Note != "sentinel" {
+		t.Fatalf("retry = %+v", response)
 	}
-	data, ok := nextNotesEvent(t, s, events.EventNotesUpdated).(events.NotesUpdatedData)
-	if !ok {
-		t.Fatal("retry emitted no NOTES_UPDATED")
+	if len(s.clientMutations.snapshot().SteeringOrder) != 1 {
+		t.Fatal("retry lost or duplicated notification")
 	}
-	if data.HumanNote != "rescued note" {
-		t.Fatalf("retry NOTES_UPDATED = %q, want %q", data.HumanNote, "rescued note")
-	}
-	s.mu.Lock()
-	n = len(s.steeringQueue)
-	s.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("steering queue length = %d, want 1 after retry delivery", n)
-	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
 }
 
 // TestFailedURLRemoveRetryDelivers verifies G2 (url remove): a failed
@@ -157,62 +127,27 @@ drain:
 	}
 }
 
-// TestNotesSteerIDReusedAfterInnerAcceptance verifies G3: a recovery between
-// the inner steer acceptance and the outer completion reuses the same inner
-// ID instead of accepting a second steer, so the session steers exactly once.
-func TestNotesSteerIDReusedAfterInnerAcceptance(t *testing.T) {
-	t.Parallel()
-	s := newNotesToolSession(t)
-	defer s.Close()
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
+func TestNotesSingleIdentitySurvivesAcceptedRestart(t *testing.T) {
+	s := newDurableHumanNoteSession(t)
+	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
+	if _, err := s.SetHumanNote("save", "sentinel"); err == nil {
+		t.Fatal("missing fault")
 	}
-	// First attempt: reserve the outer id directly, then drive the inner
-	// steer and record it as accepted — the state an attempt leaves behind
-	// when it dies between the inner acceptance and the outer success.
-	outerID := "outer-g3"
-	innerBase := outerID + "/note-steer"
-	request, err := newClientMutationRequest(clientMutationMethodNotesHumanSet, outerID, struct {
-		Note string
-	}{Note: "single steer"})
+	reloadHumanNoteStore(t, s)
+	response, err := s.SetHumanNote("save", "sentinel")
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		t.Fatal(err)
 	}
-	lookup, err := s.clientMutations.reservePrepared(request, nil)
-	if err != nil {
-		t.Fatalf("reserve: %v", err)
+	if response.Receipt.ClientMutationID != "save" {
+		t.Fatalf("receipt = %+v", response.Receipt)
 	}
-	if lookup.Lease == nil {
-		t.Fatalf("no owner lease for the simulated first attempt")
+	snapshot := s.clientMutations.snapshot()
+	if len(snapshot.Journal) != 1 || len(snapshot.SteeringOrder) != 1 || snapshot.SteeringOrder[0] != "save" {
+		t.Fatalf("nested or duplicate mutation: %v", snapshot.SteeringOrder)
 	}
-	text := "human updated their whiteboard: single steer"
-	if _, err := s.acceptNotesSteer(innerBase, text); err != nil {
-		t.Fatalf("inner accept: %v", err)
-	}
-	if err := s.markNotesDeliveryPending(outerID, "single steer"); err != nil {
-		t.Fatalf("mark delivery pending: %v", err)
-	}
-	if err := s.markNotesSteerAccepted(outerID, innerBase); err != nil {
-		t.Fatalf("mark steer accepted: %v", err)
-	}
-	lookup.Lease.Release()
-	// Simulate the crash: the owner is gone but the record stands with
-	// delivery pending and the accepted inner id journaled.
-	stored, err := s.SetHumanNote(outerID, "single steer")
-	if err != nil {
-		t.Fatalf("recovery: %v", err)
-	}
-	if stored != "single steer" {
-		t.Fatalf("recovery stored = %q, want %q", stored, "single steer")
-	}
-	s.mu.Lock()
-	n := len(s.steeringQueue)
-	s.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("steering queue length = %d, want exactly 1 (recovery must reuse the inner id)", n)
-	}
-	if rec := s.clientMutations.snapshot().Journal[outerID]; rec.NotesInnerSteerID != innerBase {
-		t.Fatalf("journaled inner steer id = %q, want %q", rec.NotesInnerSteerID, innerBase)
+	rebuilt := clientSteeringFromSnapshot(snapshot)
+	if len(rebuilt) != 1 || rebuilt[0].ClientMutationID != "save" || rebuilt[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("rebuilt steering = %+v", rebuilt)
 	}
 }
 

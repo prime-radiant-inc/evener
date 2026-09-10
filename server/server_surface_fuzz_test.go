@@ -208,7 +208,9 @@ func exerciseAppWireResiduals() {
 
 	s.SetGoalFunc(func(string) (bool, error) { return false, errors.New("goal") })
 	_, _ = s.handleAppGoalSet(ctx, appwire.GoalSetParams{})
-	s.SetNotesHumanSetFunc(func(string, string) (string, error) { return "", errors.New("notes") })
+	s.SetNotesHumanSetFunc(func(string, string) (appwire.NotesHumanSetResponse, error) {
+		return appwire.NotesHumanSetResponse{}, errors.New("notes")
+	})
 	_, _ = s.handleAppNotesHumanSet(ctx, appwire.NotesHumanSetParams{})
 	s.SetUrlsRemoveFunc(func(string, string) (bool, error) { return false, errors.New("urls") })
 	_, _ = s.handleAppUrlsRemove(ctx, appwire.UrlsRemoveParams{})

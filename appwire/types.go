@@ -833,10 +833,11 @@ type NotesHumanSetParams struct {
 	Note               string `json:"note,omitempty"`
 }
 
-// NotesHumanSetResponse reports the stored whiteboard after a human-note set:
-// the post-clamp value every downstream consumer converges on.
+// NotesHumanSetResponse reports the canonical whiteboard and durable acceptance
+// receipt. Acceptance does not imply the model has consumed its notification.
 type NotesHumanSetResponse struct {
-	Note string `json:"note"`
+	Note    string          `json:"note"`
+	Receipt MutationReceipt `json:"receipt"`
 }
 
 // UrlsRemoveParams removes one URL list entry by id. It follows the

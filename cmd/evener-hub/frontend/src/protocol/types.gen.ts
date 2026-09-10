@@ -1232,6 +1232,7 @@ export interface NotesHumanSetParams {
 
 export interface NotesHumanSetResponse {
   note: string;
+  receipt: MutationReceipt;
 }
 
 export interface NotesUpdatedParams {

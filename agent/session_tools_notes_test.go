@@ -128,7 +128,9 @@ func TestNotesReadTool(t *testing.T) {
 	t.Parallel()
 	s := newNotesToolSession(t)
 	ctx := context.Background()
-	s.setHumanNote("human hello")
+	if _, err := s.SetHumanNote("fixture", "human hello"); err != nil {
+		t.Fatal(err)
+	}
 	if _, changed := s.setAgentNote("agent hello"); !changed {
 		t.Fatal("agent set not reported as change")
 	}

@@ -378,9 +378,8 @@ type Server struct {
 	queueWithImagesFunc             func(string, []ImageAttachment) error
 	goalFunc                        func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
-	// callback stores the human's session whiteboard and returns the stored
-	// (post-clamp) value every downstream consumer converges on.
-	notesHumanSetFunc func(outerID, note string) (string, error)
+	// callback returns the full atomic acceptance result, including its receipt.
+	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
 	// urlsRemoveFunc is called by the appwire urls/remove method. The callback
 	// removes one URL list entry by id, reporting whether one was found. The
 	// outer clientMutationId travels with it so the session can journal the
@@ -641,9 +640,9 @@ func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 
 // SetNotesHumanSetFunc sets the function called by the appwire notes/human/set
 // method. The callback stores the human's session whiteboard and returns the
-// stored (post-clamp) value; the session emits EventNotesUpdated after its
+// stored (post-clamp) value and receipt; the session emits EventNotesUpdated after its
 // successful store mutation for the projector to derive the push from.
-func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (string, error)) {
+func (s *Server) SetNotesHumanSetFunc(fn func(outerID, note string) (appwire.NotesHumanSetResponse, error)) {
 	s.mu.Lock()
 	s.notesHumanSetFunc = fn
 	s.mu.Unlock()
