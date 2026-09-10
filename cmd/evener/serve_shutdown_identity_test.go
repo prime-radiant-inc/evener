@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -199,19 +200,10 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 		})
 	}
 
-	clearReachedPreparation := make(chan struct{})
 	waitEntered := make(chan struct{})
 	var waitOnce sync.Once
 	neverExpiry := make(chan time.Time)
 	deps.drainWaitExpiry = func() <-chan time.Time { waitOnce.Do(func() { close(waitEntered) }); return neverExpiry }
-	newClearSession := deps.newClearSession
-	deps.newClearSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
-		sess, err := newClearSession(client, profile, env, cfg)
-		if err == nil {
-			close(clearReachedPreparation)
-		}
-		return sess, err
-	}
 	clearDone := make(chan error, 1)
 	clearStepStart := 0
 	var releaseOnce sync.Once
@@ -233,6 +225,8 @@ func TestServeClearWaitsForOldSessionEndBeforeSwappingIdentity(t *testing.T) {
 		}()
 		select {
 		case <-waitEntered:
+		case err := <-clearDone:
+			return fmt.Errorf("clear completed before old SESSION_END drained: %v", err)
 		case <-t.Context().Done():
 			return t.Context().Err()
 		}
@@ -295,7 +289,10 @@ func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 	sessionEndReceived := make(chan struct{})
 	releaseSessionEnd := make(chan struct{})
-	defer close(releaseSessionEnd)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSessionEnd) }) }
+	defer release()
+	firstDrained := make(chan struct{})
 	var bridgeCount int
 	var bridgeMu sync.Mutex
 	deps.bridge = func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
@@ -309,7 +306,12 @@ func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
 				<-releaseSessionEnd
 			}
 			server.BridgeEvent(s.(*clearIdentityServer).Server, ev, observer)
-		}, onDrained)
+		}, func() {
+			onDrained()
+			if first {
+				close(firstDrained)
+			}
+		})
 	}
 	replacementReady := make(chan struct{})
 	newClearSession := deps.newClearSession
@@ -328,6 +330,10 @@ func TestServeClearAbortsWhenShutdownOwnedSessionDrainExpires(t *testing.T) {
 	clearResult := make(chan error, 1)
 	clearStepStart := 0
 	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		defer func() {
+			release()
+			<-firstDrained
+		}()
 		state.srv.shutdown()
 		select {
 		case <-sessionEndReceived:
