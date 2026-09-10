@@ -41,7 +41,7 @@ func reconstructionFixture(t *testing.T) (dbPath, metaPath, output string) {
 		`INSERT INTO messages VALUES (2,'evener:02wLIRxqmq3AUo6vl2OW37',1,'task sentinel','2026-09-09T01:01:00Z','entry','USER_INPUT','','turn_m1','','','')`,
 		`INSERT INTO messages VALUES (3,'evener:02wLIRxqmq3AUo6vl2OW37',2,'summary sentinel','2026-09-09T01:02:00Z','entry','SUMMARY','','','','','')`,
 		`INSERT INTO messages VALUES (4,'evener:02wLIRxqmq3AUo6vl2OW37',3,'[Tool: read_file]','2026-09-09T01:03:00Z','entry','ASSISTANT','','','model','provider','{"input_tokens":17,"output_tokens":4}')`,
-		`INSERT INTO messages VALUES (5,'evener:02wLIRxqmq3AUo6vl2OW37',4,'[TOOL_RESULTS]','2026-09-09T01:04:00Z','entry','TOOL_RESULTS','','','','','')`,
+		`INSERT INTO messages VALUES (5,'evener:02wLIRxqmq3AUo6vl2OW37',4,'','2026-09-09T01:04:00Z','entry','TOOL_RESULTS','','','','','')`,
 		`INSERT INTO tool_calls VALUES (4,'evener:02wLIRxqmq3AUo6vl2OW37','read_file','call_1','{"file_path":"sentinel.txt"}',0)`,
 		`INSERT INTO tool_result_events VALUES ('evener:02wLIRxqmq3AUo6vl2OW37',3,0,'call_1','tool_result','completed','result sentinel',15,'2026-09-09T01:04:00Z',0)`,
 	}
@@ -323,6 +323,123 @@ func TestReconstructPreservesMultipleCallsInOneRound(t *testing.T) {
 	}
 }
 
+func TestReconstructPreservesLiteralMessageText(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	source.Messages[1].Content = "[USER_INPUT]"
+	source.Messages[3].Content = "[ASSISTANT]"
+	source.Messages = source.Messages[:4]
+	source.Calls, source.Results = nil, nil
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Turn.Message.Text() != "[USER_INPUT]" || entries[2].Turn.Message.Text() != "[ASSISTANT]" {
+		t.Fatal("discarded literal message text")
+	}
+}
+
+func TestReconstructUsesRecordedToolErrorStatus(t *testing.T) {
+	for _, status := range []string{"completed", "error"} {
+		t.Run(status, func(t *testing.T) {
+			source := reconstructionSourceFixture(t)
+			source.Results[0].Status = status
+			const content = "[tool error] literal-sentinel"
+			source.Results[0].Content = content
+			if status == "error" {
+				source.Results[0].Content = "[tool error] " + content
+			}
+			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := entries[3].Turn.Message.Content[0].ToolResult
+			if result == nil || result.IsError != (status == "error") || result.Content != content {
+				t.Fatalf("changed literal tool output or error status: %+v", result)
+			}
+		})
+	}
+}
+
+func TestReconstructRejectsResultsCrossingToolRoundBoundaries(t *testing.T) {
+	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary, schema.TurnSystem, schema.TurnAssistant, schema.TurnModelSwitch, schema.TurnFailure} {
+		t.Run(string(kind), func(t *testing.T) {
+			source := reconstructionSourceFixture(t)
+			tool := source.Messages[4]
+			tool.Ordinal = 5
+			boundary := archivedMessage{ID: 6, Ordinal: 4, SourceType: "entry", Kind: string(kind), Content: "boundary-sentinel", Timestamp: "2026-09-09T01:03:30Z"}
+			source.Messages = append(source.Messages[:4], boundary, tool)
+			_, entries, err := reconstructEntries(source, schema.SessionMeta{}, nil, &reconstructionReport{})
+			if err == nil || entries != nil {
+				t.Fatal("accepted a result from an interrupted tool round")
+			}
+		})
+	}
+}
+
+func TestReconstructPreservesFailureMutationIdentityOnRestore(t *testing.T) {
+	dbPath, metaPath, output := reconstructionFixture(t)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`UPDATE messages SET source_subtype='TURN_FAILURE',source_uuid='turn_m1',content='{"message":"failure-sentinel"}' WHERE id=3`,
+		`DELETE FROM messages WHERE id>=4`, `DELETE FROM tool_calls`, `DELETE FROM tool_result_events`, `UPDATE sessions SET message_count=3`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journalPath := filepath.Join(filepath.Dir(metaPath), "journal.json")
+	const journal = `{"version":1,"session_id":"02wLIRxqmq3AUo6vl2OW37","journal":{"failed-client":{"client_mutation_id":"failed-client","method":"turn/start","payload":{},"payload_hash":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","stable_turn_id":"turn_m1","operation_state":"applied","execution_state":"failureRecording","projection_state":"pending","attempt_generation":1,"failure":{"message":"failure-sentinel"}}},"pending_executions":{"failed-client":{"client_mutation_id":"failed-client","method":"turn/start","input":[{"type":"text","text":"task sentinel"}],"execution_state":"failureRecording","turn_id":"turn_m1","projection_state":"pending"}},"budget_reservations":{},"next_turn_sequence":1,"accepted_turns":1}`
+	mustWrite(t, journalPath, journal)
+	report, err := reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, metaPath, journalPath, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(output, "mutations"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(output, "mutations", "02wLIRxqmq3AUo6vl2OW37.json"), journal)
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta schema.SessionMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = output
+	restored, err := agent.RestoreSessionFromMeta(llm.NewClient(), provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(output), meta, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored.Close()
+	data, err := os.ReadFile(report.TranscriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	var failure schema.Turn
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n"))[1:] {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Turn.Kind == schema.TurnFailure {
+			failures++
+			failure = entry.Turn
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("restore appended a duplicate failure: got %d", failures)
+	}
+	if failure.ClientMutationID != "failed-client" || failure.StableTurnID != "turn_m1" {
+		t.Fatal("lost failure mutation identity")
+	}
+}
+
 func TestReconstructPreservesMetadataProfileAndModel(t *testing.T) {
 	for _, meta := range []schema.SessionMeta{
 		{ProfileID: "profile-sentinel", Model: "configured-model"},
@@ -354,7 +471,7 @@ func TestReconstructPreservesMetadataProfileAndModel(t *testing.T) {
 func TestReconstructRestoresClientMutationIdentity(t *testing.T) {
 	dbPath, meta, output := reconstructionFixture(t)
 	journal := filepath.Join(filepath.Dir(meta), "mutations.json")
-	mustWrite(t, journal, `{"session_id":"02wLIRxqmq3AUo6vl2OW37","journal":{"client-sentinel":{"method":"turn/start","stable_turn_id":"turn_m1"},"interrupt-sentinel":{"method":"turn/interrupt","stable_turn_id":"turn_m1"}}}`)
+	mustWrite(t, journal, reconstructionJournalFixture(t, map[string]string{"client-sentinel": "turn/start", "interrupt-sentinel": "turn/interrupt"}))
 	var out, errOut bytes.Buffer
 	if code := run([]string{"reconstruct", "02wLIRxqmq3AUo6vl2OW37", "--agentsview-db", dbPath, "--meta", meta, "--mutations", journal, "--output-dir", output}, &out, &errOut); code != 0 {
 		t.Fatalf("exit %d: %s", code, &errOut)
@@ -521,13 +638,78 @@ func TestReconstructAttentionInsideToolRoundDoesNotInventAnotherResult(t *testin
 
 func TestReconstructIncludesDrainedSteeringMutationIdentity(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "mutations.json")
-	mustWrite(t, p, `{"session_id":"02wLIRxqmq3AUo6vl2OW37","journal":{"drain-sentinel":{"method":"turn/drainAsSteer","stable_turn_id":"turn_m1"}}}`)
+	mustWrite(t, p, reconstructionJournalFixture(t, map[string]string{"drain-sentinel": "turn/drainAsSteer"}))
 	ids, _, err := reconstructionMutationIDs(p, "02wLIRxqmq3AUo6vl2OW37")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ids["turn_m1"] != "drain-sentinel" {
 		t.Fatal("lost drained input identity")
+	}
+}
+
+func reconstructionJournalFixture(t *testing.T, methods map[string]string) string {
+	t.Helper()
+	records := map[string]any{}
+	for id, method := range methods {
+		records[id] = map[string]any{
+			"client_mutation_id": id, "method": method, "stable_turn_id": "turn_m1",
+			"payload_hash": "retained-payload-hash", "operation_state": "terminal",
+			"execution_state": "completed", "projection_state": "reflected", "attempt_generation": 1,
+		}
+	}
+	data, err := json.Marshal(map[string]any{
+		"version": 1, "session_id": "02wLIRxqmq3AUo6vl2OW37", "journal": records,
+		"pending_executions": map[string]any{}, "budget_reservations": map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestReconstructRejectsInvalidMutationJournalBeforeStaging(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(map[string]any, map[string]any)
+	}{
+		{"missing journal", func(j, _ map[string]any) { delete(j, "journal") }},
+		{"null journal", func(j, _ map[string]any) { j["journal"] = nil }},
+		{"null record", func(j, _ map[string]any) { j["journal"].(map[string]any)["client-sentinel"] = nil }},
+		{"missing record identity", func(_, r map[string]any) { delete(r, "client_mutation_id") }},
+		{"mismatched record identity", func(_, r map[string]any) { r["client_mutation_id"] = "different-client" }},
+		{"missing method", func(_, r map[string]any) { delete(r, "method") }},
+		{"missing execution state", func(_, r map[string]any) { delete(r, "execution_state") }},
+		{"invalid operation state", func(_, r map[string]any) { r["operation_state"] = "invalid" }},
+		{"missing attempt generation", func(_, r map[string]any) { delete(r, "attempt_generation") }},
+		{"invalid payload hash", func(_, r map[string]any) { r["payload"] = map[string]any{} }},
+		{"unknown record field", func(_, r map[string]any) { r["stable_trun_id"] = "turn_m1" }},
+		{"unsupported version", func(j, _ map[string]any) { j["version"] = 2 }},
+		{"missing pending executions", func(j, _ map[string]any) { delete(j, "pending_executions") }},
+		{"missing reservations", func(j, _ map[string]any) { delete(j, "budget_reservations") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath, meta, output := reconstructionFixture(t)
+			var journal map[string]any
+			if err := json.Unmarshal([]byte(reconstructionJournalFixture(t, map[string]string{"client-sentinel": "turn/start"})), &journal); err != nil {
+				t.Fatal(err)
+			}
+			record := journal["journal"].(map[string]any)["client-sentinel"].(map[string]any)
+			tc.damage(journal, record)
+			data, err := json.Marshal(journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalPath := filepath.Join(filepath.Dir(meta), "journal.json")
+			mustWrite(t, journalPath, string(data))
+			var out, errOut bytes.Buffer
+			if code := run([]string{"reconstruct", "02wLIRxqmq3AUo6vl2OW37", "--agentsview-db", dbPath, "--meta", meta, "--mutations", journalPath, "--output-dir", output}, &out, &errOut); code == 0 {
+				t.Fatal("accepted invalid mutation journal")
+			}
+			if _, err := os.Stat(output); !os.IsNotExist(err) {
+				t.Fatalf("published output for invalid journal: %v", err)
+			}
+		})
 	}
 }
 

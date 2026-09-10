@@ -18,6 +18,7 @@ import (
 
 	_ "modernc.org/sqlite" // Register the driver used to open the external archive read-only.
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -281,28 +282,8 @@ func reconstructionMutationIDs(path, sid string) (map[string]string, []byte, err
 	if err != nil {
 		return nil, nil, err
 	}
-	var journal struct {
-		SessionID string `json:"session_id"`
-		Journal   map[string]struct {
-			Method   string `json:"method"`
-			StableID string `json:"stable_turn_id"`
-		} `json:"journal"`
-	}
-	if err := json.Unmarshal(data, &journal); err != nil {
-		return nil, nil, err
-	}
-	if journal.SessionID != sid {
-		return nil, nil, errors.New("mutation journal session identity differs")
-	}
-	for id, entry := range journal.Journal {
-		if entry.StableID != "" && (entry.Method == "turn/start" || entry.Method == "turn/steer" || entry.Method == "turn/promoteQueuedAsSteer" || entry.Method == "turn/drainAsSteer" || entry.Method == "turn/queue") {
-			if previous := ids[entry.StableID]; previous != "" && previous != id {
-				return nil, nil, fmt.Errorf("ambiguous mutation identity for %s", entry.StableID)
-			}
-			ids[entry.StableID] = id
-		}
-	}
-	return ids, data, nil
+	ids, err = agent.ClientMutationInputIdentities(data, sid)
+	return ids, data, err
 }
 
 func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mutations map[string]string, report *reconstructionReport) (transcript.Header, []transcript.Entry, error) {
@@ -388,6 +369,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		return fail(errors.New("archive has tool calls without recoverable result events"))
 	}
 	firstAssistant := true
+	toolRoundOrdinal := -1
 	for _, m := range source.Messages {
 		if m.SourceType == "header" {
 			switch m.Kind {
@@ -413,8 +395,11 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		}
 		turn := schema.Turn{Kind: schema.TurnKind(m.Kind), Timestamp: stamp, StableTurnID: m.StableID, SteeringSource: m.PromptSource}
 		content := m.Content
-		if content == "["+m.Kind+"]" {
-			content = ""
+		switch turn.Kind {
+		case schema.TurnTool, schema.TurnToolResults, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnSteering:
+			// Native history permits these records inside a pending tool round.
+		default:
+			toolRoundOrdinal = m.Ordinal
 		}
 		switch turn.Kind {
 		case schema.TurnUserInput, schema.TurnSteering, schema.TurnEnvironment, schema.TurnCheckpoint, schema.TurnSummary:
@@ -467,14 +452,19 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 				return fail(fmt.Errorf("archived tool-result message at ordinal %d has no recoverable results", m.Ordinal))
 			}
 			for _, r := range results[m.Ordinal] {
+				if r.CallOrdinal != toolRoundOrdinal {
+					return fail(fmt.Errorf("archived tool result at ordinal %d crosses a tool-round boundary", m.Ordinal))
+				}
 				c := callLocations[[2]int{r.CallOrdinal, r.CallIndex}]
 				text := r.Content
 				if text == "" && r.ContentLength > 0 {
 					report.MissingToolOutputs++
 					text = fmt.Sprintf("[Session reconstruction: this tool result body (%d bytes) was not retained by the archive. Its contents are unavailable; verify current state before relying on it.]", r.ContentLength)
 				}
-				isError := r.Status == "error" || strings.HasPrefix(text, "[tool error] ")
-				text = strings.TrimPrefix(text, "[tool error] ")
+				isError := r.Status == "error"
+				if isError {
+					text = strings.TrimPrefix(text, "[tool error] ")
+				}
 				turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: r.ID, Name: c.Name, Content: text, IsError: isError}})
 			}
 		case schema.TurnAttentionResolution:
@@ -485,6 +475,9 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 			continue
 		case schema.TurnSystem, schema.TurnModelSwitch, schema.TurnFailure, schema.TurnHookCompleted:
 			turn.Message.Role = llm.RoleSystem
+			if turn.Kind == schema.TurnFailure {
+				turn.ClientMutationID = mutations[m.StableID]
+			}
 			detail, prefix := content, ""
 			if n := strings.LastIndex(content, "\n{"); n >= 0 {
 				detail, prefix = content[n+1:], content[:n]

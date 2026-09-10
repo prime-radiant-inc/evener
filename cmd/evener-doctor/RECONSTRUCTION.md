@@ -16,7 +16,12 @@ evener doctor reconstruct SESSION_ID \
 
 The mutation journal is optional. When supplied, client input identities are
 restored by matching its stable turn IDs. This preserves retry identity without
-mistaking an interrupt receipt for the original input.
+mistaking an interrupt receipt for the original input. Recorded turn failures
+also retain their matching mutation identity so native restore recognizes them
+instead of appending the same failure again.
+Supplied journals pass the same strict decoding and validation as native session
+restore; incomplete containers, malformed records, and mismatched record IDs
+are refused before staging any files.
 
 The output contains:
 
@@ -33,7 +38,7 @@ forked or delegated histories, incomplete message ordinals, duplicate call IDs
 or positions, gaps in a message's call indices, non-object tool arguments, and
 tool events that cannot be paired with
 their calls and transcript timestamps. Each call must have exactly one result
-event. Timestamps are compared as instants;
+event within its native tool round. Timestamps are compared as instants;
 multiple tool-result messages at the same instant are ambiguous and refused.
 Missing arguments become an empty object. Source schema mismatches fail explicitly.
 
@@ -47,7 +52,10 @@ This reconstructs normalized history. It cannot recreate original transcript
 bytes, media, provider signatures, all private runtime fields, or conversation
 after the archive's last synchronization. AgentsView can deliberately omit tool
 result bodies. Those are represented by explicit unavailable-content notices;
-recorded call IDs and result error status remain attached. Archived reasoning
+recorded call IDs and result error status remain attached. Result status determines
+whether output is an error; successful output keeps literal error-like prefixes.
+Text matching archive placeholders is retained because the archive cannot
+distinguish it from literal conversation text. Archived reasoning
 remains readable text, without invented provider signatures.
 
 Attention resolutions retain their readable evidence in `source-snapshot.json`
