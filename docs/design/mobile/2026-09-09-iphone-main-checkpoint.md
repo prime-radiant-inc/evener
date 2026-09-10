@@ -6,11 +6,11 @@ Landing sequence authorized by Jesse, 9 September 2026. Jesse asked whether to l
 
 ### Live status refresh
 
-The second prerequisite batch is now **11 of 12 merged**. #1073 is open at `2a9619fe7`; CI is green, and its current RoboRev fallback-identity finding is being corrected; the pushed head is under review. #1083 is merged at `b6e74f115`; #1095 is merged at `33b6b7569`. This count covers only #1071–#1079 and #1081–#1083; the later mobile follow-on PRs are inventoried separately below.
+The second prerequisite batch is now **11 of 12 merged**. #1073 is open at `2a9619fe7`; the fallback-identity correction is pushed, local server/projector race tests and vet pass, and current-head CI and RoboRev are pending. #1083 is merged at `b6e74f115`; #1095 is merged at `33b6b7569`. This count covers only #1071–#1079 and #1081–#1083; the later mobile follow-on PRs are inventoried separately below.
 
 | PR | Current head | GitHub status on 10 September | Scope boundary |
 | --- | --- | --- | --- |
-| [#1073](https://github.com/prime-radiant-inc/evener/pull/1073) | `2a9619fe7` | Open; CI green; current RoboRev fallback-identity finding fix in progress | Reasoning lifecycle |
+| [#1073](https://github.com/prime-radiant-inc/evener/pull/1073) | `2a9619fe7` | Open; fallback-identity correction pushed; current-head CI and RoboRev pending | Reasoning lifecycle |
 | [#1083](https://github.com/prime-radiant-inc/evener/pull/1083) | `b6e74f115` | **Merged**; named CI checks green | Browser port allocation |
 | [#1091](https://github.com/prime-radiant-inc/evener/pull/1091) | `f1cd2b22f` | Open; CI green; fresh delegate-aggregate, in-flight-page and signature finding fixes in progress | Portable activity |
 | [#1092](https://github.com/prime-radiant-inc/evener/pull/1092) | `564af8826` | **Merged**; post-merge CI green | SDK package |
