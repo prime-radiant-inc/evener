@@ -311,7 +311,7 @@ func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 		t.Fatalf("accepted subagent fork changed persisted index count from %d to %d", before, after)
 	}
 	if _, ok := past.Find(sessionID); !ok {
-		t.Fatal("parent subagent disappeared after rejected fork")
+		t.Fatal("parent subagent disappeared after accepted fork")
 	}
 }
 
@@ -351,6 +351,24 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 			if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
 				t.Fatalf("status %q with recovery fence advertised fork: %+v", status.Type, params.Capabilities)
 			}
+		}
+	}
+}
+
+func TestHubForkCapabilityFencesOnlyUnconfirmedTarget(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: "uncertain", ThreadID: "uncertain"})
+	roster := hubcore.NewRoster(runDir, &fakeProber{shouldFail: true})
+	roster.Refresh()
+	if roster.OwnershipError() != nil || len(roster.UnconfirmedEntries()) != 1 {
+		t.Fatalf("expected target-specific uncertainty: error=%v entries=%v", roster.OwnershipError(), roster.UnconfirmedEntries())
+	}
+	cfg := hubcore.WebConfig{StateDir: t.TempDir(), Roster: roster}
+	for _, id := range []string{"uncertain", "unrelated"} {
+		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:" + id, Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}}}
+		got := applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+		if want := id == "unrelated"; got != want {
+			t.Fatalf("thread %s fork=%v, want %v", id, got, want)
 		}
 	}
 }

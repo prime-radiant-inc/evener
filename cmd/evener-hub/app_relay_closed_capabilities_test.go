@@ -118,29 +118,35 @@ func TestRelayedCloseFrameOffersForkForAStoppedPersistedDescendant(t *testing.T)
 	}
 }
 
-/*func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
+func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
 	thread := appwire.Thread{ID: "recovering", SessionID: "recovering", Source: "local", Evener: appwire.EvenerThread{Ref: "local:recovering"}}
 	deliveries := make(chan appsource.RelayDelivery, 1)
-	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{}), onCommit: func() {
-		deliveries <- appsource.RelayDelivery{Notification: appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, map[string]any{"status": appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})}, Acknowledge: func() {}}
-	}}
+	handoff := &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})}
 	locks := hubcore.NewResumeLocks()
-	client := relayedNotificationClient(t, thread, deliveries, handoff)
+	client := relayedNotificationClient(t, thread, deliveries, handoff, func(cfg *hubcore.WebConfig) { cfg.ResumeLocks = locks })
+	// The subscription has captured an idle snapshot before recovery begins.
 	finish := locks.BeginForceStop([]string{"recovering"})
 	if err := locks.PersistForceStop([]string{"recovering"}, "recovering"); err != nil {
 		t.Fatal(err)
 	}
 	finish(false)
-	notification := <-client.Notifications()
-	var params appwire.ThreadStatusChangedParams
-	if err := json.Unmarshal(notification.Params, &params); err != nil {
-		t.Fatal(err)
-	}
-	if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
-		t.Fatalf("recovery lock re-enabled fork: %+v", params.Capabilities)
+	deliveries <- appsource.RelayDelivery{Notification: appwire.Notification{
+		Method: appwire.NotifyThreadStatusChanged,
+		Params: testRawJSON(t, appwire.ThreadStatusChangedParams{ThreadID: thread.ID, Ref: thread.Evener.Ref, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}}),
+	}, Acknowledge: func() {}}
+	select {
+	case notification := <-client.Notifications():
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.Capabilities == nil || params.Capabilities.ForkFromTurn {
+			t.Fatalf("recovery lock re-enabled fork: %+v", params.Capabilities)
+		}
+	case <-t.Context().Done():
+		t.Fatal("no close notification after recovery began")
 	}
 }
-*/
 
 // The invariant, stated: what the close frame pushes is what the very next read
 // returns. A reload is what used to heal a session that ended mid-turn, and it
@@ -352,6 +358,7 @@ func relayedNotificationClient(
 	thread appwire.Thread,
 	deliveries chan appsource.RelayDelivery,
 	handoff *recordingRelayHandoff,
+	configure ...func(*hubcore.WebConfig),
 ) *appwire.Client {
 	t.Helper()
 	source := &relaySessionTestSource{
@@ -370,6 +377,9 @@ func relayedNotificationClient(
 		HubStateRoot: t.TempDir(),
 		StateDir:     t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
+	}
+	for _, configureConfig := range configure {
+		configureConfig(&cfg)
 	}
 	appServer := newHubAppServer(cfg, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
