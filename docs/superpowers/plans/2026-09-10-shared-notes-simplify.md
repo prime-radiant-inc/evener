@@ -180,8 +180,8 @@ Require zero exits. Stage named changed files only; commit intent: `refactor(not
 
 **Interfaces:** Review uses this spec, each task's report and complete commit-range diff. Delivery updates the existing PR branch.
 
-- [ ] Review spec compliance and code quality after each implementation task. Run a final whole-branch review for cross-boundary failure/rejoin, notification ownership, draft lifetime, and preserved capability/URL behavior. Resolve load-bearing findings before delivery.
-- [ ] Run the required gates on the integrated tree:
+- [x] Review spec compliance and code quality after each implementation task. Run a final whole-branch review for cross-boundary failure/rejoin, notification ownership, draft lifetime, and preserved capability/URL behavior. Resolve load-bearing findings before delivery.
+- [x] Run the required gates on the integrated tree:
 
 ```sh
 make merge-approval-gate
@@ -191,5 +191,5 @@ make test-web-browser
 
 The merge gate includes lint, build, and `ROOT_FULL=1 make test`. Install dependencies first. Read all output, investigate every failure, and report environmental blocks as incomplete checks.
 
-- [ ] Verify final changed paths, clean worktree, generated output, commit range, and current remote `shared-notes` ref. Fetch only that ref with `--no-tags`. If it moved, block overlapping changes and explicitly integrate after ref/branch preflight rather than force-pushing. With unchanged ancestry, push `HEAD:shared-notes` to origin normally.
-- [ ] Report commits, PR #1070, backend/frontend behavior delivered, gate results, review disposition, dependency warning, and retained review-worktree cleanup limitation. Do not claim merge approval or merge the PR.
+- [x] Verify final changed paths, clean worktree, generated output, commit range, and current remote `shared-notes` ref. Fetch only that ref with `--no-tags`. If it moved, block overlapping changes and explicitly integrate after ref/branch preflight rather than force-pushing. With unchanged ancestry, push `HEAD:shared-notes` to origin normally.
+- [x] Report commits, PR #1070, backend/frontend behavior delivered, gate results, review disposition, dependency warning, and retained review-worktree cleanup limitation. Do not claim merge approval or merge the PR.
