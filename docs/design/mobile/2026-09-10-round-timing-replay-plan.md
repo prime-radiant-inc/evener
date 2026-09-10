@@ -1,6 +1,6 @@
 # Durable round timing replay proposal
 
-Status: proceeding as a separate correctness PR under Jesse's instruction to push the checkpoint through and skip separate approval when current-head CI and RoboRev pass. Other checkpoint PRs continue independently.
+Status: implemented and published as [PR #1100](https://github.com/prime-radiant-inc/evener/pull/1100), stacked on steering ownership #1099. Real live/full/indexed comparisons now include all controlled-session items and assert timing presence in both inline and delayed paths. Failing filesystem and actual compaction-fold regressions pass. Review identified provider-context handling that has been corrected in repair, delegate snapshots, token/recent-history accounting and evaluation requests; agent continuation and elicitation follow-up is under final local verification. The [paired native restart](assets/2026-09-10-paired-restart-cf88.json) verifies persisted conversation continuity on its recorded artifacts while separately disclosing omitted startup diagnostics. Final current-head CI/RoboRev and merged-artifact qualification remain required.
 
 ## Observed defect
 
