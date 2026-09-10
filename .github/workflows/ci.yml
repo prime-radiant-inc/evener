@@ -161,7 +161,7 @@ jobs:
 
   static:
     if: always()
-    needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package]
+    needs: [static-build, lint-golangci, lint-repository, fuzz-checks, api-package, native]
     runs-on: ubuntu-latest
     steps:
       - name: Require every static lane
