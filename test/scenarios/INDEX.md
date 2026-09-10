@@ -194,20 +194,20 @@ the Past index's Recent list.
 ## Shared notes
 
 - `web-notes-human-interrupts.md` — a human note set mid-turn interrupts
-  the model loop through one atomic mutation ID and typed notification;
-  capability gating, retry deduplication, provider consumption and the
-  `System steered: Human note` divider are checked. Notes shares drafts
-  across editors, saves after a 10,000 ms dirty blur, cancels on refocus,
-  and preserves failed/newer drafts. Fresh reads preserve exact canonical
-  text, including clamp-ending space and clear; history bounds per-round
-  `NOTES_CONTEXT` growth. Manual guidance, not an execution record.
+  the model loop (one atomic mutation ID and typed pending notification,
+  `shared-notes` capability pre-flight gate), the transcript divider renders
+  the wire-kind label `System steered: Human note`, and Notes shares drafts
+  with 10,000 ms dirty-blur saving, refocus cancellation and panel lifetime
+  preservation, and a fresh `thread/read` carries it (the Task 7 I1
+  live-envelope pin); history check bounds per-round `NOTES_CONTEXT`
+  growth (Task 5 M3).
 - `web-notes-url-add-remove.md` — agent `urls_add` links render as
-  per-id `shared-notes-url-<id>` rows in Notes with visible destinations;
-  human `urls/remove` deletes by id with the `evener/urls/updated` push
-  as authority (empty response by design). Removal converges without
-  reload and on fresh rejoin; wire/DOM IDs pair, dedup preserves identity,
-  and provider records prove current URL context. The model-choice variant
-  requires an explicit live-provider run; this entry records no execution.
+  per-id `shared-notes-url-<id>` rows in Notes (explicit live-provider
+  model-choice setup), human `urls/remove` deletes by id
+  with the `evener/urls/updated` push as authority (empty response by
+  design), removal converges without reload, the row/button testid
+  pairing answers the bare-id discoverability question (Task 8 minor 5),
+  and the `Link:` context-block shape is pinned.
 
 ## `ask_user` (interactive questions)
 
