@@ -169,7 +169,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	if steering.StableTurnID != steerStableTurnID {
 		t.Fatalf("steering StableTurnID = %q, want reserved mutation id %q", steering.StableTurnID, steerStableTurnID)
 	}
-	if steering.OwningTurnID != "" {
-		t.Fatalf("carrier steering OwningTurnID = %q, want empty because carrier owns a new logical turn", steering.OwningTurnID)
+	if steering.OwningTurnID != steerStableTurnID {
+		t.Fatalf("carrier steering OwningTurnID = %q, want active carrier turn %q", steering.OwningTurnID, steerStableTurnID)
 	}
 }

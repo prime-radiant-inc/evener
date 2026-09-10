@@ -906,7 +906,9 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
 			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
-			record.OwningTurnID = entry.Turn.OwningTurnID
+			if entry.Turn.Kind == schema.TurnSteering {
+				record.OwningTurnID = entry.Turn.OwningTurnID
+			}
 			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			// Logical-group bookkeeping runs BEFORE projection: the entry is
 			// projected under its group's turn id (the opener's), exactly
@@ -1790,31 +1792,28 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	if n == 0 {
 		return "", calls
 	}
-	turnID := ""
-	open := false
-	for i := 0; i < n; i++ {
+	tail := index.recordAt(n - 1)
+	turnID := tail.TurnID
+	if tail.OwningTurnID != "" {
+		turnID = tail.OwningTurnID
+	}
+	open := groupRoleFor(tail.TurnKind, tail.GoalContinuation) != groupStandalone
+	for i := n - 1; i >= 0; i-- {
 		record := index.recordAt(i)
-		prevKind := schema.TurnKind("")
-		if i > 0 {
-			prevKind = index.recordAt(i - 1).TurnKind
-		}
-		starts := i == 0 || recordStartsGroup(record.TurnKind, prevKind, record.GoalContinuation, record.OwningTurnID, turnID)
-		if starts {
-			turnID = record.TurnID
-			if record.OwningTurnID != "" {
-				turnID = record.OwningTurnID
-			}
-			calls = map[string]bool{}
-			open = groupRoleFor(record.TurnKind, record.GoalContinuation) != groupStandalone
-		} else if !open {
-			continue
-		}
 		for _, id := range record.GroupCalls {
 			calls[id] = true
 		}
-	}
-	if turnID == "" && n > 0 {
-		turnID = persistedTurnID(recordAtKindTurn(index, n-1), index.recordAt(n-1).Index)
+		if i == 0 || !open {
+			break
+		}
+		prevPrevKind := schema.TurnKind("")
+		if i > 1 {
+			prevPrevKind = index.recordAt(i - 2).TurnKind
+		}
+		prev := index.recordAt(i - 1)
+		if recordStartsGroup(prev.TurnKind, prevPrevKind, prev.GoalContinuation, prev.OwningTurnID, turnID) {
+			break
+		}
 	}
 	return turnID, calls
 }
