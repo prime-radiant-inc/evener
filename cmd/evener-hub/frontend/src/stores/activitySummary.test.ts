@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { ActivityTree } from "../protocol/activityData";
 import { ClientNotReadyError } from "../protocol/errors";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
@@ -6,6 +7,118 @@ import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activ
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 describe("activitySummaryStore", () => {
+  test("stale continuation counts cannot settle a newer root request", () => {
+    resetActivitySummaryStoreForTests();
+    const continuationGeneration = activitySummaryStore.getState().beginRootFetch("ref_a", 1);
+    activitySummaryStore.getState().publishRootFetch("ref_a", continuationGeneration as number, {
+      active: 1,
+      failed: 0,
+      completed: 0,
+      complete: false,
+    });
+    const newerRoot = activitySummaryStore.getState().beginRootFetch("ref_a", 2, true);
+    activitySummaryStore.getState().publishContinuationCounts("ref_a", continuationGeneration as number, {
+      active: 9,
+      failed: 0,
+      completed: 0,
+      complete: false,
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      requestID: newerRoot,
+      loading: true,
+      counts: { active: 1, failed: 0, completed: 0, complete: false },
+    });
+  });
+
+  test("a root completion already in flight cannot overwrite continuation counts", async () => {
+    resetActivitySummaryStoreForTests();
+    activityPanelStore.getState().resetForTests();
+    let resolveRoot!: (value: unknown) => void;
+    const root = new Promise<unknown>((resolve) => {
+      resolveRoot = resolve;
+    });
+    let resolveQueued!: (value: unknown) => void;
+    let queuedStarted!: () => void;
+    const queued = new Promise<void>((resolve) => {
+      queuedStarted = resolve;
+    });
+    const initialRoot: ActivityTree = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    };
+    const initialSummaryRequest = activitySummaryStore.getState().beginRootFetch("ref_a", 0);
+    activitySummaryStore.getState().publishRootFetch("ref_a", initialSummaryRequest as number, initialRoot.root.counts);
+    const initialPanelRequest = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", initialPanelRequest, { kind: "ready", tree: initialRoot });
+    activitySummaryStore.getState().refreshRoot("ref_a", 1, async () => root, undefined, true);
+    activitySummaryStore.getState().refreshRoot("ref_a", 2, () => {
+      queuedStarted();
+      return new Promise<unknown>((resolve) => {
+        resolveQueued = resolve;
+      });
+    });
+
+    activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    const continuationCounts = { active: 9, failed: 0, completed: 0, complete: true };
+    const settled = new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (entry && !entry.loading) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    const continuationSummaryRequest = activitySummaryStore.getState().entries.get("ref_a")?.requestID;
+    activitySummaryStore
+      .getState()
+      .publishContinuationCounts("ref_a", continuationSummaryRequest as number, continuationCounts);
+
+    resolveRoot({
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_a",
+        ref: "ref_a",
+        label: "A",
+        aggregate: "running",
+        counts: { active: 1, failed: 0, completed: 0, complete: true },
+        entries: [],
+        branch: {},
+      },
+    });
+    await settled;
+
+    expect(activitySummaryStore.getState().entries.get("ref_a")?.counts).toEqual(continuationCounts);
+    await queued;
+    resolveQueued({
+      revision: 3,
+      root: { ...initialRoot.root, counts: { active: 7, failed: 0, completed: 0, complete: true } },
+    });
+    await new Promise<void>((resolve) => {
+      const unsubscribe = activitySummaryStore.subscribe((state) => {
+        const entry = state.entries.get("ref_a");
+        if (entry && !entry.loading) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+    expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
+      loading: false,
+      counts: { active: 7 },
+    });
+  });
+
   test("uses the established-attempt gate and complete-count badge data", () => {
     resetActivitySummaryStoreForTests();
     expect(activitySummaryStore.getState().entries.has("ref_a")).toBe(false);

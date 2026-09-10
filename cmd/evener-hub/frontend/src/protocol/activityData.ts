@@ -9,6 +9,12 @@ export interface ActivityCounts {
   complete: boolean;
 }
 
+export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
+  if (outcome === "failure" || outcome === "failed" || outcome === "exhausted") return true;
+  const normalized = status?.trim().toLowerCase();
+  return normalized === "failed" || normalized === "exhausted" || normalized === "error";
+}
+
 export interface ActivityBranchState {
   error?: string;
   truncated?: boolean;
@@ -104,6 +110,7 @@ export interface ActivityDelegate {
   parentWatchGranted?: boolean;
   worktree?: ActivityWorktree;
   usage?: ActivityUsage;
+  turns?: ActivityJob[];
   child?: ActivitySessionNode;
   branch: ActivityBranchState;
 }
@@ -181,7 +188,7 @@ function readBoolean(object: Record<string, unknown>, key: string): boolean | nu
 
 function readInteger(object: Record<string, unknown>, key: string): number | null {
   const value = object[key];
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 }
 
 function readNonNegativeInteger(object: Record<string, unknown>, key: string): number | null {
@@ -222,8 +229,8 @@ function parseCounts(raw: unknown): ActivityCounts | null {
 function parseUsage(raw: unknown): ActivityUsage | null | undefined {
   if (typeof raw === "undefined") return undefined;
   if (!isPlainObject(raw)) return null;
-  const inputTokens = readNonNegativeInteger(raw, "inputTokens");
-  const outputTokens = readNonNegativeInteger(raw, "outputTokens");
+  const inputTokens = typeof raw.inputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "inputTokens");
+  const outputTokens = typeof raw.outputTokens === "undefined" ? 0 : readNonNegativeInteger(raw, "outputTokens");
   if (inputTokens === null || outputTokens === null) return null;
   const usage: ActivityUsage = { inputTokens, outputTokens };
   const cacheReadTokens = readNonNegativeInteger(raw, "cacheReadTokens");
@@ -279,7 +286,7 @@ function copyOptionalInteger(
     target[key] = null;
     return true;
   }
-  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
   target[key] = value;
   return true;
 }
@@ -342,7 +349,7 @@ function parseJob(raw: unknown): ActivityJob | null {
   if (typeof raw.reason !== "undefined" && typeof raw.reason !== "string") return null;
   if (typeof raw.endedAt !== "undefined" && typeof raw.endedAt !== "string") return null;
   if (typeof raw.lastOutputAt !== "undefined" && typeof raw.lastOutputAt !== "string") return null;
-  if (typeof exitCode !== "undefined" && !Number.isInteger(exitCode)) return null;
+  if (typeof exitCode !== "undefined" && !Number.isSafeInteger(exitCode)) return null;
   if (outcome) job.outcome = outcome;
   if (transcriptRef) job.transcriptRef = transcriptRef;
   if (parentDelegateId) job.parentDelegateId = parentDelegateId;
@@ -441,6 +448,13 @@ function parseDelegate(raw: unknown, depth: number): ParseResult<ActivityDelegat
   }
   for (const field of ["runningForMs", "quietForMs", "durationMs"]) {
     if (!copyOptionalInteger(raw, target, field, true)) return { value: null, incomplete: true };
+  }
+  if (Array.isArray(raw.turns)) {
+    const turns = raw.turns.map(parseJob);
+    if (turns.some((turn) => turn === null)) return { value: null, incomplete: true };
+    delegate.turns = turns as ActivityJob[];
+  } else if (typeof raw.turns !== "undefined" && raw.turns !== null) {
+    return { value: null, incomplete: true };
   }
   if (Object.hasOwn(raw, "message")) delegate.message = raw.message;
   if (Object.hasOwn(raw, "structuredResult")) delegate.structuredResult = raw.structuredResult;

@@ -1,27 +1,72 @@
-# Mobile checkpoint status
+# iPhone project status
 
-**Updated 10 September 2026.** The current integration line includes merged reasoning lifecycle #1073 and steering identity #1099. The full combined canonical gate passed at `3dcde7559ff21ce273ba94d57d12e9528f8b9dac`; its evidence is `/tmp/evener-combined-3dcde-merge-gate.log`. That gate includes 720 native tests, 686 shared tests, and the installed API package check. The older backend-only gate at `f8f0d6b29` is superseded.
+Status snapshot: 10 September 2026, 15:01 UTC. This is a checkpoint toward iPhone v1. It is not a claim that all supported workflows or a fresh TestFlight release are qualified.
 
-## Review and integration
+## Where the project stands
 
-| Area | Current state | Qualification needed |
+The landing batch has **22 merged PRs and five open PRs**. Main is `2664cc881d128d8b0c4a0af96683126e70d13cd7`. The independently installed TypeScript SDK is on main. The native application remains in #1096 until its current review finishes.
+
+The complete combined candidate `8081b4e635f54807b6ad186738e2870e8186275f` passes `make merge-approval-gate`: backend and web modules, lint, generated-output freshness, secret scan, 720 native tests, 686 shared tests, native TypeScript, and the independently installed SDK qualification. The clean backend pair built from that candidate also passes the actual owned-hub restart and app cold-launch comparison. See the [evidence map](2026-09-10-checkpoint.md) and [final restart receipt](assets/2026-09-10-paired-restart-8081.json).
+
+The signed Release simulator app remains the artifact built from `87e2b876e`. Its native and shared runtime inputs are unchanged at native candidate `ec0b6d3af`. The TestFlight workflow will build its own signed device artifact from main after the remaining PRs land.
+
+## Current review queue
+
+| PR | Current head | Verified checks and remaining step |
 | --- | --- | --- |
-| Activity (#1091) | Current head `279f32e7a` | New CI and review remain pending; the Medium generation-race and Low failure-glyph findings are still open on this head. |
-| Native checkpoint (#1096) | Head `5da0ef15f`; CI green | Current review remains pending. |
-| Environment (#1098) | Root finished the public rollback regressions | Broad tests and lint are running; final integration review remains open. |
-| Steering (#1099) | Merged | Included in the combined gate and post-merge review. |
-| Round timing (#1100) | Head `789c932be`; CI green | Current review remains pending. |
-| TestFlight (#1039) | Head `244b980af`; stacked on native | RoboRev is clean; current CI is still required. |
-| Diagnostic follow-up (#1101) | Merged at `2664cc881`; current CI and RoboRev are green | One initial CI identity-test failure remains unreproduced. It is neither fixed by that rerun nor a basis for a general gate claim. |
+| [#1091: portable activity](https://github.com/prime-radiant-inc/evener/pull/1091) | `279f32e7a` | CI green; current RoboRev review pending. Continuation settlement and structured failure rendering corrections are included. |
+| [#1096: native checkpoint](https://github.com/prime-radiant-inc/evener/pull/1096) | `ec0b6d3af` | CI green; current RoboRev review pending. Includes final activity fixes and current main. |
+| [#1098: environment recovery](https://github.com/prime-radiant-inc/evener/pull/1098) | `722493f2a` | CI green; current RoboRev review pending. Restore publication, reserved identity, hook durability, rollback errors and diagnostic classification are covered. |
+| [#1100: durable round timings](https://github.com/prime-radiant-inc/evener/pull/1100) | `9362ae189` | CI green; current RoboRev review pending. Timing metadata is excluded from search and prior-conversation counts. |
+| [#1039: TestFlight automation](https://github.com/prime-radiant-inc/evener/pull/1039) | `244b980af` | Clean RoboRev review at this head. Stacked on the native branch; no CI run at this head. Retarget to main, refresh, and obtain current CI/review before merge. |
 
-The current review inventory is a release checkpoint, not a release declaration. A current-head review and its relevant CI evidence must be read before merging each remaining item.
+The merge rule is current-head CI **and an actual clean current-head RoboRev verdict**. A successful review status alone does not establish a clean verdict. Jesse authorized merging without another human approval when both conditions hold.
 
-## Durable simulator evidence
+## What is implemented, and what is qualified
 
-The [paired restart receipt](assets/2026-09-10-paired-restart-d983.json) records a real backend restart followed by an app cold launch. It preserves 31 canonical persisted conversation items, seven draft tables, and 11 reader-preservation entries. The owned reader changed during the journey, so the receipt does not claim that every table remained unchanged. It is evidence for the recorded restart path and does not qualify a physical iPhone, performance, or TestFlight archive.
+The native candidate contains saved hub connections, project-organized sessions, automatic list paging, conversation reading and live updates, durable drafts, send/queue/steer/stop, questions and approvals, session management, and provider/plugin/settings screens. Source presence and deterministic tests establish implementation coverage; they do not establish that every workflow has passed on a physical iPhone.
 
-## Apple delivery state
+The simulator evidence covers the main conversation controls, question/approval slices from earlier journeys, reconnect, draft retention, and the final durable restart/cold-launch comparison. The latest comparison preserves 32 saved canonical items, all seven draft tables, eleven reader positions outside the current fixture, the interrupted turn, and the visible unsent draft. The provider request count remains 41.
 
-Apple has internal builds 1, 2, and 3; there is no fresh build 4. Build 3 is valid and internally available. Drew is registered in the external group, but Apple reports `NOT_INVITED`, so external access is unavailable. The beta review contact, demo, and notes fields are not filled. A fresh current-source archive, upload, processing receipt, internal availability, physical installation/update, and smoke result remain pending.
+Jesse's reported quality problems remain the product acceptance priorities: sessions must be easy to find by project, scrolling must continue loading, and sessions must open promptly. Project grouping and automatic loading are implemented; representative performance and full device acceptance remain open.
 
-Jesse paused iPad implementation/qualification and dedicated accessibility work. Android and voice remain deferred. Those areas are preserved for later work and do not block this iPhone-only v1 checkpoint.
+## Distribution
+
+Apple has valid internally available builds 1, 2 and 3. They are historical artifacts; there is no current-source build 4 yet. The next delivery step is a fresh main-based archive, upload, processing check and verified internal-group availability, followed by physical installation/update and smoke.
+
+Drew's external tester record exists, but Apple reports `NOT_INVITED`. External access is not complete. Beta review contact and demo information remain unfilled; the browser session requires fresh sign-in. Internal delivery can proceed with the existing API credentials independently of that external-review follow-up.
+
+## Merged checkpoint work
+
+| PR | Landed change |
+| --- | --- |
+| [#1066](https://github.com/prime-radiant-inc/evener/pull/1066) | fix(hub): bind device authorization polls to their provider |
+| [#1067](https://github.com/prime-radiant-inc/evener/pull/1067) | fix(hub): report actual stored credential removal on logout |
+| [#1068](https://github.com/prime-radiant-inc/evener/pull/1068) | fix(hub): return an empty array when no sessions are listed |
+| [#1069](https://github.com/prime-radiant-inc/evener/pull/1069) | fix(hub): preserve restart entrypoints across directory aliases |
+| [#1071](https://github.com/prime-radiant-inc/evener/pull/1071) | fix(server): include build version in AppWire initialization |
+| [#1072](https://github.com/prime-radiant-inc/evener/pull/1072) | fix(hub): return an empty array for subagent previews |
+| [#1073](https://github.com/prime-radiant-inc/evener/pull/1073) | fix(appwire): complete reasoning items at turn boundaries |
+| [#1074](https://github.com/prime-radiant-inc/evener/pull/1074) | fix(appwire): omit absent images from steering notifications |
+| [#1075](https://github.com/prime-radiant-inc/evener/pull/1075) | fix(transcript): preserve goal continuation identity on reload |
+| [#1076](https://github.com/prime-radiant-inc/evener/pull/1076) | fix(client): validate and publish successful AppWire handshakes |
+| [#1077](https://github.com/prime-radiant-inc/evener/pull/1077) | refactor(client): share question answer formatting with native consumers |
+| [#1078](https://github.com/prime-radiant-inc/evener/pull/1078) | perf(hub): skip persisted task and delegate detail in session lists |
+| [#1079](https://github.com/prime-radiant-inc/evener/pull/1079) | test(web): await provider dialog import before asserting its state |
+| [#1081](https://github.com/prime-radiant-inc/evener/pull/1081) | fix(daemon): retry interrupted Linux process-exit probes |
+| [#1082](https://github.com/prime-radiant-inc/evener/pull/1082) | test(appwire): prevent full-queue observation from blocking admission |
+| [#1083](https://github.com/prime-radiant-inc/evener/pull/1083) | fix(web): let Vite own browser guard port allocation |
+| [#1092](https://github.com/prime-radiant-inc/evener/pull/1092) | feat(client): package the standalone TypeScript AppWire SDK |
+| [#1094](https://github.com/prime-radiant-inc/evener/pull/1094) | refactor(web): share pure composer and catalog helpers |
+| [#1095](https://github.com/prime-radiant-inc/evener/pull/1095) | fix(keybindings): reject shortcuts with no key |
+| [#1097](https://github.com/prime-radiant-inc/evener/pull/1097) | fix(transcript): preserve interrupted turns after reload |
+| [#1099](https://github.com/prime-radiant-inc/evener/pull/1099) | fix(appwire): preserve steering ownership through transcript replay |
+| [#1101](https://github.com/prime-radiant-inc/evener/pull/1101) | test(web): retain Vite startup diagnostics in concurrent guard failures |
+
+## Remaining scope and known limits
+
+Follow the [iPhone v1 remaining-work plan](ios-v1-remaining.md): deliver the current checkpoint, establish the daily loop, qualify the implemented functionality, then improve measured performance and interaction quality.
+
+The initial #1101 CI run failed a stable-active-turn assertion once. More than 200 focused runs, the complete local root race gate, and the single CI rerun passed; the failure did not reproduce. #1101 itself adds browser-startup diagnostics and does not claim to fix that identity failure. Preserve the failed-run evidence if it recurs.
+
+iPad and dedicated accessibility work are paused. Android and voice are deferred. Higher-level web state extraction into the SDK follows this checkpoint as a separate architectural task.
