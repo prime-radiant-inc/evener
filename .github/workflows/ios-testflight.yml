@@ -147,6 +147,10 @@ jobs:
           profile_plist="$RUNNER_TEMP/evener-profile.plist"
           security cms -D -i "$profile" > "$profile_plist"
           profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          # Xcode 16 and later store downloaded profiles here; Xcode still
+          # reads the legacy MobileDevice location for profiles downloaded by
+          # older releases (Apple Xcode 16 release notes, issue 54347894):
+          # https://developer.apple.com/documentation/xcode-release-notes/xcode-16-release-notes
           profile_path="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$profile_uuid.mobileprovision"
           if test -e "$profile_path"; then
             cmp -s "$profile" "$profile_path" || { echo "A different profile already occupies this UUID" >&2; exit 1; }
