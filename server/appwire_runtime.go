@@ -522,80 +522,74 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	})
 }
 
-// flushDeferredTerminalNotifications publishes the status side of a terminal
-// event whose old turn raced a durable carrier. The event itself was already
-// projected, so replaying it would duplicate turn/item completion frames.
-func (s *Server) flushDeferredTerminalNotifications() {
+// finishProcessing clears the processing identity and publishes any deferred
+// terminal status in one projection commit. A queued carrier therefore either
+// discards the prior terminal state or arrives after its publication. Completed
+// turn and item events are not replayed.
+func (s *Server) finishProcessing() {
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.Lock()
-		return s.flushDeferredTerminalNotificationsLocked()
-	})
-}
-
-// flushDeferredTerminalNotificationsLocked publishes deferred status frames
-// while the caller holds the server mutex. It releases that mutex before
-// recording notifications, but remains inside the projection commit gate so a
-// stable carrier cannot interleave between cleanup and this publication.
-func (s *Server) flushDeferredTerminalNotificationsLocked() []appserver.SequencedNotification {
-	if s.appPendingStableTurnID != "" || len(s.appDeferredTerminalNotifications) == 0 {
+		s.setProcessingLocked(false)
+		if s.appPendingStableTurnID != "" || len(s.appDeferredTerminalNotifications) == 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		pending := s.appDeferredTerminalNotifications
+		s.appDeferredTerminalNotifications = nil
+		currentThreadID := s.appThreadID
+		if currentThreadID == "" {
+			currentThreadID = s.status.SessionID
+		}
+		currentRef := s.appRef
+		if currentRef == "" && currentThreadID != "" {
+			sourceID := s.appSourceID
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			currentRef = appwire.Ref{SourceID: sourceID, ThreadID: currentThreadID}.String()
+		}
+		currentTurns := s.appTurns
+		retained := pending[:0]
+		for _, item := range pending {
+			if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {
+				retained = append(retained, item)
+			}
+		}
+		pending = retained
+		for _, item := range pending {
+			if item.method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
+				s.status.State = params.Status.Type
+			}
+		}
 		s.mu.Unlock()
-		return nil
-	}
-	pending := s.appDeferredTerminalNotifications
-	s.appDeferredTerminalNotifications = nil
-	currentThreadID := s.appThreadID
-	if currentThreadID == "" {
-		currentThreadID = s.status.SessionID
-	}
-	currentRef := s.appRef
-	if currentRef == "" && currentThreadID != "" {
-		sourceID := s.appSourceID
-		if sourceID == "" {
-			sourceID = "local"
-		}
-		currentRef = appwire.Ref{SourceID: sourceID, ThreadID: currentThreadID}.String()
-	}
-	currentTurns := s.appTurns
-	retained := pending[:0]
-	for _, item := range pending {
-		if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {
-			retained = append(retained, item)
-		}
-	}
-	pending = retained
-	for _, item := range pending {
-		if item.method != appwire.NotifyThreadStatusChanged {
-			continue
-		}
-		if params, ok := item.params.(appwire.ThreadStatusChangedParams); ok {
-			s.status.State = params.Status.Type
-		}
-	}
-	s.mu.Unlock()
 
-	committed := make([]appserver.SequencedNotification, 0, len(pending))
-	for _, item := range pending {
-		params := s.stampFailureCountOnStatusChange(item.method, item.params)
-		params = s.stampCapabilitiesOnStatusChange(item.method, params)
-		params = stampAppNotificationTarget(params, item.threadID, item.ref)
-		notificationTarget := item.threadID
-		s.mu.RLock()
-		isRoot := item.threadID == s.appThreadID
-		s.mu.RUnlock()
-		if isRoot {
-			notificationTarget = s.appNotificationTarget(item.threadID)
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := s.stampFailureCountOnStatusChange(item.method, item.params)
+			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = stampAppNotificationTarget(params, item.threadID, item.ref)
+			notificationTarget := item.threadID
+			s.mu.RLock()
+			isRoot := item.threadID == s.appThreadID
+			s.mu.RUnlock()
+			if isRoot {
+				notificationTarget = s.appNotificationTarget(item.threadID)
+			}
+			prepared := false
+			if item.snapshot != nil {
+				params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
+			}
+			record := s.appNotifier.Record(notificationTarget, item.method, params)
+			if !prepared && item.snapshot != nil {
+				item.snapshot.Apply([]appserver.SequencedNotification{record})
+			}
+			committed = append(committed, record)
 		}
-		prepared := false
-		if item.snapshot != nil {
-			params, prepared = item.snapshot.applyLifecycleAndReturn(item.method, params)
-		}
-		record := s.appNotifier.Record(notificationTarget, item.method, params)
-		if !prepared && item.snapshot != nil {
-			item.snapshot.Apply([]appserver.SequencedNotification{record})
-		}
-		committed = append(committed, record)
-	}
-	return committed
+		return committed
+	})
 }
 
 func eventStableTurnID(event events.SessionEvent) string {

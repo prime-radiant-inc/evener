@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,6 +241,66 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 					return
 				case <-deadline:
 					t.Fatalf("status-only identity received no deferred %s notification", tc.state)
+				}
+			}
+		})
+	}
+}
+
+func TestServerAppWireConcurrentCarrierAndCleanupKeepTerminalOrdering(t *testing.T) {
+	for _, state := range []string{"idle", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			for attempt := range 1000 {
+				const threadID = "concurrent-carrier"
+				srv := NewServer(ServerConfig{})
+				srv.SetAppIdentity("local", threadID)
+				srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: threadID, Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
+				srv.SetProcessingTurn("new-turn")
+				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{State: state}}, nil)
+				cursor := srv.appNotifier.CurrentSequence()
+				start := make(chan struct{})
+				var finished sync.WaitGroup
+				finished.Add(2)
+				go func() {
+					defer finished.Done()
+					<-start
+					srv.SetProcessing(false)
+				}()
+				go func() {
+					defer finished.Done()
+					<-start
+					srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTurnStarted, SessionID: threadID, Data: events.TurnStartedData{TurnID: "new-turn"}})
+				}()
+				close(start)
+				finished.Wait()
+				sawCarrier := false
+				for _, record := range srv.AppNotificationsAfter(cursor, threadID) {
+					notification := record.Notification
+					if notification.Method == appwire.NotifyTurnStarted {
+						var params appwire.TurnStartedParams
+						if err := json.Unmarshal(notification.Params, &params); err != nil {
+							t.Fatalf("decode turn: %v", err)
+						}
+						sawCarrier = params.Turn.ID == "new-turn"
+					}
+					if !sawCarrier {
+						continue
+					}
+					if notification.Method == appwire.NotifyThreadClosed {
+						t.Fatalf("attempt %d: prior terminal closed the new carrier", attempt)
+					}
+					if notification.Method == appwire.NotifyThreadStatusChanged {
+						var params appwire.ThreadStatusChangedParams
+						if err := json.Unmarshal(notification.Params, &params); err != nil {
+							t.Fatalf("decode status: %v", err)
+						}
+						if params.Status.Type == appwire.ThreadStatusIdle || params.Status.Type == appwire.ThreadStatusClosed {
+							t.Fatalf("attempt %d: prior terminal status %q followed the new carrier", attempt, params.Status.Type)
+						}
+					}
+				}
+				if !sawCarrier {
+					t.Fatal("new carrier was not projected")
 				}
 			}
 		})

@@ -800,15 +800,7 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 // SetProcessingTurn because their stable identity is already authoritative.
 func (s *Server) SetProcessing(processing bool) {
 	if !processing {
-		// State cleanup and deferred terminal publication share the projection
-		// gate with the stable carrier. Otherwise a carrier can commit between
-		// setProcessingLocked(false) and flushDeferredTerminalNotifications,
-		// leaving the old terminal status to publish after the new carrier.
-		s.appServer.CommitProjection(func() []appserver.SequencedNotification {
-			s.mu.Lock()
-			s.setProcessingLocked(false)
-			return s.flushDeferredTerminalNotificationsLocked()
-		})
+		s.finishProcessing()
 		return
 	}
 	s.mu.Lock()
