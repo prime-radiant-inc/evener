@@ -900,7 +900,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			// projection cannot disagree (kata: one name per entry).
 			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
 			owner := ""
-			if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
+			if (entry.Turn.Kind == schema.TurnSteering || entry.Turn.Kind == schema.TurnRoundTimings) && !record.GoalContinuation {
 				owner = entry.Turn.OwningTurnID
 			}
 			if owner != "" {

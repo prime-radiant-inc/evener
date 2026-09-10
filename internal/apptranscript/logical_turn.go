@@ -69,7 +69,7 @@ func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, ow
 	if opensLogicalTurn(kind, goalContinuation) {
 		return true
 	}
-	if kind == schema.TurnSteering && owningTurnID != "" {
+	if (kind == schema.TurnSteering || kind == schema.TurnRoundTimings) && owningTurnID != "" {
 		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
 	}
 	if continuesLogicalTurn(kind) {
@@ -112,7 +112,7 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
 		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
 		a.open = true
-	case kind == schema.TurnSteering && owner != "":
+	case (kind == schema.TurnSteering || kind == schema.TurnRoundTimings) && owner != "":
 		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
 			break
 		}

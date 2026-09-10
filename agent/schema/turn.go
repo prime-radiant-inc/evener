@@ -222,7 +222,7 @@ type Turn struct {
 	// recovery for both client input and daemon goal continuations.
 	ClientMutationID string `json:"client_mutation_id,omitempty"`
 	StableTurnID     string `json:"stable_turn_id,omitempty"`
-	// OwningTurnID identifies the logical turn that owns an ordinary steering
+	// OwningTurnID identifies the logical turn that owns a steering or timing
 	// entry. It differs from StableTurnID, which identifies the client mutation.
 	OwningTurnID string `json:"owning_turn_id,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on

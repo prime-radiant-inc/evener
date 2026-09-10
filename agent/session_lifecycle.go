@@ -30,6 +30,7 @@ func (s *Session) persistAndEmitRoundTimings(timings events.RoundTimings) {
 	payload := schema.RoundTimings(timings)
 	turn := schema.NewTurn(schema.TurnRoundTimings, llm.System(payload.Announcement()))
 	turn.RoundTimings = &payload
+	turn.OwningTurnID = s.activeTurnOwner()
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
