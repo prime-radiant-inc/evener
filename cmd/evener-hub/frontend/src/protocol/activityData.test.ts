@@ -960,13 +960,13 @@ describe("lastOutputAt and usage wire fields", () => {
   });
 
   it.each([
-    ["empty", {}],
-    ["input-only", { inputTokens: 4 }],
-    ["output-only", { outputTokens: 4 }],
-  ])("rejects %s usage without both primary counters", (_name, usage) => {
-    const tree = parseActivityTree(delegateUsageTree(usage));
-    expect(tree?.root.entries).toHaveLength(0);
-    expect(tree?.root.branch.error).toBeDefined();
+    ["empty", {}, undefined],
+    ["input-only", { inputTokens: 4 }, { inputTokens: 4, outputTokens: 0 }],
+    ["output-only", { outputTokens: 4 }, { inputTokens: 0, outputTokens: 4 }],
+  ])("handles %s sparse usage according to omitempty wire semantics", (_name, rawUsage, expectedUsage) => {
+    const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
+    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toEqual(expectedUsage);
   });
 
   it("preserves explicit zero and valid usage counters", () => {
@@ -983,6 +983,15 @@ describe("lastOutputAt and usage wire fields", () => {
       kind: "delegate",
       delegate: { usage: { inputTokens: 41200, outputTokens: 6100, cacheReadTokens: 1200, totalTokens: 47700 } },
     });
+  });
+
+  it.each([
+    ["cache-only", { cacheReadTokens: 1200 }, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1200 }],
+    ["total-only", { totalTokens: 47700 }, { inputTokens: 0, outputTokens: 0, totalTokens: 47700 }],
+  ])("preserves %s sparse optional usage", (_name, rawUsage, expectedUsage) => {
+    const tree = parseActivityTree(delegateUsageTree(rawUsage)) as ActivityTree;
+    expect(tree.root.entries[0]).toMatchObject({ kind: "delegate" });
+    expect(tree.root.entries[0].kind === "delegate" && tree.root.entries[0].delegate.usage).toEqual(expectedUsage);
   });
 
   it.each([
