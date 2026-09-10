@@ -517,6 +517,7 @@ func (s *Session) markNotesDeliveryPending(outerID, stored string) error {
 		}
 		record.NotesDeliveryPending = true
 		record.NotesStoredValue = stored
+		record.NotesStoredValueSet = true
 		snapshot.Journal[outerID] = record
 		return nil
 	})
@@ -543,14 +544,14 @@ func (s *Session) clearNotesDeliveryPending(outerID, stored string) {
 			return nil
 		}
 		record.NotesDeliveryPending = false
-		// Keep the stored value as the tombstone: delivery for it already
-		// finished via this attempt's steer, and a same-ID retry of the
-		// adopted ID must recognize the landed write (tombstone path in
-		// completeNotesHumanSet) instead of rewriting the store against a
-		// newer intervening save. adoptPendingNotesDelivery only matches
-		// pending (NotesDeliveryPending) records, so the kept value cannot
-		// be re-adopted; notesDeliveryPending still gates on the pending
-		// bit, so it keeps reporting no pending delivery.
+		// Keep the stored value (and its presence flag) as the tombstone:
+		// delivery for it already finished via this attempt's steer, and a
+		// same-ID retry of the adopted ID must recognize the landed write
+		// (tombstone path in completeNotesHumanSet) instead of rewriting the
+		// store against a newer intervening save. adoptPendingNotesDelivery
+		// only matches pending (NotesDeliveryPending) records, so the kept
+		// value cannot be re-adopted; notesDeliveryPending still gates on the
+		// pending bit, so it keeps reporting no pending delivery.
 		snapshot.Journal[outerID] = record
 		return nil
 	})
@@ -558,13 +559,15 @@ func (s *Session) clearNotesDeliveryPending(outerID, stored string) {
 
 // notesSupersededWriteTombstone reports the stored value a superseding
 // fresh-ID write left behind for outerID (see clearNotesDeliveryPending):
-// the pending bit is cleared but NotesStoredValue still names the landed
-// write, on a still-InFlight record. completeNotesHumanSet treats a
-// generation>1 retry carrying that tombstone like stillPending == false —
-// the write landed and its delivery finished via the superseding write —
-// so the retry journals its own applied result without rewriting the store.
-// An already-Applied record replays on its own; a live pending marker takes
-// the delivery path; anything else is no tombstone.
+// the pending bit is cleared but NotesStoredValue (+ its presence flag)
+// still names the landed write, on a still-InFlight record.
+// completeNotesHumanSet treats a generation>1 retry carrying that tombstone
+// like stillPending == false — the write landed and its delivery finished
+// via the superseding write — so the retry journals its own applied result
+// without rewriting the store. The presence flag (not value emptiness) is
+// the tombstone test, so a superseded CLEAR (empty stored value) is still
+// recognized. An already-Applied record replays on its own; a live pending
+// marker takes the delivery path; anything else is no tombstone.
 func (s *Session) notesSupersededWriteTombstone(outerID string) (string, bool) {
 	if s.clientMutations == nil {
 		return "", false
@@ -572,7 +575,18 @@ func (s *Session) notesSupersededWriteTombstone(outerID string) (string, bool) {
 	record, exists := s.clientMutations.snapshot().Journal[outerID]
 	if !exists || record.Method != clientMutationMethodNotesHumanSet ||
 		record.OperationState != clientMutationOperationInFlight ||
-		record.NotesDeliveryPending || record.NotesStoredValue == "" {
+		record.NotesDeliveryPending {
+		return "", false
+	}
+	// The presence flag (not value emptiness) is the tombstone test, so a
+	// superseded CLEAR (empty stored value) is still recognized. Records
+	// journaled before the flag existed carry a non-empty value with no flag;
+	// those keep the legacy value test so an upgrade mid-adoption cannot turn
+	// a recognizable tombstone into a store-clobbering fresh write.
+	if !record.NotesStoredValueSet && record.NotesStoredValue != "" {
+		return record.NotesStoredValue, true
+	}
+	if !record.NotesStoredValueSet {
 		return "", false
 	}
 	return record.NotesStoredValue, true

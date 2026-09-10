@@ -70,6 +70,50 @@ func TestAddSessionURLRejectsOverCapAndBadScheme(t *testing.T) {
 	}
 }
 
+// TestCanonicalSessionURLRejectsSchemalessNonWebSchemes covers the scheme
+// bypass: inputs without "://" that still name a URI scheme
+// (javascript:, data:, mailto:) must be rejected, not stored as file://
+// entries.
+func TestCanonicalSessionURLRejectsSchemalessNonWebSchemes(t *testing.T) {
+	for _, raw := range []string{
+		"javascript:alert(1)",
+		"JaVaScRiPt:alert(1)",
+		"data:text/plain,hi",
+		"mailto:foo@bar",
+		"ftp:example.com/file",
+	} {
+		if got, err := canonicalSessionURL(raw, "/tmp/proj"); err == nil {
+			t.Fatalf("canonicalSessionURL(%q) = %q, want rejection", raw, got)
+		}
+	}
+}
+
+// TestCanonicalSessionURLRejectsUserinfo covers credential-bearing http(s)
+// URLs: userinfo must be rejected, never canonicalized with credentials
+// intact into the persisted list.
+func TestCanonicalSessionURLRejectsUserinfo(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@example.com/",
+		"https://user@example.com/y",
+		"http://user:pw@x.test:8080/y",
+	} {
+		if got, err := canonicalSessionURL(raw, "/tmp/proj"); err == nil {
+			t.Fatalf("canonicalSessionURL(%q) = %q, want rejection", raw, got)
+		}
+	}
+}
+
+// TestCanonicalSessionURLKeepsColonPathsWithoutSchemes pins the other side
+// of the scheme gate: inputs whose pre-colon segment is not a valid scheme
+// (a slash, a leading digit, an empty segment) still resolve as bare paths.
+func TestCanonicalSessionURLKeepsColonPathsWithoutSchemes(t *testing.T) {
+	for _, raw := range []string{"docs/a:b.md", "10:30 note.md", "/tmp/proj/a:b.md"} {
+		if _, err := canonicalSessionURL(raw, "/tmp/proj"); err != nil {
+			t.Fatalf("canonicalSessionURL(%q): %v", raw, err)
+		}
+	}
+}
+
 func TestSetHumanNoteClampThenCompares(t *testing.T) {
 	s := newTestNotesSession(t, "/tmp/proj")
 	stored, changed := s.setHumanNote("  hello   world  ")

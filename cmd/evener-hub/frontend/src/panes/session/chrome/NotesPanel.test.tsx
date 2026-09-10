@@ -228,6 +228,47 @@ test("remove dispatches urls/remove", async () => {
   await waitFor(() => expect(called).toMatchObject({ ref: model.ref, id: "u1" }));
 });
 
+// --- save coalescing -------------------------------------------------------------
+
+test("a second blur while a save is in flight replays the latest draft instead of dropping it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    if (first) {
+      first = false;
+      return gate.then(() => ({ note: (params as { note: string }).note }));
+    }
+    return { note: (params as { note: string }).note };
+  });
+
+  const model = testModel({ humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  // First blur starts the gated save...
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "first draft");
+  editor().blur();
+  await waitFor(() => expect(seen).toHaveLength(1));
+  // ...while it is in flight, a second edit + blur parks (not drops) the
+  // newer draft; releasing the gate lets the loop replay it.
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "second draft");
+  editor().blur();
+  release();
+  await waitFor(() => expect(seen).toHaveLength(2));
+  expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
+  expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
+});
+
 // --- failure keeps the draft ---------------------------------------------------
 
 test("a failed blur-save surfaces an error and keeps the draft", async () => {
@@ -254,6 +295,60 @@ test("a failed blur-save surfaces an error and keeps the draft", async () => {
   await screen.findAllByText(/save note boom/i);
   expect(editor().value).toBe("draft note");
   expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
+});
+
+// --- flush paths ---------------------------------------------------------------
+
+test("switching sessions flushes the outgoing dirty draft against the old thread", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return { note: (params as { note: string }).note };
+  });
+
+  const modelA = testModel({ ref: "local:aaaa", threadId: "aaaa", humanNote: "note A" });
+  // Session B's stored note deliberately EQUALS A's dirty draft: the
+  // pre-fix cleanup compared the old draft against the new stored note and
+  // skipped the save on the coincidence.
+  const modelB = testModel({ ref: "local:bbbb", threadId: "bbbb", humanNote: "dirty A draft" });
+  threadsStore.setState({ threads: new Map([[modelA.ref, modelA]]) });
+  const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "dirty A draft");
+  // Switch without blurring: the sessionRef-change cleanup is the flush
+  // under test (blur never fires on a prop-driven panel swap).
+  threadsStore.setState({ threads: new Map([[modelB.ref, modelB]]) });
+  rerender(<NotesPanelBody sessionRef={modelB.ref} model={modelB} />);
+
+  await waitFor(() => expect(seen).toHaveLength(1));
+  expect(seen[0]).toMatchObject({ ref: modelA.ref, note: "dirty A draft" });
+});
+
+test("a live-to-ended transition flushes the dirty draft before the editor unmounts", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return { note: (params as { note: string }).note };
+  });
+
+  const model = testModel({ humanNote: "old note" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  const { rerender } = render(<NotesPanelBody sessionRef={model.ref} model={model} />);
+  await user.click(editor());
+  await user.clear(editor());
+  await user.type(editor(), "final words");
+  // The session ends with the textarea focused: the editor unmounts for the
+  // read-only view without blur firing, and the flush must still save.
+  rerender(<NotesPanelBody sessionRef={model.ref} model={{ ...model, status: { type: "ended" } }} />);
+
+  await waitFor(() => expect(seen).toHaveLength(1));
+  expect(seen[0]).toMatchObject({ ref: model.ref, note: "final words" });
+  expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
 // --- idle-wake warning -----------------------------------------------------------

@@ -84,6 +84,93 @@ func TestSetHumanNoteSameIDRetryAfterAdoptionKeepsNewer(t *testing.T) {
 	}
 }
 
+// TestSetHumanNoteSameIDRetryAfterAdoptedClearKeepsNewer covers the
+// empty-note tombstone: a CLEAR (empty stored value) whose delivery is
+// adopted by a fresh-ID save must still leave a recognizable tombstone. The
+// pre-fix helper rejected NotesStoredValue == "", so retrying the original
+// clear after a newer note landed fell through to a fresh write and
+// clobbered the newer note.
+func TestSetHumanNoteSameIDRetryAfterAdoptedClearKeepsNewer(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	// The store holds a note, so the clear below is a real write (a clear on
+	// an already-empty note is a no-op with no pending delivery to adopt).
+	s.notesUpdateMu.Lock()
+	s.setHumanNote("note seed")
+	s.notesUpdateMu.Unlock()
+	// Persist of the clear lands at the store/journal level, but the owner
+	// goes away before the applied result journals: the record stands
+	// InFlight with delivery pending for "".
+	request, err := newClientMutationRequest(clientMutationMethodNotesHumanSet, "outer-tomb-clear-a", struct {
+		Note string
+	}{Note: ""})
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	lookup, err := s.clientMutations.reservePrepared(request, nil)
+	if err != nil {
+		t.Fatalf("reserve clear: %v", err)
+	}
+	if lookup.Lease == nil {
+		t.Fatalf("no owner lease for the simulated first attempt")
+	}
+	s.notesUpdateMu.Lock()
+	stored, changed := s.setHumanNote("")
+	if err := s.persistNotesMetaWithIntent("outer-tomb-clear-a", stored, changed); err != nil {
+		s.notesUpdateMu.Unlock()
+		t.Fatalf("persist clear: %v", err)
+	}
+	if !changed {
+		s.notesUpdateMu.Unlock()
+		t.Fatalf("clear of seeded note changed = false, want a real write")
+	}
+	if err := s.markNotesDeliveryPending("outer-tomb-clear-a", stored); err != nil {
+		s.notesUpdateMu.Unlock()
+		t.Fatalf("mark delivery pending clear: %v", err)
+	}
+	s.notesUpdateMu.Unlock()
+	lookup.Lease.Release()
+	// A fresh-ID save of the same (empty) text adopts the clear's pending
+	// delivery and spends its markers, leaving the tombstone; then a newer
+	// edit D lands.
+	if _, err := s.SetHumanNote("outer-tomb-clear-b", ""); err != nil {
+		t.Fatalf("fresh-ID adoption save: %v", err)
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
+	if _, err := s.SetHumanNote("outer-tomb-clear-d", "note D"); err != nil {
+		t.Fatalf("save D: %v", err)
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
+	// The hub retries the clear with the same ID: it must replay the
+	// recorded "" without restoring the empty note over D.
+	replayed, err := s.SetHumanNote("outer-tomb-clear-a", "")
+	if err != nil {
+		t.Fatalf("retry clear: %v", err)
+	}
+	if replayed != "" {
+		t.Fatalf("retry clear replayed = %q, want recorded empty", replayed)
+	}
+	s.mu.Lock()
+	current := s.humanNote
+	s.mu.Unlock()
+	if current != "note D" {
+		t.Fatalf("stored note after retry clear = %q, want D to stand", current)
+	}
+	if rec := s.clientMutations.snapshot().Journal["outer-tomb-clear-a"]; rec.OperationState != clientMutationOperationApplied {
+		t.Fatalf("retry record state = %q, want applied", rec.OperationState)
+	}
+	// No event on the tombstone replay: the stream must stay quiet.
+	select {
+	case ev := <-s.Events():
+		t.Fatalf("retry clear emitted %s, want silence", ev.Kind)
+	default:
+	}
+}
+
 // TestSetHumanNoteSameIDRetryAfterRewriteKeepsNewer covers the supersede
 // branch (live != note): A's delivery is still pending when a fresh-ID save
 // rewrites the same text A over an intervening newer save X

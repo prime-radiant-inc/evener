@@ -123,6 +123,11 @@ type clientMutationRecord struct {
 	// for that value without re-reading (and possibly rewriting) the live
 	// store. Empty for urls/remove, which has no stored value.
 	NotesStoredValue string `json:"notes_stored_value,omitempty"`
+	// NotesStoredValueSet marks NotesStoredValue as a real committed value,
+	// including an empty one: a clear (empty note) is a tombstone-worthy
+	// write, and without the flag it is indistinguishable from no tombstone
+	// (notesSupersededWriteTombstone must not reject empty values).
+	NotesStoredValueSet bool `json:"notes_stored_value_set,omitempty"`
 	// NotesInnerSteerID names the inner steer id the outer notes/human/set
 	// attempt accepted, recorded before the outer success journals. A later
 	// attempt of the same outer id reuses it instead of allocating a fresh

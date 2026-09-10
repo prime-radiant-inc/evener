@@ -164,12 +164,42 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 		}
 		return canonicalFilePath(parsed.Path, cwd, raw)
 	default:
+		// Any explicit scheme that is not http(s) or file is rejected here,
+		// BEFORE the bare-path fallback: inputs like "javascript:alert(1)",
+		// "data:text/plain,hi" or "mailto:foo@bar" carry no "://" but must
+		// never be stored as file:// entries.
+		if scheme, _, ok := strings.Cut(trimmed, ":"); ok && isURLScheme(scheme) {
+			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
+		}
 		if strings.Contains(trimmed, "://") {
 			scheme := trimmed[:strings.Index(trimmed, "://")]
 			return "", fmt.Errorf("urls/add: unsupported URL scheme %q", scheme)
 		}
 		return canonicalFilePath(trimmed, cwd, raw)
 	}
+}
+
+// isURLScheme reports whether s is a URI scheme per RFC 3986 §3.1
+// (ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )): the gate canonicalSessionURL
+// uses to tell "this input names a scheme" from "this input is a bare path"
+// (a Windows drive letter like "C:" also matches, and is rejected as a
+// scheme rather than resolved as a path — this daemon never runs on
+// Windows, and a drive-lettered path is meaningless in its scope model).
+func isURLScheme(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+			continue
+		}
+		if i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // canonicalHTTPURL normalizes an http(s) URL: lowercase scheme+host, drop
@@ -185,6 +215,12 @@ func canonicalHTTPURL(raw string) (string, error) {
 	}
 	if parsed.Host == "" {
 		return "", fmt.Errorf("urls/add: URL %q has no host", raw)
+	}
+	// Userinfo is never valid here: credentials would be persisted in the
+	// URL list, displayed, and used as link href. Reject rather than strip,
+	// so a mistyped "user@host" path is not silently rewritten.
+	if parsed.User != nil {
+		return "", fmt.Errorf("urls/add: URL %q must not contain credentials", raw)
 	}
 	host := strings.ToLower(parsed.Hostname())
 	port := parsed.Port()
