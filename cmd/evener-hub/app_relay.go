@@ -222,6 +222,34 @@ func stampClosedThreadCapabilities(notification appwire.Notification) appwire.No
 	return notification
 }
 
+// stampForkCapability adds the hub-owned action to an existing capability
+// update. Other permissions and fields remain the daemon's current values.
+func stampForkCapability(notification appwire.Notification) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(notification.Params, &params) != nil {
+		return notification
+	}
+	var capabilities map[string]json.RawMessage
+	if json.Unmarshal(params["capabilities"], &capabilities) != nil || capabilities == nil {
+		return notification
+	}
+	capabilities["forkFromTurn"] = json.RawMessage("true")
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		return notification
+	}
+	params["capabilities"] = encoded
+	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
+}
+
 type hubRelayFunctions struct {
 	startRelay          func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error
 	readThread          func(context.Context, appsource.Source, appwire.ThreadReadParams) (*hubThreadReadResult, error)
@@ -572,6 +600,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
 					notification = stampClosedThreadCapabilities(notification)
+					if hubOwnsThreadFork(target.thread) {
+						notification = stampForkCapability(notification)
+					}
 				}
 				if cfg.RelayHooks.BeforeCanonicalPublish != nil {
 					cfg.RelayHooks.BeforeCanonicalPublish(target.relayKey, notification)

@@ -414,6 +414,12 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 	return thread
 }
 
+// The hub forks persisted local sessions; in-process descendants remain read-only.
+func hubOwnsThreadFork(thread appwire.Thread) bool {
+	ref, err := appwire.ParseRef(thread.Evener.Ref)
+	return err == nil && ref.SourceID == "local" && thread.Evener.Kind != "subagent"
+}
+
 // pastThreadCapabilities is what the hub can carry out for a thread with no
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
 // change model, shutdown) plus the always-available ones (send, fork, goal,
