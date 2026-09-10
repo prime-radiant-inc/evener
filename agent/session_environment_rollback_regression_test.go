@@ -1,106 +1,156 @@
 package agent
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"github.com/spf13/afero"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
-	"strings"
-	"sync"
-	"testing"
 )
 
-type envFailFS struct {
+type environmentSyncFailureFS struct {
 	afero.Fs
-	mu   sync.Mutex
-	fail bool
-}
-type envFailFile struct {
-	afero.File
-	fs *envFailFS
+	mu        sync.Mutex
+	failure   error
+	onFailure func()
 }
 
-func (f *envFailFS) OpenFile(n string, m int, p os.FileMode) (afero.File, error) {
-	x, e := f.Fs.OpenFile(n, m, p)
-	if e != nil {
-		return nil, e
-	}
-	return &envFailFile{File: x, fs: f}, nil
+type environmentSyncFailureFile struct {
+	afero.File
+	fs *environmentSyncFailureFS
 }
-func (f *envFailFS) Create(n string) (afero.File, error) {
-	x, e := f.Fs.Create(n)
-	if e != nil {
-		return nil, e
+
+func (fs *environmentSyncFailureFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, mode)
+	if err != nil {
+		return nil, err
 	}
-	return &envFailFile{File: x, fs: f}, nil
+	return &environmentSyncFailureFile{File: file, fs: fs}, nil
 }
-func (f *envFailFile) Sync() error {
-	f.fs.mu.Lock()
-	defer f.fs.mu.Unlock()
-	if f.fs.fail {
-		f.fs.fail = false
-		return errors.New("environment transcript durability failure")
+
+func (file *environmentSyncFailureFile) Sync() error {
+	file.fs.mu.Lock()
+	failure := file.fs.failure
+	file.fs.failure = nil
+	onFailure := file.fs.onFailure
+	file.fs.mu.Unlock()
+	if failure != nil {
+		if onFailure != nil {
+			onFailure()
+		}
+		return failure
 	}
-	return f.File.Sync()
+	return file.File.Sync()
 }
+
+func attachEnvironmentSyncFailure(t *testing.T, sess *Session, failure error, onFailure func()) {
+	t.Helper()
+	if err := sess.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &environmentSyncFailureFS{Fs: afero.NewOsFs()}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, sess.TranscriptPath(), sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.attachTranscript(writer)
+	fs.mu.Lock()
+	fs.failure = failure
+	fs.onFailure = onFailure
+	fs.mu.Unlock()
+}
+
 func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
-	a := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return finalResponse("ok") }}}
-	s := restoredSessionWithResumeHook(t, a)
-	defer s.Close()
-	fs := &envFailFS{Fs: afero.NewOsFs(), fail: true}
-	_ = s.closeAttachedTranscript()
-	w, _, e := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
-	if e != nil {
-		t.Fatal(e)
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("ok") },
+	}}
+	sess := restoredSessionWithResumeHook(t, adapter)
+	failure := errors.New("environment transcript durability failure")
+	attachEnvironmentSyncFailure(t, sess, failure, nil)
+	before := sessionHistoryText(sess)
+	if _, err := sess.ProcessInput(t.Context(), "first", nil); !errors.Is(err, failure) {
+		t.Fatalf("first input error = %v, want environment durability failure", err)
 	}
-	s.attachTranscript(w)
-	if _, e = s.ProcessInput(t.Context(), "first", nil); e == nil {
-		t.Fatal("first input crossed env failure")
+	if after := sessionHistoryText(sess); after != before {
+		t.Fatal("failed environment append changed model history before input acceptance")
 	}
-	h := sessionHistoryText(s)
-	if strings.Contains(h, "RESUME_HOOK_CONTEXT") || strings.Contains(h, "RESUME_HOOK_USER_MESSAGE") {
-		t.Fatalf("failed input consumed hook: %q", h)
+	sess.mu.Lock()
+	pending := sess.pendingSessionStartKind != nil || sess.pendingSessionStartResult != nil
+	sess.mu.Unlock()
+	if !pending {
+		t.Fatal("environment failure consumed the deferred resume hook")
 	}
-	if _, e = s.ProcessInput(t.Context(), "retry", nil); e != nil {
-		t.Fatal(e)
+	if _, err := sess.ProcessInput(t.Context(), "retry", nil); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(sessionHistoryText(s), "RESUME_HOOK_CONTEXT") {
-		t.Fatal("retry omitted hook")
+	// These are opaque fixture payloads from the external hook, not prompt copy.
+	if count := strings.Count(sessionHistoryText(sess), "RESUME_HOOK_CONTEXT"); count != 1 {
+		t.Fatalf("resume hook payload deliveries = %d, want one", count)
 	}
-	if len(a.Requests()) != 1 {
-		t.Fatalf("requests=%d", len(a.Requests()))
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("provider requests = %d, want one accepted retry", len(adapter.Requests()))
+	}
+	retained, err := readTranscriptFull(sess.TranscriptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads := 0
+	for _, entry := range retained.Entries {
+		payloads += strings.Count(entry.Turn.Message.Text(), "RESUME_HOOK_CONTEXT")
+	}
+	if payloads != 1 {
+		t.Fatalf("durable hook payload deliveries = %d, want one", payloads)
 	}
 }
-func TestPushQueueHeadReturnsDurabilityFailure(t *testing.T) {
-	s := newQueuePersistTestSession(t, t.TempDir())
-	defer s.Close()
-	id := "rollback-error"
-	_, e := s.clientMutations.reserve(clientMutationRequest{Method: "turn/queue", ClientMutationID: id, Payload: []byte(`{"x":1}`), PayloadHash: func() string { h := sha256.Sum256([]byte(`{"x":1}`)); return hex.EncodeToString(h[:]) }()})
-	if e != nil {
-		t.Fatal(e)
+
+func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	mutationID := "rollback-error"
+	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "retry-input"}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	e = s.clientMutations.mutate(func(n *clientMutationSnapshot) error {
-		r := n.Journal[id]
-		r.Method = clientMutationMethodQueue
-		r.StableTurnID = "turn-rollback"
-		r.ExecutionState = "claimed"
-		n.Journal[id] = r
-		n.PendingExecutions[id] = appwire.PendingMutation{ClientMutationID: id, Method: clientMutationMethodQueue, ExecutionState: "claimed", TurnID: "turn-rollback"}
+	environmentFailure := errors.New("environment transcript durability failure")
+	rollbackFailure := errors.New("queue rollback durability failure")
+	var failRollback atomic.Bool
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		if failRollback.Swap(false) {
+			return rollbackFailure
+		}
 		return nil
-	})
-	if e != nil {
-		t.Fatal(e)
 	}
-	want := errors.New("queue rollback durability failure")
-	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return want }
-	if e = s.pushQueueHead(queuedInput{ID: "queue-entry", ClientMutationID: id, StableTurnID: "turn-rollback", Text: "retry"}); !errors.Is(e, want) {
-		t.Fatalf("error=%v", e)
+	attachEnvironmentSyncFailure(t, sess, environmentFailure, func() { failRollback.Store(true) })
+	_, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	if !ran || !errors.Is(err, environmentFailure) || !errors.Is(err, rollbackFailure) {
+		t.Fatalf("queued attempt ran=%v error=%v; want both environment and rollback failures", ran, err)
 	}
-	if s.clientMutations.snapshot().PendingExecutions[id].ExecutionState != "claimed" {
-		t.Fatal("state changed")
+	snapshot := sess.clientMutations.snapshot()
+	if state := snapshot.Journal[mutationID].ExecutionState; state != "accepted" {
+		t.Fatalf("unincorporated queued attempt execution state = %q, want accepted", state)
+	}
+	if _, pending := snapshot.PendingExecutions[mutationID]; pending {
+		t.Fatal("failed queued attempt left a stranded pending execution")
+	}
+	// Turn completion returns an unincorporated claim even when the first
+	// rollback failed. The original input remains available for a later retry.
+	if sess.QueueDepth() != 1 || len(snapshot.InputQueue) != 1 {
+		t.Fatal("turn completion did not restore the claimed queue entry")
+	}
+	entry := snapshot.InputQueue[0]
+	if entry.ClientMutationID != mutationID || len(entry.Input) != 1 || entry.Input[0].Text != "retry-input" {
+		t.Fatalf("restored queue entry = %+v, want original mutation and input", entry)
+	}
+	if snapshot.ActiveTurnID != "" {
+		t.Fatal("returned queue claim still owns the active turn")
 	}
 }

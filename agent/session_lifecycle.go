@@ -1947,7 +1947,14 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 						return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
 					}
 				} else {
-					if rollbackErr := s.pushQueueHead(queuedInput{ID: queuedIdentity.QueueEntryID, ClientMutationID: queuedIdentity.ClientMutationID, StableTurnID: queuedIdentity.StableTurnID, Text: input, Images: append([]ImageAttachment(nil), images...), Provenance: provenance.Clone(inputProvenance)}); rollbackErr != nil {
+					if rollbackErr := s.pushQueueHead(queuedInput{
+						ID:               queuedIdentity.QueueEntryID,
+						ClientMutationID: queuedIdentity.ClientMutationID,
+						StableTurnID:     queuedIdentity.StableTurnID,
+						Text:             input,
+						Images:           append([]ImageAttachment(nil), images...),
+						Provenance:       provenance.Clone(inputProvenance),
+					}); rollbackErr != nil {
 						return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
 					}
 				}
@@ -2013,14 +2020,16 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 					return errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
 				}
 			} else {
-				s.pushQueueHead(queuedInput{
+				if rollbackErr := s.pushQueueHead(queuedInput{
 					ID:               queuedIdentity.QueueEntryID,
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
 					Text:             input,
 					Images:           append([]ImageAttachment(nil), images...),
 					Provenance:       provenance.Clone(inputProvenance),
-				})
+				}); rollbackErr != nil {
+					return errors.Join(err, fmt.Errorf("return queued input: %w", rollbackErr))
+				}
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}

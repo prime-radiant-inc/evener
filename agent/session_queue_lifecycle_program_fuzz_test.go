@@ -88,7 +88,9 @@ func qlifRunProgram(t *testing.T, data []byte) string {
 			}
 			fmt.Fprintf(&trace, "e:%v:%d;", err != nil, s.QueueDepth())
 		case 2:
-			s.pushQueueHead(queuedInput{Text: text, Images: qlifImages(imageCount), Provenance: qlifQueueProvenance()})
+			if err := s.pushQueueHead(queuedInput{Text: text, Images: qlifImages(imageCount), Provenance: qlifQueueProvenance()}); err != nil {
+				t.Fatal(err)
+			}
 			fmt.Fprintf(&trace, "h:%d;", s.QueueDepth())
 		case 3:
 			entry := s.popQueueHead()
