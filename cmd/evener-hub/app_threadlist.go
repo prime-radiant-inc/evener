@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -12,14 +13,52 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
+const threadListSourceTimeout = 3 * time.Second
+
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	return hubThreadListWithSourceTimeout(ctx, cfg, sources, params, threadListSourceTimeout)
+}
+
+func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams, sourceTimeout time.Duration) (appwire.ThreadListResponse, error) {
 	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
-	for _, source := range sources.All() {
+	allSources := sources.All()
+	type sourceResult struct {
+		index int
+		resp  appwire.ThreadListResponse
+		err   error
+	}
+	results := make(chan sourceResult, len(allSources))
+	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
 		}
-		resp, err := source.ListThreads(ctx, params)
+		go func(index int, source appsource.Source) {
+			sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+			defer cancel()
+			resp, err := source.ListThreads(sourceCtx, params)
+			results <- sourceResult{index: index, resp: resp, err: err}
+		}(index, source)
+	}
+	listed := make([]sourceResult, 0, len(allSources))
+	for _, source := range allSources {
+		if !sourceAllowedForList(source.ID(), params) {
+			continue
+		}
+		select {
+		case result := <-results:
+			listed = append(listed, result)
+		case <-ctx.Done():
+			return appwire.ThreadListResponse{}, ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return appwire.ThreadListResponse{}, err
+	}
+	slices.SortFunc(listed, func(a, b sourceResult) int { return a.index - b.index })
+	for _, result := range listed {
+		source := allSources[result.index]
+		resp, err := result.resp, result.err
 		if err != nil {
 			if sourceExplicitlyRequestedForList(source.ID(), params) {
 				return appwire.ThreadListResponse{}, err
