@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -160,6 +161,10 @@ drainedBeforeFailure:
 	t.Cleanup(func() { _ = writer.Close() })
 	fs.fail = true
 	s.mu.Lock()
+	original := s.transcript
+	if original != nil {
+		t.Cleanup(func() { _ = original.Close() })
+	}
 	s.transcript = writer
 	s.transcriptReady = true
 	s.mu.Unlock()
@@ -237,9 +242,18 @@ func environmentTurnsInBytes(t *testing.T, fs afero.Fs, path string) []schema.Tu
 		t.Fatalf("read transcript bytes: %v", err)
 	}
 	var turns []schema.Turn
-	for _, line := range bytes.Split(contents, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(contents, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
-		if len(line) == 0 || bytes.Contains(line, []byte(`"kind":"header"`)) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode record boundary: %v", err)
+		}
+		if record.Kind == "header" {
 			continue
 		}
 		entry, err := transcript.DecodeEntry(line)
@@ -264,6 +278,10 @@ func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
 	fs.fail = true
 	t.Cleanup(func() { _ = writer.Close() })
 	s.mu.Lock()
+	original := s.transcript
+	if original != nil {
+		t.Cleanup(func() { _ = original.Close() })
+	}
 	s.transcript = writer
 	s.transcriptReady = true
 	before := len(s.history)
