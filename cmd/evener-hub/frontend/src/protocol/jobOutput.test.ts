@@ -17,6 +17,10 @@ describe("job output byte windows", () => {
     });
     expect(parseJobLogTail({ ...page, totalBytes: Number.MAX_SAFE_INTEGER })).not.toBeNull();
   });
+  it("preserves the default for an omitted truncation flag", () => {
+    const { truncated: _, ...withoutTruncated } = page;
+    expect(parseJobLogTail(withoutTruncated)).toEqual({ ...page, truncated: false });
+  });
   it.each([
     { totalBytes: -1 },
     { totalBytes: 1.5 },
@@ -29,7 +33,7 @@ describe("job output byte windows", () => {
     { retainedStart: Number.POSITIVE_INFINITY },
     { retainedStart: Number.MAX_SAFE_INTEGER + 1 },
     { retainedStart: 101 },
-    { truncated: undefined },
+    { truncated: null },
     { truncated: 0 },
     { truncated: "true" },
     { hasEarlier: null },

@@ -21,7 +21,7 @@ export function parseJobLogTail(data: unknown): JobLogTail | null {
     !Number.isSafeInteger(raw.retainedStart) ||
     raw.retainedStart < 0 ||
     raw.retainedStart > raw.totalBytes ||
-    typeof raw.truncated !== "boolean" ||
+    (raw.truncated !== undefined && typeof raw.truncated !== "boolean") ||
     (raw.hasEarlier !== undefined && typeof raw.hasEarlier !== "boolean")
   )
     return null;
@@ -29,7 +29,7 @@ export function parseJobLogTail(data: unknown): JobLogTail | null {
     tail: raw.tail,
     totalBytes: raw.totalBytes,
     retainedStart: raw.retainedStart,
-    truncated: raw.truncated,
+    truncated: raw.truncated === true,
     hasEarlier: raw.hasEarlier === true,
   };
 }
