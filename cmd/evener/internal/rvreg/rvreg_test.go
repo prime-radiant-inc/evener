@@ -83,11 +83,11 @@ func TestRegistrationRemoveRetriesAfterFailure(t *testing.T) {
 	if err := os.Remove(child); err != nil {
 		t.Fatalf("remove blocker: %v", err)
 	}
-	if err := os.Remove(artifact); err != nil {
-		t.Fatalf("remove artifact directory: %v", err)
-	}
 	if err := reg.Remove(); err != nil {
 		t.Fatalf("retry Remove: %v", err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("retry did not remove the rendezvous artifact: %v", err)
 	}
 	entries, err := rendezvous.List(runDir)
 	if err != nil {
