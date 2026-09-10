@@ -12,6 +12,7 @@ import {
   type ActivitySessionNode,
   type ActivityTree,
   activityNodeID,
+  delegateHasActiveWork,
   isActivityFailure,
 } from "../../../protocol/activityData";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
@@ -71,7 +72,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
   if (delegate.type === "delegate") {
     const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
     return {
-      active: delegate.terminal !== true || childActive,
+      active: delegateHasActiveWork(delegate),
       failed: isActivityFailure(delegate.terminal === true ? delegate.outcome : undefined, status) || childFailed,
       status,
     };
@@ -90,7 +91,7 @@ export function activityDelegateState(delegate: ActivityDelegate): ActivityDeleg
     };
   }
   const failed = childFailed || turns.some((turn) => isActivityFailure(turn.outcome, turn.status));
-  const active = activeTurn !== undefined || childActive;
+  const active = delegateHasActiveWork(delegate);
   return {
     active,
     failed,

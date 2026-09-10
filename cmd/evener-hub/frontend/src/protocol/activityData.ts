@@ -565,8 +565,10 @@ function jobIsActive(job: ActivityJob): boolean {
   return !job.terminal;
 }
 
-function delegateHasActiveWork(delegate: ActivityDelegate): boolean {
-  return !delegate.terminal || (delegate.child ? sessionHasActiveWork(delegate.child) : false);
+export function delegateHasActiveWork(delegate: ActivityDelegate): boolean {
+  const childActive = delegate.child ? sessionHasActiveWork(delegate.child) : false;
+  if (delegate.type === "delegate") return delegate.terminal !== true || childActive;
+  return (delegate.turns ?? []).some((turn) => !turn.terminal) || childActive;
 }
 
 function entryHasActiveWork(entry: ActivityEntry): boolean {

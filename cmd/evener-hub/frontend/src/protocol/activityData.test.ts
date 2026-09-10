@@ -5,6 +5,7 @@ import {
   type ActivityTree,
   activityNodeID,
   defaultExpandedIDs,
+  delegateHasActiveWork,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -618,6 +619,43 @@ describe("defaultExpandedIDs", () => {
   it("expands the root and every ancestor of active work, but not completed-only branches", () => {
     const tree = parseActivityTree(VALID_TREE_WIRE) as ActivityTree;
     expect(defaultExpandedIDs(tree)).toEqual(["session:sess_root", "delegate:dlg_1", "session:sess_child"]);
+  });
+
+  it("uses active turns for turn-container expansion even after the container closes", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    rootDelegate.type = "agent";
+    rootDelegate.terminal = true;
+    rootDelegate.turns = [
+      {
+        jobId: "turn-live",
+        ownerSessionId: "sess_root",
+        ownerRef: "ref_root",
+        type: "turn",
+        status: "running",
+        terminal: false,
+        background: false,
+        hasOutput: false,
+        description: "live turn",
+        startedAt: "2026-08-03T00:05:00Z",
+        outputBytes: 0,
+      },
+    ];
+    const tree = parseActivityTree(wire) as ActivityTree;
+    expect(delegateHasActiveWork(tree.root.entries[1].delegate)).toBe(true);
+    expect(defaultExpandedIDs(tree)).toContain("delegate:dlg_1");
+  });
+
+  it("does not expand an empty closed turn container", () => {
+    const wire = cloneWire(VALID_TREE_WIRE);
+    const rootDelegate = getRootDelegateWire(wire);
+    rootDelegate.type = "agent";
+    rootDelegate.terminal = true;
+    rootDelegate.turns = [];
+    rootDelegate.child = undefined;
+    const tree = parseActivityTree(wire) as ActivityTree;
+    expect(delegateHasActiveWork(tree.root.entries[1].delegate)).toBe(false);
+    expect(defaultExpandedIDs(tree)).not.toContain("delegate:dlg_1");
   });
 });
 
