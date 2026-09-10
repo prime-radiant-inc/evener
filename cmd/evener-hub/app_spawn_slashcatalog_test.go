@@ -269,9 +269,9 @@ func TestHubSpawnSlashCatalog_MissingCWDFallsBackToUserLevelInventory(t *testing
 	writeSlashCatalogPlugin(t, pluginDir, "greeter", "greet")
 
 	// The spawn flow creates a missing directory via preflightDir ("Create &
-	// start"), so the catalog must not fail for it: with no project on disk
-	// yet, the honest inventory is the user level (global + explicit plugin
-	// dirs), not an error.
+	// start"), so the catalog must not fail for it: the nearest existing
+	// ancestor (bare here, so no project items) resolves, and explicit plugin
+	// dirs still surface.
 	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
 		CWD:             missing,
 		LaunchOverrides: &appwire.LaunchConfigLayer{PluginDirs: []string{pluginDir}},
@@ -282,5 +282,46 @@ func TestHubSpawnSlashCatalog_MissingCWDFallsBackToUserLevelInventory(t *testing
 	greet := slashCatalogCommandByName(t, resp, "greet")
 	if greet.Source != "plugin" {
 		t.Errorf("greet Source = %q, want %q", greet.Source, "plugin")
+	}
+}
+
+func TestHubSpawnSlashCatalog_MissingCWDSeesAncestorProjectInventory(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	parent := t.TempDir()
+	writeSlashCatalogProjectCommand(t, parent, "deploy", "Deploy the thing")
+	writeSlashCatalogSkill(t, filepath.Join(parent, "skills"), "deployskill", "deployskill", "Deploys stuff")
+	missing := filepath.Join(parent, "not-yet-created")
+
+	// The spawn flow creates a missing directory via preflightDir ("Create &
+	// start"), and thread/start then loads the ancestor chain's project
+	// items — so the catalog resolves the nearest existing ancestor instead
+	// of failing or answering user-level-only.
+	resp, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD: missing,
+	})
+	if err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v, want ancestor-project inventory for a not-yet-created cwd", err)
+	}
+	deploy := slashCatalogCommandByName(t, resp, "deploy")
+	if deploy.Source != "project" {
+		t.Errorf("deploy Source = %q, want %q", deploy.Source, "project")
+	}
+	if _, ok := slashCatalogSkillNames(resp)["deployskill"]; !ok {
+		t.Errorf("project skill %q missing from missing-cwd catalog: %v", "deployskill", slashCatalogSkillNames(resp))
+	}
+}
+
+func TestHubSpawnSlashCatalog_FileCWDIsInvalidParams(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hubSpawnSlashCatalog(context.Background(), hubcore.WebConfig{}, appwire.SpawnSlashCatalogParams{
+		CWD: file,
+	}); err == nil {
+		t.Fatal("hubSpawnSlashCatalog with a file cwd = nil error, want InvalidParams")
 	}
 }

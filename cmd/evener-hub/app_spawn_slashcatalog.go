@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,7 +17,34 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/identifier"
 )
+
+// nearestExistingAncestorDir walks up from path to the nearest existing
+// ancestor directory. A path with no existing ancestor (or one whose nearest
+// existing path is not a directory) is a caller error, not a missing
+// directory.
+func nearestExistingAncestorDir(path string) (string, error) {
+	requested := filepath.Clean(strings.TrimSpace(path))
+	ancestor := requested
+	for {
+		info, statErr := os.Stat(ancestor)
+		if statErr == nil {
+			if !info.IsDir() {
+				return "", errors.New("nearest existing path is not a directory")
+			}
+			return ancestor, nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", errors.New("no existing ancestor")
+		}
+		ancestor = parent
+	}
+}
 
 // hubSpawnSlashCatalog answers evener/spawn/slashCatalog: the slash inventory
 // (commands + skills) a session started with these params would offer. It
@@ -49,18 +77,31 @@ func hubSpawnSlashCatalog(ctx context.Context, cfg hubcore.WebConfig, params app
 		canonical, err := hubCanonicalizeDir(params.CWD)
 		if err != nil {
 			// A not-yet-created directory is a normal spawn-flow state
-			// (preflightDir's "Create & start"): with no project on disk
-			// yet there is nothing project-scoped to offer, so fall back
-			// to the user-level inventory rather than failing. Any other
-			// canonicalization error stays InvalidParams.
+			// (preflightDir's "Create & start"). Resolve the nearest
+			// existing ancestor instead: after creation the session loads
+			// that ancestor chain's project items, so the catalog must show
+			// them now. Any other canonicalization error stays InvalidParams.
 			if !errors.Is(err, os.ErrNotExist) {
 				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + err.Error())
 			}
-			userResolved, userErr := launchconfig.ResolveUserOnly(hubLaunchConfigRoot(cfg), overrides)
-			if userErr != nil {
-				return appwire.SpawnSlashCatalogResponse{}, userErr
+			ancestor, ancestorErr := nearestExistingAncestorDir(params.CWD)
+			if ancestorErr != nil {
+				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + ancestorErr.Error())
 			}
-			resolved = userResolved
+			canonical, err = hubCanonicalizeDir(ancestor)
+			if err != nil {
+				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+			}
+			project, projectErr := identifier.ResolveProject(canonical)
+			if projectErr != nil {
+				return appwire.SpawnSlashCatalogResponse{}, appwire.InvalidParams("cwd: " + projectErr.Error())
+			}
+			ancestorResolved, err := launchconfig.ResolveWithProject(hubLaunchConfigRoot(cfg), canonical, project, overrides)
+			if err != nil {
+				return appwire.SpawnSlashCatalogResponse{}, err
+			}
+			resolved = ancestorResolved
+			canonicalCWD = canonical
 		} else {
 			canonicalCWD = canonical
 			fullResolved, err := hubResolveLaunch(hubLaunchConfigRoot(cfg), canonical, overrides)
