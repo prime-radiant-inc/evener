@@ -129,6 +129,10 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 			t.Fatalf("remote capability=%v, want source declaration %v", got.Evener.Capabilities.ForkFromTurn, want)
 		}
 	}
+	local := appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, Evener: appwire.EvenerThread{Ref: "local:no-storage"}}
+	if got := applyHubForkCapability(hubcore.WebConfig{}, local); got.Evener.Capabilities.ForkFromTurn {
+		t.Fatal("local thread without a configured or persisted state directory advertised fork")
+	}
 }
 
 func TestHubRPCPersistedSubagentCannotReadvertiseOrFork(t *testing.T) {

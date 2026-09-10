@@ -603,7 +603,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// gone.
 				if strings.HasPrefix(target.relayKey, "local:") {
 					notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-					ownsFork := hubOwnsThreadFork(target.thread) && !target.thread.Evener.ResumeRequired
+					ownsFork := applyHubForkCapability(cfg, target.thread).Evener.Capabilities.ForkFromTurn
 					notification = stampClosedThreadCapabilities(notification, ownsFork)
 					if ownsFork {
 						notification = stampForkCapability(notification)

@@ -254,6 +254,7 @@ func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
 	sources.Add(source)
 	appServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
+		StateDir:     t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
@@ -343,6 +344,7 @@ func relayedNotificationClient(
 	sources.Add(source)
 	appServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
+		StateDir:     t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
 	}, sources)
 	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
