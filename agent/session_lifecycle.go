@@ -25,23 +25,18 @@ var errEmptyResponseExhausted = errors.New("model returned empty response")
 var errStreamUnavailable = errors.New("stream unavailable")
 
 // persistAndEmitRoundTimings commits the presentational timing record before
-// publishing its live event. A transcript failure keeps the existing live
-// observability event and warning, but cannot create a phantom durable item.
+// publishing its live event, so the live item always has a durable counterpart.
 func (s *Session) persistAndEmitRoundTimings(timings events.RoundTimings) {
-	payload := &schema.RoundTimings{
-		Round: timings.Round, SystemPrompt: timings.SystemPrompt, ContextMgmt: timings.ContextMgmt,
-		HistoryExpand: timings.HistoryExpand, ToolDefs: timings.ToolDefs, LLMCall: timings.LLMCall,
-		ToolExec: timings.ToolExec, Persistence: timings.Persistence, AfterAction: timings.AfterAction,
-		LoopOverhead: timings.LoopOverhead, TotalRound: timings.TotalRound,
-	}
+	payload := schema.RoundTimings(timings)
 	turn := schema.NewTurn(schema.TurnRoundTimings, llm.System(payload.Announcement()))
-	turn.RoundTimings = payload
+	turn.RoundTimings = &payload
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return
 	}
 	s.emit(events.EventRoundTimings, timings)
 }

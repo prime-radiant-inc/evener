@@ -1848,20 +1848,7 @@ func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
 }
 
 func roundTimingsAnnouncement(data events.RoundTimings) string {
-	parts := []string{
-		fmt.Sprintf("Round %d", data.Round),
-		"total=" + data.TotalRound.String(),
-		"llm=" + data.LLMCall.String(),
-		"context=" + data.ContextMgmt.String(),
-		"tools=" + data.ToolExec.String(),
-		"prompt=" + data.SystemPrompt.String(),
-		"history=" + data.HistoryExpand.String(),
-		"tool_defs=" + data.ToolDefs.String(),
-		"persistence=" + data.Persistence.String(),
-		"after_action=" + data.AfterAction.String(),
-		"overhead=" + data.LoopOverhead.String(),
-	}
-	return strings.Join(parts, " ")
+	return schema.RoundTimings(data).Announcement()
 }
 
 func fallbackLabel(value, fallback string) string {
