@@ -150,6 +150,45 @@ test("web links show the destination URL beside an agent-controlled label", () =
   expect(row.textContent).toMatch(/https:\/\/evil\.test\/phish/);
 });
 
+test("labelless web links render the URL once, not twice", () => {
+  openPanel(
+    testModel({
+      sessionUrls: [{ id: "u2", url: "https://x.test/plain" }],
+    }),
+  );
+  const row = screen.getByTestId("shared-notes-url-u2");
+  // No label: the anchor carries the URL and no trailing span duplicates it.
+  expect(row.querySelector("a")?.getAttribute("href")).toBe("https://x.test/plain");
+  expect(row.textContent).toBe("https://x.test/plain");
+});
+
+test("file links keep visible text and offer open-beside in scope", () => {
+  const model = testModel({
+    cwd: "/home/proj",
+    sessionUrls: [{ id: "u3", url: "file:///home/proj/docs/a.md", label: "spec" }],
+  });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  const row = screen.getByTestId("shared-notes-url-u3");
+  // Visible text stays (label + URL), and the in-scope path offers the
+  // document/open-beside affordance instead of dead text.
+  expect(row.textContent).toMatch(/spec/);
+  expect(row.textContent).toMatch(/file:\/\/\/home\/proj\/docs\/a\.md/);
+  expect(screen.getByRole("button", { name: "Open beside: docs/a.md" })).toBeTruthy();
+});
+
+test("file links out of scope keep text but offer no affordance", () => {
+  const model = testModel({
+    cwd: "/home/proj",
+    sessionUrls: [{ id: "u4", url: "file:///etc/passwd" }],
+  });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  openPanel(model);
+  const row = screen.getByTestId("shared-notes-url-u4");
+  expect(row.textContent).toMatch(/file:\/\/\/etc\/passwd/);
+  expect(screen.queryByRole("button", { name: /Open beside/ })).toBeNull();
+});
+
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");

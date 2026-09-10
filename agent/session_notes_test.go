@@ -114,6 +114,18 @@ func TestCanonicalSessionURLKeepsColonPathsWithoutSchemes(t *testing.T) {
 	}
 }
 
+// TestCanonicalSessionURLRejectsEmptyHostname covers URLs whose Host is
+// non-empty but whose hostname is empty ("http://:80"): the Host check
+// passes, but the canonical form builds from Hostname() and would persist
+// an unusable link.
+func TestCanonicalSessionURLRejectsEmptyHostname(t *testing.T) {
+	for _, raw := range []string{"http://:80", "https://:443/y", "http://@/y"} {
+		if got, err := canonicalSessionURL(raw, "/tmp/proj"); err == nil {
+			t.Fatalf("canonicalSessionURL(%q) = %q, want rejection", raw, got)
+		}
+	}
+}
+
 func TestSetHumanNoteClampThenCompares(t *testing.T) {
 	s := newTestNotesSession(t, "/tmp/proj")
 	stored, changed := s.setHumanNote("  hello   world  ")

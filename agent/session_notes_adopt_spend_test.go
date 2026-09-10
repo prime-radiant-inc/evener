@@ -60,3 +60,60 @@ func TestAdoptedIntentSpendPersistsDurably(t *testing.T) {
 	default:
 	}
 }
+
+// TestAdoptedIntentSurvivesRefusedSteer verifies the retry-loss half of the
+// adopted-delivery path: when the adopter's steer is refused (interrupt
+// fence), the adopted intent is NOT consumed — nothing was delivered, so the
+// intent must stand for the retry. A same-ID retry after the fence lifts
+// resumes the recorded delivery and steers exactly once, instead of
+// converging on a silent no-op for a note nobody was told about.
+func TestAdoptedIntentSurvivesRefusedSteer(t *testing.T) {
+	t.Parallel()
+	s := newNotesToolSession(t)
+	defer s.Close()
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	// First attempt faults between the atomic metadata write and the
+	// delivery-pending journal mark: storage holds the note with only the
+	// metadata-committed intent behind it.
+	injected := errors.New("injected journal fault between meta save and delivery-pending mark")
+	s.cfg.testOnly.notesJournalFault = func() error { return injected }
+	if _, err := s.SetHumanNote("outer-adopt-refuse-a", "adopted value"); !errors.Is(err, injected) {
+		t.Fatalf("save A err = %v, want injected journal fault", err)
+	}
+	s.cfg.testOnly.notesJournalFault = nil
+	// The adopter's steer is refused: the fence makes acceptNotesSteer fail,
+	// so the adoption must leave A's intent (and the delivery) pending.
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "fence-adopt-refuse"}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed fence: %v", err)
+	}
+	if _, err := s.SetHumanNote("outer-adopt-refuse-b", "adopted value"); err == nil {
+		t.Fatalf("adopting save under fence err = nil, want steer refusal")
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
+	if _, _, ok := s.pendingNotesHumanIntent("outer-adopt-refuse-a"); !ok {
+		t.Fatal("adopted intent consumed despite refused steer, want it pending for the retry")
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = nil
+		return nil
+	}); err != nil {
+		t.Fatalf("clear fence: %v", err)
+	}
+	// Same-ID retry of the adopter resumes the recorded delivery (not a
+	// silent no-op): the store already holds the value, the steer lands now.
+	if _, err := s.SetHumanNote("outer-adopt-refuse-b", "adopted value"); err != nil {
+		t.Fatalf("retry adopter: %v", err)
+	}
+	s.mu.Lock()
+	n := len(s.steeringQueue)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("steering queue length = %d, want 1 (refused adoption must deliver on retry)", n)
+	}
+	nextNotesEvent(t, s, events.EventNotesUpdated)
+}

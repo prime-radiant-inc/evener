@@ -370,22 +370,13 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	if adopted.stored == "" {
 		text = "human updated their whiteboard: (whiteboard cleared)"
 	}
-	// A journal-fault adoption claimed a metadata-committed intent with no
-	// journal marker: consume it BEFORE accepting the steer, so a cleanup
-	// failure can never restore an intent for a steer that already landed
-	// (which a later same-value save would re-adopt and inject twice). A
-	// journal-marker adoption has no intent under its own ID and this is a
-	// no-op. On a consume failure nothing has been accepted yet, so the
-	// intent stands and recovery adopts it exactly as before.
-	if adopted.outerID != strings.TrimSpace(outerID) {
-		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
-			lease.Release()
-			return adopted.stored, err
-		}
-	}
 	innerID := strings.TrimSpace(outerID) + "/note-steer"
 	steerID, err := s.acceptNotesSteer(s.lookupSteerID(outerID, innerID, lease), text)
 	if err != nil {
+		// Delivery refused: the adopted intent stands (a journal-fault
+		// adoption) or the adopted journal marker stands (a marker
+		// adoption), so a retry resumes this same delivery instead of
+		// converging on a silent no-op for a note nobody was told about.
 		lease.Release()
 		return adopted.stored, fmt.Errorf("notes/human/set: inject human-note steer: %w", err)
 	}
@@ -396,6 +387,19 @@ func (s *Session) deliverAdoptedNotesSteer(lease *clientMutationLease, outerID s
 	s.setSteeringKindOnRecord(steerID, events.SteeringKindHumanNote)
 	s.annotateSteeringKind(steerID, events.SteeringKindHumanNote)
 	s.clearNotesDeliveryPending(adopted.outerID, adopted.stored)
+	// The adopted delivery finished via this attempt's steer: spend a
+	// journal-fault adoption's metadata-committed intent now, durably, so a
+	// later retry cannot deliver the same value twice. (A journal-marker
+	// adoption has no intent under its own ID and this is a no-op.) The
+	// spend runs AFTER the steer accepted, so a refusal above never consumes
+	// the intent a retry needs; its own durability (same-save absence)
+	// covers the crash window the spend itself opens.
+	if adopted.outerID != strings.TrimSpace(outerID) {
+		if err := s.consumePendingNotesHumanDurable(adopted.outerID); err != nil {
+			lease.Release()
+			return adopted.stored, err
+		}
+	}
 	return s.applyNotesHumanSetResult(lease, outerID, adopted.stored)
 }
 

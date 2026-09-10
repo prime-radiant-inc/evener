@@ -216,6 +216,12 @@ func canonicalHTTPURL(raw string) (string, error) {
 	if parsed.Host == "" {
 		return "", fmt.Errorf("urls/add: URL %q has no host", raw)
 	}
+	// An empty hostname with a non-empty Host (e.g. "http://:80") passes the
+	// Host check above but normalizes to an unusable link: Hostname() is what
+	// the canonical form is actually built from, so gate on it.
+	if parsed.Hostname() == "" {
+		return "", fmt.Errorf("urls/add: URL %q has no hostname", raw)
+	}
 	// Userinfo is never valid here: credentials would be persisted in the
 	// URL list, displayed, and used as link href. Reject rather than strip,
 	// so a mistyped "user@host" path is not silently rewritten.

@@ -31,7 +31,23 @@ import { threadsStore } from "../../../stores/threads";
 import { Button, Sheet, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
+
+// Session file URLs canonicalize to file:///absolute forms (agent
+// validation); the open-beside flow takes a filesystem path, so decode the
+// URL path back (percent-escapes from delimiter filenames included).
+function fileURLToPath(fileURL: string): string {
+  try {
+    return decodeURIComponent(new URL(fileURL).pathname);
+  } catch {
+    return fileURL;
+  }
+}
+
+function isFileHref(href: string): boolean {
+  return /^file:\/\//.test(href);
+}
 
 export interface NotesPanelBodyProps {
   sessionRef: string;
@@ -375,7 +391,16 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
                       <a href={url.url} target="_blank" rel="noopener noreferrer">
                         {url.label || url.url}
                       </a>{" "}
-                      {url.label !== "" && <span className={CLASS.linkUrl}>{url.url}</span>}
+                      {url.label ? <span className={CLASS.linkUrl}>{url.url}</span> : null}
+                    </span>
+                  ) : isFileHref(url.url) ? (
+                    // Local file references open through the in-app
+                    // document/open-beside flow (design requirement), with the
+                    // URL text retained. Out-of-scope paths keep the visible
+                    // text but no affordance.
+                    <span>
+                      {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>{" "}
+                      <FileOpenBesideButton absPath={fileURLToPath(url.url)} sessionRef={sessionRef} cwd={model.cwd} />
                     </span>
                   ) : (
                     <span>

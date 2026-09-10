@@ -63,7 +63,7 @@ func TestRunHubNotesQuotedClearSetsLiteral(t *testing.T) {
 	m.detail.Live = true
 	m.detail.HumanNote = "existing note"
 
-	for _, quoted := range []string{`"clear"`, `'clear'`, `  "clear"  `} {
+	for _, quoted := range []string{`"clear"`, `'clear'`, `  "clear"  `, `"CLEAR"`, `'Clear'`} {
 		calls = nil
 		cmd := m.runHubNotes(quoted)
 		if cmd == nil {
@@ -73,7 +73,13 @@ func TestRunHubNotesQuotedClearSetsLiteral(t *testing.T) {
 		if !ok || msg.err != nil || msg.cleared {
 			t.Fatalf("%q result = %#v, want a non-clear set", quoted, msg)
 		}
-		if len(calls) != 1 || calls[0].Note != "clear" {
+		want := "clear"
+		if quoted == `"CLEAR"` {
+			want = "CLEAR"
+		} else if quoted == `'Clear'` {
+			want = "Clear"
+		}
+		if len(calls) != 1 || calls[0].Note != want {
 			t.Fatalf("%q calls = %#v, want one literal-word mutation", quoted, calls)
 		}
 	}
@@ -116,5 +122,19 @@ func TestRunHubNotesClearClears(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0].Note != "" {
 		t.Fatalf("clear calls = %#v, want one empty-note mutation", calls)
+	}
+	// Bare case variants still clear: the reservation is case-insensitive.
+	for _, variant := range []string{"CLEAR", "Clear", "  cLeAr  "} {
+		calls = nil
+		cmd := m.runHubNotes(variant)
+		if cmd == nil {
+			t.Fatalf("%q should produce a cmd", variant)
+		}
+		if msg, ok := cmd().(hubNotesMsg); !ok || msg.err != nil || !msg.cleared {
+			t.Fatalf("%q result = %#v, want successful cleared note", variant, msg)
+		}
+		if len(calls) != 1 || calls[0].Note != "" {
+			t.Fatalf("%q calls = %#v, want one empty-note mutation", variant, calls)
+		}
 	}
 }
