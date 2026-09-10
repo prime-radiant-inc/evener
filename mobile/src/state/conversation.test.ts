@@ -18,6 +18,7 @@ import type {
   MobileConversation,
 } from "../conversation/model";
 import { projectThread } from "../conversation/project";
+import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -1342,6 +1343,244 @@ describe("ConversationStore", () => {
   });
 
   describe("item/completed settles item", () => {
+    it("updates a first clustered member without losing later members or attachments", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "call-first",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: {},
+            members: [
+              {
+                id: "call-first",
+                label: "shell",
+                family: "tool",
+                state: "running",
+                detail: {},
+              },
+              {
+                id: "call-later",
+                label: "shell",
+                family: "tool",
+                state: "running",
+                detail: {},
+              },
+            ],
+          },
+          {
+            kind: "attachments",
+            id: "call-first:attachments",
+            sourceTranscriptKey: "call-first",
+            items: [{ id: "old", src: "https://hub.test/old" }],
+          },
+          {
+            kind: "attachments",
+            id: "call-later:attachments",
+            sourceTranscriptKey: "call-later",
+            items: [{ id: "later", src: "https://hub.test/later" }],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "call-first",
+            toolName: "shell",
+            status: "completed",
+            output: "updated",
+            outputImages: [{ id: "new", url: "https://hub.test/new" }],
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      const cluster = items.find(
+        (item) => item.kind === "activity" && item.id === "call-first",
+      );
+      expect(cluster?.kind).toBe("activity");
+      expect(cluster && "members" in cluster ? cluster.members : []).toHaveLength(
+        2,
+      );
+      expect(items.filter((item) => item.id === "call-first")).toHaveLength(1);
+      expect(
+        items.find((item) => item.id === "call-first:attachments")?.items,
+      ).toEqual([{ id: "call-first:out:0", src: "https://hub.test/new" }]);
+      expect(
+        items.find((item) => item.id === "call-later:attachments"),
+      ).toBeDefined();
+    });
+
+    it("uses transcript identity for a later member and keeps its attachment beside the cluster", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "wire-first",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: {},
+            members: [
+              {
+                id: "wire-first",
+                label: "shell",
+                family: "tool",
+                state: "completed",
+                detail: {},
+                transcriptKey: "first",
+              },
+              {
+                id: "wire-later",
+                label: "shell",
+                family: "tool",
+                state: "running",
+                detail: {},
+                transcriptKey: "later",
+              },
+            ],
+          },
+          {
+            kind: "attachments",
+            id: "wire-first:attachments",
+            sourceTranscriptKey: "first",
+            items: [{ id: "first", src: "https://hub.test/first" }],
+          },
+          {
+            kind: "attachments",
+            id: "wire-later:attachments",
+            sourceTranscriptKey: "later",
+            items: [{ id: "old", src: "https://hub.test/old" }],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "new-wire-later",
+            transcriptKey: "later",
+            toolName: "shell",
+            status: "inProgress",
+            outputImages: [{ id: "new", url: "https://hub.test/new" }],
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      const activities = items.filter((item) => item.kind === "activity");
+      expect(activities).toHaveLength(1);
+      expect(
+        activities[0]?.kind === "activity" && activities[0].members,
+      ).toHaveLength(2);
+      expect(items.map((item) => item.id)).toEqual([
+        "wire-first",
+        "wire-first:attachments",
+        "new-wire-later:attachments",
+      ]);
+      expect(items[1]).toMatchObject({
+        kind: "attachments",
+        sourceTranscriptKey: "first",
+        items: [{ id: "first", src: "https://hub.test/first" }],
+      });
+      expect(items[2]).toMatchObject({
+        kind: "attachments",
+        sourceTranscriptKey: "later",
+        items: [{ id: "new-wire-later:out:0", src: "https://hub.test/new" }],
+      });
+      expect(items).not.toContainEqual(
+        expect.objectContaining({ id: "wire-later:attachments" }),
+      );
+    });
+
+    it("splits a failed member out of a hydrated cluster", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "call-first",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: {},
+            members: [
+              {
+                id: "call-first",
+                label: "shell",
+                family: "tool",
+                state: "running",
+                detail: {},
+              },
+              {
+                id: "call-later",
+                label: "shell",
+                family: "tool",
+                state: "running",
+                detail: {},
+              },
+            ],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "call-later",
+            toolName: "shell",
+            status: "completed",
+            error: "boom",
+          },
+        },
+      } as AnyNotification);
+      const activities = (store.getState().conversation?.items ?? []).filter(
+        (item) => item.kind === "activity",
+      );
+      expect(activities).toHaveLength(2);
+      expect(
+        activities.some(
+          (item) =>
+            item.kind === "activity" &&
+            item.id === "call-later" &&
+            item.state === "failed",
+        ),
+      ).toBe(true);
+      expect(
+        activities.filter(
+          (item) => item.kind === "activity" && item.id === "call-later",
+        ),
+      ).toHaveLength(1);
+      const flattened = projectNativeTranscript(
+        store.getState().conversation,
+        null,
+      ).items;
+      expect(
+        flattened.filter((item) => item.kind === "activity").map((item) => item.id),
+      ).toEqual(["call-first", "call-later"]);
+    });
+
     it("marks an assistant item as not streaming on item/completed", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
@@ -2602,6 +2841,107 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       const conv = store.getState().conversation;
       expect(conv?.items.length).toBeLessThanOrEqual(500);
+    });
+
+    it("keeps repeated warning identities stable through a later item update", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [{ kind: "user", id: "user-1", text: "input" }],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+
+      const warning = {
+        method: "warning",
+        params: { title: "Provider warning", message: "Retrying" },
+      } as AnyNotification;
+      store.getState().applyNotification(warning);
+      store.getState().applyNotification(warning);
+      const warningIdsBefore = (store.getState().conversation?.items ?? [])
+        .filter((item) => item.kind === "failure")
+        .map((item) => item.id);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "user-1",
+            text: "updated input",
+            transcriptEntryIndex: 4,
+          },
+        },
+      } as AnyNotification);
+
+      const warningIdsAfter = (store.getState().conversation?.items ?? [])
+        .filter((item) => item.kind === "failure")
+        .map((item) => item.id);
+      expect(warningIdsBefore).toHaveLength(2);
+      expect(new Set(warningIdsBefore).size).toBe(2);
+      expect(warningIdsAfter).toEqual(warningIdsBefore);
+    });
+
+    it("preserves a command description through live item projection", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "command-1",
+            toolName: "shell",
+            description: "Inspect the source tree",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+
+      const item = store.getState().conversation?.items.find(
+        (candidate) => candidate.id === "command-1",
+      );
+      expect(item).toMatchObject({
+        kind: "activity",
+        detail: { description: "Inspect the source tree" },
+      });
+    });
+
+    it("preserves a user transcript entry index through live item projection", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "fork-source",
+            text: "fork from this input",
+            transcriptEntryIndex: 8,
+          },
+        },
+      } as AnyNotification);
+
+      expect(
+        store.getState().conversation?.items.find(
+          (candidate) => candidate.id === "fork-source",
+        ),
+      ).toMatchObject({
+        kind: "user",
+        transcriptEntryIndex: 8,
+      });
     });
   });
 

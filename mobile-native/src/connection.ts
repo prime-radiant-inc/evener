@@ -138,10 +138,10 @@ export class HubProfiles {
 		const values = await Promise.all(
 			(await this.ids()).map(async (id) => {
 				try {
-			return await this.read(id);
-		} catch {
-			return null;
-		}
+					return await this.read(id);
+				} catch {
+					return null;
+				}
 			}),
 		);
 		return values.flatMap((value) =>

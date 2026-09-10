@@ -101,6 +101,55 @@ describe("hub connections", () => {
 		);
 		expect((await profiles.list()).map((p) => p.id)).toEqual(["a", "b"]);
 	});
+	it("skips one corrupt secure record while preserving valid siblings and their secrets", async () => {
+		const data = new Map<string, string>([
+			["evener.hubs", JSON.stringify(["bad", "good-a", "good-b"])],
+			[
+				"evener.hub.bad",
+				JSON.stringify({
+					id: "bad",
+					name: "Broken",
+					origin: "https://bad.test",
+				}),
+			],
+			[
+				"evener.hub.good-a",
+				JSON.stringify({
+					id: "good-a",
+					name: "Good A",
+					origin: "https://a.test",
+					token: "secret-a",
+				}),
+			],
+			[
+				"evener.hub.good-b",
+				JSON.stringify({
+					id: "good-b",
+					name: "Good B",
+					origin: "https://b.test",
+					token: "secret-b",
+				}),
+			],
+		]);
+		const profiles = new HubProfiles({
+			getItemAsync: async (key) => data.get(key) ?? null,
+			setItemAsync: async (key, value) => {
+				data.set(key, value);
+			},
+			deleteItemAsync: async (key) => {
+				data.delete(key);
+			},
+		});
+
+		expect(await profiles.list()).toEqual([
+			{ id: "good-a", name: "Good A", origin: "https://a.test" },
+			{ id: "good-b", name: "Good B", origin: "https://b.test" },
+		]);
+		expect(await profiles.token("good-a")).toBe("secret-a");
+		expect(await profiles.token("good-b")).toBe("secret-b");
+		expect(data.has("evener.hub.good-a")).toBe(true);
+		expect(data.has("evener.hub.good-b")).toBe(true);
+	});
 
 	it("uses the shared handshake and an authorization header, never URL credentials", async () => {
 		let target = "";

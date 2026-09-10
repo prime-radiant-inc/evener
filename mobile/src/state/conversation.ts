@@ -39,6 +39,7 @@ import type {
   ActivityMember,
 } from "../conversation/model";
 import {
+  clusterActivities,
   projectApproval,
   projectItemAttachments,
   projectQueue,
@@ -93,6 +94,21 @@ function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
     const companion = companions.get(timelineIdentity(item));
     return companion ? [item, companion] : [item];
   });
+}
+
+function activityClusterSegments(
+  cluster: Extract<MobileTimelineItem, { kind: "activity" }>,
+  updatedIndex: number,
+  updatedMember: ActivityMember,
+): MobileTimelineItem[] {
+  const members = cluster.members ? [...cluster.members] : [];
+  members[updatedIndex] = updatedMember;
+  return clusterActivities(
+    members.map((member) => ({
+      family: member.state === "failed" ? `failed:${member.id}` : member.family,
+      item: { kind: "activity", ...member },
+    })),
+  );
 }
 
 export type ConversationStatus =
@@ -2606,7 +2622,9 @@ export function createConversationStore() {
               const items: MobileTimelineItem[] = [];
               let replaced = false;
               const eventIdentity = params.item.transcriptKey ?? params.item.id;
+              const consumedAttachments = new Set<string>();
               for (const item of conv.items) {
+                if (consumedAttachments.has(item.id)) continue;
                 if (
                   item.kind === "activity" &&
                   item.members &&
@@ -2630,16 +2648,32 @@ export function createConversationStore() {
                         ? { position: projectedWithReasoning.position }
                         : {}),
                     };
-                    const members = [...item.members];
-                    members[memberIndex] = nextMember;
-                    replacement[0] = {
-                      ...item,
-                      state: members.some((member) => member.state === "running")
-                        ? "running"
-                        : "completed",
-                      members,
-                    };
-                    items.push(...replacement);
+                    const segments = activityClusterSegments(item, memberIndex, nextMember);
+                    // Rebuild companions beside their source segment. A
+                    // later member update must not move its image ahead of
+                    // earlier members' images or retain an obsolete image.
+                    const attachments = new Map<string, MobileTimelineItem>();
+                    const identities = new Set(
+                      item.members.map((member) => member.transcriptKey ?? member.id),
+                    );
+                    for (const candidate of conv.items) {
+                      const source = attachmentSourceIdentity(candidate);
+                      if (source && identities.has(source)) {
+                        consumedAttachments.add(candidate.id);
+                        attachments.set(source, candidate);
+                      }
+                    }
+                    attachments.delete(eventIdentity);
+                    if (replacement[1]) attachments.set(eventIdentity, replacement[1]);
+                    for (const segment of segments) {
+                      items.push(segment);
+                      if (segment.kind !== "activity") continue;
+                      for (const member of segment.members ?? [segment]) {
+                        const companion = attachments.get(member.transcriptKey ?? member.id);
+                        if (companion) items.push(companion);
+                      }
+                    }
+
                     replaced = true;
                     continue;
                   }

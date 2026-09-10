@@ -855,6 +855,18 @@ describe("projectThread", () => {
       const f = c.items.find((i) => i.kind === "failure");
       if (f?.kind === "failure") expect(f.title).toBe("something went wrong");
     });
+
+    it("keeps identical errors from different turns as distinct stable failure items", () => {
+      const t = thread([turn("turn-a", []), turn("turn-b", [])]);
+      for (const current of t.turns ?? [])
+        current.error = { message: "same provider failure", title: "Provider error" };
+
+      const first = projectThread(t).items.filter((item) => item.kind === "failure");
+      const second = projectThread(t).items.filter((item) => item.kind === "failure");
+      expect(first.map((item) => item.id)).toEqual(["failure:turn-a:Provider error", "failure:turn-b:Provider error"]);
+      expect(new Set(first.map((item) => item.id)).size).toBe(2);
+      expect(second).toEqual(first);
+    });
   });
 
   describe("images / attachments", () => {

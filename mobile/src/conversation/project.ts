@@ -483,7 +483,7 @@ export function projectItemAttachments(
 // if any member is running; otherwise completed (failed members never join a
 // run, so a cluster is never failed).
 
-function clusterActivities(
+export function clusterActivities(
   preItems: PreActivity[],
 ): Extract<MobileTimelineItem, { kind: "activity" }>[] {
   const result: Extract<MobileTimelineItem, { kind: "activity" }>[] = [];

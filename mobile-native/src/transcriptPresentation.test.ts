@@ -32,27 +32,43 @@ const member = (
 	position: { entry: 1, item },
 });
 
-it("flattens clustered members when preferences are unavailable", () => {
-	const items: MobileTimelineItem[] = [
-		{
-			kind: "activity",
-			id: "cluster",
-			label: "shell",
-			family: "tool",
-			state: "completed",
-			detail: {},
-			members: [member("a", "first", 0), member("b", "second", 1)],
-		},
-	];
-	const result = projectNativeTranscript(conversation(items), null);
-	expect(result.items).toEqual([
-		{ kind: "activity", ...member("a", "first", 0) },
-		{ kind: "activity", ...member("b", "second", 1) },
-	]);
-	expect(result.items).not.toBe(items);
-	expect(result.expandByDefault).toBe(false);
-	expect(result.usage).toBeNull();
-});
+it.each([null, undefined])(
+	"flattens every clustered member and preserves attachments when preferences are %s",
+	(config) => {
+		const items: MobileTimelineItem[] = [
+			{
+				kind: "activity",
+				id: "cluster",
+				label: "shell",
+				family: "tool",
+				state: "completed",
+				detail: {},
+				members: [member("a", "first", 0), member("b", "second", 1)],
+			},
+			{
+				kind: "attachments",
+				id: "b:attachments",
+				sourceTranscriptKey: "key-b",
+				items: [{ id: "image", src: "data:image/png;base64,x" }],
+			},
+		];
+		const result = projectNativeTranscript(conversation(items), config);
+		expect(result.items).toEqual([
+			{ kind: "activity", ...member("a", "first", 0) },
+			{ kind: "activity", ...member("b", "second", 1) },
+			items[1],
+		]);
+		expect(result.activityPresentation).toEqual(
+			new Map([
+				["a", { mode: "full" }],
+				["b", { mode: "full" }],
+			]),
+		);
+		expect(result.items).not.toBe(items);
+		expect(result.expandByDefault).toBe(false);
+		expect(result.usage).toBeNull();
+	},
+);
 
 it("unrolls members, applies preset content, and keeps source-linked attachments", () => {
 	const items: MobileTimelineItem[] = [

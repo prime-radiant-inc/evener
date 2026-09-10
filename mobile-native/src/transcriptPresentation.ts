@@ -175,16 +175,19 @@ function usageFor(
 
 export function projectNativeTranscript(
 	conversation: MobileConversation | null,
-	config: TranscriptDisplayConfigV1 | null,
+	config: TranscriptDisplayConfigV1 | null | undefined,
 ): NativeTranscriptPresentation {
 	const source = conversation?.items ?? [];
 	if (!config) {
 		const activityPresentation = new Map<string, ActivityPresentation>();
 		const items = source.flatMap((item) =>
-			item.kind === "activity" && item.members?.length ? item.members.map(memberItem) : [item],
+			item.kind === "activity" && item.members?.length
+				? item.members.map(memberItem)
+				: [item],
 		);
 		for (const item of items)
-			if (item.kind === "activity") activityPresentation.set(item.id, { mode: "full" });
+			if (item.kind === "activity")
+				activityPresentation.set(item.id, { mode: "full" });
 		return {
 			items,
 			activityPresentation,
