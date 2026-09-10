@@ -534,7 +534,19 @@ func (s *Server) flushDeferredTerminalNotifications() {
 		}
 		pending := s.appDeferredTerminalNotifications
 		s.appDeferredTerminalNotifications = nil
-		currentThreadID, currentRef, currentTurns := s.appThreadID, s.appRef, s.appTurns
+		currentThreadID := s.appThreadID
+		if currentThreadID == "" {
+			currentThreadID = s.status.SessionID
+		}
+		currentRef := s.appRef
+		if currentRef == "" && currentThreadID != "" {
+			sourceID := s.appSourceID
+			if sourceID == "" {
+				sourceID = "local"
+			}
+			currentRef = appwire.Ref{SourceID: sourceID, ThreadID: currentThreadID}.String()
+		}
+		currentTurns := s.appTurns
 		retained := pending[:0]
 		for _, item := range pending {
 			if item.threadID == currentThreadID && item.ref == currentRef && item.snapshot == currentTurns {

@@ -192,6 +192,51 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 	}
 }
 
+func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state string
+	}{
+		{name: "idle", state: "idle"},
+		{name: "closed", state: "closed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const threadID = "status-only-abandoned"
+			srv := NewServer(ServerConfig{})
+			srv.SetStatus(StatusInfo{SessionID: threadID, State: "active"})
+			client := dialServerAppWire(t, srv)
+			if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}); err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: threadID, Data: events.UserInputData{Text: "old", StableTurnID: "old-turn"}})
+			srv.SetProcessingTurn("abandoned-turn")
+			BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{Reason: "abandoned", State: tc.state}}, nil)
+			srv.SetProcessing(false)
+
+			deadline := time.After(time.Second)
+			for {
+				select {
+				case notification := <-client.Notifications():
+					if (tc.state == "idle" && notification.Method != appwire.NotifyThreadStatusChanged) ||
+						(tc.state == "closed" && notification.Method != appwire.NotifyThreadClosed) {
+						continue
+					}
+					read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID})
+					if err != nil {
+						t.Fatalf("read after deferred %s status: %v", tc.state, err)
+					}
+					if read.Thread.Status.Type != tc.state {
+						t.Fatalf("read status=%q, want %q", read.Thread.Status.Type, tc.state)
+					}
+					return
+				case <-deadline:
+					t.Fatalf("status-only identity received no deferred %s notification", tc.state)
+				}
+			}
+		})
+	}
+}
+
 func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
