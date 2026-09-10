@@ -221,6 +221,15 @@ func TestServerAppWireAbandonedCarrierUsesStatusIdentityBeforeAppIdentity(t *tes
 						(tc.state == "closed" && notification.Method != appwire.NotifyThreadClosed) {
 						continue
 					}
+					if tc.state == "idle" {
+						var params appwire.ThreadStatusChangedParams
+						if err := json.Unmarshal(notification.Params, &params); err != nil {
+							t.Fatalf("decode status: %v", err)
+						}
+						if params.Status.Type != appwire.ThreadStatusIdle {
+							continue
+						}
+					}
 					read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + threadID})
 					if err != nil {
 						t.Fatalf("read after deferred %s status: %v", tc.state, err)
