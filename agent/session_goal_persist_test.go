@@ -150,3 +150,48 @@ func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
 		t.Fatalf("post-nudge turn = (%v, %v), want blocked", snap.Status, active)
 	}
 }
+
+// TestGoalPersist_LegacyExpiryBackfill pins M3 (round-13): pre-upgrade
+// snapshots persist expiry fires with Expiry unset (omitempty) and the
+// "wait expired: ..." trigger. After restore the lease-expiry entry carries
+// Expiry=true — so claimedPredicateFire-equivalent behavior holds (no
+// advancement through timer refires) — while the synthetic deadline entry
+// (WaitID "deadline") is NOT backfilled through this path (it keys on
+// WaitID separately in claimedPredicateFire).
+func TestGoalPersist_LegacyExpiryBackfill(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	g := &schema.GoalSnapshot{
+		Objective: "legacy expiry",
+		Status:    string(goal.StatusActive),
+		CreatedAt: now,
+		UpdatedAt: now.Add(time.Minute),
+		Budgets: &schema.GoalBudgetsSnapshot{
+			MaxContinuations: goal.DefaultMaxContinuations,
+			Deadline:         now.Add(goal.DefaultGoalDeadline),
+		},
+		PendingWake: []schema.GoalPendingWakeSnapshot{
+			{WaitID: "wait_1", Trigger: "wait expired: timer", FiredAt: now, Kind: string(goal.WaitUntilTime)},
+			{WaitID: goal.DeadlineWakeID, Trigger: "deadline exceeded (waiting on timer)", FiredAt: now},
+		},
+	}
+
+	fresh := goal.NewStore()
+	fresh.RestoreSnapshot(goalRestoreToStore(g, now.Add(time.Minute)))
+	full, ok := fresh.GoalSnapshot()
+	if !ok {
+		t.Fatal("restored store must have a goal")
+	}
+	if len(full.PendingWake) != 2 {
+		t.Fatalf("restored pendingWake = %+v, want 2 entries", full.PendingWake)
+	}
+	if !full.PendingWake[0].Expiry {
+		t.Fatalf("legacy lease-expiry entry must backfill Expiry=true: %+v", full.PendingWake[0])
+	}
+	if full.PendingWake[1].Expiry {
+		t.Fatalf("synthetic deadline entry must not backfill Expiry through this path (WaitID-keyed): %+v", full.PendingWake[1])
+	}
+	if claimedPredicateFire(full.PendingWake[:1]) {
+		t.Fatal("backfilled lease-expiry entry must not count as predicate advancement")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -1088,7 +1089,10 @@ func stallBlockText(store *goal.Store) string {
 // childTerminalTrigger reports the terminal trigger for a direct child target
 // (the §8 gate attach-scan): terminal-only — a non-terminal or unknown child
 // reads false and never claims. Controller reads are §3-top pre-reads
-// (acquire, read, release — never held across the claim).
+// (acquire, read, release — never held across the claim). Restored children
+// whose runtime is untracked still resolve through their durable delegate
+// record (Descriptor.ChildSessionID, PhaseClosed — mirroring the
+// LookupDelegate PhaseClosed branch).
 func (s *Session) childTerminalTrigger(childID string) (string, bool) {
 	if s == nil || s.subagents == nil || childID == "" {
 		return "", false
@@ -1109,6 +1113,34 @@ func (s *Session) childTerminalTrigger(childID string) (string, bool) {
 			trigger += ": " + strings.TrimSpace(result)
 		}
 		return trigger, true
+	}
+	if c := s.delegateController; c != nil {
+		c.mu.Lock()
+		var outcome string
+		var reason string
+		terminal := false
+		for _, agg := range c.durable {
+			if agg == nil || agg.Descriptor.ChildSessionID != childID {
+				continue
+			}
+			if agg.Phase != delegatestore.PhaseClosed {
+				continue
+			}
+			terminal = true
+			if agg.LatestOutcome != nil {
+				outcome = string(agg.LatestOutcome.Status)
+				reason = agg.LatestOutcome.Reason
+			}
+			break
+		}
+		c.mu.Unlock()
+		if terminal {
+			trigger := "child " + childID + " terminal"
+			if detail := strings.TrimSpace(strings.TrimSpace(outcome + " " + reason)); detail != "" {
+				trigger += ": " + detail
+			}
+			return trigger, true
+		}
 	}
 	return "", false
 }

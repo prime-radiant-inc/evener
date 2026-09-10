@@ -466,6 +466,67 @@ func TestGoalChildRegisterTerminalCatchesUp(t *testing.T) {
 	}
 }
 
+// TestGoalChildDurableTerminalCatchesUp pins M2 (round-13): an until_child
+// lease on a restored-but-untracked terminal child (durable delegate record
+// in PhaseClosed, no tracked subagent runtime) catches up immediately with
+// the durable terminal trigger — mirroring the LookupDelegate PhaseClosed
+// branch — instead of parking with no guaranteed future notification. A
+// non-terminal durable record never catches up (terminal-only matching).
+func TestGoalChildDurableTerminalCatchesUp(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	sess := newWaitGateSession(t, clk)
+	defer sess.Close()
+	wireKickAndNotify(sess)
+
+	sess.delegateController = &delegateTreeController{
+		durable: delegatestore.State{
+			"dlg_done": &delegatestore.Aggregate{
+				DelegateID: "dlg_done",
+				Descriptor: delegatestore.Descriptor{ChildSessionID: "restored_done"},
+				Phase:      delegatestore.PhaseClosed,
+				LatestOutcome: &delegatestore.Outcome{
+					Status: delegatestore.OutcomeCompleted,
+				},
+			},
+			"dlg_live": &delegatestore.Aggregate{
+				DelegateID: "dlg_live",
+				Descriptor: delegatestore.Descriptor{ChildSessionID: "restored_live"},
+				Phase:      delegatestore.PhaseRunning,
+			},
+		},
+	}
+	defer func() { sess.delegateController = nil }()
+
+	if trigger, ok := sess.childTerminalTrigger("restored_done"); !ok || !strings.Contains(trigger, "restored_done") {
+		t.Fatalf("durable-terminal trigger = (%q, %v), want the terminal trigger carrying the child identity", trigger, ok)
+	}
+	if trigger, ok := sess.childTerminalTrigger("restored_live"); ok || trigger != "" {
+		t.Fatalf("non-terminal durable trigger = (%q, %v), want no catch-up (terminal-only matching)", trigger, ok)
+	}
+	if trigger, ok := sess.childTerminalTrigger("no_such_child"); ok || trigger != "" {
+		t.Fatalf("unknown-child trigger = (%q, %v), want no catch-up", trigger, ok)
+	}
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("wait on the restored child", clk.Now())
+	w, ok := sess.registerGoalWait(goal.WaitKind{Kind: goal.WaitUntilChild, Target: "restored_done", Timeout: time.Hour}, clk.Now())
+	if !ok {
+		t.Fatalf("precondition: until_child on a durable-known descendant must register: %q", store.LastRejectReason())
+	}
+	full, _ := store.GoalSnapshot()
+	if len(full.PendingWake) != 1 || full.PendingWake[0].WaitID != w.Lease.WaitID {
+		t.Fatalf("pendingWake = %+v, want the durable-terminal catch-up claim for %q", full.PendingWake, w.Lease.WaitID)
+	}
+	if !strings.Contains(full.PendingWake[0].Trigger, "restored_done") {
+		t.Fatalf("catch-up trigger = %q, must carry the terminal child identity", full.PendingWake[0].Trigger)
+	}
+	prompt, cont := sess.armGoalContinuation(false, true)
+	if !cont || !strings.Contains(prompt, "restored_done") {
+		t.Fatalf("gate = (%q, %v), want the catch-up wake drive", prompt, cont)
+	}
+}
+
 // TestGoalChildForwardSiblingWakeDelivers pins Important-3: a forward that
 // claims a live sibling waiter's until_child must also DELIVER the wake —
 // claiming into the store without driving strands it (delegate children own

@@ -143,11 +143,12 @@ const MaxConsecutiveAutoReparks = 3
 
 // AttachScanCooldown is the §5 same-predicate cooldown (spec §2 defaults
 // table, §5): after an attach-scan-true immediate drive, the same target
-// identity may not re-park for this long — the re-park rejects with the
-// cooldown named instead of closing a tight park/wake loop. Keyed by target
-// identity (path / URL / job id / delegate id / approval key / child id),
-// not full payload. Poll ticks (60s floor) never trigger it: only
-// registration/restore attach-scan and notification races consult it.
+// predicate may not re-park for this long — the re-park rejects with the
+// cooldown named instead of closing a tight park/wake loop. Keyed by
+// (kind, event-subtype, target), not target alone: the same target string
+// on a different kind is a different predicate. Poll ticks (60s floor)
+// never trigger it: only registration/restore attach-scan and notification
+// races consult it.
 const AttachScanCooldown = 30 * time.Second
 
 // DeadlineExpiryTrigger is the trigger excerpt prefix for the synthetic
@@ -181,9 +182,13 @@ const (
 // decision plus the claim/notice payload. Expiry marks a deadline-passed fire
 // (never arms the §5 cooldown); predicate fires arm it.
 type WaitClassification struct {
-	WaitID      string
-	Target      string
-	Kind        Kind
+	WaitID string
+	Target string
+	Kind   Kind
+	// Subtype selects the UntilEvent flavor for the cooldown key
+	// (cooldownKey): same-string targets on different subtypes are
+	// different predicates. Empty for non-event kinds.
+	Subtype     EventSubtype
 	Disposition WaitDisposition
 	// Trigger is the pendingWake excerpt for a fire.
 	Trigger string
@@ -487,9 +492,10 @@ type Store struct {
 	// the Task-3 tool surface propagates it as the validation error.
 	lastRejectReason string
 	// cooldownUntil records the §5 same-predicate cooldown per target
-	// identity (spec §2 defaults table): an attach-scan-true immediate drive
-	// arms it, and a same-target re-park before it lapses rejects with the
-	// cooldown named. Keyed by target identity, not full payload.
+	// predicate (spec §2 defaults table): an attach-scan-true immediate
+	// drive arms it, and a same-predicate re-park before it lapses rejects
+	// with the cooldown named. Keyed by cooldownKey (kind, event-subtype,
+	// target), not target alone.
 	cooldownUntil map[string]time.Time
 	// parkEnter records the sclock instant of the latest transition into
 	// waiting (registration park or gate park). ParkedTotal accrues
@@ -500,6 +506,13 @@ type Store struct {
 
 // NewStore returns an empty Store.
 func NewStore() *Store { return &Store{} }
+
+// cooldownKey keys the §5 same-predicate cooldown on (kind, event-subtype,
+// target): the same target string on a different kind (or event subtype) is
+// a different predicate and must not share the cooldown.
+func cooldownKey(kind Kind, subtype EventSubtype, target string) string {
+	return string(kind) + "\x00" + string(subtype) + "\x00" + target
+}
 
 // ClassifyWaits evaluates every live lease against the live substrate at one
 // tick (spec §§1-2: the predicateTruth seam plus the expiry/loss routing).
@@ -534,7 +547,7 @@ func (s *Store) ClassifyWaits(waits []Wait, now time.Time, childTerminal func(ch
 		if !w.Live() {
 			continue
 		}
-		c := WaitClassification{WaitID: w.Lease.WaitID, Target: w.Lease.Predicate.Target, Kind: w.Lease.Kind}
+		c := WaitClassification{WaitID: w.Lease.WaitID, Target: w.Lease.Predicate.Target, Kind: w.Lease.Kind, Subtype: w.Lease.Predicate.EventSubtype}
 		// Expiry binds every kind (spec §1 rule 1): a passed lease deadline
 		// fires exactly once via ClaimFire regardless of predicate truth.
 		if !now.Before(w.Lease.Deadline) {
@@ -778,6 +791,19 @@ func cloneLedgerSummary(in LedgerSummary) LedgerSummary {
 // SetSubstrate wiring is a later task's job; nil substrate rejects every
 // substrate kind fail-closed.)
 func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
+	// Baseline pre-read (lock-order discipline, cf. ClassifyWaits): StatFile
+	// is a session read (Session.mu → env) that must never run under the
+	// store lock. Snapshot the substrate pointer under a short hold, stat
+	// outside it, then re-acquire to mutate. SetSubstrate runs once at
+	// wiring, so the pointer is stable across the two holds.
+	s.mu.Lock()
+	preSub := s.substrate
+	s.mu.Unlock()
+	var preBaseline string
+	var preBaselineOK bool
+	if req.Kind == WaitUntilEvent && req.EventSubtype == EventFileModified && preSub != nil {
+		preBaseline, preBaselineOK = preSub.StatFile(req.Target)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := s.goal
@@ -808,10 +834,11 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	// is a different wait), so an identical re-register dedupes instead of
 	// minting a duplicate lease. The replace-then-rescan below only
 	// handles the same-target-different-deadline shape.
-	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified && s.substrate != nil {
-		if baseline, ok := s.substrate.StatFile(norm.Target); ok {
-			norm.Baseline = baseline
-		}
+	// The baseline is the hoisted pre-read above (never re-stat under the
+	// lock — see the pre-read note): it feeds norm pre-key exactly as the
+	// in-lock stat did.
+	if norm.Kind == WaitUntilEvent && norm.EventSubtype == EventFileModified && s.substrate != nil && preBaselineOK {
+		norm.Baseline = preBaseline
 	}
 	key := idempotencyKey(norm, deadline)
 	for _, w := range g.Waits {
@@ -822,11 +849,11 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			return w, true
 		}
 	}
-	// §5 same-predicate cooldown (spec §2 defaults table): a same-target
+	// §5 same-predicate cooldown (spec §2 defaults table): a same-predicate
 	// re-park before the attach-scan-true drive's cooldown lapses rejects
 	// with the cooldown named instead of closing a tight park/wake loop.
 	// Poll ticks never consult it — registration does.
-	if until, ok := s.cooldownUntil[norm.Target]; ok && norm.Target != "" && now.Before(until) {
+	if until, ok := s.cooldownUntil[cooldownKey(norm.Kind, norm.EventSubtype, norm.Target)]; ok && norm.Target != "" && now.Before(until) {
 		s.lastRejectReason = fmt.Sprintf("same-predicate cooldown for %q until %s: attach-scan drove an evaluation turn; re-park after the cooldown", norm.Target, until.UTC().Format(time.RFC3339))
 		return Wait{}, false
 	}
@@ -972,8 +999,12 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 		// the retention window, so fire immediately with the terminal outcome
 		// as the trigger excerpt instead of parking. The pendingWake entry
 		// drives exactly one evaluation turn via rule 1; no live lease
-		// remains and the goal stays active.
+		// remains, so a waiting goal returns to active like the ClaimFire
+		// consume (kept carries no live lease to park on).
 		g.Waits = kept
+		if !hasLiveWait(kept) && g.Status == StatusWaiting {
+			g.Status = StatusActive
+		}
 		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: catchUp, FiredAt: now, Kind: w.Lease.Kind})
 		g.UpdatedAt = now
 		s.settleParkAnchorLocked(now)
@@ -995,6 +1026,9 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 	}
 	if fire, trigger, _, _ := waitPredicateTruth(sub, scanWait, nil); fire {
 		g.Waits = kept
+		if !hasLiveWait(kept) && g.Status == StatusWaiting {
+			g.Status = StatusActive
+		}
 		g.PendingWake = append(g.PendingWake, PendingWake{WaitID: w.Lease.WaitID, Trigger: trigger, FiredAt: now, Kind: w.Lease.Kind})
 		g.UpdatedAt = now
 		s.settleParkAnchorLocked(now)
@@ -1002,7 +1036,7 @@ func (s *Store) RegisterWait(req WaitKind, now time.Time) (Wait, bool) {
 			s.cooldownUntil = make(map[string]time.Time)
 		}
 		if norm.Target != "" {
-			s.cooldownUntil[norm.Target] = now.Add(AttachScanCooldown)
+			s.cooldownUntil[cooldownKey(norm.Kind, norm.EventSubtype, norm.Target)] = now.Add(AttachScanCooldown)
 		}
 		s.lastRejectReason = ""
 		return w, true
@@ -1169,7 +1203,7 @@ func (s *Store) ClaimClassified(batch []WaitClassification, now time.Time) (clai
 					if s.cooldownUntil == nil {
 						s.cooldownUntil = make(map[string]time.Time)
 					}
-					s.cooldownUntil[c.Target] = now.Add(AttachScanCooldown)
+					s.cooldownUntil[cooldownKey(entry.Kind, c.Subtype, c.Target)] = now.Add(AttachScanCooldown)
 					s.mu.Unlock()
 				}
 			}
@@ -1390,14 +1424,15 @@ func (s *Store) SetDeadlineFinalDelivered(v bool, now time.Time) {
 	s.goal.UpdatedAt = now
 }
 
-// CheckCooldown reports whether target identity is inside the §5 same-predicate
+// CheckCooldown reports whether the (kind, event-subtype, target) predicate is
+// inside the §5 same-predicate
 // cooldown at now (spec §2 defaults table, §5): a same-target re-park before
 // the instant lapses rejects with the cooldown named instead of closing a
 // tight park/wake loop. Poll ticks never consult it.
-func (s *Store) CheckCooldown(target string, now time.Time) (time.Time, bool) {
+func (s *Store) CheckCooldown(kind Kind, subtype EventSubtype, target string, now time.Time) (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	until, ok := s.cooldownUntil[target]
+	until, ok := s.cooldownUntil[cooldownKey(kind, subtype, target)]
 	if !ok || !now.Before(until) {
 		return time.Time{}, false
 	}

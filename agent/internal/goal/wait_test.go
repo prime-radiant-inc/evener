@@ -337,3 +337,101 @@ func TestCancelWaitAndClaimFire(t *testing.T) {
 		t.Fatalf("cancel of the last live lease returns to active: %+v", snap)
 	}
 }
+
+// TestRegisterWaitCatchUpReplacesLastLiveWaitReturnsActive pins M1
+// (round-13): a retained-terminal catch-up that replaces the goal's only live
+// lease must return the waiting goal to active — the pendingWake entry drives
+// the turn via rule 1, so no live lease remains to park on.
+func TestRegisterWaitCatchUpReplacesLastLiveWaitReturnsActive(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	jobs := map[string]fakeTarget{"job_1": {live: true}}
+	s.SetSubstrate(&fakeSubstrate{jobs: jobs})
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_1", Timeout: time.Minute}, waveBClock()); !ok {
+		t.Fatalf("precondition: live job must park: %q", s.LastRejectReason())
+	}
+	if snap, _ := s.Snapshot(); snap.Status != goal.StatusWaiting {
+		t.Fatalf("precondition: status = %q, want waiting", snap.Status)
+	}
+	// The target reaches terminal inside retention; re-registering the same
+	// target (new deadline, so no dedupe) replaces the only live lease and
+	// catches up immediately.
+	jobs["job_1"] = fakeTarget{retained: true, excerpt: "job job_1 exited 0"}
+	w, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "job_1", Timeout: 2 * time.Minute}, waveBClock().Add(time.Second))
+	if !ok {
+		t.Fatalf("retained-terminal re-register must catch up: %q", s.LastRejectReason())
+	}
+	if snap, _ := s.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("catch-up replacing the last live lease must return to active: %+v", snap)
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if goal.HasLiveWait(gsnap.Waits) {
+		t.Fatalf("catch-up leaves no live lease: %+v", gsnap.Waits)
+	}
+	if len(gsnap.PendingWake) != 1 || gsnap.PendingWake[0].WaitID != w.Lease.WaitID {
+		t.Fatalf("want exactly one pending wake for %q, got %+v", w.Lease.WaitID, gsnap.PendingWake)
+	}
+}
+
+// TestRegisterWaitAttachScanReplacesLastLiveWaitReturnsActive pins M1
+// (round-13): an attach-scan-true fire that replaces the goal's only live
+// lease must return the waiting goal to active, like the ClaimFire consume.
+func TestRegisterWaitAttachScanReplacesLastLiveWaitReturnsActive(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	files := map[string]string{"/sandbox/plan.md": "base-1"}
+	s.SetSubstrate(&fakeSubstrate{files: files})
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Minute}, waveBClock()); !ok {
+		t.Fatalf("precondition: stat-able file must park: %q", s.LastRejectReason())
+	}
+	if snap, _ := s.Snapshot(); snap.Status != goal.StatusWaiting {
+		t.Fatalf("precondition: status = %q, want waiting", snap.Status)
+	}
+	// The file changes; re-registering the same target replaces the only live
+	// lease and the attach-scan sees the delta against the replaced baseline.
+	files["/sandbox/plan.md"] = "base-2"
+	w, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "/sandbox/plan.md", Timeout: time.Minute}, waveBClock().Add(time.Second))
+	if !ok {
+		t.Fatalf("attach-scan-true re-register must fire: %q", s.LastRejectReason())
+	}
+	if snap, _ := s.Snapshot(); snap.Status != goal.StatusActive {
+		t.Fatalf("attach-scan replacing the last live lease must return to active: %+v", snap)
+	}
+	gsnap, _ := s.GoalSnapshot()
+	if goal.HasLiveWait(gsnap.Waits) {
+		t.Fatalf("attach-scan fire leaves no live lease: %+v", gsnap.Waits)
+	}
+	if len(gsnap.PendingWake) != 1 || gsnap.PendingWake[0].WaitID != w.Lease.WaitID {
+		t.Fatalf("want exactly one pending wake for %q, got %+v", w.Lease.WaitID, gsnap.PendingWake)
+	}
+}
+
+// TestCooldownKeyedByKindAndSubtype pins L1 (round-13): the §5 same-predicate
+// cooldown keys on (kind, event-subtype, target), so a fire on one kind never
+// blocks the same-string target on a different kind.
+func TestCooldownKeyedByKindAndSubtype(t *testing.T) {
+	s := goal.NewStore()
+	s.Set("x", waveBClock())
+	files := map[string]string{"shared": "base-1"}
+	jobs := map[string]fakeTarget{"shared": {live: true}}
+	s.SetSubstrate(&fakeSubstrate{files: files, jobs: jobs})
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "shared", Timeout: time.Hour}, waveBClock()); !ok {
+		t.Fatalf("precondition: file wait must park: %q", s.LastRejectReason())
+	}
+	files["shared"] = "base-2"
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "shared", Timeout: time.Hour}, waveBClock().Add(time.Second)); !ok {
+		t.Fatalf("precondition: attach-scan-true must fire: %q", s.LastRejectReason())
+	}
+	// Same-string target on a different kind: no cooldown rejection.
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilJob, Target: "shared", Timeout: time.Hour}, waveBClock().Add(2*time.Second)); !ok {
+		t.Fatalf("different-kind same-target must not hit the cooldown: %q", s.LastRejectReason())
+	}
+	// Same kind + subtype + target still cools down.
+	files["shared"] = "base-3"
+	if _, ok := s.RegisterWait(goal.WaitKind{Kind: goal.WaitUntilEvent, EventSubtype: goal.EventFileModified, Target: "shared", Timeout: time.Hour}, waveBClock().Add(3*time.Second)); ok {
+		t.Fatal("same-kind same-target re-park inside the cooldown must reject")
+	}
+	if reason := s.LastRejectReason(); !strings.Contains(reason, "cooldown") {
+		t.Fatalf("reject reason %q must name the cooldown", reason)
+	}
+}

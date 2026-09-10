@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/goal"
@@ -142,13 +143,23 @@ func goalRestoreToStore(g *schema.GoalSnapshot, restoreTime time.Time) goal.Pers
 		}})
 	}
 	for _, p := range g.PendingWake {
+		// Legacy backfill (round-13 M3): pre-upgrade snapshots persist
+		// lease-expiry fires with Expiry unset (omitempty) and the
+		// "wait expired: ..." trigger. Backfill the structural mark here —
+		// without it the restored entry would count as advancement. The
+		// synthetic deadline wake (WaitID "deadline") is excluded: it keys
+		// on WaitID separately in claimedPredicateFire.
+		expiry := p.Expiry
+		if !expiry && p.WaitID != goal.DeadlineWakeID && strings.HasPrefix(p.Trigger, "wait expired: ") {
+			expiry = true
+		}
 		out.PendingWake = append(out.PendingWake, goal.PendingWake{
 			WaitID:     p.WaitID,
 			Trigger:    p.Trigger,
 			FiredAt:    p.FiredAt,
 			Superseded: p.Superseded,
 			Kind:       goal.Kind(p.Kind),
-			Expiry:     p.Expiry,
+			Expiry:     expiry,
 		})
 	}
 	if g.LedgerSummary != nil {
