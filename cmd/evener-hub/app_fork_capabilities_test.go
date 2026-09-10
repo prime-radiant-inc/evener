@@ -84,8 +84,8 @@ func TestHubForkAdmissionLoadsOwnershipWhenPastIndexIsUnavailable(t *testing.T) 
 	}{
 		{name: "past nil root", wantOK: true},
 		{name: "past miss root", past: hubcore.NewPastIndex(""), wantOK: true},
-		{name: "past nil subagent", child: true},
-		{name: "past miss subagent", past: hubcore.NewPastIndex(""), child: true},
+		{name: "past nil persisted subagent", child: true, wantOK: true},
+		{name: "past miss persisted subagent", past: hubcore.NewPastIndex(""), child: true, wantOK: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
@@ -115,7 +115,7 @@ func TestHubForkAdmissionLoadsOwnershipWhenPastIndexIsUnavailable(t *testing.T) 
 					t.Fatalf("root fork rejected: %v", err)
 				}
 			} else if err == nil {
-				t.Fatal("subagent fork succeeded without indexed ownership")
+				t.Fatal("fork failed unexpectedly")
 			}
 		})
 	}

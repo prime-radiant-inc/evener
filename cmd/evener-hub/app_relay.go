@@ -234,14 +234,19 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 		return notification
 	}
 	var params struct {
-		Status         appwire.ThreadStatus       `json:"status"`
-		Capabilities   map[string]json.RawMessage `json:"capabilities"`
-		ResumeRequired bool                       `json:"resumeRequired"`
+		Status       appwire.ThreadStatus       `json:"status"`
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
 	}
 	if json.Unmarshal(notification.Params, &params) != nil || params.Capabilities == nil {
 		return notification
 	}
-	fenced := params.ResumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired")
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(notification.Params, &raw); err != nil {
+		return notification
+	}
+	var resumeRequired bool
+	_ = json.Unmarshal(raw["resumeRequired"], &resumeRequired)
+	fenced := resumeRequired || params.Status.Type == appwire.ThreadStatusRestartRequired || slices.Contains(params.Status.ActiveFlags, "resumeRequired")
 	if allowFork && !fenced {
 		params.Capabilities["forkFromTurn"] = json.RawMessage("true")
 	} else {
@@ -251,10 +256,6 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 	}
 	encoded, err := json.Marshal(params.Capabilities)
 	if err != nil {
-		return notification
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(notification.Params, &raw); err != nil {
 		return notification
 	}
 	raw["capabilities"] = encoded
