@@ -40,7 +40,7 @@ func TestAdoptedIntentSpendPersistsDurably(t *testing.T) {
 	if _, _, ok := s.pendingNotesHumanIntent("outer-adopt-spend-a"); ok {
 		t.Fatal("adopted intent still pending after spend, want it consumed")
 	}
-	if _, ok := s.pendingNotesHumanIntent("outer-adopt-spend-b"); ok {
+	if _, _, ok := s.pendingNotesHumanIntent("outer-adopt-spend-b"); ok {
 		t.Fatal("adopter intent still pending after applied result, want it cleared")
 	}
 	// A further same-text save steers nothing more: delivery finished exactly
