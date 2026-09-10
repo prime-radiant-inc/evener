@@ -279,14 +279,12 @@ function heldCluster(): MobileTimelineItem {
   };
 }
 
-async function beginHeldClusterRehydrate(
-  rereadItems: MobileTimelineItem[],
-) {
+async function beginHeldClusterRehydrate() {
   const service = new FakeConversationService();
   const stale = makeConversation({ items: [heldCluster()] });
   service.openConv = stale;
   service.readProjectionResult = {
-    conversation: makeConversation({ items: rereadItems }),
+    conversation: stale,
     activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities },
     olderCursor: null,
   };
@@ -1546,7 +1544,7 @@ describe("ConversationStore", () => {
     });
 
     it("retains an omitted live-owned cluster during a held rehydrate", async () => {
-      const { store, release, rehydratePromise } = await beginHeldClusterRehydrate([]);
+      const { store, release, rehydratePromise } = await beginHeldClusterRehydrate();
       store.getState().applyNotification({
         method: "item/completed",
         params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" } },
@@ -1554,18 +1552,38 @@ describe("ConversationStore", () => {
       release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
       await rehydratePromise;
       expect(store.getState().conversation?.items.filter((item) => item.kind === "activity")).toHaveLength(1);
+      const members = store.getState().conversation?.items.flatMap((item) => item.kind === "activity" ? item.members ?? [item] : []) ?? [];
+      expect(members.map((member) => member.transcriptKey)).toEqual(["first", "later"]);
+      expect(members[1]?.detail.output).toBe("updated");
     });
 
-    it("keeps both members when a later failure splits a held cluster", async () => {
-      const { store, stale, release, rehydratePromise } = await beginHeldClusterRehydrate([heldCluster()]);
+    it.each([false, true])("keeps a failed member separate during a held rehydrate with page history %s", async (withPageHistory) => {
+      const { store, service, stale, release, rehydratePromise } = await beginHeldClusterRehydrate();
+      if (withPageHistory) {
+        service.olderItems = { items: [{ kind: "user", id: "older", text: "older" }], nextCursor: undefined };
+        store.setState({ olderCursor: "older-cursor" });
+        await store.getState().loadOlder(service);
+      }
       store.getState().applyNotification({
         method: "item/completed",
         params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "failed", output: "failed", error: "boom" } },
       } as AnyNotification);
-      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      // The read is newer for the untouched first member, but predates the
+      // second member's failure. Ownership must be resolved per member.
+      const snapshot = heldCluster();
+      if (snapshot.kind !== "activity" || !snapshot.members) throw new Error("invalid fixture");
+      const first = snapshot.members[0];
+      if (!first) throw new Error("missing first member");
+      snapshot.members[0] = { ...first, state: "completed", detail: { output: "authoritative first" } };
+      release({ conversation: { ...stale, items: [snapshot] }, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
       await rehydratePromise;
-      const members = store.getState().conversation?.items.flatMap((item) => item.kind === "activity" ? item.members ?? [item] : []).map((member) => member.transcriptKey ?? member.id) ?? [];
-      expect(members).toEqual(["first", "later"]);
+      const activities = store.getState().conversation?.items.filter((item) => item.kind === "activity") ?? [];
+      expect(activities).toHaveLength(2);
+      expect(activities.map((item) => item.transcriptKey)).toEqual(["first", "later"]);
+      expect(activities[0]).toMatchObject({ state: "completed", detail: { output: "authoritative first" } });
+      expect(activities[1]).toMatchObject({ state: "failed", detail: { output: "failed" } });
+      expect(activities.every((item) => !item.members)).toBe(true);
+      if (withPageHistory) expect(store.getState().conversation?.items[0]?.id).toBe("older");
     });
 
     it("does not resurrect a removed image when an attachment wire ID changes", async () => {

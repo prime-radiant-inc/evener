@@ -98,43 +98,56 @@ function isLiveOwned(
   return [...timelineIdentities(item)].some((identity) => revisions.has(identity));
 }
 
+function projectActivityMembers(members: ActivityMember[]): MobileTimelineItem[] {
+  return clusterActivities(
+    members.map((member) => ({
+      family: member.state === "failed" ? `failed:${member.id}` : member.family,
+      item: { kind: "activity", ...member },
+    })),
+  );
+}
+
 function mergeLiveActivityMembers(
-  snapshot: MobileTimelineItem,
+  snapshot: Extract<MobileTimelineItem, { kind: "activity" }>,
   currentItems: MobileTimelineItem[],
   revisions: Map<string, number>,
-): MobileTimelineItem | undefined {
-  if (snapshot.kind !== "activity" || !snapshot.members) return undefined;
-  const snapshotIdentities = timelineIdentities(snapshot);
-  const candidates = currentItems.filter(
-    (candidate) =>
-      candidate.kind === "activity" &&
-      [...timelineIdentities(candidate)].some((id) => snapshotIdentities.has(id)),
-  );
-  if (candidates.length === 0) return undefined;
-  const members = new Map<string, ActivityMember>();
-  const memberRevisions = new Map<string, number>();
-  for (const candidate of candidates) {
+  entryRevision: number,
+): MobileTimelineItem[] | undefined {
+  const liveMembers = new Map<string, ActivityMember>();
+  for (const candidate of currentItems) {
     if (candidate.kind !== "activity") continue;
-    const candidateMembers = candidate.members ?? [candidate];
-    const revision = liveRevisionForItem(candidate, revisions);
-    for (const member of candidateMembers) {
+    for (const member of candidate.members ?? [candidate]) {
       const identity = member.transcriptKey ?? member.id;
-      if (revision >= (memberRevisions.get(identity) ?? -1)) {
-        members.set(identity, member);
-        memberRevisions.set(identity, revision);
+      if ((revisions.get(identity) ?? 0) > entryRevision) {
+        liveMembers.set(identity, member);
       }
     }
   }
-  const mergedMembers = snapshot.members.map(
-    (member) => members.get(member.transcriptKey ?? member.id) ?? member,
-  );
-  return {
-    ...snapshot,
-    state: mergedMembers.some((member) => member.state === "running")
-      ? "running"
-      : "completed",
-    members: mergedMembers,
-  };
+  let changed = false;
+  const members = (snapshot.members ?? [snapshot]).map((member) => {
+    const current = liveMembers.get(member.transcriptKey ?? member.id);
+    if (current) changed = true;
+    return current ?? member;
+  });
+  // Reuse the lifecycle projector so failed members retain their own rows.
+  return changed ? projectActivityMembers(members) : undefined;
+}
+
+function itemsAbsentFromSnapshot(
+  items: MobileTimelineItem[],
+  snapshotIdentities: Set<string>,
+  snapshotRows: Set<string>,
+): MobileTimelineItem[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "activity") {
+      return snapshotRows.has(timelineIdentity(item)) ? [] : [item];
+    }
+    const members = item.members ?? [item];
+    const omitted = members.filter(
+      (member) => !snapshotIdentities.has(member.transcriptKey ?? member.id),
+    );
+    return omitted.length === members.length ? [item] : projectActivityMembers(omitted);
+  });
 }
 
 function decorateLifecycleItem(
@@ -151,7 +164,8 @@ function decorateLifecycleItem(
 // Snapshot/live-tail merging can introduce a companion after later messages.
 // Keep attachments beside their source whenever both rows are retained.
 function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  const ids = new Set(items.map(timelineIdentity));
+  const sourceItems = items.filter((item) => item.kind !== "attachments");
+  const ids = new Set(sourceItems.flatMap((item) => [...timelineIdentities(item)]));
   const companions = new Map<string, MobileTimelineItem>();
   for (const item of items) {
     const sourceId = attachmentSourceIdentity(item);
@@ -159,9 +173,12 @@ function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
   }
   return items.flatMap((item) => {
     const sourceId = attachmentSourceIdentity(item);
-    if (sourceId !== null && companions.has(sourceId)) return [];
-    const companion = companions.get(timelineIdentity(item));
-    return companion ? [item, companion] : [item];
+    if (sourceId !== null) return companions.has(sourceId) ? [] : [item];
+    const attachments = [...timelineIdentities(item)].flatMap((identity) => {
+      const companion = companions.get(identity);
+      return companion ? [companion] : [];
+    });
+    return [item, ...attachments];
   });
 }
 
@@ -172,12 +189,7 @@ function activityClusterSegments(
 ): MobileTimelineItem[] {
   const members = cluster.members ? [...cluster.members] : [];
   members[updatedIndex] = updatedMember;
-  return clusterActivities(
-    members.map((member) => ({
-      family: member.state === "failed" ? `failed:${member.id}` : member.family,
-      item: { kind: "activity", ...member },
-    })),
-  );
+  return projectActivityMembers(members);
 }
 
 export type ConversationStatus =
@@ -1700,33 +1712,24 @@ export function createConversationStore() {
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
-          const supersededVersions = new Map<string, MobileTimelineItem>();
+          const supersededVersions = new Map<string, MobileTimelineItem[]>();
           if (currentConvForMerge !== null) {
             for (const item of conversation.items) {
-              const identities = timelineIdentities(item);
-              const current = currentConvForMerge.items
-                .filter(
-                  (candidate) =>
-                    (candidate.kind === "attachments") === (item.kind === "attachments") &&
-                    [...timelineIdentities(candidate)].some((id) => identities.has(id)),
-                )
-                .sort(
-                  (a, b) =>
-                    liveRevisionForItem(b, liveOwnedRevs) -
-                    liveRevisionForItem(a, liveOwnedRevs),
-                )[0];
-              const rev = current && liveRevisionForItem(current, liveOwnedRevs);
-              if (rev !== undefined && rev > entryLiveRev && current !== undefined) {
-                const identity = timelineIdentity(item);
+              const identity = timelineIdentity(item);
+              if (item.kind === "activity") {
+                const replacement = mergeLiveActivityMembers(item, currentConvForMerge.items, liveOwnedRevs, entryLiveRev);
+                if (replacement) {
+                  supersededIds.add(identity);
+                  supersededVersions.set(identity, replacement);
+                }
+                continue;
+              }
+              const current = currentConvForMerge.items.find(
+                (candidate) => candidate.kind === item.kind && timelineIdentity(candidate) === identity,
+              );
+              if (current && liveRevisionForItem(current, liveOwnedRevs) > entryLiveRev) {
                 supersededIds.add(identity);
-                supersededVersions.set(
-                  identity,
-                  mergeLiveActivityMembers(
-                    item,
-                    currentConvForMerge.items,
-                    liveOwnedRevs,
-                  ) ?? current,
-                );
+                supersededVersions.set(identity, [current]);
               }
             }
           }
@@ -1748,12 +1751,11 @@ export function createConversationStore() {
                 return [];
               }
             }
-            return [
-              supersededIds.has(timelineIdentity(item))
-                ? (supersededVersions.get(timelineIdentity(item)) as MobileTimelineItem)
-                : item,
-            ];
+            return supersededVersions.get(timelineIdentity(item)) ?? [item];
           });
+          const omittedItems = currentConvForMerge === null ? [] : itemsAbsentFromSnapshot(
+            currentConvForMerge.items, rereadIdentities, rereadKeys,
+          );
           let mergedCursor = olderCursor;
           if (preservePageHistory) {
             if (currentConvForMerge !== null) {
@@ -1765,14 +1767,12 @@ export function createConversationStore() {
               //    liveOwnedRevs that are not in the reread projection).
               // 4. Drop current-only items owned by NEITHER (not pageOwned,
               //    not liveOwned, not in reread) as omitted old history.
-              const pageOnlyItems = currentConvForMerge.items.filter(
+              const pageOnlyItems = omittedItems.filter(
                 (i) =>
-                  !rereadIdentities.has(timelineIdentity(i)) &&
                   pageOwnedIds.has(timelineIdentity(i)),
               );
-              const liveTailItems = currentConvForMerge.items.filter(
+              const liveTailItems = omittedItems.filter(
                 (i) =>
-                  !rereadKeys.has(timelineIdentity(i)) &&
                   !pageOwnedIds.has(timelineIdentity(i)) &&
                   isLiveOwned(i, liveOwnedRevs),
               );
@@ -1790,9 +1790,8 @@ export function createConversationStore() {
           } else if (currentConvForMerge !== null) {
             // No page race, but still append live-owned items omitted from the
             // reread (live notifications that arrived during the await).
-            const liveTailItems = currentConvForMerge.items.filter(
+            const liveTailItems = omittedItems.filter(
               (i) =>
-                !rereadIdentities.has(timelineIdentity(i)) &&
                 !pageOwnedIds.has(timelineIdentity(i)) &&
                 isLiveOwned(i, liveOwnedRevs),
             );
