@@ -434,7 +434,11 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	s.mu.Lock()
 	publishedRevision := s.newestPublishedFoldRevision
 	s.mu.Unlock()
-	s.handleCompactionTurnEffects(t, s.writeTranscript(t), false, publishedRevision)
+	writeErr := s.writeTranscript(t)
+	if isSessionNameCompactionTurn(t) && writeErr == nil {
+		s.resetEnvContextTrackerAfterCompaction()
+	}
+	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
 }
 
 // handleCompactionTurnEffects runs a compaction turn's post-write side
@@ -463,7 +467,6 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// applyPendingForceCompact, and the automatic per-request
 		// ManageContext) funnels through via contextMgr.OnCompactionTurn /
 		// WithCompactionTurnCallback.
-		s.resetEnvContextTrackerAfterCompaction()
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	if superseded {
