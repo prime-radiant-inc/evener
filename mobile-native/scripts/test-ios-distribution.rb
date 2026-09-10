@@ -35,7 +35,7 @@ def expect_failure(message)
   assert(failed, "expected failure: #{message}")
 end
 
-def write_ipa(path, identifier:, marketing_version:, build_number:, device_family: [1])
+def write_ipa(path, identifier:, marketing_version:, build_number:, device_family: [1], encryption: false)
   Dir.mktmpdir("evener-ipa") do |dir|
     app = File.join(dir, "Payload", "Evener.app")
     FileUtils.mkdir_p(app)
@@ -48,6 +48,7 @@ def write_ipa(path, identifier:, marketing_version:, build_number:, device_famil
       <key>CFBundleVersion</key><string>#{build_number}</string>
       <key>UIDeviceFamily</key><array>#{device_family.map { |value| "<integer>#{value}</integer>" }.join}</array>
       <key>DTPlatformName</key><string>iphoneos</string>
+      <key>ITSAppUsesNonExemptEncryption</key><#{encryption ? "true" : "false"}/>
       </dict></plist>
     PLIST
     Zip::File.open(path, create: true) { |zip| zip.add("Payload/Evener.app/Info.plist", File.join(app, "Info.plist")) }
@@ -62,6 +63,7 @@ def test_ipa_analyser(tmpdir)
   assert(info["CFBundleShortVersionString"] == "0.1.0", "IPA analyser lost marketing version")
   assert(info["CFBundleVersion"] == "7", "IPA analyser lost build number")
   assert(info["UIDeviceFamily"] == [1], "IPA analyser lost iPhone family")
+  assert(info["ITSAppUsesNonExemptEncryption"] == false, "IPA analyser lost export encryption compliance")
 end
 
 def test_configure_helper(tmpdir)
@@ -258,7 +260,7 @@ def test_lanes(tmpdir)
   expect_failure("external group") { lane.runner.execute(:testflight, :ios) }
   assert(DistributionStore.uploads.empty?, "uploaded before checking group type")
 
-  [[:identifier, "another.app"], [:marketing_version, "0.2.0"], [:build_number, "8"], [:device_family, [1, 2]]].each_with_index do |(key, value), index|
+  [[:identifier, "another.app"], [:marketing_version, "0.2.0"], [:build_number, "8"], [:device_family, [1, 2]], [:encryption, true]].each_with_index do |(key, value), index|
     DistributionStore.reset
     path = File.join(tmpdir, "wrong-#{index}.ipa")
     input = { identifier: "com.primeradiant.evener.native", marketing_version: "0.1.0", build_number: "7" }
